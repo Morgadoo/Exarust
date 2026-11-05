@@ -57,7 +57,7 @@ impl Plugin for RoomViewPlugin {
 }
 
 /// The level's rooms and which of them show.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Debug)]
 pub struct LevelRooms {
     pub rooms: Arc<Rooms>,
     pub tracker: RoomTracker,

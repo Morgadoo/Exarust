@@ -106,7 +106,7 @@ fn bridge_character_tick_types(app: &mut App) {
         .bridge_copy::<TickedClips>()
         .bridge_copy::<exa_anim::BodyPart>()
         .bridge_copy::<exa_anim::Stature>()
-        .bridge_copy_resource::<exa_anim::Motions>()
+        .bridge_copy_opaque_resource::<exa_anim::Motions>()
         .bridge_copy::<PlayerBody>()
         .bridge_copy::<OutOfScene>()
         .bridge_copy::<CharacterBody>()
@@ -297,7 +297,7 @@ mod tests {
     use super::*;
 
     /// Every character tick the stages ran, in order.
-    #[derive(Resource, Default)]
+    #[derive(Resource, Default, Debug)]
     struct Ticked(Vec<TickedCharacter>);
 
     fn note(ticked: Res<TickedCharacter>, mut log: ResMut<Ticked>) {

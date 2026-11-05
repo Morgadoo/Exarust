@@ -77,7 +77,7 @@ struct FrameRecord {
     brain_parts: [f32; 5],
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 struct Probes {
     marks: [Option<Instant>; 7],
     last_start: Option<Instant>,

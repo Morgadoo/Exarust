@@ -140,10 +140,10 @@ impl Plugin for BodyOverlayPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_body_overlay_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyFrameGizmos, ()>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyFrameGizmos, bevy::time::Fixed>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyGizmos, ()>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyGizmos, bevy::time::Fixed>>();
+    app.bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyFrameGizmos, ()>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyFrameGizmos, bevy::time::Fixed>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyGizmos, ()>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyGizmos, bevy::time::Fixed>>();
 }
 
 /// Gizmos drawn over the scene, `width` pixels wide.

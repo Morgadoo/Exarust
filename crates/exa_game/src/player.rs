@@ -96,7 +96,7 @@ const RETURN_BLEND: u32 = 30;
 
 /// The player's physics root (origin at the feet). The audio listener is
 /// anchored on it, as the original anchors its listener on the player.
-#[derive(Component)]
+#[derive(Component, Debug, Clone)]
 #[require(exa_audio::ListenerAnchor)]
 pub struct Player;
 
@@ -341,7 +341,7 @@ impl AttackInput {
 /// The left button as the behaviour ticks see it: a press since the last
 /// tick counts even when it was let go before a tick ran (a click within a
 /// frame that ran no tick).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 struct AttackButton {
     pressed_since_tick: bool,
 }
@@ -389,7 +389,7 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
 
 /// The point under the cursor on the player's aim plane, for the right
 /// mouse button, combat facing and the world cursor.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
 
 /// The cursor's aim pick reaches this far along its ray (m), as the
@@ -539,7 +539,7 @@ pub(crate) fn cursor_ground(
 /// it by `(0.4·AimSpeed + 0.1)²` a behaviour tick (the original eases the
 /// screen cursor and picks its point on the aim plane; Exarust eases the
 /// world point by the same factor).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub(crate) struct AimCursor(pub(crate) Option<Vec3>);
 
 pub struct PlayerPlugin;
@@ -604,7 +604,8 @@ impl Plugin for PlayerPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_player_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>()
+    app.bridge_copy::<Player>()
+        .bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>()
         .bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>()
         .bridge_lend_resource::<exa_ai::presence::ActivationArea>()
         .bridge_copy::<exa_character::Wielded>()

@@ -226,7 +226,7 @@ fn tile_cell(cm: f32) -> (usize, f32) {
 }
 
 /// The cloth a step advances.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Cloth {
     pub particles: Vec<Particle>,
     pub edges: Vec<Edge>,

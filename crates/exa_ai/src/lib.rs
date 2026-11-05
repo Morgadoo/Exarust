@@ -153,7 +153,8 @@ impl Plugin for AiPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_ai_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_message::<crate::brain::StatueByte>()
+    app.bridge_copy::<crate::brain::RatedPlayer>()
+        .bridge_message::<crate::brain::StatueByte>()
         .bridge_message::<crate::presence::Entered>()
         .bridge_message::<exa_combat::AttackAskedHook>()
         .bridge_lend_resource::<crate::BrainTickClock>()

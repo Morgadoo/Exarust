@@ -37,7 +37,9 @@ without the shell (`body_floor_test`).
 the fixed step's schedules (`FixedMainScheduleOrder`'s, plus the ones it
 names, such as the character tick and the brain chain) whole, with their
 sets and order, from the frame's world into the simulation's, on the first
-lockstep step. Each type their systems (and their run conditions) touch is
+lockstep step. Each type their systems, their run conditions and their query filters
+(`With`, `Without`: a marker the bridge does not carry would match nothing)
+touch is
 registered on the app by the plugin whose systems touch it
 (`SimBridgeAppExt`: `bridge_copy` for a cloneable component,
 `bridge_relationship` for a relationship such as `ChildOf`, whose target
@@ -58,18 +60,28 @@ it builds the moved schedules and lists every type their systems or run
 conditions touch that is not bridged (`BridgeCoverage`, logged; while one
 is missing, a failing system is skipped with one warning); after each step
 it warns once for any component the simulation's entities carry that is not
-bridged (one a system inserts by command). `BridgeCost` counts the values
-and the time each half of the copy took, and each side logs its costliest
-types every 1000 steps; `EXA_BRIDGE_ALL=1` copies every value every step (a
+bridged (one a system inserts by command). Changed values are found in the storage's change
+ticks (`Changed<T>` with the half's own tick), not one `Ref` per value.
+`BridgeCost` counts the values and the time each half of the copy took, and
+each side logs its costliest types every 1000 steps; `EXA_BRIDGE_ALL=1` copies every value every step (a
 debug aid). Every plugin with fixed-step systems registers its data (a
 `bridge_*_types` function next to its build); bodies are copied when they
-change, the collision world, the navigation grid and the solver's stages
-are lent. The solver, the sector lists and the character tick walk their
+change, the collision world, the navigation grid, the cloths and the
+solver's stages are lent. The game runs its fixed step this way by default
+(`--no-sim-bridge` keeps it in the frame's world). The solver, the sector lists and the character tick walk their
 bodies in entity order, so neither world's table layout decides it. A body's
 every pose is the same bit for bit behind the bridge, inline and on the
 thread (`body_floor_test`), and a scripted run logs the same changes,
 removals, spawns, children and messages on both sides as one world
 (`sim_bridge_test`).
+
+`sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
+each bridged type's values (entity ids left out, values sorted), in its own
+schedule after `FixedLast`, which moves with the fixed step: a one-world run
+and a bridged one compare tick by tick and type by type, and
+`EXA_DIGEST_DUMP=<step>[-<step>]` writes the values themselves. It found the
+bridged duel's drift: query filters were not in the coverage, so `With<Player>`
+matched nothing in the simulation's world.
 
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the

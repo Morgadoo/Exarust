@@ -195,7 +195,8 @@ impl Plugin for SimControlPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_sim_control_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_resource::<crate::sim_control::SimControl>()
+    app.bridge_copy::<Undying>()
+        .bridge_lend_resource::<crate::sim_control::SimControl>()
         .bridge_lend_resource::<exa_ui::loading::LoadingStatus>();
 }
 

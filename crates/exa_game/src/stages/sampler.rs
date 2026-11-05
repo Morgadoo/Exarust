@@ -56,7 +56,7 @@ use crate::limp::{Lean, Pace, clip_pose, clip_tick, physical_turns, run_overlay}
 /// the body's part order (the pose itself, scaled by the body's stature,
 /// is kept on its `Animator` as the targets); none when its clip gave
 /// none (the body keeps last tick's pose).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub(crate) struct SampledPose(pub(crate) Option<Vec<Affine3A>>);
 
 /// Advances and samples the ticked body's clip, by the step its

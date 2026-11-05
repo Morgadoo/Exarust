@@ -206,7 +206,7 @@ impl Default for Following {
 }
 
 /// The search's scene and every follower's state.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct SearchWorld {
     scene: Scene,
     /// Each character's place in the scene's character list (its object is
@@ -1708,7 +1708,7 @@ fn bridge_npc_search_types(app: &mut App) {
     app.bridge_lend_resource::<exa_ai::rooms::RoomGridSize>()
         .bridge_copy::<exa_character::Outfit>()
         .bridge_lend_resource::<crate::doll_view::DollItems>()
-        .bridge_lend_resource::<crate::gui_screens::GameScreens>()
+        .bridge_lend_opaque_resource::<crate::gui_screens::GameScreens>()
         .bridge_lend_resource::<crate::npc_search::SearchItems>()
         .bridge_lend_resource::<crate::npc_search::SearchWorld>()
         .bridge_copy::<crate::torch::CarriesTorch>()

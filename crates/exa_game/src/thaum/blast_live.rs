@@ -82,7 +82,7 @@ const LIMB_EXTRA: f32 = 10.0;
 const AHEAD: f32 = 600.0;
 
 /// A blast in the scene.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct LiveBlast {
     pub blast: Blast,
     pub caster: Entity,

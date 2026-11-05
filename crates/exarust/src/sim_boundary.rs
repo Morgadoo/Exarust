@@ -174,6 +174,19 @@ impl BoundaryMap {
                     continue;
                 }
                 let set = access.to_filtered_access_set();
+                // Query filters decide what matches: the bridge carries them.
+                if side == Side::Sim {
+                    for id in set
+                        .filtered_accesses()
+                        .iter()
+                        .flat_map(|f| f.with_filters().chain(f.without_filters()))
+                    {
+                        map.sim_types
+                            .entry(name_of(id))
+                            .or_default()
+                            .insert(name.clone());
+                    }
+                }
                 let Ok(kinds) = set.combined_access().try_iter_access() else {
                     map.whole_world.entry(side).or_default().insert(name);
                     continue;
@@ -212,6 +225,13 @@ impl BoundaryMap {
         map.not_built.sort();
         if let Some(types) = world.get_resource::<exa_physics::sim_bridge::SimBridgeTypes>() {
             map.bridged = types.covered_names();
+        }
+        // Bevy's default query filters.
+        for name in [
+            "bevy_ecs::entity_disabling::Disabled",
+            "bevy_ecs::resource::IsResource",
+        ] {
+            map.bridged.insert(name.to_owned());
         }
         map
     }
