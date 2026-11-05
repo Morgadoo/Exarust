@@ -815,6 +815,9 @@ pub fn mind_trust(
     };
     let entry = &mut target.powers[index];
     entry.caster = Some(caster.id);
+    // The marker keeps its caster in the word the perception's charm test
+    // reads as the body it trusts.
+    entry.target = Some(caster.id);
     if let MindClass::Trust(power) = &mut entry.class {
         power.start = scene.now_ms;
     }
@@ -974,7 +977,10 @@ pub fn mind_loyalty(
         contact.regard = 30.0;
         contact.hostility = 0.0;
     }
+    // The cast builds the caster's power running (its constructor leaves
+    // the state word 0); the ready state is the load's relink.
     let mut power = LoyaltyCaster::new();
+    power.state = crate::thaum::power::RUNNING;
     power.target = Some(target.id);
     power.held += crate::thaum::casting::reserve(&mut caster.cast, cost);
     let mut entry = MindPower::new(LOYALTY, MindClass::Loyalty(power));
@@ -1211,7 +1217,9 @@ pub fn mind_command_dead(
         contact.hostility = 0.0;
     }
     target.ai.rearm = true;
+    // Running from the cast, as Loyalty's (the ready state is the load's).
     let mut power = CommandDeadCaster::new();
+    power.state = crate::thaum::power::RUNNING;
     power.target = Some(target.id);
     power.held += crate::thaum::casting::reserve(&mut caster.cast, cost);
     let mut entry = MindPower::new(COMMAND_DEAD, MindClass::CommandDead(power));
@@ -1299,6 +1307,7 @@ pub fn mind_sense_persistent(caster: &mut MindBody, cost: f32) -> MindOutcome {
         return outcome;
     }
     let mut power = MindSense::new();
+    power.state = crate::thaum::power::RUNNING;
     power.show();
     power.held += crate::thaum::casting::reserve(&mut caster.cast, cost);
     caster
@@ -1341,6 +1350,7 @@ pub fn mind_mask_persistent(caster: &mut MindBody, cost: f32) -> MindOutcome {
         return outcome;
     }
     let mut power = MindMask::new();
+    power.state = crate::thaum::power::RUNNING;
     power.held += crate::thaum::casting::reserve(&mut caster.cast, cost);
     let mut entry = MindPower::new(MASK_PERSISTENT, MindClass::Mask(power));
     entry.levels = [0.9, 0.8];

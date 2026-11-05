@@ -414,6 +414,9 @@ impl Plugin for CastPlugin {
             // What the bar's Mind casts read and write (the mind runtime's
             // plugin runs them).
             .init_resource::<crate::mind::runtime::MindPick>()
+            .init_resource::<crate::mind::runtime::MindDeadPick>()
+            .add_message::<exa_audio::PointSounded>()
+            .add_message::<exa_audio::MusicOverlay>()
             .init_resource::<crate::mind::runtime::MindAim>()
             .init_resource::<crate::mind::runtime::MindControl>()
             .add_message::<crate::mind::runtime::SpiritBodyAsked>()
@@ -728,7 +731,13 @@ pub(crate) fn run_bar_commands(
                     spirit_screen: mind.control.spirit_screen.map(|s| s.state),
                     loud_music: false,
                 };
-                let mind_target = mind.pick.0;
+                // The dead powers pick with the collapsed allowed.
+                let mind_target = match asked & ID_MASK {
+                    crate::mind::casts::RAISE_DEAD | crate::mind::casts::COMMAND_DEAD => {
+                        mind.dead_pick.0
+                    }
+                    _ => mind.pick.0,
+                };
                 let entry = tree.cast_slot(
                     &mut caster.record,
                     &mut caster.bar,
@@ -782,6 +791,25 @@ pub(crate) fn run_bar_commands(
                         "mind cast {asked:#x} at {mind_target:?}: code {}, sound {:?}, request {:?}",
                         outcome.code, outcome.sound, outcome.request
                     );
+                    if let Some(sound) = outcome.sound {
+                        crate::mind::runtime::play_mind_sound(&mut mind.sounds, sound);
+                    }
+                    if let crate::mind::casts::MindRequest::SpiritForm { music_volume } =
+                        outcome.request
+                    {
+                        mind.music.write(exa_audio::MusicOverlay::In {
+                            name: crate::mind::casts::SPIRIT_MUSIC.to_string(),
+                            volume: music_volume,
+                        });
+                        // The spirit screen's start plays its own sound.
+                        crate::mind::runtime::play_mind_sound(
+                            &mut mind.sounds,
+                            crate::mind::casts::MindSound {
+                                name: crate::mind::sight::SPIRIT_SCREEN_SOUND,
+                                volume: crate::mind::sight::SPIRIT_SCREEN_VOLUME,
+                            },
+                        );
+                    }
                     if crate::mind::runtime::spirit_asked(&outcome) {
                         let feet = mind
                             .places
@@ -833,6 +861,9 @@ pub(crate) fn run_bar_commands(
 pub(crate) struct MindBar<'w, 's> {
     minds: Query<'w, 's, &'static mut crate::mind::runtime::MindBody>,
     pick: Res<'w, crate::mind::runtime::MindPick>,
+    dead_pick: Res<'w, crate::mind::runtime::MindDeadPick>,
+    sounds: MessageWriter<'w, exa_audio::PointSounded>,
+    music: MessageWriter<'w, exa_audio::MusicOverlay>,
     control: Res<'w, crate::mind::runtime::MindControl>,
     spirits: MessageWriter<'w, crate::mind::runtime::SpiritBodyAsked>,
     places: Query<'w, 's, &'static GlobalTransform>,

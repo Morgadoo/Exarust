@@ -618,6 +618,45 @@ pub(crate) fn start_music(
     }
 }
 
+/// A request for the overlay track: `In` fades a named track in over the
+/// main one at its volume ([`AudioEnvironment::music_overlay`]), `Out` fades
+/// it out ([`AudioEnvironment::music_overlay_fade_out`]). Spirit Form plays
+/// its realm's music this way.
+#[derive(Message, Debug, Clone, PartialEq)]
+pub enum MusicOverlay {
+    In { name: String, volume: f32 },
+    Out,
+}
+
+/// Runs the overlay requests on the real clock the fades measure.
+pub(crate) fn overlay_music(
+    mut env: ResMut<AudioEnvironment>,
+    mut requests: MessageReader<MusicOverlay>,
+    real: Res<Time<Real>>,
+    game: Option<Res<Game>>,
+    mut bank: ResMut<SoundBank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+) {
+    let now = real.elapsed().as_millis() as u32;
+    for request in requests.read() {
+        match request {
+            MusicOverlay::In { name, volume } => {
+                let Some(game) = game.as_deref() else {
+                    continue;
+                };
+                env.music_overlay(&mut bank, name, *volume, now, |bank, name| {
+                    bank.load_buffer(game, &mut sources, name).unwrap_or(0)
+                });
+                info!("music overlay: {name} fades in at {volume}");
+            }
+            MusicOverlay::Out => {
+                env.music_overlay_fade_out(now);
+                info!("music overlay: fades out");
+            }
+        }
+    }
+}
+
 /// Applies the music setting the options screen stores when it changes. Not
 /// wired to a screen yet; public so one can drive it.
 pub(crate) fn apply_music_setting(

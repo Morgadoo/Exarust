@@ -13,7 +13,7 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 |---|---|
 | `bank` | the name-keyed buffer cache (`Sound.rpk` WAV files), numbered sets, the variant picker and the engine generator |
 | `environment` | the 512-voice pool, listener and bus gains, audibility ranking, the quicksort, source binding, the per-update state machine and the OpenAL distance model |
-| `music` | the two-track crossfader (A/B), its four states and the level's track; a story level's track, volume, ambience and preset by the bytes of its name, and whether entering it changes the music |
+| `music` | the two-track crossfader (A/B), its four states and the level's track; the overlay requests (`MusicOverlay`, Spirit Form's realm music); a story level's track, volume, ambience and preset by the bytes of its name, and whether entering it changes the music |
 | `ambience` | an area's looping bed and its scheduled one-shots |
 | `reverb` | the global EAX reverb parameter block and the level's decay offset |
 | `hits`, `footsteps` | the game's first two users of the mixer; the footsteps read the body's gait plants (`exa_physics::body::Footstep`) with the original's gain and pitch, and keep a speed timer for bodies without a ragdoll |
