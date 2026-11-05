@@ -1,21 +1,25 @@
 //! Audio from `Sound.rpk` (RIFF/WAVE PCM): the name-keyed buffer cache and
 //! sound sets (`bank`), the original's virtual-voice mixer with 512 voices
 //! ranked onto 64 sources (`environment`), music crossfades (`music`), area
-//! ambience (`ambience`), the global EFX reverb's parameters (`reverb`),
+//! ambience (`ambience`), the global EFX reverb's parameters (`reverb`) and
+//! its sound (`efx`, OpenAL Soft's EAX reverb and source send, played by the
+//! reverb bus in `efx_bus`),
 //! weapon impacts and pain sounds on hits (`hits`), footsteps for moving
 //! characters (`footsteps`), the plain rigid bodies' collision sounds
 //! and scrape loops (`bodies`), and the doors', levers' and push surfaces'
 //! creaks, knocks, slams, clicks and tick loops (`mechanisms`).
 //!
-//! The original mixes through OpenAL with EFX; Bevy's rodio backend has
-//! neither EFX nor per-source auxiliary sends. The mixer computes the reverb
-//! block and the send flag of every voice but the backend does not apply them.
-//! The OpenAL distance model the original sets up (linear, clamped between
+//! The original mixes through OpenAL Soft with EFX; Bevy's rodio backend has
+//! neither EFX nor per-source auxiliary sends, so the reverb bus keeps a wet
+//! copy of every sending source slot and runs the port of OpenAL Soft's
+//! reverb on rodio's audio thread. The OpenAL distance model the original sets up (linear, clamped between
 //! 4 m and 30 m) is applied by the playback layer (see the crate README).
 
 mod ambience;
 mod bank;
 mod bodies;
+pub mod efx;
+mod efx_bus;
 mod environment;
 mod footsteps;
 mod hits;
@@ -91,6 +95,7 @@ impl Plugin for AudioPlugin {
                     reverb::apply_level_reverb,
                     playback::advance_audio_environment,
                     playback::apply_source_commands,
+                    efx_bus::drive_reverb_bus,
                 )
                     .chain(),
             )
@@ -98,6 +103,13 @@ impl Plugin for AudioPlugin {
                 FixedUpdate,
                 bodies::body_sounds.after(exa_physics::body::BodySystems),
             );
+        // The reverb bus needs Bevy's audio output (absent in tests and
+        // headless tools).
+        if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
+            use bevy::audio::AddAudioSource;
+            app.add_audio_source::<efx_bus::ReverbBusAudio>()
+                .add_systems(Startup, efx_bus::spawn_reverb_bus);
+        }
     }
 }
 

@@ -922,9 +922,13 @@ fn play_level(
         name,
     )));
     commands.insert_resource(exa_audio::LevelAmbienceBed::default());
-    commands.insert_resource(exa_audio::LevelReverb {
-        decay_offset: info.reverb_decay,
-    });
+    commands.insert_resource(exa_audio::LevelReverb::for_level(
+        matches!(
+            exa_world::environment::level_preset(name),
+            exa_world::environment::LevelPreset::Outdoor { .. }
+        ),
+        info.reverb_decay,
+    ));
     commands.insert_resource(exa_game::hud::HeartbeatRule {
         allowed: options.heartbeat || exa_game::hud::heartbeat_allowed(name),
     });
