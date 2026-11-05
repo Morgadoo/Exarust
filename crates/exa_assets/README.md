@@ -224,6 +224,11 @@ and a shaded material word (`0x100807`), and a type-2 record keeps only the
 colour/opacity slot. Refracting records cast shadows, and a record whose
 destination nibble is ONE never does.
 
+A shader word with the local reflection (`0x400000`: a reflection layer
+and extra flag `0x800` above shading quality 4, `glsdark02` alone in the
+shipped libraries) sets the material's `flags2::LOCAL_REFLECTION`;
+`exa_render::local_reflection` binds the low field it reads.
+
 A height layer is switched off by its texture: a map one texel tall clears
 the material word's `0x800000` and the shader word's displacement bit, and
 stores zero parallax counts; a taller map keeps the layer and gets its

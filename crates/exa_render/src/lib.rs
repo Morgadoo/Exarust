@@ -17,12 +17,14 @@ pub mod gi;
 pub mod gi_ambient;
 pub mod gi_probe;
 pub mod gi_shape;
+pub mod gi_tag;
 pub mod glow;
 pub mod hair_program;
 pub mod icon_render;
 pub mod image_noise;
 pub mod light_slots;
 pub mod lights;
+pub mod local_reflection;
 pub mod material;
 pub mod material_state;
 pub mod mind_sight;
@@ -81,13 +83,13 @@ impl Plugin for RenderPlugin {
             post::PostPlugin,
             quality::QualityPlugin,
             material::MaterialsPlugin,
-            gi::GiPlugin,
+            (gi::GiPlugin, gi_tag::GiTagPlugin),
             (flame::FlamePlugin, flame_row::FlameRowPlugin),
             (electricity::ElectricityPlugin, force_effects::ForceEffectsPlugin),
             (spray::SprayPlugin, rain::RainPlugin),
             stain::StainPlugin,
             (benchmark::BenchmarkPlugin, supersample::SupersamplePlugin),
-            lights::LightsPlugin,
+            (lights::LightsPlugin, local_reflection::LocalReflectionPlugin),
             cube_shadows::CubeShadowsPlugin,
             shell::ShellPlugin,
             (glow::GlowPlugin, mind_sight::MindSightPlugin),

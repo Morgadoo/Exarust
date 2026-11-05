@@ -92,6 +92,8 @@ evaluated per voxel, with their uniforms, tracked from each shape entity's
 component; no effect registers one yet, so the pass also carries a white
 shape texel), draw box, program names, quad and shared uniforms, the three linked programs' sampler units and uniforms (`GiPass::layout`: `Shadow<i>` on 2 + i, `LVox` 0, `OVox` 1; the emission program sets only `OVox`), the neighbour margin copy's columns, UV offsets and quad, the dynamic update's dirty region, and the occupancy sub-upload
 (`GiOccupancyPatch`) a moving mesh's changed box goes out as. A voxel light carries the node's base colour, current and base intensity, base and active radius and flag word, with the 3× modern and double-precision 0.6 legacy colour paths, the activation copy, the clone copy and the constructor's class 0x41 white unit-intensity default.
+- `local_reflection`: the original's local reflection (`Shd.LocalRef`; it has no planar reflection): the scene's low field (`SceneLowField`, a quarter of the post camera's target), copied from the post chain's blurred bright pass after each frame and bound to every `flags2::LOCAL_REFLECTION` material (`glsdark02`), which `exa.wesl` reads pushed along the view-space normal and mixes into the GI-volume cube reflection; `ViewPrj` (the projection's scale × 500 cm); `EXA_LOCAL_REF_DEBUG` ([`docs/RENDERING.md`](../../docs/RENDERING.md), Local reflection).
+- `gi_tag`: each surface's GI block cell from its world bounds centre (the original's per-object `VXGIPos` takes the node's bounding-sphere centre), carried in the mesh tag's bits 20–31 (`GiCellTag`, composed with the light-list slot by `lights`) and read by `shading.wesl`'s `gi_slot_tagged` ([`docs/RENDERING.md`](../../docs/RENDERING.md), Voxel GI).
 - `post`: the original's grading chain (the fade and desaturation controls with their exact ramps, the two cached program variants the sharpen amount and shader-restore switch pick, the bloom filter's `(x²·24)` weight curve over one sample more than it uploads, with its doubled-sum normalisation and 1.5 or double `level·0.016 + 1` scale, and the pass's uniform values); the `post` files hold Exarust's Bevy implementation of the bloom/grade chain.
 - `image_noise`: the original's procedural noise: white noise from its
   linear congruential sequence (whole maps and float row ranges), byte octaves (the terrain's blend-rule
@@ -120,7 +122,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   sizes the point lights' cube faces and the sun map, `MultisampleSetting`
   the scene camera's MSAA while super-sampling is off, and
   `supersample::SuperSampling` turns the supersampled scene's target off and
-  on ([`docs/UI.md`](../../docs/UI.md#what-actually-takes-effect)).
+  on (`EXA_SUBFRAME` shows one sub-frame of the resolve) ([`docs/UI.md`](../../docs/UI.md#what-actually-takes-effect)).
 - `benchmark`: the GPU benchmark's workload, the original's own fragment
   program as a two-dimensional material (a texture read at the uv, the
   square roots, the reads offset by 0.2341, 0.1476, 0.3768 and 0.4276, the

@@ -12,7 +12,7 @@ import bevy_pbr::render::{
 };
 import exa_render::shading::{
     Surface, Lit, Taps, taps, lit_by, light_shadow, sun_shadow, light, light_skin, schlick, view_depth, vertical_shaping,
-    gi_frame, gi_tap, gi_slot, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
+    gi_frame, gi_tap, gi_slot_tagged, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
     REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
 import exa_render::hair::{
@@ -29,7 +29,8 @@ struct ExaParams {
     flags: u32,
     // The LOD bias on colour-texture samples (`ExaParams::texture_bias`).
     texture_bias: f32,
-    pad1: u32,
+    // The second flag word (`material::flags2`).
+    flags2: u32,
     pad2: u32,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
@@ -139,6 +140,36 @@ const SHADOW_STEPS: i32 = 16;
 @group(constants::MATERIAL_BIND_GROUP) @binding(128) var gi_volume_8: texture_3d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(119) var height_map: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(120) var height_sampler: sampler;
+// The scene's low field: the previous frame's quarter-size blurred bright
+// pass (`exa_render::local_reflection`).
+@group(constants::MATERIAL_BIND_GROUP) @binding(133) var scene_low: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(134) var scene_low_sampler: sampler;
+
+// `flags2`: the original's local reflection (`Shd.LocalRef`).
+const LOCAL_REFLECTION: u32 = 1u;
+// `EXA_LOCAL_REF_DEBUG`: such a surface shows its low-field read × 4.
+const DEBUG_LOCAL_REFLECTION: u32 = 2u;
+const LOCAL_PUSH_BASE: f32 = 1.05;
+const LOCAL_PUSH_SCALE: f32 = 0.05;
+const LOCAL_READ_GAIN: f32 = 1.5;
+const LOCAL_VIEW_PRJ_CM: f32 = 500.0;
+
+// The original's `{$reflection}` program: the low field read just off the
+// fragment's screen position, pushed along the view-space normal by
+// n.xy·(1.05/(1.05 − n.z) − 1)·0.05·ViewPrj/w (w the clip depth in cm,
+// `ViewPrj` the projection's scales × 500 cm), × 1.5.
+fn local_reflection(n: vec3<f32>, p: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+    let view = view_bindings::view;
+    let nv = (view.view_from_world * vec4(n, 0.0)).xyz;
+    let w_cm = -(view.view_from_world * vec4(p, 1.0)).z * 100.0;
+    let k = LOCAL_PUSH_BASE / (LOCAL_PUSH_BASE - nv.z) - 1.0;
+    let prj = vec2(view.clip_from_view[0].x, view.clip_from_view[1].y) * LOCAL_VIEW_PRJ_CM;
+    var o = nv.xy * (k * LOCAL_PUSH_SCALE) * prj / w_cm;
+    // GL's texture y runs up the screen; the target's runs down.
+    o.y = -o.y;
+    let uv = frag / view.viewport.zw + o;
+    return textureSampleLevel(scene_low, scene_low_sampler, uv, 0.0).rgb * LOCAL_READ_GAIN;
+}
 
 // Resident block `k`'s light at texture position `w`; with no block, the
 // original's texture 0: no light and full openness.
@@ -620,15 +651,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let ambient_w = select(REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, has(OUTDOOR));
     var hair_share = 0.5;
     if has(GI) {
-        // Voxel GI: the light of the resident block the object's origin
-        // falls in (the original's per-object `VXGIPos`; no block reads
-        // black), lifted where faint, × the level ambient × 15 × openness
+        // Voxel GI: the light of the resident block the object's bounds
+        // centre falls in (the original's per-object `VXGIPos`, from the
+        // mesh tag's cell; no block reads black), lifted where faint, × the level ambient × 15 × openness
         // (outdoors with its own lift, then × the environment cube at mip 7
         // × `Ambient.w`·5); reflections take the cube × the light before
         // that factor.
         let world_from_local = mesh[in.instance_index].world_from_local;
         let o = vec3(world_from_local[0].w, world_from_local[1].w, world_from_local[2].w);
-        let slot = gi_slot(material.gi_grid, material.gi_cells, o);
+        let slot = gi_slot_tagged(material.gi_grid, material.gi_cells, o, tag);
         let g = gi_block_sample(slot, p, n, disc);
         if has(DEBUG_GI) && !has(DEBUG_SPLIT) {
             out.color = vec4(g.rgb * 10.0, 1.0);
@@ -646,7 +677,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         if has(ENVIRONMENT) {
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
-            reflected = mirrored * (gi_light * ambient_w * 2.0) * gv;
+            reflected = mirrored * (gi_light * ambient_w * 2.0);
+            // Local reflection: toward the low field's read on glossy
+            // surfaces seen edge on, min(2·gloss, 1)²·(1 − N·V).
+            if (material.flags2 & LOCAL_REFLECTION) != 0u {
+                let local = local_reflection(n, p, in.position.xy);
+                if (material.flags2 & DEBUG_LOCAL_REFLECTION) != 0u {
+                    out.color = vec4(local * 4.0, 1.0);
+                    return out;
+                }
+                let a = min((1.0 - s.rough) * 2.0, 1.0);
+                reflected = mix(reflected, local, a * a * (1.0 - s.ndv));
+            }
+            reflected *= gv;
         } else {
             // Without a reflection layer (`Mat.TexRef`) the specular GI is a
             // quarter of the ambient, not a cube sample.

@@ -323,8 +323,11 @@ impl GlobalUniforms {
                 view.subframe_offset * view.frame_scale,
             ],
             view_size: size,
-            // `ViewPrj` is the projection's half extents at 500 cm [inf].
-            view_proj: [half * 500.0, aspect * half * 500.0],
+            // `ViewPrj` is the projection's x scale × 500 cm, and that times
+            // the viewport's aspect (a double division) for y: the global
+            // block reads the view's projection matrix's first element.
+            // Exarust forms the scale from the field of view.
+            view_proj: crate::local_reflection::view_prj(1.0 / (half * aspect), width, height),
             cam_mat: view.camera_from_world,
             sdw_mat: view.world_to_shadow,
             voxel_gi_scale: gi_scale,

@@ -1073,6 +1073,12 @@ impl ModelLoader<'_> {
             ..default()
         };
         mat.params.texture_bias = self.cache.textures.settings().lod_bias();
+        // The factory's local reflection (`Shd.LocalRef`: a reflection
+        // layer and extra flag `0x800` above shading quality 4); the low
+        // field is bound by `exa_render::local_reflection`.
+        if shader_word & exa_render::shader_program::shader::LOCAL_REFLECTION != 0 {
+            mat.params.flags2 |= exa_render::material::flags2::LOCAL_REFLECTION;
+        }
         // The record's texture load flags, with the mode bits the original
         // adds per slot: normal, gloss and height maps (and the specular map
         // of a material whose kind has bit 0) are data, and a diffuse with a
