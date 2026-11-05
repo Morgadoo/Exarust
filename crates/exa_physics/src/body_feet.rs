@@ -385,12 +385,16 @@ pub(super) fn push_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive) {
 /// `turn`. On its feet and with support, once the foot has a contact
 /// state, and only while its forward lies within a right angle of that
 /// orientation's forward, the horizontal gap from the toe to where the
-/// orientation places it is projected onto the orientation's side axis and
-/// closed by the velocity servo: rate 0.4 × scale, gain
-/// [`FootDrive::sole_gain`] × S. A gap under 1.19e-7 cm², or one the toe
-/// already closes by 0.05, is left. A foot with no contact state is left
-/// too: turning it while it settles keeps its box off the floor.
-pub(super) fn turn_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive, turn: Quat) {
+/// orientation places it is projected onto a side axis and closed by the
+/// velocity servo: rate 0.4 × scale, gain [`FootDrive::sole_gain`] × S. The
+/// side axis is the orientation's, which the leg keeps
+/// ([`Leg::sole_side`]); while the body moves and its foot contact touches
+/// without being lifted, the axis it kept is used instead, so a planted
+/// foot's sole keeps the heading it was set down with. A gap under
+/// 1.19e-7 cm², or one the toe already closes by 0.05, is left. A foot
+/// with no contact state is left too: turning it while it settles keeps
+/// its box off the floor.
+pub(super) fn turn_sole(foot: &mut Part, leg: &mut Leg, fd: &FootDrive, turn: Quat) {
     // Exarust's own. The original also turns a foot with no contact state.
     if fd.off_feet || !fd.has_support || leg.state.0 == 0 {
         return;
@@ -405,7 +409,14 @@ pub(super) fn turn_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive, turn: Quat) 
     let origin = foot.point(&foot.own_origin);
     let aimed = origin + turn * local;
     let flat = (aimed - foot.point(&leg.toe)).with_y(0.0);
-    let side = turn * Vec3::X;
+    let planted =
+        fd.moving && leg.state.0 & (FootState::TOUCHING | FootState::LIFTED) == FootState::TOUCHING;
+    let side = if planted {
+        leg.sole_side
+    } else {
+        leg.sole_side = turn * Vec3::X;
+        leg.sole_side
+    };
     let along = side * flat.dot(side);
     let rate = (f64::from(fd.scale) * SOLE_TURN_RATE) as f32;
     let gain = fd.sole_gain * fd.support;

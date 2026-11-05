@@ -20,10 +20,13 @@
 //! Evidence: the original's grip builder and link iteration, and
 //! [`crate::grip`]'s records.
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use crate::body::{BodySystems, Ragdoll, SolverStage, SolverStages};
-use crate::grip::{self, DISABLED, GripLinks, GripRelease, HeldGrip, HeldKind};
+use crate::grip::{
+    self, DISABLED, ENABLED, GripLinks, GripRelease, HeldGrip, HeldKind, HeldRest, ReplaceHeld,
+};
 
 /// The grip stage's order: the builder and the per-tick sync. The game's
 /// grip-mode and flip systems run before [`GripSolveSet::Sync`], so this
@@ -172,7 +175,11 @@ impl SolverStage for GripSolver {
 /// Builds the grip links of every [`HeldGrip`] whose item and character
 /// bodies both exist, in the original's builder. It runs before the tick's
 /// solver; [`mark_held`] then wakes the item's body.
-pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragdoll>) {
+pub fn build_grips(
+    mut commands: Commands,
+    mut held: Query<(Entity, &mut HeldGrip)>,
+    bodies: Query<&Ragdoll>,
+) {
     for (entity, mut grip) in &mut held {
         if grip.links.is_some() || grip.released {
             continue;
@@ -236,6 +243,13 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             continue;
         };
         let item_to_hand = hold_part.transform().inverse() * item_part.transform();
+        // Where the attach put the item under its hand, for a later
+        // re-place ([`replace_held`]).
+        commands.entity(entity).insert(grip::HeldRest {
+            hand: hold_index,
+            item_in_hand: item_to_hand,
+            flipped: grip.flip,
+        });
         let bindings = grip::GripBindings {
             item_part: HeldGrip::ITEM_PART,
             hand_parts: hands,
@@ -410,6 +424,86 @@ pub fn release_freed_grips(
     }
 }
 
+/// The held-item re-place, as the original runs it after it moves a
+/// character ([`ReplaceHeld`]): for every item the body holds, its body is
+/// put at rest at its grip under the holding hand where that hand now is
+/// (every particle set, the previous and older ones too, so it moves with
+/// no velocity), and woken. A weapon of an armed grip class (0x30 bits)
+/// whose second-hand link is enabled (and not the item's first link) then
+/// takes the distance the link now spans, from its point on the item to
+/// its point on the hand, as both its slack and its held length: the
+/// second hand holds wherever the move left it. A shield is put back under
+/// its hand and a torch in its hand the same way.
+///
+/// [inf] The original rebuilds the placement from the grip table (the
+/// shield's and the torch's from their attach routines' own frames);
+/// Exarust keeps the placement its attach measured ([`HeldRest`]), which is
+/// the same frame. A multi-node item turns about its root part rather
+/// than its root node on a flip.
+pub fn replace_held(
+    mut commands: Commands,
+    asked: Query<(Entity, &Ragdoll), With<ReplaceHeld>>,
+    mut held: Query<(&mut HeldGrip, &HeldRest, &mut Ragdoll), Without<ReplaceHeld>>,
+) {
+    for (entity, holder) in &asked {
+        commands.entity(entity).remove::<ReplaceHeld>();
+        let Some(key) = holder.parts.first().map(|p| p.entity) else {
+            continue;
+        };
+        for (mut grip, rest, mut item) in &mut held {
+            if grip.holder_key != key || grip.released {
+                continue;
+            }
+            let Some(hand) = holder.parts.get(rest.hand) else {
+                continue;
+            };
+            let Some(root) = item.parts.get(HeldGrip::ITEM_PART) else {
+                continue;
+            };
+            let root_entity = root.entity;
+            let flipped = grip.links.as_ref().map_or(grip.flip, |l| l.flipped);
+            let target = rest.placement(hand.transform(), flipped);
+            let shift = (target.translation - root.transform().translation).length();
+            let moved = target * root.transform().inverse();
+            let worlds: Vec<Affine3A> = item.parts.iter().map(|p| moved * p.transform()).collect();
+            item.place_at(&worlds);
+            item.wake();
+            info!(
+                "held re-place: {:?} item {:?} ({:?}) put back at its grip, {:.1} cm from where it was",
+                key,
+                root_entity,
+                grip.kind,
+                shift * CM
+            );
+            let armed = grip.kind == HeldKind::Weapon && grip.class & grip::ARMED_GRIP != 0;
+            let Some(links) = grip.links.as_mut() else {
+                continue;
+            };
+            if !armed {
+                continue;
+            }
+            if let Some(i) = links.second.filter(|&i| i > 0)
+                && let Some(link) = links.links.get_mut(i)
+                && link.flags & ENABLED != 0
+                && let Some(part) = link.hand
+                && let (Some(a), Some(b)) = (
+                    item.point_at(link.item, &link.on_item),
+                    holder.point_at(part, &link.on_hand),
+                )
+            {
+                link.slack = span(a - b);
+                link.length = link.slack;
+            }
+        }
+    }
+}
+
+/// A vector's length as the original's vector length sums it:
+/// `√((x² + z²) + y²)`.
+fn span(d: Vec3) -> f32 {
+    ((d.x * d.x + d.z * d.z) + d.y * d.y).sqrt()
+}
+
 /// Copies the built links into the solver stage for this tick.
 pub fn sync_grips(held: Query<(Entity, &HeldGrip)>, mut stages: ResMut<SolverStages>) {
     let mut groups = Vec::new();
@@ -478,7 +572,7 @@ pub fn plugin(app: &mut App) {
         )
         .add_systems(
             FixedUpdate,
-            (build_grips, release_freed_grips, mark_held)
+            (build_grips, release_freed_grips, mark_held, replace_held)
                 .chain()
                 .in_set(GripSolveSet::Build),
         )

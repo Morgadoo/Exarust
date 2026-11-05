@@ -353,9 +353,11 @@ pub struct GroundPlacement {
 /// Runs each asked placement on the ground
 /// ([`Ragdoll::place_on_ground`]): the leg snap from the character frame
 /// put on the walkable floor, then the current clip sampled by the
-/// pose-only sampler and every part put on the frame at the snap's height.
-/// The controller (the capsule at the feet) stays where it stands: the
-/// original's frame sits at the pelvis, which the parts carry. Logs the
+/// pose-only sampler and every part put on the frame at the snap's height,
+/// then the held items re-placed in the hands
+/// ([`exa_physics::grip::ReplaceHeld`]). The controller (the capsule at
+/// the feet) stays where it stands: the original's frame sits at the
+/// pelvis, which the parts carry. Logs the
 /// pelvis height it placed at info level.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn place_on_ground(
@@ -422,6 +424,9 @@ fn place_on_ground(
         }
         let level = exa_physics::sector_lists::MeshLevel::new(&physics.0, &meshes);
         let placed = body.place_on_ground(&level, floor, &posed, pelvis);
+        // The original's behaviour then puts the held items back in the
+        // hands where the placement left them.
+        commands.entity(root).insert(exa_physics::grip::ReplaceHeld);
         info!(
             "ground placement {root:?}: height query over the level and {} body meshes, {} probes on a body mesh above the level, {} at the level's height",
             meshes.len(),

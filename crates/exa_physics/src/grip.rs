@@ -246,6 +246,47 @@ impl GripLinks {
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GripRelease;
 
+/// Asks for the held-item re-place on a character's body (put on the
+/// entity carrying its [`Ragdoll`]): the original runs it right after it
+/// moves a character to a new place (the player's spawn placement on its
+/// third behaviour tick, a Long Door, a save load, an arena or AI reset).
+/// Every item that body holds is put back at its grip under its hand, at
+/// rest, and woken, and an enabled second-hand link takes the distance it
+/// now spans as its slack ([`crate::grip_solve::replace_held`]). Without
+/// it the item bodies stay where they were and the grip links drag them
+/// across the move.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplaceHeld;
+
+/// Where a held item sits under its holding hand, measured when its grip
+/// links are built (the attach's placement): the item body's root part in
+/// the holding hand part's frame, and whether the item was then held
+/// flipped. The re-place ([`ReplaceHeld`]) puts the item back there; a flip
+/// since then turns it half a turn about its own Y axis, as the original's
+/// placement builds a flipped item.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct HeldRest {
+    /// The holding hand's part index in the holder's body.
+    pub hand: usize,
+    /// The item's root part in that hand part's frame.
+    pub item_in_hand: Affine3A,
+    /// The item was held flipped when this was measured.
+    pub flipped: bool,
+}
+
+impl HeldRest {
+    /// The item root part's world placement under the hand part's world
+    /// `hand`, held flipped or not.
+    pub fn placement(&self, hand: Affine3A, flipped: bool) -> Affine3A {
+        let turn = if flipped != self.flipped {
+            Affine3A::from_rotation_y(std::f32::consts::PI)
+        } else {
+            Affine3A::IDENTITY
+        };
+        hand * self.item_in_hand * turn
+    }
+}
+
 /// A held item waiting for its grip links, or holding them. The physics
 /// side of an item held in a hand: the item's own body is a [`Ragdoll`]
 /// whose part 0 is the item's root, and the character's body holds the

@@ -206,6 +206,12 @@ pub struct Leg {
     /// The toe: the foot's sole point 20 cm ahead of the ankle, as weights
     /// on the foot part.
     pub(super) toe: [f32; 4],
+    /// The side axis the sole turn last took from the foot's animated
+    /// orientation (world). While the body moves and the foot touches
+    /// without being lifted, the turn keeps projecting onto this one
+    /// instead of the current pose's ([`super::feet::turn_sole`]). Zero
+    /// until a turn has taken one.
+    pub(super) sole_side: Vec3,
     /// The floor the toe is held over (m).
     pub floor: f32,
     /// When the footwork last changed this foot's state (ms): it landed,
@@ -696,6 +702,7 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             smoothed: 0.0,
             foot,
             toe,
+            sole_side: Vec3::ZERO,
             floor: 0.0,
             changed_ms: f32::NAN,
             knee: 0.0,
