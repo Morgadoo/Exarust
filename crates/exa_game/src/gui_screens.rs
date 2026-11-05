@@ -48,7 +48,9 @@ pub struct ScreenRequest {
     pub player_ready: bool,
     /// The player's condition is not the dead mode 0xa00.
     pub player_alive: bool,
-    /// The body a loot window is asked for (its entity index), if any.
+    /// The body a loot window is asked for (its entity index), if any; for
+    /// the inventory, the character whose inventory opens (`None` is the
+    /// player's own).
     pub target: Option<i32>,
     /// The body's record flag word, for the loot window's show rule.
     pub flags: u32,
@@ -736,6 +738,14 @@ pub struct GameScreens {
     pub journal_unit: i32,
     /// The player's character record id (Exarust uses the entity index).
     pub player: i32,
+    /// The character the open inventory is bound to (its record id): the
+    /// player's own, or another character's that the interaction or a
+    /// script's `ShowInventory` opened. The pack, the character view and
+    /// the drops onto it all read this character.
+    pub inventory_owner: i32,
+    /// The body of [`Self::inventory_owner`] (the player's body for the
+    /// player's own inventory), set when the window opens.
+    pub inventory_body: Option<Entity>,
     /// The inventory's item pack, drawn through the panel's icon path.
     pub pack: Container,
     /// The description card the panel asked for.
@@ -764,6 +774,8 @@ impl Default for GameScreens {
             inventory_unit: 4,
             journal_unit: 4,
             player: 0,
+            inventory_owner: 0,
+            inventory_body: None,
             pack: Container::default(),
             card: CardWindow::default(),
             loot: Vec::new(),
@@ -834,36 +846,65 @@ impl GameScreens {
         player_alive: bool,
         unit: i32,
     ) -> ScreenAction {
-        self.show_inventory(player_ready, player_alive, unit, true)
+        let player = self.player;
+        self.show_inventory(player_ready, player_alive, unit, true, player)
     }
 
-    /// The player's inventory: the show rule, then a new one is registered
-    /// as an open container and placed at its constructor's (8, 8) or its
-    /// remembered place. `toggle` closes an inventory that is already the
-    /// active form; a script's `ShowInventory` passes false and leaves it.
+    /// The body whose possessions and look the open inventory shows: the
+    /// bound character's, else `player` (a window opened without its
+    /// opener's binding, as tests do).
+    pub fn inventory_bound(&self, player: Option<Entity>) -> Option<Entity> {
+        self.inventory_body.or(player)
+    }
+
+    /// The character the open inventory shows, if one is open.
+    pub fn inventory_character(&self) -> Option<i32> {
+        self.find(GameScreen::Inventory)
+            .map(|_| self.inventory_owner)
+    }
+
+    /// A character's inventory (`owner` its record id; the player's own or
+    /// another's): the show rule, then a new one is registered as an open
+    /// container under the character's tag and placed by
+    /// [`inventory_place`]: the player's at its remembered place or its
+    /// constructor's (8, 8), another character's at the screen's right
+    /// edge less its width and four units. `toggle` closes an inventory
+    /// that is already the active form; a script's `ShowInventory` passes
+    /// false and leaves it.
+    ///
+    /// The original keeps one inventory window per character (its finder
+    /// matches the window's character), so the player's and a companion's
+    /// can be open together. Exarust has one inventory window: asking for
+    /// another character's closes the open one first [Exarust stand-in].
     pub fn show_inventory(
         &mut self,
         player_ready: bool,
         player_alive: bool,
         unit: i32,
         toggle: bool,
+        owner: i32,
     ) -> ScreenAction {
-        let open = self.find(GameScreen::Inventory);
+        let mut open = self.find(GameScreen::Inventory);
+        if open.is_some() && self.inventory_owner != owner && player_ready && player_alive {
+            self.close(GameScreen::Inventory);
+            open = None;
+        }
         let action = inventory_screen(InventoryInput {
             player_ready,
             player_mode_ok: player_alive,
             open: open.is_some(),
             filling: false,
-            active: self.focused() == Some(GameScreen::Inventory),
+            active: open.is_some() && self.focused() == Some(GameScreen::Inventory),
             toggle,
         });
         match (action, open) {
             (ScreenAction::Opened, _) => {
                 self.inventory_unit = unit.max(1);
+                self.inventory_owner = owner;
                 let layout = self.inventory_layout();
                 let (width, height) = layout.size;
                 let (x, y) = inventory_place(
-                    true,
+                    owner == self.player,
                     self.inventory_place,
                     self.task.screen.0,
                     width,
@@ -876,10 +917,11 @@ impl GameScreens {
                 self.pack.unit = self.inventory_unit;
                 self.pack.icon_size = exa_items::icon_cache::icon_size(self.inventory_unit);
                 self.pack.client = (layout.pack.width(), layout.pack.height());
+                self.pack.owner = Some(owner as u32);
                 // The pack's linked panel is the character view: a drag
                 // onto the figure leaves the pack without losing its bulk.
                 self.pack.linked = Some(crate::doll_view::DOLL_PANEL);
-                self.containers.open(tagged_container(self.player));
+                self.containers.open(tagged_container(owner));
                 self.push(GameScreen::Inventory, GuiRect::new(x, y, width, height));
             }
             (ScreenAction::Focused, Some(screen)) => {
@@ -1152,8 +1194,12 @@ impl GameScreens {
                 self.journal.place = place;
             }
             GameScreen::Inventory => {
-                self.containers.close(tagged_container(self.player));
-                self.inventory_place = place;
+                self.containers
+                    .close(tagged_container(self.inventory_owner));
+                // Only the player's own window remembers its place.
+                if self.inventory_owner == self.player {
+                    self.inventory_place = place;
+                }
                 // The panel's destroy releases every icon reference before
                 // its entry array goes.
                 let unit = self.pack.unit;
@@ -1161,6 +1207,7 @@ impl GameScreens {
                 self.pack.release_all_icons(|icon| released.push(icon));
                 self.released_icons.extend(released);
                 self.pack = Container::form(unit);
+                self.inventory_body = None;
             }
             GameScreen::Loot => {
                 if let Some(window) = self
@@ -1603,16 +1650,18 @@ fn sync_screen_size(
     }
 }
 
-/// A script's `ShowInventory` opens the player's inventory and leaves it
-/// when it is already the active form. The original asks for the named
-/// character's own screen; a character other than the player is left,
-/// because this game has no second character view to bind that screen to.
+/// A script's `ShowInventory` opens the named character's inventory (the
+/// actor index clamped to 0 or more), without the toggle: an inventory
+/// that is already the active form is left. The player's own body opens
+/// the player's inventory; another character's opens that character's,
+/// under the same show rule (the player ready and not dead).
 fn show_script_inventory(
     mut effects: MessageReader<exa_script::ScriptEffect>,
     players: Query<
         (&exa_ai::brain::CharacterId, Option<&exa_combat::Condition>),
         With<crate::player::PlayerBody>,
     >,
+    characters: Query<(Entity, &exa_ai::brain::CharacterId), Without<crate::player::PlayerBody>>,
     mut screens: MessageWriter<ScreenRequest>,
 ) {
     let Some((id, condition)) = players.iter().next() else {
@@ -1623,14 +1672,23 @@ fn show_script_inventory(
         let exa_script::dialogue::Effect::ShowInventory(actor) = effect.0 else {
             continue;
         };
-        if actor != id.0 {
-            continue;
-        }
+        let target = if actor == id.0 {
+            None
+        } else {
+            match characters.iter().find(|(_, c)| c.0 == actor) {
+                Some((body, _)) => Some(body.index().index() as i32),
+                None => {
+                    debug!("ShowInventory of {actor}: no such character");
+                    continue;
+                }
+            }
+        };
+        info!("ShowInventory of {actor}: the inventory of {target:?} (None: the player's)");
         screens.write(ScreenRequest {
             screen: GameScreen::Inventory,
             player_ready: !word.dying(),
             player_alive: !word.is_dead(),
-            target: None,
+            target,
             flags: 0,
             toggle: false,
         });
@@ -1671,16 +1729,42 @@ fn open_requested_screens(
         }
         let action = match request.screen {
             GameScreen::Inventory => {
+                // The character the window binds: the player's own body, or
+                // the body the request names.
+                let body = match request.target {
+                    None => player_bodies.iter().next(),
+                    Some(target) => {
+                        let body = possessions
+                            .iter()
+                            .find(|(entity, _)| entity.index().index() as i32 == target)
+                            .map(|(entity, _)| entity);
+                        if body.is_none() {
+                            continue;
+                        }
+                        body
+                    }
+                };
+                let owner = match request.target {
+                    None => screens.player,
+                    Some(target) => target,
+                };
                 let action = screens.show_inventory(
                     request.player_ready,
                     request.player_alive,
                     unit,
                     request.toggle,
+                    owner,
                 );
-                // The pack is the player's own carried list, as the original
-                // loads it when the inventory opens.
+                if action == ScreenAction::Opened {
+                    screens.inventory_body = body;
+                }
+                if owner != screens.player {
+                    info!("GUI: the inventory of character {owner}: {action:?}");
+                }
+                // The pack is the character's own carried list, as the
+                // original's bind loads it when the inventory opens.
                 if action == ScreenAction::Opened
-                    && let Some(body) = player_bodies.iter().next()
+                    && let Some(body) = body
                     && let Ok((_, possessions)) = possessions.get(body)
                     && let Some(icons) = icons.as_deref_mut()
                 {
@@ -2491,6 +2575,54 @@ mod tests {
         assert_eq!(
             screens.open_inventory(false, true, 4),
             ScreenAction::Refused
+        );
+    }
+
+    /// Another character's inventory: the same show rule, registered under
+    /// that character's tag, placed at the screen's right edge less its
+    /// width and four units; its close does not move the player's
+    /// remembered place. Asking for the player's own closes it first
+    /// (Exarust keeps one inventory window).
+    #[test]
+    fn another_characters_inventory_opens_at_the_right_edge() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        screens.player = 7;
+        screens.inventory_place = Some((30, 40));
+        assert_eq!(
+            screens.show_inventory(true, true, 4, true, 9),
+            ScreenAction::Opened
+        );
+        assert_eq!(screens.inventory_character(), Some(9));
+        let form = screens.find(GameScreen::Inventory).unwrap().form;
+        assert_eq!(
+            screens.task.form(form).unwrap().bounds(),
+            GuiRect::new(1600 - 244 - 16, 8, 244, 644)
+        );
+        assert!(screens.containers.is_open(0x2000_0009));
+        assert_eq!(screens.pack.owner, Some(9));
+        // A script's call leaves the active window; the interaction's
+        // toggles it shut.
+        assert_eq!(
+            screens.show_inventory(true, true, 4, false, 9),
+            ScreenAction::Refused
+        );
+        assert_eq!(
+            screens.show_inventory(true, true, 4, true, 9),
+            ScreenAction::Closed
+        );
+        assert!(!screens.containers.is_open(0x2000_0009));
+        assert_eq!(screens.inventory_place, Some((30, 40)));
+        // The companion's, then the player's own: the first closes.
+        screens.show_inventory(true, true, 4, true, 9);
+        assert_eq!(screens.open_inventory(true, true, 4), ScreenAction::Opened);
+        assert_eq!(screens.inventory_character(), Some(7));
+        assert!(!screens.containers.is_open(0x2000_0009));
+        assert!(screens.containers.is_open(0x2000_0007));
+        let form = screens.find(GameScreen::Inventory).unwrap().form;
+        assert_eq!(
+            screens.task.form(form).unwrap().bounds(),
+            GuiRect::new(30, 40, 244, 644)
         );
     }
 

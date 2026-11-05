@@ -173,6 +173,9 @@
 //!                                     after loading, as a world object's click would
 //!          --gui-drop ID@FRAME        debug: put the item into the pack and drop it into the world at that frame
 //!                                     after loading, as a drag out of the window would (hold LMB to lift it)
+//!          --character-use ID@FRAME[+],...  debug: the player's interaction (Ctrl/double click) on the living
+//!                                     character with that record id at that frame after loading (`+`: with
+//!                                     a Loyalty marker the player cast on it first)
 //!          --doll-drop ID:FLAGS@FRAME[+],...  debug: put each item with its flags into the pack and drop it onto
 //!                                     the inventory's character view at its frame after loading (`+`: on the
 //!                                     view's right half with Insight's technique 8 known, so a weapon goes
@@ -480,6 +483,9 @@ pub struct Options {
     pub figure: exa_game::figure_pick::FigureScript,
     /// `--doll-drop ID:FLAGS@FRAME`: the item dropped onto the doll.
     pub doll_drop: exa_game::doll_view::DollDropScript,
+    /// `--character-use ID@FRAME[+]`: the player's interaction on a living
+    /// character.
+    pub character_use: exa_game::character_use::CharacterUseScript,
     /// Play mode: in-process level changes at frames after the first load
     /// (`level@frame`), each logged with an entity, physics and asset count.
     pub level_changes: Vec<(String, u32)>,
@@ -1227,6 +1233,16 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--character-use" => {
+                let text = args.next().unwrap_or_default();
+                match exa_game::character_use::CharacterUseScript::parse(&text) {
+                    Some(script) => options.character_use = script,
+                    None => {
+                        eprintln!("--character-use: cannot read {text:?} (ID@FRAME[+],...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--encounter-script" => {
                 options.encounter_script = args.next().unwrap_or_default().into_bytes();
             }
@@ -1751,6 +1767,7 @@ fn main() -> AppExit {
         options.debug_bubble,
     ))
     .insert_resource(options.doll_drop.clone())
+    .insert_resource(options.character_use.clone())
     .insert_resource(options.figure.clone())
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {

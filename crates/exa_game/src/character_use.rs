@@ -20,10 +20,10 @@
 //! A failed condition still lets a character through whose power list
 //! holds a Loyalty marker (`0x10010A`) or a Command Dead marker
 //! (`0x10010D`) the player cast. Either way the character's inventory
-//! window opens: the same window the player's own body opens, bound to that
-//! character. Exarust's inventory screen shows only the player, so the
-//! opening is logged and left [Exarust stand-in, as for a script's
-//! `ShowInventory` of another character].
+//! window opens: the same call the player's own body makes, with the
+//! toggle, bound to that character ([`crate::gui_screens::GameScreens::show_inventory`]):
+//! its pack is the character's carried list, its character view the
+//! character's figure, and it is placed at the screen's right edge.
 //!
 //! Evidence: REA on the controls' interaction hook and its condition test
 //! (`Exanima.exe` 0.9.5, checked against the assembly).
@@ -67,7 +67,101 @@ impl Plugin for CharacterUsePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<CharacterUse>()
             .add_message::<exa_script::ScriptEffect>()
-            .add_systems(Update, run_character_uses.after(crate::hand::HandSystems));
+            .add_message::<crate::gui_screens::ScreenRequest>()
+            .init_resource::<CharacterUseScript>()
+            .add_systems(
+                Update,
+                (scripted_character_uses, run_character_uses)
+                    .chain()
+                    .after(crate::hand::HandSystems),
+            );
+    }
+}
+
+/// One scripted interaction of `--character-use`: the character's record
+/// id, the frame after the load, and whether the player's Loyalty marker is
+/// put on the character first (`+`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptedUse {
+    pub id: u32,
+    pub frame: u32,
+    pub loyal: bool,
+}
+
+/// `--character-use ID@FRAME[+],...`: the player's interaction on the
+/// living character with that record id at that frame after the load, as
+/// the Ctrl/double click on its body sends it (a debug tool). `+` first
+/// records a Loyalty marker the player cast on the character, so a failed
+/// condition still opens its inventory.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct CharacterUseScript(pub Vec<ScriptedUse>);
+
+impl CharacterUseScript {
+    pub fn parse(text: &str) -> Option<Self> {
+        text.split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|entry| {
+                let (entry, loyal) = match entry.strip_suffix('+') {
+                    Some(rest) => (rest, true),
+                    None => (entry, false),
+                };
+                let (id, frame) = entry.split_once('@')?;
+                Some(ScriptedUse {
+                    id: crate::gui_drop::parse_id(id)?,
+                    frame: frame.trim().parse().ok()?,
+                    loyal,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .filter(|uses| !uses.is_empty())
+            .map(Self)
+    }
+}
+
+/// Sends the scripted interactions ([`CharacterUseScript`]).
+fn scripted_character_uses(
+    script: Res<CharacterUseScript>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    mut characters: Query<(Entity, &CharacterId, Option<&mut MindBody>), Without<PlayerBody>>,
+    players: Query<Entity, With<PlayerBody>>,
+    mut uses: MessageWriter<CharacterUse>,
+) {
+    let Some(last) = script.0.iter().map(|u| u.frame).max() else {
+        return;
+    };
+    if loading.is_some() || *frames > last {
+        return;
+    }
+    *frames += 1;
+    let player = players.iter().next().map(crate::mind::runtime::body_id);
+    for entry in script.0.iter().filter(|u| u.frame == *frames) {
+        let Some((body, _, mind)) = characters.iter_mut().find(|(_, id, _)| id.0 == entry.id)
+        else {
+            info!("character use script: no living character {}", entry.id);
+            continue;
+        };
+        if entry.loyal
+            && let Some(mut mind) = mind
+        {
+            mind.powers.push(crate::mind::casts::MindPower::recorded(
+                LOYALTY_MARK,
+                player,
+                None,
+            ));
+        }
+        info!(
+            "character use script: the player's interaction on {} at frame {}{}",
+            entry.id,
+            entry.frame,
+            if entry.loyal {
+                ", with the player's Loyalty marker"
+            } else {
+                ""
+            }
+        );
+        uses.write(CharacterUse { body });
     }
 }
 
@@ -109,8 +203,9 @@ pub fn run_character_uses(
     possession: Option<Res<crate::teleporters::Possession>>,
     time: Option<Res<Time<Virtual>>>,
     characters: Query<Character<'_>, Without<PlayerBody>>,
-    players: Query<(Entity, &CharacterId, &Roles), With<PlayerBody>>,
+    players: Query<(Entity, &CharacterId, &Roles, Option<&Condition>), With<PlayerBody>>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
+    mut screens: MessageWriter<crate::gui_screens::ScreenRequest>,
 ) {
     let mut conversations = conversations;
     let now = time.map_or(0, |t| t.elapsed().as_millis() as u32);
@@ -118,7 +213,8 @@ pub fn run_character_uses(
         let Ok((id, held, relations, condition, mind)) = characters.get(body) else {
             continue;
         };
-        let Some((player_body, player, player_roles)) = players.iter().next() else {
+        let Some((player_body, player, player_roles, player_condition)) = players.iter().next()
+        else {
             continue;
         };
         let word = condition.map_or(0, |c| c.0);
@@ -162,15 +258,21 @@ pub fn run_character_uses(
             UseOutcome::Nothing
         };
         info!(
-            "character use of {}: interaction condition {:?} -> result {result:?}, {outcome:?}{}",
+            "character use of {}: interaction condition {:?} -> result {result:?}, {outcome:?}",
             id.0,
             section.map(String::from_utf8_lossy),
-            if matches!(outcome, UseOutcome::Inventory { .. }) {
-                " (the character's inventory window has no Exarust view; left)"
-            } else {
-                ""
-            }
         );
+        if matches!(outcome, UseOutcome::Inventory { .. }) {
+            let word = player_condition.copied().unwrap_or_default();
+            screens.write(crate::gui_screens::ScreenRequest {
+                screen: exa_ui::game_gui::GameScreen::Inventory,
+                player_ready: !word.dying(),
+                player_alive: !word.is_dead(),
+                target: Some(body.index().index() as i32),
+                flags: 0,
+                toggle: true,
+            });
+        }
     }
 }
 
@@ -192,6 +294,28 @@ mod tests {
 
     /// A Loyalty or Command Dead marker counts only when the player cast
     /// it; another power or another caster does not.
+    #[test]
+    fn the_use_script_reads_ids_frames_and_the_marker() {
+        let script = CharacterUseScript::parse("0x2b@40+, 7@3").unwrap();
+        assert_eq!(
+            script.0,
+            vec![
+                ScriptedUse {
+                    id: 0x2b,
+                    frame: 40,
+                    loyal: true
+                },
+                ScriptedUse {
+                    id: 7,
+                    frame: 3,
+                    loyal: false
+                },
+            ]
+        );
+        assert!(CharacterUseScript::parse("").is_none());
+        assert!(CharacterUseScript::parse("43").is_none());
+    }
+
     #[test]
     fn a_players_marker_opens_the_inventory() {
         let mut mind = MindBody::new(9);

@@ -192,6 +192,7 @@ impl Plugin for ArenaHubPlugin {
                     hub_restock,
                     hub_session_fall,
                     shop_drag,
+                    sync_shop_preview,
                     shop_item_cards,
                     close_hub_windows,
                     release_shop_icons,
@@ -1317,20 +1318,50 @@ fn hub_pointer(window: &Window, scripted: Option<&exa_ui::ScriptedPointer>) -> O
     Some((at.x, at.y))
 }
 
-/// The trade window's drag, as its item panels take the mouse: a left
-/// press on an item starts the item's drag, and the left release ends it
-/// on the panel under the pointer (the panel's accept test, its drop and
-/// the source's drag end), or cancels it anywhere else
-/// ([`crate::shop_panels`]). A move into or out of a basket redoes its
-/// total.
+/// The trade window's character preview rect on the screen: the page's
+/// client inside its border, at the constructor's place.
+fn shop_preview_rect(bounds: exa_ui::gui_core::GuiRect) -> [i32; 4] {
+    let border = crate::shop_window::BORDER;
+    let [x, y, w, h] = crate::shop_window::CHARACTER_VIEW;
+    [bounds.left + border + x, bounds.top + border + y, w, h]
+}
+
+fn inside4(rect: [i32; 4], at: (i32, i32)) -> bool {
+    at.0 >= rect[0] && at.1 >= rect[1] && at.0 < rect[0] + rect[2] && at.1 < rect[1] + rect[3]
+}
+
+/// The race word of a record's race (bit 4: it wears apparel), from the
+/// races table; a human's 4 when the table is not read.
+fn race_word(game: Option<&exa_assets::Game>, race: u8) -> u32 {
+    game.and_then(|game| {
+        crate::scene_bodies::game_races(game)
+            .iter()
+            .find(|r| r.id == u32::from(race))
+            .map(|r| r.flags)
+    })
+    .unwrap_or(4)
+}
+
+/// The trade window's drag, as its item panels and its character preview
+/// take the mouse: a left press on an item starts the item's drag, a press
+/// on the preview's figure starts a drag of the item its pick finds there;
+/// the left release ends it on the panel under the pointer (the panel's
+/// accept test, its drop and the source's drag end), on the preview (the
+/// view's drop, [`crate::shop_preview::dress`]), or cancels it anywhere
+/// else ([`crate::shop_panels`]). A drag off the preview takes the item
+/// off as the view's release does ([`crate::shop_preview::take_off`]). A
+/// move into or out of a basket redoes its total.
 #[allow(clippy::too_many_arguments)]
 fn shop_drag(
     buttons: Res<ButtonInput<MouseButton>>,
     screen: Query<&Window, With<bevy::window::PrimaryWindow>>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
     mut windows: ResMut<HubWindows>,
-    icons: Option<Res<crate::item_panel_draw::PanelIcons>>,
+    mut icons: Option<ResMut<crate::item_panel_draw::PanelIcons>>,
     catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    game: Option<Res<exa_assets::Game>>,
+    mut items: ResMut<crate::doll_view::DollItems>,
+    pick: crate::loadout_kit::PreviewPick,
 ) {
     let pressed = buttons.just_pressed(MouseButton::Left);
     let released = buttons.just_released(MouseButton::Left);
@@ -1348,32 +1379,224 @@ fn shop_drag(
         return;
     };
     let local = (pointer.0 - bounds.left, pointer.1 - bounds.top);
+    let preview_rect = shop_preview_rect(bounds);
     let catalogue = catalogue.as_deref();
     if pressed
         && !windows.forms.contains(pointer.0, pointer.1)
-        && let Some(drag) =
-            windows.shop_press(local, |id| crate::panel_live::bulk_of(id, catalogue))
+        && windows
+            .shop
+            .as_ref()
+            .is_some_and(|shop| shop.preview_drag.is_none())
     {
-        info!(
-            "hub shop: drag of {:#x} (flags {:#x}) from the {:?} at {pointer:?}",
-            drag.id, drag.flags, drag.source
-        );
+        if let Some(drag) =
+            windows.shop_press(local, |id| crate::panel_live::bulk_of(id, catalogue))
+        {
+            info!(
+                "hub shop: drag of {:#x} (flags {:#x}) from the {:?} at {pointer:?}",
+                drag.id, drag.flags, drag.source
+            );
+        } else if inside4(preview_rect, pointer)
+            && let Some(shop) = windows.shop.as_mut()
+            && let Some(record) = shop.preview.as_ref()
+        {
+            items.ensure(game.as_deref());
+            let p = crate::shop_preview::possessions(record);
+            if let Some(item) = pick.item_at(preview_rect, pointer, &p, &items) {
+                let (icon, _) = icons.as_deref_mut().map_or((0, (0, 0)), |icons| {
+                    icons.reserve(item.id, item.flags, catalogue)
+                });
+                shop.preview_drag = Some(crate::shop_preview::PreviewDrag {
+                    item,
+                    icon,
+                    grab: crate::item_container::drag_grab(shop.panels.pack.icon_size),
+                });
+                info!("hub shop: drag of {item:?} off the preview at {pointer:?}");
+            }
+        }
     }
-    if released {
-        let Some(drag) = windows.shop.as_ref().and_then(|shop| shop.panels.drag) else {
-            return;
-        };
+    if !released {
+        return;
+    }
+    items.ensure(game.as_deref());
+    let find = |id: u32| items.get(id);
+    let kind_of = |id: u32| catalogue.and_then(|c| c.kind(id));
+    // A drag off the preview: the panel under the pointer may take it,
+    // then the view's release.
+    if let Some(shop) = windows.shop.as_mut()
+        && let Some(drag) = shop.preview_drag.take()
+    {
+        let item = drag.item;
+        let client = (
+            local.0 - crate::shop_window::BORDER,
+            local.1 - crate::shop_window::BORDER,
+        );
+        let bulk = crate::panel_live::bulk_of(item.id, catalogue);
         let half = icons
             .as_deref()
             .and_then(|icons| icons.half(drag.icon))
             .unwrap_or((0, 0));
-        let found = crate::panel_live::model_found(drag.id, catalogue);
-        let dropped = windows.shop_release(local, half, found);
-        let totals = windows.shop.as_ref().map(|shop| shop.window.shown_balance);
+        let mut landed = None;
+        if let Some((panel, cell)) = shop.panels.panel_at(client) {
+            let accepted = shop.panels.get(panel).accept(
+                &crate::item_container::Drag {
+                    src: Some(crate::shop_preview::PREVIEW_PANEL),
+                    dst: Some(panel.number()),
+                    objid: item.id,
+                    objflags: item.flags,
+                    icon: drag.icon as u32,
+                    bulk: bulk.clamp(0, 255) as u8,
+                    model_found: crate::panel_live::model_found(item.id, catalogue),
+                },
+                panel.number(),
+            );
+            if accepted
+                && let Some(done) = shop.panels.get_mut(panel).drop_entry(
+                    crate::item_container::DropDrag {
+                        same_panel: false,
+                        linked: false,
+                        id: item.id,
+                        icon: drag.icon,
+                        flags: item.flags,
+                        bulk,
+                    },
+                    drag.grab,
+                    cell,
+                    half,
+                )
+            {
+                landed = Some((panel, done.added.is_some()));
+                if panel.is_basket() {
+                    shop.basket_changed(panel);
+                }
+            }
+        }
+        // The new entry keeps the drag's icon reference; otherwise it goes.
+        if !landed.is_some_and(|(_, added)| added)
+            && let Some(icons) = icons.as_deref_mut()
+        {
+            icons.release(drag.icon);
+        }
+        let off = crate::shop_preview::release_takes_off(item.flags, landed.is_some())
+            && shop
+                .preview
+                .as_mut()
+                .is_some_and(|record| crate::shop_preview::take_off(record, item, find, kind_of));
         info!(
-            "hub shop: the drag of {:#x} ends at {pointer:?}: {dropped:?}; bottom row {totals:?}",
-            drag.id
+            "hub shop: the drag of {item:?} off the preview ends at {pointer:?}: into {:?}, taken off {off}; worn now {:?}, hands {:?}",
+            landed.map(|(panel, _)| panel),
+            shop.preview
+                .as_ref()
+                .map(|r| r.worn.iter().map(|w| w.id).collect::<Vec<_>>()),
+            shop.preview.as_ref().map(|r| r.hands.map(|h| h.id))
         );
+        return;
+    }
+    let Some(drag) = windows.shop.as_ref().and_then(|shop| shop.panels.drag) else {
+        return;
+    };
+    // A panel's drag released over the preview: the view's drop.
+    if inside4(preview_rect, pointer)
+        && let Some(shop) = windows.shop.as_mut()
+        && let Some(record) = shop.preview.as_mut()
+    {
+        let race = race_word(game.as_deref(), record.race);
+        let dressed = crate::shop_preview::dress(record, drag.id, drag.flags, race, find, kind_of);
+        match &dressed {
+            Some(done) => {
+                shop.panels.drag = None;
+                let source = shop.panels.get_mut(drag.source);
+                source.finish_drag(
+                    crate::shop_preview::PREVIEW_PANEL,
+                    false,
+                    true,
+                    drag.flags,
+                    drag.bulk,
+                );
+                if drag.source.is_basket() {
+                    shop.basket_changed(drag.source);
+                }
+                for &(id, flags) in &done.to_pack {
+                    let (icon, _) = icons
+                        .as_deref_mut()
+                        .map_or((0, (0, 0)), |icons| icons.reserve(id, flags, catalogue));
+                    let bulk = crate::panel_live::bulk_of(id, catalogue);
+                    shop.panels.pack.add_at_centre(id, icon, flags, bulk);
+                }
+            }
+            None => shop.panels.cancel(),
+        }
+        info!(
+            "hub shop: the drag of {:#x} from the {:?} ends on the preview at {pointer:?}: {dressed:?}; worn now {:?}, hands {:?}",
+            drag.id,
+            drag.source,
+            shop.preview
+                .as_ref()
+                .map(|r| r.worn.iter().map(|w| w.id).collect::<Vec<_>>()),
+            shop.preview.as_ref().map(|r| r.hands.map(|h| h.id))
+        );
+        return;
+    }
+    let half = icons
+        .as_deref()
+        .and_then(|icons| icons.half(drag.icon))
+        .unwrap_or((0, 0));
+    let found = crate::panel_live::model_found(drag.id, catalogue);
+    let dropped = windows.shop_release(local, half, found);
+    let totals = windows.shop.as_ref().map(|shop| shop.window.shown_balance);
+    info!(
+        "hub shop: the drag of {:#x} ends at {pointer:?}: {dropped:?}; bottom row {totals:?}",
+        drag.id
+    );
+}
+
+/// The trade window's preview: the opener's copy of the player's record
+/// (its worn list and hands the body's live ones), shown through the hub
+/// preview's view at the window's character view place.
+fn sync_shop_preview(
+    mut windows: ResMut<HubWindows>,
+    players: Query<
+        (
+            &exa_character::record::CharacterData,
+            &exa_items::possession::Possessions,
+        ),
+        With<crate::player::PlayerBody>,
+    >,
+    mut preview: ResMut<crate::loadout_kit::KitPreview>,
+    mut panels: ResMut<crate::loadout_kit::KitPanels>,
+) {
+    if !windows.is_kind(HubWindowKind::Shop) {
+        return;
+    }
+    let Some(bounds) = windows.bounds() else {
+        return;
+    };
+    let Some(shop) = windows.shop.as_mut() else {
+        return;
+    };
+    if shop.preview.is_none() {
+        let mut record = players
+            .iter()
+            .next()
+            .map(|(data, _)| data.record.clone())
+            .unwrap_or_else(exa_formats::characters::CharacterRecord::reset);
+        if let Some((_, p)) = players.iter().next() {
+            record.worn = p.worn.clone();
+            record.hands = [p.out[0], p.out[1], p.stowed[0], p.stowed[1]]
+                .map(|h| exa_formats::characters::ItemRef::new(h.id, h.flags));
+        }
+        info!(
+            "hub shop: the preview copies the player's record: worn {:?}, hands {:?}",
+            record.worn.iter().map(|w| w.id).collect::<Vec<_>>(),
+            record.hands.map(|h| h.id)
+        );
+        shop.preview = Some(record);
+    }
+    let [x, y, w, h] = shop_preview_rect(bounds);
+    preview.rect = Some(exa_ui::gui_core::GuiRect::new(x, y, w, h));
+    if preview.record != shop.preview {
+        panels.revision += 1;
+        preview.revision = panels.revision;
+        preview.record.clone_from(&shop.preview);
     }
 }
 

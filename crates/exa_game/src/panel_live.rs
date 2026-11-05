@@ -487,7 +487,9 @@ pub(crate) fn release(
         return;
     }
     let source = drag.source.unwrap();
-    let player = player_bodies.iter().next();
+    // The inventory pack's side is the character the window is bound to
+    // (the player's own body, or the companion's whose inventory opened).
+    let player = screens.inventory_bound(player_bodies.iter().next());
     let Ok(window) = windows.single() else {
         return;
     };

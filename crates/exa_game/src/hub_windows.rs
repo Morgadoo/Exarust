@@ -570,6 +570,11 @@ pub struct ShopModel {
     /// Each item's value word, which a basket's change callback sums. An
     /// item with none counts nothing.
     pub prices: HashMap<u32, u16>,
+    /// The character preview's record: the opener's copy of the player's
+    /// ([`crate::shop_preview`]); `None` until the preview's sync copies it.
+    pub preview: Option<exa_formats::characters::CharacterRecord>,
+    /// A drag off the preview in flight.
+    pub preview_drag: Option<crate::shop_preview::PreviewDrag>,
 }
 
 impl ShopModel {
@@ -943,6 +948,8 @@ impl HubWindows {
             panels,
             // Filled from the catalogue after the window opens.
             prices: HashMap::new(),
+            preview: None,
+            preview_drag: None,
         };
         self.shop = Some(shop);
         self.kind = HubWindowKind::Shop;
@@ -1477,14 +1484,13 @@ fn paint_shop(
         bounds.height() - 2 * border,
     );
     let character = crate::shop_window::CHARACTER_VIEW;
-    paint_panel(
-        &mut painted,
-        at4(
-            inner,
-            (character[0], character[1], character[2], character[3]),
-        ),
-        look,
+    let character = at4(
+        inner,
+        (character[0], character[1], character[2], character[3]),
     );
+    paint_panel(&mut painted, character, look);
+    // The preview's 3D view shows through the canvas there.
+    painted.push(crate::gui_screens::clear_layer(character));
     for panel in crate::shop_panels::SHOP_PANELS {
         let [x, y, w, h] = panel.rect();
         paint_panel(&mut painted, at4(inner, (x, y, w, h)), look);
@@ -1505,6 +1511,26 @@ fn paint_shop(
             if let Some(mut layer) = icons.layer(container) {
                 gui_paint::offset_batch(&mut layer.batch, r[0], r[1]);
                 layer.clip = Some(r);
+                painted.push(layer);
+            }
+        }
+        if let (Some(drag), Some(pointer)) = (shop.preview_drag, pointer) {
+            // A drag off the preview: its item's icon under the pointer.
+            let shown = crate::item_container::Container {
+                entries: vec![crate::item_container::Entry {
+                    cell: crate::item_container::Cell::new(
+                        pointer.0 - drag.grab.x,
+                        pointer.1 - drag.grab.y,
+                    ),
+                    id: drag.item.id,
+                    icon: drag.icon,
+                    flags: drag.item.flags,
+                    drag: 0,
+                }],
+                icon_size: shop.panels.pack.icon_size,
+                ..crate::item_container::Container::default()
+            };
+            if let Some(layer) = icons.layer(&shown) {
                 painted.push(layer);
             }
         }
