@@ -929,6 +929,13 @@ request.
 
 ## The running hub
 
+A match's outdoor arena draws its day and weather at its level load
+(`exa_world::environment`): the original's map load hands the draw the
+arena's night flag and a fresh counter word, and nothing of the career
+(rank, day, matches fought); the time of day then stands still for the
+match. `arena_match::outdoor_bed` reads the scene's daylight factor (the
+field after the time of day), as `weather`'s ambience does.
+
 `arena_match::ArenaMatch` keeps the transition screen (3 next round, 2 end)
 and exposes the Continue and forfeit branches (`end_action`, `forfeit`);
 `arena_live` draws the arena's end screen through the GUI path (`NEXT FIGHT`
