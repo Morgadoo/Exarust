@@ -60,31 +60,6 @@ pub enum EndAction {
     Scripted { handler: usize, item: i32 },
 }
 
-/// The scripted modes whose end-menu handler a story script registered, in
-/// registration order: the original's table of mode words, each entry
-/// carrying the handler the click calls. Exarust's script crate is empty, so
-/// nothing registers one yet; the table and its dispatch are here for the
-/// scripts that will.
-#[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
-pub struct EndHandlers {
-    /// The registered mode words, in order of registration.
-    pub modes: Vec<u32>,
-}
-
-impl EndHandlers {
-    /// Registers a scripted mode: the original appends its word and handler
-    /// (a mode already present is registered again).
-    pub fn register(&mut self, mode: u32) {
-        self.modes.push(mode);
-    }
-
-    /// The handler index for a mode: the first matching entry.
-    #[must_use]
-    pub fn handler_for(&self, mode: u32) -> Option<usize> {
-        self.modes.iter().position(|&registered| registered == mode)
-    }
-}
-
 /// A scripted mode's end-menu handler ran: its index and the clicked row.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScriptedEnd {
@@ -267,14 +242,17 @@ impl EndMenuScreen {
     /// handles closes the menu first; a registered scripted handler is left
     /// for its script to close (the original only calls the handler). A row
     /// the dispatch does not handle leaves the menu as it is.
-    pub fn confirm(&mut self, flow: &mut Flow, handlers: &[u32]) -> Vec<Step> {
+    pub fn confirm(&mut self, flow: &mut Flow) -> Vec<Step> {
+        // The registered scripted modes ([`crate::flow::ScriptModes`]), in
+        // the table's order.
+        let handlers = flow.script_modes.words();
         let Some(menu) = self.menu else {
             return Vec::new();
         };
         let Some(selected) = self.selected else {
             return Vec::new();
         };
-        let Some(action) = end_action(&menu, flow.mode, selected + 1, handlers) else {
+        let Some(action) = end_action(&menu, flow.mode, selected + 1, &handlers) else {
             return Vec::new();
         };
         if let EndAction::Scripted { handler, item } = action {
@@ -294,7 +272,7 @@ impl EndMenuScreen {
                         flow.mode,
                         selected + 1,
                         flow.practice.fight,
-                        handlers
+                        &handlers
                     ),
                     Some(EndSessionAction::NextPracticeFight { last: true })
                 );
@@ -326,7 +304,6 @@ pub struct EndMenuScreenPlugin;
 impl Plugin for EndMenuScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EndMenuScreen>()
-            .init_resource::<EndHandlers>()
             .add_message::<ScriptedEnd>()
             .add_systems(
                 Update,
@@ -342,7 +319,6 @@ impl Plugin for EndMenuScreenPlugin {
 fn update(
     mut screen: ResMut<EndMenuScreen>,
     mut flow: Option<ResMut<Flow>>,
-    handlers: Option<Res<EndHandlers>>,
     mut scripts: MessageWriter<ScriptedEnd>,
     mut steps: ResMut<FlowSteps>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -352,7 +328,6 @@ fn update(
     if !screen.open {
         return;
     }
-    let registered = handlers.as_ref().map_or(&[][..], |h| &h.modes[..]);
     if keys.just_pressed(KeyCode::ArrowDown) {
         screen.move_selection(1);
     }
@@ -362,7 +337,7 @@ fn update(
     if keys.just_pressed(KeyCode::Enter)
         && let Some(flow) = flow.as_mut()
     {
-        let out = screen.confirm(flow, registered);
+        let out = screen.confirm(flow);
         if let Some(scripted) = screen.scripted.take() {
             scripts.write(scripted);
         }
@@ -396,7 +371,7 @@ fn update(
         && hit == Some(pressed)
         && let Some(flow) = flow.as_mut()
     {
-        let out = screen.confirm(flow, registered);
+        let out = screen.confirm(flow);
         if let Some(scripted) = screen.scripted.take() {
             scripts.write(scripted);
         }
@@ -569,30 +544,29 @@ mod tests {
     #[test]
     fn a_registered_scripted_mode_hands_its_row_to_the_handler() {
         let won = end_menu(MENU_WON, Mode::Story);
-        let mut handlers = EndHandlers::default();
-        assert_eq!(handlers.handler_for(0x20), None);
+        let mut flow = Flow::default();
+        assert_eq!(flow.script_modes.find(0x20), None);
         assert_eq!(
-            end_action(&won, Mode::Other(0x20), 1, &handlers.modes),
+            end_action(&won, Mode::Other(0x20), 1, &flow.script_modes.words()),
             None
         );
-        handlers.register(0x20);
+        flow.script_modes.register(0x20, false);
         // A second registration of the same word is kept; the first wins.
-        handlers.register(0x20);
-        assert_eq!(handlers.modes, [0x20, 0x20]);
-        assert_eq!(handlers.handler_for(0x20), Some(0));
+        flow.script_modes.register(0x20, true);
+        assert_eq!(flow.script_modes.words(), [0x20, 0x20]);
+        assert_eq!(flow.script_modes.find(0x20).map(|(i, _)| i), Some(0));
         assert_eq!(
-            end_action(&won, Mode::Other(0x20), 1, &handlers.modes),
+            end_action(&won, Mode::Other(0x20), 1, &flow.script_modes.words()),
             Some(EndAction::Scripted {
                 handler: 0,
                 item: 1
             })
         );
         // The confirm hands the row over and leaves the menu to the script.
-        let mut flow = Flow::default();
         flow.mode = Mode::Other(0x20);
         let mut screen = EndMenuScreen::default();
         screen.show(won);
-        assert!(screen.confirm(&mut flow, &handlers.modes).is_empty());
+        assert!(screen.confirm(&mut flow).is_empty());
         assert_eq!(
             screen.scripted,
             Some(ScriptedEnd {
@@ -610,7 +584,7 @@ mod tests {
         flow.phase = crate::flow::Phase::Ended;
         let mut screen = EndMenuScreen::default();
         screen.show(end_menu(MENU_WON, Mode::Practice));
-        let steps = screen.confirm(&mut flow, &[]);
+        let steps = screen.confirm(&mut flow);
         assert_eq!(steps, vec![Step::ClosePrelude, Step::Transition]);
         assert!(!screen.open);
         assert_eq!(flow.phase, crate::flow::Phase::Transition);
@@ -623,7 +597,7 @@ mod tests {
         flow.mode = Mode::Arena;
         screen.show(end_menu(crate::flow::MENU_ARENA, Mode::Arena));
         screen.selected = Some(2);
-        assert!(screen.confirm(&mut flow, &[]).is_empty());
+        assert!(screen.confirm(&mut flow).is_empty());
         assert!(screen.open);
     }
 

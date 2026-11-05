@@ -677,13 +677,22 @@ The appearance page's final button SHALL warn "Please name your character" when 
 - **THEN** the equipment page holds apparel and skills and the button reads BEGIN
 
 ### Requirement: Creation commit
-On the equipment page a record with known powers SHALL open the power tree; otherwise recruiting SHALL hand the record to the arena, versus SHALL ready its lobby and any other mode SHALL save the preset, commit the record, store its worth and start the game. The appearance page's back action SHALL leave for the arena when recruiting and for the menu otherwise.
+On the equipment page, a record with known powers SHALL open the power tree. Otherwise:
+- recruiting SHALL hand the record to the arena;
+- versus SHALL hand the record to its lobby form, and with no lobby form READY SHALL do nothing;
+- any other mode SHALL save the preset, commit the record, store its worth and start the game.
+
+The appearance page's back action SHALL leave for the arena when recruiting. Otherwise it SHALL leave for the menu through the creator's cancel.
 
 #### Scenario: Commit
 - **WHEN** a record with two known powers is committed
 - **THEN** the power tree opens
 - **WHEN** the appearance page goes back in story
 - **THEN** the screen leaves for the menu
+
+#### Scenario: READY without a lobby
+- **WHEN** a named versus character's READY is pressed with no lobby form
+- **THEN** the creator stays on the equipment page and no session starts
 
 ### Requirement: Creation continue chooser
 Selecting a save slot SHALL ask the save manager what it offers; a zero mask SHALL change nothing, otherwise a missing save SHALL fall back to the checkpoint and a missing checkpoint to the save. The toggle SHALL switch kinds only when the slot offers the other. Stepping and list picks SHALL select the checkpoint of the new slot; a pick of the current slot SHALL do nothing.
