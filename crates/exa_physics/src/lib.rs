@@ -34,6 +34,7 @@ pub mod sector_lists;
 pub mod shape;
 pub mod shock;
 pub mod signal;
+pub mod sim_app;
 pub mod sim_object;
 pub mod step_driver;
 pub mod volume;

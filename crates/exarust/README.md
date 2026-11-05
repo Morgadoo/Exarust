@@ -35,6 +35,9 @@ record of race byte 14 through the placed-character path and marks the
 body as the caster's spirit, which the mind runtime then hands the player.
 The placed-character path builds the wraith physical with its race's hover
 flag, so the spirit floats on its hovering lift and walks.
+The game adds `exa_physics::sim_app`'s shell: the simulation's own world,
+stepped in lockstep with the fixed step on its `exa-sim` thread, or on the
+frame's thread with `--sim-inline`.
 `--sim-boundary <file>` (`src/sim_boundary.rs`) writes, once the level has loaded and the fixed step
 has run 200 ticks, every component and resource type the fixed step's
 schedules share with the frame's, by direction, with each side's readers and
