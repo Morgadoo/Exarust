@@ -925,6 +925,8 @@ Round 75 simthread4e: bodies are snapshots and the frame's writes to them are po
 
 Round 77 simthread4f: the bridge copies only what the simulation holds; the original's free loop is traced for stage 6.
 
+Round 78 simthread6a: the AI manager frame runs before every simulation step, as the original's pre-step hook.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
