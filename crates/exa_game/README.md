@@ -757,7 +757,8 @@ anchors and states), the joint trace
 the planner probe (`path_probe`, `--debug-path`: a plan from the player's
 feet to a point, drawn and logged) and the simulation controls (`sim_control`, with the scripted pauses at a
 tick, a stretched link, the first blood jet, the player's first landed
-blow or the first collapse).
+blow or the first collapse; no fixed step runs while the loading screen
+shows, as the original's load holds its pause counter).
 
 The player behaviour's own rules (`player_behaviour`) are the aim point's
 soft height lock toward the nearest of a target's bones (the reference
