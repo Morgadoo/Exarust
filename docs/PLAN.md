@@ -1489,6 +1489,10 @@ Round 48 shop: the arena shop's baskets are live. A carried item seeds the goods
 
 Round 48b gicurve: the outdoor GI shading curve and the open sky's tinted cube are live and the cube faces sit on the original's targets; open arenas are now overbright inside the GI block, cause not found.
 
+Round 53 glowtrade (E7, P6): script glows pulse, crystals drain, the trade window's items carry cards, and the card draws over the hub windows (the original's upper-layer card form).
+
+Round 53 scripteffects (U2): the real gap was the AI contact list, which the script cast never received; WitnessRole and ShowInventory already had readers.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -2216,6 +2220,8 @@ Round 48b shock: shock-weapon arcs arm, follow and end with the held blades, wit
 Round 49 domes (E5): the force domes draw and sound; the Barrier only stands in combat mode, as in the original.
 
 Round 52 kinesisfx (E6): the held force shells hum and light, and strikes ripple on landed blows (not on the swing).
+
+Round 53 mindruntime (S3): Control Mind and Spirit Form move the player between bodies; the other Mind classes do not tick yet.
 
 ### Phase 8 — Polish and release
 
