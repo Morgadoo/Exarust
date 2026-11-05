@@ -275,6 +275,8 @@ Round 48b world: mechanism light jobs and sequence relays run, light operatives 
 
 Round 50 doornav (W1): the backlog premise was wrong; a door never changes the navigation grid in the original, only the room route follows it.
 
+Round 65 terrain: the original's tile bake replaces a per-vertex stand-in; plain grass now carries plants, pending a retail check.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -896,6 +898,8 @@ Round 63 charmove: the original never sweeps a character; retiring the capsule f
 Round 63 simthread (stage 1 of 7): the original's driver ported and the fixed step's shared state mapped; the tick moves off the frame once the simulation has its own sub-app world.
 
 Round 64 simthread3 (stage 3, increment 1): the simulation world runs the fixed step behind a copy bridge, opt-in until every type is registered. Also (gridstall): wgpu's upload buffers no longer use the 3090's shared 256 MiB BAR window without a resizable BAR (patched gpu-allocator), which ended the second grid game's 0.5–1.6 s render stalls; the grid host plays no audio, ending the multi-GB ALSA log spam.
+
+Round 65 simthread3 (stage 3, increment 2): the whole fixed step runs behind the bridge; one divergence to find before it becomes the default.
 
 ### Phase 4 — Combat and items (started)
 
@@ -1536,6 +1540,8 @@ Round 59 forminput (S9): windows move, close, scroll and show hover inks as the 
 Round 59 suncaster (S8, shadows): the sun caster pass, its softness filter and polygon offset follow the original.
 
 Round 61 reflections (S8): the original has no planar reflection; its local reflection on glass is ported, and the sewer water is the wet-floor gloss.
+
+Round 65 gamegui: the card's coins and the loadout preview's bars draw; a block of registered GUI controls is never used by 0.9.5.
 
 ### Phase 6 — AI (started)
 
