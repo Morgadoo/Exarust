@@ -823,8 +823,8 @@ pub fn open_hub_window_on_load(
     hub: Res<crate::arena_hub_live::ArenaHub>,
     mut windows: ResMut<HubWindows>,
     career: Res<ArenaCareer>,
-    names: Res<crate::hub_windows::HubItemNames>,
     mut open_arsenal: MessageWriter<crate::arsenal_view::OpenArsenal>,
+    mut open_shop: MessageWriter<crate::arena_hub_live::OpenHubShop>,
 ) {
     if ask.done || !hub.manager_placed || windows.task.screen.0 == 0 {
         return;
@@ -849,7 +849,13 @@ pub fn open_hub_window_on_load(
             info!("hub window arsenal opens");
             return;
         }
-        "shop" => windows.open_shop(false, &career, &names),
+        // The shop opens as the hub's click on it does: its first stock is
+        // made when the shelf is empty.
+        "shop" => {
+            open_shop.write(crate::arena_hub_live::OpenHubShop);
+            info!("hub window shop asked");
+            return;
+        }
         "manage" => manage_first(&mut windows),
         "records" => {
             manage_first(&mut windows);

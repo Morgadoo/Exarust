@@ -246,6 +246,65 @@ fn pointer(windows: &Query<&Window, With<PrimaryWindow>>) -> Option<IVec2> {
         .map(|p| (p * window.scale_factor()).as_ivec2())
 }
 
+/// What a panel entry's double click writes: its use hook, a container
+/// popup, the divination reading and the named level's load.
+#[derive(bevy::ecs::system::SystemParam)]
+struct DoubleClickOut<'w> {
+    hooks: MessageWriter<'w, UseHook>,
+    containers: MessageWriter<'w, crate::gui_screens::ContainerRequest>,
+    divination: MessageWriter<'w, crate::div_card_screen::OpenDivination>,
+    levels: MessageWriter<'w, crate::flow::ReadNamedLevel>,
+}
+
+/// `--double-click ID@FRAME` (debug): at that frame after the load the item
+/// is put into the player's pack and its entry's double click is run, as a
+/// second left press on it in the inventory would.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DoubleClickScript(pub Option<(u32, u32)>);
+
+impl DoubleClickScript {
+    pub fn parse(text: &str) -> Option<Self> {
+        UseScript::parse(text).map(|s| Self(s.0))
+    }
+}
+
+/// The scripted double click's entry, once the item is in the pack: its id
+/// and its slot from one.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PendingDoubleClick(Option<(u32, i32)>);
+
+/// Puts the scripted item into the pack and asks for its double click.
+fn scripted_double_click(
+    script: Res<DoubleClickScript>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    mut players: Query<&mut Possessions, With<PlayerBody>>,
+    mut pending: ResMut<PendingDoubleClick>,
+) {
+    let Some((id, frame)) = script.0 else {
+        return;
+    };
+    if loading.is_some() || *frames > frame {
+        return;
+    }
+    *frames += 1;
+    if *frames != frame {
+        return;
+    }
+    let Some(mut p) = players.iter_mut().next() else {
+        info!("double click script: no player at frame {frame}");
+        return;
+    };
+    p.carried.push(exa_items::possession::Carried {
+        id,
+        flags: 0,
+        x: 0,
+        y: 0,
+    });
+    info!("double click script: {id:#x} double clicked in the pack at frame {frame}");
+    pending.0 = Some((id, p.carried.len() as i32));
+}
+
 /// The item panel's double click: a second left press within the double
 /// click's time and distance on the same entry asks its double-click class.
 /// Class 0 on a container opens its popup; class 2 closes the card and
@@ -260,18 +319,30 @@ fn panel_double_click(
     mut items: ResMut<DollItems>,
     mut screens: ResMut<GameScreens>,
     mut last: Local<Option<(IVec2, u64, Panel, usize)>>,
-    mut hooks: MessageWriter<UseHook>,
-    mut containers: MessageWriter<crate::gui_screens::ContainerRequest>,
-    mut divination: MessageWriter<crate::div_card_screen::OpenDivination>,
-    mut levels: MessageWriter<crate::flow::ReadNamedLevel>,
+    mut pending: ResMut<PendingDoubleClick>,
+    mut out: DoubleClickOut,
 ) {
+    let now = real.elapsed().as_millis() as u64;
+    if let Some((id, slot)) = pending.0.take() {
+        let at = pointer(&windows).unwrap_or_default();
+        run_double_click(
+            &mut items,
+            game.as_deref(),
+            &mut screens,
+            &mut out,
+            (id, 0),
+            slot,
+            Panel::PlayerPack,
+            at,
+            now,
+        );
+    }
     if !buttons.just_pressed(MouseButton::Left) || cursor.took_press {
         return;
     }
     let Some(at) = pointer(&windows) else {
         return;
     };
-    let now = real.elapsed().as_millis() as u64;
     let panels = open_panels(&screens);
     let Some((panel, local)) = panel_at(&panels, at) else {
         *last = None;
@@ -295,12 +366,38 @@ fn panel_double_click(
     }
     *last = None;
     let entry = panel_container.entries[index];
-    items.ensure(game.as_deref());
-    let operative = operative_of(&items, entry.id).map(|(class, kind, _)| (class, kind));
-    let use_class = player_controls::panel_use_class(operative, entry.flags);
-    let is_container = items
-        .get(entry.id)
-        .is_some_and(|item| item.container.is_some());
+    run_double_click(
+        &mut items,
+        game.as_deref(),
+        &mut screens,
+        &mut out,
+        (entry.id, entry.flags),
+        index as i32 + 1,
+        panel,
+        at,
+        now,
+    );
+}
+
+/// An entry's double click: the item's use class picks what it does, after
+/// a class-0 use of kind 5 or 7 has run.
+#[allow(clippy::too_many_arguments)]
+fn run_double_click(
+    items: &mut DollItems,
+    game: Option<&Game>,
+    screens: &mut GameScreens,
+    out: &mut DoubleClickOut,
+    (id, flags): (u32, u32),
+    slot: i32,
+    panel: Panel,
+    at: IVec2,
+    now: u64,
+) {
+    items.ensure(game);
+    let operative = operative_of(items, id).map(|(class, kind, _)| (class, kind));
+    let use_class = player_controls::panel_use_class(operative, flags);
+    let is_container = items.get(id).is_some_and(|item| item.container.is_some());
+    info!("double click: {id:#x} use {operative:?}, class {use_class}");
     // Class 0 of a kind other than the GUI item runs its use before the
     // class is applied. Kind 5 closes the card and opens the divination
     // reading with the zero argument that use passes. Kind 7 asks to load
@@ -308,21 +405,23 @@ fn panel_double_click(
     if operative.is_some_and(|(class, kind)| class == 0 && kind == player_controls::TAKE_DIVINATION)
     {
         let _ = screens.card.close(now as u32);
-        divination.write(crate::div_card_screen::OpenDivination { seed: 0 });
+        info!("double click: {id:#x} opens the divination reading");
+        out.divination
+            .write(crate::div_card_screen::OpenDivination { seed: 0 });
     }
     // Kind 7 asks to load the level the header names. The card stays, and a
     // container section still opens afterwards.
     if operative.is_some_and(|(class, kind)| class == 0 && kind == player_controls::TAKE_NAME_HOOK)
     {
-        levels.write(crate::flow::ReadNamedLevel { id: entry.id });
+        out.levels.write(crate::flow::ReadNamedLevel { id });
     }
     match crate::item_container::double_click(use_class, is_container) {
         crate::item_container::DoubleClick::UseItem => {
             let _ = screens.card.close(now as u32);
-            hooks.write(UseHook {
-                item: entry.id,
-                entry: entry.id,
-                slot: index as i32 + 1,
+            out.hooks.write(UseHook {
+                item: id,
+                entry: id,
+                slot,
                 panel,
             });
         }
@@ -330,9 +429,9 @@ fn panel_double_click(
         // a placed chest uses; this item has no placed object, so the record
         // is the item's own section.
         crate::item_container::DoubleClick::OpenContainer => {
-            containers.write(crate::gui_screens::ContainerRequest {
+            out.containers.write(crate::gui_screens::ContainerRequest {
                 object: Entity::PLACEHOLDER,
-                id: entry.id,
+                id,
                 pointer: at,
             });
         }
@@ -1207,6 +1306,8 @@ impl Plugin for UseCursorPlugin {
         mechanism_sound::register(app);
         app.init_resource::<UseCursor>()
             .init_resource::<UseScript>()
+            .init_resource::<DoubleClickScript>()
+            .init_resource::<PendingDoubleClick>()
             .init_resource::<KitScript>()
             .init_resource::<DollItems>()
             .init_resource::<KitConditions>()
@@ -1223,6 +1324,7 @@ impl Plugin for UseCursorPlugin {
                     apply_kit,
                     transfer_gui,
                     tick_kits,
+                    scripted_double_click,
                     panel_double_click,
                     scripted_use,
                     begin_use,

@@ -132,6 +132,9 @@ pub struct CardView {
     pub sockets: Option<SocketSheet>,
     /// The large-icon side the socket cells were last tried at.
     sockets_tried: Option<i32>,
+    /// A map's parchment the card builder asked for in place of a card,
+    /// opened by [`crate::parchment`].
+    pub parchment: Option<crate::parchment::OpenParchment>,
 }
 
 /// A card asked for by the player's single click on a world object: its
@@ -408,6 +411,24 @@ fn show(
     now: u32,
     world: bool,
 ) {
+    // A map is no card: the builder hands it to the parchment, before it
+    // closes the card shown for another item (that close is the card
+    // branch's own, so an open card stays).
+    if let Some(image) = catalogue
+        .card_facts(item)
+        .filter(|facts| facts.map && !facts.container)
+        .and_then(|facts| facts.map_image.clone())
+    {
+        debug!("item card: {item:#x} is a map, its parchment {image:?} asked");
+        view.parchment = Some(crate::parchment::OpenParchment {
+            item,
+            image,
+            pointer,
+            unit,
+            world,
+        });
+        return;
+    }
     view.close(screens, icons, now);
     if view.roll == 0 {
         view.roll = now | 1;
@@ -473,9 +494,14 @@ fn request_card(
     use_cursor: Option<Res<crate::player_controls::UseCursor>>,
     mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
     flow: Option<Res<crate::flow::Flow>>,
+    parchment: Res<crate::parchment::ParchmentView>,
 ) {
-    // The press that ended the use cursor is the cursor's.
-    if !buttons.just_pressed(MouseButton::Right) || use_cursor.is_some_and(|c| c.took_press) {
+    // The press that ended the use cursor is the cursor's, and one on the
+    // parchment is the parchment's.
+    if !buttons.just_pressed(MouseButton::Right)
+        || use_cursor.is_some_and(|c| c.took_press)
+        || parchment.took_press
+    {
         return;
     }
     let Ok(window) = windows.single() else {
@@ -1256,23 +1282,31 @@ pub struct ItemCardPlugin;
 impl Plugin for ItemCardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CardView>()
+            .init_resource::<crate::parchment::ParchmentView>()
             .add_message::<WorldCard>()
             .add_message::<FigureCard>()
             .add_systems(
                 Update,
                 (
+                    crate::parchment::parchment_press,
                     card_press,
                     request_card,
                     scripted_card,
                     world_cards,
                     figure_cards,
                     tick_card,
+                    crate::parchment::open_parchment,
                 )
                     .chain()
                     .after(crate::use_cursor::UseCursorSystems)
                     .before(crate::gui_screens::close_on_right_release),
             );
-        app.add_systems(Update, draw_card.after(crate::gui_screens::draw_screens));
+        app.add_systems(
+            Update,
+            (draw_card, crate::parchment::draw_parchment)
+                .chain()
+                .after(crate::gui_screens::draw_screens),
+        );
     }
 }
 

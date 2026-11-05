@@ -91,6 +91,8 @@
 //!          --open-hub-window <name>   play arenahub: once the manager stands, open a hub window built from its control
 //!                                     table: manage, records, status, loadout, hire, dismiss[:row], yesno (also board,
 //!                                     shop, and arsenal, the arsenal view Manage Company's Arsenal opens)
+//!          --shop-buy ROW             with --open-hub-window shop: click stock row ROW into the buy basket, confirm
+//!                                     the trade, then open the bought copy's card at the pointer (debug)
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
 //!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
 //!                                     stand-in for a loaded career's employee)
@@ -153,6 +155,8 @@
 //!          --game-event CODE@FRAME,... debug: raise the story scripts' GameEvent CODE at frames after loading
 //!                                     (memory fragment 0xc00001, raise dead 0xda0115, awakenings 0xc10ec1-3)
 //!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
+//!          --double-click ID@FRAME    debug: put the item into the pack and run its entry's double click at that
+//!                                     frame (a kind-5 deck opens the divination reading)
 //!          --kit-use clean|repair:ID@FRAME,... debug: release a brush or repair sphere on the pack entry ID at that frame
 //!                                     after loading, as its double click in the pack would (the use cursor)
 //!          --item-card ID@FRAME       debug: open the item's description card at the pointer (`--cursor`) at that frame
@@ -450,6 +454,8 @@ pub struct Options {
     pub kit_use: exa_game::use_cursor::KitScript,
     /// `--use-item ID@FRAME`: the item's use hook, as its double click.
     pub use_item: exa_game::use_cursor::UseScript,
+    /// `--double-click ID@FRAME`: the item's pack entry double clicked.
+    pub double_click: exa_game::use_cursor::DoubleClickScript,
     /// `--game-event CODE@FRAME,...`: script `GameEvent` codes raised at
     /// frames after the load.
     pub game_events: Option<exa_game::game_event_live::GameEventScript>,
@@ -522,6 +528,8 @@ pub struct Options {
     /// `--open-hub-window <name>`: open a hub window once the hub is
     /// entered (a debug tool for screenshots).
     pub open_hub_window: Option<String>,
+    /// `--shop-buy ROW`: the scripted shop's purchase.
+    pub shop_buy: Option<usize>,
     /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
     /// the company once the hub is entered (a debug tool).
     pub hub_employee_kit: Option<(String, Vec<u32>)>,
@@ -1022,6 +1030,16 @@ fn main() -> AppExit {
             }
             "--fell-player" => options.fell_player = args.next().and_then(|v| v.parse().ok()),
             "--arena-auto" => options.arena_auto = true,
+            "--shop-buy" => {
+                let value = args.next().unwrap_or_default();
+                match value.trim().parse() {
+                    Ok(row) => options.shop_buy = Some(row),
+                    Err(_) => {
+                        eprintln!("--shop-buy: cannot read {value:?} (a row number)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--open-hub-window" => {
                 let name = args.next().unwrap_or_default();
                 if !exa_game::hub_forms::hub_window_name_ok(&name) {
@@ -1177,7 +1195,7 @@ fn main() -> AppExit {
                     }
                 }
             }
-            "--use-item" | "--gui-drop" | "--doll-drop" | "--item-card" => {
+            "--use-item" | "--gui-drop" | "--doll-drop" | "--item-card" | "--double-click" => {
                 let text = args.next().unwrap_or_default();
                 let ok =
                     match a.as_str() {
@@ -1185,6 +1203,8 @@ fn main() -> AppExit {
                             .map(|s| options.item_card = s),
                         "--use-item" => exa_game::use_cursor::UseScript::parse(&text)
                             .map(|s| options.use_item = s),
+                        "--double-click" => exa_game::use_cursor::DoubleClickScript::parse(&text)
+                            .map(|s| options.double_click = s),
                         "--gui-drop" => exa_game::gui_drop::GuiDropScript::parse(&text)
                             .map(|s| options.gui_drop = s),
                         _ => exa_game::doll_view::DollDropScript::parse(&text)
@@ -1647,6 +1667,7 @@ fn main() -> AppExit {
         at_frame: options.toggle_door,
     })
     .insert_resource(options.use_item)
+    .insert_resource(options.double_click)
     .insert_resource(options.kit_use.clone())
     .insert_resource(options.gui_drop)
     .insert_resource(options.item_card)

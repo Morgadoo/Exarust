@@ -74,7 +74,7 @@ The catalogue now keeps each record's card facts (display name and
 description through `objstrings.rdb`, compact value expanded to copper,
 condition, weapon, apparel and shield sections, the four crystal-socket
 words of the section the card shows, sockets, material gate,
-name id) and the worn burden and shield record. Names resolve as the
+name id, a map's image name from its map section) and the worn burden and shield record. Names resolve as the
 original's string resolver does (inherit, own-tier bit, shared library);
 an unresolved name gives no card, and the tint, rank and socket bytes come
 from the section of the page shown. The card holds an icon slot by its own

@@ -1125,6 +1125,15 @@ pub const INSTANCE_ON_USE: u32 = 1;
 pub const RANDOM_TABLE: u32 = 0x200;
 /// The map record's own section; its name follows a zeroed volume.
 pub const MAP: u32 = 0x8000_0B03;
+
+/// The image a map section's body names: the 16-byte name at body `0x10`,
+/// after the zeroed volume, up to its first zero (`Map_Exanima01` in the
+/// base tier's "Map"). `None` for a body too short or an empty name.
+pub fn map_image(body: &[u8]) -> Option<String> {
+    let name = body.get(0x10..0x20)?;
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    (end > 0).then(|| String::from_utf8_lossy(&name[..end]).into_owned())
+}
 /// The torch's extra section; zero in the one shipped record, meaning not
 /// established.
 pub const TORCH: u32 = 0x100;
@@ -1152,6 +1161,17 @@ mod tests {
         let mut v = s.as_bytes().to_vec();
         v.resize(len, 0);
         v
+    }
+
+    /// The shipped map sections hold sixteen zero bytes, then the image's
+    /// name in sixteen bytes.
+    #[test]
+    fn a_map_section_names_its_image_after_the_zeroed_volume() {
+        let mut body = vec![0u8; 0x10];
+        body.extend(padded("Map_Exanima01", 0x10));
+        assert_eq!(map_image(&body).as_deref(), Some("Map_Exanima01"));
+        assert_eq!(map_image(&[0u8; 0x20]), None);
+        assert_eq!(map_image(&body[..0x18]), None);
     }
 
     /// The paint job's condition: each byte through the original's

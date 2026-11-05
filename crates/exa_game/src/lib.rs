@@ -99,6 +99,7 @@ pub mod npc_search;
 pub mod object_click;
 pub mod pair_trace;
 pub mod panel_live;
+pub mod parchment;
 pub mod path_probe;
 pub mod pick;
 pub mod player;

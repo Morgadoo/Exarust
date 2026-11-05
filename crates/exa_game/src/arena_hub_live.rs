@@ -151,11 +151,17 @@ impl Plugin for ArenaHubPlugin {
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
             .add_message::<crate::arsenal_view::OpenArsenal>()
+            .add_message::<OpenHubShop>()
+            .add_message::<crate::item_card::WorldCard>()
+            .init_resource::<ShopBuyScript>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<HubWindows>()
             .init_resource::<crate::hub_windows::ArenaCareer>()
             .init_resource::<crate::hub_windows::HubItemNames>()
             .init_resource::<crate::shop_stock::LiveShopStock>()
+            .init_resource::<crate::shop_stock::ItemPalette>()
+            .init_resource::<crate::shop_stock::ShopFactories>()
+            .init_resource::<exa_assets::live_objects::LiveObjects>()
             .init_resource::<LastHubClick>()
             .init_resource::<crate::hub_forms::OpenHubWindow>()
             .init_resource::<crate::arsenal::ShelfKinds>()
@@ -181,6 +187,7 @@ impl Plugin for ArenaHubPlugin {
                     crate::loadout_kit::kit_input,
                     crate::loadout_kit::sync_kit,
                     hub_clicks,
+                    scripted_shop,
                     hub_restock,
                     hub_session_fall,
                     close_hub_windows,
@@ -699,6 +706,9 @@ struct HubShop<'w, 's> {
     game: Option<Res<'w, exa_assets::Game>>,
     catalogue: Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
     live: ResMut<'w, crate::shop_stock::LiveShopStock>,
+    objects: ResMut<'w, exa_assets::live_objects::LiveObjects>,
+    palette: ResMut<'w, crate::shop_stock::ItemPalette>,
+    factories: ResMut<'w, crate::shop_stock::ShopFactories>,
     names: ResMut<'w, crate::hub_windows::HubItemNames>,
     players: Query<
         'w,
@@ -708,13 +718,24 @@ struct HubShop<'w, 's> {
     >,
 }
 
-/// The shop line for an item's catalogue value. A copy uses its source
-/// record. No value is a zero line, and the row stays on the shelf.
+/// The shop line for an item's value: a copy's own model value word in the
+/// live database (its condition already scaled it), else the catalogue's,
+/// else its source record's. No value is a zero line, and the row stays on
+/// the shelf.
 fn shop_line_price(
     catalogue: &exa_items::catalogue::ItemCatalogue,
     live: &crate::shop_stock::LiveShopStock,
+    objects: &exa_assets::live_objects::LiveObjects,
     id: u32,
 ) -> u16 {
+    if id & exa_formats::objdb::TAG_MASK != 0
+        && let Some(word) = objects
+            .db()
+            .section(id, 0x0010_0000)
+            .and_then(|model| model.get(0x1E..0x20))
+    {
+        return u16::from_le_bytes([word[0], word[1]]);
+    }
     let facts = catalogue.card_facts(id).or_else(|| {
         live.parent_of_instance(id)
             .and_then(|base| catalogue.card_facts(base))
@@ -756,14 +777,21 @@ impl HubShop<'_, '_> {
         } else {
             (&mut career.company.stock, 0, -1)
         };
-        if let Some(report) =
-            crate::trade::ensure_first_stock_of(stock, kinds, rank, rolls(), &mut *self.live)
-        {
+        let report = if stock.is_empty() {
+            let rolls = rolls();
+            self.with_world(|world| {
+                crate::trade::ensure_first_stock_of(stock, kinds, rank, rolls, world)
+            })
+        } else {
+            None
+        };
+        if let Some(report) = report {
             bevy::log::info!(
                 "hub shop: first stock of {} items ({} invalid)",
                 stock.len(),
                 report.invalid
             );
+            self.log_copies(stock);
         }
         if let Some(catalogue) = self.catalogue.as_deref() {
             self.live.fill_names(catalogue, &mut self.names);
@@ -776,7 +804,67 @@ impl HubShop<'_, '_> {
         windows.open_shop(merchant, career, &self.names);
         if let Some(catalogue) = self.catalogue.as_deref() {
             let live = &self.live;
-            windows.price_shop_rows(|id| shop_line_price(catalogue, live, id));
+            let objects = &self.objects;
+            windows.price_shop_rows(|id| shop_line_price(catalogue, live, objects, id));
+        }
+    }
+
+    /// Runs a stock update over the live object database, where the copies
+    /// are made (its base tier read first).
+    fn with_world<R>(
+        &mut self,
+        run: impl FnOnce(&mut crate::shop_stock::LiveShopWorld<'_>) -> R,
+    ) -> R {
+        if let Some(game) = self.game.as_deref() {
+            self.objects.ensure_base(&game.0);
+        }
+        let game = self.game.as_deref();
+        let factories = &mut self.factories;
+        let mut factory = |name: &str, body: &mut [u8]| factories.pass(game, name, body);
+        let mut entropy = || crate::arena_match::counter_now() as u32;
+        let mut world = crate::shop_stock::LiveShopWorld {
+            stock: &mut self.live,
+            db: self.objects.db_mut(),
+            palette: &mut self.palette.0,
+            entropy: &mut entropy,
+            factory: &mut factory,
+        };
+        run(&mut world)
+    }
+
+    /// Logs each copy the shelf holds with its own condition: an apparel
+    /// body's condition, damage, dirt and variant bytes, a weapon's quality,
+    /// damage and dirt, and the value word.
+    fn log_copies(&self, stock: &[u32]) {
+        let db = self.objects.db();
+        for &id in stock {
+            if id & exa_formats::objdb::TAG_MASK == 0 {
+                continue;
+            }
+            let name = db.name(id).unwrap_or_default();
+            let value = db
+                .section(id, 0x0010_0000)
+                .and_then(|m| m.get(0x1E..0x20))
+                .map_or(0, |w| u16::from_le_bytes([w[0], w[1]]));
+            if let Some(body) = db.section(id, 0x1000).filter(|b| b.len() > 0x1B2) {
+                bevy::log::info!(
+                    "hub shop: copy {id:#x} {name:?} apparel condition {:#04x} variant {:#04x} quality {} damage {} dirt {} value {value}",
+                    body[0x1A9],
+                    body[0x1AA],
+                    body[0x1B0],
+                    body[0x1B1],
+                    body[0x1B2],
+                );
+            } else if let Some(weapon) = db.section(id, 0x4000).filter(|b| b.len() > 0x0E) {
+                bevy::log::info!(
+                    "hub shop: copy {id:#x} {name:?} weapon quality {} damage {} dirt {} seeds {:#x} {:#x} value {value}",
+                    weapon[0x0C],
+                    weapon[0x0D],
+                    weapon[0x0E],
+                    u32::from_le_bytes(weapon[4..8].try_into().expect("4 bytes")),
+                    u32::from_le_bytes(weapon[8..12].try_into().expect("4 bytes")),
+                );
+            }
         }
     }
 
@@ -790,24 +878,122 @@ impl HubShop<'_, '_> {
             crate::arena_match::counter_now() as u32,
             crate::arena_match::counter_now() as u32,
         ];
-        career.company.restock(0, -1, rolls, &mut *self.live);
+        self.with_world(|world| career.company.restock(0, -1, rolls, world));
         if career
             .company
             .roster
             .iter()
             .any(|member| member.profession == crate::career::Profession::Merchant)
         {
-            crate::trade::update_stock(
+            let (stock, kinds, rank) = (
                 &mut career.merchant_stock,
                 career.merchant_kinds,
                 career.merchant_rank,
-                rolls,
-                &mut *self.live,
             );
+            self.with_world(|world| crate::trade::update_stock(stock, kinds, rank, rolls, world));
         }
         if let Some(catalogue) = self.catalogue.as_deref() {
             self.live.fill_names(catalogue, &mut self.names);
         }
+    }
+}
+
+/// Opens the shop as the hub's click on it does (`--open-hub-window shop`).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenHubShop;
+
+/// `--shop-buy ROW` (debug): once the scripted shop opens, its stock row
+/// `ROW` is clicked into the buy basket and the trade confirmed through the
+/// window's own clicks; the window then closes and the bought copy's card
+/// opens at the pointer.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShopBuyScript {
+    pub row: Option<usize>,
+    stage: u8,
+    wait: u32,
+    bought: u32,
+}
+
+impl ShopBuyScript {
+    /// The purchase of stock row `row`.
+    pub fn of_row(row: usize) -> Self {
+        Self {
+            row: Some(row),
+            ..Self::default()
+        }
+    }
+}
+
+/// Frames between the scripted shop's steps.
+const SHOP_SCRIPT_WAIT: u32 = 40;
+
+/// The scripted shop: the open, and the scripted purchase.
+fn scripted_shop(
+    mut opens: MessageReader<OpenHubShop>,
+    career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+    mut windows: ResMut<HubWindows>,
+    mut shop: HubShop,
+    mut buy: ResMut<ShopBuyScript>,
+    mut cards: MessageWriter<crate::item_card::WorldCard>,
+) {
+    let Some(mut career) = career else {
+        return;
+    };
+    for _ in opens.read() {
+        shop.open(false, &mut career, &mut windows);
+        info!(
+            "hub shop: opened by script, {} on the shelf",
+            career.company.stock.len()
+        );
+        if buy.row.is_some() {
+            buy.stage = 1;
+            buy.wait = SHOP_SCRIPT_WAIT;
+        }
+    }
+    if buy.stage == 0 {
+        return;
+    }
+    if buy.wait > 0 {
+        buy.wait -= 1;
+        return;
+    }
+    match buy.stage {
+        1 => {
+            let row = buy.row.unwrap_or(0);
+            let Some(model) = windows.shop.as_ref() else {
+                buy.stage = 0;
+                return;
+            };
+            let panel = model.window.panels()[4];
+            let id = model.stock.get(row).map_or(0, |s| s.0);
+            let point = (
+                panel[0] + 6,
+                panel[1] + 4 + crate::hub_windows::ROW_HEIGHT * row as i32 + 2,
+            );
+            let took = windows.shop_click(point, &mut career);
+            let trade = (10, crate::hub_windows::SHOP_SIZE.1 - 20);
+            let done = took && windows.shop_click(trade, &mut career);
+            info!("shop buy script: row {row} item {id:#x} taken {took}, trade {done}");
+            buy.bought = if done { id } else { 0 };
+            buy.stage = if done { 2 } else { 0 };
+            buy.wait = SHOP_SCRIPT_WAIT;
+            if done {
+                shop.log_copies(&[id]);
+            }
+        }
+        2 => {
+            // The trade window closes first so the card is seen alone (the
+            // hub windows and the card share no draw order).
+            windows.close();
+            info!("shop buy script: the card of {:#x}", buy.bought);
+            cards.write(crate::item_card::WorldCard {
+                item: buy.bought,
+                flags: 0,
+                delayed: false,
+            });
+            buy.stage = 0;
+        }
+        _ => buy.stage = 0,
     }
 }
 
