@@ -37,6 +37,10 @@ use crate::career::{Company, basket_total};
 pub const TRADE_TITLE: &str = "Trade";
 /// The page's size in units.
 pub const WINDOW_SIZE: (i32, i32) = (0x36c, 0x244);
+/// The page's border word, as the constructor stores it: the panels'
+/// places are in the client this far inside the page's edges (the stock
+/// panel's 0x234 fills the 0x244-tall page less the border twice).
+pub const BORDER: i32 = 8;
 /// The page's colour word, as the constructor stores it.
 pub const WINDOW_COLOUR: u32 = 0xce1c_2023;
 /// The character preview, (x, y, width, height).

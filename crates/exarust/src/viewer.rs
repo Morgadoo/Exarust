@@ -2870,7 +2870,10 @@ fn press_keys(
     mut pointer: Option<ResMut<exa_ui::ScriptedPointer>>,
     mut frames: Local<u32>,
 ) {
-    if (options.press.is_empty() && options.clicks.is_empty() && options.clicks_at.is_empty())
+    if (options.press.is_empty()
+        && options.clicks.is_empty()
+        && options.clicks_at.is_empty()
+        && options.drags_at.is_empty())
         || loading.is_some()
     {
         return;
@@ -2901,6 +2904,24 @@ fn press_keys(
     }
     // `--click-at`: the pointer moves on the press's frame and stays for
     // the release on the next.
+    // `--drag-at`: pressed at the first point, the pointer moves to the
+    // second by the end frame and the button lets go on the frame after.
+    for &(from, to, at, end) in &options.drags_at {
+        if at == frame {
+            info!("dragging from {from:?} to {to:?}");
+            if let Some(pointer) = pointer.as_deref_mut() {
+                pointer.0 = Some(Vec2::from(from));
+            }
+            buttons.press(MouseButton::Left);
+        } else if frame > at && frame <= end {
+            if let Some(pointer) = pointer.as_deref_mut() {
+                let t = (frame - at) as f32 / (end - at) as f32;
+                pointer.0 = Some(Vec2::from(from).lerp(Vec2::from(to), t));
+            }
+        } else if frame == end + 1 {
+            buttons.release(MouseButton::Left);
+        }
+    }
     for &(point, at) in &options.clicks_at {
         if at == frame {
             info!("clicking the left mouse button at {point:?}");
