@@ -921,6 +921,8 @@ Round 73 backfall: the held-S falls came from a step lift the original never app
 
 Round 74 determinism: the simulation starts after the load, as in the original, and scripted runs repeat tick for tick.
 
+Round 75 simthread4e: bodies are snapshots and the frame's writes to them are posted, as the original's threads share them.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
