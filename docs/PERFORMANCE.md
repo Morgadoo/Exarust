@@ -133,7 +133,23 @@ Three tools, from a quick look to a full timeline:
   Bevy 0.20's GPU timings: a pass is keyed by name only, so the
   supersampled scene and the window's display share a line, and spans
   around whole views read as nothing. Overall GPU load is `nvidia-smi`'s
-  (`nvidia-smi dmon -s u`).
+  (`nvidia-smi dmon -s u`). The logged report also counts the image,
+  mesh and material assets added or changed since the last report
+  (`assets:`, with the image changed most often) and times an 8 MiB CPU
+  write into a fresh upload buffer (`staging write:`, the best of four
+  passes). After the load the counts stay small (a few images and a few
+  hundred mesh changes per 5 s report from cloth and hair); a staging write
+  well under ~8 GB/s on the RTX 3090 means the upload buffers sit in the
+  BAR window (below).
+- **Upload memory**: wgpu's allocator (gpu-allocator) prefers
+  host-visible device-local memory for its upload buffers. Without a
+  resizable BAR that is the 256 MiB BAR1 window the whole GPU shares; a
+  game that gets a block there writes uploads at ~5.5 GB/s, and one whose
+  mapping fails (the kernel logs `NVRM: dmaAllocMapping_GM107: can't alloc
+  VA space`) at ~0.5 GB/s, stalling its render thread at 0.5-1.6 s a frame.
+  The workspace patches gpu-allocator (`patches/gpu-allocator`) to take
+  that memory only from a heap of at least 1 GiB. Check a game with
+  `grep nvidia0 /proc/<pid>/maps` (from the toolbox): no 64 MiB mapping.
 - **Tracing builds**: `cargo build -p exarust --profile profiling --features
   trace-chrome` writes a `trace-*.json` of every system, schedule and render
   step into the working directory. Open it in <https://ui.perfetto.dev>,
