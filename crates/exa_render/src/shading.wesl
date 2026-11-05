@@ -327,7 +327,7 @@ fn light_id(index: u32) -> u32 {
 // with a light list (tag bits 3 and up) only by the lights on it, as the
 // original lights an object by its strongest links; others by every light.
 fn lit_by(tag: u32, index: u32) -> bool {
-    let slot = tag >> 3u;
+    let slot = (tag >> 3u) & LIGHT_SLOT_MASK;
     if slot == 0u {
         return true;
     }
@@ -462,6 +462,28 @@ fn gi_slot(grid: vec4<f32>, cells: array<vec4<i32>, 9>, o: vec3<f32>) -> u32 {
         return 0u;
     }
     let cell = vec2<i32>(floor((o.xz * 100.0 - grid.xy) * 0.00020833334));
+    return gi_slot_of_cell(cells, cell);
+}
+
+// The mesh tag's light-list slot (bits 3–19) and the GI cell above it
+// (`exa_render::gi_tag`: bits 20–25 x + 1, 26–31 z + 1, 0 for none).
+const LIGHT_SLOT_MASK: u32 = 131071u;
+const GI_TAG_SHIFT: u32 = 20u;
+
+// The resident block an object samples: the cell its bounds centre falls
+// in, carried in its mesh tag (the original's per-object `VXGIPos` takes
+// the node's world bounding-sphere centre); a mesh without one picks by its
+// origin `o`.
+fn gi_slot_tagged(grid: vec4<f32>, cells: array<vec4<i32>, 9>, o: vec3<f32>, tag: u32) -> u32 {
+    let bits = tag >> GI_TAG_SHIFT;
+    if grid.z == 0.0 || bits == 0u {
+        return gi_slot(grid, cells, o);
+    }
+    let cell = vec2<i32>(i32(bits & 63u) - 1, i32((bits >> 6u) & 63u) - 1);
+    return gi_slot_of_cell(cells, cell);
+}
+
+fn gi_slot_of_cell(cells: array<vec4<i32>, 9>, cell: vec2<i32>) -> u32 {
     for (var k = 0u; k < 9u; k++) {
         if cells[k].z != 0 && all(cells[k].xy == cell) {
             return k;

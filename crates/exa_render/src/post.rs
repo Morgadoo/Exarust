@@ -17,6 +17,7 @@ use bevy::render::extract_component::{
     ComponentUniforms, DynamicUniformIndex, ExtractComponent, ExtractComponentPlugin,
     UniformComponentPlugin,
 };
+use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::binding_types::{sampler, texture_2d, uniform_buffer};
 use bevy::render::render_resource::{
     BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, CachedRenderPipelineId,
@@ -26,6 +27,7 @@ use bevy::render::render_resource::{
     TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, ViewQuery};
+use bevy::render::texture::GpuImage;
 use bevy::render::texture::{CachedTexture, TextureCache};
 use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
@@ -467,7 +469,7 @@ fn prepare_textures(
         let Some(size) = camera.physical_target_size else {
             continue;
         };
-        let mut target = |label: &'static str, divisor: u32, format| {
+        let mut target = |label: &'static str, divisor: u32, format, usage| {
             let mut extent = size.to_extents();
             extent.width = (extent.width / divisor).max(1);
             extent.height = (extent.height / divisor).max(1);
@@ -480,14 +482,19 @@ fn prepare_textures(
                     sample_count: 1,
                     dimension: TextureDimension::D2,
                     format,
-                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                    usage: TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::TEXTURE_BINDING
+                        | usage,
                     view_formats: &[],
                 },
             )
         };
-        let bright = target("exa_post_bright", 2, BRIGHT_FORMAT);
-        let blurred_x = target("exa_post_blur_x", 4, BRIGHT_FORMAT);
-        let blurred = target("exa_post_blur", 4, BLURRED_FORMAT);
+        let none = TextureUsages::empty();
+        let bright = target("exa_post_bright", 2, BRIGHT_FORMAT, none);
+        let blurred_x = target("exa_post_blur_x", 4, BRIGHT_FORMAT, none);
+        // The window's blurred texture is also the scene's low field the
+        // next frame's local reflections read (copied out after the pass).
+        let blurred = target("exa_post_blur", 4, BLURRED_FORMAT, TextureUsages::COPY_SRC);
         commands.entity(entity).insert(PostTextures {
             bright,
             blurred_x,
@@ -501,16 +508,20 @@ fn post_process(
     view: ViewQuery<(
         &ViewTarget,
         &ExtractedView,
+        &ExtractedCamera,
         &PostTextures,
         &DynamicUniformIndex<ExaPost>,
     )>,
+    low_field: Option<Res<crate::local_reflection::SceneLowField>>,
+    gpu_images: Res<RenderAssets<GpuImage>>,
+    mut mismatch_logged: Local<bool>,
     pipelines: Option<Res<PostPipelines>>,
     cache: Res<PipelineCache>,
     device: Res<RenderDevice>,
     uniforms: Res<ComponentUniforms<ExaPost>>,
     mut ctx: RenderContext,
 ) {
-    let (target, extracted, textures, index) = view.into_inner();
+    let (target, extracted, camera, textures, index) = view.into_inner();
     let Some(pipelines) = pipelines else { return };
     let Some(&finish_id) = pipelines.finish.get(&extracted.target_format) else {
         return;
@@ -598,6 +609,30 @@ fn post_process(
         &[index.index()],
         post.destination,
     );
+    // The post chain's last camera (the window's, or the off-screen
+    // frame's) hands its blurred bright pass to the next frame's local
+    // reflections; an image target of the post chain is that frame.
+    if camera.target.is_some()
+        && let Some(field) = low_field
+        && let Some(image) = gpu_images.get(&field.image)
+    {
+        if image.texture.size() != textures.blurred.texture.size() {
+            if !*mismatch_logged {
+                *mismatch_logged = true;
+                debug!(
+                    "local reflection: low field {:?} and the blurred pass {:?} differ; not copied",
+                    image.texture.size(),
+                    textures.blurred.texture.size()
+                );
+            }
+            return;
+        }
+        ctx.command_encoder().copy_texture_to_texture(
+            textures.blurred.texture.as_image_copy(),
+            image.texture.as_image_copy(),
+            image.texture.size(),
+        );
+    }
 }
 
 #[cfg(test)]

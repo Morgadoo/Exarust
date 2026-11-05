@@ -171,6 +171,18 @@ pub mod flags {
     pub const DEBUG_SPLIT: u32 = 2147483648;
 }
 
+/// The second flag word ([`ExaParams::flags2`]).
+pub mod flags2 {
+    /// The original's local reflection (`Shd.LocalRef`, shader word
+    /// `0x400000`): inside the GI volume the cube reflection is mixed with
+    /// the previous frame's blurred bright pass read just off the fragment's
+    /// own screen position ([`crate::local_reflection`]).
+    pub const LOCAL_REFLECTION: u32 = 1;
+    /// `EXA_LOCAL_REF_DEBUG=1`: a [`LOCAL_REFLECTION`] surface inside the GI
+    /// volume shows its low-field read × 4 and nothing else.
+    pub const DEBUG_LOCAL_REFLECTION: u32 = 2;
+}
+
 /// How a surface shows the blood that wounds paint into its mesh's vertex
 /// alpha: the original's dirt mode 4, in one of the three programs that
 /// have it. The vertex alpha α (1 clean, lowered around wounds) is compared
@@ -292,7 +304,8 @@ pub struct ExaParams {
     /// texture settings' value at the material's build (−0.75 at the retail
     /// texture quality with 4x supersampling).
     pub texture_bias: f32,
-    pub pad1: u32,
+    /// The second flag word ([`flags2`]).
+    pub flags2: u32,
     pub pad2: u32,
     /// The camera's GI block's sample origin (m; the per-object pick's slot
     /// 0, [`ExaParams::gi_origins`]) and the shared sample size (m).
@@ -347,7 +360,7 @@ impl Default for ExaParams {
             emissive: Vec4::new(0.0, 0.0, 0.0, 1.0),
             flags: flags::LIT,
             texture_bias: -0.75,
-            pad1: 0,
+            flags2: 0,
             pad2: 0,
             gi_origin: Vec4::ZERO,
             gi_extent: Vec4::ONE,
@@ -429,6 +442,12 @@ pub struct ExaMaterial {
     #[texture(131, dimension = "cube_array", sample_type = "depth")]
     #[sampler(132, sampler_type = "comparison")]
     pub shadow_cubes: Handle<Image>,
+    /// The scene's low field (the previous frame's quarter-size blurred
+    /// bright pass) that a [`flags2::LOCAL_REFLECTION`] surface reads; the
+    /// original's `FrmBuf` on unit 7.
+    #[texture(133)]
+    #[sampler(134)]
+    pub scene_low: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     /// The surface casts no shadows (opacity ≤ 0.8, or the record says so).
     pub no_shadows: bool,
@@ -466,6 +485,7 @@ impl Default for ExaMaterial {
             height_map: None,
             lights: Handle::default(),
             shadow_cubes: crate::cube_shadows::CUBE_POOL,
+            scene_low: None,
             alpha_mode: AlphaMode::default(),
             no_shadows: false,
             cut_shadow: false,

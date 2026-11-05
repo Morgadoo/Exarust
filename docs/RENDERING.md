@@ -78,6 +78,47 @@ its centre, then runs the post chain at window resolution. It is on in the
 viewer; `--no-supersample` turns it off. The original multisamples nothing
 (`HWMultisample = 0`), so the supersampled scene is drawn without MSAA.
 
+The original draws all four sub-frames of a pass in one walk of its
+lists, each at the window's size in its own quadrant viewport with its own
+jittered projection (and, for an animated camera, its own clock), so its
+right column of samples sits about 0.2 px below the left. Exarust keeps
+the ordered grid by decision: it has the same sample count, weights and
+fill cost, the shadow and GI taps are already split by a pixel's place in
+its block, and no single raster can reproduce the original's pattern
+(its points are not a lattice containing the pixel grid), while four Bevy
+views would multiply the per-view CPU work and the sun cascades by four.
+The per-sub-frame camera clock and the shutter depth offsets are not
+drawn either. `EXA_SUBFRAME=0..3` shows one sub-frame (the pixel of each
+block at column `k & 1`, row `k >> 1`) instead of the resolve.
+
+## Local reflection
+
+The original has no planar reflection: no mirrored camera and no clip
+plane. A record with a reflection layer and extra flag `0x800`, above
+shading quality 4, gets the local reflection (`Shd.LocalRef`). Of the
+shipped libraries only `glsdark02` has it: the dark glass of the lamp
+globes, the hourglass, the glasses and the sewer lamps. (The sewer's
+water is the terrain's wet floor gloss, which reflects the environment
+cube.) The read is the scene's low field, the post chain's quarter-size
+blurred bright pass, which the chain leaves at the end of the frame, so
+the surface reads the previous frame:
+
+- the read sits at the fragment's screen position pushed by
+  `n.xy · (1.05/(1.05 − n.z) − 1) · 0.05 · ViewPrj / w`, with `n` the
+  view-space normal, `w` the clip depth in centimetres and `ViewPrj` the
+  projection's x scale × 500 and that × the viewport's aspect;
+- it is scaled by 1.5;
+- inside the GI volume the reflection is
+  `mix(cube · light · Ambient.w · 2, read, a) · gv` with
+  `a = min(2·gloss, 1)²·(1 − N·V)`: a glossy surface seen edge on takes
+  the read, its face keeps the cube. Outside the volume there is no read.
+
+`exa_render::local_reflection` keeps the low field as an image a quarter
+of the post camera's target, copied from the post chain's blurred texture
+after each frame's post pass, and binds it to every local-reflection
+material (`ExaMaterial::scene_low`). `EXA_LOCAL_REF_DEBUG=1` shows the read
+× 4 on those surfaces.
+
 ## Post-processing
 
 Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
@@ -1628,13 +1669,16 @@ in world space there too):
   slots in every lit material (`GiSlots`: the camera's block in slot 0,
   the neighbours after it, each slot's sample origin and block-grid cell
   `GiPick`, and the grid's edge) and picks per draw in the fragment
-  shader from the mesh's world origin (`gi_slot`); terrain takes the
+  shader from the cell of the mesh's world bounds centre, carried in its
+  mesh tag (`exa_render::gi_tag`; the original passes the node's world
+  bounding-sphere centre), or from its origin while it has none
+  (`gi_slot_tagged`); terrain takes the
   centre of the 6 m terrain block under the fragment (the tile is eight
   blocks a side), and plant chunks stand at their block's centre. An
   object no slot holds samples (0, 0, 0, 1). The focus-centred block of a
-  grid with no built cell is off the grid and lights every object. Which
-  point the original's lit-material builder passes for a node was not
-  traced to its field [guess: the node's origin].
+  grid with no built cell is off the grid and lights every object. In
+  exanima01, 39 of 21 896 surfaces stand in another block than their
+  origin's.
 - Surfaces **sample** the volume with the original's per-object transform:
   `texture(p·scale + offset)` with `p` in world centimetres, the offset's X
   and Z half a texture minus the block's centre over its width and its Y
@@ -3656,7 +3700,8 @@ colour word is -1. `exa_assets::polyhedra::uv_sphere` builds it.
 The per-tick
 tendril motion of an electric arc and its emissive texture, the looping
 fire and electricity sounds, body contacts being driven from the physics
-step, the jittered supersampling pattern, the sun and terrain in the GI volume,
+step, the jittered supersampling pattern (by decision, see
+Supersampling), the sun and terrain in the GI volume,
 several resident GI blocks (and their margin copies), the GI injection's
 cube-shadow test and dynamic occupancy updates, vertex dirt (dirt modes
 1–3), glass

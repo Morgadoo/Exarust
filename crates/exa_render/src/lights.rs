@@ -9,7 +9,8 @@
 //! integer id (up to a few hundred) would push its shadow away from the
 //! caster. Exarust's own shadow filter reads only the fractional id above the
 //! default. A mesh with a light list gets a slot, carried in its mesh tag
-//! above the shadow-bias level (bits 0–2): tag = level | (slot + 1) << 3.
+//! above the shadow-bias level (bits 0–2): tag = level | (slot + 1) << 3,
+//! the slot within bits 3–19 (the GI cell, [`crate::gi_tag`], sits above).
 //! Slot 0 means no list: every light in reach. Rules: `docs/RENDERING.md`
 //! (Lights).
 //!
@@ -25,6 +26,8 @@ use bevy::ecs::entity::EntityHashMap;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use bevy::render::storage::ShaderBuffer;
+
+use crate::gi_tag::GiCellTag;
 
 pub struct LightsPlugin;
 
@@ -258,10 +261,15 @@ fn cube_records(
     }
 }
 
-/// The tag of a mesh with bias level `bias` and list slot `slot`.
-fn tag(bias: u32, slot: Option<u32>) -> u32 {
-    (bias & 7) | slot.map_or(0, |s| (s + 1) << 3)
+/// The tag of a mesh with bias level `bias`, list slot `slot` and GI cell
+/// bits `gi` ([`crate::gi_tag`], bits 20 and up).
+fn tag(bias: u32, slot: Option<u32>, gi: Option<&GiCellTag>) -> u32 {
+    (bias & 7) | slot.map_or(0, |s| ((s + 1) << 3) & LIGHT_SLOT_BITS) | gi.map_or(0, |g| g.0)
 }
+
+/// The tag bits the light-list slot may take (3–19); the GI cell sits
+/// above them.
+const LIGHT_SLOT_BITS: u32 = ((1 << crate::gi_tag::LOW_BITS) - 1) & !7;
 
 type SlotQuery<'w, 's> = Query<
     'w,
@@ -270,14 +278,15 @@ type SlotQuery<'w, 's> = Query<
         Entity,
         Option<&'static MeshLights>,
         Option<&'static ShadowBias>,
+        Option<&'static GiCellTag>,
     ),
-    Or<(Changed<MeshLights>, Changed<ShadowBias>)>,
+    Or<(Changed<MeshLights>, Changed<ShadowBias>, Changed<GiCellTag>)>,
 >;
 
 /// Writes the light lists of meshes whose lists changed and gives them
 /// their tags.
 fn assign_mesh_slots(mut commands: Commands, mut table: ResMut<LightTable>, meshes: SlotQuery) {
-    for (entity, lights, bias) in &meshes {
+    for (entity, lights, bias, gi) in &meshes {
         let slot = lights.map(|lights| {
             let s = match table.slot_of.get(&entity) {
                 Some(&s) => s,
@@ -300,7 +309,7 @@ fn assign_mesh_slots(mut commands: Commands, mut table: ResMut<LightTable>, mesh
             }
             s
         });
-        let value = tag(bias.map_or(0, |b| b.0), slot);
+        let value = tag(bias.map_or(0, |b| b.0), slot, gi);
         commands.entity(entity).insert(MeshTag::new(value));
     }
 }
@@ -310,7 +319,7 @@ fn free_mesh_slots(
     mut commands: Commands,
     mut table: ResMut<LightTable>,
     mut removed: RemovedComponents<MeshLights>,
-    biases: Query<Option<&ShadowBias>, Without<MeshLights>>,
+    biases: Query<(Option<&ShadowBias>, Option<&GiCellTag>), Without<MeshLights>>,
 ) {
     for entity in removed.read() {
         let Some(s) = table.slot_of.remove(&entity) else {
@@ -320,10 +329,10 @@ fn free_mesh_slots(
         table.free.push(s);
         table.dirty = true;
         // A mesh still alive keeps its bias level, lit by every light.
-        if let Ok(bias) = biases.get(entity) {
+        if let Ok((bias, gi)) = biases.get(entity) {
             commands
                 .entity(entity)
-                .insert(MeshTag::new(tag(bias.map_or(0, |b| b.0), None)));
+                .insert(MeshTag::new(tag(bias.map_or(0, |b| b.0), None, gi)));
         }
     }
 }
@@ -367,9 +376,14 @@ mod tests {
 
     #[test]
     fn tags_pack_bias_and_slot() {
-        assert_eq!(tag(3, None), 3);
-        assert_eq!(tag(1, Some(0)), 1 | 8);
-        assert_eq!(tag(9, Some(4)), 1 | 40);
+        assert_eq!(tag(3, None, None), 3);
+        assert_eq!(tag(1, Some(0), None), 1 | 8);
+        assert_eq!(tag(9, Some(4), None), 1 | 40);
+        // The GI cell rides above the slot.
+        let gi = GiCellTag(crate::gi_tag::pack(IVec2::new(2, 5)));
+        let t = tag(1, Some(4), Some(&gi));
+        assert_eq!(t & 0xF_FFFF, 1 | 40);
+        assert_eq!(crate::gi_tag::unpack(t), Some(IVec2::new(2, 5)));
     }
 
     #[test]

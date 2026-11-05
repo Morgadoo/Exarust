@@ -157,6 +157,21 @@ pub struct ResolveMaterial {
     #[texture(0)]
     #[sampler(1)]
     pub scene: Handle<Image>,
+    /// The debug view's sub-frame ([`debug_subframe`]): 0–3 shows only that
+    /// pixel of each 2 × 2 block, −1 the resolve.
+    #[uniform(2)]
+    pub subframe: i32,
+}
+
+/// `EXA_SUBFRAME=0..3`: the resolve shows one sub-frame alone, the pixel of
+/// each window pixel's 2 × 2 block at column `k & 1`, row `k >> 1` (the
+/// shadow and GI taps of sub-frame `k`), instead of their average. Any
+/// other value, or none, resolves as the original does.
+pub fn debug_subframe(value: Option<&str>) -> i32 {
+    value
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|k| (0..=3).contains(k))
+        .unwrap_or(-1)
 }
 
 impl Material for ResolveMaterial {
@@ -217,6 +232,7 @@ fn start_supersampling(
             .remove::<ExaPost>();
         let material = materials.add(ResolveMaterial {
             scene: image.clone(),
+            subframe: debug_subframe(std::env::var("EXA_SUBFRAME").ok().as_deref()),
         });
         let layer = RenderLayers::layer(RESOLVE_LAYER);
         let resolve = commands
@@ -327,5 +343,19 @@ fn follow_window(
         images.remove(&ss.image);
         ss.image = image;
         ss.size = size;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_debug_sub_frame_takes_zero_to_three() {
+        assert_eq!(debug_subframe(None), -1);
+        assert_eq!(debug_subframe(Some("2")), 2);
+        assert_eq!(debug_subframe(Some(" 3")), 3);
+        assert_eq!(debug_subframe(Some("4")), -1);
+        assert_eq!(debug_subframe(Some("x")), -1);
     }
 }
