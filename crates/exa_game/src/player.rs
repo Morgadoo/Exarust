@@ -105,7 +105,7 @@ pub struct Player;
 /// hands hold picks its moveset, and it keeps a combat stance. Its heading
 /// and look are its locomotion request's, its yaw and run blend its body
 /// tick's (`exa_physics::body::locomotion`).
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 #[require(
     exa_character::WearsUnderwear,
     Hands,
@@ -283,7 +283,7 @@ impl PlayerBody {
 /// comes within 300 ms of the press before, the other side when the cursor
 /// lies left of the facing), holding the button keeps the request standing
 /// and releasing it drops it.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct AttackInput {
     /// The button was down last tick.
     down: bool,

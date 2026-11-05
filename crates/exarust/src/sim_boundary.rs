@@ -132,6 +132,11 @@ pub struct BoundaryMap {
     pub types: BTreeMap<String, Users>,
     /// Exclusive and unbounded-access systems, by side.
     pub whole_world: BTreeMap<Side, BTreeSet<String>>,
+    /// Every type the simulation's side touches, filters too.
+    pub sim_types: BTreeSet<String>,
+    /// The types registered with the simulation's bridge
+    /// (`exa_physics::sim_bridge`), and the ones they cover.
+    pub bridged: BTreeSet<String>,
 }
 
 impl BoundaryMap {
@@ -176,9 +181,18 @@ impl BoundaryMap {
                     let (id, write) = match kind {
                         ComponentAccessKind::Shared(id) => (id, false),
                         ComponentAccessKind::Exclusive(id) => (id, true),
-                        // A filter (`With`, `Without`) reads no data.
-                        ComponentAccessKind::Archetypal(_) => continue,
+                        // A filter (`With`, `Without`) reads no data, but
+                        // the bridge must carry it.
+                        ComponentAccessKind::Archetypal(id) => {
+                            if side == Side::Sim {
+                                map.sim_types.insert(name_of(id));
+                            }
+                            continue;
+                        }
                     };
+                    if side == Side::Sim {
+                        map.sim_types.insert(name_of(id));
+                    }
                     map.types
                         .entry(name_of(id))
                         .or_default()
@@ -189,7 +203,18 @@ impl BoundaryMap {
         }
         map.schedules.sort();
         map.not_built.sort();
+        if let Some(types) = world.get_resource::<exa_physics::sim_bridge::SimBridgeTypes>() {
+            map.bridged = types.covered_names();
+        }
         map
+    }
+
+    /// The simulation's types the bridge does not carry yet.
+    pub fn unbridged(&self) -> Vec<&String> {
+        self.sim_types
+            .iter()
+            .filter(|t| !self.bridged.contains(*t))
+            .collect()
     }
 
     /// The map as text: the schedules, a count per direction, then every
@@ -228,6 +253,17 @@ impl BoundaryMap {
             for system in systems {
                 let _ = writeln!(out, "- {system}");
             }
+        }
+        let unbridged = self.unbridged();
+        let _ = writeln!(
+            out,
+            "\n## Bridge coverage\n\n- simulation-side types: {}\n- bridged: {}\n- not bridged: {}\n",
+            self.sim_types.len(),
+            self.sim_types.len() - unbridged.len(),
+            unbridged.len()
+        );
+        for name in &unbridged {
+            let _ = writeln!(out, "- `{name}`");
         }
         let list = |out: &mut String, what: &str, set: &BTreeSet<String>| {
             if !set.is_empty() {
@@ -269,11 +305,13 @@ fn write_map(world: &mut World, mut written: Local<bool>, mut loaded_at: Local<O
     let map = BoundaryMap::read(world);
     match std::fs::write(&path.0, map.report()) {
         Ok(()) => info!(
-            "sim boundary: {} shared types written to {}",
+            "sim boundary: {} shared types, {} of {} simulation-side types bridged, written to {}",
             map.types
                 .values()
                 .filter(|u| u.direction().is_some())
                 .count(),
+            map.sim_types.len() - map.unbridged().len(),
+            map.sim_types.len(),
             path.0.display()
         ),
         Err(e) => error!("cannot write the sim boundary to {}: {e}", path.0.display()),

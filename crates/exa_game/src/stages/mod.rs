@@ -94,7 +94,39 @@ impl Plugin for CharacterTickPlugin {
                     carry::aim_body.in_set(Carry),
                 ),
             );
+        bridge_character_tick_types(app);
     }
+}
+
+/// The data the character tick's systems touch (the driver's own query
+/// too: it takes the whole world), for the simulation's bridge.
+fn bridge_character_tick_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<Animator>()
+        .bridge_copy::<TickedClips>()
+        .bridge_copy::<exa_anim::BodyPart>()
+        .bridge_copy::<exa_anim::Stature>()
+        .bridge_copy_resource::<exa_anim::Motions>()
+        .bridge_copy::<PlayerBody>()
+        .bridge_copy::<OutOfScene>()
+        .bridge_copy::<CharacterBody>()
+        .bridge_copy::<exa_ai::brain::Npc>()
+        .bridge_copy::<exa_ai::combatant::Combatant>()
+        .bridge_copy::<exa_combat::Attacking>()
+        .bridge_copy::<exa_combat::attack::Attacker>()
+        .bridge_copy::<exa_combat::Condition>()
+        .bridge_copy::<exa_combat::condition::PostureBranch>()
+        .bridge_copy::<exa_combat::condition::StateFlags>()
+        .bridge_copy::<exa_combat::Fighter>()
+        .bridge_copy::<exa_combat::stance::Stance>()
+        .bridge_copy::<exa_combat::swing::Swing>()
+        .bridge_copy::<exa_combat::swing::SwingState>()
+        .bridge_copy::<crate::balance::ShockHeld>()
+        .bridge_copy::<crate::golem_body::StatueRest>()
+        .bridge_copy::<crate::item_effects::WornEffects>()
+        .bridge_lend_resource::<sampler::SampledPose>()
+        .bridge_message::<exa_physics::body::Footstep>()
+        .bridge_message::<exa_physics::body::FootSounded>();
 }
 
 /// The ticked body's engagement target, as the swing's homing reads it:
@@ -382,6 +414,94 @@ mod tests {
             .map(|t| t.body)
             .collect();
         assert_eq!(ticked, [standing, standing]);
+    }
+
+    /// The posture-stage test's app, its fixed step run in one world or
+    /// moved to the simulation's world behind the bridge.
+    fn dying_app(bridge: Option<exa_physics::sim_app::SimMode>) -> (App, Entity, Entity) {
+        use bevy::ecs::schedule::ScheduleLabel;
+        use exa_combat::collapse::{Collapse, CollapsePlugin};
+        use exa_combat::{Condition, Fighter};
+        use exa_physics::sim_bridge::{SimBridgeAppExt, SimBridgePlugin};
+        let mut app = App::new();
+        app.add_plugins((BodyPlugin, CharacterTickPlugin, CollapsePlugin))
+            .insert_resource(exa_physics::Physics::default())
+            .insert_resource(crate::limp::tests::motions())
+            .init_resource::<Ticked>()
+            .add_systems(
+                CharacterTick,
+                (
+                    note.in_set(CharacterStage::Attack),
+                    note.in_set(CharacterStage::Carry),
+                ),
+            );
+        if let Some(mode) = bridge {
+            app.add_plugins((
+                exa_physics::sim_app::SimShellPlugin { mode },
+                SimBridgePlugin {
+                    extra: vec![CharacterTick.intern()],
+                },
+            ))
+            .bridge_lend_resource::<Ticked>();
+        }
+        let world = app.world_mut();
+        let clips = || (Animator::new("Default", "Idle"), TickedClips);
+        let mut dying = body(true);
+        dying.drive.as_mut().unwrap().tone = 0.252;
+        let dying = world
+            .spawn((
+                dying,
+                clips(),
+                Fighter::default(),
+                Condition::COLLAPSING,
+                Collapse::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        let standing = world.spawn((body(true), clips())).id();
+        (app, dying, standing)
+    }
+
+    /// The posture-stage death, through `FixedMain`, in one world and with
+    /// the fixed step and the character tick moved behind the bridge
+    /// (inline and on the simulation's thread): the same death, the same
+    /// stages ticked, and every type the moved systems touch is bridged.
+    #[test]
+    fn the_character_tick_runs_alike_behind_the_bridge() {
+        use exa_combat::Condition;
+        use exa_physics::sim_app::SimMode;
+        use exa_physics::sim_bridge::FrameBridge;
+        let run = |bridge: Option<SimMode>| {
+            let (mut app, dying, standing) = dying_app(bridge);
+            for _ in 0..3 {
+                app.world_mut().run_schedule(bevy::app::FixedMain);
+            }
+            let world = app.world();
+            if bridge.is_some() {
+                let coverage = world.resource::<FrameBridge>().coverage.clone().unwrap();
+                assert!(coverage.missing.is_empty(), "{:#?}", coverage.missing);
+                assert!(coverage.schedules.iter().any(|s| s == "CharacterTick"));
+            }
+            let ticked: Vec<bool> = world
+                .resource::<Ticked>()
+                .0
+                .iter()
+                .map(|t| t.body == standing)
+                .collect();
+            (
+                *world.get::<Condition>(dying).unwrap(),
+                world.get::<Ragdoll>(dying).unwrap().drive.is_none(),
+                ticked,
+                world.resource::<exa_physics::body::BodyTicks>().0,
+            )
+        };
+        let alone = run(None);
+        assert_eq!(alone.0, Condition::DEAD);
+        assert!(alone.1);
+        assert_eq!(alone.3, 3);
+        for mode in [SimMode::Inline, SimMode::Thread] {
+            assert_eq!(alone, run(Some(mode)), "{mode:?}");
+        }
     }
 
     #[test]

@@ -262,7 +262,7 @@ const SWEEP_STEPS: usize = 6;
 /// Attack in progress on a fighter: its motion, the fighter's weapon class
 /// (which picks the hand that strikes) and which targets it has already
 /// struck.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct Attacking {
     pub motion: AttackMotion,
     pub weapon_class: u8,

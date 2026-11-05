@@ -1712,8 +1712,9 @@ pub(crate) fn plain_law(gap: Vec3, slack: f32, strength: f32) -> Option<(Vec3, O
 }
 
 /// A simulated body: limp, or driven by its muscles when it has a
-/// [`Drive`].
-#[derive(Component, Debug)]
+/// [`Drive`]. The default is an empty body, the place holder the bridge
+/// leaves while a body is lent to the simulation's world.
+#[derive(Component, Debug, Default)]
 pub struct Ragdoll {
     pub parts: Vec<Part>,
     /// Every part's links, the skeleton's then its origin pivot, part by part.
@@ -2559,7 +2560,33 @@ impl Plugin for BodyPlugin {
             // After every frame system that moves a character or a body
             // root (the drawn controller, turns, a get-up's teleport).
             .add_systems(PostUpdate, draw_bodies.before(TransformSystems::Propagate));
+        bridge_body_types(app);
     }
+}
+
+/// The data the bodies' fixed systems touch, for the simulation's bridge
+/// ([`crate::sim_bridge`]): bodies and the solver's own state are lent for
+/// each step, the level's collision grid copied when it changes.
+pub fn bridge_body_types(app: &mut App) {
+    use crate::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend::<Ragdoll>()
+        .bridge_copy::<OutOfScene>()
+        .bridge_lend_resource::<Physics>()
+        .bridge_copy_resource::<crate::StaticColliders>()
+        .bridge_lend_resource::<ShoveQueue>()
+        .bridge_lend_resource::<DealtShoves>()
+        .bridge_copy_resource::<BodyTicks>()
+        .bridge_lend_resource::<SolverStages>()
+        .bridge_lend_resource::<crate::sector_lists::SectorBodies>()
+        .bridge_sim_only::<TickedCharacter>()
+        .bridge_copy::<Fallen>()
+        .bridge_copy::<locomotion::Locomotion>()
+        .bridge_copy::<locomotion::Locomotor>()
+        .bridge_copy::<locomotion::CapsuleGaits>()
+        .bridge_copy::<crate::CharacterBody>()
+        .bridge_message::<Shove>()
+        .bridge_message::<Footstep>()
+        .bridge_message::<FootSounded>();
 }
 
 /// What building a body needs for each part.

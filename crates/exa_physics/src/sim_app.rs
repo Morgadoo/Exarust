@@ -20,10 +20,12 @@
 //! - [`SimId`] names an object in both worlds; each world keeps its own
 //!   [`SimLinks`] from ids to its entities.
 //!
-//! For now the simulation runs in **lockstep** with the frame's fixed step:
-//! the [`SimLockstep`] schedule runs before `FixedFirst` in every pass of
-//! `FixedMain` and waits for exactly one simulation step. The simulation's
-//! world holds only its clock yet, so the game behaves as before.
+//! The simulation runs in **lockstep** with the frame's fixed step: the
+//! [`SimLockstep`] schedule runs before `FixedFirst` in every pass of
+//! `FixedMain` and waits for exactly one simulation step. Without the bridge
+//! the simulation's world holds only its clock; with it
+//! ([`crate::sim_bridge::SimBridgePlugin`]) the fixed step's schedules run
+//! there, the data they touch copied in before and out after each step.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -35,6 +37,10 @@ use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
 use crate::STEP_HZ;
+use crate::sim_bridge::{
+    BridgeIn, BridgeOut, FrameBridge, POOL_BATCH, frame_apply, frame_gather, reserve_ids,
+    run_fixed_order, sim_apply, sim_gather,
+};
 
 /// Work the frame hands the simulation, run on the simulation's world at
 /// the start of the next step, in post order.
@@ -274,20 +280,35 @@ pub enum SimMode {
     Thread,
 }
 
+/// A step the frame asks for: its commands and, with the bridge, the
+/// frame's changes.
+struct StepRequest {
+    commands: Vec<SimCommand>,
+    bridge: Option<BridgeIn>,
+}
+
 /// A step's results, handed back to the frame.
 struct Stepped {
     events: Vec<FrameEvent>,
+    bridge: Option<BridgeOut>,
 }
 
 /// Builds the simulation's sub-app: its world with the clock, the links,
-/// the outbox and the [`SimStep`] schedule (the clock's advance first).
-pub fn new_sim_app() -> SubApp {
+/// the outbox and the [`SimStep`] schedule (the clock's advance, then the
+/// fixed step's schedules once the bridge has moved them).
+///
+/// `reserved` are ids the frame's world reserved for it: the world takes
+/// its own entities from them, so its ids never meet the frame's
+/// ([`crate::sim_bridge`]). Its first two entities (a new world's query
+/// filters and schedules) are the frame's own two, which stay resources.
+pub fn new_sim_app(reserved: &[Entity]) -> SubApp {
     let mut sub = SubApp::new();
+    sub.world_mut().entity_allocator_mut().free_many(reserved);
     sub.init_resource::<SimClock>()
         .init_resource::<SimLinks>()
         .init_resource::<SimOutbox>()
         .init_schedule(SimStep)
-        .add_systems(SimStep, advance_clock);
+        .add_systems(SimStep, (advance_clock, run_fixed_order).chain());
     sub
 }
 
@@ -301,13 +322,28 @@ fn advance_clock(mut clock: ResMut<SimClock>) {
 /// schedule, then the snapshot and the events.
 fn step_world(
     world: &mut World,
-    commands: Vec<SimCommand>,
+    request: StepRequest,
     snapshots: &SnapshotBuffer<SimSnapshot>,
 ) -> Stepped {
-    for command in commands {
+    let bridged = request.bridge.is_some();
+    let (mut coverage, mut apply_us) = (None, 0);
+    if let Some(bridge_in) = request.bridge {
+        (coverage, apply_us) = sim_apply(world, bridge_in);
+    }
+    for command in request.commands {
         command(world);
     }
     world.run_schedule(SimStep);
+    let bridge = bridged.then(|| {
+        let (packet, gather_us, pool) = sim_gather(world);
+        BridgeOut {
+            packet,
+            coverage: coverage.take(),
+            apply_us,
+            gather_us,
+            pool,
+        }
+    });
     let clock = *world.resource::<SimClock>();
     snapshots.publish(SimSnapshot {
         tick: clock.tick,
@@ -316,13 +352,14 @@ fn step_world(
     });
     Stepped {
         events: std::mem::take(queue(&mut world.resource_mut::<SimOutbox>().queued)),
+        bridge,
     }
 }
 
 enum Runner {
     Inline(Box<SubApp>),
     Thread {
-        requests: Sender<Vec<SimCommand>>,
+        requests: Sender<StepRequest>,
         replies: Receiver<Stepped>,
         _thread: JoinHandle<()>,
     },
@@ -344,7 +381,7 @@ impl SimShell {
         let runner = match mode {
             SimMode::Inline => Runner::Inline(Box::new(sub_app)),
             SimMode::Thread => {
-                let (requests, inbox) = channel::<Vec<SimCommand>>();
+                let (requests, inbox) = channel::<StepRequest>();
                 let (outbox, replies) = channel();
                 let published = snapshots.clone();
                 let thread = std::thread::Builder::new()
@@ -352,8 +389,8 @@ impl SimShell {
                     .spawn(move || {
                         let mut sub_app = sub_app;
                         // The frame drops its sender when it closes.
-                        while let Ok(commands) = inbox.recv() {
-                            let stepped = step_world(sub_app.world_mut(), commands, &published);
+                        while let Ok(request) = inbox.recv() {
+                            let stepped = step_world(sub_app.world_mut(), request, &published);
                             if outbox.send(stepped).is_err() {
                                 break;
                             }
@@ -378,24 +415,18 @@ impl SimShell {
         self.mode
     }
 
-    /// Runs one step with `commands` and waits for it; returns the events
-    /// it sent.
-    fn step(&self, commands: Vec<SimCommand>) -> Vec<FrameEvent> {
+    /// Runs one step and waits for it.
+    fn step(&self, request: StepRequest) -> Stepped {
         let mut runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
         match &mut *runner {
-            Runner::Inline(sub_app) => {
-                step_world(sub_app.world_mut(), commands, &self.snapshots).events
-            }
+            Runner::Inline(sub_app) => step_world(sub_app.world_mut(), request, &self.snapshots),
             Runner::Thread {
                 requests, replies, ..
             } => {
                 requests
-                    .send(commands)
+                    .send(request)
                     .expect("the simulation thread is running");
-                replies
-                    .recv()
-                    .expect("the simulation thread stepped")
-                    .events
+                replies.recv().expect("the simulation thread stepped")
             }
         }
     }
@@ -425,7 +456,11 @@ pub struct SimShellPlugin {
 
 impl Plugin for SimShellPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(SimShell::new(new_sim_app(), self.mode))
+        // Bevy's own types are bridged whether the bridge is on or not, so
+        // the boundary map's coverage counts them.
+        crate::sim_bridge::bridge_bevy_types(app);
+        let reserved = reserve_ids(app.world_mut(), POOL_BATCH);
+        app.insert_resource(SimShell::new(new_sim_app(&reserved), self.mode))
             .init_resource::<SimInbox>()
             .init_resource::<SimIds>()
             .init_resource::<SimLinks>()
@@ -443,9 +478,15 @@ impl Plugin for SimShellPlugin {
 /// commands go over, the frame waits, then runs the step's events and keeps
 /// its snapshot.
 pub fn step_lockstep(world: &mut World) {
+    let bridge = frame_gather(world);
     let commands = world.resource_mut::<SimInbox>().take();
-    let events = world.resource::<SimShell>().step(commands);
-    for event in events {
+    let stepped = world
+        .resource::<SimShell>()
+        .step(StepRequest { commands, bridge });
+    if let Some(out) = stepped.bridge {
+        frame_apply(world, out);
+    }
+    for event in stepped.events {
         event(world);
     }
     let snapshot = world.resource::<SimShell>().snapshots.take();
@@ -463,6 +504,20 @@ pub fn step_lockstep(world: &mut World) {
     if steps.is_multiple_of(LOG_EVERY) {
         let mode = world.resource::<SimShell>().mode;
         info!("simulation lockstep ({mode:?}): {steps} steps, {mismatches} mismatches");
+        if let Some(cost) = world.get_resource::<FrameBridge>().map(|b| b.cost) {
+            info!(
+                "simulation bridge: {:.0} us a step copying ({} values in, {} out over {} steps; \
+                 gather in {} us, apply in {} us, gather out {} us, apply out {} us)",
+                cost.us_per_step(),
+                cost.values_in,
+                cost.values_out,
+                cost.steps,
+                cost.gather_in_us,
+                cost.apply_in_us,
+                cost.gather_out_us,
+                cost.apply_out_us
+            );
+        }
     }
     if let Some(snapshot) = snapshot {
         world

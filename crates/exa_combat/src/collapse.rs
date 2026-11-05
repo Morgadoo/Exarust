@@ -455,6 +455,13 @@ impl Plugin for CollapsePlugin {
         )
         .add_message::<crate::pain::PainSounded>()
         .add_systems(Update, collapse_groans);
+        use exa_physics::sim_bridge::SimBridgeAppExt;
+        app.bridge_copy::<Condition>()
+            .bridge_copy::<crate::fall::FallDeath>()
+            .bridge_copy::<Collapse>()
+            .bridge_copy::<exa_anim::Animator>()
+            .bridge_copy::<crate::Fighter>()
+            .bridge_copy::<Hands>();
     }
 }
 

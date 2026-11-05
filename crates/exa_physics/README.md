@@ -29,9 +29,36 @@ order; a latest-wins `SnapshotBuffer` hands the frame each step's
 For now it runs in lockstep: the `SimLockstep` schedule, before `FixedFirst`
 in every pass of `FixedMain`, runs exactly one simulation step and waits
 for it, and `LockstepCheck` counts the steps against the snapshots' ticks
-(logged every 1000 steps). The simulation's world holds only its clock yet,
-so a body's every pose is the same bit for bit with or without the shell
-(`body_floor_test`).
+(logged every 1000 steps). Without the bridge the simulation's world holds
+only its clock, so a body's every pose is the same bit for bit with or
+without the shell (`body_floor_test`).
+
+`sim_bridge` is the lockstep copy bridge (stage 3): `SimBridgePlugin` moves
+the fixed step's schedules (`FixedMainScheduleOrder`'s, plus the ones it
+names, such as the character tick and the brain chain) whole, with their
+sets and order, from the frame's world into the simulation's, on the first
+lockstep step. Each type their systems touch is registered on the app by the
+plugin whose systems touch it (`SimBridgeAppExt`: `bridge_copy` for a
+cloneable component, `bridge_relationship` for a relationship such as
+`ChildOf`, `bridge_lend` for a large one moved across for the step and back,
+the same for resources, `bridge_message` for a message type forwarded both
+ways, `bridge_sim_only` for data only the step touches). Every step the
+frame sends what changed in its world since the last step (values with a
+newer change tick, removals, despawns, messages), the simulation applies it,
+runs, and sends its own changes back the same way; each side's own writes
+from an apply are not sent back, so `Changed`, `Added` and
+`RemovedComponents` see on each side what they would see in one world.
+Entity ids are the same in both worlds: the frame's allocator hands out every
+id, the simulation spawns its own entities from ids the frame reserved for
+it, and a despawn is mirrored without freeing the id. When the bridge starts
+it builds the moved schedules and lists every type their systems touch that
+is not bridged (`BridgeCoverage`, logged); `BridgeCost` counts the values
+and the time each half of the copy took. `BodyPlugin` registers the bodies'
+data (`bridge_body_types`): the bodies, the collision world and the solver's
+stages are lent, the level's collision grid copied when it changes. With the
+bridge a body's every pose is still the same bit for bit, inline and on the
+thread (`body_floor_test`), and a scripted run logs the same changes,
+removals, spawns and messages on both sides as one world (`sim_bridge_test`).
 
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
