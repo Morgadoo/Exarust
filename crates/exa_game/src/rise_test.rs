@@ -217,3 +217,75 @@ fn the_unarmed_set_up_reads_the_record_out_set() {
     assert!(!weapon_slots_empty(None, Some(&lit)));
     assert!(weapon_slots_empty(None, Some(&lit.let_go())));
 }
+
+/// The rise and the restore run in the simulation's frame start, as the
+/// original's AI manager runs them on its simulation thread: through the
+/// fixed step, one world and the bridge (inline and on its thread) rise the
+/// same corpse alike.
+#[test]
+fn the_rise_runs_alike_behind_the_bridge() {
+    use exa_physics::sim_app::{SimFrameStart, SimMode, SimShellPlugin};
+    use exa_physics::sim_bridge::{SimBridgeAppExt, SimBridgePlugin};
+    let run = |mode: Option<SimMode>| {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, exa_physics::body::BodyPlugin))
+            .insert_resource(exa_physics::Physics::default())
+            .insert_resource(Time::<Fixed>::from_hz(exa_physics::STEP_HZ))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+            ))
+            .add_systems(SimFrameStart, (rise_the_dead, restore_revived).chain());
+        if let Some(mode) = mode {
+            app.add_plugins((
+                SimShellPlugin { mode },
+                SimBridgePlugin { extra: Vec::new() },
+            ))
+            .bridge_copy::<Condition>()
+            .bridge_copy::<StateFlags>()
+            .bridge_copy::<KnockOut>()
+            .bridge_copy::<Fighter>()
+            .bridge_copy::<DeathClock>()
+            .bridge_copy::<CharacterVoice>()
+            .bridge_copy::<Hands>()
+            .bridge_copy::<exa_combat::collapse::Collapse>()
+            .bridge_copy::<LimpKept>()
+            .bridge_copy::<CharacterBody>()
+            .bridge_copy::<TickedClips>()
+            .bridge_copy::<Animator>()
+            .bridge_copy::<PlayerBody>()
+            .bridge_copy::<exa_ai::brain::Npc>()
+            .bridge_copy::<exa_ai::roles::Roles>()
+            .bridge_copy::<exa_items::possession::Possessions>()
+            .bridge_copy::<exa_character::held::HeldMoveset>();
+        }
+        let (root, body) = spawn_dead(&mut app, 0.6, BodyRules::MAY_RISE, RaceMuscles::HUMAN);
+        app.insert_resource(BodyTicks(834));
+        for _ in 0..4 {
+            app.update();
+        }
+        let w = app.world();
+        (
+            format!("{:?}", w.get::<Condition>(body)),
+            w.get::<Ragdoll>(body).unwrap().drive.is_some(),
+            w.get::<TickedClips>(body).is_some(),
+            w.get::<CharacterBody>(root).is_some(),
+            w.get::<LimpKept>(body).is_none(),
+            w.get::<DeathClock>(body).is_none(),
+        )
+    };
+    let alone = run(None);
+    assert_eq!(
+        alone,
+        (
+            format!("{:?}", Some(&Condition::DOWN)),
+            true,
+            true,
+            true,
+            true,
+            true
+        )
+    );
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        assert_eq!(run(Some(mode)), alone, "{mode:?}");
+    }
+}
