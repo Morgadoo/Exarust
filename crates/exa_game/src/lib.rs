@@ -139,6 +139,7 @@ pub mod shop_window;
 pub mod sim_control;
 pub mod slots;
 pub mod socket_drag;
+pub mod spectate;
 pub mod splash;
 pub mod staff;
 pub mod stages;
@@ -212,6 +213,7 @@ impl Plugin for GamePlugin {
                 hotkeys::HotkeyPlugin,
                 equip::EquipPlugin,
                 player_light::PlayerLightPlugin,
+                spectate::SpectatePlugin,
                 light_probe::LightProbePlugin,
                 commands::CommandPlugin,
             ),

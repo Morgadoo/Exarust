@@ -612,6 +612,7 @@ fn bridge_player_types(app: &mut App) {
         .bridge_lend_resource::<crate::hw_config::HardwareConfig>()
         .bridge_lend_resource::<crate::idle_orbit::IdleWatch>()
         .bridge_lend_resource::<crate::player::AimCursor>()
+        .bridge_lend_resource::<crate::spectate::SpectateSession>()
         .bridge_lend_resource::<crate::player::AttackButton>()
         .bridge_lend::<crate::player::ChaseCamera>()
         .bridge_lend_resource::<crate::player_controls::PlaySession>()
@@ -890,9 +891,14 @@ pub(crate) fn steer_player(
         Option<&mut Ragdoll>,
         Has<Attacking>,
     )>,
-    targets: Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
+    (targets, spectate): (
+        Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
+        Option<Res<crate::spectate::SpectateSession>>,
+    ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
+    // Spectating, the controls' frame does nothing: no key steers.
+    let spectating = crate::spectate::SpectateSession::spectating(spectate.as_deref());
     let held = |action| bindings.pressed(&keys, action);
     let input = Keys {
         w: held(Action::Forward),
@@ -989,7 +995,7 @@ pub(crate) fn steer_player(
             );
             // Not steered while it falls (Exarust's own) or its condition is
             // helpless: down, getting up, collapsing, dead.
-            if fallen || state.helpless() {
+            if fallen || state.helpless() || spectating {
                 req.moving = false;
                 continue;
             }
@@ -2253,15 +2259,37 @@ pub(crate) fn chase_camera(
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
     mut cameras: Query<(&mut ChaseCamera, &mut Transform, &mut Projection)>,
+    (mut spectate, every_body): (
+        Option<ResMut<crate::spectate::SpectateSession>>,
+        Query<&Ragdoll>,
+    ),
 ) {
-    let Some(target) = players.iter().next() else {
-        return;
+    let player_focus = players.iter().next().map(|target| {
+        camera_focus(
+            target.translation,
+            bodies.iter().next(),
+            fixed.overstep_fraction(),
+        )
+    });
+    // Spectating, the camera looks at the body it follows, else where it
+    // last looked (`crate::spectate`).
+    let focus = match spectate.as_deref_mut().filter(|s| s.active) {
+        Some(session) => {
+            let fallback = player_focus.unwrap_or(Vec3::ZERO);
+            let focus = crate::spectate::spectate_focus(
+                session,
+                &every_body,
+                fixed.overstep_fraction(),
+                fallback,
+            );
+            session.focus = Some(focus);
+            focus
+        }
+        None => match player_focus {
+            Some(focus) => focus,
+            None => return,
+        },
     };
-    let focus = camera_focus(
-        target.translation,
-        bodies.iter().next(),
-        fixed.overstep_fraction(),
-    );
     let (width, aspect) = windows.single().map_or((1600.0, 1.6), |w| {
         (
             w.width().max(1.0),

@@ -150,6 +150,7 @@
 //!          --sim-inline               run the simulation's own world on the frame's thread instead of its thread
 //!          --sim-digest <file>        write a hash of every bridged type after each fixed step (one world vs bridge)
 //!          --hold-loading             hold game time while the loading screen shows (repeatable tick numbers)
+//!          --spectate                 enter the controls' spectate session after the load (double click a character to follow it)
 //!          --no-sim-bridge            keep the fixed step in the frame's world (default: the simulation's world, behind the copy bridge)
 //!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
 //!                                     schedules, by direction (the simulation thread's hand-off)
@@ -486,6 +487,9 @@ pub struct Options {
     pub sim_digest: Option<PathBuf>,
     /// Hold game time while the loading screen shows (`--hold-loading`).
     pub hold_loading: bool,
+    /// Enter the controls' spectate session once the load is over
+    /// (`--spectate`).
+    pub spectate: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
@@ -1106,6 +1110,7 @@ fn main() -> AppExit {
             "--sim-boundary" => options.sim_boundary = args.next().map(PathBuf::from),
             "--sim-digest" => options.sim_digest = args.next().map(PathBuf::from),
             "--hold-loading" => options.hold_loading = true,
+            "--spectate" => options.spectate = true,
             "--debug-column" => {
                 options.debug_column = args
                     .next()
@@ -1963,6 +1968,9 @@ fn main() -> AppExit {
     app.add_plugins(exa_physics::sim_digest::SimDigestPlugin);
     if let Some(path) = options.sim_digest.clone() {
         app.insert_resource(exa_physics::sim_digest::SimDigestPath(path));
+    }
+    if options.spectate {
+        app.insert_resource(exa_game::spectate::SpectateOnLoad);
     }
     if options.hold_loading {
         app.add_systems(PreUpdate, frame_loop::hold_while_loading);

@@ -760,6 +760,14 @@ tick, a stretched link, the first blood jet, the player's first landed
 blow or the first collapse; no fixed step runs while the loading screen
 shows, as the original's load holds its pause counter).
 
+The controls' spectate session (`spectate`, the original's Spectate game
+mode): its start sets the spectate flag and frees the camera, the player is
+not steered while it runs, a double click makes the chase camera follow the
+picked character (anything else frees it, the camera keeping its last
+point), and its end clears both. The original's arena starts it when the
+round's entrant is a company employee; Exarust's arena always fields the
+player, so `--spectate` starts it after the load.
+
 The player behaviour's own rules (`player_behaviour`) are the aim point's
 soft height lock toward the nearest of a target's bones (the reference
 point moved toward that bone by its projected fraction, a NaN fraction
