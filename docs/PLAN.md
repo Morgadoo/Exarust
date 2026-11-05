@@ -1259,6 +1259,8 @@ Round 49 loadout (P12): the loadout form equips and returns kit items and saves 
 
 Round 52 useeffects (P5, P6): the parchment is a map's popup, not a kind 7 use; shop copies have their own bodies.
 
+Round 54 hubrows: the trade window has no rows in the original; its item panels replace the stand-in rows, which removes the label offset by construction.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1492,6 +1494,8 @@ Round 48b gicurve: the outdoor GI shading curve and the open sky's tinted cube a
 Round 53 glowtrade (E7, P6): script glows pulse, crystals drain, the trade window's items carry cards, and the card draws over the hub windows (the original's upper-layer card form).
 
 Round 53 scripteffects (U2): the real gap was the AI contact list, which the script cast never received; WitnessRole and ShowInventory already had readers.
+
+Round 54 objscripts (U3): placed objects' use scripts run; StartDialogue uses the last encounter's pair, as the original's static context does.
 
 ### Phase 6 — AI (started)
 
@@ -2222,6 +2226,8 @@ Round 49 domes (E5): the force domes draw and sound; the Barrier only stands in 
 Round 52 kinesisfx (E6): the held force shells hum and light, and strikes ripple on landed blows (not on the swing).
 
 Round 53 mindruntime (S3): Control Mind and Spirit Form move the player between bodies; the other Mind classes do not tick yet.
+
+Round 54 mindclasses: the other Mind powers expire; the spirit screen is a desaturation, not a quad; the mind pick uses light reach, not a ray.
 
 ### Phase 8 — Polish and release
 
