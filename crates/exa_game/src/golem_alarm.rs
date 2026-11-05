@@ -125,19 +125,36 @@ pub struct AlarmCheckPoint(pub Vec3);
 
 pub struct GolemAlarmPlugin;
 
+/// The data the alarm-zone check touches in the simulation's frame start,
+/// for the simulation's bridge (`exa_physics::sim_bridge`).
+fn bridge_alarm_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<AlarmVolumes>()
+        .bridge_lend_resource::<GolemAlarm>()
+        .bridge_copy::<AlarmCheckPoint>();
+}
+
 impl Plugin for GolemAlarmPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AlarmVolumes>()
             .init_resource::<GolemAlarm>()
+            // The zone check is the original's AI manager frame's, after its
+            // rise (a hook the simulation thread's step calls): it runs in
+            // the simulation's frame start, after the rise and its restore.
+            .add_systems(
+                exa_physics::sim_app::SimFrameStart,
+                check_alarm_zones
+                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Early)
+                    .after(crate::rise::restore_revived),
+            )
             .add_systems(
                 Update,
-                (
-                    check_alarm_zones.after(crate::rise::restore_revived),
-                    return_from_alarm
-                        .after(crate::flow::FlowSystems::Transition)
-                        .before(crate::flow::FlowSystems::ApplySteps),
-                ),
+                return_from_alarm
+                    .after(crate::flow::FlowSystems::Transition)
+                    .before(crate::flow::FlowSystems::ApplySteps),
             );
+        exa_physics::sim_app::add_frame_start(app);
+        bridge_alarm_types(app);
     }
 }
 
