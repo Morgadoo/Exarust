@@ -4642,9 +4642,10 @@ pub struct StoryStartPlayer {
 }
 
 /// The story start's record writes: the off hand's item, the carried
-/// entry appended, and the power word on a record that has a power block.
-/// (The float the start writes beside the power slots has no record field
-/// in Exarust's reading of the record: not written.)
+/// entry appended, the record's power word (the specialist domains,
+/// [`CharacterRecord::extra_word`](exa_formats::characters::CharacterRecord::extra_word))
+/// and the potential beside the power slots, which Exarust keeps in the
+/// power block's word (written when the record has a block).
 pub fn story_record(
     record: &mut exa_formats::characters::CharacterRecord,
     off_hand: Option<ItemRef>,
@@ -4657,8 +4658,11 @@ pub fn story_record(
     if let Some(entry) = carried {
         record.inventory.push(entry);
     }
-    if let (Some((word, _)), Some(block)) = (powers, record.powers.as_mut()) {
-        block.word = word;
+    if let Some((word, potential)) = powers {
+        record.extra_word = word;
+        if let Some(block) = record.powers.as_mut() {
+            block.word = potential.to_bits();
+        }
     }
 }
 
@@ -7565,6 +7569,20 @@ mod tests {
         let torch = world.resource::<crate::torch::StoryTorch>().0.unwrap();
         assert!((torch.translation - Vec3::new(80.45, 0.047, 40.75)).length() < 1e-5);
         assert!(!world.contains_resource::<StoryStartPlayer>());
+    }
+
+    /// The unknown background's start writes the power word and the
+    /// potential beside the slots, not the word into the potential.
+    #[test]
+    fn the_unknown_start_writes_the_power_word_and_potential() {
+        let mut record = exa_formats::characters::CharacterRecord::reset();
+        crate::create::apply_creation_defaults(&mut record);
+        record.powers.as_mut().unwrap().word = 9.0f32.to_bits();
+        record.extra_word = 0;
+        let start = story_start(Background::Unknown, 1.0);
+        story_record(&mut record, start.off_hand, start.carried, start.powers);
+        assert_eq!(record.extra_word, 0x0051_0000);
+        assert_eq!(record.powers.as_ref().unwrap().word, 4.0f32.to_bits());
     }
 
     /// The knight's start: the torch in the off hand and one carried with

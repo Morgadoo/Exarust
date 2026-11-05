@@ -103,9 +103,10 @@
 //!
 //! Evidence: the tree reader, the open, store, mark, focus, click, drag,
 //! key and bar routines, the bar's layout and its state timings, and the
-//! record's pair and slot arrays. Where the original calls into the
-//! character creator for the final commitment of a [`NEW`] power, this
-//! module leaves the pair on the record and exposes [`TreeScreen::commit`].
+//! record's pair and slot arrays. The creation screen's clicks write their
+//! pairs into the creator's record as they happen; the creator's BEGIN
+//! saves that record as it stands (a [`NEW`] pair stays new), as the
+//! original's commit callback does (`crate::power_screen::CreatorPowerTree`).
 
 use exa_formats::characters::Skill;
 use exa_formats::power_tree::{PowerNode, PowerTree, learn_marks, node_pixels, place_node};
@@ -360,6 +361,60 @@ impl PowerRecord {
             focus_item: true,
             skills: SkillTiers::default(),
         }
+    }
+
+    /// The tree's view of a character record: the potential beside the
+    /// slots as the focus, the record's power word as the specialist
+    /// domains, its known powers and slots, and its Insight and
+    /// Concentration. A record without a powers block gives an empty one
+    /// with focus 0. The focus item is not read (the tree's learning gates
+    /// do not ask for it).
+    pub fn of_character(record: &exa_formats::characters::CharacterRecord) -> Self {
+        let mut out = Self::empty(0.0);
+        if let Some(powers) = record.powers.as_ref() {
+            out.focus = f32::from_bits(powers.word);
+            out.pairs = powers
+                .known
+                .iter()
+                .map(|power| KnownPower {
+                    power: power.id,
+                    flags: power.flags,
+                })
+                .collect();
+            out.slots = powers.slots;
+        }
+        out.specialisation = record.extra_word;
+        out.skills = SkillTiers {
+            insight: record.skills[exa_formats::characters::INSIGHT],
+            concentration: record.skills[exa_formats::characters::CONCENTRATION],
+        };
+        out
+    }
+
+    /// Writes the tree's pairs, slots and focus back into a character
+    /// record, the tree working on the record itself in the original. A
+    /// pair keeps the saved data of the known power it had the id of.
+    pub fn write_into(&self, record: &mut exa_formats::characters::CharacterRecord) {
+        let old = record.powers.take();
+        let blob_of = |id: u32| {
+            old.as_ref()
+                .and_then(|powers| powers.known.iter().find(|power| power.id == id))
+                .and_then(|power| power.blob.clone())
+        };
+        record.powers = Some(exa_formats::characters::Powers {
+            word: self.focus.to_bits(),
+            slots: self.slots,
+            known: self
+                .pairs
+                .iter()
+                .map(|pair| exa_formats::characters::Power {
+                    id: pair.power,
+                    flags: pair.flags,
+                    blob: blob_of(pair.power),
+                })
+                .collect(),
+        });
+        record.extra_word = self.specialisation;
     }
 
     /// An empty record with the given focus.
@@ -1857,21 +1912,6 @@ impl TreeScreen {
         }
         // The original logs a bad pair's data pointer and clears it; an
         // Exarust pair has no data pointer.
-    }
-
-    /// The pair of the node the creation prompt marked, ready for the
-    /// creator's commitment: the original's caller (the character screen)
-    /// turns a NEW pair into a learnt and picked one. A labelled guess.
-    pub fn commit(&mut self, record: &mut PowerRecord) -> Option<KnownPower> {
-        let index = self.marks.iter().position(|mark| mark & NEW != 0)?;
-        self.marks[index] = (self.marks[index] | LEARNED | PICKED) & !NEW;
-        let power = self.nodes[index].power;
-        record.store_pair(power, self.marks[index] & PAIR_BITS);
-        record
-            .pairs
-            .iter()
-            .find(|pair| pair.power == power)
-            .copied()
     }
 
     /// The power bar's slot index of the focus (0-based).
@@ -3404,6 +3444,44 @@ mod tests {
     }
 
     #[test]
+    fn a_character_record_round_trips_through_the_tree_record() {
+        use exa_formats::characters::{CharacterRecord, Power, Powers};
+        let mut character = CharacterRecord::reset();
+        character.extra_word = 0x51_0000;
+        character.powers = Some(Powers {
+            word: 4.0f32.to_bits(),
+            slots: [0x100101, 0x201, 0, 0, 0, 0, 0, 0, 0, 0],
+            known: vec![
+                Power {
+                    id: 0x101,
+                    flags: 0x5fff,
+                    blob: Some(vec![1, 2]),
+                },
+                Power {
+                    id: 0x201,
+                    flags: 0x5fff,
+                    blob: None,
+                },
+            ],
+        });
+        let mut record = PowerRecord::of_character(&character);
+        assert_eq!(record.focus, 4.0);
+        assert_eq!(record.specialisation, 0x51_0000);
+        assert_eq!(record.slots[0], 0x100101);
+        assert_eq!(record.pairs.len(), 2);
+        record.store_pair(0x102, NEW);
+        record.write_into(&mut character);
+        let powers = character.powers.as_ref().unwrap();
+        assert_eq!(powers.word, 4.0f32.to_bits());
+        assert_eq!(powers.known[0].blob, Some(vec![1, 2]));
+        assert_eq!((powers.known[2].id, powers.known[2].flags), (0x102, NEW));
+        assert!(powers.known[2].blob.is_none());
+        let bare = PowerRecord::of_character(&CharacterRecord::reset());
+        assert!(bare.pairs.is_empty());
+        assert_eq!(bare.focus, 0.0);
+    }
+
+    #[test]
     fn a_power_word_carries_its_domain_and_kind() {
         assert_eq!(domain_of(0x10203), DOMAIN_FORCE);
         assert_eq!(domain_of(0x10205), DOMAIN_FORCE);
@@ -4100,9 +4178,6 @@ mod tests {
                 flags: SHOWN | NEW
             }]
         );
-        let committed = screen.commit(&mut record);
-        assert_eq!(committed.map(|pair| pair.flags), Some(LEARNED | PICKED));
-        assert_eq!(screen.marks[1] & (LEARNED | PICKED), LEARNED | PICKED);
     }
 
     #[test]

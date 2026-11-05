@@ -126,8 +126,10 @@
 //!          --open-creator <mode>      once loaded, open the character creator: story (the background picker),
 //!                                     story-all (the picker with every background unlocked), story:N
 //!                                     (background N), begin:N (background N's creator commits its opening
-//!                                     record at once: a new story starts unattended), practice, expert,
-//!                                     arena, recruit or versus
+//!                                     record at once: a new story starts unattended), powers (the
+//!                                     unknown background's creator, named if unnamed, presses its final
+//!                                     button on both pages so the power tree's creation prompt opens),
+//!                                     practice, expert, arena, recruit or versus
 //!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
 //!          --open-loot FRAME          debug: open the loot window of the dead body nearest the player that many frames
 //!                                     after the load
@@ -1067,9 +1069,10 @@ fn main() -> AppExit {
                 let word = args.next().unwrap_or_default();
                 if exa_game::creator_screen::CreatorEntry::parse(&word).is_none()
                     && exa_game::creator_screen::begin_entry(&word).is_none()
+                    && exa_game::creator_screen::powers_entry(&word).is_none()
                 {
                     eprintln!(
-                        "--open-creator: story, story-all, story:N, begin:N, practice, expert, arena, recruit or versus, not {word:?}"
+                        "--open-creator: story, story-all, story:N, begin:N, powers, practice, expert, arena, recruit or versus, not {word:?}"
                     );
                     return AppExit::from_code(2);
                 }
