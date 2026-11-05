@@ -907,6 +907,8 @@ Round 66 simthread3 (stage 3 done): the simulation world runs the game's fixed s
 
 Round 67 simthread4a: the first stage-4 groups move frame work into the simulation and snapshot the cloths.
 
+Round 68 simthread4b: one command queue carries the frame's writes into the simulation.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
