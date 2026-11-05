@@ -72,7 +72,7 @@ The system SHALL scale a lit record's diffuse colour by its opacity when its mas
 - **THEN** its diffuse colour is zero
 
 ### Requirement: Voxel light volume
-The system SHALL build a level's voxel light volume as the original does. Each mesh's GI sample points mark a block of 20 cm voxels below the level's highest point. Every frame, light propagates through the open voxels from their eight diagonal neighbours, the level's base ambient, lights and voxel lights are injected, and the result is stored as 8-bit sRGB. Every write into the volume SHALL be encoded as the reference hardware (NVIDIA RTX 3090, driver 615.78) encodes a fragment into a `GL_SRGB8_ALPHA8` target: a linear value stores the number of the measured steps at or below it, not the nearest code.
+The system SHALL build a level's voxel light volume as the original does. Each mesh's GI sample points mark a block of 20 cm voxels below the level's highest point. Every frame, light propagates through the open voxels from their eight diagonal neighbours, the level's base ambient, lights and voxel lights are injected, and the result is stored as 8-bit sRGB.
 
 #### Scenario: Block height
 - **WHEN** a level is taller than 12.8 m
@@ -1567,3 +1567,10 @@ With `EXA_GI_DEBUG=direct` lit world and terrain surfaces SHALL leave out their 
 #### Scenario: Direct share
 - **WHEN** a level runs with `EXA_GI_DEBUG=direct`
 - **THEN** a surface no light reaches directly is black
+
+### Requirement: GI volume store encoding
+Every write into the voxel light volume SHALL be encoded as the reference hardware (NVIDIA RTX 3090, driver 615.78) encodes a fragment into a `GL_SRGB8_ALPHA8` target: a linear value stores the number of the measured steps at or below it, not the nearest code.
+
+#### Scenario: A value just under a step
+- **WHEN** a voxel's linear value lies 0.39 of a code above code 5
+- **THEN** it stores code 5, where nearest rounding would also give 5, and at 0.45 above code 20 it stores the code the measured step table gives
