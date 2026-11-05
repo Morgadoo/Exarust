@@ -31,7 +31,11 @@
 //! its final button commits: the record is written
 //! ([`crate::create::write_created_record`]), kept as [`CreatedCharacter`]
 //! for the player's spawn, and the story or practice starts through the
-//! flow. BACK goes back a page, or leaves to the menu.
+//! flow. BACK goes back a page, or leaves to the menu. A record that knows
+//! powers (the unknown background's) opens the power tree instead: the
+//! form hides and the tree's creation prompt answers ([`Creator::tree_answered`]):
+//! BEGIN commits the record with the powers it chose, BACK shows the form
+//! again in the original's page state 2.
 //!
 //! `--open-creator <mode>` opens it once the load ends ([`OpenCreatorOnLoad`]).
 //!
@@ -42,8 +46,7 @@
 //! mirrored style flipping them; the hair list shows each style's entry
 //! name where the original renders an icon; the equipment page's kit lists
 //! and skills panel are drawn as empty panels; the arena career, versus
-//! lobby and recruit commits, the power tree and the voice previews are not
-//! wired.
+//! lobby and recruit commits and the voice previews are not wired.
 
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
@@ -259,9 +262,31 @@ pub fn begin_entry(word: &str) -> Option<CreatorEntry> {
         .then(|| CreatorEntry::story(background))
 }
 
-/// The opened creator commits its record at once (`--open-creator begin`).
+/// The `powers` word's entry: the story creator for the unknown
+/// background, whose record knows the thaumaturge's two powers.
+pub fn powers_entry(word: &str) -> Option<CreatorEntry> {
+    (word == "powers").then(|| CreatorEntry::story(0))
+}
+
+/// What the opened creator does at once, for a debug word.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnOpen {
+    #[default]
+    Nothing,
+    /// Commit the opening record (`--open-creator begin`).
+    Begin,
+    /// Name the character if unnamed and press the final button through
+    /// both pages, so the power tree opens (`--open-creator powers`).
+    PowerTree,
+}
+
+/// The opened creator's debug step ([`OnOpen`]).
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BeginOnOpen(pub bool);
+pub struct BeginOnOpen(pub OnOpen);
+
+/// The name `--open-creator powers` gives an unnamed character (a debug
+/// value, not the original's).
+pub const DEBUG_POWERS_NAME: &str = "Thaumaturge";
 
 /// The background picker's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +351,13 @@ pub struct Creator {
     built: bool,
     /// The Height and Age trackbars' settle stamp.
     settle_last: i32,
+    /// The final button opened the power tree (the original's page state
+    /// word 2). It stays set after the tree's BACK, so the final button
+    /// then rebuilds the equipment page as the appearance page's does,
+    /// and the creator's own BACK leaves the creator.
+    pub powers_page: bool,
+    /// The form is hidden while the power tree shows over it.
+    pub hidden: bool,
 }
 
 /// Scales a design length at unit 4 to `unit`, as the original's rescale:
@@ -409,6 +441,8 @@ impl Creator {
             regenerated: 0,
             built: false,
             settle_last: 0,
+            powers_page: false,
+            hidden: false,
         };
         creator.tone.callback = true;
         creator.hair_colour.callback = true;
@@ -644,12 +678,23 @@ impl Creator {
         };
         self.main[creation::NAME_LABEL].text = header.first.as_bytes().to_vec();
         self.main[creation::HAIR_LABEL].text = header.second.as_bytes().to_vec();
-        self.main[creation::NEXT].text = header.final_button.as_bytes().to_vec();
+        // The final button names the mode's commit on the equipment page,
+        // unless the record knows powers: then the original leaves the
+        // label it had, as that button opens the power tree.
+        let knows_powers = self
+            .record
+            .powers
+            .as_ref()
+            .is_some_and(|powers| !powers.known.is_empty());
         if self.page == CreationScreenPage::Equipment {
-            self.main[creation::NEXT].text =
-                exa_ui::creation::commit_label(self.entry.screen_mode, self.entry.game_mode)
-                    .as_bytes()
-                    .to_vec();
+            if !knows_powers {
+                self.main[creation::NEXT].text =
+                    exa_ui::creation::commit_label(self.entry.screen_mode, self.entry.game_mode)
+                        .as_bytes()
+                        .to_vec();
+            }
+        } else {
+            self.main[creation::NEXT].text = header.final_button.as_bytes().to_vec();
         }
         let name = &mut self.main[creation::NAME];
         if self.page == CreationScreenPage::Appearance {
@@ -1113,16 +1158,52 @@ impl Creator {
     /// The submit state the final button reads.
     fn submit_input(&self) -> SubmitInput {
         SubmitInput {
-            page: self.page,
+            page: self.final_page(),
             name_len: self.name.text.len(),
-            // [guess] the power tree is not wired: the record's powers are
-            // not offered to it.
-            known_powers: 0,
+            known_powers: self
+                .record
+                .powers
+                .as_ref()
+                .map_or(0, |powers| powers.known.len() as i32),
             game_mode: self.entry.game_mode,
             screen_mode: self.entry.screen_mode,
             continue_mode: false,
             equipment_hook: false,
         }
+    }
+
+    /// The page the final button and BACK read: the original tests its
+    /// page state word for 1 (the equipment page), so the state 2 the power
+    /// tree left reads as not the equipment page.
+    fn final_page(&self) -> CreationScreenPage {
+        if self.powers_page {
+            CreationScreenPage::Appearance
+        } else {
+            self.page
+        }
+    }
+
+    /// The power tree's creation prompt answered. BEGIN takes the tree's
+    /// record (its pairs and slots, written as the tree's clicks wrote
+    /// them) and commits as the final button's own commit for the mode
+    /// does; BACK shows the form again with the page state left at 2.
+    pub fn tree_answered(
+        &mut self,
+        begin: bool,
+        powers: Option<&crate::thaum::tree::PowerRecord>,
+    ) -> Option<CreatorAction> {
+        if let Some(powers) = powers {
+            powers.write_into(&mut self.record);
+        }
+        self.hidden = false;
+        if !begin {
+            return None;
+        }
+        let kind = create::tree_begin_kind(self.entry.game_mode);
+        Some(CreatorAction::Commit {
+            kind,
+            record: Box::new(self.committed_record()),
+        })
     }
 
     /// NEXT (and the final button on the equipment page): the page advances
@@ -1135,8 +1216,17 @@ impl Creator {
         }
         if submit.build_equipment {
             self.page = CreationScreenPage::Equipment;
+            self.powers_page = false;
             self.refresh_page();
             return None;
+        }
+        if submit.commit == Some(create::CommitKind::PowerTree) {
+            // The page state word takes 2 and the tree opens behind the
+            // task queue: the creator's form hides and the tree opens on
+            // the creator's record with the creator's two callbacks.
+            self.powers_page = true;
+            self.hidden = true;
+            return Some(CreatorAction::OpenPowerTree(Box::new(self.record.clone())));
         }
         submit.commit.map(|kind| {
             let record = self.committed_record();
@@ -1183,7 +1273,7 @@ impl Creator {
     /// appearance page leaves the creator.
     pub fn back(&mut self) -> CreatorAction {
         let switch = create::switch_creation_page(
-            self.page,
+            self.final_page(),
             self.entry.screen_mode,
             create::BuiltPanels::default(),
         );
@@ -1235,6 +1325,9 @@ pub enum CreatorAction {
     },
     /// The voice's preview plays.
     PlayVoice(i32),
+    /// The final button found known powers: the power tree opens on this
+    /// record in its creation mode, and the creator's form hides.
+    OpenPowerTree(Box<CharacterRecord>),
 }
 
 /// The open screens.
@@ -1256,6 +1349,7 @@ impl CreatorScreen {
     pub fn preview_px(&self) -> Option<GuiRect> {
         self.creator
             .as_ref()
+            .filter(|creator| !creator.hidden)
             .map(Creator::preview_px)
             .or_else(|| self.saves.as_ref().map(|s| s.preview_px()))
     }
@@ -1357,7 +1451,10 @@ fn open_from_menu(
             available: (word == "story-all").then_some(7),
         });
     } else if let Some(entry) = begin_entry(&word) {
-        begin.0 = true;
+        begin.0 = OnOpen::Begin;
+        creators.write(OpenCreator(entry));
+    } else if let Some(entry) = powers_entry(&word) {
+        begin.0 = OnOpen::PowerTree;
         creators.write(OpenCreator(entry));
     } else if let Some(entry) = CreatorEntry::parse(&word) {
         creators.write(OpenCreator(entry));
@@ -1411,6 +1508,11 @@ pub fn entry_record(
                 }
                 (create::PresetSource::Template, _, Some(template)) => record = template,
                 _ => {}
+            }
+            // The unknown background starts the thaumaturge's powers over
+            // whichever record it took.
+            if bg.creation_defaults {
+                create::apply_creation_defaults(&mut record);
             }
         }
         if plan.full_health {
@@ -1662,6 +1764,7 @@ fn input(
     mut commands: Commands,
     players: Query<Entity, With<crate::player::Player>>,
     mut begin: ResMut<BeginOnOpen>,
+    mut power_tree: Option<ResMut<crate::power_screen::CreatorPowerTree>>,
 ) {
     let typed: Vec<KeyboardInput> = typed.read().cloned().collect();
     let Ok(window) = windows.single() else {
@@ -1729,37 +1832,60 @@ fn input(
     creator.tick();
     creator.resize(size, unit);
     let mut actions = Vec::new();
-    if core::mem::take(&mut begin.0) {
-        info!("creator: --open-creator begin commits the opening record");
-        actions.push(CreatorAction::Commit {
-            kind: create::CommitKind::Begin,
-            record: Box::new(creator.committed_record()),
-        });
-    }
-    for event in &typed {
-        if !event.state.is_pressed() {
-            continue;
+    match core::mem::take(&mut begin.0) {
+        OnOpen::Nothing => {}
+        OnOpen::Begin => {
+            info!("creator: --open-creator begin commits the opening record");
+            actions.push(CreatorAction::Commit {
+                kind: create::CommitKind::Begin,
+                record: Box::new(creator.committed_record()),
+            });
         }
-        match &event.logical_key {
-            Key::Character(text) => creator.type_name(text.as_str()),
-            Key::Space => creator.type_name(" "),
-            _ => {}
+        OnOpen::PowerTree => {
+            info!("creator: --open-creator powers presses the final button on both pages");
+            if creator.name.text.is_empty() {
+                creator.name.text = DEBUG_POWERS_NAME.as_bytes().to_vec();
+                let end = creator.name.text.len();
+                creator.name.edit.reset(end);
+            }
+            actions.extend(creator.advance());
+            actions.extend(creator.advance());
         }
     }
-    if keys.just_pressed(KeyCode::Backspace) {
-        creator.backspace();
+    // The power tree's creation prompt answered: its BEGIN commits, its
+    // BACK shows the form again. The frame the answer arrives in, and every
+    // frame the form is hidden under the tree, takes no input.
+    let mut takes_input = !creator.hidden;
+    if let Some(answer) = power_tree.as_mut().and_then(|tree| tree.answer.take()) {
+        actions.extend(creator.tree_answered(answer.begin, Some(&answer.record)));
+        takes_input = false;
     }
-    if keys.just_pressed(KeyCode::Escape) {
-        if creator.warning.take().is_none() {
-            // The cancel key leaves as the appearance page's BACK does.
-            actions.push(CreatorAction::Leave(create::leave_creator(
-                creator.entry.screen_mode,
-            )));
+    if takes_input {
+        for event in &typed {
+            if !event.state.is_pressed() {
+                continue;
+            }
+            match &event.logical_key {
+                Key::Character(text) => creator.type_name(text.as_str()),
+                Key::Space => creator.type_name(" "),
+                _ => {}
+            }
         }
-    } else if keys.just_pressed(KeyCode::Enter) && creator.warning.take().is_none() {
-        actions.extend(creator.advance());
+        if keys.just_pressed(KeyCode::Backspace) {
+            creator.backspace();
+        }
+        if keys.just_pressed(KeyCode::Escape) {
+            if creator.warning.take().is_none() {
+                // The cancel key leaves as the appearance page's BACK does.
+                actions.push(CreatorAction::Leave(create::leave_creator(
+                    creator.entry.screen_mode,
+                )));
+            }
+        } else if keys.just_pressed(KeyCode::Enter) && creator.warning.take().is_none() {
+            actions.extend(creator.advance());
+        }
     }
-    if let Some((x, y)) = pointer {
+    if let Some((x, y)) = pointer.filter(|_| takes_input) {
         actions.extend(creator.pointer(x, y));
         if mouse.just_pressed(MouseButton::Left) {
             actions.extend(creator.press(x, y));
@@ -1782,6 +1908,18 @@ fn input(
                     let preview =
                         create::voice_preview(&prefix, voice, creator.base[base::PITCH].value);
                     info!("creator: voice preview {} (not played)", preview.name);
+                }
+            }
+            CreatorAction::OpenPowerTree(record) => {
+                info!("creator: the record knows powers; the power tree opens and the form hides");
+                match power_tree.as_mut() {
+                    Some(tree) => {
+                        tree.request = Some(crate::thaum::tree::PowerRecord::of_character(&record));
+                    }
+                    None => {
+                        warn!("creator: no power tree screen is registered; the form stays");
+                        creator.hidden = false;
+                    }
                 }
             }
             CreatorAction::Leave(destination) => {
@@ -2458,7 +2596,7 @@ fn paint(
         let (size, unit) = screen_and_unit(window);
         paint_class_select(picker, size, unit, textures).submit(&mut frames);
     }
-    if let Some(creator) = &screen.creator {
+    if let Some(creator) = screen.creator.as_ref().filter(|c| !c.hidden) {
         paint_creator(creator, textures).submit(&mut frames);
     }
 }
@@ -2594,7 +2732,15 @@ mod tests {
 
     #[test]
     fn next_asks_for_a_name_then_shows_the_equipment_page_and_commits() {
-        let mut c = creator();
+        // The knight's record (no template here) knows no powers, so the
+        // final button commits.
+        let mut c = Creator::open(
+            CreatorEntry::story(1),
+            entry_record(CreatorEntry::story(1), None, None),
+            (1024, 768),
+            4,
+            vec!["hair a".into(), "hair b".into()],
+        );
         let next = control_centre(&c, Part::Main, creation::NEXT);
         assert!(click(&mut c, next).is_empty());
         assert_eq!(c.warning, Some(NameWarning::missing()));
@@ -2617,6 +2763,78 @@ mod tests {
         assert_eq!(*kind, create::CommitKind::Begin);
         assert_eq!(record.name, "Derrin");
         assert_eq!(record.pools, Pools::FULL);
+    }
+
+    #[test]
+    fn the_unknown_background_starts_the_thaumaturge_s_powers() {
+        let record = entry_record(CreatorEntry::story(0), None, None);
+        let powers = record.powers.as_ref().unwrap();
+        assert_eq!(powers.known.len(), 2);
+        assert_eq!(record.extra_word, 0x51_0000);
+        let knight = entry_record(CreatorEntry::story(1), None, None);
+        assert!(knight.powers.is_none());
+    }
+
+    #[test]
+    fn a_record_with_powers_opens_the_tree_and_its_begin_commits() {
+        let mut c = creator();
+        c.name.text = b"Ardent".to_vec();
+        assert_eq!(c.advance(), None);
+        assert_eq!(c.page, CreationScreenPage::Equipment);
+        // The final button's label is left alone for a record with powers.
+        assert_ne!(c.main[creation::NEXT].text, b"BEGIN");
+        let Some(CreatorAction::OpenPowerTree(record)) = c.advance() else {
+            panic!("the tree did not open");
+        };
+        assert_eq!(record.powers.as_ref().unwrap().known.len(), 2);
+        assert!(c.hidden && c.powers_page);
+        // The tree's clicks wrote a new pair into its record.
+        let mut tree = crate::thaum::tree::PowerRecord::of_character(&record);
+        assert_eq!(tree.focus, 4.0);
+        assert_eq!(tree.specialisation, 0x51_0000);
+        tree.store_pair(0x102, crate::thaum::tree::NEW);
+        let Some(CreatorAction::Commit { kind, record }) = c.tree_answered(true, Some(&tree))
+        else {
+            panic!("BEGIN did not commit");
+        };
+        assert_eq!(kind, create::CommitKind::Begin);
+        assert!(!c.hidden);
+        let known: Vec<u32> = record
+            .powers
+            .as_ref()
+            .unwrap()
+            .known
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(known, vec![0x101, 0x201, 0x102]);
+        assert_eq!(record.name, "Ardent");
+    }
+
+    #[test]
+    fn the_tree_s_back_shows_the_form_with_the_page_state_left_at_two() {
+        let mut c = creator();
+        c.name.text = b"Ardent".to_vec();
+        c.advance();
+        assert!(matches!(c.advance(), Some(CreatorAction::OpenPowerTree(_))));
+        assert_eq!(c.tree_answered(false, None), None);
+        assert!(!c.hidden);
+        assert!(c.powers_page);
+        // The final button now rebuilds the equipment page as the
+        // appearance page's does, and a second press opens the tree again.
+        assert_eq!(c.advance(), None);
+        assert!(!c.powers_page);
+        assert_eq!(c.page, CreationScreenPage::Equipment);
+        assert!(matches!(c.advance(), Some(CreatorAction::OpenPowerTree(_))));
+        // With the state at 2 the creator's own BACK leaves the creator.
+        c.tree_answered(false, None);
+        assert_eq!(c.back(), CreatorAction::Leave(PageDestination::Menu));
+    }
+
+    #[test]
+    fn the_powers_word_opens_the_unknown_background() {
+        assert_eq!(powers_entry("powers"), Some(CreatorEntry::story(0)));
+        assert_eq!(powers_entry("power"), None);
     }
 
     #[test]

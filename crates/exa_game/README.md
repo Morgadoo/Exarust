@@ -62,7 +62,7 @@ constantly displaced body
 (`thaum::veil`) gets its shell effect (starting dead, fading the body's mesh and skin
 parts), its displaced collision bit, its hum start point, its tendril
 image, its visibility bits and the hit veto with the 500 ms collision
-restore; none of it is wired into a running game yet. The running screen (`power_screen`) opens the tree with P (while it is
+restore; none of it is wired into a running game yet. The running screen (`power_screen`) opens the tree with P, and in its creation mode for the creator (while it is
 shown its form has the keys: the arrows step the bar, any other key closes
 it after the opening fade's first 50 ms) and draws the
 tree and the bar through `exa_ui::tree_draw` into a kept canvas that redraws
@@ -302,7 +302,17 @@ continue page's character view loads or polls its model, attaches the
 carried item list, walks the figure's item passes, cuts the name to
 fifteen bytes, labels CONTINUE or VERSUS, binds both item panels and
 refreshes the look or the hair button. The power tree opens over the
-creator with the deferred-close and commit callbacks, the name warning
+creator with the deferred-close and commit callbacks, and runs: the
+unknown background's record takes the thaumaturge's two powers
+(`create::apply_creation_defaults`), its equipment page's final button
+keeps its label, hides the form (page state 2) and opens the tree in its
+creation mode on the creator's record (`power_screen::CreatorPowerTree`);
+the prompt's BEGIN (or Enter) commits the record with the powers the tree
+wrote, its BACK (or Escape) shows the form again, after which the final
+button rebuilds the equipment page and the creator's BACK leaves
+(`--open-creator powers` drives it unattended). The tree's texts take the
+GUI font atlas of the current interface level (reloaded on a unit change)
+and sample it as the GUI's text draw does. The name warning
 keeps its `Character Name` / `Please name your character` box and code
 0xc1, the reset-to-portal and delete-confirmation dialogs take the creator
 as owner and centre at -1, and the icon sheet carries the 0x203 word, the

@@ -786,6 +786,36 @@ pub fn creation_defaults() -> CreationDefaults {
     }
 }
 
+/// Writes the thaumaturge's starting powers into a record, as loading the
+/// unknown story background does after its preset or new record is in:
+/// the ten slots are cleared, the two known powers of
+/// [`creation_defaults`] replace the list (with no saved data), the first
+/// slot takes the first power with bit 20 and the second the second, the
+/// potential beside the slots becomes 4.0 and the record's power word
+/// (the specialist domains, [`CharacterRecord::extra_word`]) `0x510000`.
+pub fn apply_creation_defaults(record: &mut CharacterRecord) {
+    let defaults = creation_defaults();
+    let mut slots = [0u32; exa_formats::characters::POWER_SLOTS];
+    let known: Vec<exa_formats::characters::Power> = defaults
+        .slots
+        .iter()
+        .take(defaults.count.max(0) as usize)
+        .map(|pair| exa_formats::characters::Power {
+            id: pair[0] as u32,
+            flags: pair[1] as u32,
+            blob: None,
+        })
+        .collect();
+    slots[0] = defaults.first as u32;
+    slots[1] = defaults.second as u32;
+    record.powers = Some(exa_formats::characters::Powers {
+        word: defaults.value.to_bits(),
+        slots,
+        known,
+    });
+    record.extra_word = defaults.flags as u32;
+}
+
 /// A binding behind a creation signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreationBinding {
@@ -2483,6 +2513,18 @@ pub enum CommitKind {
     /// The record knows thaumaturgy powers: the power tree opens, and its
     /// own commit saves the preset and starts the story.
     PowerTree,
+}
+
+/// What the power tree's BEGIN commits for a game mode. The creator's
+/// BEGIN callback saves the preset, stores the record's worth and starts
+/// the game, whatever the mode: the story's begin, and every other mode's
+/// create (it never readies a versus lobby or hands a recruit over).
+pub fn tree_begin_kind(game_mode: i32) -> CommitKind {
+    if game_mode == 4 {
+        CommitKind::Begin
+    } else {
+        CommitKind::Create
+    }
 }
 
 /// The state the character screen's final button reads.
@@ -5751,6 +5793,28 @@ mod tests {
         assert_eq!(defaults.second, 0x201);
         assert_eq!(defaults.value, 4.0);
         assert_eq!(defaults.flags, 0x510000);
+    }
+
+    #[test]
+    fn the_tree_s_begin_starts_the_story_or_creates() {
+        assert_eq!(tree_begin_kind(4), CommitKind::Begin);
+        assert_eq!(tree_begin_kind(2), CommitKind::Create);
+        assert_eq!(tree_begin_kind(8), CommitKind::Create);
+        assert_eq!(tree_begin_kind(0x1010), CommitKind::Create);
+    }
+
+    #[test]
+    fn the_creation_defaults_give_the_record_two_powers() {
+        let mut record = CharacterRecord::reset();
+        record.extra_word = 7;
+        apply_creation_defaults(&mut record);
+        let powers = record.powers.as_ref().unwrap();
+        assert_eq!(powers.word, 4.0f32.to_bits());
+        assert_eq!(powers.slots, [0x100101, 0x201, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let known: Vec<(u32, u32)> = powers.known.iter().map(|p| (p.id, p.flags)).collect();
+        assert_eq!(known, vec![(0x101, 0x5fff), (0x201, 0x5fff)]);
+        assert!(powers.known.iter().all(|p| p.blob.is_none()));
+        assert_eq!(record.extra_word, 0x510000);
     }
 
     #[test]

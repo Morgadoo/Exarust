@@ -26,7 +26,10 @@
 //! form has the keys: the arrows step the bar and any other key closes it
 //! ([`TreeScreen::key`]). The bar's own keys (pick, step, use) belong to
 //! the hotkey handler and the cast plugin ([`crate::thaum::cast`]), which
-//! keeps the caster's record and this screen's in step.
+//! keeps the caster's record and this screen's in step. The character
+//! creator opens the same screen in its creation mode on the creator's
+//! record ([`CreatorPowerTree`]): the prompt's BEGIN and BACK (and Enter
+//! and Escape) answer the creator.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -71,6 +74,9 @@ pub struct PowerScreen {
     pub sheets: TreeSheets,
     /// The GUI font atlas the tree's text samples and its texture name.
     pub font_atlas: Option<(&'static str, (u16, u16))>,
+    /// The interface unit the atlas was loaded for: a change of unit loads
+    /// the new level's atlas (the start's default unit is not the window's).
+    font_unit: Option<i32>,
     pub font: Option<GameFont>,
     /// The sound the tree's last action names, for the audio path: showing
     /// it plays `ThaumShow02`; a hidden screen is silent. The running game
@@ -114,6 +120,7 @@ impl Default for PowerScreen {
             domain_files: [None, None, None, None, None, None, None],
             sheets: TreeSheets::default(),
             font_atlas: None,
+            font_unit: None,
             font: None,
             sound: None,
             dirty: true,
@@ -130,13 +137,161 @@ impl Default for PowerScreen {
 #[derive(Resource)]
 struct AssetsLoaded;
 
+/// The character creator's use of the tree: the creator's final button
+/// asks for the tree on its record ([`CreatorPowerTree::request`]); the
+/// tree opens in its creation mode with no calling form, and its prompt's
+/// BEGIN or BACK hands the record back ([`CreatorPowerTree::answer`]).
+#[derive(Resource, Debug, Default)]
+pub struct CreatorPowerTree {
+    /// The record the tree opens on.
+    pub request: Option<PowerRecord>,
+    /// The prompt's answer, with the record as the tree left it.
+    pub answer: Option<CreatorTreeAnswer>,
+    /// The game's own record, kept while the creator's is on the screen.
+    kept: Option<PowerRecord>,
+    /// The creation tree is the one on the screen.
+    pub active: bool,
+}
+
+/// What the creation prompt answered.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatorTreeAnswer {
+    /// BEGIN (the creator's commit callback) rather than BACK (its cancel).
+    pub begin: bool,
+    pub record: PowerRecord,
+}
+
+/// The creation tree's opening, input and answer: the creator's request
+/// opens the tree on its record in [`TreeMode::Create`] (the creator's
+/// opening path: no calling form, the task word 0x10, hints at 0xff, no
+/// bar); the prompt's two buttons, and the form's confirm (Enter, the GUI
+/// core's 0x100 word) and cancel (Escape, 0x200) words, which the tree's
+/// message handler turns into the same two callbacks, answer it. Either
+/// answer leaves the tree as the original's close does (the bar and the
+/// domain stored, the closing fade).
+fn creator_tree(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    time: Res<Time>,
+    mut creator: ResMut<CreatorPowerTree>,
+    mut screen: ResMut<PowerScreen>,
+) {
+    let now = time.elapsed().as_millis() as u32;
+    if let Some(record) = creator.request.take() {
+        let Ok(window) = windows.single() else {
+            creator.request = Some(record);
+            return;
+        };
+        let width = window.physical_width() as f32;
+        let height = window.physical_height() as f32;
+        creator.kept = Some(std::mem::replace(&mut screen.record, record));
+        creator.active = true;
+        let domain = crate::thaum::tree::DOMAIN_MIND;
+        let PowerScreen {
+            open,
+            bar_open,
+            tree,
+            record,
+            texts,
+            domain_files,
+            dirty,
+            sound,
+            sheets,
+            ..
+        } = &mut *screen;
+        let file = domain_files.get(usize::from(domain)).cloned().flatten();
+        *texts = file
+            .as_deref()
+            .and_then(|bytes| exa_formats::power_tree::read_power_tree(bytes).ok())
+            .map(|tree| tree.texts)
+            .unwrap_or_default();
+        *tree = TreeScreen::load(
+            domain,
+            TreeMode::Create,
+            Some(&*record),
+            file.as_deref(),
+            width,
+            height,
+        );
+        tree.domain_cells = domain_cells(sheets);
+        *open = true;
+        *bar_open = false;
+        *sound = tree.show(now).sound;
+        *dirty = true;
+        info!(
+            "power tree: the creator opens it on {} known powers",
+            record.pairs.len()
+        );
+        return;
+    }
+    if !creator.active || !screen.open || screen.tree.mode != TreeMode::Create {
+        return;
+    }
+    // The prompt's buttons answer on the click (the release), as the
+    // tree's press reads BACK and BEGIN.
+    let mut flags = 0;
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
+        flags = 0x100;
+    } else if keys.just_pressed(KeyCode::Escape) {
+        flags = 0x200;
+    }
+    let mut answer = None;
+    if flags != 0 && !screen.tree.closing() {
+        let out = screen.tree.wheel(flags, 0.0, 0.0, now);
+        if out.begin || out.back {
+            answer = Some(out.begin);
+        }
+    }
+    if answer.is_none()
+        && buttons.just_released(MouseButton::Left)
+        && !screen.tree.closing()
+        && let Ok(window) = windows.single()
+        && window.cursor_position().is_some()
+    {
+        let focus = screen.tree.focus;
+        if focus == crate::thaum::tree::focus::BEGIN {
+            answer = Some(true);
+        } else if focus == crate::thaum::tree::focus::BACK {
+            answer = Some(false);
+        }
+    }
+    let Some(begin) = answer else {
+        return;
+    };
+    let PowerScreen {
+        tree,
+        record,
+        bar,
+        dirty,
+        ..
+    } = &mut *screen;
+    tree.leave(bar, record);
+    tree.hide(now);
+    *dirty = true;
+    info!(
+        "power tree: the creation prompt answers {}",
+        if begin { "BEGIN" } else { "BACK" }
+    );
+    let record = match creator.kept.take() {
+        Some(kept) => std::mem::replace(&mut screen.record, kept),
+        None => screen.record.clone(),
+    };
+    creator.active = false;
+    creator.answer = Some(CreatorTreeAnswer { begin, record });
+}
+
 pub struct PowerScreenPlugin;
 
 impl Plugin for PowerScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PowerScreen>()
+            .init_resource::<CreatorPowerTree>()
             .add_systems(Startup, (load_screen, setup_router))
-            .add_systems(Update, (hotkeys, pointer, draw, ui_sounds).chain());
+            .add_systems(
+                Update,
+                (creator_tree, hotkeys, pointer, draw, ui_sounds).chain(),
+            );
     }
 }
 
@@ -246,7 +401,9 @@ fn load_screen(
 /// install ships it, else the base font's atlas that the packs carry. The
 /// level's metrics stay either way (see [`font_with_fallback`]).
 fn load_tree_font(game: &Game, unit: Option<i32>, screen: &mut PowerScreen) {
-    let level = gui_level(level_for_unit(unit.unwrap_or(4))).main;
+    let unit = unit.unwrap_or(4);
+    screen.font_unit = Some(unit);
+    let level = gui_level(level_for_unit(unit)).main;
     let loaded = game
         .load_rgba(level.texture)
         .ok()
@@ -604,6 +761,7 @@ struct CanvasState {
 #[allow(clippy::too_many_arguments)]
 fn draw(
     time: Res<Time>,
+    game: Option<Res<Game>>,
     mut screen: ResMut<PowerScreen>,
     gui: Option<Res<exa_ui::GuiScale>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -695,6 +853,15 @@ fn draw(
     // window's physical height; the tree's layout and its font level both
     // come from it.
     let scale = gui.as_deref().map_or(4, |gui| gui.scale) as f32;
+    // The text atlas follows the interface level, as the wheel's texture
+    // does: the unit the screen loaded with is the start's default, and
+    // another level's atlas gives no glyphs.
+    if let Some(game) = game.as_deref()
+        && screen.font_unit.is_some_and(|unit| unit != scale as i32)
+    {
+        load_tree_font(game, Some(scale as i32), &mut screen);
+        screen.canvas.invalidate();
+    }
     let (draw, canvas_height) = frame_draw(&mut screen, width, height, scale, now);
     let PowerScreen {
         canvas: cache,
@@ -1792,8 +1959,12 @@ fn shade(
         }
         Program::SkinText => {
             // The skin's textured program with `TexCol` one: the atlas
-            // colour multiplies the run's ink.
-            let tex = sample(texture, vertex.u, vertex.v);
+            // colour multiplies the run's ink. The glyph cells (row over 16
+            // from the decoded atlas's first row, the quad's top on the far
+            // row, as the glyphs are stored upside down) address the atlas
+            // as the GUI's own text draw does, so its rows are read from the
+            // first down, not through the sheets' flipped rows.
+            let tex = sample(texture, vertex.u, 1.0 - vertex.v);
             let tex_col = uniforms.par0[0];
             [
                 col[0] * (tex[0] * tex_col + 1.0 - tex_col),
@@ -2173,6 +2344,110 @@ mod tests {
         assert!(!screen.open && !screen.bar_open);
         let mut canvases = app.world_mut().query::<&Visibility>();
         assert!(canvases.iter(app.world()).all(|v| *v == Visibility::Hidden));
+    }
+
+    /// The creator's request opens the tree in its creation mode on the
+    /// creator's record (no bar); Escape answers BACK with the record and
+    /// the game's own record comes back; Enter on a second opening answers
+    /// BEGIN.
+    #[test]
+    fn the_creator_s_request_opens_the_creation_tree_and_its_keys_answer() {
+        let mut app = scripted_tree_app(None, vec![(10, KeyCode::Escape), (200, KeyCode::Enter)]);
+        let game_record = app.world().resource::<PowerScreen>().record.clone();
+        let mut asked = PowerRecord::empty(4.0);
+        asked.pairs.push(crate::thaum::tree::KnownPower {
+            power: 0x101,
+            flags: 0x5fff,
+        });
+        app.world_mut().resource_mut::<CreatorPowerTree>().request = Some(asked.clone());
+        for _ in 0..3 {
+            app.update();
+        }
+        {
+            let screen = app.world().resource::<PowerScreen>();
+            assert!(screen.open && !screen.bar_open);
+            assert_eq!(screen.tree.mode, TreeMode::Create);
+            assert_eq!(screen.tree.task_word, 0x10);
+            assert_eq!(screen.record.pairs, asked.pairs);
+            assert!(app.world().resource::<CreatorPowerTree>().active);
+        }
+        for _ in 0..10 {
+            app.update();
+        }
+        let answer = app
+            .world_mut()
+            .resource_mut::<CreatorPowerTree>()
+            .answer
+            .take()
+            .expect("BACK answered");
+        assert!(!answer.begin);
+        assert_eq!(answer.record.pairs, asked.pairs);
+        assert_eq!(app.world().resource::<PowerScreen>().record, game_record);
+        // The closing fade turns the screen off.
+        for _ in 0..30 {
+            app.update();
+        }
+        assert!(!app.world().resource::<PowerScreen>().open);
+        app.world_mut().resource_mut::<CreatorPowerTree>().request = Some(asked);
+        for _ in 0..160 {
+            app.update();
+        }
+        let answer = app
+            .world_mut()
+            .resource_mut::<CreatorPowerTree>()
+            .answer
+            .take()
+            .expect("BEGIN answered");
+        assert!(answer.begin);
+    }
+
+    /// With the installed packs the creation tree's prompt is drawn: its
+    /// title's letters light the band an eighth down the window, also when
+    /// the screen loaded its atlas at the start's default interface unit
+    /// and the window's unit is another.
+    #[test]
+    fn the_creation_prompt_draws_its_title() {
+        let Some(game) = installed_game() else {
+            return;
+        };
+        let mut app = scripted_tree_app(Some(&game), Vec::new());
+        app.insert_resource(exa_ui::GuiScale { size: 0, scale: 5 });
+        app.update();
+        app.world_mut().resource_mut::<exa_ui::GuiScale>().scale = 4;
+        app.world_mut().resource_mut::<CreatorPowerTree>().request = Some(PowerRecord::starter());
+        for _ in 0..120 {
+            app.update();
+        }
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(screen.open);
+        let (draw, _) = {
+            let screen = &mut *app.world_mut().resource_mut::<PowerScreen>();
+            frame_draw(screen, 1280, 720, 4.0, 2000)
+        };
+        let fonts = draw
+            .batches
+            .iter()
+            .filter(|b| matches!(b.texture, Texture::Font(_)))
+            .count();
+        let mut canvases = app.world_mut().query::<&ImageNode>();
+        let handle = canvases
+            .iter(app.world())
+            .next()
+            .expect("the canvas")
+            .image
+            .clone();
+        let images = app.world().resource::<Assets<Image>>();
+        let image = images.get(&handle).expect("the canvas image");
+        let data = image.data.as_ref().expect("the pixels");
+        let lit = (85..110)
+            .flat_map(|y| (300..980).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let at = ((y * 1280 + x) * 4) as usize;
+                data[at + 3] > 8 && data[at..at + 3].iter().any(|&c| c > 64)
+            })
+            .count();
+        assert!(fonts > 0);
+        assert!(lit > 100, "{lit}");
     }
 
     /// The open tree's frames as the GPU check takes them (1280 by 720, a
