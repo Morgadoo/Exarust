@@ -413,8 +413,15 @@ the original's text (`HELP`) at 2, 48 units, its parent's client less 4
 units wide and 50 units high (`help_box`), ready for the text box's draw.
 The device and memory readouts take the renderer's name or the Deck's and
 the video memory (or "Unknown").
-The line skin's own control draws are in
-`skin` too: each quad's eight-float sample record (`sample_corners`), the
+The line skin's form draw (`line_skin::draw_line_form`, the method the
+game's skin puts in the form-draw slot) gives a form's shadow and backdrop
+flags, its title's x and its frame quads: a top-level form's corner frame
+(ornaments, close mark, edge bars split around the title, the title strip)
+and a child's panel frame, free (two units in) or held (on its edges, with
+an edge mask against the owner's client choosing joints or curled
+corners). The line skin's own control draws are in
+`skin` too: each quad's eight-float sample record (`sample_corners`, from
+the skin's whole record table `LINE_SAMPLE_RECORDS`), the
 check box and its mark (`check_box_quads`) and the textured batch they go
 into (`line_skin_batch`, `push_line_quads`); `line_skin::shown_palette` is
 the palette a shown form draws with (alpha ramps 170 and 125) and

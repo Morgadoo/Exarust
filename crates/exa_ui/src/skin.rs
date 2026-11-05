@@ -604,9 +604,231 @@ pub fn sample_corners(sample: [u32; 4]) -> Option<[f32; 8]> {
         FRAME_EDGE => [0.475, 0.3, 0.475, 0.35, 0.575, 0.35, 0.575, 0.3],
         CHECK_BOX => [0.75, 0.8, 0.75, 1.0, 0.85, 1.0, 0.85, 0.8],
         CHECK_MARK => [0.85, 0.8, 0.85, 1.0, 0.95, 1.0, 0.95, 0.8],
-        _ => return None,
+        _ => {
+            return LINE_SAMPLE_RECORDS
+                .iter()
+                .find(|record| record[..4] == sample)
+                .map(|record| record.map(f32::from_bits));
+        }
     })
 }
+
+/// The line skin's sample records as the executable stores them, one after
+/// another (each corner's u and v bits, in drawing order). A quad's sample
+/// words are a record's first two corners, and no two records share them,
+/// so the words find the record. The window draws, the panel frames, the
+/// title caps and the bars bind these.
+pub const LINE_SAMPLE_RECORDS: [[u32; 8]; 19] = [
+    // 0.4, 0.8, 0.4, 1, 0.5, 1, 0.5, 0.8
+    [
+        0x3ecc_cccd,
+        0x3f4c_cccd,
+        0x3ecc_cccd,
+        0x3f80_0000,
+        0x3f00_0000,
+        0x3f80_0000,
+        0x3f00_0000,
+        0x3f4c_cccd,
+    ],
+    // 0.15, 0.2, 0.15, 0.4, 0.3, 0.4, 0.3, 0.2
+    [
+        0x3e19_999a,
+        0x3e4c_cccd,
+        0x3e19_999a,
+        0x3ecc_cccd,
+        0x3e99_999a,
+        0x3ecc_cccd,
+        0x3e99_999a,
+        0x3e4c_cccd,
+    ],
+    // 0.3, 0.1, 0.3, 0.2, 0.5, 0.2, 0.5, 0.1
+    [
+        0x3e99_999a,
+        0x3dcc_cccd,
+        0x3e99_999a,
+        0x3e4c_cccd,
+        0x3f00_0000,
+        0x3e4c_cccd,
+        0x3f00_0000,
+        0x3dcc_cccd,
+    ],
+    // 0.7, 0.1, 0.7, 0.2, 0.75, 0.2, 0.75, 0.1
+    [
+        0x3f33_3333,
+        0x3dcc_cccd,
+        0x3f33_3333,
+        0x3e4c_cccd,
+        0x3f40_0000,
+        0x3e4c_cccd,
+        0x3f40_0000,
+        0x3dcc_cccd,
+    ],
+    // 0.5, 0.8, 0.5, 0.9, 0.55, 0.9, 0.55, 0.8
+    [
+        0x3f00_0000,
+        0x3f4c_cccd,
+        0x3f00_0000,
+        0x3f66_6666,
+        0x3f0c_cccd,
+        0x3f66_6666,
+        0x3f0c_cccd,
+        0x3f4c_cccd,
+    ],
+    // 0.4, 0.3, 0.4, 0.45, 0.475, 0.45, 0.475, 0.3
+    [
+        0x3ecc_cccd,
+        0x3e99_999a,
+        0x3ecc_cccd,
+        0x3ee6_6666,
+        0x3ef3_3333,
+        0x3ee6_6666,
+        0x3ef3_3333,
+        0x3e99_999a,
+    ],
+    // 0.475, 0.3, 0.475, 0.35, 0.575, 0.35, 0.575, 0.3
+    [
+        0x3ef3_3333,
+        0x3e99_999a,
+        0x3ef3_3333,
+        0x3eb3_3333,
+        0x3f13_3333,
+        0x3eb3_3333,
+        0x3f13_3333,
+        0x3e99_999a,
+    ],
+    // 0.75, 0.8, 0.75, 1, 0.85, 1, 0.85, 0.8
+    [
+        0x3f40_0000,
+        0x3f4c_cccd,
+        0x3f40_0000,
+        0x3f80_0000,
+        0x3f59_999a,
+        0x3f80_0000,
+        0x3f59_999a,
+        0x3f4c_cccd,
+    ],
+    // 0.85, 0.8, 0.85, 1, 0.95, 1, 0.95, 0.8
+    [
+        0x3f59_999a,
+        0x3f4c_cccd,
+        0x3f59_999a,
+        0x3f80_0000,
+        0x3f73_3333,
+        0x3f80_0000,
+        0x3f73_3333,
+        0x3f4c_cccd,
+    ],
+    // 0.3, 0, 0.3, 0.1, 0.5, 0.1, 0.5, 0
+    [
+        0x3e99_999a,
+        0x0000_0000,
+        0x3e99_999a,
+        0x3dcc_cccd,
+        0x3f00_0000,
+        0x3dcc_cccd,
+        0x3f00_0000,
+        0x0000_0000,
+    ],
+    // 0, 0, 0, 0.3, 0.15, 0.3, 0.15, 0
+    [
+        0x0000_0000,
+        0x0000_0000,
+        0x0000_0000,
+        0x3e99_999a,
+        0x3e19_999a,
+        0x3e99_999a,
+        0x3e19_999a,
+        0x0000_0000,
+    ],
+    // 0, 0.4, 0, 0.7, 0.15, 0.7, 0.15, 0.4
+    [
+        0x0000_0000,
+        0x3ecc_cccd,
+        0x0000_0000,
+        0x3f33_3333,
+        0x3e19_999a,
+        0x3f33_3333,
+        0x3e19_999a,
+        0x3ecc_cccd,
+    ],
+    // 0, 0.8, 0, 1, 0.1, 1, 0.1, 0.8
+    [
+        0x0000_0000,
+        0x3f4c_cccd,
+        0x0000_0000,
+        0x3f80_0000,
+        0x3dcc_cccd,
+        0x3f80_0000,
+        0x3dcc_cccd,
+        0x3f4c_cccd,
+    ],
+    // 0.7, 0, 0.7, 0.1, 0.75, 0.1, 0.75, 0
+    [
+        0x3f33_3333,
+        0x0000_0000,
+        0x3f33_3333,
+        0x3dcc_cccd,
+        0x3f40_0000,
+        0x3dcc_cccd,
+        0x3f40_0000,
+        0x0000_0000,
+    ],
+    // 0.2, 0.1, 0.2, 0.2, 0.3, 0.2, 0.3, 0.1
+    [
+        0x3e4c_cccd,
+        0x3dcc_cccd,
+        0x3e4c_cccd,
+        0x3e4c_cccd,
+        0x3e99_999a,
+        0x3e4c_cccd,
+        0x3e99_999a,
+        0x3dcc_cccd,
+    ],
+    // 0.65, 0.7, 0.65, 0.9, 0.75, 0.9, 0.75, 0.7
+    [
+        0x3f26_6666,
+        0x3f33_3333,
+        0x3f26_6666,
+        0x3f66_6666,
+        0x3f40_0000,
+        0x3f66_6666,
+        0x3f40_0000,
+        0x3f33_3333,
+    ],
+    // 0.7, 0.5, 0.7, 0.7, 0.75, 0.7, 0.75, 0.5
+    [
+        0x3f33_3333,
+        0x3f00_0000,
+        0x3f33_3333,
+        0x3f33_3333,
+        0x3f40_0000,
+        0x3f33_3333,
+        0x3f40_0000,
+        0x3f00_0000,
+    ],
+    // 0.6, 0.2, 0.6, 0.6, 0.8, 0.6, 0.8, 0.2
+    [
+        0x3f19_999a,
+        0x3e4c_cccd,
+        0x3f19_999a,
+        0x3f19_999a,
+        0x3f4c_cccd,
+        0x3f19_999a,
+        0x3f4c_cccd,
+        0x3e4c_cccd,
+    ],
+    // 0.15, 0.2, 0.15, 0.6, 0.35, 0.6, 0.35, 0.2
+    [
+        0x3e19_999a,
+        0x3e4c_cccd,
+        0x3e19_999a,
+        0x3f19_999a,
+        0x3eb3_3333,
+        0x3f19_999a,
+        0x3eb3_3333,
+        0x3e4c_cccd,
+    ],
+];
 
 /// The line skin's check box: a four-unit square at the record's place
 /// (its lower left corner first, then up, across and down), and the mark
@@ -13229,7 +13451,15 @@ mod line_quad_tests {
             let corners = sample_corners(sample).unwrap();
             assert_eq!(&corners[..4], &sample.map(f32::from_bits)[..]);
         }
-        assert_eq!(sample_corners(SCROLL_BAR), None);
+        assert_eq!(
+            sample_corners(SCROLL_BAR),
+            Some([0.3, 0.1, 0.3, 0.2, 0.5, 0.2, 0.5, 0.1])
+        );
+        for record in LINE_SAMPLE_RECORDS {
+            let words = [record[0], record[1], record[2], record[3]];
+            assert_eq!(sample_corners(words), Some(record.map(f32::from_bits)));
+        }
+        assert_eq!(sample_corners([0, 0, 0, 0]), None);
         assert_eq!(
             sample_corners(SLIDER_THUMB),
             Some([0.4, 0.8, 0.4, 1.0, 0.5, 1.0, 0.5, 0.8])

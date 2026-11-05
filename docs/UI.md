@@ -1680,21 +1680,70 @@ permissions apply), the inventory and journal are forms on a `GuiTask`
 as an open container, the journal keeps its session entries, a right-button
 release over the inventory's or a loot window's form closes it (their own
 mouse handler), and Escape closes the focused screen (Exarust's). Both
-screens now draw
-(`exa_game::gui_paint`) with the words their constructors write. The form
-attribute word is 0x30022 (the journal adds 0x8000) and the frame style
-adds the centred-title bit 0x3000; the item pack adds 0x80 to its style and
-0x10 and 0x100000 to its attributes. Attribute bit 1 is the title bar and
-no shipped form constructor sets it, so neither screen draws a title bar.
+screens draw through `exa_game::gui_paint`. The constructors' words: the
+form attribute word is 0x30022 (the journal adds 0x8000) and the frame
+style adds the centred-title bit 0x3000; the item pack adds 0x80 to its
+style and 0x10 and 0x100000 to its attributes; the character view (a 3-D
+view) clears 0x20, sets 0x4c010 and takes style 0x88, the inventory then
+clears 0xc000 and 0x08 and sets 0x90 and 0x80 (0x70092, style 0x80).
+
+**The commit of a form's words.** A constructed form's state keeps its
+restyle bit (the base constructor writes state 0x3000) until the show
+pass, or a child added to it, commits its words: a form whose owner is
+not the task is held (state bit 4), and for attribute 0x10000 a held form
+loses its backdrop (0x20000) while a top-level one gains style 0x10 (the
+corner frame) and attributes 0x41 (title bar and shadow)
+(`exa_ui::form::set_style`, applied by `gui_paint::commit_words`). So the
+inventory, owned by the task, is titled "Inventory" with a shadow and
+ornamented corners, and its character view and pack, owned by the
+inventory, are held. The journal still paints with its constructor's
+words through the default background (no title bar).
+
+**The game skin's form draw** (`exa_ui::line_skin::draw_line_form`,
+painted by `gui_paint::paint_line_form`; the inventory uses it). The line
+skin puts its own method in the skin's form-draw slot. It draws the
+shadow (attribute 0x40: the rounded program's ring eight units out, black
+at the form group's fourth shade's alpha), the backdrop (attribute 0x20000
+on a form that is not held: one solid quad in the form group's fourth
+shade, black at 170 shown), the form's content and children, the title
+(attribute 1: centred in the form's width, its baseline the main font's
+ascent, in the label group's seventh shade), then the frame from the skin
+atlas in the idle control ink (255, 250, 230 at 104):
+
+- **Corner frame** (style 0x10, not wide): six-unit corner ornaments, the
+  top right one the second ornament when the close mark (attribute 2) is
+  drawn beside it, four units square; edge bars two units thick from
+  round(6.6 units) in, the top one split around the title's gap
+  ((width − title − 5 units) / 2) with a cap at each side; under a title
+  (without attribute 0x800000) the progress strip two to four units down,
+  split at the gap.
+- **Panel frame** (style 0x80, not wide, no scroll bar). A free panel's
+  runs two units in: the strip on top (without a title), bars down the
+  sides and along the bottom eight units short of the corners, two joint
+  pieces per corner (the top pair only when neither the panel nor its
+  owner is titled, or the owner has 0x800000). A held panel's lies on its
+  edges, its corners six units: an edge mask marks each side within a unit
+  of the owner's client edge; the top bar is left off when the panel is
+  flush with a titled owner's top; a corner flush on both of its sides
+  closes with joints, any other with the curled corner piece reaching two
+  units outside. In the inventory the view's bottom corners and the pack's
+  top corners curl.
+
+Each atlas quad takes the eight texture coordinates of its sample record
+(`exa_ui::skin::LINE_SAMPLE_RECORDS`, the skin's own table). The panel
+frame's scroll-bar branch and the wide frame are not ported.
+
 The inventory's 8-unit spacing and the journal's 2 frame the client; the
 control records are laid out by the two-pass layout: the inventory's
 Encumbrance label (class 5, y 0x62 in design units, at client (4, 386)),
 its rating-dots record (class 0xac01, at client (100, 386), 12 × 28) and
-its Primary button (108 × 24 at
-(4, 416)), and the journal's New (4, 20) and Erase (120, 20), 104 × 24
-each. A button caption takes the skin's placement from its style word
-(0x3000 centres horizontally, 0x300 centres vertically). The journal's
-selected entry draws through the text box.
+its two page buttons in radio group 1 (the constructor passes the table's
+last index, 3): Primary (108 × 24 at (4, 416), stored lit) and Secondary
+(following it on its row by four, at (116, 416)); and the journal's New
+(4, 20) and Erase (120, 20), 104 × 24 each. A button caption takes the
+skin's placement from its style word (0x3000 centres horizontally, 0x300
+centres vertically). The journal's selected entry draws through the text
+box.
 
 **Palette and fades of the game's windows.** The base form's draw hands
 the skin a pair of alpha scales only while its show or hide fade runs in
@@ -1716,7 +1765,7 @@ the show only starts the fade for a hidden form.
 
 The closes destroy these forms at once (no hide fade; Manage Company's
 row that opens the board hides it with a fade, not reproduced). Their
-button records (the inventory's Primary, the journal's New and Erase, the
+button records (the inventory's Primary and Secondary, the journal's New and Erase, the
 board's tabs and Enter) are the line skin's atlas frame
 (`exa_game::gui_paint::paint_line_button`, the Settings form's draw): a
 lone button in the idle ink (104), a lit grouped one in the on ink (128), a
@@ -1750,7 +1799,11 @@ a body does not re-dress its mesh, the GUI-to-world drop is not run, and a
 level-local item's record is not promoted into the world database, so its
 bulk counts 0. The skills key's screen and the power tree are outside this unit,
 and the selector opens only from a power slot the HUD does not draw yet.
-The Rayform faces are not shipped, so the text keeps the level font's
+The Rayform faces are not read: the original keeps them as resources
+embedded in its executable (`RAYFORM06R_RFI` … `RAYFORM16R_RFI`), not in a
+pack (the `GUI texture "Rayform10R" not found` log lines are these fonts,
+not the frame skin, which is `guiskin.rfi` in `Resource.rpk`), so the text
+keeps the level font's
 metrics (glyph quad, advances, line height) and samples its glyph cells
 from the base font's atlas, a quad of the level's size over one base cell.
 A texture coordinate runs up the image, so a stored-top-down texture is
@@ -3073,8 +3126,8 @@ the camera's space, as the view's task writes the scene's first light
 each frame (the earlier reading of that write as the figure's facing was
 wrong), at the item icon scene's 0.75 (a guess at the scene's light level).
 The inventory's painter clears the canvas over the view and the camera
-clears to the colour the canvas had there (black at 227 with the line
-skin), so the figure stands on the window's own client: what the original's
+clears to the colour the canvas had there (black at 170: the window's
+backdrop; the view, held, draws none), so the figure stands on the window's own client: what the original's
 kept still holds behind the figure is not traced, so this is a guess. The
 camera, its image and the figure exist only while the inventory is open.
 The figure's hands are the view's hand-scene job, run whenever the record

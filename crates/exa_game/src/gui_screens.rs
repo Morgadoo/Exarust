@@ -32,7 +32,7 @@ use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
 
 use crate::body_inventory;
-use crate::gui_paint::{self, Frame};
+use crate::gui_paint::{self, Frame, LineFormAt};
 use crate::item_container::{
     CardWindow, Container, ContainerChild, ContainerRecord, POPUP_BORDER, POPUP_PANEL_BORDER,
     PopupPlan, open_container, popup_form_size, popup_icon_height, popup_icon_place, popup_place,
@@ -227,17 +227,28 @@ fn button_record(x: i32, y: i32, w: i32, text: &str) -> Control {
     control
 }
 
-/// The inventory constructor's three records, as stored: the Encumbrance
-/// label, the rating dots beside it and the Primary button.
+/// The inventory constructor's four records, as stored (the constructor
+/// passes the table's last index, 3): the Encumbrance label, the rating
+/// dots beside it and the two page buttons, Primary and Secondary, in
+/// radio group 1. The fill lights one of them
+/// ([`exa_ui::game_gui::inventory_tab_states`]; the table stores Primary
+/// lit).
 fn inventory_records() -> Vec<Control> {
     let mut label = Control::new(5, 4, INVENTORY_LABEL_ROW, 12, 28);
     label.style = 0;
     label.text = b"Encumbrance:".to_vec();
     let dots = Control::new(RATING_DOTS_CLASS, 100, -0x8000, 12, 28);
-    // The button's x is stored as a plain 4 and its y as an anchor of eight
-    // rows below the record above.
-    let primary = button_record(4, -0x7ff8, 108, "Primary");
-    vec![label, dots, primary]
+    let [primary_state, secondary_state] = exa_ui::game_gui::inventory_tab_states(0);
+    // Primary's x is stored as a plain 4 and its y as an anchor of eight
+    // rows below the record above; Secondary follows it on its row, four
+    // after it.
+    let mut primary = button_record(4, -0x7ff8, 108, "Primary");
+    primary.group = 1;
+    primary.state = primary_state;
+    let mut secondary = button_record(-0x7ff7, -0x8000, 108, "Secondary");
+    secondary.group = 1;
+    secondary.state = secondary_state;
+    vec![label, dots, primary, secondary]
 }
 
 /// The height the inventory constructor leaves the character view short of
@@ -1952,16 +1963,19 @@ fn paint_controls(
         let rect = GuiRect::new(control.x, control.y, control.w, control.h);
         let text = String::from_utf8_lossy(&control.text);
         let layers = match control.class {
-            1 => gui_paint::paint_button(
+            1 => gui_paint::paint_line_button(
                 rect,
-                control.style,
+                gui_paint::ButtonWords {
+                    style: control.style,
+                    state: control.state,
+                    group: control.group,
+                },
                 unit,
                 palette,
+                1.0,
                 font,
                 size,
                 &text,
-                false,
-                false,
             ),
             5 => gui_paint::paint_label(rect, control.style, unit, palette, font, size, &text),
             _ => continue,
@@ -2023,40 +2037,57 @@ fn paint_inventory(
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
-    let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
-    frame.spacing = layout.border;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
-    // The character view is a child form: its frame is drawn with the
-    // words the constructor gives it.
-    let doll_panel = gui_paint::paint_panel(
-        layout.doll_at(bounds),
+    // The game's skin draws a form through the line skin's form draw, with
+    // the words the show commits: the inventory is a top-level form (its
+    // shadow, backdrop, title and corner frame), the character view and
+    // the pack are held children (no backdrop; the panel frame on their
+    // edges, curled where they leave the client's edges).
+    let client = GuiRect::new(
+        bounds.left + layout.border,
+        bounds.top + layout.border,
+        bounds.width() - layout.border * 2,
+        bounds.height() - layout.border * 2,
+    );
+    let mut painted = gui_paint::Painted {
+        client,
+        ..Default::default()
+    };
+    let outer_words =
+        gui_paint::commit_words(gui_paint::SCREEN_STYLE, gui_paint::FORM_ATTRIBUTES, true);
+    let mut outer = gui_paint::paint_line_form(
+        LineFormAt::top(bounds),
         unit,
         &palette,
-        gui_paint::DOLL_ATTRIBUTES,
-        gui_paint::PACK_STYLE,
+        1.0,
+        outer_words,
+        Some((INVENTORY_TITLE, &font, size)),
     );
-    for layer in doll_panel.layers {
-        painted.push(layer);
-    }
-    let view = crate::doll_view::view_rect(layout.doll_at(bounds), DOLL_BORDER);
+    painted.layers.extend(outer.under());
+    let child = |rect: GuiRect, attributes: u32| {
+        gui_paint::paint_line_form(
+            LineFormAt::child(rect, client, outer_words.attributes),
+            unit,
+            &palette,
+            1.0,
+            gui_paint::commit_words(gui_paint::PACK_STYLE, attributes, false),
+            None,
+        )
+    };
+    let doll_rect = layout.doll_at(bounds);
+    let mut doll_form = child(doll_rect, gui_paint::DOLL_ATTRIBUTES);
+    painted.layers.extend(doll_form.under());
+    let view = crate::doll_view::view_rect(doll_rect, DOLL_BORDER);
     let backdrop = doll.filter(|doll| doll.punch).map(|_| {
         let centre = ((view.left + view.right) / 2, (view.top + view.bottom) / 2);
         let backdrop = canvas_colour_at(&painted.layers, textures, centre);
         painted.push(clear_layer(view));
         backdrop
     });
+    painted.layers.extend(doll_form.over());
     let pack = layout.pack_at(bounds);
-    let panel = gui_paint::paint_panel(
-        pack,
-        unit,
-        &palette,
-        gui_paint::PACK_ATTRIBUTES,
-        gui_paint::PACK_STYLE,
-    );
-    let panel_client = panel.client;
-    for layer in panel.layers {
-        painted.push(layer);
-    }
+    let mut pack_form = child(pack, gui_paint::PACK_ATTRIBUTES);
+    painted.layers.extend(pack_form.under());
+    let panel_client = panel_client(pack);
     // The entries' cells are the panel's own coordinates: the icons are
     // moved to its client area and clipped to it.
     if let Some(icons) = icons
@@ -2071,6 +2102,8 @@ fn paint_inventory(
         ]);
         painted.push(layer);
     }
+    painted.layers.extend(pack_form.over());
+    painted.layers.extend(outer.over());
     let controls = layout.controls_at(bounds);
     paint_controls(&controls, unit, &palette, &font, size, &mut painted);
     // The rating dots draw in the label group's seventh ink.
@@ -2435,7 +2468,7 @@ mod tests {
         let bounds = GuiRect::new(8, 8, 244, 644);
         let (left, top) = client_of(bounds, gui_paint::INVENTORY_SPACING);
         let controls = screen_controls(GameScreen::Inventory, bounds);
-        assert_eq!(controls.len(), 3);
+        assert_eq!(controls.len(), 4);
         let place = |c: &Control| (c.x - left, c.y - top, c.w, c.h);
         assert_eq!(controls[0].class, 5);
         assert_eq!((place(&controls[0]).0, place(&controls[0]).1), (4, 386));
@@ -2449,6 +2482,14 @@ mod tests {
         );
         assert_eq!(controls[2].class, 1);
         assert_eq!(place(&controls[2]), (4, 416, 108, 24));
+        // Secondary follows Primary on its row, four after it; both are
+        // in group 1 and Primary is lit.
+        assert_eq!(place(&controls[3]), (116, 416, 108, 24));
+        assert_eq!((controls[2].group, controls[3].group), (1, 1));
+        assert_eq!(
+            (controls[2].state & 0x60, controls[3].state & 0x60),
+            (0x60, 0)
+        );
     }
 
     /// At unit 4 the layout is the constructor's design: 244 × 644 at
@@ -3171,11 +3212,15 @@ mod tests {
         app.update();
         let frames = app.world().resource::<GuiFrames>();
         assert_eq!(frames.frames.len(), 1);
-        let layer = &frames.frames[0].layers[0];
+        // The shadow first, reaching eight units out from the form; then
+        // the backdrop from the form's corner.
+        let shadow = &frames.frames[0].layers[0];
+        let first = &shadow.batch.vertices_of(&shadow.batch.primitives[0])[0];
+        assert_eq!((first.x, first.y), (8.0 - 32.0, 8.0 - 32.0));
+        let layer = &frames.frames[0].layers[1];
         assert!(!layer.batch.primitives.is_empty());
         let first = &layer.batch.vertices_of(&layer.batch.primitives[0])[0];
-        assert!(first.x >= 8.0 && first.y >= 8.0);
-        assert!(first.x <= 8.0 + 244.0 && first.y <= 8.0 + 644.0);
+        assert_eq!((first.x, first.y), (8.0, 8.0));
         assert!(layer.batch.primitives.iter().any(|primitive| {
             matches!(
                 primitive.mode,
@@ -3311,8 +3356,8 @@ mod tests {
             canvas_colour_at(&plain.layers, &textures, centre),
             backdrop.unwrap()
         );
-        // The form's and the doll panel's translucent black fills.
-        assert_eq!(backdrop, Some([0, 0, 0, 227]));
+        // The form's translucent black backdrop (the held view has none).
+        assert_eq!(backdrop, Some([0, 0, 0, 170]));
         assert_eq!(canvas_colour_at(&painted.layers, &textures, centre), [0; 4]);
     }
 
