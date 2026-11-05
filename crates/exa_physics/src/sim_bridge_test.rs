@@ -149,6 +149,7 @@ fn app(shell: Option<SimMode>) -> App {
         .init_resource::<Tally>()
         .add_systems(FixedUpdate, (sim_watch, integrate, sparks).chain())
         .add_systems(Update, frame_watch);
+    crate::sim_app::add_fixed_commands(&mut app);
     if let Some(mode) = shell {
         app.add_plugins((SimShellPlugin { mode }, SimBridgePlugin { extra: vec![] }))
             .bridge_copy::<Tag>()
@@ -195,6 +196,18 @@ fn script(app: &mut App, frame: u32, named: &mut Vec<Entity>) {
             world.entity_mut(named[2]).insert(Vel(0.5));
             world.write_message(Ping(99));
             world.write_message(Ping(6));
+        }
+        5 => {
+            // A frame decision posted as a write: it lands at the start of
+            // the next step, in either world.
+            let target = named[1];
+            world
+                .resource_mut::<crate::sim_app::FixedCommands>()
+                .post(move |w: &mut World| {
+                    if let Some(mut p) = w.get_mut::<Pos>(target) {
+                        p.0 = 42.0;
+                    }
+                });
         }
         6 => {
             world.entity_mut(named[3]).despawn();
@@ -249,6 +262,13 @@ fn the_bridge_shows_each_side_what_one_world_would() {
     // The script reached the fixed step: frame 2's move, frame 3's removal.
     assert!(alone.sim.iter().any(|s| s.contains("removed [\"2\"]")));
     assert!(alone.sim.last().unwrap().ends_with("kids 1"));
+    // The posted write reached the fixed step.
+    assert!(
+        alone
+            .end
+            .iter()
+            .any(|(t, v)| *t == 1 && v.contains("Pos(42.0)"))
+    );
     for mode in [SimMode::Inline, SimMode::Thread] {
         let bridged = run(Some(mode));
         assert_eq!(bridged.steps, alone.sim.len() as u64);
@@ -296,18 +316,18 @@ fn ids_are_shared_and_unchanged_values_stay_home() {
     frame_sparks.sort();
     assert_eq!(sim_sparks, frame_sparks);
     assert_eq!(frame_sparks.iter().map(|s| s.1).collect::<Vec<_>>(), [5, 6]);
-    // Steady state: only what changed crosses: in, the lent `Heavy` and
-    // `Tally` and Bevy's four clocks; out, the two moving bodies' `Pos`,
-    // `Heavy`, `Tally` and the fixed step's log. The three still bodies stay
-    // home.
+    // Steady state: only what changed crosses: in, the lent `Heavy`,
+    // `Tally` and command queue and Bevy's four clocks; out, the two moving
+    // bodies' `Pos`, `Heavy`, `Tally`, the queue and the fixed step's log.
+    // The three still bodies stay home.
     let before = world.resource::<FrameBridge>().cost;
     app.update();
     let after = app.world().resource::<FrameBridge>().cost;
     assert_eq!(after.steps, before.steps + 1);
     let values_in = after.values_in - before.values_in;
     let values_out = after.values_out - before.values_out;
-    assert_eq!(values_in, 6, "{before:?} -> {after:?}");
-    assert_eq!(values_out, 5, "{before:?} -> {after:?}");
+    assert_eq!(values_in, 7, "{before:?} -> {after:?}");
+    assert_eq!(values_out, 6, "{before:?} -> {after:?}");
 }
 
 /// A type a moved system touches that no plugin registered stops a debug
