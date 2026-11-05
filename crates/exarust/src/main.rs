@@ -151,8 +151,9 @@
 //!                                     left mouse button there at frames after loading
 //!          --toggle-door FRAME        debug: toggle the bound hinged door nearest the player (a shut one is driven
 //!                                     open) that many frames after the level's rooms exist, logging its angle
-//!          --object-click F[d][l],...  debug: click the placed container nearest the player at frames after
-//!                                     loading (d: the double click, l: as a hit on level geometry)
+//!          --object-click F[d][l][#id],...  debug: click the placed container nearest the player at frames
+//!                                     after loading (d: the double click, l: as a hit on level geometry, #id: the
+//!                                     placed object with this hexadecimal id instead, e.g. 200#587)
 //!          --game-event CODE@FRAME,... debug: raise the story scripts' GameEvent CODE at frames after loading
 //!                                     (memory fragment 0xc00001, raise dead 0xda0115, awakenings 0xc10ec1-3)
 //!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
@@ -1234,7 +1235,7 @@ fn main() -> AppExit {
                 match exa_game::object_click::ScriptedObjectClick::parse_list(&list) {
                     Some(c) => options.object_clicks = c,
                     None => {
-                        eprintln!("--object-click: cannot read {list:?} (frame[d][l],...)");
+                        eprintln!("--object-click: cannot read {list:?} (frame[d][l][#id],...)");
                         return AppExit::from_code(2);
                     }
                 }

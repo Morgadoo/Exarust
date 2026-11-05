@@ -150,6 +150,18 @@ impl LiveObjects {
         written
     }
 
+    /// One byte of the record `id` names, at `offset` in the body of its
+    /// first section with `tag` (a socket's charge, …), logged as an
+    /// in-place write. Returns whether the record and its section were
+    /// there.
+    pub fn write_section_byte(&mut self, id: u32, tag: u32, offset: usize, value: u8) -> bool {
+        let written = self.db.set_section_byte(id, tag, offset, value);
+        if written {
+            self.touched(id);
+        }
+        written
+    }
+
     /// A container's children written back into the record `id` names.
     pub fn set_container_children(
         &mut self,

@@ -32,6 +32,7 @@ pub mod control_nodes;
 pub mod create;
 pub mod creator_screen;
 pub mod creator_view;
+pub mod crystal_drain;
 pub mod cursor;
 pub mod destination;
 pub mod dialogue_live;
@@ -54,6 +55,7 @@ pub mod frame;
 pub mod game_event;
 pub mod game_event_live;
 pub mod gamepad;
+pub mod glow_pulse;
 pub mod golem_alarm;
 pub mod golem_body;
 pub mod gui_drop;
@@ -212,7 +214,11 @@ impl Plugin for GamePlugin {
             trace::TracePlugin,
             effects::EffectsPlugin,
             thaum::live::ThaumEffectsPlugin,
-            teleporters::TeleportPlugin,
+            (
+                teleporters::TeleportPlugin,
+                glow_pulse::GlowPulsePlugin,
+                crystal_drain::CrystalDrainPlugin,
+            ),
             hw_config::HardwareConfigPlugin,
             destination::DestinationPlugin,
             (
