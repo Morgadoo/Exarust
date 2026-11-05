@@ -653,9 +653,7 @@ fn read_hire_facts(
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut tried: Local<bool>,
 ) {
-    if *tried
-        || career.hire_facts.is_some()
-        || !levels.iter().any(|root| is_hub_level(&root.name))
+    if *tried || career.hire_facts.is_some() || !levels.iter().any(|root| is_hub_level(&root.name))
     {
         return;
     }

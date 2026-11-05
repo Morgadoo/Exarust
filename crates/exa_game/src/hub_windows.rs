@@ -386,8 +386,12 @@ impl ArenaCareer {
             return Err(crate::career::HireError::Funds);
         };
         let gear = self.gear_words(&member);
-        self.company
-            .hire_listed(member.name.clone(), member.profession, &member.skills, &gear)?;
+        self.company.hire_listed(
+            member.name.clone(),
+            member.profession,
+            &member.skills,
+            &gear,
+        )?;
         if let Some(joined) = self.company.roster.last_mut() {
             joined.skill_xp = member.skill_xp;
             joined.techniques = member.techniques;
@@ -675,7 +679,13 @@ fn draw_hire_member(
         .skill_xp
         .map(|xp| u32::from(xp) / u32::from(crate::career::SKILL_STEP));
     if let Some(facts) = facts {
-        dress_candidate(&mut member, candidate.level, &mut lcg, facts, profile.look.flags);
+        dress_candidate(
+            &mut member,
+            candidate.level,
+            &mut lcg,
+            facts,
+            profile.look.flags,
+        );
     }
     member
 }

@@ -333,9 +333,14 @@ pub fn spectated_foe(
     fighters
         .iter()
         .filter(|(entity, other_team, other_company, alive, _)| {
-            *entity != me && *alive && (company != *other_company || (!company && team != *other_team))
+            *entity != me
+                && *alive
+                && (company != *other_company || (!company && team != *other_team))
         })
-        .min_by(|a, b| at.distance_squared(a.4).total_cmp(&at.distance_squared(b.4)))
+        .min_by(|a, b| {
+            at.distance_squared(a.4)
+                .total_cmp(&at.distance_squared(b.4))
+        })
         .map(|(entity, ..)| *entity)
 }
 
@@ -985,14 +990,7 @@ fn stand_next_round(
     }
     if let NextRound::Reserve(index) = fight.company {
         let (member, id) = scene.entrant(career, index);
-        let body = company_plan(
-            member,
-            &ours,
-            MANAGER_ROLE,
-            id,
-            now,
-            MATCH_ACT_GRACE_MS,
-        );
+        let body = company_plan(member, &ours, MANAGER_ROLE, id, now, MATCH_ACT_GRACE_MS);
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
 }
@@ -1073,14 +1071,7 @@ fn stand_bracket_round(
                 role, act_at_ms, ..
             } => {
                 let (member, id) = scene.entrant(career, fighter.index);
-                let body = company_plan(
-                    member,
-                    &place,
-                    role,
-                    id,
-                    0,
-                    act_at_ms,
-                );
+                let body = company_plan(member, &place, role, id, 0, act_at_ms);
                 commands.write(SceneCommand::Spawn(Box::new(body)));
             }
             RaisedBody::Opponent {
@@ -1445,10 +1436,19 @@ mod tests {
         ];
         // A company body takes the nearest living opponent, not its fellow
         // or the dead one.
-        assert_eq!(spectated_foe((e(1), 1, true, Vec3::ZERO), &rows), Some(e(3)));
+        assert_eq!(
+            spectated_foe((e(1), 1, true, Vec3::ZERO), &rows),
+            Some(e(3))
+        );
         // An opponent takes another team's fighter, the company's or a rival.
-        assert_eq!(spectated_foe((e(5), 3, false, Vec3::X * 9.0), &rows), Some(e(3)));
-        assert_eq!(spectated_foe((e(3), 2, false, Vec3::X * 5.0), &rows), Some(e(2)));
+        assert_eq!(
+            spectated_foe((e(5), 3, false, Vec3::X * 9.0), &rows),
+            Some(e(3))
+        );
+        assert_eq!(
+            spectated_foe((e(3), 2, false, Vec3::X * 5.0), &rows),
+            Some(e(2))
+        );
         assert_eq!(spectated_foe((e(1), 1, true, Vec3::ZERO), &rows[..2]), None);
     }
 
