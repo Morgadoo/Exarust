@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::{Error, MappedArchive, Project, Result};
+use crate::{Error, MappedArchive, ModuleResources, Project, Result};
 
 /// The packs a retail installation ships, by role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,7 +76,14 @@ pub struct GameData {
     root: PathBuf,
     project: Project,
     packs: BTreeMap<PackKind, MappedArchive>,
+    /// The executable's raw-data resources (the GUI fonts and sheets the
+    /// original keeps there); empty when the executable is missing or
+    /// unreadable.
+    module: ModuleResources,
 }
+
+/// The executable whose resources hold the GUI fonts.
+pub const EXECUTABLE: &str = "Exanima.exe";
 
 impl GameData {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -127,10 +134,15 @@ impl GameData {
                 packs.insert(kind, MappedArchive::open(&path)?);
             }
         }
+        let module = std::fs::read(root.join(EXECUTABLE))
+            .ok()
+            .and_then(|bytes| ModuleResources::parse(&bytes).ok())
+            .unwrap_or_default();
         Ok(Self {
             root,
             project,
             packs,
+            module,
         })
     }
 
@@ -181,9 +193,26 @@ impl GameData {
     }
 
     /// Finds an image by bare name (no extension), searching the texture
-    /// packs first and the resource pack (where entries keep `.rfi`) last.
+    /// packs first and the resource pack (where entries keep `.rfi`) last,
+    /// then the executable's raw-data resource `<name>_rfi`: the original's
+    /// font records and its glyph and symbol sheets name their images as
+    /// module resources (`Rayform10R_rfi`, `GlphCommon_rfi`, …), which no
+    /// pack holds.
     pub fn texture(&self, name: &str) -> Option<&[u8]> {
-        self.texture_in(name).map(|(_, _, bytes)| bytes)
+        self.texture_in(name)
+            .map(|(_, _, bytes)| bytes)
+            .or_else(|| self.module_image(name))
+    }
+
+    /// An image the executable carries as the raw-data resource
+    /// `<name>_rfi` (matched without regard to case).
+    pub fn module_image(&self, name: &str) -> Option<&[u8]> {
+        self.module.get(&format!("{name}_rfi"))
+    }
+
+    /// The executable's raw-data resources.
+    pub fn module_resources(&self) -> &ModuleResources {
+        &self.module
     }
 
     /// [`GameData::texture`] with the pack and exact entry name that held the

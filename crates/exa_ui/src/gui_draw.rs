@@ -496,28 +496,25 @@ impl Plugin for GuiDrawPlugin {
     }
 }
 
-/// Loads the skin's atlas and the main and small fonts of the current GUI
-/// level. A missing texture is reported once and left out.
-fn load_gui_textures(
-    game: Option<Res<Game>>,
-    scale: Option<Res<crate::scale::GuiScale>>,
-    mut textures: ResMut<GuiTextures>,
-) {
+/// Loads the skin's atlas and the GUI fonts: the five Rayform faces come
+/// from the executable's raw-data resources (`Rayform08R_rfi`, …), the base
+/// font from the resource pack. Every level's faces are loaded, so a window
+/// whose height picks another GUI level than the start-up one still draws
+/// with its own face. A missing texture is reported once and left out.
+fn load_gui_textures(game: Option<Res<Game>>, mut textures: ResMut<GuiTextures>) {
     let Some(game) = game else {
         return;
     };
-    let unit = scale.as_deref().map_or(4, |scale| scale.scale as i32);
-    let level = crate::gui_font::level_for_unit(unit);
-    let fonts = crate::gui_font::gui_level(level);
+    let fonts = crate::gui_font::FONTS.map(|font| font.texture);
     for name in [
         SKIN_TEXTURE,
-        fonts.main.texture,
-        fonts.small.texture,
-        crate::gui_font::FONTBASE_24.texture,
         crate::gui_text::MENU_FONT_TEXTURE,
         crate::menu::MENU_TITLE_TEXTURE,
         crate::selection::SCREEN_ATLAS,
-    ] {
+    ]
+    .into_iter()
+    .chain(fonts)
+    {
         if textures.textures.contains_key(name) || textures.missing.iter().any(|n| n == name) {
             continue;
         }

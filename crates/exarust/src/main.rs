@@ -120,6 +120,8 @@
 //!                                     record at once: a new story starts unattended), practice, expert,
 //!                                     arena, recruit or versus
 //!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
+//!          --open-loot FRAME          debug: open the loot window of the dead body nearest the player that many frames
+//!                                     after the load
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre or the grid has changed
 //!          --searcher <id>            play mode: the level character with this record id (hex with 0x) gets the
@@ -420,6 +422,9 @@ pub struct Options {
     /// Play mode: open the placed container nearest the player in its
     /// popup this many frames after the load (`--open-container`).
     pub open_container: Option<u32>,
+    /// Play mode: open the loot window of the dead body nearest the player
+    /// this many frames after the load (`--open-loot`).
+    pub open_loot: Option<u32>,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
     pub debug_path: Option<[f32; 3]>,
     /// Play mode: the level character with this record id is recruited as
@@ -998,6 +1003,7 @@ fn main() -> AppExit {
                 options.open_creator = Some(word);
             }
             "--open-container" => options.open_container = args.next().and_then(|v| v.parse().ok()),
+            "--open-loot" => options.open_loot = args.next().and_then(|v| v.parse().ok()),
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
             "--schedule-ambiguities" => options.schedule_ambiguities = true,
@@ -1712,6 +1718,7 @@ fn main() -> AppExit {
         .insert_resource(exa_game::gui_screens::DebugOpenContainer(
             options.open_container,
         ))
+        .insert_resource(exa_game::gui_screens::DebugOpenLoot(options.open_loot))
         .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
         .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
         .insert_resource(exa_world::sun_shadow::SunShadowFit(

@@ -32,7 +32,7 @@ use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
 
 use crate::body_inventory;
-use crate::gui_paint::{self, Frame, LineFormAt};
+use crate::gui_paint::{self, LineFormAt};
 use crate::item_container::{
     CardWindow, Container, ContainerChild, ContainerRecord, POPUP_BORDER, POPUP_PANEL_BORDER,
     PopupPlan, open_container, popup_form_size, popup_icon_height, popup_icon_place, popup_place,
@@ -1325,6 +1325,7 @@ impl Plugin for GameScreensPlugin {
             .init_resource::<PanelIcons>()
             .init_resource::<DebugGuiForm>()
             .init_resource::<DebugOpenContainer>()
+            .init_resource::<DebugOpenLoot>()
             .init_resource::<GuiFrames>()
             // The item panel's container popups read and write the item
             // records; init_resource keeps the table another plugin made.
@@ -1340,6 +1341,7 @@ impl Plugin for GameScreensPlugin {
                     register_level_items,
                     crate::container_fill::fill_level_containers,
                     show_script_inventory,
+                    debug_open_loot,
                     open_requested_screens,
                     debug_open_container,
                     open_requested_containers,
@@ -1543,6 +1545,60 @@ fn debug_open_container(
         object,
         id: placed.tagged_id,
         pointer,
+    });
+}
+
+/// Exarust's debug helper (`--open-loot FRAME`): this many frames after the
+/// level load has finished and a player is present, the loot window of the
+/// dead body nearest the player opens, as the double click on it would.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DebugOpenLoot(pub Option<u32>);
+
+/// Runs [`DebugOpenLoot`]: counts frames once a player is present and, at
+/// the frame asked for, requests the nearest dead body's loot window.
+fn debug_open_loot(
+    debug: Option<Res<DebugOpenLoot>>,
+    players: Query<&GlobalTransform, With<crate::player::Player>>,
+    bodies: Query<(Entity, &exa_physics::body::Ragdoll, &exa_combat::Condition)>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    mut requests: MessageWriter<ScreenRequest>,
+) {
+    let Some(at) = debug.and_then(|debug| debug.0) else {
+        return;
+    };
+    if loading.is_some() {
+        return;
+    }
+    let Some(player) = players.iter().next() else {
+        return;
+    };
+    *frames += 1;
+    if *frames != at {
+        return;
+    }
+    let feet = player.translation();
+    let distance = |ragdoll: &exa_physics::body::Ragdoll| {
+        ragdoll.parts.first().map_or(f32::MAX, |part| {
+            Vec3::from(part.transform().translation).distance(feet)
+        })
+    };
+    let nearest = bodies
+        .iter()
+        .filter(|(_, _, condition)| condition.is_dead())
+        .min_by(|a, b| distance(a.1).total_cmp(&distance(b.1)));
+    let Some((body, ragdoll, _)) = nearest else {
+        info!("open-loot: no dead body in the level");
+        return;
+    };
+    info!("open-loot: body {body:?} at {:.2} m", distance(ragdoll));
+    requests.write(ScreenRequest {
+        screen: GameScreen::Loot,
+        player_ready: true,
+        player_alive: true,
+        target: Some(body.index().index() as i32),
+        flags: 0,
+        toggle: true,
     });
 }
 
@@ -2175,10 +2231,21 @@ fn paint_journal(
     let level = exa_ui::gui_font::level_for_unit(unit);
     let fonts = exa_ui::gui_font::gui_level(level);
     let (font, size) = screen_font(fonts.main, textures);
-    let mut frame = Frame::new(bounds, unit, JOURNAL_TITLE);
-    frame.attributes = gui_paint::JOURNAL_ATTRIBUTES;
-    frame.spacing = layout.border;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    // The game skin's form draw with the words the show commits: a
+    // top-level form, so titled, shadowed and corner-framed.
+    let mut painted = gui_paint::Painted {
+        client: layout.client(bounds),
+        ..Default::default()
+    };
+    let (mut form, _) = gui_paint::paint_top_form(
+        bounds,
+        unit,
+        &palette,
+        1.0,
+        gui_paint::JOURNAL_WORDS,
+        Some((JOURNAL_TITLE, &font, size)),
+    );
+    painted.layers.extend(form.under());
     let controls = layout.controls_at(bounds);
     paint_controls(&controls, unit, &palette, &font, size, &mut painted);
     let text = layout.child_at(0, bounds);
@@ -2246,6 +2313,7 @@ fn paint_journal(
             ));
         }
     }
+    painted.layers.extend(form.over());
     painted
 }
 
@@ -2264,23 +2332,37 @@ fn paint_loot(
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let layout = ScreenLayout::loot(window.pack.unit.max(1));
-    let mut frame = Frame::new(bounds, unit, LOOT_TITLE);
-    frame.spacing = layout.border;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    // The game skin's form draw: the window is top-level (titled,
+    // shadowed, corner-framed), its two item panels are held children
+    // framed on their edges.
+    let client = layout.client(bounds);
+    let mut painted = gui_paint::Painted {
+        client,
+        ..Default::default()
+    };
+    let (mut outer, outer_words) = gui_paint::paint_top_form(
+        bounds,
+        unit,
+        &palette,
+        1.0,
+        gui_paint::LOOT_WORDS,
+        Some((LOOT_TITLE, &font, size)),
+    );
+    painted.layers.extend(outer.under());
     let (pack, equipment) = (layout.child_at(0, bounds), layout.child_at(1, bounds));
     let mut paint_panel_with =
         |rect: GuiRect, container: &Container, icons: &mut Option<&mut PanelIcons>| {
-            let panel = gui_paint::paint_panel(
+            let mut panel = gui_paint::paint_held_form(
                 rect,
+                client,
+                outer_words.attributes,
                 unit,
                 &palette,
-                gui_paint::PACK_ATTRIBUTES,
-                gui_paint::PACK_STYLE,
+                1.0,
+                gui_paint::ITEM_PANEL_WORDS,
             );
-            let panel_client = panel.client;
-            for layer in panel.layers {
-                painted.push(layer);
-            }
+            painted.layers.extend(panel.under());
+            let panel_client = panel_client(rect);
             if let Some(icons) = icons.as_deref_mut()
                 && let Some(mut layer) = icons.layer(container)
             {
@@ -2293,23 +2375,12 @@ fn paint_loot(
                 ]);
                 painted.push(layer);
             }
+            painted.layers.extend(panel.over());
         };
     paint_panel_with(pack, &window.pack, &mut icons);
     paint_panel_with(equipment, &window.worn, &mut icons);
+    painted.layers.extend(outer.over());
     painted
-}
-
-/// The container popup's frame words as its constructors leave them: the
-/// attribute word the container constructor writes over the card's
-/// (`0x830023`: title bar, close mark, client fill, no rounded skin), the
-/// frame style with the card's centred-title bits (`0x3000`; the container
-/// clears the card's `0x80`) and no title string (the opener sets none).
-pub fn popup_frame(bounds: GuiRect, unit: i32) -> Frame {
-    let mut frame = Frame::new(bounds, unit, "");
-    frame.attributes = exa_ui::popups::CONTAINER_FLAGS;
-    frame.style = (gui_paint::SCREEN_STYLE | 0x3080) & !exa_ui::popups::CONTAINER_EXTRA_CLEAR;
-    frame.spacing = POPUP_BORDER;
-    frame
 }
 
 /// A container popup: the card's frame (no title, the popup's eight-pixel
@@ -2318,19 +2389,30 @@ pub fn popup_frame(bounds: GuiRect, unit: i32) -> Frame {
 fn paint_container_popup(
     bounds: GuiRect,
     unit: i32,
-    textures: &GuiTextures,
     popup: &ContainerPopup,
     mut icons: Option<&mut PanelIcons>,
 ) -> gui_paint::Painted {
     // A shown form's draw hands its fade (1) to the skin, which raises the
     // palette's alpha ramps (form group 170, the others 125).
     let palette = exa_ui::line_skin::shown_palette(1.0);
-    let level = exa_ui::gui_font::level_for_unit(unit);
-    let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
-    let mut frame = popup_frame(bounds, unit);
-    frame.spacing = POPUP_BORDER;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    // The game skin's form draw with the words the show commits: the popup
+    // is top-level (shadowed, corner-framed; titled but with no title
+    // string, and its 0x800000 bit keeps the title strip off), the item
+    // panel a held child framed on its edges.
     let client = ContainerPopup::client(bounds);
+    let mut painted = gui_paint::Painted {
+        client,
+        ..Default::default()
+    };
+    let (mut form, form_words) = gui_paint::paint_top_form(
+        bounds,
+        unit,
+        &palette,
+        1.0,
+        gui_paint::CONTAINER_WORDS,
+        None,
+    );
+    painted.layers.extend(form.under());
     if let Some(icons) = icons.as_deref_mut() {
         let (x, y) = popup_icon_place(
             bounds.width(),
@@ -2351,17 +2433,18 @@ fn paint_container_popup(
             painted.push(layer);
         }
     }
-    let panel = gui_paint::paint_panel(
-        popup.panel_rect(bounds),
+    let panel_rect = popup.panel_rect(bounds);
+    let mut panel = gui_paint::paint_held_form(
+        panel_rect,
+        client,
+        form_words.attributes,
         unit,
         &palette,
-        gui_paint::PACK_ATTRIBUTES,
-        gui_paint::PACK_STYLE,
+        1.0,
+        gui_paint::ITEM_PANEL_WORDS,
     );
-    let panel_client = panel.client;
-    for layer in panel.layers {
-        painted.push(layer);
-    }
+    painted.layers.extend(panel.under());
+    let panel_client = panel_client(panel_rect);
     if let Some(icons) = icons
         && let Some(mut layer) = icons.layer(&popup.panel)
     {
@@ -2374,6 +2457,8 @@ fn paint_container_popup(
         ]);
         painted.push(layer);
     }
+    painted.layers.extend(panel.over());
+    painted.layers.extend(form.over());
     painted
 }
 
@@ -2440,9 +2525,7 @@ pub(crate) fn draw_screens(
                 None => continue,
             },
             GameScreen::Container => match screens.popups.iter().find(|p| p.form == screen.form) {
-                Some(popup) => {
-                    paint_container_popup(bounds, unit, textures, popup, Some(&mut icons))
-                }
+                Some(popup) => paint_container_popup(bounds, unit, popup, Some(&mut icons)),
                 None => continue,
             },
             _ => continue,
@@ -2713,12 +2796,15 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_frame_takes_the_container_constructors_words() {
-        let frame = popup_frame(GuiRect::new(10, 20, 224, 308), 4);
-        assert_eq!(frame.attributes, 0x83_0023);
-        assert_eq!(frame.style, 0x3000);
-        assert_eq!(frame.spacing, 8);
-        assert!(frame.title.is_empty());
+    fn the_popup_takes_the_container_constructors_words() {
+        // The card's style (0x3080) with the panel bit cleared, the
+        // attribute word written over; the show commits the corner frame
+        // and the title and shadow bits of a top-level form.
+        let words = gui_paint::CONTAINER_WORDS;
+        assert_eq!((words.style, words.attributes), (0x3000, 0x83_0023));
+        let committed = gui_paint::commit_words(words.style, words.attributes, true);
+        assert_eq!((committed.style, committed.attributes), (0x3010, 0x83_0063));
+        assert_eq!(POPUP_BORDER, 8);
     }
 
     #[test]
@@ -3108,39 +3194,42 @@ mod tests {
             window,
             None,
         );
-        assert!(painted.layers.len() >= 3);
-        // The pack panel's frame starts at the client's left and its bottom
-        // less 180; the equipment panel above it ends four units before.
+        // The window's shadow and backdrop, the two held panels' frames
+        // (no backdrop of their own) and the window's corner frame.
+        assert_eq!(painted.layers.len(), 5);
+        // The pack panel's frame lies on its edges, at the client's left
+        // and its bottom less 180; the equipment panel above it ends four
+        // units before. A corner not flush with the client's edges curls
+        // two units outside.
         let client = painted.client;
         assert_eq!(
             (client.left, client.top, client.width(), client.height()),
             (402, 38, 240, 436)
         );
-        let pack = painted.layers[1]
-            .batch
-            .vertices
-            .iter()
-            .map(|v| (v.x, v.y))
-            .fold((f32::MAX, f32::MAX), |a, b| (a.0.min(b.0), a.1.min(b.1)));
-        assert!((pack.0 - client.left as f32).abs() < 2.0, "{pack:?}");
-        assert!(
-            (pack.1 - (client.bottom - 180) as f32).abs() < 2.0,
-            "{pack:?}"
-        );
-        let equipment = painted.layers[2]
-            .batch
-            .vertices
-            .iter()
-            .map(|v| (v.x, v.y))
-            .fold((f32::MAX, f32::MAX), |a, b| (a.0.min(b.0), a.1.min(b.1)));
-        assert!(
-            (equipment.0 - client.left as f32).abs() < 2.0,
-            "{equipment:?}"
-        );
-        assert!(
-            (equipment.1 - client.top as f32).abs() < 2.0,
-            "{equipment:?}"
-        );
+        let corner = |layer: usize| {
+            painted.layers[layer]
+                .batch
+                .vertices
+                .iter()
+                .map(|v| (v.x, v.y))
+                .fold((f32::MAX, f32::MAX), |a, b| (a.0.min(b.0), a.1.min(b.1)))
+        };
+        let near = |value: f32, edge: i32| (edge - 8..=edge).contains(&(value as i32));
+        let pack = corner(2);
+        assert!(near(pack.0, client.left), "{pack:?}");
+        assert!(near(pack.1, client.bottom - 180), "{pack:?}");
+        let equipment = corner(3);
+        assert!(near(equipment.0, client.left), "{equipment:?}");
+        assert!(near(equipment.1, client.top), "{equipment:?}");
+        // The window's backdrop covers the panels (held, they have none).
+        let textures = GuiTextures::default();
+        for at in [(500, 100), (500, 400)] {
+            assert_eq!(
+                canvas_colour_at(&painted.layers, &textures, at),
+                [0, 0, 0, 170],
+                "{at:?}"
+            );
+        }
     }
 
     #[test]

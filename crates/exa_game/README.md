@@ -53,9 +53,9 @@ bands, choice glow, icons, ring frame and label, hovered every frame)
 through `exa_ui::wheel_draw`, draws the tooltip, labels and prompt with the
 GUI skin's own font: the interface level's main font gives the advances,
 glyph quad and line step, and its glyphs sample the level's atlas when the
-install ships it, else the base `fontbase24r` atlas scaled to that quad (the
-packs ship only the base one; a focused prompt button's caption gets the
-skin's one-pixel outline). It plays the screen's `ThaumShow02`, `ThaumSel01`,
+install ships it (the Rayform faces come from the executable's resources),
+else the base `fontbase24r` atlas scaled to that quad (a focused prompt
+button's caption gets the skin's one-pixel outline). It plays the screen's `ThaumShow02`, `ThaumSel01`,
 `ThaumSlot02`, `ThaumChnl01`, `ThaumChnl02` and `ThaumFail01` sounds through
 the audio environment, and takes the arrows as the bar's cycle keys. A
 constantly displaced body
@@ -1389,8 +1389,14 @@ over `exa_ui::line_skin::draw_line_form`) with the words its show commits
 (`gui_paint::commit_words`): the window titled "Inventory" with its shadow,
 backdrop, ornamented corners, close mark and title strip, the character
 view and the 228 × 180 pack as held panels framed on their edges (curled
-corners where they leave the client's edges). The journal keeps its
-constructor's words through the default background (no title bar). The
+corners where they leave the client's edges). The journal, the loot window
+("Body", its two item panels held), the container popup (its item panel
+held), the item card and the hub's windows (the record forms, the board and
+the trade window with its character view and four item panels held) draw
+the same way (`gui_paint::paint_top_form`, `paint_held_form`) with their
+constructors' words (`gui_paint::FormWords`); Manage Company's tables and
+the board's panes keep the default background. `--open-loot FRAME` opens
+the nearest dead body's loot window for unattended checks. The
 control records are laid out by the two-pass layout (the inventory's
 Encumbrance label and its Primary and Secondary page buttons in one radio
 group, Primary lit, the journal's New and Erase buttons) with captions
@@ -1574,9 +1580,9 @@ cast after it) run in the brains' chain (`exa_ai::BrainChain`), in the
 fixed step, once per
 body tick; the attack-hook answers run after it. The world's own press is held while
 the pointer is over an open screen. The journal's entry list and the
-controls' callbacks are not wired; the text keeps the level
-font's metrics and samples the base font's atlas while the Rayform faces
-are not shipped. The skills key's screen and the power tree are not opened.
+controls' callbacks are not wired; the text draws with the level's
+Rayform face, read from the executable's resources (the base font's atlas
+stands in only when the executable is missing). The skills key's screen and the power tree are not opened.
 
 ## Dialogue in play
 

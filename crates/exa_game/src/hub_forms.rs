@@ -25,7 +25,7 @@ use exa_ui::gui_core::GuiRect;
 use exa_ui::record_form::RecordForm;
 
 use crate::career::Profession;
-use crate::gui_paint::{self, Frame};
+use crate::gui_paint;
 use crate::hub_windows::{ArenaCareer, HubWindowKind, HubWindows, Look};
 use crate::manage::{
     ArsenalForm, DISABLED, HIDDEN, ManageRefresh, PAGE_HIRE, PAGE_ROSTER, RowRecord,
@@ -710,19 +710,34 @@ pub fn apply_staff_changes(
     }
 }
 
-/// Paints one table-built form: its frame in the form's own words, then
-/// its records (the coin controls' amounts, the image buttons' frames and
-/// the combo box's panel and text beside the basic classes).
-pub(crate) fn paint_form(painted: &mut gui_paint::Painted, form: &RecordForm, look: &Look) {
+/// Paints one table-built form through the game skin's form draw, with
+/// the words the show commits to a top-level form (its constructor's
+/// attribute word, its placement word in the style), then its records
+/// (the coin controls' amounts, the image buttons' frames and the combo
+/// box's panel and text beside the basic classes). The shadow and backdrop
+/// are pushed first; the title and frame layers come back for the caller
+/// to push after the form's other children.
+#[must_use]
+pub(crate) fn paint_form(
+    painted: &mut gui_paint::Painted,
+    form: &RecordForm,
+    look: &Look,
+) -> Vec<exa_ui::gui_draw::GuiLayer> {
     let r = form.rect();
     let bounds = GuiRect::new(r.x, r.y, r.w, r.h);
     let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
-    let mut frame = Frame::new(bounds, look.unit, &form.title);
-    frame.attributes = form.spec.attributes;
-    frame.spacing = form.geometry.border;
-    for layer in gui_paint::paint_frame(&frame, &look.palette, &font, size).layers {
-        painted.push(layer);
-    }
+    let (mut frame, _) = gui_paint::paint_top_form(
+        bounds,
+        look.unit,
+        &look.palette,
+        look.fade,
+        gui_paint::FormWords {
+            style: form.spec.placement,
+            attributes: form.spec.attributes,
+        },
+        Some((&form.title, &font, size)),
+    );
+    painted.layers.extend(frame.under());
     let origin = form.origin();
     let unit = form.unit();
     let text = crate::settings_form::Text { font: &font, size };
@@ -790,6 +805,7 @@ pub(crate) fn paint_form(painted: &mut gui_paint::Painted, form: &RecordForm, lo
             ),
         }
     }
+    frame.over().collect()
 }
 
 /// `--open-hub-window <name>`: once the hub is entered and the manager

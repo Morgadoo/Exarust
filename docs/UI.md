@@ -30,6 +30,21 @@ requested word or, for a request of −1, the GUI's default word (0x33),
 with bit 0x100 set; the sample step is the glyph quad over that texture's
 size.
 
+The five Rayform faces are not in any pack. A font record's texture
+reference has the "module resource" source kind and names
+`Rayform06R_rfi` … `Rayform16R_rfi`: the original finds it with the
+system's resource finder in its own module, as raw data (type 10), the
+name matched without regard to case, and decodes the bytes as any `.rfi`.
+The glyph and symbol sheets are referenced the same way (`GlphCommon_rfi`,
+`GUISymbl_rfi`). `Exanima.exe` 0.9.5 carries them as named raw-data
+entries (language 2057). Exarust reads them from the installed executable
+at run time (`exa_rpk::ModuleResources`; `GameData::texture` falls back to
+`<name>_rfi` after the packs) and loads all six faces at start-up. They are
+128 × 256 (06R), 256 × 512 (08R, 10R, 12R) and 512 × 1024 (16R), a 16 × 16
+grid of cells that hold the record's glyph quad. At 1592 × 1046 the
+inventory's title "Inventory" is 73 pixels of ink, the retail capture's 74
+(the base-font stand-in drew 72 with other glyph shapes).
+
 A GUI scale level (0 to 5, the index of the scale in the table below)
 sets the GUI unit, the main and small fonts and the cells of the two icon
 atlases:
@@ -1696,11 +1711,28 @@ corner frame) and attributes 0x41 (title bar and shadow)
 (`exa_ui::form::set_style`, applied by `gui_paint::commit_words`). So the
 inventory, owned by the task, is titled "Inventory" with a shadow and
 ornamented corners, and its character view and pack, owned by the
-inventory, are held. The journal still paints with its constructor's
-words through the default background (no title bar).
+inventory, are held. The other in-game forms are committed the same way
+from their constructors' words (style / attributes): the journal 0x3000 /
+0x38022, the loot window "Body" 0x3000 / 0x30022 with its two item panels
+(the item panel's own constructor: 0x80 / 0x130032), the item card 0x3080
+/ 0x310f0 (written over the base word), the container popup the card's
+style with 0x80 cleared / 0x830023 (written over), its item panel, and the
+trade window 0x3000 | 0x800 | 0x8000 / 0x830022, whose character view
+takes the 3-D view's words with 0x80 in the style and 0xc000 cleared, 0x90
+set in the attributes, and whose four item panels take the item panel's.
+The hub's record forms keep their traced attribute words, their placement
+word in the style. Committed, the journal is (0x3010, 0x38063), the loot
+window (0x3010, 0x30063), the card (0x3090, 0x310f1: the corner frame and
+the free panel frame, no title string), the popup (0x3010, 0x830063: no
+title string, and 0x800000 keeps the title strip off), the trade window
+(0xb810, 0x830063); their panels are held, with no backdrop of their own
+(`gui_paint::FormWords`, `paint_top_form`, `paint_held_form`).
 
 **The game skin's form draw** (`exa_ui::line_skin::draw_line_form`,
-painted by `gui_paint::paint_line_form`; the inventory uses it). The line
+painted by `gui_paint::paint_line_form`; the inventory, the journal, the
+loot window, the container popup, the item card and the hub's windows use
+it; Manage Company's tables and the board's panes, whose classes' words are
+not traced, keep the default background). The line
 skin puts its own method in the skin's form-draw slot. It draws the
 shadow (attribute 0x40: the rounded program's ring eight units out, black
 at the form group's fourth shade's alpha), the backdrop (attribute 0x20000
@@ -1799,13 +1831,11 @@ a body does not re-dress its mesh, the GUI-to-world drop is not run, and a
 level-local item's record is not promoted into the world database, so its
 bulk counts 0. The skills key's screen and the power tree are outside this unit,
 and the selector opens only from a power slot the HUD does not draw yet.
-The Rayform faces are not read: the original keeps them as resources
-embedded in its executable (`RAYFORM06R_RFI` … `RAYFORM16R_RFI`), not in a
-pack (the `GUI texture "Rayform10R" not found` log lines are these fonts,
-not the frame skin, which is `guiskin.rfi` in `Resource.rpk`), so the text
-keeps the level font's
-metrics (glyph quad, advances, line height) and samples its glyph cells
-from the base font's atlas, a quad of the level's size over one base cell.
+The Rayform faces are read from the executable's resources (Fonts,
+above); only when the executable is missing does the text keep the level
+font's metrics (glyph quad, advances, line height) and sample its glyph
+cells from the base font's atlas, a quad of the level's size over one base
+cell.
 A texture coordinate runs up the image, so a stored-top-down texture is
 read from its bottom row.
 
