@@ -1261,11 +1261,10 @@ fn settle_match(
     records.deaths = records.deaths.wrapping_add(arena.deaths);
     career.company.book_records(&records);
     if out.day.drop_unfit {
-        let healths: Vec<u16> = career
-            .company
-            .roster
-            .iter()
-            .map(|member| member.health)
+        // An entrant's id is its participant id: 0 the manager, `i`
+        // roster member `i - 1`.
+        let healths: Vec<u16> = std::iter::once(career.player.health)
+            .chain(career.company.roster.iter().map(|member| member.health))
             .collect();
         arena::drop_unfit(&mut career.entries, |id| {
             healths.get(id as usize).copied().unwrap_or(0)
@@ -1652,6 +1651,7 @@ mod tests {
             loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
+            outfit: Default::default(),
         });
         app.insert_resource(career);
         let mut fighter = Fighter::default();

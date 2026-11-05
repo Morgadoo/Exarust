@@ -134,6 +134,9 @@ pub struct Member {
     pub health: u16,
     /// Still named in a tournament entry.
     pub in_entry: bool,
+    /// What the record itself wears and holds: a hire-list candidate's
+    /// generated outfit, whose value its listed price adds.
+    pub outfit: crate::hirelings::Loadout,
 }
 
 /// One of the six matches the board offers every day.
@@ -568,6 +571,7 @@ impl Company {
             loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
+            outfit: Default::default(),
         });
         Ok(())
     }
@@ -632,6 +636,7 @@ impl Company {
             loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
+            outfit: Default::default(),
         });
         Ok(())
     }

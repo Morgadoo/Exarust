@@ -824,6 +824,7 @@ mod tests {
                 loadouts: Default::default(),
                 health: u16::MAX,
                 in_entry: false,
+                outfit: Default::default(),
             });
         }
         let mut fighters = [

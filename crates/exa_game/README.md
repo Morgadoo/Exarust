@@ -2136,16 +2136,26 @@ upkeep, HIRE runs the company's funds, room and duplicate checks
 candidate, and End Day renews the list. A candidate's level and the boards'
 rank rolls read the career's one run-time library generator
 (`ArenaCareer::random`, the Mersenne twister apart from the engine's LCG);
-the per-candidate counter spacing is a guess. The candidate's item outfit is
-not generated (the hub holds no item-fact table), so its price has no gear
-share [limitation]. The Arsenal window and the kit release a dismissal makes
-in the original are still not built. End Day rests the manager and gives him
+the per-candidate counter spacing is a guess. Once the hub's level is in,
+the hub reads the object database's facts (`arena_hub_live::hire_facts_of`:
+the outfit tables, each body item's apparel rank byte, each item's value
+word) and each candidate's outfit pass continues its sequence
+(`hub_windows::dress_candidate`): a combatant is dressed by level and its
+six loadouts are that kit, trimmed below its level; a specialist is dressed
+from its profile (0x14 for a physician, 4 otherwise) and holds nothing. The
+price adds four fifths of the outfit's value, the hire keeps the outfit and
+loadouts, and a specialist hired in the hub stands at its spot at once
+(`place_hired_specialists`). A dismissal releases the employee's kit to
+the arsenal (`hub_forms::apply_staff_changes`). End Day rests the manager and gives him
 the first trainer's lesson before the staff, books a tournament lost when the
 company entered a week a rival took, then, in the original's order, asks the
 live shop world to rotate the shop's shelf and the employed merchant's stock
 (`hub_restock`, on the next frame), renews the hire list, rolls a new week's
 board the day after a tournament day and rolls the day's six standard
-matches. The week's board (`ArenaCareer::regenerate_tournament_at`) clears
+matches; when the new day is a tournament day it drops the unfit entrants
+and clears each event entry naming fewer than its event's fighters per side
+or, for an armed event, whose first entrant's weapon is not in the event's
+row (`hub_forms::clear_unready_entries`). The week's board (`ArenaCareer::regenerate_tournament_at`) clears
 the event entries and draws six event rows, the weekly prize that avoids the
 last eight and the sixteen-company field, which becomes the career's rival
 field that the board's winners table and the match launch read. The arena

@@ -65,6 +65,8 @@ pub struct ArenaHub {
     pub returned: Option<crate::arena_session::ReturnPlacement>,
     /// The shopkeeper and the specialists' bodies were asked for.
     pub npcs_spawned: bool,
+    /// The specialists whose bodies stand in this hub visit.
+    pub specialists_placed: Vec<crate::career::Profession>,
     /// The roll the entry used.
     pub roll: u32,
 }
@@ -81,6 +83,7 @@ impl Default for ArenaHub {
             fall: None,
             returned: None,
             npcs_spawned: false,
+            specialists_placed: Vec::new(),
             roll: 0,
         }
     }
@@ -205,6 +208,13 @@ impl Plugin for ArenaHubPlugin {
                 hub_enter_on_load
                     .after(crate::hub_forms::hub_employee_kit_on_load)
                     .before(hub_clicks),
+            )
+            .add_systems(Update, read_hire_facts.before(enter_loaded_hub))
+            .add_systems(
+                Update,
+                place_hired_specialists
+                    .after(enter_loaded_hub)
+                    .after(crate::hub_forms::hub_form_input),
             );
         crate::hub_windows::add_hub_draw(app);
     }
@@ -277,6 +287,7 @@ fn enter_loaded_hub(
         hub.manager = Some(plan);
         hub.manager_placed = false;
         hub.npcs_spawned = false;
+        hub.specialists_placed.clear();
         hub.fall = None;
         hub.roll = entry.roll;
         // Only a physician clears the weapon object at the hub's spot.
@@ -340,6 +351,7 @@ fn enter_loaded_hub(
                 let mut plan = crate::scene_bodies::hub_body_plan(&spot, false);
                 plan.name = Some(member.name.clone());
                 plans.push(plan);
+                hub.specialists_placed.push(member.profession);
             }
         }
         let count = plans.len();
@@ -348,6 +360,35 @@ fn enter_loaded_hub(
         }
         hub.npcs_spawned = true;
         info!("arena hub: {count} bodies asked for (shopkeeper and specialists)");
+    }
+}
+
+/// A specialist hired during the hub visit: the original's hire places a
+/// merchant's or physician's body at its spot at once, as the hub's entry
+/// places those already employed.
+fn place_hired_specialists(
+    mut hub: ResMut<ArenaHub>,
+    career: Res<crate::hub_windows::ArenaCareer>,
+    mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
+) {
+    if !hub.npcs_spawned {
+        return;
+    }
+    for member in &career.company.roster {
+        if hub.specialists_placed.contains(&member.profession) {
+            continue;
+        }
+        let Some(spot) = crate::arena_spawn::specialist_spot(member.profession) else {
+            continue;
+        };
+        let mut plan = crate::scene_bodies::hub_body_plan(&spot, false);
+        plan.name = Some(member.name.clone());
+        scene_commands.write(crate::scene_bodies::SceneCommand::Spawn(Box::new(plan)));
+        hub.specialists_placed.push(member.profession);
+        info!(
+            "arena hub: the hired {:?} {} stands at its spot",
+            member.profession, member.name
+        );
     }
 }
 
@@ -565,6 +606,76 @@ fn plan_match(
         rivals,
         fighters,
     })
+}
+
+/// The hire list's object-database facts ([`crate::hub_windows::HireFacts`]):
+/// the outfit tables, each body item's apparel rank byte (the body
+/// section's rank word's low byte) and each item's value word (the model
+/// section's, as the catalogue expands and the shop's price compacts it).
+#[must_use]
+pub fn hire_facts_of(game: &exa_assets::Game) -> Option<crate::hub_windows::HireFacts> {
+    let bytes = game
+        .0
+        .pack(exa_assets::PackKind::Resource)?
+        .get("objdb.rdb")?;
+    let database = exa_formats::rdb::Database::parse(bytes).ok()?;
+    let items = exa_formats::objdb::items(&database);
+    let catalogue = exa_items::catalogue::ItemCatalogue::of_database(&database);
+    let facts: std::collections::BTreeMap<u32, crate::arena_outfit::ItemFacts> = items
+        .iter()
+        .map(|item| (item.id, crate::arena_outfit::ItemFacts::of_item(item)))
+        .collect();
+    let tables = crate::arena_outfit::OutfitTables::build(|id| facts.get(&id.0).cloned());
+    let apparel_rank = items
+        .iter()
+        .filter(|item| item.has_body)
+        .map(|item| (item.id, item.body_rank as u8))
+        .collect();
+    let values = items
+        .iter()
+        .filter_map(|item| {
+            let card = catalogue.card_facts(item.id)?;
+            Some((item.id, exa_formats::containers::price_of(card.coins)))
+        })
+        .collect();
+    Some(crate::hub_windows::HireFacts {
+        tables,
+        apparel_rank,
+        values,
+    })
+}
+
+/// Reads the hire list's facts once the hub's level is in, so the
+/// candidates are dressed and priced with their outfits.
+fn read_hire_facts(
+    game: Option<Res<exa_assets::Game>>,
+    levels: Query<&LevelRoot>,
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    mut tried: Local<bool>,
+) {
+    if *tried
+        || career.hire_facts.is_some()
+        || !levels.iter().any(|root| is_hub_level(&root.name))
+    {
+        return;
+    }
+    let Some(game) = game else {
+        return;
+    };
+    *tried = true;
+    match hire_facts_of(&game) {
+        Some(facts) => {
+            career.set_hire_facts(
+                std::sync::Arc::new(facts),
+                crate::arena_match::counter_now(),
+            );
+            let prices: Vec<u32> = (0..career.hire_pool.len())
+                .map(|index| career.hire_price(index))
+                .collect();
+            info!("hire list: dressed from the object database; prices {prices:?}");
+        }
+        None => warn!("hire list: the object database does not read; candidates stay undressed"),
+    }
 }
 
 /// `--hub-enter slot,...`: once the manager stands in the hub (and a
@@ -2328,6 +2439,7 @@ mod tests {
             loadouts: Default::default(),
             health: 65_000,
             in_entry: false,
+            outfit: Default::default(),
         });
         let board = career.board();
         // A duel takes the combatant (pool slot 1), not the manager.
@@ -2453,6 +2565,7 @@ mod tests {
             loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
+            outfit: Default::default(),
         }
     }
 
@@ -2477,6 +2590,41 @@ mod tests {
             assert_eq!(hub.manager_placed, entered, "{mode:?}");
             assert_eq!(hub.npcs_spawned, entered, "{mode:?}");
         }
+    }
+
+    #[test]
+    fn a_specialist_hired_in_the_hub_stands_at_once() {
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        spawn_hub_level(&mut app);
+        spawn_player(&mut app);
+        app.update();
+        let drained = app
+            .world_mut()
+            .resource_mut::<Messages<crate::scene_bodies::SceneCommand>>()
+            .drain()
+            .count();
+        assert_eq!(drained, 1, "the shopkeeper");
+        app.world_mut()
+            .resource_mut::<crate::hub_windows::ArenaCareer>()
+            .company
+            .roster
+            .push(member(crate::career::Profession::Physician));
+        app.update();
+        app.update();
+        let commands: Vec<crate::scene_bodies::SceneCommand> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::scene_bodies::SceneCommand>>()
+            .drain()
+            .collect();
+        assert_eq!(commands.len(), 1, "the hired physician, once");
+        assert_eq!(
+            app.world().resource::<ArenaHub>().specialists_placed,
+            vec![crate::career::Profession::Physician]
+        );
     }
 
     #[test]

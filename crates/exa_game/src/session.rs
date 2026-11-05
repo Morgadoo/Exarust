@@ -832,6 +832,7 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
             loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
+            outfit: Default::default(),
         });
     }
     let pages = take_count(&mut rest)?;

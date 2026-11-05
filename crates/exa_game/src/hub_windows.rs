@@ -101,6 +101,9 @@ pub struct ArenaCareer {
     pub hire_catalog: crate::arena_outfit::ProfessionCatalog,
     /// The appearance variant the next candidate avoids.
     pub hire_previous: u32,
+    /// The object database's facts the hire list's outfit pass and price
+    /// read ([`HireFacts`]); none until the hub has read them.
+    pub hire_facts: Option<std::sync::Arc<HireFacts>>,
     /// The day's six standard matches, rolled once and kept until the day
     /// ends ([`crate::arena::generate_daily_board`]).
     pub daily_rows: [crate::arena::MatchInstance; 6],
@@ -143,6 +146,7 @@ impl Default for ArenaCareer {
                 loadouts: Default::default(),
                 health: u16::MAX,
                 in_entry: false,
+                outfit: Default::default(),
             },
             entries: Roster::default(),
             log: crate::arena_log::ArenaLog::default(),
@@ -157,6 +161,7 @@ impl Default for ArenaCareer {
             hire_pool: Vec::new(),
             hire_catalog: crate::arena_outfit::ProfessionCatalog::default(),
             hire_previous: 0,
+            hire_facts: None,
             daily_rows: crate::arena::generate_daily_board(0x1234_5678, || 0.5),
             restock_pending: false,
             tournament: None,
@@ -285,6 +290,7 @@ impl ArenaCareer {
                 &mut self.hire_catalog,
                 &mut self.hire_previous,
                 &mut self.random,
+                self.hire_facts.as_deref(),
             ));
         }
         self.hire_pool = pool;
@@ -308,9 +314,16 @@ impl ArenaCareer {
         let mut catalog = std::mem::take(&mut self.hire_catalog);
         let mut previous = self.hire_previous;
         let random = &mut self.random;
+        let facts = self.hire_facts.clone();
         let mut counter = crate::arena_match::counter_now();
         crate::hirelings::renew_pool(&mut pool, &mut self.roll, || {
-            let member = draw_hire_member(counter, &mut catalog, &mut previous, random);
+            let member = draw_hire_member(
+                counter,
+                &mut catalog,
+                &mut previous,
+                random,
+                facts.as_deref(),
+            );
             counter = counter.wrapping_add(0x9E37_79B9_7F4A_7C15);
             member
         });
@@ -320,13 +333,45 @@ impl ArenaCareer {
     }
 
     /// What a listed candidate costs: the rank from its six skill levels and
-    /// the hire fee. The live list carries no item facts, so the outfit's
-    /// gear value is not added (a gap against the original, whose candidate
-    /// is dressed from the object database).
+    /// the hire fee with four fifths of its outfit's value (each worn and
+    /// held item's value word priced as a shop line).
     pub fn hire_price(&self, index: usize) -> u32 {
         self.hire_pool.get(index).map_or(0, |member| {
-            crate::career::Company::listed_price(&member.skills, &[])
+            crate::career::Company::listed_price(&member.skills, &self.gear_words(member))
         })
+    }
+
+    /// The value words of what a member's record wears and holds.
+    pub fn gear_words(&self, member: &Member) -> Vec<u16> {
+        let Some(facts) = self.hire_facts.as_deref() else {
+            return Vec::new();
+        };
+        member
+            .outfit
+            .items
+            .iter()
+            .chain(member.outfit.hands.iter().filter(|&&hand| hand != 0))
+            .filter_map(|id| facts.values.get(id).copied())
+            .collect()
+    }
+
+    /// The hub has read the object database: the hire list's outfit pass
+    /// can run. A candidate drawn before (the play-mode hub's default list)
+    /// is dressed now from a fresh roll. [Exarust's: the original's list is
+    /// always drawn with the database loaded.]
+    pub fn set_hire_facts(&mut self, facts: std::sync::Arc<HireFacts>, counter: u64) {
+        self.hire_facts = Some(facts.clone());
+        for (index, member) in self.hire_pool.iter_mut().enumerate() {
+            if member.outfit != crate::hirelings::Loadout::default() {
+                continue;
+            }
+            let roll = (counter as u32).swap_bytes().wrapping_add(index as u32);
+            let mut lcg = crate::arena_outfit::Lcg::new(roll);
+            // The level is the combatant's skill sum's [Exarust's: the list
+            // does not keep the generator's level].
+            let level = member.skills.iter().sum::<u32>() as i32 / 2;
+            dress_candidate(member, level, &mut lcg, &facts, 0);
+        }
     }
 
     /// Hire the candidate at `index`: the company's own funds, room and
@@ -340,11 +385,14 @@ impl ArenaCareer {
         let Some(member) = self.hire_pool.get(index).cloned() else {
             return Err(crate::career::HireError::Funds);
         };
+        let gear = self.gear_words(&member);
         self.company
-            .hire_listed(member.name.clone(), member.profession, &member.skills, &[])?;
+            .hire_listed(member.name.clone(), member.profession, &member.skills, &gear)?;
         if let Some(joined) = self.company.roster.last_mut() {
             joined.skill_xp = member.skill_xp;
             joined.techniques = member.techniques;
+            joined.loadouts = member.loadouts.clone();
+            joined.outfit = member.outfit.clone();
         }
         self.log.append_words(
             crate::staff::LOG_JOINED,
@@ -443,18 +491,128 @@ pub(crate) fn name16(name: &str) -> [u8; 16] {
     out
 }
 
+/// What the hire list reads from the object database: the outfit tables
+/// the candidates are dressed from, each body item's apparel rank byte (the
+/// loadout trim's) and each item's value word (the price's).
+#[derive(Debug, Default)]
+pub struct HireFacts {
+    pub tables: crate::arena_outfit::OutfitTables,
+    pub apparel_rank: HashMap<u32, u8>,
+    pub values: HashMap<u32, u16>,
+}
+
+impl PartialEq for HireFacts {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+/// The eight profile bytes a specialist candidate is dressed from: the
+/// physician's flag byte 0x14, the merchant's and trainer's 4, then rank
+/// limit 0 and 100, 10, 10. [The original passes five bytes on its stack;
+/// the last three the profile pass may read are left as they were, taken as
+/// 0 here.]
+pub const fn specialist_profile(profession: Profession) -> [u8; 8] {
+    let flags = match profession {
+        Profession::Physician => 0x14,
+        _ => 4,
+    };
+    [flags, 0, 100, 10, 10, 0, 0, 0]
+}
+
+/// The hire-list candidate's outfit pass, after its record's: a
+/// combatant is dressed by level (its level as the rank, a twentieth of it
+/// as the height bias) and its six loadouts are copies of that kit, those
+/// of the ranks below its level trimmed to their rank; a specialist is
+/// dressed from its profile ([`specialist_profile`]) and holds nothing.
+/// The outfit continues the candidate's shared sequence.
+pub fn dress_candidate(
+    member: &mut Member,
+    level: i32,
+    lcg: &mut crate::arena_outfit::Lcg,
+    facts: &HireFacts,
+    record_flags: u32,
+) {
+    let character = crate::arena_outfit::OutfitCharacter {
+        skill_word: 0,
+        experience: u32::from(member.skill_xp[3]),
+        warmth: 0.0,
+        record_flags,
+    };
+    let combatant = member.profession == Profession::Combatant;
+    let outfit = if combatant {
+        crate::arena_outfit::generate_by_level_lcg(
+            level,
+            level as f32 * 0.05,
+            0,
+            lcg,
+            &facts.tables,
+            &character,
+        )
+    } else {
+        crate::arena_outfit::generate_profile_lcg(
+            &specialist_profile(member.profession),
+            lcg,
+            &facts.tables,
+            &character,
+        )
+    };
+    let hands: Vec<u32> = outfit
+        .hands
+        .iter()
+        .flatten()
+        .map(|held| held.variant)
+        .collect();
+    let mut kit = crate::hirelings::Loadout::default();
+    for item in &outfit.items {
+        if hands.contains(&item.id.0) || facts.tables.facts(item.id).is_none() {
+            continue;
+        }
+        kit.items.push(item.id.0);
+    }
+    // A specialist's two hands are cleared after its outfit.
+    if combatant {
+        for (slot, held) in outfit.hands.iter().enumerate() {
+            if let Some(held) = held {
+                kit.hands[slot] = held.variant;
+            }
+        }
+        let ranked = crate::hirelings::ranked_loadouts(&kit, level, |item| {
+            facts.apparel_rank.get(&item).copied()
+        });
+        for (slot, loadout) in member.loadouts.iter_mut().zip(ranked) {
+            *slot = exa_formats::characters::Loadout {
+                word: 0,
+                hands: [
+                    exa_formats::characters::ItemRef::new(loadout.hands[0], 0),
+                    exa_formats::characters::ItemRef::new(loadout.hands[1], 0),
+                    exa_formats::characters::ItemRef::NONE,
+                    exa_formats::characters::ItemRef::NONE,
+                ],
+                worn: loadout
+                    .items
+                    .iter()
+                    .map(|&id| exa_formats::characters::ItemRef::new(id, 0))
+                    .collect(),
+            };
+        }
+    }
+    member.outfit = kit;
+}
+
 /// Draw one hire-list candidate. The profession, and a combatant's or
 /// trainer's level, come from [`crate::hirelings::draw_candidate`]; the
 /// candidate's record then runs the random-NPC pass from the draw's roll
 /// (the original reseeds its shared sequence from the performance counter
-/// before each candidate, then draws the role and the record from it). The
-/// item outfit pass is not run: the hub has no item-fact table, so the
-/// candidate carries no gear and the price adds no gear value.
+/// before each candidate, then draws the role and the record from it), and
+/// with the object database read its outfit pass ([`dress_candidate`])
+/// continues the same sequence.
 fn draw_hire_member(
     counter: u64,
     catalog: &mut crate::arena_outfit::ProfessionCatalog,
     previous: &mut u32,
     random: &mut crate::arena::Mt19937,
+    facts: Option<&HireFacts>,
 ) -> Member {
     // The role draws step the engine's LCG; a trainer's or combatant's level
     // reads the library generator, and the record's pass then continues the
@@ -497,6 +655,7 @@ fn draw_hire_member(
         loadouts: Default::default(),
         health: u16::MAX,
         in_entry: false,
+        outfit: Default::default(),
     };
     for (index, row) in profile
         .professions
@@ -515,6 +674,9 @@ fn draw_hire_member(
     member.skills = member
         .skill_xp
         .map(|xp| u32::from(xp) / u32::from(crate::career::SKILL_STEP));
+    if let Some(facts) = facts {
+        dress_candidate(&mut member, candidate.level, &mut lcg, facts, profile.look.flags);
+    }
     member
 }
 
@@ -1987,6 +2149,7 @@ mod tests {
             loadouts: Default::default(),
             health: 65_000,
             in_entry: false,
+            outfit: Default::default(),
         });
         let refresh = career.manage();
         assert_eq!(refresh.roster.len(), 2);
@@ -2575,6 +2738,49 @@ mod tests {
                 .rivals
                 .iter()
                 .all(|&company| (1..=19).contains(&company))
+        );
+    }
+
+    /// A candidate's price adds four fifths of what its outfit is worth,
+    /// and the hire keeps the outfit and the loadouts.
+    #[test]
+    fn a_candidates_outfit_is_priced_and_kept() {
+        let mut career = ArenaCareer::default();
+        career.company.roster.clear();
+        career.company.copper = 100_000;
+        let mut facts = HireFacts::default();
+        facts.values.insert(7, 100);
+        facts.values.insert(9, 12);
+        career.hire_facts = Some(std::sync::Arc::new(facts));
+        let bare = career.hire_price(0);
+        career.hire_pool[0].outfit = crate::hirelings::Loadout {
+            hands: [9, 0],
+            items: vec![7, 8],
+        };
+        career.hire_pool[0].loadouts[5].word = 3;
+        let skills = career.hire_pool[0].skills;
+        assert_eq!(
+            career.hire_price(0),
+            crate::career::Company::listed_price(&skills, &[100, 12])
+        );
+        assert!(career.hire_price(0) > bare);
+        assert!(career.hire_candidate(0).is_ok());
+        let joined = career.company.roster.last().unwrap();
+        assert_eq!(joined.outfit.items, vec![7, 8]);
+        assert_eq!(joined.loadouts[5].word, 3);
+    }
+
+    /// The specialists' outfit profiles: the physician's flag byte 0x14,
+    /// the others' 4.
+    #[test]
+    fn a_specialist_is_dressed_from_its_profile() {
+        assert_eq!(
+            specialist_profile(Profession::Physician),
+            [0x14, 0, 100, 10, 10, 0, 0, 0]
+        );
+        assert_eq!(
+            specialist_profile(Profession::Trainer),
+            [4, 0, 100, 10, 10, 0, 0, 0]
         );
     }
 
