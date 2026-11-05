@@ -172,6 +172,29 @@ pub trait FormHost: Send + Sync {
     fn tooltip_class(&self, _record: i32) -> i32 {
         0
     }
+    /// The task's pointer and the point its press started at, handed over
+    /// before a press, a drag move or a release (the original's forms read
+    /// both from the task).
+    fn set_pointer(&mut self, _at: (i32, i32), _press: (i32, i32)) {}
+    /// The wheel's delta (120 a notch), sent to the focused form.
+    fn wheel(&mut self, _delta: i32) -> u32 {
+        0
+    }
+    /// The form's attribute word, for its layer when it is raised.
+    fn attributes(&self) -> u32 {
+        0
+    }
+    /// The default tooltip's text for a record of this form.
+    fn tooltip_text(&self, _record: i32) -> Vec<u8> {
+        Vec::new()
+    }
+    /// The form as the base form, when it is one.
+    fn base(&self) -> Option<&crate::base_form::BaseForm> {
+        None
+    }
+    fn base_mut(&mut self) -> Option<&mut crate::base_form::BaseForm> {
+        None
+    }
 }
 
 /// A basic form: an absolute rectangle, a parent, its controls and the
@@ -704,6 +727,9 @@ impl Default for PointerState {
 /// The window manager.
 pub struct GuiTask {
     forms: Vec<Option<Box<dyn FormHost>>>,
+    /// The forms in draw order, the last on top; a form's children are the
+    /// ones whose parent it is, in this order.
+    order: Vec<FormId>,
     /// The root form, the first added (the original's 800 × 600 task form).
     pub root: Option<FormId>,
     pub screen: (i32, i32),
@@ -743,6 +769,7 @@ impl GuiTask {
     pub fn new(screen: (i32, i32)) -> Self {
         Self {
             forms: Vec::new(),
+            order: Vec::new(),
             root: None,
             screen,
             active: None,
@@ -766,6 +793,7 @@ impl GuiTask {
     pub fn add(&mut self, form: Box<dyn FormHost>) -> FormId {
         self.forms.push(Some(form));
         let id = self.forms.len() as FormId;
+        self.order.push(id);
         if self.root.is_none() {
             self.root = Some(id);
         }
@@ -830,8 +858,72 @@ impl GuiTask {
         (Some(form), code, cursor)
     }
 
+    /// The forms in draw order (the last on top).
+    pub fn draw_order(&self) -> Vec<FormId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|&id| self.form(id).is_some())
+            .collect()
+    }
+
+    /// Raises the top-level form holding `form` among the root's children
+    /// by the base form's layer rule ([`crate::form::raise_top_level`]).
+    pub fn raise(&mut self, form: FormId) {
+        let top = self.root_of(form);
+        let root = self.root;
+        let siblings: Vec<FormId> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|&id| self.form(id).is_some_and(|f| f.parent() == root))
+            .collect();
+        let mut list: Vec<crate::form::Sibling> = siblings
+            .iter()
+            .map(|&id| crate::form::Sibling {
+                id,
+                attributes: self.form(id).map_or(0, FormHost::attributes),
+                owner: None,
+            })
+            .collect();
+        if !crate::form::raise_top_level(&mut list, top) {
+            return;
+        }
+        let mut raised = list.into_iter().map(|s| s.id);
+        for slot in &mut self.order {
+            if siblings.contains(slot) {
+                *slot = raised.next().unwrap_or(*slot);
+            }
+        }
+        self.redraw = true;
+    }
+
+    /// The wheel's delta for the focused form (the window procedure hands
+    /// it to the active form).
+    pub fn wheel(&mut self, delta: i32) -> u32 {
+        let Some(active) = self.active else {
+            return 0;
+        };
+        let result = self.form_mut(active).map_or(0, |f| f.wheel(delta));
+        if result & 3 == 3 {
+            self.redraw = true;
+        }
+        result
+    }
+
+    fn pointer_to(&mut self, form: FormId) {
+        let at = (self.pointer.x, self.pointer.y);
+        let press = (self.pointer.press_x, self.pointer.press_y);
+        if let Some(f) = self.form_mut(form) {
+            f.set_pointer(at, press);
+        }
+    }
+
     fn hit_in(&self, form: FormId, x: i32, y: i32) -> Option<FormId> {
-        let children: Vec<FormId> = (1..=self.forms.len() as FormId)
+        let children: Vec<FormId> = self
+            .order
+            .iter()
+            .copied()
             .filter(|&id| {
                 self.form(id)
                     .is_some_and(|f| f.parent() == Some(form) && f.is_visible())
@@ -1088,6 +1180,7 @@ impl GuiTask {
         let mut result = 0;
         if self.drop.kind == 0 {
             let (x, y) = (self.pointer.x, self.pointer.y);
+            self.pointer_to(capture);
             result = self.form_mut(capture).map_or(0, |f| f.drag_move(x, y));
             if result & 0x80 == 0x80 {
                 self.release(0);
@@ -1139,6 +1232,7 @@ impl GuiTask {
                 target
             }
         };
+        self.pointer_to(form);
         let result = self.form_mut(form).map_or(0, |f| f.press(word));
         let restore = |task: &mut Self, target: FormId| {
             let control = if Some(target) == task.active {
@@ -1181,6 +1275,7 @@ impl GuiTask {
     /// Brings a form to the front of its siblings with a control focused
     /// (the forms' activation; the order of the form list is its z-order).
     fn bring_to_front(&mut self, form: FormId, control: i32) {
+        self.raise(form);
         self.focus_set(Some(form), control);
     }
 
@@ -1296,6 +1391,7 @@ impl GuiTask {
                 self.pointer.target = None;
             }
         } else if let Some(capture) = self.pointer.capture.take() {
+            self.pointer_to(capture);
             let result = self.form_mut(capture).map_or(0, |f| f.release(word32));
             if result & 0x80 == 0x80 {
                 if self.pointer.capture.is_none() {
@@ -1309,6 +1405,7 @@ impl GuiTask {
                 self.redraw = true;
             }
         } else if let Some(target) = self.pointer.target {
+            self.pointer_to(target);
             let result = self.form_mut(target).map_or(0, |f| f.release(word32));
             if result & 3 == 3 {
                 self.redraw = true;

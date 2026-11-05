@@ -2915,24 +2915,43 @@ fn fell_player(
 /// clicks the left mouse button) at its frame, counted from the end of the
 /// load, holds it over its frames, and lets it go at the range's end (the
 /// frame after, for a tap or a click).
+#[allow(clippy::too_many_arguments)]
 fn press_keys(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut buttons: ResMut<ButtonInput<MouseButton>>,
     mut pointer: Option<ResMut<exa_ui::ScriptedPointer>>,
+    mut wheel: MessageWriter<bevy::input::mouse::MouseWheel>,
+    window: Query<Entity, With<bevy::window::PrimaryWindow>>,
     mut frames: Local<u32>,
 ) {
     if (options.press.is_empty()
         && options.clicks.is_empty()
         && options.clicks_at.is_empty()
-        && options.drags_at.is_empty())
+        && options.drags_at.is_empty()
+        && options.wheels.is_empty())
         || loading.is_some()
     {
         return;
     }
     *frames += 1;
     let frame = *frames;
+    // `--wheel`: the turn in lines (a notch is 120 of the original's units).
+    for &(delta, at) in &options.wheels {
+        if at == frame
+            && let Ok(window) = window.single()
+        {
+            info!("turning the wheel by {delta}");
+            wheel.write(bevy::input::mouse::MouseWheel {
+                unit: bevy::input::mouse::MouseScrollUnit::Line,
+                x: 0.0,
+                y: delta as f32 / 120.0,
+                window,
+                phase: bevy::input::touch::TouchPhase::Moved,
+            });
+        }
+    }
     for (press, over) in &options.press {
         if frame == over.start {
             info!("pressing {press:?}");

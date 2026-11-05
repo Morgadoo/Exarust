@@ -240,9 +240,25 @@ pub struct Control {
     /// The layout pass has placed this record (the original's state bit
     /// 0x1000); a later pass leaves it alone.
     pub laid_out: bool,
+    /// A button's tooltip text: the record's second string (a C string),
+    /// which the tooltip shows for a button (class 1) in place of the
+    /// record's text. No constructor in the running game is known to set
+    /// one, so it is empty unless a caller fills it.
+    pub hint: Vec<u8>,
 }
 
 impl Control {
+    /// The text the default tooltip shows for this record: a button's
+    /// [`Control::hint`], any other record's text (the tooltip timer
+    /// reads a button's second string and any other record's text).
+    pub fn tooltip_text(&self) -> &[u8] {
+        if self.class == 1 {
+            &self.hint
+        } else {
+            &self.text
+        }
+    }
+
     pub fn new(class: u16, x: i32, y: i32, w: i32, h: i32) -> Self {
         Self {
             class,
@@ -267,6 +283,7 @@ impl Control {
             reports: false,
             alt_press: false,
             laid_out: false,
+            hint: Vec::new(),
         }
     }
 
@@ -530,9 +547,13 @@ pub fn dispatch(
             }
         }
         (5, _) => 0,
+        // A hovered record with tooltip text asks for its tooltip. A button
+        // (class 1) shows its record's second string, so it asks only
+        // with one set: the retail inventory's captioned Primary and
+        // Secondary show no tooltip when hovered.
         (1 | 3 | 6 | 7, message::HINT) => {
             let c = &controls[i];
-            if c.state & 0xf_0000 == 0x1_0000 && !c.text.is_empty() {
+            if c.state & 0xf_0000 == 0x1_0000 && !c.tooltip_text().is_empty() {
                 0x103
             } else {
                 3
@@ -1752,10 +1773,25 @@ mod tests {
             ),
             3 | 5
         );
-        // A button with text and a hint asks for its tooltip.
+        // A button with a hint asks for its tooltip; its caption alone
+        // does not.
         let mut b = vec![Control::new(1, 0, 0, 80, 24)];
         b[0].text = b"Go".to_vec();
         b[0].state = 0x1_0000;
+        assert_eq!(
+            dispatch(
+                &mut b,
+                0,
+                Message {
+                    message: message::HINT,
+                    ..Default::default()
+                },
+                5,
+                &mut ev
+            ),
+            3
+        );
+        b[0].hint = b"Leave".to_vec();
         assert_eq!(
             dispatch(
                 &mut b,

@@ -1384,7 +1384,18 @@ half dots. The view draws no preview bars (only character creation and the
 arena switch them on). The
 journal keeps its session entries and stores its text on close. Escape
 closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
-The screens draw through `gui_paint` and `exa_ui::gui_draw`. The inventory
+The screens are base forms (`exa_ui::base_form`) on a rooted window
+manager the pointer drives (`form_input`: a frame's pointer, left button
+and wheel, the GUI timer and the task's tick): a press on a title drags the
+window, a release over the close mark closes it, a pressed window draws on
+top, the close mark and the records take their hover inks, and a record
+that asks for it shows the default tooltip (`--debug-hint TEXT` gives the
+inventory's Primary button one). The manual and its page (`help_live`) and
+the Settings Controls page (`settings_form`) run the same way: the page's
+arrows (repeating), thumb, rail and the wheel scroll it. The inventory's
+view and records sit under its title by the client measure (two pixels
+below its border). `--wheel delta@frame,...` turns the wheel in a scripted
+run. The screens draw through `gui_paint` and `exa_ui::gui_draw`. The inventory
 draws through the game skin's own form draw (`gui_paint::paint_line_form`
 over `exa_ui::line_skin::draw_line_form`) with the words its show commits
 (`gui_paint::commit_words`): the window titled "Inventory" with its shadow,

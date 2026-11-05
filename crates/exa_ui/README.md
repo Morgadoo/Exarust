@@ -629,6 +629,20 @@ register after the shipped seven.
 
 ## GUI core
 
+`base_form` is a live base form (`BaseForm`, a `FormHost`) that runs the
+form class's pointer rules from `form` over the line skin's frame hit and
+scroll rail: the hover (records' hover bits, the hint that asks for the
+tooltip, the frame mark kept for the skin's hover inks), the title drag,
+the thumb press and drag, the arrows' repeat on the GUI timer (the press
+steps, seven ticks of 100 clock units later the repeat starts, a fired
+tick re-arms after itself), the release marks (close, hide) and the wheel.
+The task keeps a draw order, raises a pressed form by the layer rule,
+hands the focused form the wheel and each form the pointer and press point.
+`line_skin::line_client` is the client measure under the line skin (a
+titled top-level form's client starts two units and 2 down) and
+`line_skin::hover_ink` the frame marks' hover ink; a button's tooltip text
+is its record's second string (`Control::hint`).
+
 `gui_core` is the window manager: a form is anything implementing
 `FormHost` (the original's virtual methods: hit test, select, press,
 release, drag move, drop, close), and `GuiTask` keeps the task's state —

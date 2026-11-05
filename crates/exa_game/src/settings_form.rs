@@ -48,6 +48,10 @@ use crate::menu_screen::{MenuChoice, MenuScreen, MenuScreenSystems};
 #[derive(Resource, Debug, Default)]
 pub struct SettingsForm {
     pub form: Option<FormState>,
+    /// The Controls page as a held base form with its scroll bar, which
+    /// the pointer drives ([`crate::form_input`]): its arrows, thumb, rail
+    /// and the wheel move the page's fraction.
+    pub page: Option<(crate::form_input::FormTask, exa_ui::gui_core::FormId)>,
     /// Defaults started the benchmark: the rows refill when it ends.
     benchmarking: bool,
 }
@@ -190,6 +194,84 @@ fn apply_rows(form: &mut FormState, config: &mut HardwareConfig, events: &[FormE
     }
 }
 
+/// Drives the Controls page's base form: built over the page's place and
+/// client with its committed words (the panel frame and the scroll bar),
+/// the form's fraction handed in and read back. The page's records keep
+/// the form's own hit and press ([`FormState`]); the base form takes the
+/// frame codes (the arrows and their repeat, the thumb and the rail) and
+/// the wheel, which goes to the form under the pointer.
+fn drive_controls_page(
+    page: &mut Option<(crate::form_input::FormTask, exa_ui::gui_core::FormId)>,
+    form: &mut FormState,
+    window: &Window,
+    scripted: Option<&exa_ui::ScriptedPointer>,
+    mouse: &ButtonInput<MouseButton>,
+    wheel: i32,
+    now: u32,
+) {
+    if form.page != 1 {
+        *page = None;
+        form.page_hover = 0;
+        return;
+    }
+    let rect = form.page_screen();
+    let bounds = GuiRect::new(rect.x, rect.y, rect.w, rect.h);
+    let unit = form.unit();
+    let client = form.page_client();
+    let local = exa_ui::form::ClientRect {
+        left: client.x - rect.x,
+        top: client.y - rect.y,
+        right: client.x - rect.x + client.w,
+        bottom: client.y - rect.y + client.h,
+    };
+    let rebuild = page.as_ref().is_none_or(|(task, id)| {
+        task.base(*id)
+            .is_none_or(|f| f.bounds != bounds || f.unit != unit || f.client != local)
+    });
+    if rebuild {
+        let held = gui_paint::commit_words(CONTROLS_STYLE, CONTROLS_ATTRIBUTES, false);
+        let mut base = exa_ui::base_form::BaseForm::new(
+            bounds,
+            unit,
+            (held.style, held.attributes, held.state),
+            local,
+        );
+        let g = &form.geometry;
+        let owner_x = g.form.x + settings::BORDER;
+        let owner_y = g.form.y + settings::BORDER;
+        base.in_owner = (rect.x - owner_x, rect.y - owner_y);
+        base.owner_client = (
+            g.form.w - 2 * settings::BORDER,
+            g.form.h - 2 * settings::BORDER,
+        );
+        base.scroll = Some(exa_ui::base_form::FormScroll {
+            fraction: form.scroll,
+            step: settings::SCROLL_STEP,
+            content: g.controls_content,
+        });
+        let mut task = crate::form_input::FormTask::new();
+        let id = task.add(base, None);
+        *page = Some((task, id));
+    }
+    let Some((task, id)) = page.as_mut() else {
+        return;
+    };
+    if let Some(scroll) = task.base_mut(*id).and_then(|f| f.scroll.as_mut()) {
+        scroll.fraction = form.scroll;
+    }
+    let frame = crate::form_input::read_pointer(window, scripted, mouse, wheel, now);
+    task.drive(&frame);
+    for event in task.take_events(*id) {
+        if let exa_ui::base_form::BaseEvent::Scrolled(f) = event {
+            info!("settings: Controls page scrolled to {f:.3}");
+        }
+    }
+    if let Some(base) = task.base(*id) {
+        form.scroll = base.scroll.map_or(form.scroll, |s| s.fraction);
+        form.page_hover = base.hover;
+    }
+}
+
 /// The pointer, wheel and keys while the form is open and neither the
 /// key-read nor the warm-up screen covers it.
 #[allow(clippy::too_many_arguments)]
@@ -252,9 +334,16 @@ fn form_input(
                 if mouse.just_released(MouseButton::Left) {
                     events.extend(form.release(x, y));
                 }
-                if notches != 0.0 {
-                    form.wheel(x, y, notches as i32);
-                }
+                let now = time.elapsed().as_millis() as u32;
+                drive_controls_page(
+                    &mut settings.page,
+                    &mut form,
+                    window,
+                    scripted.as_deref(),
+                    &mouse,
+                    notches as i32,
+                    now,
+                );
             }
         }
     }
@@ -604,6 +693,7 @@ pub fn paint_form(form: &FormState, textures: &GuiTextures) -> Painted {
             },
             unit,
         );
+        at.hover_mark = form.page_hover;
         at.scroll = Some(exa_ui::line_skin::LineFormScroll {
             client_top: page_client.y - page.y,
             client_right: page_client.x - page.x + page_client.w,

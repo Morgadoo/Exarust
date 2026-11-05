@@ -151,6 +151,9 @@
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --click-at x,y@frame;...   move the scripted pointer to the window point (logical pixels) and click the
 //!                                     left mouse button there at frames after loading
+//!          --wheel delta@frame,...   debug: turn the mouse wheel by delta (120 a notch, up positive) at frames
+//!                                     after loading
+//!          --debug-hint TEXT          debug: the inventory's Primary button carries this tooltip text
 //!          --drag-at x,y>x,y@frame[-end];...
 //!                                     debug: press the left mouse button at the first window point (logical
 //!                                     pixels) at the frame, move the scripted pointer to the second by the end
@@ -572,6 +575,12 @@ pub struct Options {
     /// `--drag-at x,y>x,y@frame;...`: a left drag from the first point to
     /// the second, pressed at the frame (a debug tool).
     pub drags_at: Vec<Drag>,
+    /// `--wheel delta@frame,...`: the mouse wheel turns by `delta` (120 a
+    /// notch, up positive) at frames after the load (a debug tool).
+    pub wheels: Vec<(i32, u32)>,
+    /// `--debug-hint TEXT`: the inventory's Primary button carries this
+    /// tooltip text (a debug tool).
+    pub debug_hint: Option<String>,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
     /// `--opponent-feral <f>`: the debug duellist's feral level.
@@ -769,6 +778,17 @@ fn parse_clicks_at(list: &str) -> Option<Vec<([f32; 2], u32)>> {
                 [x.trim().parse().ok()?, y.trim().parse().ok()?],
                 frame.trim().parse().ok()?,
             ))
+        })
+        .collect()
+}
+
+/// Reads `--wheel`'s `delta@frame` entries, separated by `,`.
+fn parse_wheels(list: &str) -> Option<Vec<(i32, u32)>> {
+    list.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|entry| {
+            let (delta, frame) = entry.trim().split_once('@')?;
+            Some((delta.trim().parse().ok()?, frame.trim().parse().ok()?))
         })
         .collect()
 }
@@ -1184,6 +1204,17 @@ fn main() -> AppExit {
                     .filter(|s| !s.is_empty())
                     .collect();
             }
+            "--wheel" => {
+                let list = args.next().unwrap_or_default();
+                match parse_wheels(&list) {
+                    Some(w) => options.wheels = w,
+                    None => {
+                        eprintln!("--wheel: cannot read {list:?} (delta@frame,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--debug-hint" => options.debug_hint = args.next(),
             "--drag-at" => {
                 let list = args.next().unwrap_or_default();
                 match parse_drags_at(&list) {
@@ -1709,6 +1740,9 @@ fn main() -> AppExit {
         .insert_resource(exa_game::gui_screens::DebugGuiForm {
             enabled: options.debug_gui_form,
         })
+        .insert_resource(exa_game::gui_screens::DebugRecordHint(
+            options.debug_hint.clone(),
+        ))
         .insert_resource(exa_game::settings_form::OpenSettingsOnLoad {
             page: options.open_settings,
             done: false,
@@ -1953,6 +1987,10 @@ mod tests {
             Some(vec![([10.0, 20.0], 30), ([1.5, 2.0], 4)])
         );
         assert_eq!(parse_clicks_at("10,20"), None);
+        assert_eq!(
+            parse_wheels("-120@5, 240@9"),
+            Some(vec![(-120, 5), (240, 9)])
+        );
         assert_eq!(
             parse_drags_at("10,20>30,40@50"),
             Some(vec![([10.0, 20.0], [30.0, 40.0], 50, 80)])

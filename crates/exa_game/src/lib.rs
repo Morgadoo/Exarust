@@ -53,6 +53,7 @@ pub mod fire_sound;
 pub mod flow;
 pub mod footprints;
 pub mod footwork;
+pub mod form_input;
 pub mod frame;
 pub mod game_event;
 pub mod game_event_live;

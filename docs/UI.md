@@ -1307,7 +1307,12 @@ the task's state. A control value of `i32::MIN` means none.
 - **Tooltip.** The task's tick shows a requested tooltip once 400 clock
   units have passed (an unsigned comparison), only if the focus is still on
   that form and control; the control's record picks its class and text, or
-  the form's own hint. A press, or the tooltip's own time running out,
+  the form's own hint. The default tooltip shows a button's (class 1)
+  second string, the C string its record keeps for the tooltip, and any
+  other record's text; a button asks for its tooltip only with that string
+  set (the retail inventory's captioned Primary and Secondary show none).
+  No record of the running game's screens is known to carry one;
+  `--debug-hint TEXT` gives the inventory's Primary button one. A press, or the tooltip's own time running out,
   hides it with a 256-unit fade.
 - **Hit test.** With a modal form, it always takes the hit, in its own
   coordinates. Otherwise a point off the screen hits nothing (no form,
@@ -1549,6 +1554,41 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   focus or the root); the tooltip clears with its reset; the task's
   pressed form clears with its press word; the dragged form clears; and
   the drop payload clears with its callback reset.
+- **Live input.** `exa_ui::base_form::BaseForm` runs these rules on one
+  live form for the window manager (each `FormHost` method is one slot):
+  the hover is the task's select (the old record's hover bits clear, the
+  new record takes the code's bits and is asked for its hint, whose 0x100
+  asks for the tooltip; a frame mark is kept for the skin's inks); the
+  press, drag and release are the rules above; the wheel goes to the
+  focused form (the window procedure's hand-off). The base form calls two
+  line-skin hooks: its frame hit (see Line skin) and its vertical rail,
+  whose start, end and two-unit thumb the thumb's hit, press and drag
+  read. A press on the rail off the thumb grabs the thumb's middle and runs
+  the drag at once. A press on an arrow steps once, lights the over flag
+  and restarts the GUI timer (one tick is 100 clock units) seven ticks
+  ahead; each fired tick repeats the step while the pointer is still on the
+  arrow and re-arms one tick after the clock that fired it, so a late frame
+  takes one step. `exa_game::form_input` feeds a frame's pointer, left
+  button and wheel to a task of base forms. The inventory, journal, loot
+  window and container popup, the manual and its page, and the Settings
+  Controls page run on it: their titles drag them, their close marks close
+  them, their scroll bars and the wheel scroll them. The hub's tables have
+  no scroll bar attribute (no writer sets 0x100 or 0x200 on them, and the
+  table view keeps the base wheel), so neither the wheel nor a bar scrolls
+  them.
+- **Client measure.** The client refresh measures each form with its
+  skin's lengths: the left edge is the border; the right the width less the
+  border, less the skin's scroll length with the vertical bar; the bottom
+  the height less the border; a titled form's top is the skin's title
+  length plus the border metric 2 when its attribute word's 0x800030 bits
+  are exactly 0x20, else plus its title span (the panel frame's length),
+  and an untitled form's top the border. Under the line skin a titled
+  top-level form's client starts at two units and 2: the inventory's view
+  and records sit two pixels under its border (its pack stays at the
+  client's bottom).
+- **Draw order.** The task keeps its forms in draw order; a press a form
+  holds raises its top-level form among the root's children by the layer
+  rule above, and the screens draw in that order.
 - **Snap slots and rescale.** A snap container (attribute 0x20) cuts the
   space between its client's edges and its visible children's widened
   client rectangles into slots: from each free cell the longer free run
@@ -2357,6 +2397,11 @@ capped and plain span bars, the label and the widget dispatcher
   a cap at each end eight units in and the track between them. A titled
   window splits the track at its title's gap, half of the width less the
   title and five units, and puts a cap on the inner side of each piece.
+- **Form hover inks.** The form draw inks the frame mark under the
+  pointer (the form's hover word) in 255, 204, 153 at the GUI's alpha: the
+  scroll bar's upper arrow (-9), lower arrow (-10) and thumb (-8) in place
+  of the idle ink, and a hovered close mark (-4) is left out of the frame
+  and drawn again after it, with the same sample and corners.
 - **Close-edge tints.** With state bit 0x200 a bar draws an upper and a
   lower tab beside the client and a square below the scroll thumb. Close
   mark -9 tints the upper tab, -10 the lower one and -8 the square (which

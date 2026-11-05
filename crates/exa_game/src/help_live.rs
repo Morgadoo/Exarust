@@ -18,7 +18,11 @@
 //! (`Step::MenuHelp(true)`) until it closes; a page's `[inptN]` tags name
 //! the keys of the saved key table's entries ([`manual_key_slot`]). F1 opens the menu, so F1 then
 //! MANUAL is the original's way to the help pages. Escape, F1 or a right
-//! click closes the manual, which clears the menu's help flag again.
+//! click closes the manual, which clears the menu's help flag again. The
+//! manual and its page are base forms the pointer drives
+//! ([`crate::form_input`]): the title drags the manual, its close mark
+//! closes it, and the page's scroll bar and the wheel over it scroll the
+//! page, its text easing toward the fraction as the text box does.
 //!
 //! Evidence: the prelude's tip routine and its four callers, the menu's row
 //! handler (the MANUAL rows call the manual's open with 4 and set the menu
@@ -75,8 +79,23 @@ pub fn read_manual(bytes: &[u8]) -> Option<(Vec<TopicRef>, ManualPages)> {
 pub struct ManualScreen {
     pub manual: Option<Manual>,
     pub pages: ManualPages,
-    /// The page's scroll, 0 (top) to 1 (end).
+    /// The page's drawn scroll, 0 (top) to 1 (end): it eases a fifth of
+    /// the way per frame toward the page form's fraction, as the text box
+    /// does.
     pub scroll: f32,
+    /// The manual's window manager: the manual form and its page (a held
+    /// base form with the scroll bar), which the pointer drives.
+    pub forms: Option<crate::form_input::FormTask>,
+    /// The manual form and its page in [`ManualScreen::forms`], and the
+    /// rectangle and unit they were built for.
+    pub outer: Option<exa_ui::gui_core::FormId>,
+    pub page: Option<exa_ui::gui_core::FormId>,
+    built: Option<(GuiRect, i32)>,
+    /// Where a title drag left the manual (its constructor centres it).
+    pub place: Option<(i32, i32)>,
+    /// The page's laid-out text: its content height over the form's client
+    /// and one line's share of the scroll, from the last paint.
+    pub page_metrics: Option<(i32, f32)>,
 }
 
 impl ManualScreen {
@@ -89,6 +108,105 @@ impl ManualScreen {
         self.manual = Some(Manual::open(topics, argument, &pages));
         self.pages = pages;
         self.scroll = 0.0;
+        self.forms = None;
+        self.outer = None;
+        self.page = None;
+        self.built = None;
+        self.place = None;
+        self.page_metrics = None;
+    }
+
+    /// The manual's rectangle: its centred place, or where a title drag
+    /// left it.
+    pub fn rect(&self, screen: (i32, i32), unit: i32) -> GuiRect {
+        let rect = manual_rect(screen, unit);
+        match self.place {
+            Some((x, y)) => GuiRect::new(x, y, rect.width(), rect.height()),
+            None => rect,
+        }
+    }
+
+    /// The page form's hover word (its frame mark under the pointer).
+    pub fn page_hover(&self) -> i32 {
+        self.forms
+            .as_ref()
+            .zip(self.page)
+            .and_then(|(forms, page)| forms.base(page))
+            .map_or(0, |f| f.hover)
+    }
+
+    /// The manual form's hover word.
+    pub fn outer_hover(&self) -> i32 {
+        self.forms
+            .as_ref()
+            .zip(self.outer)
+            .and_then(|(forms, outer)| forms.base(outer))
+            .map_or(0, |f| f.hover)
+    }
+
+    /// Builds (or rebuilds, for a new place or unit) the manual's two base
+    /// forms: the manual (its committed words, the line skin's client) and
+    /// the page held in its client with the scroll bar.
+    fn build_forms(&mut self, rect: GuiRect, unit: i32) {
+        if self.built == Some((rect, unit)) && self.forms.is_some() {
+            return;
+        }
+        let fraction = self
+            .forms
+            .as_ref()
+            .zip(self.page)
+            .and_then(|(f, p)| f.base(p))
+            .and_then(|p| p.scroll)
+            .map_or(0.0, |s| s.fraction);
+        let mut forms = crate::form_input::FormTask::new();
+        let words = gui_paint::commit_words(
+            gui_paint::MANUAL_WORDS.style,
+            gui_paint::MANUAL_WORDS.attributes,
+            true,
+        );
+        let client = exa_ui::line_skin::line_client(
+            rect.width(),
+            rect.height(),
+            gui_paint::BORDER,
+            words.style,
+            words.attributes,
+            unit,
+        );
+        let outer = forms.add(
+            exa_ui::base_form::BaseForm::new(
+                rect,
+                unit,
+                (words.style, words.attributes, words.state),
+                client,
+            ),
+            None,
+        );
+        let (_, page_rect) = manual_parts(rect, unit);
+        let held = gui_paint::commit_words(
+            gui_paint::MANUAL_PAGE_WORDS.style,
+            gui_paint::MANUAL_PAGE_WORDS.attributes,
+            false,
+        );
+        let inner = page_client(page_rect);
+        let mut page = exa_ui::base_form::BaseForm::new(
+            page_rect,
+            unit,
+            (held.style, held.attributes, held.state),
+            inner,
+        );
+        let owner = manual_client(rect);
+        page.in_owner = (page_rect.left - owner.left, page_rect.top - owner.top);
+        page.owner_client = (owner.width(), owner.height());
+        page.scroll = Some(exa_ui::base_form::FormScroll {
+            fraction,
+            step: 0.0,
+            content: 0,
+        });
+        let page = forms.add(page, Some(outer));
+        self.forms = Some(forms);
+        self.outer = Some(outer);
+        self.page = Some(page);
+        self.built = Some((rect, unit));
     }
 
     /// Picks a topic (1-based) and scrolls its page to the top.
@@ -98,6 +216,12 @@ impl ManualScreen {
         };
         let picked = manual.select(topic, &self.pages);
         self.scroll = 0.0;
+        if let (Some(forms), Some(page)) = (self.forms.as_mut(), self.page)
+            && let Some(page) = forms.base_mut(page)
+            && let Some(scroll) = page.scroll.as_mut()
+        {
+            scroll.fraction = 0.0;
+        }
         picked
     }
 
@@ -126,6 +250,33 @@ pub fn manual_rect(screen: (i32, i32), unit: i32) -> GuiRect {
         scale(help_system::MANUAL_SIZE.1),
     );
     GuiRect::new((screen.0 - w) / 2, (screen.1 - h) / 2, w, h)
+}
+
+/// The manual form's client as its painter frames it: inside the border.
+pub fn manual_client(rect: GuiRect) -> GuiRect {
+    GuiRect::new(
+        rect.left + gui_paint::BORDER,
+        rect.top + gui_paint::BORDER,
+        rect.width() - 2 * gui_paint::BORDER,
+        rect.height() - 2 * gui_paint::BORDER,
+    )
+}
+
+/// The page form's client (form-local): the base form's inside its border
+/// less the scroll inset, as its frame's scroll bar is placed.
+pub fn page_client(page: GuiRect) -> ClientRect {
+    exa_ui::form::client_rect(
+        page.width(),
+        page.height(),
+        gui_paint::BORDER,
+        0,
+        gui_paint::MANUAL_PAGE_WORDS.attributes,
+        0,
+        exa_ui::settings::SCROLL_INSET,
+        0,
+        15,
+        gui_paint::BORDER,
+    )
 }
 
 /// The topic list's and the page's rectangles in a manual at `rect`.
@@ -240,8 +391,11 @@ fn open_manual(
 }
 
 /// The open manual's keys and pointer: a click on the list picks a topic,
-/// the arrows step through them, the wheel scrolls the page, and Escape, F1
-/// or a right click closes it.
+/// the arrows step through them, Escape, F1 or a right click closes it.
+/// The pointer drives the manual's base forms ([`crate::form_input`]): the
+/// title drags the manual, the close mark closes it, and the page's scroll
+/// bar (arrows with their repeat, thumb, rail) and the wheel over the page
+/// move its fraction, toward which the drawn scroll eases.
 #[allow(clippy::too_many_arguments)]
 fn manual_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -250,22 +404,26 @@ fn manual_input(
     windows: Query<&Window, With<PrimaryWindow>>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
     textures: Option<Res<GuiTextures>>,
+    time: Res<Time<Real>>,
     mut screen: ResMut<ManualScreen>,
     mut steps: Option<ResMut<FlowSteps>>,
 ) {
-    let scrolled: f32 = wheel.read().map(|w| w.y).sum();
+    let delta = crate::form_input::wheel_delta(&mut wheel);
     if !screen.is_open() {
         return;
     }
-    if keys.just_pressed(KeyCode::Escape)
-        || keys.just_pressed(KeyCode::F1)
-        || mouse.just_released(MouseButton::Right)
-    {
+    let close = |screen: &mut ManualScreen, steps: &mut Option<ResMut<FlowSteps>>| {
         screen.close();
         info!("manual: closed");
         if let Some(steps) = steps.as_mut() {
             steps.steps.push(Step::MenuHelp(false));
         }
+    };
+    if keys.just_pressed(KeyCode::Escape)
+        || keys.just_pressed(KeyCode::F1)
+        || mouse.just_released(MouseButton::Right)
+    {
+        close(&mut screen, &mut steps);
         return;
     }
     let count = screen.manual.as_ref().map_or(0, |m| m.topics.len()) as i32;
@@ -276,31 +434,87 @@ fn manual_input(
     if keys.just_pressed(KeyCode::ArrowUp) && current > 1 {
         screen.pick(current - 1);
     }
-    if scrolled != 0.0 {
-        screen.scroll = (screen.scroll - scrolled * 0.1).clamp(0.0, 1.0);
-    }
     let Ok(window) = windows.single() else {
         return;
     };
-    if !mouse.just_released(MouseButton::Left) {
+    let (size, unit) = screen_and_unit(window);
+    let rect = screen.rect(size, unit);
+    screen.build_forms(rect, unit);
+    let now = time.elapsed().as_millis() as u32;
+    let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
+    let (Some(outer), Some(page)) = (screen.outer, screen.page) else {
+        return;
+    };
+    let metrics = screen.page_metrics;
+    let screen = &mut *screen;
+    let Some(forms) = screen.forms.as_mut() else {
+        return;
+    };
+    if let (Some((content, step)), Some(form)) = (metrics, forms.base_mut(page))
+        && let Some(scroll) = form.scroll.as_mut()
+    {
+        scroll.content = content;
+        scroll.step = step;
+    }
+    forms.drive(&frame);
+    let mut closed = false;
+    for event in forms.take_events(outer) {
+        match event {
+            exa_ui::base_form::BaseEvent::Moved(x, y) => {
+                info!("manual: moved to {x}, {y}");
+                screen.place = Some((x, y));
+            }
+            exa_ui::base_form::BaseEvent::Close => closed = true,
+            _ => {}
+        }
+    }
+    for event in forms.take_events(page) {
+        if let exa_ui::base_form::BaseEvent::Scrolled(f) = event {
+            info!("manual: page scrolled to {f:.3}");
+        }
+    }
+    let target = forms
+        .base(page)
+        .and_then(|p| p.scroll)
+        .map_or(0.0, |s| s.fraction);
+    // The text box's ease: a fifth of the way per frame, snapping when
+    // within a thousandth.
+    screen.scroll = if (target - screen.scroll).abs() <= exa_ui::text_box::SCROLL_SNAP {
+        target
+    } else {
+        target * exa_ui::text_box::SCROLL_EASE
+            + screen.scroll * (1.0 - exa_ui::text_box::SCROLL_EASE)
+    };
+    if closed {
+        close(screen, &mut steps);
         return;
     }
-    let pointer = match scripted.as_deref() {
-        Some(scripted) => scripted.position(window),
-        None => window.cursor_position(),
-    };
-    let Some(at) = pointer.map(|p| (p * window.scale_factor()).as_ivec2()) else {
+    if !frame.released {
+        return;
+    }
+    let Some(at) = frame.at else {
         return;
     };
-    let (size, unit) = screen_and_unit(window);
     let empty = GuiTextures::default();
     let (font, _) = list_font(unit, textures.as_deref().unwrap_or(&empty));
-    let (list, _) = manual_parts(manual_rect(size, unit), unit);
-    if let Some(row) = list_row(list, font.line_height, unit, at.x, at.y)
+    let (list, _) = manual_parts(screen.rect(size, unit), unit);
+    if let Some(row) = list_row(list, font.line_height, unit, at.0, at.1)
         && (row as i32) < count
     {
         screen.pick(row as i32 + 1);
     }
+}
+
+/// The page form's stored fraction (the thumb's place), or the drawn
+/// scroll before the forms exist.
+fn page_fraction(screen: &ManualScreen) -> f32 {
+    screen
+        .forms
+        .as_ref()
+        .zip(screen.page)
+        .and_then(|(f, p)| f.base(p))
+        .and_then(|p| p.scroll)
+        .map_or(screen.scroll, |s| s.fraction)
 }
 
 /// The level's main font, with its atlas when loaded.
@@ -312,7 +526,7 @@ fn list_font(unit: i32, textures: &GuiTextures) -> (exa_ui::gui_font::GuiFont, O
 /// Paints the manual over the menu: the "MANUAL" frame, the topic list with
 /// the shown topic banded, and the page's text with its markup.
 fn paint_manual(
-    screen: Res<ManualScreen>,
+    mut screen: ResMut<ManualScreen>,
     bindings: Option<Res<crate::bindings::Bindings>>,
     textures: Option<Res<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -331,24 +545,20 @@ fn paint_manual(
     let level = exa_ui::gui_font::level_for_unit(unit);
     let fonts = exa_ui::gui_font::gui_level(level);
     let (font, atlas) = list_font(unit, textures);
-    let rect = manual_rect(size, unit);
+    let rect = screen.rect(size, unit);
     // The game skin's form draw with the words the show commits: a
     // top-level form (titled, shadowed, corner-framed); its topic list (an
     // item view) and its page (a text box with the scroll bar) are held.
-    let (mut outer, committed) = gui_paint::paint_top_form(
+    let (mut outer, committed) = gui_paint::paint_top_form_marked(
         rect,
         unit,
         &palette,
         1.0,
         gui_paint::MANUAL_WORDS,
         Some((help_system::MANUAL_TITLE, &font, atlas)),
+        screen.outer_hover(),
     );
-    let client = GuiRect::new(
-        rect.left + gui_paint::BORDER,
-        rect.top + gui_paint::BORDER,
-        rect.width() - 2 * gui_paint::BORDER,
-        rect.height() - 2 * gui_paint::BORDER,
-    );
+    let client = manual_client(rect);
     let mut painted = gui_paint::Painted {
         client,
         ..Default::default()
@@ -372,7 +582,8 @@ fn paint_manual(
         &palette,
         1.0,
         gui_paint::MANUAL_PAGE_WORDS,
-        screen.scroll,
+        page_fraction(&screen),
+        screen.page_hover(),
     );
     painted.layers.extend(list_frame.under());
     painted.layers.extend(page_frame.under());
@@ -442,6 +653,11 @@ fn paint_manual(
         slant: font.slant,
     };
     let draw = text_box.draw(&inks, &|_| None);
+    // The page form's scroll runs over the text's lines: its content is
+    // the text's height over the form's client, one step a line's share.
+    let inner = page_client(page);
+    let content = text_box.content_height + (inner.height() - client.height());
+    screen.page_metrics = Some((content, text_box.scroll_step));
     let overflow = (text_box.content_height - client.height()).max(0);
     let shift = (screen.scroll * overflow as f32) as i32;
     let glyphs: Vec<_> = draw
