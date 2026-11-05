@@ -1023,8 +1023,11 @@ the knock travel, the stop's heading in the door frame as the angle, and
 the drive angle moving the stop point onto the stop's radius by its
 weights. The hand's door link (slack 1 cm, strength 0.003, the first three
 passes) is `DoorBody::take_hold`, `pull_to` and `let_go`. The door's
-sounds, its navigation passage report and the last-pusher stamp are not
-reproduced. Hung props (lamps, chains, wall rings) also register, with
+sounds go out through `mechanism_sound`; the last-pusher stamp is not
+reproduced. Its navigation
+passage report is not made: the original's pathfinder ignores it (it
+returns itself; the fallback's slot is empty), so a door never changes the
+grid's cells. Hung props (lamps, chains, wall rings) also register, with
 their world links.
 
 A lever's arm registers hung with a `body::PendingLever`, and

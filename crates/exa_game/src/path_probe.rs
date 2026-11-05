@@ -5,7 +5,10 @@
 //! while it plans (as the original's AI lifts its own before it plans; the
 //! size class and shift are those the earlier reading of the AI planner
 //! gave). It plans again whenever the player has moved more than a metre
-//! from where it last planned, logs each plan and draws the path: yellow
+//! from where it last planned or the grid has changed since
+//! ([`NavRevision`]: a refresh that moved a floor, such as a door's
+//! doorway freed under `--nav-refresh-moved`), logs each plan and draws the
+//! path: yellow
 //! when it reaches the goal, orange when it ends short, a ring at each
 //! point, a cyan cross at the goal. Nothing walks the path. Idle (no system
 //! runs) without the flag.
@@ -13,7 +16,7 @@
 use bevy::prelude::*;
 use exa_combat::Fighter;
 use exa_physics::CharacterBody;
-use exa_world::nav::{ACCEPT_GOAL_CELL, NavFootprints, NavGrid, Path, find_path_with};
+use exa_world::nav::{ACCEPT_GOAL_CELL, NavFootprints, NavGrid, NavRevision, Path, find_path_with};
 
 use crate::footprints::keep_footprints;
 use crate::player::PlayerBody;
@@ -55,6 +58,8 @@ pub struct PathProbe {
     pub goal: Option<Vec3>,
     /// Where the player stood at its last plan.
     from: Option<Vec3>,
+    /// The grid's revision at its last plan.
+    revision: u32,
     plan: Option<Path>,
 }
 
@@ -78,9 +83,11 @@ fn plan_probe(
     mut probe: ResMut<PathProbe>,
     grid: Option<ResMut<NavGrid>>,
     mut prints: ResMut<NavFootprints>,
+    revision: Option<Res<NavRevision>>,
     players: Query<(Entity, &ChildOf), (With<PlayerBody>, With<Fighter>)>,
     roots: Query<(&CharacterBody, &Transform)>,
 ) {
+    let revision = revision.map_or(0, |r| r.0);
     let (Some(goal), Some(mut grid)) = (probe.goal, grid) else {
         return;
     };
@@ -90,9 +97,10 @@ fn plan_probe(
     }) else {
         return;
     };
-    if probe
-        .from
-        .is_some_and(|from| from.distance(standing) <= REPLAN_AFTER)
+    if probe.revision == revision
+        && probe
+            .from
+            .is_some_and(|from| from.distance(standing) <= REPLAN_AFTER)
     {
         return;
     }
@@ -110,7 +118,7 @@ fn plan_probe(
         prints.stamp(&mut grid, who, standing);
     }
     info!(
-        "debug path from ({:.3}, {:.3}, {:.3}) to ({:.3}, {:.3}, {:.3}): {} points, cost {}, {}",
+        "debug path from ({:.3}, {:.3}, {:.3}) to ({:.3}, {:.3}, {:.3}): {} points, cost {}, {} (grid revision {revision})",
         standing.x,
         standing.y,
         standing.z,
@@ -129,6 +137,7 @@ fn plan_probe(
         info!("  {k:>3}: ({:.3}, {:.3}, {:.3})", p.x, p.y, p.z);
     }
     probe.from = Some(standing);
+    probe.revision = revision;
     probe.plan = Some(plan);
 }
 
@@ -164,7 +173,8 @@ mod tests {
 
     /// The probe plans with the player's own footprint lifted (4 cells at
     /// 5, not the doubled 32 and 16 its footprint would add), puts the
-    /// footprint back, and waits for a metre of movement to plan again.
+    /// footprint back, and waits for a metre of movement or a change of the
+    /// grid to plan again.
     #[test]
     fn the_probe_plans_without_its_footprint() {
         let mut c = Columns::new(40, 40, grid_base(3.4));
@@ -205,5 +215,10 @@ mod tests {
         app.world_mut().resource_mut::<PathProbe>().plan = None;
         app.update();
         assert!(app.world().resource::<PathProbe>().plan().is_none());
+
+        // A changed grid plans again where the player stands.
+        app.insert_resource(NavRevision(1));
+        app.update();
+        assert!(app.world().resource::<PathProbe>().plan().is_some());
     }
 }

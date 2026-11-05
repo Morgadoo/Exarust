@@ -118,7 +118,7 @@
 //!                                     arena, recruit or versus
 //!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
-//!                                     again whenever the player has moved a metre
+//!                                     again whenever the player has moved a metre or the grid has changed
 //!          --searcher <id>            play mode: the level character with this record id (hex with 0x) takes the
 //!                                     Explorer role: it follows the player and searches the dead bodies near it
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
