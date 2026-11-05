@@ -65,6 +65,11 @@ fn the_action_sets_hold_the_originals_actions() {
         Control::Button(GamepadButton::Mode)
     );
     assert_eq!(
+        default_control(Id::Combat),
+        Control::Button(GamepadButton::RightThumb)
+    );
+    assert_eq!(EMULATED_LEFT_BUTTON, GamepadButton::RightTrigger2);
+    assert_eq!(
         default_control(Id::Move),
         Control::Stick(GamepadAxis::LeftStickX, GamepadAxis::LeftStickY)
     );
@@ -499,7 +504,7 @@ fn a_step_mode_zeroes_the_move_and_keeps_the_run_flag() {
 #[test]
 fn every_digital_gameplay_action_sets_its_command_bit() {
     let cases = [
-        (Id::Combat, command::ATTACK),
+        (Id::Combat, command::COMBAT),
         (Id::SwapWeapon, command::SWAP_WEAPON),
         (Id::Inventory, command::INVENTORY),
         (Id::Skills, command::SKILLS),
@@ -518,35 +523,59 @@ fn every_digital_gameplay_action_sets_its_command_bit() {
     }
 }
 
+fn mouse_left() -> PadSample {
+    PadSample {
+        mouse_left: true,
+        ..pad()
+    }
+}
+
+/// `Combat` is the combat-mode toggle's command bit, not the attack.
 #[test]
-fn the_attack_is_a_latched_edge_and_the_command_word_keeps_it() {
+fn the_combat_action_is_a_command_bit_and_not_the_attack() {
     let combat = pad().with_digital(Id::Combat, true);
     let mut play = primed_play();
     let frame = *play.update(4, &combat, play_ctx());
-    assert_eq!(frame.pressed & command::ATTACK, command::ATTACK);
+    assert_eq!(frame.pressed & command::COMBAT, command::COMBAT);
+    assert!(!play.attack_held());
+    assert!(!play.take_attack_press());
+    let frame = *play.update(5, &combat, play_ctx());
+    assert_eq!(frame.pressed & command::COMBAT, 0);
+    assert_eq!(play.commands() & command::COMBAT, command::COMBAT);
+    play.consume(command::COMBAT);
+    assert_eq!(play.commands() & command::COMBAT, 0);
+}
+
+/// The emulated left button attacks: held, with its press latched, and
+/// outside the command word.
+#[test]
+fn the_emulated_left_button_is_a_latched_attack() {
+    let mut play = primed_play();
+    let frame = *play.update(4, &mouse_left(), play_ctx());
+    assert_eq!(frame.pressed, 0);
     assert!(play.attack_held());
     assert!(play.take_attack_press());
     assert!(!play.take_attack_press());
-    let frame = *play.update(5, &combat, play_ctx());
-    assert_eq!(frame.pressed & command::ATTACK, 0);
-    assert_eq!(play.commands() & command::ATTACK, command::ATTACK);
-    play.consume(command::ATTACK);
-    assert_eq!(play.commands() & command::ATTACK, 0);
+    play.update(5, &mouse_left(), play_ctx());
     assert!(play.attack_held());
+    assert!(!play.take_attack_press());
+    play.update(6, &pad(), play_ctx());
+    assert!(!play.attack_held());
+    play.update(7, &mouse_left(), play_ctx());
+    assert!(play.take_attack_press());
 }
 
 #[test]
-fn the_attack_is_not_latched_while_the_set_primes() {
+fn the_combat_toggle_is_not_pressed_while_the_set_primes() {
     let combat = pad().with_digital(Id::Combat, true);
     let mut play = PlayPad::default();
     play.update(0, &combat, play_ctx());
     play.update(3, &combat, play_ctx());
-    assert!(!play.take_attack_press());
-    assert_eq!(play.commands() & command::ATTACK, 0);
-    // Released and pressed again, it fires.
+    assert_eq!(play.commands() & command::COMBAT, 0);
+    // Released and pressed again, it is a press.
     play.update(4, &pad(), play_ctx());
-    play.update(5, &combat, play_ctx());
-    assert!(play.take_attack_press());
+    let frame = *play.update(5, &combat, play_ctx());
+    assert_eq!(frame.pressed & command::COMBAT, command::COMBAT);
 }
 
 #[test]
@@ -672,11 +701,11 @@ fn a_gameplay_set_switch_primes_the_held_buttons() {
         ..play_ctx()
     };
     play.update(100, &combat, ctx);
-    assert_eq!(play.update(103, &combat, ctx).pressed & command::ATTACK, 0);
+    assert_eq!(play.update(103, &combat, ctx).pressed & command::COMBAT, 0);
     // Released and pressed after the priming, it is a press.
     play.update(104, &pad(), ctx);
     let frame = *play.update(105, &combat, ctx);
-    assert_eq!(frame.pressed & command::ATTACK, command::ATTACK);
+    assert_eq!(frame.pressed & command::COMBAT, command::COMBAT);
 }
 
 #[test]
@@ -841,13 +870,18 @@ fn the_default_table_reads_bevys_buttons_and_sticks() {
     pad.analog_mut().set(GamepadAxis::RightStickY, 0.75);
     let sample = sample_pad(&pad);
     assert!(sample.connected);
-    assert!(sample.digital(Id::Combat));
+    // The right trigger is the emulated left button; Combat is R3.
+    assert!(sample.mouse_left);
+    assert!(!sample.digital(Id::Combat));
     assert!(sample.digital(Id::Select));
     assert!(sample.digital(Id::ZoomIn));
     assert_eq!(sample.analog(Id::Move), Vec2::new(0.5, -0.25));
     assert_eq!(sample.analog(Id::Camera), Vec2::new(0.0, 0.75));
     // An unbound action is not pressed.
     assert!(!sample.digital(Id::Skills));
+    pad.digital_mut().press(GamepadButton::RightThumb);
+    let sample = sample_pad(&pad);
+    assert!(sample.digital(Id::Combat) && sample.digital(Id::Look));
 }
 
 #[test]
@@ -931,6 +965,12 @@ fn the_scripted_pad_holds_its_actions_over_their_frames() {
             .analog(Id::Move),
         Vec2::Y
     );
+    let mut attack = ScriptedPad::parse("attack@2,combat@2").unwrap();
+    assert!(!attack.next_sample().mouse_left);
+    let second = attack.next_sample();
+    assert!(second.mouse_left && second.digital(Id::Combat));
+    assert!(!attack.next_sample().mouse_left);
+    assert!(ScriptedPad::parse("attack@3-3").is_none());
     assert!(ScriptedPad::parse("jump@1").is_none());
     assert!(ScriptedPad::parse("talk@4-4").is_none());
 }

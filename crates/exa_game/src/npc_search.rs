@@ -248,11 +248,13 @@ impl SearchShots {
     }
 }
 
-/// Takes the screenshots the search asked for, when they are due.
+/// Takes the screenshots the search asked for when they are due, one a
+/// frame (a second shot of the same target in a frame is lost).
 pub fn take_search_shots(
     mut commands: Commands,
     shots: Option<ResMut<SearchShots>>,
     mut world: ResMut<SearchWorld>,
+    offscreen: Option<Res<crate::debug_shot::OffscreenImage>>,
 ) {
     let Some(mut shots) = shots else {
         world.shots.clear();
@@ -263,25 +265,22 @@ pub fn take_search_shots(
     for (wait, label) in world.shots.drain(..) {
         shots.due.push((frame.wrapping_add(wait), label));
     }
-    let due: Vec<String> = shots
-        .due
-        .iter()
-        .filter(|(at, _)| *at <= frame)
-        .map(|(_, label)| label.clone())
-        .collect();
-    shots.due.retain(|(at, _)| frame < *at);
-    for label in due {
-        if std::fs::create_dir_all(&shots.dir).is_err() {
-            warn!("search: cannot make {:?}", shots.dir);
-            return;
-        }
-        shots.taken += 1;
-        let path = shots.dir.join(format!("{:02}-{label}.png", shots.taken));
-        info!("search: screenshot {path:?}");
-        commands
-            .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
-            .observe(bevy::render::view::screenshot::save_to_disk(path));
+    // One shot a frame: a second screenshot of the same target in the
+    // frame is lost, so the later ones wait a frame each, in order.
+    let Some(next) = shots.due.iter().position(|(at, _)| *at <= frame) else {
+        return;
+    };
+    let (_, label) = shots.due.remove(next);
+    if std::fs::create_dir_all(&shots.dir).is_err() {
+        warn!("search: cannot make {:?}", shots.dir);
+        return;
     }
+    shots.taken += 1;
+    let path = shots.dir.join(format!("{:02}-{label}.png", shots.taken));
+    info!("search: screenshot {path:?}");
+    commands
+        .spawn(crate::debug_shot::window_shot(offscreen.as_deref()))
+        .observe(bevy::render::view::screenshot::save_to_disk(path));
 }
 
 /// The world edits the search's deeds leave for the game: loose objects

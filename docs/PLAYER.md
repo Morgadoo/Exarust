@@ -345,7 +345,7 @@ saves the view's basis and returns before the pointer code
 | CameraI / CameraC | both | analog | right stick |
 | AimI / AimC | both | analog | right stick |
 | SprintI / SprintC | both | digital | L3 |
-| CombatI / CombatC | both | digital | right trigger (RT) |
+| CombatI / CombatC | both | digital | R3 |
 | WepSwpI / WepSwpC | both | digital | Y (North) |
 | PowersI / PowersC | both | digital | D-pad up |
 | UsePowerI / UsePowerC | both | digital | X (West) |
@@ -492,7 +492,7 @@ already down is not a press.
   else is primed.
 - **The command word.** The digital actions become the player controls'
   command word, which the game consumes and clears. The bits: `1` the
-  combat action, `2` weapon swap, `0x10`/`0x20` the power bar's left/right
+  combat-mode toggle, `2` weapon swap, `0x10`/`0x20` the power bar's left/right
   steps, `0x40`/`0x80` the dialogue's up/down steps, `0x100` inventory,
   `0x200` skills, `0x1000` use power, `0x2000` powers, `0x4000` the power
   tree (`PowerTree` only primes it; `Powers` held past 500 ms sets it),
@@ -512,14 +512,20 @@ keys' ±0.025 rad a tick; pulled back beyond 135° it backpedals;
 `gamepad::pad_keys`, Exarust's own reading of the original's wanted
 direction for its key-driven steering), holds the
 sprint latch when sprint is on, crouches on `CrouchC`, and in combat mode
-steps along and across the aim. The attack trigger holds the attack request
-(so attacks repeat after their cooldown), and `AltAction` asks for a stab;
-the trigger's first frame is also latched for a click that falls between
-ticks. Guard has no action of its own: in combat mode the stance rule holds
+steps along and across the aim. The original's pad attacks only through
+Steam's emulated mouse: its Steam reader sets no attack bit, and the
+behaviour's attack bit comes from the mouse poll alone. Exarust does not
+link Steam, so the right trigger stands in for that emulated left button
+(`gamepad::EMULATED_LEFT_BUTTON`, outside the action sets): it holds the
+attack request (so attacks repeat after their cooldown), and its first
+frame is latched for a click that falls between ticks. `AltAction` asks
+for a stab. Guard has no action of its own: in combat mode the stance rule holds
 the guard (or Cmbt - Idle) while no attack plays, as with the keyboard.
-`WepSwp` swaps the weapon sets. R3 turns combat mode on and off: the original has no
-Steam action for that, so Exarust gives the right stick's click the job, as
-`Look` (Cursor Look) has no meaning on a pad. The aim stick sets the combat
+`WepSwp` swaps the weapon sets. `Combat` (bit `0x1` of the command word)
+turns combat mode on and off, as the controls' per-frame pad routine does,
+with no gate of its own. Exarust's default puts it on R3, the button that
+shares nothing with the emulated left button; `Look` (Cursor Look, a held
+bit nothing reads on a pad) shares R3. The aim stick sets the combat
 aim, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` turns it.
 
 The command bits for inventory, skills, powers, the power tree, use power,

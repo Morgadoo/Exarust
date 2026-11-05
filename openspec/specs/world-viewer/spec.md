@@ -391,3 +391,10 @@ A grid scene's leading `exe=<path>` word SHALL run that binary for its quadrant 
 #### Scenario: Two builds side by side
 - **WHEN** `exarust grid "exe=/tmp/old play exanima01" "play exanima01"` runs
 - **THEN** quadrant 1 runs /tmp/old and quadrant 2 the host's build, both on exanima01
+
+### Requirement: Offscreen debug screenshots
+In an offscreen game every debug screenshot (`--screenshot`, `--searcher-shots`) SHALL save the image the window's cameras draw into. A windowed game SHALL save its window. The search's screenshots SHALL be taken one a frame, in the order they fell due.
+
+#### Scenario: Searcher shots in a grid quadrant
+- **WHEN** a grid quadrant runs `play exanima01 --searcher 0x2b --searcher-shots <dir>` and the follower searches
+- **THEN** each of its picks, settles and loots writes a numbered PNG of the quadrant's frame into `<dir>`

@@ -36,6 +36,7 @@ pub mod creator_screen;
 pub mod creator_view;
 pub mod crystal_drain;
 pub mod cursor;
+pub mod debug_shot;
 pub mod destination;
 pub mod dialogue_live;
 pub mod div_card_screen;
@@ -196,7 +197,7 @@ impl Plugin for GamePlugin {
         .add_plugins((
             limp::LimpPlugin,
             balance::BalancePlugin,
-            fall::FallPlugin,
+            (fall::FallPlugin, level_change::LevelChangeBridgePlugin),
             (footprints::FootprintPlugin, character_voice::CharacterVoicePlugin),
             (
                 cursor::CursorPlugin,

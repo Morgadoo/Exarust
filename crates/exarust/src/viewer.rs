@@ -5,7 +5,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::image::CompressedImageFormatSupport;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::screenshot::save_to_disk;
 use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
 use exa_formats::character_stats::{CharacterStats, Spawn};
 use exa_formats::characters::CharacterRecord;
@@ -2175,7 +2175,7 @@ fn screenshot_after_frames(
     time: Res<Time<Virtual>>,
     mut frames: Local<u32>,
     mut exit: MessageWriter<AppExit>,
-    offscreen: Option<Res<crate::offscreen::OffscreenTarget>>,
+    offscreen: Option<Res<exa_game::debug_shot::OffscreenImage>>,
 ) {
     let Some(path) = &options.screenshot else {
         return;
@@ -2193,11 +2193,9 @@ fn screenshot_after_frames(
     if *frames == options.frames {
         // Offscreen (a grid quadrant), the image the window's cameras
         // draw into.
-        let shot = match &offscreen {
-            Some(target) => Screenshot::image(target.image.clone()),
-            None => Screenshot::primary_window(),
-        };
-        commands.spawn(shot).observe(save_to_disk(path.clone()));
+        commands
+            .spawn(exa_game::debug_shot::window_shot(offscreen.as_deref()))
+            .observe(save_to_disk(path.clone()));
     }
     if *frames == options.frames + 20 {
         exit.write(AppExit::Success);

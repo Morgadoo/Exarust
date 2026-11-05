@@ -198,7 +198,7 @@
 //!                                     view's right half with Insight's technique 8 known, so a weapon goes
 //!                                     into the off hand)
 //!          --pad-press name@frame,... debug: a scripted gamepad in controller mode (talk, select, up, down, powers,
-//!                                     use-power, combat, pause, inventory, skills, swap, power-tree;
+//!                                     use-power, combat, pause, inventory, skills, swap, power-tree, attack (the emulated left button);
 //!                                     `name@from-to` holds it), frames after the load
 //!          --figure-drag FROM>TO@FRAME debug: press on the inventory figure at FROM at that frame after loading
 //!                                     and release at TO two frames later (a drag off the figure); a point is

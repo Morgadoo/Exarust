@@ -335,6 +335,8 @@ impl Plugin for OffscreenPlugin {
                         Readback::texture(image.clone()),
                     ))
                     .observe(write_frame);
+                // The debug screenshots shoot the same image.
+                commands.insert_resource(exa_game::debug_shot::OffscreenImage(image.clone()));
                 commands.insert_resource(OffscreenTarget { image, size });
             },
         )

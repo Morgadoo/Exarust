@@ -89,7 +89,8 @@ pub enum Id {
     Aim,
     /// `Sprint`: run and sprint.
     Sprint,
-    /// `Combat`: the primary combat action (Exarust uses it as the attack).
+    /// `Combat`: the combat-mode toggle (the controls' per-frame pad
+    /// routine toggles combat mode on its bit).
     Combat,
     /// `WepSwp`: switch equipped.
     SwapWeapon,
@@ -374,7 +375,7 @@ pub const DEFAULT_CONTROLS: [(Id, Control); Id::COUNT] = [
         Control::Stick(GamepadAxis::RightStickX, GamepadAxis::RightStickY),
     ),
     (Id::Sprint, Control::Button(GamepadButton::LeftThumb)),
-    (Id::Combat, Control::Button(GamepadButton::RightTrigger2)),
+    (Id::Combat, Control::Button(GamepadButton::RightThumb)),
     (Id::SwapWeapon, Control::Button(GamepadButton::North)),
     (Id::Powers, Control::Button(GamepadButton::DPadUp)),
     (Id::UsePower, Control::Button(GamepadButton::West)),
@@ -392,6 +393,13 @@ pub const DEFAULT_CONTROLS: [(Id, Control); Id::COUNT] = [
     (Id::Alternate, Control::Button(GamepadButton::LeftTrigger2)),
 ];
 
+/// The pad button that stands in for Steam's emulated left mouse button:
+/// the original's pad attacks only through the Steam controller layer's
+/// mouse emulation (the behaviour's attack bit is written by the mouse
+/// poll alone), which Exarust does not link. Exarust's own, outside the
+/// action sets.
+pub const EMULATED_LEFT_BUTTON: GamepadButton = GamepadButton::RightTrigger2;
+
 /// The default control bound to `id`.
 pub fn default_control(id: Id) -> Control {
     DEFAULT_CONTROLS[id.index()].1
@@ -406,6 +414,8 @@ pub struct PadSample {
     pub connected: bool,
     digital: [bool; Id::COUNT],
     analog: [Vec2; Id::COUNT],
+    /// The emulated left mouse button ([`EMULATED_LEFT_BUTTON`]) is down.
+    pub mouse_left: bool,
 }
 
 impl Default for PadSample {
@@ -414,6 +424,7 @@ impl Default for PadSample {
             connected: false,
             digital: [false; Id::COUNT],
             analog: [Vec2::ZERO; Id::COUNT],
+            mouse_left: false,
         }
     }
 }
@@ -1110,8 +1121,8 @@ pub struct StepModes {
 /// The player command word's bits, as the original's player controls read
 /// them.
 pub mod command {
-    /// The primary combat action (`CombatI`/`CombatC`).
-    pub const ATTACK: u32 = 0x1;
+    /// The combat-mode toggle (`CombatI`/`CombatC`).
+    pub const COMBAT: u32 = 0x1;
     /// Switch equipped (`WepSwp`).
     pub const SWAP_WEAPON: u32 = 0x2;
     /// Step left: the power bar's horizontal axis under −0.1.
@@ -1186,6 +1197,8 @@ pub struct PlayFrame {
     pub alternate: bool,
     /// `CrouchC` is held (combat set).
     pub crouch: bool,
+    /// The emulated left mouse button is held (the pad's attack).
+    pub mouse_left: bool,
     /// `Look` is held.
     pub look_held: bool,
     /// `Look` went down this frame.
@@ -1214,6 +1227,7 @@ impl Default for PlayFrame {
             sprint: false,
             alternate: false,
             crouch: false,
+            mouse_left: false,
             look_held: false,
             look_pressed: false,
             camera_mode_held: false,
@@ -1391,7 +1405,7 @@ pub struct PlayPad {
     variant: Variant,
     /// The first frame has been taken.
     started: bool,
-    /// The attack press latched for the next fixed tick.
+    /// The emulated left button's press, latched for the next fixed tick.
     attack_latched: bool,
     /// The frame's result.
     frame: PlayFrame,
@@ -1432,9 +1446,9 @@ impl PlayPad {
         self.command &= !bits;
     }
 
-    /// Whether the primary combat action is held.
+    /// Whether the emulated left mouse button (the pad's attack) is held.
     pub fn attack_held(&self) -> bool {
-        self.frame.state & command::ATTACK != 0
+        self.frame.mouse_left
     }
 
     /// Takes the latched attack press, if any (for a click between ticks).
@@ -1528,7 +1542,13 @@ impl PlayPad {
         frame.crouch = ctx.variant == Variant::Combat && sample.digital(Id::Crouch);
         frame.sprint = sample.digital(Id::Sprint);
         if sample.digital(Id::Combat) {
-            self.state |= command::ATTACK;
+            self.state |= command::COMBAT;
+        }
+        // Steam's emulated mouse button is outside the action sets: it is
+        // neither primed nor in the command word, and its press is a click.
+        frame.mouse_left = sample.mouse_left;
+        if sample.mouse_left && !self.frame.mouse_left {
+            self.attack_latched = true;
         }
         if ctx.variant == Variant::Interact {
             if sample.digital(Id::Inventory) {
@@ -1572,9 +1592,6 @@ impl PlayPad {
             self.state |= command::PAUSE;
         }
         let pressed = !previous & self.state;
-        if pressed & command::ATTACK != 0 {
-            self.attack_latched = true;
-        }
         let was_look = self.command & command::LOOK != 0;
         let was_camera_mode = self.command & command::CAMERA_MODE != 0;
         self.command =
@@ -1596,7 +1613,7 @@ impl PlayPad {
     fn prime(&mut self, sample: &PadSample, variant: Variant) {
         self.state = 0;
         for (id, bit) in [
-            (Id::Combat, command::ATTACK),
+            (Id::Combat, command::COMBAT),
             (Id::SwapWeapon, command::SWAP_WEAPON),
             (Id::Talk, command::TALK),
             (Id::Powers, command::POWER_BAR),
@@ -1837,37 +1854,30 @@ fn read_pad(
 /// not the original's). Each entry holds an action over its frames, counted
 /// from the first frame after the load: `talk`, `select` and the other
 /// digital actions by their Exarust names, `up` and `down` the move stick
-/// pushed fully up or down. While it is set it stands in for a connected
+/// pushed fully up or down, `attack` the emulated left mouse button
+/// ([`EMULATED_LEFT_BUTTON`]). While it is set it stands in for a connected
 /// pad in controller mode.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct ScriptedPad {
     /// The action, its stick value (for the move stick) and its frames.
     pub presses: Vec<(Id, Vec2, std::ops::Range<u32>)>,
+    /// The frames the emulated left mouse button is held.
+    pub mouse_left: Vec<std::ops::Range<u32>>,
     frame: u32,
 }
 
 impl ScriptedPad {
     /// Reads `name@frame` or `name@from-to` entries, comma separated.
     pub fn parse(list: &str) -> Option<Self> {
+        let mut mouse_left = Vec::new();
         let presses = list
             .split(',')
             .filter(|entry| !entry.trim().is_empty())
             .map(|entry| {
                 let (name, frames) = entry.trim().rsplit_once('@')?;
-                let (id, value) = match name {
-                    "up" => (Id::Move, Vec2::Y),
-                    "down" => (Id::Move, Vec2::NEG_Y),
-                    "talk" => (Id::Talk, Vec2::ZERO),
-                    "select" => (Id::Select, Vec2::ZERO),
-                    "powers" => (Id::Powers, Vec2::ZERO),
-                    "use-power" => (Id::UsePower, Vec2::ZERO),
-                    "combat" => (Id::Combat, Vec2::ZERO),
-                    "pause" => (Id::PauseMenu, Vec2::ZERO),
-                    "inventory" => (Id::Inventory, Vec2::ZERO),
-                    "skills" => (Id::Skills, Vec2::ZERO),
-                    "swap" => (Id::SwapWeapon, Vec2::ZERO),
-                    "power-tree" => (Id::PowerTree, Vec2::ZERO),
-                    _ => return None,
+                let id = match name {
+                    "attack" => None,
+                    _ => Some(Self::action(name)?),
                 };
                 let (from, to) = match frames.split_once('-') {
                     Some((from, to)) => (from.parse().ok()?, to.parse().ok()?),
@@ -1876,10 +1886,45 @@ impl ScriptedPad {
                         (at, at.checked_add(1)?)
                     }
                 };
-                (to > from).then_some((id, value, from..to))
+                if to <= from {
+                    return None;
+                }
+                match id {
+                    Some((id, value)) => Some(Some((id, value, from..to))),
+                    None => {
+                        mouse_left.push(from..to);
+                        Some(None)
+                    }
+                }
             })
-            .collect::<Option<Vec<_>>>()?;
-        Some(Self { presses, frame: 0 })
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        Some(Self {
+            presses,
+            mouse_left,
+            frame: 0,
+        })
+    }
+
+    /// A scripted action's name: the action and its stick value.
+    fn action(name: &str) -> Option<(Id, Vec2)> {
+        Some(match name {
+            "up" => (Id::Move, Vec2::Y),
+            "down" => (Id::Move, Vec2::NEG_Y),
+            "talk" => (Id::Talk, Vec2::ZERO),
+            "select" => (Id::Select, Vec2::ZERO),
+            "powers" => (Id::Powers, Vec2::ZERO),
+            "use-power" => (Id::UsePower, Vec2::ZERO),
+            "combat" => (Id::Combat, Vec2::ZERO),
+            "pause" => (Id::PauseMenu, Vec2::ZERO),
+            "inventory" => (Id::Inventory, Vec2::ZERO),
+            "skills" => (Id::Skills, Vec2::ZERO),
+            "swap" => (Id::SwapWeapon, Vec2::ZERO),
+            "power-tree" => (Id::PowerTree, Vec2::ZERO),
+            _ => return None,
+        })
     }
 
     /// The next frame's sample: every entry whose frames hold it.
@@ -1889,6 +1934,17 @@ impl ScriptedPad {
             connected: true,
             ..PadSample::default()
         };
+        for frames in &self.mouse_left {
+            if frames.contains(&self.frame) {
+                if frames.start == self.frame {
+                    info!(
+                        "scripted pad: the emulated left button at frame {}",
+                        self.frame
+                    );
+                }
+                sample.mouse_left = true;
+            }
+        }
         for (id, value, frames) in &self.presses {
             if !frames.contains(&self.frame) {
                 continue;
@@ -1910,6 +1966,7 @@ impl ScriptedPad {
 fn sample_pad(pad: &Gamepad) -> PadSample {
     let mut sample = PadSample {
         connected: true,
+        mouse_left: pad.pressed(EMULATED_LEFT_BUTTON),
         ..PadSample::default()
     };
     for id in Id::ALL {
