@@ -29,7 +29,7 @@ The system SHALL light with the original's units. A point light's colour is line
 - **THEN** that light adds nothing to it
 
 ### Requirement: Fires
-The system SHALL turn model nodes with a fire emitter into fires per the original's presets. A fire of size s up to 0.35 has one emitter at the node and a light of sRGB (1, 0.68, 0.43), intensity 8√s and radius 1500√s cm (×1.25 above 0.2, compared in double precision), 5 cm above the node. Its intensity is the emitter's density × (1 + 0.05 × a soft-bounded random walk) × that intensity, the density being the live particles over the template's scaled normaliser, smoothed by 0.8 and not clamped, so a torch's light runs above its template intensity on average, as the original's does.
+The system SHALL turn model nodes with a fire emitter into fires per the original's presets. A fire of size s up to 0.35 has one emitter at the node and a light of sRGB (1, 0.68, 0.43), intensity 8√s and radius 1500√s cm (×1.25 above 0.2, compared in double precision), 5 cm above the node. Its intensity is the emitter's density × (1 + 0.05 × a soft-bounded random walk) × that intensity, the density being the live particles over the template's scaled normaliser, smoothed by 0.8 and not clamped.
 
 #### Scenario: Menu torches
 - **WHEN** the main menu scene is shown
