@@ -130,6 +130,8 @@ Done (change `convert-the-oldest-object-databases`; objdb2 lane, reviewed): the 
 
 Done (osmain3 lane, Claude, after the DeepSeek provider failed): the OS layer now shows the original's menu cursor as the window's pointer, minimises a full-screen window when it loses focus, opens the original's error and warning boxes and logs its display-mode and package-file errors. RF_OS_Functions 58% → 64%.
 
+Round 57 contentstream (S5): the stream thread runs; the original never streams drops or spawned items, only icons and requested characters.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
@@ -1502,6 +1504,10 @@ Round 53 glowtrade (E7, P6): script glows pulse, crystals drain, the trade windo
 Round 53 scripteffects (U2): the real gap was the AI contact list, which the script cast never received; WitnessRole and ShowInventory already had readers.
 
 Round 54 objscripts (U3): placed objects' use scripts run; StartDialogue uses the last encounter's pair, as the original's static context does.
+
+Round 57 giwarmth: the warm GI was the 8-bit store's rounding, not the colour path; EXA_GI_DEBUG=direct|ambient splits a frame into its shares.
+
+Round 57 guifonts: the GUI fonts are module resources inside Exanima.exe, read at run time and never committed; the in-game forms take the original's framed draw.
 
 ### Phase 6 — AI (started)
 
