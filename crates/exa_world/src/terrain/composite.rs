@@ -623,7 +623,8 @@ pub fn set_passes(
 }
 
 /// The tile's mask pass for one group of up to four layers: cleared to 0,
-/// blended, and drawn over the whole tile (the root node's palette slice and
+/// the first group overwriting and later ones blending (`ONE, SRC_ALPHA`),
+/// and drawn over the whole tile (the root node's palette slice and
 /// its 256-texel mask window holding 240 cells) into the caller's 240²
 /// viewport, which the caller reads back. It runs per tile, not per
 /// composite set.
@@ -640,15 +641,15 @@ pub fn mask_pass(start: usize, total: usize, layers: &[LayerFlags]) -> PassDraw 
         side: TILE_MASK_VIEWPORT,
         target: None,
         clear: Some([0.0; 4]),
-        blend: true,
+        blend: key.add,
         wrap_clamp: false,
         mask: Some(MaskRegion::for_node(TILE_NODE_LEVEL, 0, 0, count)),
         quad: node_pass_quad(TILE_NODE_LEVEL, 0, 0),
     }
 }
 
-/// The tile's height pass: cleared to 0.5 in every channel, blended,
-/// clamped, and drawn over the original's fixed 4.016667 square into the
+/// The tile's height pass: cleared to 0.5 in every channel, the first group
+/// overwriting and later ones blending (`ONE, SRC_ALPHA`), clamped, and drawn over the original's fixed 4.016667 square into the
 /// caller's 244² viewport, sampling the root node's mask window. `layers[k]`
 /// says whether layer `k` has a height map.
 pub fn height_pass(start: usize, total: usize, layers: &[LayerFlags]) -> PassDraw {
@@ -664,7 +665,7 @@ pub fn height_pass(start: usize, total: usize, layers: &[LayerFlags]) -> PassDra
         side: TILE_HEIGHT_VIEWPORT,
         target: None,
         clear: Some([HEIGHT_CLEAR; 4]),
-        blend: true,
+        blend: key.add,
         wrap_clamp: true,
         mask: Some(MaskRegion::for_node(TILE_NODE_LEVEL, 0, 0, count)),
         quad: height_pass_quad(),
@@ -2049,7 +2050,10 @@ mod tests {
         let mask = mask_pass(0, 4, &all);
         assert_eq!(mask.key.word(), 0xf04);
         assert_eq!(mask.clear, Some([0.0; 4]));
-        assert!(mask.blend && !mask.wrap_clamp);
+        // The first group overwrites (blending off); the bake turns the
+        // `ONE, SRC_ALPHA` blend on from the group starting at layer 4.
+        assert!(!mask.blend && !mask.wrap_clamp);
+        assert!(mask_pass(4, 6, &all).blend);
         assert_eq!(mask.target, None);
         // The tile's mask pass covers the whole tile: the root node's
         // palette slice 0..4 and its 256-texel window holding 240 cells.
@@ -2069,7 +2073,8 @@ mod tests {
         let height = height_pass(0, 4, &all);
         assert_eq!(height.key.word(), 0xf4);
         assert_eq!(height.clear, Some([0.5; 4]));
-        assert!(height.blend && height.wrap_clamp);
+        assert!(!height.blend && height.wrap_clamp);
+        assert!(height_pass(4, 6, &all).blend);
         assert_eq!(height.mask, mask.mask);
         // The fixed 4.016667 square on unit 0, 241/256 of the root node's
         // window on unit 1, and vertices out to 241/244 of the viewport.

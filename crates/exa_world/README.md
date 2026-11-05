@@ -44,7 +44,7 @@ and the grid's rooms; portal clipping is next (see
 - `grid_sets`: the builder's set catalog: the wall and floor set names registered once each (whole-name comparison, the original's 16-byte name), the loaded flag, and the `Terrain` floor set marked `0x7E01` instead of loaded by the load pass, so it never brings floor pieces (the original's floor registration loads a new set at once, before that pass; see `docs/formats/RFC.md`). `GridBuild` registers every name it loads and indexes a set shared by name once.
 - `scene_env`: the original's scene environment as a pure model: the sun and moon on their 45° path and the daylight factor (the engine's fast sines, the library's double cosines and its approximate reciprocal square root), the engine's built-in six-record day track and its start-up pass (the `o` fill rule; the optional step that linearises the colours and scales the sky colours by 0.75 is modelled but off, as the shipped game never sets its flag), the records' pick-and-blend, the engine's own sRGB curve (the fast logarithm and exponential), cloud dimming (the luminance summed x, y, then z; `f⁴` squared twice), the fog's span and per-frame near/far, the clear colour (RGBA) and sky gradient, the ambient scale, the automatic sunlight rule, the sun mode and sky switch (the light's colour and intensity back to the level's and 3), the sun placement's two bodies for the sky, the scene's `k`-colour scale, the sky cube's tint, the flash tint, the frame's water level (−100000, or −25 cm when the terrain palette's wetness the terrain load hands the environment is above 0.4; published as `exa_physics::body::WaterLevel`), its rain-driven wind, tint and sun intensity, the `_Sunlight` node's constants, rain, a rain effect and sound, thunder and lightning with the original's generators and its branch order, the paused and view-led tick, the strike placed 200 cm in front of the view, and the save unit's three presets: the indoor/underground scene, the seeded outdoor day and weather, and the fog variants. `environment` turns it into the level's `Lighting` (ambient, sun, linear fog, clear colour and sky) and Bevy resources; a level load calls `level_lighting_scene`, which applies the preset the level's name selects (indoor for `exanima*` and the first seven arenas, the seeded outdoor preset for `arenao*`, the record for everything else) with one seed per load (the original's counter word: the low word of a 100 ns counter with its bytes reversed, `counter_seed`; the visibility pass and the lighting draw the same day, and the lighting logs the draw), keeps the environment as `SceneEnvRuntime` with the engine's and the library's streams, and a `PostUpdate` system ticks the weather each frame, hands the sun placement's dimmer to the sun map as the light's softness source (`SunShadowRegion::c`) and rewrites the fog, clear colour, ambient and sun light only when the frame changes (the time of day has no speed in play, as in the shipped game, which never writes the field; `EXA_TIME_SPEED` drives it and `EXA_TIME_OF_DAY` re-places the sun after the draw, both debug aids).
 - `published_light`: the light records the unit publishes to the engine's scene globals, as `PublishedLight`: the sun record's direction times its fourth lane and that lane's root, the reach (stored only when it differs by at least 0.01 from the published one, single-precision difference and double-precision compare, a NaN passing, scaling the direction and halved while the original's mode flag is clear) and re-publishing the held reach through a zeroed one when a sun is set, and the sky light's record stored verbatim. The records' identity past the sun and the sky direction, and the mode flag's meaning, are inferred guesses.
-- `terrain`: tiles, blend rules, height pass and plants; the palette's
+- `terrain`: tiles, blend rules, the tile bake and plants; the palette's
   name-sorted brush table (the original's binary search), the
   eleven-brush limit (wired: later layers are dropped), the painted
   layers' 0.001 weight gate, the 256 × 256 byte channel accumulation per
@@ -54,7 +54,14 @@ and the grid's rooms; portal clipping is next (see
   its byte) and the four-per-mask-plane packing (wired into the tile's
   splat, with the renderer's sixteen-layer cap keeping the heaviest
   materials and material 0 first), and, not wired, the height-rule
-  scaling and the Gaussian blur kernel; the palette falls back to
+  scaling and the Gaussian blur kernel; `terrain::tile_bake` runs the
+  original's per-tile mask and height passes on the tile worker with the
+  GPU's rules (the root node's quads, the merged weight bytes filtered
+  bilinearly, groups of four blending `ONE, SRC_ALPHA` after the first, the
+  material maps' nearest texel and level with the bind's LOD bias, 8-bit
+  writes, the mask plane sRGB-encoded) and hands both planes back by the
+  manager's feature word: the 244² height plane lifts each vertex by its
+  texel, and the 240² mask plane's green is the plant density; the palette falls back to
   `default.ftb` as the original does; a tile's geometry
   and masks are built on the async compute pool (the original's terrain
   worker), each palette material's diffuse and normal maps come through
@@ -91,7 +98,8 @@ and the grid's rooms; portal clipping is next (see
   hook shows one a step during the load (the block-until-loaded wait flushes
   the rest), and `TerrainStreaming` then runs the hook and the selection
   every frame from the active camera's look-ahead focus, marking an inserted
-  tile's blocks wanted, dropping an unloaded tile's blocks and handing the
+  tile's blocks wanted (a built tile is baked, its read-back taken the next
+  frame, and only then inserted) and handing the
   sets the selection holds to `exa_render::terrain_composite` (opt-in with
   `EXA_TERRAIN_SETS=1`); a hidden block ranks against its room's light list
   (`room_light_lists`, the rooms' own lights and those their portals carry
@@ -200,8 +208,9 @@ and the grid's rooms; portal clipping is next (see
   buffer is sized at 12 or 24 bytes a vertex (`vertex_upload_bytes`), and
   the bake's read-back hand-off (`queue_readback`, `take_readback`) copies
   the 244² height plane and the 240² × 3 packed plane by the renderer's
-  feature bits and marks the record (not wired: Exarust builds tiles on the
-  CPU). Only the detail displacement is shared with the running terrain
+  feature bits and marks the record (wired: the tile worker takes the bake's
+  planes through it, and the frame hook takes a pending read-back before its
+  walk). Only the detail displacement is shared with the running terrain
   build; its own normal keeps the exact square root.
 - `terrain::plugins`: the terrain extension list (attach order, activate
   forward and deactivate backward) and the static terrain's create-or-reuse

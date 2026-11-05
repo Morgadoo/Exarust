@@ -392,13 +392,13 @@ from the level's start by the planner's step rules: under 50 cm up, under
 | level | cells | floor cells (lower, upper) | open sky (lower, upper) | reached from the start |
 |---|---|---|---|---|
 | `arena` | 640 × 640 | 1956, 10 | 516, 0 | 1861 |
-| `arenao1` | 640 × 640 | 14677, 3678 | 2867, 270 | 5005 |
-| `exanima01` | 640 × 800 | 220850, 2279 | 99982, 83 | 46113 |
+| `arenao1` | 640 × 640 | 14677, 3678 | 2867, 270 | 5002 |
+| `exanima01` | 640 × 800 | 221449, 2276 | 100015, 85 | 46225 |
 
 In exanima01 the start's rooms are closed by their doors, whose leaves
 raise the doorways' floors ([Moving props](#moving-props)): the walk from
-the start meets 46 113 cells. On the floors as built (every body away, as
-when the doors stand open) it meets 195 049 and reaches the foot of the
+the start meets 46 225 cells. On the floors as built (every body away, as
+when the doors stand open) it meets 195 684 and reaches the foot of the
 stair room (8.9, −1, 64), whose floor reads voxel 211, a metre under the
 corridors, down steps of 10–20 cm. Before `place-node-records-in-the-level-frame`
 the doors' leaves, like every node a placement's records move, stood
@@ -408,10 +408,13 @@ closed grid cells (the rock between the rooms) 1120 keep a floor, at the
 walls' edges (1555 while the records heaped props in the rock). Filling
 the whole tiles instead (what Exarust did before
 `build-nav-terrain-only-where-blocks-are`) made the rock's ground, at
-about 0, floor too: 186 721 such cells. arenao1 fills its 34 flagged blocks of
+about 0, floor too: 186 724 such cells. arenao1 fills its 34 flagged blocks of
 its one tile. The counts follow the terrain's height pass over every
 material a tile uses (`layer-every-terrain-material`); with only the four
-heaviest, arenao1 reached 5050 cells and exanima01 190 954.
+heaviest, arenao1 reached 5050 cells and exanima01 190 954. The height
+pass is the tile bake's height plane (`terrain::tile_bake`; each vertex's
+texel, the maps' nearest level, no mask sharpening); the per-vertex
+stand-in before it gave arenao1 5005 and exanima01's open floors 195 709.
 
 Not reproduced, with what it changes:
 

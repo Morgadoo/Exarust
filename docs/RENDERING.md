@@ -1020,8 +1020,13 @@ keeps the tiles, their blocks and the streaming bits after the load and
 runs the hook and the block selection every frame (the selection is
 skipped while the refresh delay counts down, as in the original):
 - the frame hook handles at most one tile; an insert or a ready tile marks
-  its blocks as wanting a composite, an unload hides the tile and takes its
-  blocks out of the selection, handing their sets back;
+  its blocks as wanting a composite. A built tile's bake comes first (the
+  worker asks for it whenever the renderer reads bake planes back, which
+  the shipped manager always does): the hook bakes it, the next frame's
+  hand-off takes its read-back, and only then does the insert test let it
+  through, so a tile takes three hook steps. Exarust runs the bake itself
+  with the tile's build (`terrain::tile_bake`), so the bake step changes
+  nothing on screen;
 - the priority slot (`TerrainStreaming::reprioritise`) gives every
   selected block `round(6000 − d)` and sets the ring to half the spread of
   the wanted, visible blocks' old priorities plus 6000. The original
