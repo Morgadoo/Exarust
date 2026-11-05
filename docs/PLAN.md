@@ -1571,6 +1571,8 @@ Round 65 gamegui: the card's coins and the loadout preview's bars draw; a block 
 
 Round 76 playerctl: the arena spectate session is ported (reachable once the arena fields company employees).
 
+Round 79 playerctl: spectated arena matches as in the original, the hire list dressed and priced, and SG_PlayerControls fully mapped.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
