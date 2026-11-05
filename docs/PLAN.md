@@ -877,6 +877,8 @@ Round 47 redress: characters re-dress live.
 
 Round 51 liveobjdb (S2): the live object database replaces the use cursor's private copy and the item workarounds; saved item condition now survives a reload.
 
+Round 52 levelsave (G5): the level's own state is saved and read back from the save; the bogus last record of every database is gone.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1254,6 +1256,8 @@ Round 48b items: the item uses that were only reported now act. Containers open 
 Round 48b parry: armed parries run with the weapon's speed, and the hands lock while a parry holds. The swing nudges and the walk-bit clears are live. The armed grip's strength is still unused.
 
 Round 49 loadout (P12): the loadout form equips and returns kit items and saves the manager's per-rank kits.
+
+Round 52 useeffects (P5, P6): the parchment is a map's popup, not a kind 7 use; shop copies have their own bodies.
 
 ### Phase 5 — Visual and audio fidelity (started)
 
@@ -2210,6 +2214,8 @@ Round 48b misc: script witnesses, ShowInventory and WitnessRole run live. The pr
 Round 48b shock: shock-weapon arcs arm, follow and end with the held blades, with their hum, voxel and GI lights; device arcs light their point light. Barricades, blasts and waves enter the brains' target pass with a mind-aware relation. A wall impact alerts the hitter. A hard hit ripples the shell, and a dying shaper can teach the player. The kinesis mesh gate (f32678884) is a performance early-out with no change in behaviour.
 
 Round 49 domes (E5): the force domes draw and sound; the Barrier only stands in combat mode, as in the original.
+
+Round 52 kinesisfx (E6): the held force shells hum and light, and strikes ripple on landed blows (not on the swing).
 
 ### Phase 8 — Polish and release
 
