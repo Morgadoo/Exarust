@@ -576,17 +576,15 @@ pub struct LimpKept {
 #[allow(clippy::type_complexity)]
 fn go_limp(
     mut commands: Commands,
-    mut bodies: Query<(Entity, &GoLimp, &mut Ragdoll, Option<&Animator>)>,
+    bodies: Query<(Entity, &GoLimp, Option<&Animator>)>,
     parents: Query<&ChildOf>,
     controlled: Query<&CharacterBody>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
-    for (root, limp, mut body, anim) in &mut bodies {
-        if body.drive.is_some() {
-            body.go_limp();
-        }
-        if let Some(velocity) = limp.velocity {
-            body.set_velocity(velocity);
-        }
+    for (root, limp, anim) in &bodies {
+        // The body's muscles go at the start of the next fixed step (a
+        // write to simulation data); the frame's own records change now.
+        fixed.run(limp_body, (root, limp.velocity));
         let character = parents
             .iter_ancestors(root)
             .find_map(|a| controlled.get(a).ok().map(|c| (a, c.clone())));
@@ -600,6 +598,20 @@ fn go_limp(
                 animator: anim.cloned(),
                 character,
             });
+    }
+}
+
+/// A body's muscles go and it takes `velocity` (run at the start of a
+/// fixed step).
+fn limp_body(In((root, velocity)): In<(Entity, Option<Vec3>)>, mut bodies: Query<&mut Ragdoll>) {
+    let Ok(mut body) = bodies.get_mut(root) else {
+        return;
+    };
+    if body.drive.is_some() {
+        body.go_limp();
+    }
+    if let Some(velocity) = velocity {
+        body.set_velocity(velocity);
     }
 }
 
@@ -1464,14 +1476,17 @@ pub(crate) struct PendingLimbTrees {
 /// (only between body steps, which a frame system is).
 fn install_limb_trees(
     mut commands: Commands,
-    mut pending: Query<(Entity, &mut PendingLimbTrees, &mut Ragdoll)>,
+    mut pending: Query<(Entity, &mut PendingLimbTrees)>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
-    for (root, mut trees, mut body) in &mut pending {
+    for (root, mut trees) in &mut pending {
         trees.tasks.retain_mut(|(part, task)| {
             let Some(tree) = bevy::tasks::block_on(bevy::tasks::poll_once(task)) else {
                 return true;
             };
-            body.set_part_tree(*part, tree);
+            // The tree goes into the simulation's body at the start of the
+            // next fixed step.
+            fixed.run(install_tree, (root, *part, tree));
             false
         });
         if trees.tasks.is_empty() {
@@ -1481,6 +1496,17 @@ fn install_limb_trees(
             );
             commands.entity(root).remove::<PendingLimbTrees>();
         }
+    }
+}
+
+/// Installs a finished limb tree into its part (run at the start of a fixed
+/// step).
+fn install_tree(
+    In((root, part, tree)): In<(Entity, usize, Option<Arc<exa_physics::mesh_tree::MeshTree>>)>,
+    mut bodies: Query<&mut Ragdoll>,
+) {
+    if let Ok(mut body) = bodies.get_mut(root) {
+        body.set_part_tree(part, tree);
     }
 }
 

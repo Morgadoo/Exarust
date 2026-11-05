@@ -2353,8 +2353,29 @@ const POKE_DOOR_LEAD: f32 = 0.5;
 fn poke_mechanisms_at_frame(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
-    clock: Res<exa_physics::body::BodyTicks>,
     mut frames: Local<u32>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
+) {
+    let Some(at) = options.mechanism_poke else {
+        return;
+    };
+    if loading.is_some() {
+        return;
+    }
+    *frames += 1;
+    // The pokes write to the mechanisms' bodies: they land at the start of
+    // the next fixed step, one per frame, in order.
+    if *frames >= at {
+        fixed.run(poke_mechanisms, (*frames, at));
+    }
+}
+
+/// `--mechanism-poke`'s work for frame `frame` (run at the start of a fixed
+/// step).
+#[allow(clippy::type_complexity)]
+fn poke_mechanisms(
+    In((frame, at)): In<(u32, u32)>,
+    clock: Res<exa_physics::body::BodyTicks>,
     mut poked: Local<(Option<Entity>, Option<Entity>)>,
     players: Query<&GlobalTransform, With<exa_game::player::Player>>,
     mut doors: Query<
@@ -2374,19 +2395,12 @@ fn poke_mechanisms_at_frame(
         Without<exa_physics::body::DoorBody>,
     >,
 ) {
-    let Some(at) = options.mechanism_poke else {
-        return;
-    };
-    if loading.is_some() {
-        return;
-    }
-    *frames += 1;
     // The way the leaf opens at its stop (its angle falls as it opens).
     let opening = |glue: &exa_physics::body::DoorBody, body: &exa_physics::body::Ragdoll| {
         let angle = glue.door.angle;
         (glue.stop_at(body, angle - 0.3) - glue.stop_at(body, angle)).normalize_or_zero()
     };
-    if *frames == at {
+    if frame == at {
         let Some(player) = players.iter().next().map(GlobalTransform::translation) else {
             warn!("--mechanism-poke: no player");
             return;
@@ -2437,10 +2451,10 @@ fn poke_mechanisms_at_frame(
         }
         return;
     }
-    if *frames < at {
+    if frame < at {
         return;
     }
-    let since = *frames - at;
+    let since = frame - at;
     if let Some(e) = poked.0
         && let Ok((_, mut glue, mut body)) = doors.get_mut(e)
     {
@@ -2785,21 +2799,11 @@ struct DebugDuellist;
 /// rule can raise it 10 s after it dies. A debug tool.
 #[allow(clippy::type_complexity)]
 fn fell_undead_opponent(
-    mut commands: Commands,
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut frames: Local<u32>,
-    mut duellists: Query<
-        (
-            Entity,
-            &mut exa_combat::Condition,
-            Option<&mut exa_combat::StateFlags>,
-            &mut exa_anim::Animator,
-            &mut exa_physics::body::Ragdoll,
-            &exa_combat::Fighter,
-        ),
-        (With<DebugDuellist>, Without<exa_game::player::PlayerBody>),
-    >,
+    duellists: Query<Entity, (With<DebugDuellist>, Without<exa_game::player::PlayerBody>)>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
     let Some(at) = options.undead_opponent else {
         return;
@@ -2811,37 +2815,56 @@ fn fell_undead_opponent(
     if *frames != at {
         return;
     }
-    for (entity, mut condition, flags, mut anim, mut body, fighter) in &mut duellists {
-        let Some(energy) = body.drive.as_ref().map(|d| d.energy) else {
-            continue;
-        };
-        let mut word = flags.as_deref().copied().unwrap_or_default();
-        if !exa_combat::collapse::start_collapse(
-            &mut condition,
-            &mut word,
-            &mut anim,
-            Some(&mut body),
-            energy,
-            None,
-        ) {
-            continue;
-        }
-        match flags {
-            Some(mut f) => *f = word,
-            None => {
-                commands.entity(entity).insert(word);
-            }
-        }
-        commands
-            .entity(entity)
-            .insert(exa_combat::collapse::Collapse::default());
-        info!(
-            "undead opponent {entity:?} collapses: rules {:#x} (may rise {}), red {:.3}",
-            fighter.stats.rules.0,
-            fighter.stats.rules.0 & exa_formats::character_stats::BodyRules::MAY_RISE != 0,
-            fighter.health.red
-        );
+    for entity in &duellists {
+        fixed.run(collapse_undead, entity);
     }
+}
+
+/// `--undead-opponent`'s collapse of `entity` (run at the start of a fixed
+/// step).
+fn collapse_undead(
+    In(entity): In<Entity>,
+    mut commands: Commands,
+    mut duellists: Query<(
+        &mut exa_combat::Condition,
+        Option<&mut exa_combat::StateFlags>,
+        &mut exa_anim::Animator,
+        &mut exa_physics::body::Ragdoll,
+        &exa_combat::Fighter,
+    )>,
+) {
+    let Ok((mut condition, flags, mut anim, mut body, fighter)) = duellists.get_mut(entity) else {
+        return;
+    };
+    let Some(energy) = body.drive.as_ref().map(|d| d.energy) else {
+        return;
+    };
+    let mut word = flags.as_deref().copied().unwrap_or_default();
+    if !exa_combat::collapse::start_collapse(
+        &mut condition,
+        &mut word,
+        &mut anim,
+        Some(&mut body),
+        energy,
+        None,
+    ) {
+        return;
+    }
+    match flags {
+        Some(mut f) => *f = word,
+        None => {
+            commands.entity(entity).insert(word);
+        }
+    }
+    commands
+        .entity(entity)
+        .insert(exa_combat::collapse::Collapse::default());
+    info!(
+        "undead opponent {entity:?} collapses: rules {:#x} (may rise {}), red {:.3}",
+        fighter.stats.rules.0,
+        fighter.stats.rules.0 & exa_formats::character_stats::BodyRules::MAY_RISE != 0,
+        fighter.health.red
+    );
 }
 
 /// `--fell-player <frame>`: at that frame after the load the player
@@ -2851,21 +2874,11 @@ fn fell_undead_opponent(
 /// tool.
 #[allow(clippy::type_complexity)]
 fn fell_player(
-    mut commands: Commands,
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut frames: Local<u32>,
-    mut players: Query<
-        (
-            Entity,
-            &mut exa_combat::Condition,
-            Option<&mut exa_combat::StateFlags>,
-            &mut exa_anim::Animator,
-            &mut exa_physics::body::Ragdoll,
-            &mut exa_combat::Fighter,
-        ),
-        With<exa_game::player::PlayerBody>,
-    >,
+    players: Query<Entity, With<exa_game::player::PlayerBody>>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
     let Some(at) = options.fell_player else {
         return;
@@ -2877,36 +2890,58 @@ fn fell_player(
     if *frames != at {
         return;
     }
-    for (entity, mut condition, flags, mut anim, mut body, mut fighter) in &mut players {
-        let Some(energy) = body.drive.as_ref().map(|d| d.energy) else {
-            continue;
-        };
-        let mut word = flags.as_deref().copied().unwrap_or_default();
-        if !exa_combat::collapse::start_collapse(
-            &mut condition,
-            &mut word,
-            &mut anim,
-            Some(&mut body),
-            energy,
-            None,
-        ) {
-            continue;
-        }
-        fighter.health.yellow = 0.0;
-        match flags {
-            Some(mut f) => *f = word,
-            None => {
-                commands.entity(entity).insert(word);
-            }
-        }
-        commands
-            .entity(entity)
-            .insert(exa_combat::collapse::Collapse::default());
-        info!(
-            "fell player: {entity:?} collapses at frame {at}, red {:.3}",
-            fighter.health.red
-        );
+    // The collapse is a write to simulation data: it lands at the start of
+    // the next fixed step, wherever the step runs.
+    for entity in &players {
+        fixed.run(collapse_player, (entity, at));
     }
+}
+
+/// `--fell-player`'s collapse of `entity` (run at the start of a fixed
+/// step).
+fn collapse_player(
+    In((entity, at)): In<(Entity, u32)>,
+    mut commands: Commands,
+    mut players: Query<(
+        &mut exa_combat::Condition,
+        Option<&mut exa_combat::StateFlags>,
+        &mut exa_anim::Animator,
+        &mut exa_physics::body::Ragdoll,
+        &mut exa_combat::Fighter,
+    )>,
+) {
+    let Ok((mut condition, flags, mut anim, mut body, mut fighter)) = players.get_mut(entity)
+    else {
+        return;
+    };
+    let Some(energy) = body.drive.as_ref().map(|d| d.energy) else {
+        return;
+    };
+    let mut word = flags.as_deref().copied().unwrap_or_default();
+    if !exa_combat::collapse::start_collapse(
+        &mut condition,
+        &mut word,
+        &mut anim,
+        Some(&mut body),
+        energy,
+        None,
+    ) {
+        return;
+    }
+    fighter.health.yellow = 0.0;
+    match flags {
+        Some(mut f) => *f = word,
+        None => {
+            commands.entity(entity).insert(word);
+        }
+    }
+    commands
+        .entity(entity)
+        .insert(exa_combat::collapse::Collapse::default());
+    info!(
+        "fell player: {entity:?} collapses at frame {at}, red {:.3}",
+        fighter.health.red
+    );
 }
 
 /// The text a scripted press of `key` types: the lower-case letter or the
