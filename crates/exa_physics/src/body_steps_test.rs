@@ -81,41 +81,22 @@ fn a_knockback_step_keeps_the_blow_target() {
     assert!(!steps.knockback);
 }
 
-/// A knockback step's length: (1.5 − 0.3·encumbrance) times the step length
-/// scaled by the leg extension.
+/// A knockback step's stance is clamped as any step's, to 1.1 plain step
+/// lengths × scale of the frame: a target 1 m out stops at 88 cm for an
+/// 80 cm reach, and at 1.1·80·2 = 176 cm at scale 2 for a target 2 m out
+/// (the original reads its stored reach there, not the scaled length its
+/// feet routine rewrites).
 #[test]
-fn a_knockback_step_shortens_with_encumbrance_and_extension() {
-    assert_eq!(knockback_length(80.0, 1.0, 0.0), 120.0);
-    assert_eq!(knockback_length(80.0, 1.0, 1.0), 96.0);
-    assert_eq!(knockback_length(80.0, 0.5, 0.5), 54.0);
-    // The extended length is taken in single precision first.
-    let scaled = 77.7f32 * 0.81;
-    assert_eq!(
-        knockback_length(77.7, 0.81, 0.25),
-        ((1.5 - 0.25f64 * 0.3) * f64::from(scaled)) as f32
-    );
-    // A fully encumbered body's knockback step stops short of 1 m.
-    let mut steps = Steps::default();
-    begin_knockback(&mut steps, Vec3::new(1.0, 0.0, 0.0));
-    let mut t = trigger(1.0, true, 0.0);
-    t.encumbrance = 1.0;
-    t.extension = 0.8;
-    match consider(&mut steps, &t) {
-        Plan::Stepping(origin) => assert!(origin.x < 1.0, "{origin}"),
-        other => panic!("expected the knockback step, got {other:?}"),
-    }
-}
-
-/// A knockback step reaches half again the plain length: a target 1 m out
-/// stays, where the plain 80 cm step (clamped at 1.1 of it) would stop at
-/// 88 cm.
-#[test]
-fn a_knockback_step_reaches_half_again() {
-    let mut steps = Steps::default();
-    begin_knockback(&mut steps, Vec3::new(1.0, 0.0, 0.0));
-    match consider(&mut steps, &trigger(1.0, true, 0.0)) {
-        Plan::Stepping(origin) => assert!(close(origin.x, 1.0), "{origin}"),
-        other => panic!("expected the knockback step, got {other:?}"),
+fn a_knockback_stance_takes_the_plain_clamp() {
+    for (scale, out, at) in [(1.0, 1.0, 0.88), (2.0, 2.0, 1.76)] {
+        let mut steps = Steps::default();
+        begin_knockback(&mut steps, Vec3::new(out, 0.0, 0.0));
+        let mut t = trigger(1.0, true, 0.0);
+        t.scale = scale;
+        match consider(&mut steps, &t) {
+            Plan::Stepping(origin) => assert!(close(origin.x, at), "{origin}"),
+            other => panic!("expected the knockback step, got {other:?}"),
+        }
     }
 }
 
@@ -134,8 +115,6 @@ fn trigger(balance: f32, supported: bool, h_cm: f32) -> Trigger {
         scale: 1.0,
         bonus: 0.0,
         reach: 80.0,
-        extension: 1.0,
-        encumbrance: 0.0,
         frame: Vec3::ZERO,
         landings: 0,
         shock_stagger: false,
@@ -285,8 +264,43 @@ fn still_lead(idle: bool, side: Vec3) -> ChestLead {
         scale: 1.0,
         fast: Vec3::ZERO,
         side,
+        forward: Vec3::Z,
         kind: LEAD_KIND,
+        long: false,
+        length_cm: 80.0,
     }
+}
+
+/// The pelvis lead, a 40 cm error with the pin on its posed target, scale
+/// and level 1, not idle (0.7): straight ahead its cosine 1 is scaled by
+/// (40/80)², so the target moves 40 · 0.7 · (0.75·0.25 + 1) · 1.2 =
+/// 39.9 cm; straight back the cosine −1 is halved, 40 · 0.7 · 0.625 · 1.2
+/// = 21 cm; across, 40 · 0.7 · 1.2 = 33.6 cm; a long step takes no
+/// direction term (33.6 cm ahead too).
+#[test]
+fn the_pelvis_leads_by_its_own_rule() {
+    let posed = Vec3::Y;
+    let lead = still_lead(false, Vec3::X);
+    let moved = |target: Vec3, lead: &ChestLead| {
+        cm((pelvis_lead_pose(posed, target, Vec3::ZERO, posed, lead) - posed).with_y(0.0)).length()
+    };
+    let ahead = moved(Vec3::Z * 0.4, &lead);
+    assert!(
+        (ahead - 40.0 * 0.7 * (0.75 * 0.25 + 1.0) * 1.2).abs() < 1e-3,
+        "{ahead}"
+    );
+    let back = moved(-Vec3::Z * 0.4, &lead);
+    assert!((back - 21.0).abs() < 1e-3, "{back}");
+    let across = moved(Vec3::X * 0.4, &lead);
+    assert!((across - 33.6).abs() < 1e-3, "{across}");
+    let long = ChestLead { long: true, ..lead };
+    assert!((moved(Vec3::Z * 0.4, &long) - 33.6).abs() < 1e-3);
+    // No step length: no direction term.
+    let none = ChestLead {
+        length_cm: 0.0,
+        ..lead
+    };
+    assert!((moved(Vec3::Z * 0.4, &none) - 33.6).abs() < 1e-3);
 }
 
 /// A 40 cm error with the pin on its posed target, a still chest, scale 1
@@ -646,4 +660,40 @@ fn the_stance_score_keeps_the_originals_edges() {
         1.0,
     );
     assert!(close(raised, 2.0), "{raised}");
+}
+
+/// Three seconds of footwork steps backwards, as a held S key lays them: a
+/// new step 50 cm behind the chest whenever none runs. The body walks them
+/// on its feet (its pelvis pin led by its own rule, its frame on its
+/// pelvis while it steps) and never loses its balance or its support.
+#[test]
+fn footwork_walks_backwards_without_a_fall() {
+    use super::super::FootworkStep;
+    let floor = floor_quad(0.0, 20.0);
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    for _ in 0..80 {
+        stand(&mut body, &pose, &floor);
+    }
+    let start = body.chest_point().unwrap();
+    let mut steps_taken = 0;
+    let mut low_balance = f32::MAX;
+    for _ in 0..250 {
+        if !body.stepping() {
+            let chest = body.chest_point().unwrap();
+            let step = FootworkStep {
+                target: Vec3::new(chest.x, 0.0, chest.z - 0.5),
+                ..body.footwork_step().unwrap()
+            };
+            body.write_footwork(&step, true);
+            steps_taken += 1;
+        }
+        stand(&mut body, &pose, &floor);
+        let b = body.drive.as_ref().unwrap().balance();
+        low_balance = low_balance.min(b.value);
+        assert!(b.has_support(), "support lost after {steps_taken} steps");
+    }
+    let moved = start.z - body.chest_point().unwrap().z;
+    assert!(steps_taken >= 2, "{steps_taken} steps");
+    assert!(moved > 0.5, "moved {moved} m back");
+    assert!(low_balance > 0.2, "balance fell to {low_balance}");
 }

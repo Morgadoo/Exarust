@@ -154,8 +154,10 @@ sound's draws (pitch first, then gain), the races that are released into
 the shocked state instead (and that release), race index 1 that only
 rings, and the burn of the others (yellow health, the shock-stagger bit,
 the stagger step along the shock and the pain reaction's part and
-values). A knockback step's length is (1.5 − 0.3·encumbrance) times the
-step length scaled by the leg extension (`body_steps::knockback_length`). The running game's arc shocks (`exa_game::thaum`) apply their
+values). A knockback step's stance is clamped, as any step's, to 1.1 of the
+stored step reach × scale around the frame (`body_steps::stance_origin`,
+in double): the scaled length the original's feet routine rewrites for a
+step of kind 2 has no reader there. The running game's arc shocks (`exa_game::thaum`) apply their
 own clock and health rule and do not call `shock` yet; the body tick's
 shock stagger and the release of a release race (`Body::force_release`)
 are live, and a staggered body on its feet holds the daze pose
@@ -577,6 +579,15 @@ gates, the muscles', the lift's and the frame's stepping read the body's own
 episode (the frame's origin goes onto the pelvis every tick of a step, as the
 original's anchor routine sets it while its stepping byte is set), and the
 long kind clears on any tick without a step and at the step's end.
+While a step leads (any kind, not out of balance) the pelvis pin is led
+by its own rule (`steps::pelvis_lead_pose`: the error to the posed target
+plus the step offset, × 0.7 (0.4 idle) × (0.75·s + 1) × 1.2·scale ×
+level; `s` the error's cosine with the frame's forward axis, halved
+backwards and scaled by its squared share of the step length forwards, 0
+for a long step), and both leads measure the step's offset from the
+standing point the anchor routine keeps (the frame's origin, on the
+pelvis while stepping), so they fade as the body reaches its target. The
+thorax reach narrows by the crouch less while the step episode runs.
 The placement on the ground also restarts the chest history (both ticks'
 chest at the placed chest, velocities zero), clears every foot state and
 puts the feet centre at the anchors' mean. A clip that replaces Walk or Run asks for

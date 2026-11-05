@@ -1008,8 +1008,6 @@ impl Ragdoll {
                 scale,
                 bonus,
                 reach: drive.stats.foot_reach(),
-                extension: b.extension,
-                encumbrance: drive.stats.encumbrance,
                 frame,
                 landings: b.landings,
                 shock_stagger: bearing.shock_stagger,

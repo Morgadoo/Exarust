@@ -177,6 +177,14 @@ fn facing(drive: &Drive) -> Vec3 {
         .unwrap_or(Vec3::Z)
 }
 
+/// The frame's forward axis: the yaw frame's third axis, as it is.
+fn forward_axis(drive: &Drive) -> Vec3 {
+    drive
+        .frame
+        .or(drive.root)
+        .map_or(Vec3::Z, |t| Vec3::from(t.matrix3.z_axis))
+}
+
 /// The frame's horizontal side axis: the yaw frame's first axis.
 fn side_axis(drive: &Drive) -> Vec3 {
     drive
@@ -228,28 +236,33 @@ impl Ragdoll {
         let factor = drive.stats.pin_factor;
         let scale = drive.stats.scale;
         let lead = (drive.steps.stepping && !drive.steps.out_of_balance).then(|| {
+            // The step's offset is the target less the standing point the
+            // anchor routine keeps, which a step sets onto the pelvis every
+            // tick (the frame's origin): the lead fades as the body reaches
+            // its target.
             (
                 drive.steps.target,
-                drive.steps.standing,
+                drive.anchor.unwrap_or(drive.steps.standing),
                 steps::ChestLead {
                     idle: drive.bearing.idle,
                     level: drive.balance.level(),
                     scale,
                     fast: drive.balance.fast_velocity(),
                     side: side_axis(drive),
+                    forward: forward_axis(drive),
                     kind: if drive.steps.knockback {
                         steps::KNOCKBACK_KIND
                     } else {
                         steps::LEAD_KIND
                     },
+                    long: drive.steps.knockback,
+                    length_cm: drive.stats.foot_reach() * drive.balance.extension(),
                 },
             )
         });
-        let reach = thorax_reach(
-            drive.bearing.crouch,
-            self.legs.iter().any(|l| l.state.stepping()),
-            scale,
-        );
+        // The thorax reach narrows by the crouch less while the body's
+        // step episode runs.
+        let reach = thorax_reach(drive.bearing.crouch, drive.steps.stepping, scale);
         let pelvis = pelvis_reach(scale);
         let forward = facing(drive);
         let targets = drive.targets.clone();
@@ -300,8 +313,9 @@ impl Ragdoll {
     }
 }
 
-/// What one iteration's pin pulls share. A thorax pin reads `lead`; the
-/// pelvis pin does not.
+/// What one iteration's pin pulls share. While a step leads, a thorax pin
+/// reads `lead` by the thorax rule and the pelvis pin by its own
+/// ([`steps::pelvis_lead_pose`]).
 struct Pass<'a> {
     centre: Vec3,
     forward: Vec3,
@@ -322,8 +336,12 @@ fn pin_correction(
 ) -> Vec3 {
     let at = part.point(&weights);
     let mut posed = pose.transform_point3(part.rest_point(&weights));
-    if thorax && let Some((step_at, standing, chest)) = pass.lead {
-        posed = steps::lead_pose(posed, *step_at, *standing, at, chest);
+    if let Some((step_at, standing, chest)) = pass.lead {
+        posed = if thorax {
+            steps::lead_pose(posed, *step_at, *standing, at, chest)
+        } else {
+            steps::pelvis_lead_pose(posed, *step_at, *standing, at, chest)
+        };
     }
     let goal = target(
         posed,
