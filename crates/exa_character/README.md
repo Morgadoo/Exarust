@@ -270,6 +270,11 @@ tested rules of their own.
   record's look seed; every other first apparel keeps its stored appearance
   and its own seed (`retexture_layer`). `preview` and `retexture_only` are
   the two public wrappers.
+- `preview_change` picks the creator's rebuild path from the record fields
+  an edit wrote, as each creator control calls one path: skin tone, hair
+  colour and the beard bits (`BEARD_BITS`) re-texture only; the hair style
+  and the shading bit (`HAIR_SHADING_BIT`) rebuild only the hair; anything
+  else rebuilds the whole body. `exa_game::creator_view` runs it live.
 - `spawn` plans the spawns the levels and arena call: a placed character's
   motion (the saved attack motions 5–12 written back as stance 3 and a zero
   phase, else the saved motion, else 0x13, or 0x19 for a profession word

@@ -383,6 +383,64 @@ pub fn hair_rebuild<'a>(
     }
 }
 
+/// The record's beard variant bits: the creator's facial-hair stepper
+/// writes them, and only the skin job reads them.
+pub const BEARD_BITS: u32 = 0x00F0_0000;
+/// The record's hair-shading bit: the creator's straight/wavy toggle writes
+/// it, and the hair's material reads it.
+pub const HAIR_SHADING_BIT: u32 = 0x0001_0000;
+
+/// Which of the generator's three rebuild paths a change of the creation
+/// preview's record takes. The creator's controls each call one path:
+/// the skin-tone picker, the hair-colour picker (and its gloss slider) and
+/// the facial-hair stepper re-texture the body only; the hair list and the
+/// straight/wavy toggle rebuild only the hair; every other change (the
+/// physique, height, age, sex, a loadout) rebuilds the whole body through
+/// the preview wrapper. Exarust's creator collects the edits of a frame
+/// before it rebuilds, so a change can need more than one path; the whole
+/// rebuild covers the other two.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PreviewChange {
+    /// The whole body is rebuilt.
+    pub rebuild: bool,
+    /// Only the skin job is built again ([`retexture_only`]).
+    pub retexture: bool,
+    /// Only the hair is removed and grown again ([`hair_rebuild`]).
+    pub hair: bool,
+}
+
+/// The paths a change from `old` to `new` takes ([`PreviewChange`]).
+pub fn preview_change(
+    old: &exa_formats::characters::CharacterRecord,
+    new: &exa_formats::characters::CharacterRecord,
+) -> PreviewChange {
+    if old == new {
+        return PreviewChange::default();
+    }
+    // `old` with the fields the two narrow paths own taken from `new`: any
+    // other difference needs the whole rebuild.
+    let mut narrowed = old.clone();
+    narrowed.skin = new.skin;
+    narrowed.hair_colour = new.hair_colour;
+    narrowed.hair_style = new.hair_style;
+    let owned = BEARD_BITS | HAIR_SHADING_BIT;
+    narrowed.profession_rest = (old.profession_rest & !owned) | (new.profession_rest & owned);
+    if narrowed != *new {
+        return PreviewChange {
+            rebuild: true,
+            ..PreviewChange::default()
+        };
+    }
+    let bits = old.profession_rest ^ new.profession_rest;
+    PreviewChange {
+        rebuild: false,
+        retexture: old.skin != new.skin
+            || old.hair_colour != new.hair_colour
+            || bits & BEARD_BITS != 0,
+        hair: old.hair_style != new.hair_style || bits & HAIR_SHADING_BIT != 0,
+    }
+}
+
 /// Waits while the render thread still owns the old texture
 ///. The original sleeps a millisecond and checks the node's
 /// busy flag; a single-threaded caller waits cooperatively.
@@ -743,5 +801,60 @@ mod tests {
         plain.nodes[1].chunk_kind = crate::runtime::MESH;
         let plan = apply_plan(&plain, 0, 1, None, None);
         assert_eq!(plan.clear_texture, None);
+    }
+
+    /// The creator's controls pick the rebuild path by the fields they
+    /// write: tone, hair colour and beard re-texture; the style and the
+    /// shading bit rebuild the hair; anything else the whole body.
+    #[test]
+    fn a_preview_change_takes_the_path_of_the_fields_it_wrote() {
+        use exa_formats::characters::CharacterRecord;
+        let old = CharacterRecord::default();
+        assert_eq!(preview_change(&old, &old), PreviewChange::default());
+        let with = |f: &dyn Fn(&mut CharacterRecord)| {
+            let mut r = old.clone();
+            f(&mut r);
+            preview_change(&old, &r)
+        };
+        let retexture = PreviewChange {
+            retexture: true,
+            ..PreviewChange::default()
+        };
+        let hair = PreviewChange {
+            hair: true,
+            ..PreviewChange::default()
+        };
+        let rebuild = PreviewChange {
+            rebuild: true,
+            ..PreviewChange::default()
+        };
+        assert_eq!(with(&|r| r.skin = [1, 2]), retexture);
+        assert_eq!(with(&|r| r.hair_colour = [9, 8, 7, 0]), retexture);
+        assert_eq!(with(&|r| r.profession_rest |= 0x0030_0000), retexture);
+        assert_eq!(with(&|r| r.hair_style = 4), hair);
+        assert_eq!(with(&|r| r.profession_rest |= HAIR_SHADING_BIT), hair);
+        assert_eq!(
+            with(&|r| {
+                r.hair_style = 4;
+                r.skin = [3, 3];
+            }),
+            PreviewChange {
+                retexture: true,
+                hair: true,
+                rebuild: false
+            }
+        );
+        assert_eq!(with(&|r| r.physique = [0.5, 0.5]), rebuild);
+        assert_eq!(with(&|r| r.female = !r.female), rebuild);
+        // Another profession bit is not the narrow paths'.
+        assert_eq!(with(&|r| r.profession_rest |= 0x40), rebuild);
+        // Mixed with a whole-body field, the whole rebuild covers it.
+        assert_eq!(
+            with(&|r| {
+                r.skin = [1, 1];
+                r.age = 0.7;
+            }),
+            rebuild
+        );
     }
 }
