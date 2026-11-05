@@ -377,13 +377,18 @@ pub fn release_freed_grips(
     mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll, Has<GripRelease>)>,
     bodies: Query<&Ragdoll, Without<HeldGrip>>,
 ) {
+    let holding = |grip: &HeldGrip| !grip.released && grip.links.is_some();
+    let holders = crate::body::first_by_key(
+        held.iter()
+            .filter(|(_, grip, ..)| holding(grip))
+            .map(|(_, grip, ..)| grip.holder_key),
+        bodies.iter().map(|body| ((), body)),
+    );
     for (entity, mut grip, mut body, released) in &mut held {
-        if grip.released || grip.links.is_none() {
+        if !holding(&grip) {
             continue;
         }
-        let owner = bodies
-            .iter()
-            .find(|b| b.parts.first().is_some_and(|p| p.entity == grip.holder_key));
+        let owner = holders.get(&grip.holder_key);
         if owner.is_some() && !released {
             continue;
         }

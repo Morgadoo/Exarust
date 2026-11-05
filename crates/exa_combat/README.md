@@ -656,3 +656,5 @@ pulses, the callback's end) and the cast start (the callback's answer, the
 motion, the clinch end, condition 0x20).
 
 The swing's cursor nudge (`strike_body::striking_fist`) pushes a striker only while the character's weapon class word is 0, as the original tests it: the fists (0x80), the claws (0xC0) and two weapons (0x90) are never pushed.
+
+The limb-impact pass (`impact::strike_limbs`) keeps the part states of the non-fighter bodies only for the keys a touch names.

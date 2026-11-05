@@ -44,6 +44,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+use rapier3d::parry::bounding_volume::BoundingVolume;
 use rapier3d::prelude::*;
 
 /// Simulation rate of the fixed step: the original's 83 Hz (12 ms) time-
@@ -870,7 +871,11 @@ fn move_characters(
     )>,
     mut moves: Local<Vec<(RigidBodyHandle, Vec3)>>,
     mut physics_mut: ResMut<PendingKinematics>,
+    mut stats: Local<Option<SweepStats>>,
 ) {
+    if stats.is_none() && std::env::var_os("EXA_SWEEP_STATS").is_some() {
+        *stats = Some(SweepStats::default());
+    }
     let dt = time.delta_secs();
     let controller = KinematicCharacterController {
         up: Vec3::Y,
@@ -911,6 +916,12 @@ fn move_characters(
         let shape = Capsule::new_y(body.half_height, body.radius);
         // The entity's origin is at the feet; the capsule is centred above.
         let centre_offset = body.half_height + body.radius;
+        if let Some(stats) = stats.as_mut() {
+            stats.count(&queries, &shape, start + Vec3::Y * centre_offset);
+            stats.why[0] += u32::from(!body.grounded);
+            stats.why[1] += u32::from(body.desired_velocity != Vec3::ZERO);
+            stats.why[2] += u32::from(following);
+        }
         let mut at = start;
         // First the follow, across the ground, through the controller: it
         // is stopped by walls and steps up as a walk is.
@@ -946,6 +957,69 @@ fn move_characters(
         }
     }
     physics_mut.0.clone_from(&moves);
+    if let Some(stats) = stats.as_mut() {
+        stats.tick();
+    }
+}
+
+/// What the character sweeps meet (`EXA_SWEEP_STATS`, a debug aid): per
+/// swept character and tick, the colliders whose box reaches the capsule's
+/// and the triangles of those meshes the capsule's box reaches, logged
+/// every 83 ticks with the colliders that bring the most triangles.
+#[derive(Default)]
+struct SweepStats {
+    ticks: u32,
+    swept: u32,
+    colliders: u64,
+    triangles: u64,
+    heaviest: Vec<(usize, u32, u128, u32, Vec3, Vec3)>,
+    why: [u32; 3],
+}
+
+impl SweepStats {
+    fn count(&mut self, queries: &QueryPipeline, shape: &Capsule, centre: Vec3) {
+        let aabb = shape
+            .compute_aabb(&Pose::from_translation(centre))
+            .loosened(0.1);
+        self.swept += 1;
+        for (handle, collider) in queries.intersect_aabb_conservative(aabb) {
+            self.colliders += 1;
+            if let Some(mesh) = collider.shape().as_trimesh() {
+                let local = aabb.transform_by(&collider.position().inverse());
+                let n = mesh.bvh().intersect_aabb(&local).count();
+                self.triangles += n as u64;
+                let whole = collider.compute_aabb();
+                self.heaviest.push((
+                    n,
+                    handle.into_raw_parts().0,
+                    collider.user_data,
+                    mesh.num_triangles() as u32,
+                    whole.mins,
+                    whole.maxs,
+                ));
+            }
+        }
+    }
+
+    fn tick(&mut self) {
+        self.ticks += 1;
+        if self.ticks < 83 {
+            return;
+        }
+        self.heaviest.sort_by_key(|h| std::cmp::Reverse(h.0));
+        self.heaviest.dedup_by_key(|h| h.1);
+        info!(
+            "sweep stats: {:.1} characters swept a tick (airborne {}, walking {}, following {}), {:.1} colliders and {:.0} triangles each; heaviest (in box, handle, user data, mesh triangles, box) {:?}",
+            self.swept as f32 / self.ticks as f32,
+            self.why[0],
+            self.why[1],
+            self.why[2],
+            self.colliders as f32 / self.swept.max(1) as f32,
+            self.triangles as f32 / self.swept.max(1) as f32,
+            &self.heaviest[..self.heaviest.len().min(4)],
+        );
+        *self = Self::default();
+    }
 }
 
 /// Draws characters between their last two fixed steps, so they move

@@ -838,12 +838,10 @@ impl Pairs {
         let span = bevy::log::info_span!("pairs: gather sleepers").entered();
         for (b, body) in bodies.iter().enumerate().skip(awake) {
             for (k, p) in body.parts.iter().enumerate() {
-                if !meets(p) {
-                    continue;
-                }
-                let seen = Seen::of(b, k, p);
-                if near.contains(&seen.cell) {
-                    found.push(seen);
+                // The cell first: most sleepers lie far from every awake
+                // part, and the rest of their pose is not needed.
+                if meets(p) && near.contains(&p.cell((0, 0))) {
+                    found.push(Seen::of(b, k, p));
                 }
             }
         }

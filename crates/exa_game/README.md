@@ -2093,3 +2093,5 @@ ticked character's open strikers only while its weapon class word is 0
 panels and the worn figure read (`doll_view::DollItems`, whose tagged ids
 keep their own copies and container lists) and the card's wear byte
 (`exa_items::catalogue`); they are not saved (no live object database).
+
+`equip::apply_head_height` finds each armed grip's holder through `exa_physics::body::first_by_key`.

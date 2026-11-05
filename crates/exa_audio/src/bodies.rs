@@ -24,7 +24,7 @@
 //! for every random draw; the draw here comes from this system's own
 //! generator, as each of Exarust's sound paths keeps its own.
 
-use bevy::platform::collections::{HashMap, HashSet};
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_physics::body::{
@@ -139,9 +139,7 @@ pub(crate) fn body_sounds(
             .entry(name.to_owned())
             .or_insert_with(|| bank.load_set(&game, &mut sources, name))
     };
-    let mut seen = HashSet::new();
     for (entity, mut body, names) in &mut bodies {
-        seen.insert(entity);
         if body.held_by.is_some() {
             continue;
         }
@@ -188,7 +186,7 @@ pub(crate) fn body_sounds(
     }
     // A body that left the world frees its loops, as its destructor does.
     loops.retain(|entity, handles| {
-        let keep = seen.contains(entity);
+        let keep = bodies.contains(*entity);
         if !keep {
             for &h in handles.iter() {
                 env.free_handle(&mut bank, h);

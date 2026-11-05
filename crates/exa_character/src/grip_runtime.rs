@@ -118,18 +118,24 @@ pub fn refresh_holds(
     )>,
     mut holders: Query<(Entity, &Ragdoll, Option<&mut HeldRefresh>)>,
 ) {
+    // Each holder's weapons in the held items' order: every body is a
+    // holder here (the level's props too), so the items are bucketed by
+    // holder once instead of walked once per body.
+    let mut by_holder: bevy::ecs::entity::EntityHashMap<Vec<_>> = Default::default();
+    for item in &held {
+        // The count is the hands' weapon slots: a shield or a torch is held
+        // through its own slot.
+        if item.1.kind == HeldKind::Weapon {
+            by_holder.entry(item.1.holder_key).or_default().push(item);
+        }
+    }
     for (owner, body, current) in &mut holders {
         let Some(key) = body.parts.first().map(|p| p.entity) else {
             continue;
         };
         let mut count = 0;
         let mut first: Option<(HeldItemSpec, bool, Option<[Vec3; 4]>)> = None;
-        for (_, grip, blade, spec, item_body) in &held {
-            // The count is the hands' weapon slots: a shield or a torch
-            // is held through its own slot.
-            if grip.holder_key != key || grip.kind != HeldKind::Weapon {
-                continue;
-            }
+        for &(_, grip, blade, spec, item_body) in by_holder.get(&key).into_iter().flatten() {
             count += 1;
             let Some(spec) = spec else {
                 continue;
@@ -311,14 +317,18 @@ pub fn release_collapsed(
     bodies: Query<(Entity, &Ragdoll)>,
     owners: Query<&Condition>,
 ) {
+    let lets_go = |grip: &HeldGrip| !grip.released && grip.kind != HeldKind::Shield;
+    let holders = exa_physics::body::first_by_key(
+        held.iter()
+            .filter(|(_, grip)| lets_go(grip))
+            .map(|(_, grip)| grip.holder_key),
+        bodies.iter(),
+    );
     for (item, grip) in &held {
-        if grip.released || grip.kind == HeldKind::Shield {
+        if !lets_go(grip) {
             continue;
         }
-        let Some((owner, _)) = bodies
-            .iter()
-            .find(|(_, b)| b.parts.first().is_some_and(|p| p.entity == grip.holder_key))
-        else {
+        let Some(&owner) = holders.get(&grip.holder_key) else {
             continue;
         };
         if owners.get(owner).is_ok_and(|c| *c == Condition::COLLAPSING) {
@@ -343,14 +353,15 @@ pub fn animate_grips(
     owners: Query<(&Animator, &Condition, Option<&crate::held::BurningGrip>)>,
     motions: Option<Res<Motions>>,
 ) {
+    let holders = exa_physics::body::first_by_key(
+        held.iter().map(|(_, grip, ..)| grip.holder_key),
+        bodies.iter().map(|(entity, body)| ((entity, body), body)),
+    );
     for (item, mut grip, blade, record, ability) in &mut held {
         let Ok((_, item_body)) = bodies.get(item) else {
             continue;
         };
-        let Some((owner, holder_body)) = bodies
-            .iter()
-            .find(|(_, b)| b.parts.first().is_some_and(|p| p.entity == grip.holder_key))
-        else {
+        let Some(&(owner, holder_body)) = holders.get(&grip.holder_key) else {
             continue;
         };
         let Ok((anim, condition, burning_grip)) = owners.get(owner) else {

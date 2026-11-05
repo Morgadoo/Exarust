@@ -679,6 +679,14 @@ impl Part {
         )
     }
 
+    /// The grid cell of [`Self::pose`] alone, computed the same way: the
+    /// pair stage tests a sleeping part's cell before it needs the rest.
+    pub(crate) fn cell(&self, origin: (i32, i32)) -> (i32, i32) {
+        let matrix = affine_from_points(&self.rest, &self.rest_inverse, &self.positions);
+        let box_centre = matrix.transform_point3(self.pairing.mesh.centre);
+        crate::sector::cell_of(box_centre * 100.0, origin)
+    }
+
     /// The part's transform `alpha` of the way from where the tick before
     /// last left it to where the last tick did: the original interpolates
     /// the four particles and builds the matrix from them, so the drawn
@@ -5294,6 +5302,34 @@ impl Level for MaskedLevel<'_> {
     }
 }
 
+/// For each of `keys` (a body's key is its first part's entity), the
+/// first of `bodies`, in their order, with that key: what a `find` over
+/// `bodies` returns for each key, in one walk that ends once every key is
+/// found. Held items look their holders up by key; a level holds thousands
+/// of sleeping prop bodies, so a walk per item and tick cost more than the
+/// rest of the tick's bookkeeping.
+pub fn first_by_key<'a, T>(
+    keys: impl IntoIterator<Item = Entity>,
+    bodies: impl IntoIterator<Item = (T, &'a Ragdoll)>,
+) -> bevy::ecs::entity::EntityHashMap<T> {
+    let mut wanted: bevy::ecs::entity::EntityHashSet = keys.into_iter().collect();
+    let mut found = bevy::ecs::entity::EntityHashMap::default();
+    if wanted.is_empty() {
+        return found;
+    }
+    for (value, body) in bodies {
+        if let Some(first) = body.parts.first()
+            && wanted.remove(&first.entity)
+        {
+            found.insert(first.entity, value);
+            if wanted.is_empty() {
+                break;
+            }
+        }
+    }
+    found
+}
+
 /// The solver's tick over every body (the character ticks ran before it):
 /// the queued blows, then one tick of the world's solver over the awake
 /// bodies, with the solver stages, which see the sleeping bodies too (a
@@ -5628,6 +5664,49 @@ mod tests {
         let before = gap(&moved);
         moved.iterate();
         assert!(gap(&moved) < before);
+    }
+
+    /// The key lookup gives, for each key, the first body in order with it,
+    /// as a `find` per key does, duplicates and missing keys included.
+    #[test]
+    fn the_key_lookup_takes_the_first_body_with_each_key() {
+        let keyed = |index: u32| {
+            let mut body = two_parts(0.0);
+            body.parts[0].entity = Entity::from_raw_u32(index).unwrap();
+            body
+        };
+        let bodies = [keyed(1), keyed(2), keyed(1), keyed(3)];
+        let key = |index: u32| Entity::from_raw_u32(index).unwrap();
+        let keys = [key(1), key(3), key(9), key(1)];
+        let found = first_by_key(keys, bodies.iter().enumerate());
+        for k in keys {
+            let by_find = bodies
+                .iter()
+                .position(|b| b.parts.first().is_some_and(|p| p.entity == k));
+            assert_eq!(found.get(&k).copied(), by_find, "{k:?}");
+        }
+        assert_eq!(found.len(), 2);
+        let none = first_by_key([], bodies.iter().map(|b| ((), b)));
+        assert!(none.is_empty());
+    }
+
+    /// A part's cell alone is its pose's cell, bit for bit.
+    #[test]
+    fn a_parts_cell_is_its_poses_cell() {
+        let mut body = two_parts(0.0);
+        for (i, at) in [Vec3::new(5.99, 0.3, -6.01), Vec3::new(-3.0, 1.0, 12.0)]
+            .into_iter()
+            .enumerate()
+        {
+            for x in &mut body.parts[i].positions {
+                *x += at;
+            }
+        }
+        for p in &body.parts {
+            for origin in [(0, 0), (40, -3)] {
+                assert_eq!(p.cell(origin), p.pose(origin).cell);
+            }
+        }
     }
 
     /// A link added at run time is solved: pulled apart beyond its slack, one

@@ -435,3 +435,5 @@ draws the engine's unit twice (the pitch's p, then the gain's g) and plays
 body gain fields the original multiplies in have no Exarust counterpart
 and are 1 (a guess), and the underwater splash and the foley set are not
 in. Nothing selects voices in the running game yet.
+
+The bodies' sound pass frees a body's scrape loops once the body has left its query (no per-tick set of every body).

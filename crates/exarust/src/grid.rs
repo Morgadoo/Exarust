@@ -19,7 +19,10 @@
 //! standard input. A child that exits shows its exit status (and restarts
 //! with `--restart`, or on Enter while its quadrant is active).
 //! `exarust grid-swap <n> <scene>` asks a running host to replace one
-//! quadrant's game.
+//! quadrant's game. A scene's leading `exe=<path>` runs that binary instead
+//! of the host's own, and its leading `env:<KEY>=<value>` words set the
+//! child's environment (two builds or settings side by side, under the
+//! same load).
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -774,12 +777,39 @@ fn set_camera_viewports(
     }
 }
 
+/// A scene's leading debug words and the rest: `exe=<path>` runs that
+/// build of the game, and `env:<KEY>=<value>` sets the child's environment
+/// (for comparing builds or settings side by side under the same load).
+fn launch_words(words: &[String]) -> (Option<PathBuf>, Vec<(&str, &str)>, &[String]) {
+    let mut exe = None;
+    let mut envs = Vec::new();
+    let mut args = words;
+    while let Some((first, rest)) = args.split_first() {
+        if let Some(path) = first.strip_prefix("exe=") {
+            exe = Some(PathBuf::from(path));
+        } else if let Some((key, value)) =
+            first.strip_prefix("env:").and_then(|kv| kv.split_once('='))
+        {
+            envs.push((key, value));
+        } else {
+            break;
+        }
+        args = rest;
+    }
+    (exe, envs, args)
+}
+
 /// Launches a child for `q` with the host's offscreen arguments.
 fn launch(config: &GridConfig, q: &mut Quadrant, size: UVec2) -> std::io::Result<Running> {
     let _ = std::fs::remove_file(&q.frame_path);
     let log = File::create(&q.log_path)?;
-    let exe = std::env::current_exe()?;
+    let (exe, envs, args) = launch_words(&q.args);
+    let exe = match exe {
+        Some(exe) => exe,
+        None => std::env::current_exe()?,
+    };
     let mut command = Command::new(exe);
+    command.envs(envs);
     if let Some(game) = &config.game {
         command.arg("--game").arg(game);
     }
@@ -796,7 +826,7 @@ fn launch(config: &GridConfig, q: &mut Quadrant, size: UVec2) -> std::io::Result
     }
     command
         .args(&config.child_args)
-        .args(&q.args)
+        .args(args)
         .env_remove("EXA_WINDOW_AT")
         .stdin(Stdio::piped())
         .stdout(log.try_clone()?)
@@ -1414,6 +1444,18 @@ fn stop_children_on_exit(mut exits: MessageReader<AppExit>, mut host: ResMut<Gri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scenes_leading_debug_words_pick_the_build_and_environment() {
+        let words = scene_args("exe=/tmp/old env:A=1 env:B=x=y play arena env:C=2");
+        let (exe, envs, args) = launch_words(&words);
+        assert_eq!(exe, Some(PathBuf::from("/tmp/old")));
+        assert_eq!(envs, [("A", "1"), ("B", "x=y")]);
+        assert_eq!(args, ["play", "arena", "env:C=2"]);
+        let plain = scene_args("arena");
+        let (exe, envs, args) = launch_words(&plain);
+        assert_eq!((exe, envs.len(), args), (None, 0, &plain[..]));
+    }
 
     #[test]
     fn scenes_become_child_arguments() {

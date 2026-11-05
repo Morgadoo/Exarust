@@ -432,10 +432,17 @@ pub fn strike_limbs(
                 part_states.insert((key, i), part.state);
             }
         }
+        // The other bodies (the level's props, thousands of them) only for
+        // the keys a touch names: the only ones looked up.
+        let touched: bevy::ecs::entity::EntityHashSet =
+            touches.iter().flat_map(|t| [t.a.0, t.b.0]).collect();
         for (_, body) in &bodies {
             let Some(key) = body.parts.first().map(|p| p.entity) else {
                 continue;
             };
+            if !touched.contains(&key) {
+                continue;
+            }
             for (i, part) in body.parts.iter().enumerate() {
                 part_states.insert((key, i), part.state);
             }
