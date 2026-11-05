@@ -764,9 +764,15 @@ The controls' spectate session (`spectate`, the original's Spectate game
 mode): its start sets the spectate flag and frees the camera, the player is
 not steered while it runs, a double click makes the chase camera follow the
 picked character (anything else frees it, the camera keeping its last
-point), and its end clears both. The original's arena starts it when the
-round's entrant is a company employee; Exarust's arena always fields the
-player, so `--spectate` starts it after the load.
+point), and its end clears both. The arena starts it when no participant
+is the player's to control (only hired employees entered): the bench
+(`save_live`) keeps the manager's record as the next player spawn's and
+despawns the player, the camera looks at the arena's spawn spot, the
+fighters duel the nearest other side (`arena_live`), and the hub's arrival
+rebuilds the manager and ends the session. A match's company entries are
+the board's lineup (`ArenaMatchLaunch::entrants`): entry `i` is pool slot
+`entrants[i]`, the manager at slot 0. `--spectate` starts the session in
+any level, and `--hub-enter` begins the board's match with a given lineup.
 
 The player behaviour's own rules (`player_behaviour`) are the aim point's
 soft height lock toward the nearest of a target's bones (the reference

@@ -16,16 +16,31 @@ The spectate session (this lane):
 
 | routine | bytes | before | after | evidence |
 |---|---|---|---|---|
-| Spectate start hook | 368 | missing | live behind `--spectate` | sets the mode, turns the controls on, sets the spectate flag, clears the camera's follow, registers the double click's interaction routine |
-| Spectate end hook | 208 | missing | ported (session end), no caller in play | turns the controls off, clears the flag and the follow, drops the click |
-| Interaction (double click), spectate branch | part of 1,504 | missing | live behind `--spectate` | a picked character's body becomes the camera's follow object; anything else, or a miss, frees the camera |
+| Spectate start hook | 368 | missing | live (a match with no controllable participant; `--spectate` too) | sets the mode, turns the controls on, sets the spectate flag, clears the camera's follow, registers the double click's interaction routine |
+| Spectate end hook | 208 | missing | live (the hub's arrival, as the next mode starts) | turns the controls off, clears the flag and the follow, drops the click |
+| Interaction (double click), spectate branch | part of 1,504 | missing | live while spectating | a picked character's body becomes the camera's follow object; anything else, or a miss, frees the camera |
 | Controls' frame, spectate gate | (already ported) | live (gate never set) | live (the session sets it: the player is not steered) | the frame returns while spectating |
 
-Reachability: the mode's hooks are called only from the arena's round entry
-(the next round's entrant, the tournament round and two other entries): an
-entrant that is the player starts the Character mode, any other (a company
-employee) starts Spectate. Exarust's arena always fields the player, so play
-never enters the session; `--spectate` enters it to check it.
+Reachability: the start hook is called only from the arena's match start,
+the next round's entrant, the tournament spawn and the match tick. The
+match start clears the player record and tears the scene (and its player
+body) down; the loadout pass names the first participant whose record the
+player may control (the manager, or a recruit) the player. With one, the
+Character mode starts and the player body is built from that record; with
+none (only hired employees entered, which the board's default lineup does
+once a combatant is hired) no player body is built, the camera is put at
+the spawn spot raised by (700, 1180, 1100) cm looking at the spot, and
+Spectate starts. The end hook has no direct caller: it is the mode's end
+entry, run when the next mode (the hub's Character mode) starts.
+
+Exarust (round 77): the board's lineup travels on the launch; a match with
+no player entry benches the manager (his record, possessions and health
+kept for the next player spawn, the player despawned) and starts the
+session looking at the spawn spot; the fighters duel the nearest other side
+(Exarust's stand-in for the brain's target pass, which otherwise follows
+the player); the hub's arrival rebuilds the manager and ends the session.
+Recruits are not in Exarust's roster yet, so only the manager can be the
+player's entry.
 
 ## TPlayerBehaviour
 

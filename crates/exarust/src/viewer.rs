@@ -138,6 +138,12 @@ fn setup(
             done: false,
         });
     }
+    if !options.hub_enter.is_empty() {
+        commands.insert_resource(exa_game::arena_hub_live::HubEnter {
+            slots: options.hub_enter.clone(),
+            done: false,
+        });
+    }
     if let Some((name, kit)) = &options.hub_employee_kit {
         commands.insert_resource(exa_game::hub_forms::HubEmployeeKit {
             name: name.clone(),
@@ -909,7 +915,8 @@ fn play_level(
                 career,
             )
             .with_weapon_variants(setup.weapon_variants)
-            .with_rivals(rivals),
+            .with_rivals(rivals)
+            .with_entrants(launch.map_or_else(Vec::new, |launch| launch.entrants.clone())),
         );
     } else {
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();

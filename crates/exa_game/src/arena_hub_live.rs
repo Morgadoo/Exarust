@@ -199,6 +199,12 @@ impl Plugin for ArenaHubPlugin {
                 )
                     .chain()
                     .in_set(HubWindowSystems),
+            )
+            .add_systems(
+                Update,
+                hub_enter_on_load
+                    .after(crate::hub_forms::hub_employee_kit_on_load)
+                    .before(hub_clicks),
             );
         crate::hub_windows::add_hub_draw(app);
     }
@@ -362,8 +368,13 @@ pub struct ArenaMatchLaunch {
     pub level: i32,
     /// The event's gear tier.
     pub tier: i32,
-    /// The company entry that is the player's own, if any.
+    /// The company entry that is the player's own, if any. None when no
+    /// entrant is the player's to control (only hired employees fight):
+    /// the match is spectated (`crate::spectate`).
     pub player: Option<usize>,
+    /// The board's entrants in entry order, as company pool slots (0 is the
+    /// manager, roster member `i` is slot `i + 1`): the participant list.
+    pub entrants: Vec<usize>,
     /// A tournament event's match.
     pub tournament: bool,
     /// The prize a win pays, copper.
@@ -547,12 +558,59 @@ fn plan_match(
         level,
         tier,
         player,
+        entrants: board.team.clone(),
         tournament,
         prize: board.selected.prize,
         weapon_variants,
         rivals,
         fighters,
     })
+}
+
+/// `--hub-enter slot,...`: once the manager stands in the hub (and a
+/// `--hub-employee-kit` employee has joined), the board's selected match
+/// begins with these company pool slots as its lineup (0 is the manager,
+/// roster member `i` is slot `i + 1`), through the board's own launch
+/// ([`plan_launch`]) without the clicks. A debug tool for entering
+/// employees without the manager (the spectated match).
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HubEnter {
+    pub slots: Vec<usize>,
+    pub done: bool,
+}
+
+/// Runs `--hub-enter` once, when the lineup's members are on the roster.
+fn hub_enter_on_load(
+    ask: Option<ResMut<HubEnter>>,
+    mut hub: ResMut<ArenaHub>,
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    flow: Option<Res<Flow>>,
+    mut launches: MessageWriter<ArenaMatchLaunch>,
+    mut rematch: ResMut<ArenaRematch>,
+) {
+    let Some(mut ask) = ask else {
+        return;
+    };
+    let roster = career.company.roster.len();
+    if ask.done || !hub.manager_placed || ask.slots.iter().any(|&slot| slot > roster) {
+        return;
+    }
+    ask.done = true;
+    let mut board = career.board();
+    board.team = ask.slots.clone();
+    let alternative = flow.is_some_and(|flow| flow.alternative_music);
+    match plan_launch(&mut career, &board, alternative) {
+        Some(launch) => {
+            info!(
+                "--hub-enter: template {} begins with slots {:?} (the player's entry {:?})",
+                launch.template, launch.entrants, launch.player
+            );
+            launches.write(launch);
+            rematch.board = Some(board);
+            hub.busy = true;
+        }
+        None => warn!("--hub-enter: the board refuses the match"),
+    }
 }
 
 /// Timer ticks the auto rematch waits after the return to the hub.
@@ -2276,6 +2334,8 @@ mod tests {
         assert_eq!(board.team, vec![1]);
         let launch = plan_launch_at(&mut career, &board, false, 0x1234_5678).unwrap();
         assert_eq!(launch.player, None);
+        // The participant list is the lineup's pool slots.
+        assert_eq!(launch.entrants, vec![1]);
         assert!(
             launch
                 .fighters

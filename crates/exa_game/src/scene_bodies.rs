@@ -1014,14 +1014,13 @@ fn apply_scene_commands(
         messages.clear();
         return;
     };
-    let player = players.iter().next();
+    // A spectated arena match has no player body (`crate::spectate`): its
+    // fighters' duel target starts as no entity, and their brains pick
+    // their foes as they do among themselves.
+    let player = players.iter().next().unwrap_or(Entity::PLACEHOLDER);
     for command in messages.read() {
         match command {
             SceneCommand::Spawn(plan) => {
-                let Some(player) = player else {
-                    warn!("scene bodies: no player to rate");
-                    continue;
-                };
                 let mut loader = ModelLoader {
                     game: &game.0,
                     cache: &mut cache,

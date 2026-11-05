@@ -79,6 +79,10 @@ pub struct ArenaScene {
     pub rivals: [i32; crate::career::RIVAL_FIELD],
     /// The roll a bracket's unwatched pairs draw from.
     pub roll: u32,
+    /// The participants in entry order, as company pool slots (0 is the
+    /// manager, roster member `i` is slot `i + 1`); empty for a match the
+    /// command line laid out, whose entry `i` is slot `i`.
+    pub entrants: Vec<usize>,
 }
 
 impl ArenaScene {
@@ -114,7 +118,43 @@ impl ArenaScene {
             weapon_variants: None,
             rivals: [0; crate::career::RIVAL_FIELD],
             roll: crate::arena_match::counter_now() as u32,
+            entrants: Vec::new(),
         }
+    }
+
+    /// The board's participants, as company pool slots.
+    #[must_use]
+    pub fn with_entrants(mut self, entrants: Vec<usize>) -> Self {
+        self.entrants = entrants;
+        self
+    }
+
+    /// The company pool slot of the layout's company entry `index`: the
+    /// participant list maps it (the original's participants are the
+    /// board's entrants mapped by id, in entry order).
+    #[must_use]
+    pub fn entrant_slot(&self, index: usize) -> usize {
+        self.entrants.get(index).copied().unwrap_or(index)
+    }
+
+    /// Company entry `index`'s member (name and health word) and the id its
+    /// body carries (its pool slot, the record's participant id): slot 0 is
+    /// the manager, slot `i` roster member `i - 1`.
+    #[must_use]
+    pub fn entrant<'a>(
+        &self,
+        career: Option<&'a crate::hub_windows::ArenaCareer>,
+        index: usize,
+    ) -> (Option<(&'a str, u16)>, u32) {
+        let slot = self.entrant_slot(index);
+        let member = career.and_then(|career| {
+            let member = match slot {
+                0 => Some(&career.player),
+                slot => career.company.roster.get(slot - 1),
+            };
+            member.map(|member| (member.name.as_str(), member.health))
+        });
+        (member, u32::try_from(slot).unwrap_or(0))
     }
 
     /// The week's tournament field the rival sides wear.
@@ -273,7 +313,88 @@ impl Plugin for ArenaLivePlugin {
                 )
                     .chain()
                     .after(crate::gui_screens::draw_screens),
+            )
+            .add_systems(
+                Update,
+                aim_spectated_fighters.run_if(resource_exists::<ArenaScene>),
             );
+    }
+}
+
+/// The foe a spectated match's fighter duels: the nearest living fighter
+/// of another side (the company's bodies are one side, every other team
+/// word another), as `(entity, team, company, alive, position)` rows.
+#[must_use]
+pub fn spectated_foe(
+    me: (Entity, u32, bool, Vec3),
+    fighters: &[(Entity, u32, bool, bool, Vec3)],
+) -> Option<Entity> {
+    let (me, team, company, at) = me;
+    fighters
+        .iter()
+        .filter(|(entity, other_team, other_company, alive, _)| {
+            *entity != me && *alive && (company != *other_company || (!company && team != *other_team))
+        })
+        .min_by(|a, b| at.distance_squared(a.4).total_cmp(&at.distance_squared(b.4)))
+        .map(|(entity, ..)| *entity)
+}
+
+/// A spectated match's duels. Exarust's scene bodies start with the player
+/// as their duel target (the brain's target pass reads it as the foe it
+/// tracks), and a spectated match has no player body, so each fighter
+/// whose target is not a living fighter of another side takes the nearest
+/// one. [Exarust's stand-in: the original's target pass picks the foe
+/// among the contacts its senses rate hostile, which the arena's roles
+/// make of every other side.] The write lands in the simulation's copy
+/// through [`exa_physics::sim_app::FixedCommands`].
+fn aim_spectated_fighters(
+    scene: Res<ArenaScene>,
+    mut bodies: Query<(
+        Entity,
+        &SceneFighter,
+        &Condition,
+        &GlobalTransform,
+        Option<&mut exa_ai::Duellist>,
+    )>,
+    fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+) {
+    if scene.player_entry.is_some() || !scene.placed {
+        return;
+    }
+    let Some(mut fixed) = fixed else {
+        return;
+    };
+    let rows: Vec<(Entity, u32, bool, bool, Vec3)> = bodies
+        .iter()
+        .map(|(entity, fighter, condition, at, _)| {
+            (
+                entity,
+                fighter.team,
+                fighter.company,
+                *condition != Condition::DEAD,
+                at.translation(),
+            )
+        })
+        .collect();
+    for (entity, fighter, condition, at, duellist) in &mut bodies {
+        let Some(mut duellist) = duellist else {
+            continue;
+        };
+        if *condition == Condition::DEAD {
+            continue;
+        }
+        let me = (entity, fighter.team, fighter.company, at.translation());
+        let current = rows.iter().find(|row| row.0 == duellist.target);
+        let keeps = current.is_some_and(|row| {
+            row.3 && spectated_foe(me, std::slice::from_ref(row)) == Some(row.0)
+        });
+        if keeps {
+            continue;
+        }
+        if let Some(foe) = spectated_foe(me, &rows) {
+            info!("arena match (spectated): {entity} duels {foe}");
+            fixed.write(entity, &mut duellist, move |d| d.target = foe);
+        }
     }
 }
 
@@ -299,21 +420,15 @@ pub fn round_plans(
                 if scene.player_entry == Some(index) {
                     continue;
                 }
-                let member = career.and_then(|career| {
-                    career
-                        .company
-                        .roster
-                        .get(index.saturating_sub(1))
-                        .map(|member| (member.name.as_str(), member.health))
-                });
-                // The arena index is the participant id: 0 is the manager,
-                // the first roster member is 1, as the numbering pass
-                // writes it into each record's id word.
+                // The participant id is the entrant's pool slot: 0 is the
+                // manager, the first roster member is 1, as the numbering
+                // pass writes it into each record's id word.
+                let (member, id) = scene.entrant(career, index);
                 plans.push(company_plan(
                     member,
                     &slot.place,
                     MANAGER_ROLE,
-                    u32::try_from(index).unwrap_or(0),
+                    id,
                     now_ms,
                     act_grace_ms,
                 ));
@@ -627,9 +742,10 @@ fn draw_end_screen(
 }
 
 /// Stands the first round's bodies once the level is loaded and the player
-/// is there.
+/// is there; in a spectated match (no entrant is the player's) once the
+/// player is gone (`crate::save_live`'s bench).
 #[allow(clippy::too_many_arguments)]
-fn stand_first_round(
+pub(crate) fn stand_first_round(
     scene: Option<ResMut<ArenaScene>>,
     arena: Option<ResMut<ArenaMatch>>,
     career: Option<Res<crate::hub_windows::ArenaCareer>>,
@@ -643,7 +759,14 @@ fn stand_first_round(
     let Some(mut scene) = scene else {
         return;
     };
-    if scene.placed || loading.is_some() || !building.is_empty() || players.is_empty() {
+    // The player's own entry waits for the player's body; a spectated
+    // match waits until the bench has taken it away.
+    let player_ready = if scene.player_entry.is_some() {
+        !players.is_empty()
+    } else {
+        players.is_empty()
+    };
+    if scene.placed || loading.is_some() || !building.is_empty() || !player_ready {
         return;
     }
     if !levels
@@ -861,18 +984,12 @@ fn stand_next_round(
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
     if let NextRound::Reserve(index) = fight.company {
-        let member = career.and_then(|career| {
-            career
-                .company
-                .roster
-                .get(index.saturating_sub(1))
-                .map(|member| (member.name.as_str(), member.health))
-        });
+        let (member, id) = scene.entrant(career, index);
         let body = company_plan(
             member,
             &ours,
             MANAGER_ROLE,
-            u32::try_from(index).unwrap_or(0),
+            id,
             now,
             MATCH_ACT_GRACE_MS,
         );
@@ -955,18 +1072,12 @@ fn stand_bracket_round(
             RaisedBody::Company {
                 role, act_at_ms, ..
             } => {
-                let member = career.and_then(|career| {
-                    career
-                        .company
-                        .roster
-                        .get(fighter.index.saturating_sub(1))
-                        .map(|member| (member.name.as_str(), member.health))
-                });
+                let (member, id) = scene.entrant(career, fighter.index);
                 let body = company_plan(
                     member,
                     &place,
                     role,
-                    u32::try_from(fighter.index).unwrap_or(0),
+                    id,
                     0,
                     act_at_ms,
                 );
@@ -1319,6 +1430,49 @@ mod tests {
             plans[1].at,
             Vec3::from_array(our_place(spawn).position) / 100.0
         );
+    }
+
+    /// A spectated fighter duels the nearest living fighter of another
+    /// side: the company's bodies are one side, each other team another.
+    #[test]
+    fn a_spectated_fighter_duels_the_nearest_other_side() {
+        let e = |n| Entity::from_raw_u32(n).unwrap();
+        let rows = [
+            (e(1), 1, true, true, Vec3::ZERO),
+            (e(2), 1, true, true, Vec3::X),
+            (e(3), 2, false, true, Vec3::X * 5.0),
+            (e(4), 3, false, false, Vec3::X * 0.5),
+            (e(5), 3, false, true, Vec3::X * 9.0),
+        ];
+        // A company body takes the nearest living opponent, not its fellow
+        // or the dead one.
+        assert_eq!(spectated_foe((e(1), 1, true, Vec3::ZERO), &rows), Some(e(3)));
+        // An opponent takes another team's fighter, the company's or a rival.
+        assert_eq!(spectated_foe((e(5), 3, false, Vec3::X * 9.0), &rows), Some(e(3)));
+        assert_eq!(spectated_foe((e(3), 2, false, Vec3::X * 5.0), &rows), Some(e(2)));
+        assert_eq!(spectated_foe((e(1), 1, true, Vec3::ZERO), &rows[..2]), None);
+    }
+
+    /// A company entry is the lineup's pool slot: its member and its id
+    /// come from the participant list, the manager from slot 0.
+    #[test]
+    fn a_company_entry_is_its_lineup_slot() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.player.name = "Boss".into();
+        career.player.health = 60_000;
+        for (name, health) in [("Ash", 40_000), ("Bram", 50_000)] {
+            career.company.roster.push(crate::career::Member {
+                name: name.into(),
+                health,
+                ..career.player.clone()
+            });
+        }
+        let scene = scene().with_entrants(vec![2, 0]);
+        assert_eq!(scene.entrant(Some(&career), 0), (Some(("Bram", 50_000)), 2));
+        assert_eq!(scene.entrant(Some(&career), 1), (Some(("Boss", 60_000)), 0));
+        // Past the list (a command-line match) the entry is its own slot.
+        assert_eq!(scene.entrant(Some(&career), 2), (Some(("Bram", 50_000)), 2));
+        assert_eq!(scene.entrant(None, 0), (None, 2));
     }
 
     #[test]
