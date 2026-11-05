@@ -3653,7 +3653,7 @@ Opening the divination reading SHALL load its card sheet `divcardsa1.rfi` into t
 - **THEN** the reading opens with argument 0 and its cards are drawn
 
 ### Requirement: Trade window item cards
-A right press over an item of the trade window's stock or buy basket SHALL ask for that item's card with the flags `0x80000000` (the card then shows its whole value), and over an item of the player's pack or sell basket with no flags (a quarter of its value); the card SHALL carry the item's description phrase. The item SHALL be the top-most icon under the pointer, as drawn. A press over the shown card SHALL be the card's own. The right release that follows either SHALL NOT close the trade window.
+A right press over an item of the trade window's stock or buy basket SHALL ask for that item's card with the flags `0x80000000` (the card then shows its whole value), and over an item of the player's pack or sell basket with no flags (a quarter of its value); the card SHALL carry the item's description phrase. The item SHALL be the top-most icon under the pointer, as drawn. A press over the shown card SHALL be the card's own. The following right release SHALL NOT close the window.
 
 #### Scenario: A stock item's card
 - **WHEN** the player right-clicks a shop copy of value 215 in the stock
