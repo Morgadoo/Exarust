@@ -463,8 +463,17 @@ hand-backs run behind the transition screen; Spirit Form's wraith body
 (built by the viewer) takes the player, the powers and the list and gives
 them back; a blow on a body with the handover bit ends its Spirit Form or
 Control Mind; and the lists are fed to the perception as `MindPowers`. The
-other Mind classes' ticks, the spirit screen's draw and the cast sounds
-are not wired.
+walk also ticks and expires the other classes (Sense Minds and Mask Mind,
+instant and persistent, Confusion and Enrage with their status bits,
+Trust and Suspicion, Loyalty and Command Dead with their markers' unlinks
+and re-arms), and the enraged bit is fed to the contact integration. The
+pick skips a body wearing a mind ward and, without Sense Minds, asks the
+level's light-reach query; the dead powers pick with corpses allowed. The
+casts play their sounds; Spirit Form fades its realm music in and out, and
+its screen drives the post-processing's desaturation. The spirit screen's
+two scene-environment values, its noise texture, a Command Dead body's
+lying down and a physical wraith (a legless, hovering body the balance
+cannot carry yet; the spirit does not walk) are not in.
 
 The small effect nodes (`effects`) are in, on the original's game clock
 in whole milliseconds: a level portal marker (the `0x3DD0E004` emitter

@@ -446,9 +446,13 @@ cost, which the load then takes three quarters of with the technique.
 
 What the Mind domain shows is in `exa_game::mind::sight`:
 
-- **Target pick**: a character on screen, not the player, not hidden (rules
-  bit 0x10), not collapsed unless the dead powers ask, seen by the player's
-  view unless Sense Minds runs, within `height·zoom·0.5·40/depth` pixels of
+- **Target pick**: a character on screen, not the player, not wearing a
+  mind ward (the armour pass sets the body's rules bit 0x10 with its masked
+  bit), not collapsed unless the dead powers ask, seen by the player's view
+  unless Sense Minds runs (the level's light-reach query, not a ray: the
+  same room, or a door link of one room into the other's cell whose door
+  point lies within reach of it, through an open door; yes without a room
+  grid), within `height·zoom·0.5·40/depth` pixels of
   the pointer (the desk's pointer position; an unordered compare passes);
   the nearest share wins.
 - **Overlay**: a start registers its frame hook when off, shows it for the
@@ -510,8 +514,47 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   0.001, a second cast, the bar's Use or a hit on the body) the handover
   bit clears, the spirit screen fades over 1.2 s and the transition screen
   opens; at black the body takes the focus, reserve and list back and the
-  spirit leaves. The wraith has no physical frame in Exarust, so the
-  spirit does not walk.
+  spirit leaves. The original places the spirit as a level's character is
+  (a fresh record of profession 0xE00 taking five of the caster's record
+  fields, placed 60 cm out through the scene's character placement), so
+  the wraith gets the one physical builder's body: its model's twelve upper
+  parts (pelvis to head, no legs, and a robe's cloth marker) and its race's
+  hovering feet (one probe under the pelvis). Exarust's balance, lift and
+  pins need two legs, so the wraith is still built without a physical body
+  and the spirit does not walk.
+- **The spirit screen** (the screen's frame hook, on the real clock): its
+  value charges over 1.2 s, holds at 1 and, when the form ends, fades over
+  1.2 s. While it charges or holds, `s = 1 − (1 − v)²` is the final
+  post-processing pass's desaturation (`Desat`), and two
+  scene-environment values the screen saved when it was built follow it (a
+  colour times `1 − s`, and a value blended toward 1000; not identified, not
+  applied); fading, the desaturation stays and only the second value
+  follows `1000·v`. The screen's stop, at the way home's black, puts the
+  desaturation back to 0 and the saved values back. Its 512² noise picture
+  is uploaded each frame to a texture the post processor holds, which the
+  final pass's program declares and never samples.
+- **Sounds**: a cast plays its row's sound at the listener (unattenuated,
+  on the interface bus, flags 0x4060, pitch 1); Spirit Form's cast plays the
+  screen's `ThmMnd_B02` at 0.2 and fades `Msc_SprtRealm` in over the level's
+  track (0.1, 0.15 with the music option), and its end plays `ThmMnd_E02`
+  at 0.1 and fades the overlay out.
+- **The other classes' walk** (event 0 each tick): the instant Sense Minds
+  answers 4 once its end passes and 2 two seconds later; the instant Mask
+  Mind keeps the masked bit `0x1_0000` 15 s (its inner mask fading from
+  10 s) and clears it; the persistent Sense Minds and Mask Mind run until
+  ended (the mask setting its bit every tick) and give their focus back;
+  Confusion and Enrage clear the confused `0x4_0000` or enraged `0x8_0000`
+  bit after 15 s (unsigned elapsed time on the scene clock); Trust and
+  Suspicion end after 20 s (signed); Loyalty's and Command Dead's casters
+  run from the cast (their ready state is a save's relink) and their end
+  ends the target's marker (Command Dead also lays the raised body down);
+  Loyalty's marker counts its ticks (its strength follows the relation
+  after 800) and its end ends the caster's power, re-arms the AI and plays
+  `ThmMnd_E01` at 0.15; Command Dead's marker's end ends the caster's power
+  and re-arms the AI. The enraged bit is the contact integration's marked
+  body (hostility follows the soothe term); Confusion's id is the
+  perception's frenzy, Trust's marker (its caster in the charm's word) its
+  charm toward the caster, Suspicion's its lowered attitude.
 - **The hit's break**: a blow on a body not down, whose AI is not set
   aside and whose status has the handover bit ends the Spirit Form it is
   the body of, else the Control Mind it runs.

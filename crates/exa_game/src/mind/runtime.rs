@@ -83,7 +83,7 @@ use super::{SpiritForm, step_spirit_form};
 use crate::player::{Player, PlayerBody};
 use crate::thaum::cast::PowerCaster;
 use crate::thaum::casting::CastBody;
-use crate::thaum::power::mind::Possession;
+use crate::thaum::power::mind::{CONFUSED, ENRAGED, MASKED, Possession};
 use crate::thaum::power::{ENDING, HANDED_OVER, IN_CONTROL, SPIRIT_DISTANCE};
 
 /// The status bits the spirit body carries.
@@ -102,6 +102,9 @@ const BREAK_CONTROL: u32 = 0x10c;
 /// The id of Sense Minds under the pick's 0xffff mask: a body running it
 /// picks without the line-of-sight test.
 const SENSE_LOW: u32 = 0x101;
+/// The rules bit the mind pick skips: the armour pass sets it on a body
+/// wearing a mind ward.
+pub const WARD_RULE: u32 = 0x10;
 
 /// The player's two bodies, as the original keeps them: the body the player
 /// left (the caster of a running Control Mind or Spirit Form) and the
@@ -173,6 +176,11 @@ pub struct SpiritBodyAsked {
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MindPick(pub Option<Entity>);
 
+/// The body the dead powers' pick found this frame (collapsed bodies
+/// allowed): Raise Dead and Command Dead cast at it.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MindDeadPick(pub Option<Entity>);
+
 /// A screen point the mind pick reads instead of the window's cursor (the
 /// debug cast aims it at a character).
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
@@ -186,9 +194,12 @@ impl Plugin for MindRuntimePlugin {
         app.init_resource::<MindControl>()
             .init_resource::<MindFadeOverlay>()
             .init_resource::<MindPick>()
+            .init_resource::<MindDeadPick>()
             .init_resource::<MindAim>()
             .add_message::<SpiritBodyAsked>()
             .add_message::<BlowNoticed>()
+            .add_message::<exa_audio::PointSounded>()
+            .add_message::<exa_audio::MusicOverlay>()
             .add_systems(
                 Update,
                 (
@@ -206,6 +217,7 @@ impl Plugin for MindRuntimePlugin {
                 FixedUpdate,
                 (
                     feed_mind_powers.before(exa_ai::BrainTick),
+                    feed_mind_status.before(exa_ai::BrainTick),
                     take_broken_holds.after(exa_ai::BrainTick),
                     tick_minds
                         .after(exa_physics::body::BodySystems)
@@ -342,27 +354,54 @@ pub fn spirit_point(feet: Vec3, yaw: f32) -> Vec3 {
     feet + Vec3::new(yaw.sin(), 0.0, yaw.cos()) * (SPIRIT_DISTANCE / 100.0)
 }
 
-/// Each frame, the body the mind pick ([`pick_target`]) finds under the
-/// pointer (the window's, or the debug cast's aim), the camera's vertical
-/// projection scale as the zoom and the depth in cm. Every character counts
-/// as an AI of kind 1 with its rules bit clear, and the line of sight is
-/// taken as clear [guess: the original asks the player's scene a ray from
-/// eye to eye, which the running game has no query for].
-#[allow(clippy::type_complexity)]
+/// Whether the player's view sees a body, as the original's mind pick asks
+/// it: the level's light-reach query between the two bodies' places (the
+/// same room, or a door link of one room into the other's cell whose door
+/// point lies within reach of it, through an open door). Without a level
+/// room grid the original's default answer is yes.
+pub fn view_sees(rooms: Option<&exa_world::room_view::LevelRooms>, from: Vec3, to: Vec3) -> bool {
+    let Some(level) = rooms else {
+        return true;
+    };
+    level
+        .rooms
+        .light_reach(from.xz(), to.xz(), |link| level.tracker.is_open(link))
+}
+
+/// Each frame, the bodies the mind pick ([`pick_target`]) finds under the
+/// pointer (the window's, or the debug cast's aim), with and without the
+/// collapsed, the camera's vertical projection scale as the zoom and the
+/// depth in cm. Every character counts as an AI of kind 1; a body wearing a
+/// mind ward carries the rules bit `0x10` (the armour pass sets it with the
+/// masked bit) and is never picked; without Sense Minds the player's view
+/// must see it ([`view_sees`]).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn pick_mind_target(
     mut pick: ResMut<MindPick>,
+    mut dead_pick: ResMut<MindDeadPick>,
     aim: Res<MindAim>,
+    rooms: Option<Res<exa_world::room_view::LevelRooms>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform, &Projection), With<crate::player::ChaseCamera>>,
-    players: Query<(Entity, Option<&MindBody>), With<PlayerBody>>,
-    bodies: Query<(Entity, &GlobalTransform, &Condition), (With<Fighter>, With<MindBody>)>,
+    players: Query<(Entity, &GlobalTransform, Option<&MindBody>), With<PlayerBody>>,
+    bodies: Query<
+        (
+            Entity,
+            &GlobalTransform,
+            &Condition,
+            Has<exa_ai::brain::MindWarded>,
+        ),
+        (With<Fighter>, With<MindBody>),
+    >,
 ) {
     let Ok((camera, eye, projection)) = cameras.single() else {
         pick.0 = None;
+        dead_pick.0 = None;
         return;
     };
-    let Some((player, mind)) = players.iter().next() else {
+    let Some((player, player_at, mind)) = players.iter().next() else {
         pick.0 = None;
+        dead_pick.0 = None;
         return;
     };
     let cursor = match aim.0 {
@@ -371,6 +410,7 @@ fn pick_mind_target(
     };
     let Some(cursor) = cursor else {
         pick.0 = None;
+        dead_pick.0 = None;
         return;
     };
     let height = camera.logical_viewport_size().map_or(720.0, |size| size.y);
@@ -382,7 +422,7 @@ fn pick_mind_target(
     let candidates: Vec<PickCandidate> = bodies
         .iter()
         .filter(|(entity, ..)| *entity != player)
-        .filter_map(|(entity, at, condition)| {
+        .filter_map(|(entity, at, condition, warded)| {
             let point = at.translation();
             let screen = camera.world_to_viewport(eye, point).ok()?;
             // The depth in cm, as the radius's 40 is.
@@ -390,9 +430,9 @@ fn pick_mind_target(
             (depth > 0.0).then_some(PickCandidate {
                 id: body_id(entity),
                 ai_kind: 1,
-                rules: 0,
+                rules: if warded { WARD_RULE } else { 0 },
                 condition: condition.0,
-                visible: true,
+                visible: view_sees(rooms.as_deref(), player_at.translation(), point),
                 screen: [screen.x, screen.y, depth],
             })
         })
@@ -402,13 +442,14 @@ fn pick_mind_target(
         height: height as i32,
         zoom,
     };
-    let picked = pick_target(&candidates, &view, false, sense);
-    pick.0 = picked.and_then(|id| {
+    let entity_of = |id: BodyId| {
         bodies
             .iter()
             .map(|(entity, ..)| entity)
             .find(|&entity| body_id(entity) == id)
-    });
+    };
+    pick.0 = pick_target(&candidates, &view, false, sense).and_then(entity_of);
+    dead_pick.0 = pick_target(&candidates, &view, true, sense).and_then(entity_of);
 }
 
 /// What the power walk asks of the world after a body's tick.
@@ -433,31 +474,106 @@ enum MindAction {
         spirit: Entity,
         body: Option<BodyId>,
     },
+    /// A caster's end unlinks its target: the first entry `id` on body
+    /// `on` whose caster is `caster` ends.
+    EndMarker {
+        on: BodyId,
+        id: u32,
+        caster: BodyId,
+    },
+    /// A marker's end ends its caster's power: the first entry `id` on body
+    /// `on` whose target is `target` ends.
+    EndCasterPower {
+        on: BodyId,
+        id: u32,
+        target: BodyId,
+    },
+    /// The body's AI re-arms its behaviour (the original's behaviour byte).
+    Rearm(Entity),
+    /// A Command Dead caster's end lays its raised body down again.
+    LayDown(BodyId),
 }
 
-/// The Mind powers' walk, each body tick: Control Mind's binding, the
-/// possession marker and Spirit Form (the other Mind classes keep their
-/// state; their ticks are not wired). A power that answers bit 2 leaves
-/// the list.
-#[allow(clippy::type_complexity)]
+/// The status bits the timed Mind classes own on a body.
+const MIND_STATUS_BITS: u32 = MASKED | CONFUSED | ENRAGED;
+
+/// What one walk over a body's list ended, for the log.
+fn class_name(class: &MindClass) -> &'static str {
+    match class {
+        MindClass::SenseInstant(_) => "Sense Minds",
+        MindClass::Sense(_) => "Sense Minds (persistent)",
+        MindClass::MaskInstant(_) => "Mask Mind",
+        MindClass::Mask(_) => "Mask Mind (persistent)",
+        MindClass::Confusion(_) => "Confusion",
+        MindClass::Enrage(_) => "Enrage",
+        MindClass::Trust(_) => "Trust",
+        MindClass::Suspicion(_) => "Suspicion",
+        MindClass::Loyalty(_) => "Loyalty",
+        MindClass::LoyaltyMark(_) => "Loyalty's marker",
+        MindClass::CommandDead(_) => "Command Dead",
+        MindClass::CommandDeadMark(_) => "Command Dead's marker",
+        MindClass::ControlMind(_) => "Control Mind",
+        MindClass::Possession(_) => "the possession marker",
+        MindClass::Spirit(_) => "Spirit Form",
+        MindClass::Other(_) => "a power",
+    }
+}
+
+/// The Mind powers' walk, each body tick, as the original's list walk asks
+/// each entry's control with event 0:
+///
+/// - **Control Mind**, the possession marker and **Spirit Form**: the
+///   binding, the handover and the form's drain (above).
+/// - **Sense Minds**: the instant one answers 4 when its end passes (the
+///   overlay's fade starts) and 2 two seconds later (on the real clock);
+///   the persistent one runs until it is ended and gives its focus back.
+/// - **Mask Mind**: the instant one keeps the masked bit for 15 s and
+///   clears it as it expires; the persistent one sets the bit every tick
+///   and clears it at its end, giving its focus back.
+/// - **Confusion** and **Enrage**: 15 s on the scene clock (unsigned
+///   elapsed time), then the confused (`0x4_0000`) or enraged
+///   (`0x8_0000`) bit clears on the body that carries the effect.
+/// - **Trust** and **Suspicion**: 20 s (signed 64-bit elapsed time), then
+///   the marker ends.
+/// - **Loyalty**: the caster's power waits for its end, then ends the
+///   target's marker and gives its focus back; the marker counts its ticks
+///   (its strength follows the relation after 800), and at its end ends
+///   the caster's power, re-arms its AI and plays `ThmMnd_E01` at 0.15.
+/// - **Command Dead**: the caster's end ends the raised body's marker and
+///   lays the body down again; the marker's end ends the caster's power and
+///   re-arms its AI.
+///
+/// A power that answers bit 2 leaves the list. Each body's three status
+/// bits the walk owns are kept on the power caster's body (when it has one)
+/// and copied back to its mind.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn tick_minds(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
     mut minds: Query<(Entity, &mut MindBody, Option<&mut PowerCaster>)>,
     conditions: Query<&Condition>,
+    mut sounds: MessageWriter<exa_audio::PointSounded>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, _)| (m.id, e)).collect();
     let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
     let mut actions = Vec::new();
-    for (entity, mut mind, caster) in &mut minds {
+    for (entity, mut mind, mut caster) in &mut minds {
         if mind.powers.is_empty() {
             continue;
         }
         let mind = &mut *mind;
+        let own_id = mind.id;
+        // The casts write a target's bits on its mind; its caster's body is
+        // the word the walk reads.
+        if let Some(caster) = caster.as_deref_mut() {
+            caster.body.status_bits |= mind.cast.status_bits & MIND_STATUS_BITS;
+        }
         let mut powers = std::mem::take(&mut mind.powers);
-        let body = body_of(mind, caster.map(Mut::into_inner));
+        let body = body_of(mind, caster.as_deref_mut());
         powers.retain_mut(|power| {
+            let caster_id = power.caster;
+            let target_id = power.target;
             let result = match &mut power.class {
                 MindClass::ControlMind(control) => {
                     let target = control.target.and_then(entity_of);
@@ -508,13 +624,102 @@ pub fn tick_minds(
                     }
                     step.result
                 }
-                _ => 0,
+                MindClass::SenseInstant(sense) => {
+                    let result = sense.control(now);
+                    if result == 4 {
+                        info!("sense minds: {entity:?}'s sense passes its end; the overlay fades");
+                    }
+                    result
+                }
+                MindClass::Sense(sense) => sense.control(0, body),
+                MindClass::MaskInstant(mask) => {
+                    let shown = mask.step(now, body);
+                    if shown.code == 4 {
+                        info!("mask mind: {entity:?}'s inner mask starts to fade");
+                    }
+                    shown.code
+                }
+                MindClass::Mask(mask) => mask.control(0, body),
+                MindClass::Confusion(timed) | MindClass::Enrage(timed) => {
+                    let step = timed.control(now, body.status_bits);
+                    body.status_bits = step.flags;
+                    step.result
+                }
+                MindClass::Trust(timed) | MindClass::Suspicion(timed) => timed.control(now),
+                MindClass::Loyalty(loyalty) => {
+                    let step = loyalty.control(0, None, body);
+                    if step.unlink
+                        && let Some(target) = loyalty.target.or(target_id)
+                    {
+                        actions.push(MindAction::EndMarker {
+                            on: target,
+                            id: casts::LOYALTY_MARK,
+                            caster: own_id,
+                        });
+                    }
+                    step.result
+                }
+                MindClass::LoyaltyMark(mark) => {
+                    let result = mark.control(0, 0.0);
+                    if result & 2 != 0 {
+                        if let Some(caster) = mark.caster.or(caster_id) {
+                            actions.push(MindAction::EndCasterPower {
+                                on: caster,
+                                id: casts::LOYALTY,
+                                target: own_id,
+                            });
+                        }
+                        actions.push(MindAction::Rearm(entity));
+                        play_mind_sound(&mut sounds, casts::END_SOUND);
+                    }
+                    result
+                }
+                MindClass::CommandDead(command) => {
+                    let step = command.control(0, None, body);
+                    if step.unlink
+                        && let Some(target) = command.target.or(target_id)
+                    {
+                        actions.push(MindAction::EndMarker {
+                            on: target,
+                            id: casts::COMMAND_DEAD_MARK,
+                            caster: own_id,
+                        });
+                        actions.push(MindAction::LayDown(target));
+                    }
+                    step.result
+                }
+                MindClass::CommandDeadMark(mark) => {
+                    let (result, ended) = mark.control(0);
+                    if ended {
+                        if let Some(caster) = caster_id {
+                            actions.push(MindAction::EndCasterPower {
+                                on: caster,
+                                id: casts::COMMAND_DEAD,
+                                target: own_id,
+                            });
+                        }
+                        actions.push(MindAction::Rearm(entity));
+                    }
+                    result
+                }
+                MindClass::Other(_) => 0,
             };
+            if result & 2 != 0 {
+                info!(
+                    "mind: {} {:#x} on {entity:?} ends at {now} ms",
+                    class_name(&power.class),
+                    power.id
+                );
+            }
             result & 2 == 0
         });
         // A cast during the walk may have added entries; keep them after.
         powers.append(&mut mind.powers);
         mind.powers = powers;
+        if let Some(caster) = caster.as_deref() {
+            mind.cast.status_bits = (mind.cast.status_bits & !MIND_STATUS_BITS)
+                | (caster.body.status_bits & MIND_STATUS_BITS);
+        }
     }
     for action in actions {
         let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
@@ -541,8 +746,68 @@ pub fn tick_minds(
                 let body = body.and_then(entity_of);
                 commands.queue(move |world: &mut World| spirit_ends(world, spirit, body));
             }
+            MindAction::EndMarker { on, id, caster } => {
+                if let Some(on) = entity_of(on) {
+                    commands.queue(move |world: &mut World| {
+                        end_entry(world, on, id, |p| p.caster == Some(caster));
+                    });
+                }
+            }
+            MindAction::EndCasterPower { on, id, target } => {
+                if let Some(on) = entity_of(on) {
+                    commands.queue(move |world: &mut World| {
+                        end_entry(world, on, id, |p| p.target == Some(target));
+                    });
+                }
+            }
+            MindAction::Rearm(body) => {
+                commands.queue(move |world: &mut World| {
+                    if let Some(mut mind) = world.get_mut::<MindBody>(body) {
+                        mind.ai.rearm = true;
+                    }
+                    info!("mind: {body:?}'s AI re-arms its behaviour");
+                });
+            }
+            MindAction::LayDown(target) => {
+                let target = entity_of(target);
+                info!(
+                    "command dead: the raised body {target:?} lies down again \
+                     [not wired: the running game raises no corpse]"
+                );
+            }
         }
     }
+}
+
+/// Ends the first entry `id` on `body` that `matches` (the original's
+/// unlink walks stop at the first match).
+fn end_entry(world: &mut World, body: Entity, id: u32, matches: impl Fn(&MindPower) -> bool) {
+    let Some(mut mind) = world.get_mut::<MindBody>(body) else {
+        return;
+    };
+    if let Some(power) = mind.powers.iter_mut().find(|p| p.id == id && matches(p)) {
+        power.end();
+        info!("mind: {id:#x} on {body:?} is told to end");
+    }
+}
+
+/// A Mind sound as the original plays its cast and end sounds: at the
+/// listener, unattenuated, on the interface bus (flags `0x4060`), pitch 1.
+pub const MIND_SOUND_FLAGS: u32 = 0x4060;
+
+/// Plays a Mind sound.
+pub fn play_mind_sound(
+    sounds: &mut MessageWriter<exa_audio::PointSounded>,
+    sound: casts::MindSound,
+) {
+    info!("mind sound: {} at volume {}", sound.name, sound.volume);
+    sounds.write(exa_audio::PointSounded {
+        name: sound.name.to_string(),
+        position: Vec3::ZERO,
+        volume: sound.volume,
+        pitch: 1.0,
+        flags: MIND_SOUND_FLAGS,
+    });
 }
 
 /// Ends the first power with exactly this id on a body, as the original's
@@ -793,8 +1058,8 @@ pub fn adopt_spirit(world: &mut World, body: Entity, spirit: Entity) {
     let mut control = world.resource_mut::<MindControl>();
     control.held = Some(body);
     let now = world
-        .get_resource::<BodyTicks>()
-        .map_or(0, |t| t.millis() as i64);
+        .get_resource::<Time<Real>>()
+        .map_or(0, |t| i64::from(crate::splash::clock_ms(t)));
     world.resource_mut::<MindControl>().spirit_screen = Some(SpiritForm {
         state: 3,
         value: 0.0,
@@ -812,18 +1077,28 @@ fn spirit_ends(world: &mut World, spirit: Entity, body: Option<Entity>) {
     };
     set_status(world, body, |s| s & !HANDED_OVER);
     let now = world
-        .get_resource::<BodyTicks>()
-        .map_or(0, |t| t.millis() as i64);
+        .get_resource::<Time<Real>>()
+        .map_or(0, |t| i64::from(crate::splash::clock_ms(t)));
     if let Some(screen) = world.resource_mut::<MindControl>().spirit_screen.as_mut() {
         screen.state = 2;
         screen.stamp = now;
     }
-    info!(
-        "spirit form ends: {} {} (volume {})",
-        "the sound",
-        crate::thaum::power::mind::SPIRIT_END_SOUND,
-        crate::thaum::power::mind::SPIRIT_END_VOLUME
-    );
+    // The screen's end plays `ThmMnd_E02` at 0.1 and fades the overlay
+    // music out.
+    let sound = casts::MindSound {
+        name: crate::thaum::power::mind::SPIRIT_END_SOUND,
+        volume: crate::thaum::power::mind::SPIRIT_END_VOLUME,
+    };
+    info!("mind sound: {} at volume {}", sound.name, sound.volume);
+    world.write_message(exa_audio::PointSounded {
+        name: sound.name.to_string(),
+        position: Vec3::ZERO,
+        volume: sound.volume,
+        pitch: 1.0,
+        flags: MIND_SOUND_FLAGS,
+    });
+    world.write_message(exa_audio::MusicOverlay::Out);
+    info!("spirit form ends: the spirit screen fades and the spirit music fades out");
     begin_fade(world, FadeAction::SpiritHome { spirit, body });
 }
 
@@ -865,27 +1140,69 @@ pub fn spirit_home(world: &mut World, spirit: Entity, body: Entity) {
     info!("spirit form: the player is home in {body:?}; the spirit {spirit:?} leaves");
 }
 
-/// Steps the spirit screen's value on the body clock (its strength and fade
-/// have no draw yet; they are logged at debug level).
-fn step_spirit_screen(mut control: ResMut<MindControl>, ticks: Option<Res<BodyTicks>>) {
-    let now = ticks.as_deref().map_or(0, |t| t.millis() as i64);
+/// The spirit screen's frame hook, on the real clock: the value charges,
+/// holds or fades ([`step_spirit_form`]) and, while it charges or holds,
+/// its eased value `1 − (1 − v)²` is the post-processing's desaturation
+/// (the final pass's `Desat`: the scene goes grey toward its green
+/// channel). A fading screen leaves the desaturation where the hold left
+/// it; the screen's stop, at the way home's black, puts it back to 0.
+///
+/// The hook also writes two scene-environment values the original saved
+/// when it built the screen (a colour scaled by `1 − s` and a value blended
+/// toward 1000 by the strength), and uploads its 512² noise picture to a
+/// texture the post processor holds; neither is drawn here (the fields are
+/// not identified [guess: the fog's colour and span]; the final pass's
+/// program declares the texture and never samples it).
+fn step_spirit_screen(
+    mut control: ResMut<MindControl>,
+    real: Option<Res<Time<Real>>>,
+    mut posts: Query<&mut exa_render::post::ExaPost>,
+    mut shown: Local<bool>,
+    mut last_log: Local<u32>,
+) {
+    let now = real.as_deref().map_or(0, crate::splash::clock_ms);
     let Some(screen) = control.spirit_screen.as_mut() else {
+        if *shown {
+            *shown = false;
+            for mut post in &mut posts {
+                post.desaturate = 0.0;
+            }
+            info!("spirit screen: stopped, desaturation 0");
+        }
         return;
     };
-    let step = step_spirit_form(screen, now, 0.0);
-    debug!(
-        "spirit screen: state {} value {:.3} strength {:.1} fade {:?}",
-        step.state, step.value, step.strength, step.screen
-    );
+    let step = step_spirit_form(screen, i64::from(now), 0.0);
+    if let Some(desat) = step.screen {
+        *shown = true;
+        for mut post in &mut posts {
+            post.desaturate = desat;
+        }
+    }
+    if now >= *last_log + 250 {
+        *last_log = now;
+        info!(
+            "spirit screen: state {} value {:.3} strength {:.1} desaturation {:?}",
+            step.state, step.value, step.strength, step.screen
+        );
+    }
 }
 
 /// While the player is out of its own body, once a second of body ticks:
 /// where the player's body and the held body stand (a trace for the runs
 /// that check the swap).
+#[allow(clippy::type_complexity)]
 fn log_mind_bodies(
     control: Res<MindControl>,
     ticks: Option<Res<BodyTicks>>,
-    players: Query<(Entity, &GlobalTransform), With<PlayerBody>>,
+    players: Query<
+        (
+            Entity,
+            &GlobalTransform,
+            Option<&exa_physics::body::Ragdoll>,
+            Option<&Locomotion>,
+        ),
+        With<PlayerBody>,
+    >,
     places: Query<&GlobalTransform>,
     mut last: Local<u64>,
 ) {
@@ -897,10 +1214,17 @@ fn log_mind_bodies(
         return;
     }
     *last = now;
-    for (player, at) in &players {
+    for (player, at, ragdoll, locomotion) in &players {
+        // The first part (the pelvis) is where a physical body really is.
+        let pelvis = ragdoll
+            .and_then(|r| r.parts.first())
+            .map(|p| p.transform().translation);
         info!(
-            "mind: tick {now}: the player's body {player:?} at {:.2?}, the held body {held:?} at {:.2?}",
+            "mind: tick {now}: the player's body {player:?} at {:.2?} (pelvis {:.2?}, {} parts, moving {:?}), the held body {held:?} at {:.2?}",
             at.translation(),
+            pelvis,
+            ragdoll.map_or(0, |r| r.parts.len()),
+            locomotion.map(|l| l.moving),
             places.get(held).map(GlobalTransform::translation).ok()
         );
     }
@@ -974,6 +1298,20 @@ fn feed_mind_powers(
     }
 }
 
+/// Before the brains' tick: the enraged bit of each body's status word is
+/// the contact integration's marked body (its contacts' hostility follows
+/// the soothe term instead of the attitude).
+fn feed_mind_status(mut brains: Query<(&MindBody, Option<&PowerCaster>, &mut Npc)>) {
+    for (mind, caster, mut npc) in &mut brains {
+        let status = caster.map_or(mind.cast.status_bits, |c| c.body.status_bits)
+            | (mind.cast.status_bits & MIND_STATUS_BITS);
+        let enraged = status & ENRAGED != 0;
+        if npc.integration.marked_body != enraged {
+            npc.integration.marked_body = enraged;
+        }
+    }
+}
+
 /// After the brains' tick: a hold the perception broke ends its power.
 fn take_broken_holds(mut minds: Query<(&mut MindBody, &MindPowers)>) {
     for (mut mind, powers) in &mut minds {
@@ -1024,7 +1362,196 @@ mod tests {
     fn world() -> World {
         let mut world = World::new();
         world.init_resource::<MindControl>();
+        world.init_resource::<Messages<exa_audio::PointSounded>>();
+        world.init_resource::<Messages<exa_audio::MusicOverlay>>();
         world
+    }
+
+    /// An app that runs the power walk at a body tick.
+    fn walk_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<MindControl>();
+        app.add_message::<exa_audio::PointSounded>();
+        app.add_systems(Update, tick_minds);
+        app
+    }
+
+    fn walk_at(app: &mut App, ticks: u64) {
+        app.world_mut().insert_resource(BodyTicks(ticks));
+        app.update();
+    }
+
+    fn cast_scene(now_ms: u32) -> MindScene {
+        MindScene {
+            now_ms,
+            real_ms: now_ms,
+            ..MindScene::default()
+        }
+    }
+
+    /// Casts a row from `caster` at `target` in the world.
+    fn cast_at(world: &mut World, id: u32, caster: Entity, target: Entity, now_ms: u32) -> i32 {
+        let row = *casts::mind_row(id).unwrap();
+        let mut a = world.get::<MindBody>(caster).unwrap().clone();
+        let mut b = world.get::<MindBody>(target).unwrap().clone();
+        let outcome = casts::mind_cast(&row, row.cost, &mut a, Some(&mut b), &cast_scene(now_ms));
+        *world.get_mut::<MindBody>(caster).unwrap() = a;
+        *world.get_mut::<MindBody>(target).unwrap() = b;
+        outcome.code
+    }
+
+    #[test]
+    fn confusion_and_enrage_expire_after_fifteen_seconds() {
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let target = character(app.world_mut(), false);
+        for id in [casts::CONFUSION, casts::ENRAGE] {
+            assert_eq!(
+                cast_at(app.world_mut(), id, caster, target, 0),
+                casts::STARTED
+            );
+        }
+        let bits = CONFUSED | ENRAGED;
+        // 15 000 ms is not past; the first tick after clears both bits.
+        walk_at(&mut app, 15_000 / 12);
+        let mind = app.world().get::<MindBody>(target).unwrap();
+        assert_eq!(mind.cast.status_bits & bits, bits);
+        assert_eq!(mind.powers.len(), 2);
+        walk_at(&mut app, 15_000 / 12 + 1);
+        let mind = app.world().get::<MindBody>(target).unwrap();
+        assert_eq!(mind.cast.status_bits & bits, 0);
+        assert!(mind.powers.is_empty());
+    }
+
+    #[test]
+    fn trust_and_suspicion_last_twenty_seconds() {
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let target = character(app.world_mut(), false);
+        app.world_mut()
+            .get_mut::<MindBody>(caster)
+            .unwrap()
+            .cast
+            .focus = 1.0;
+        assert_eq!(
+            cast_at(app.world_mut(), casts::TRUST, caster, target, 0),
+            casts::STARTED
+        );
+        assert_eq!(
+            cast_at(app.world_mut(), casts::SUSPICION, caster, target, 0),
+            casts::STARTED
+        );
+        let mind = app.world().get::<MindBody>(target).unwrap();
+        // The perception reads the trust marker's caster as the trusted body.
+        let trust = mind
+            .powers
+            .iter()
+            .find(|p| p.id == casts::TRUST_MARK)
+            .unwrap();
+        assert_eq!(trust.target, Some(body_id(caster)));
+        walk_at(&mut app, 20_000 / 12);
+        assert_eq!(app.world().get::<MindBody>(target).unwrap().powers.len(), 2);
+        walk_at(&mut app, 20_000 / 12 + 1);
+        assert!(
+            app.world()
+                .get::<MindBody>(target)
+                .unwrap()
+                .powers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_instant_mask_holds_its_bit_fifteen_seconds() {
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let other = character(app.world_mut(), false);
+        assert_eq!(
+            cast_at(app.world_mut(), casts::MASK, caster, other, 0),
+            casts::STARTED
+        );
+        walk_at(&mut app, 1);
+        let mind = app.world().get::<MindBody>(caster).unwrap();
+        assert_ne!(mind.cast.status_bits & MASKED, 0);
+        walk_at(&mut app, 15_012 / 12 + 1);
+        let mind = app.world().get::<MindBody>(caster).unwrap();
+        assert_eq!(mind.cast.status_bits & MASKED, 0);
+        assert!(mind.powers.is_empty());
+    }
+
+    #[test]
+    fn the_instant_sense_fades_two_seconds_past_its_end() {
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let other = character(app.world_mut(), false);
+        app.world_mut()
+            .get_mut::<MindBody>(caster)
+            .unwrap()
+            .cast
+            .focus = 1.0;
+        assert_eq!(
+            cast_at(app.world_mut(), casts::SENSE, caster, other, 0),
+            casts::STARTED
+        );
+        // Ends at 4000 ms; 4 answers once, then 2 past 6000 ms.
+        walk_at(&mut app, 4_008 / 12 + 1);
+        assert_eq!(app.world().get::<MindBody>(caster).unwrap().powers.len(), 1);
+        walk_at(&mut app, 6_000 / 12 + 1);
+        assert!(
+            app.world()
+                .get::<MindBody>(caster)
+                .unwrap()
+                .powers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn loyalty_runs_until_ended_and_unlinks_both_halves() {
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let target = character(app.world_mut(), false);
+        {
+            let mut mind = app.world_mut().get_mut::<MindBody>(caster).unwrap();
+            mind.cast.focus = 1.0;
+            mind.cast.slots = 3;
+        }
+        assert_eq!(
+            cast_at(app.world_mut(), casts::LOYALTY, caster, target, 0),
+            casts::STARTED
+        );
+        for tick in 1..100 {
+            walk_at(&mut app, tick);
+        }
+        // Running from the cast: no second marker is linked.
+        let marks = |app: &App| {
+            app.world()
+                .get::<MindBody>(target)
+                .unwrap()
+                .powers
+                .iter()
+                .filter(|p| p.id == casts::LOYALTY_MARK)
+                .count()
+        };
+        assert_eq!(marks(&app), 1);
+        assert_eq!(app.world().get::<MindBody>(caster).unwrap().powers.len(), 1);
+        // The marker's end ends the caster's power on the next walk.
+        {
+            let mut mind = app.world_mut().get_mut::<MindBody>(target).unwrap();
+            mind.ai.rearm = false;
+            mind.powers[0].end();
+        }
+        walk_at(&mut app, 100);
+        walk_at(&mut app, 101);
+        assert_eq!(marks(&app), 0);
+        assert!(
+            app.world()
+                .get::<MindBody>(caster)
+                .unwrap()
+                .powers
+                .is_empty()
+        );
+        assert!(app.world().get::<MindBody>(target).unwrap().ai.rearm);
     }
 
     /// A character: a root with a body under it.
@@ -1100,6 +1627,7 @@ mod tests {
     fn the_binding_hands_over_after_two_seconds() {
         let mut app = App::new();
         app.init_resource::<MindControl>();
+        app.add_message::<exa_audio::PointSounded>();
         app.add_systems(Update, tick_minds);
         let caster = character(app.world_mut(), true);
         let target = character(app.world_mut(), false);
