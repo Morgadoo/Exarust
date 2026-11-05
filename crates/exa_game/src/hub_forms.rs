@@ -987,12 +987,39 @@ pub struct HubArsenal {
     pub done: bool,
 }
 
+/// `--hub-stash id,...`: once the hub is entered, each id joins the hub
+/// stash as a stashed item does. A debug tool for the arena save's
+/// promotion; a new career's own stash is empty.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HubStash {
+    pub items: Vec<u32>,
+    pub done: bool,
+}
+
+/// Runs `--hub-stash` once, when the manager stands in the hub.
+pub fn hub_stash_on_load(
+    ask: Option<ResMut<HubStash>>,
+    hub: Res<crate::arena_hub_live::ArenaHub>,
+    stores: Option<ResMut<crate::save_live::ArenaStores>>,
+) {
+    let (Some(mut ask), Some(mut stores)) = (ask, stores) else {
+        return;
+    };
+    if ask.done || !hub.manager_placed {
+        return;
+    }
+    ask.done = true;
+    stores.stash.extend(ask.items.iter().copied());
+    info!("--hub-stash: the stash holds {:#x?}", stores.stash);
+}
+
 /// Runs `--hub-arsenal` once, when the shelf facts are read.
 pub fn hub_arsenal_on_load(
     ask: Option<ResMut<HubArsenal>>,
     hub: Res<crate::arena_hub_live::ArenaHub>,
     stores: Option<ResMut<crate::save_live::ArenaStores>>,
     kinds: Option<Res<crate::arsenal::ShelfKinds>>,
+    live: Option<Res<exa_assets::live_objects::LiveObjects>>,
 ) {
     let (Some(mut ask), Some(mut stores), Some(kinds)) = (ask, stores, kinds) else {
         return;
@@ -1005,7 +1032,14 @@ pub fn hub_arsenal_on_load(
         .items
         .iter()
         .map(|&item| {
-            let kind = kinds.kind(item);
+            // A level's or the world's own record is shelved by the
+            // template it was made from (the shelf facts are the
+            // templates').
+            let template = live
+                .as_ref()
+                .filter(|_| item & exa_formats::objdb::TAG_MASK != 0)
+                .map_or(item, |live| live.db().template_of(item));
+            let kind = kinds.kind(template);
             stores.arsenal.stow(item, kind, 0);
             (item, crate::arsenal::shelf_of(kind))
         })

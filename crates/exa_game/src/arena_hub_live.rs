@@ -177,6 +177,7 @@ impl Plugin for ArenaHubPlugin {
                     crate::hub_forms::open_hub_window_on_load,
                     crate::hub_forms::hub_employee_kit_on_load,
                     crate::hub_forms::hub_arsenal_on_load,
+                    crate::hub_forms::hub_stash_on_load,
                     crate::hub_forms::hub_form_input,
                     crate::loadout_kit::kit_input,
                     crate::loadout_kit::sync_kit,

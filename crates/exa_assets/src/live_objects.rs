@@ -164,15 +164,19 @@ impl LiveObjects {
     }
 
     /// The level's own database becomes the local tier, as the level
-    /// reader's local-database chunk replaces it.
+    /// reader's local-database chunk replaces it, and the whole tier is then
+    /// migrated from its templates: every level import runs the importer's
+    /// hook, which is the tier migration for a save's own section and, for
+    /// the archive's file, the same migration before the container fill.
     pub fn load_level(&mut self, name: &str, records: Option<Store>, strings: Option<Library>) {
         let records = records.unwrap_or_default();
         let count = records.len();
         let last = records.entries().last().map_or(0, |entry| entry.id);
-        self.db_mut()
-            .load_local(records, strings.unwrap_or_default());
+        let db = self.db_mut();
+        db.load_local(records, strings.unwrap_or_default());
+        let migrated = db.migrate_tier(Tier::Local);
         info!(
-            "object database: level {name} local tier {count} records (ids 1..={last}), next local id {:#x}",
+            "object database: level {name} local tier {count} records (ids 1..={last}, {migrated} migrated), next local id {:#x}",
             self.db.first_free_id(Tier::Local) | exa_formats::objdb::LOCAL
         );
     }

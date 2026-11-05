@@ -725,13 +725,14 @@ mod tests {
         ogre[FLAGS2..FLAGS2 + 4].copy_from_slice(&REGENERATES_RED_TOO.to_le_bytes());
         let mut file = Vec::new();
         file.extend_from_slice(&0xDBCB_0D00u32.to_le_bytes());
-        file.extend_from_slice(&32u32.to_le_bytes());
+        file.extend_from_slice(&48u32.to_le_bytes());
         for (i, id) in [1u32, 2].iter().enumerate() {
             file.extend_from_slice(&id.to_le_bytes());
             file.extend_from_slice(&0u32.to_le_bytes());
             file.extend_from_slice(&((i * RECORD) as u32).to_le_bytes());
             file.extend_from_slice(&(RECORD as u32).to_le_bytes());
         }
+        file.extend_from_slice(&[0; 16]);
         file.extend_from_slice(&suited);
         file.extend_from_slice(&ogre);
         let races = parse(&file).unwrap();
@@ -747,13 +748,14 @@ mod tests {
         ];
         let mut file = Vec::new();
         file.extend_from_slice(&0xDBCB_0D00u32.to_le_bytes());
-        file.extend_from_slice(&32u32.to_le_bytes());
+        file.extend_from_slice(&48u32.to_le_bytes());
         for (i, id) in [1u32, 17].iter().enumerate() {
             file.extend_from_slice(&id.to_le_bytes());
             file.extend_from_slice(&0u32.to_le_bytes());
             file.extend_from_slice(&((i * RECORD) as u32).to_le_bytes());
             file.extend_from_slice(&(RECORD as u32).to_le_bytes());
         }
+        file.extend_from_slice(&[0; 16]);
         for r in &records {
             file.extend_from_slice(r);
         }
@@ -776,13 +778,15 @@ mod tests {
     fn database(records: &[(u32, Vec<u8>)]) -> Vec<u8> {
         let mut file = Vec::new();
         file.extend_from_slice(&0xDBCB_0D00u32.to_le_bytes());
-        file.extend_from_slice(&((16 * records.len()) as u32).to_le_bytes());
+        file.extend_from_slice(&((16 * (records.len() + 1)) as u32).to_le_bytes());
         for (i, (id, r)) in records.iter().enumerate() {
             file.extend_from_slice(&id.to_le_bytes());
             file.extend_from_slice(&0u32.to_le_bytes());
             file.extend_from_slice(&((i * RECORD) as u32).to_le_bytes());
             file.extend_from_slice(&(r.len() as u32).to_le_bytes());
         }
+        // The slot after the last entry, as the writer saves it.
+        file.extend_from_slice(&[0; 16]);
         for (_, r) in records {
             file.extend_from_slice(r);
         }
@@ -1169,8 +1173,8 @@ mod tests {
     fn short_records_are_rejected() {
         let mut file = Vec::new();
         file.extend_from_slice(&0u32.to_le_bytes());
-        file.extend_from_slice(&16u32.to_le_bytes());
-        for v in [1u32, 0, 0, 8] {
+        file.extend_from_slice(&32u32.to_le_bytes());
+        for v in [1u32, 0, 0, 8, 0, 0, 0, 0] {
             file.extend_from_slice(&v.to_le_bytes());
         }
         file.extend_from_slice(&[0u8; 8]);
@@ -1243,13 +1247,15 @@ mod voice_tests {
     fn database(records: &[(u32, Vec<u8>)]) -> Vec<u8> {
         let mut file = Vec::new();
         file.extend_from_slice(&0xDBCB_0D00u32.to_le_bytes());
-        file.extend_from_slice(&((16 * records.len()) as u32).to_le_bytes());
+        file.extend_from_slice(&((16 * (records.len() + 1)) as u32).to_le_bytes());
         for (i, (id, r)) in records.iter().enumerate() {
             file.extend_from_slice(&id.to_le_bytes());
             file.extend_from_slice(&0u32.to_le_bytes());
             file.extend_from_slice(&((i * RECORD) as u32).to_le_bytes());
             file.extend_from_slice(&(r.len() as u32).to_le_bytes());
         }
+        // The slot after the last entry, as the writer saves it.
+        file.extend_from_slice(&[0; 16]);
         for (_, r) in records {
             file.extend_from_slice(r);
         }

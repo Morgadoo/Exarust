@@ -128,6 +128,12 @@ fn setup(
             done: false,
         });
     }
+    if !options.hub_stash.is_empty() {
+        commands.insert_resource(exa_game::hub_forms::HubStash {
+            items: options.hub_stash.clone(),
+            done: false,
+        });
+    }
     if let Some((name, kit)) = &options.hub_employee_kit {
         commands.insert_resource(exa_game::hub_forms::HubEmployeeKit {
             name: name.clone(),
@@ -161,7 +167,13 @@ fn setup(
                     .id();
                 exa_world::fire::spawn_fire(&mut commands, node, 0.2);
             }
-            if begin_level(&mut commands, &mut loader, name, mechanism_bodies(&options)) {
+            if begin_level(
+                &mut commands,
+                &mut loader,
+                name,
+                mechanism_bodies(&options),
+                None,
+            ) {
                 // The camera is there from the start, behind the loading
                 // screen; it moves to the level's view when the load ends.
                 let camera = spawn_fly_camera(&mut commands, pose, fov, &options);
@@ -324,7 +336,13 @@ fn setup(
             commands.insert_resource(exa_world::room_view::RoomView {
                 all: options.all_rooms,
             });
-            if !begin_level(&mut commands, &mut loader, name, mechanism_bodies(&options)) {
+            if !begin_level(
+                &mut commands,
+                &mut loader,
+                name,
+                mechanism_bodies(&options),
+                None,
+            ) {
                 let start = PlayStart {
                     position: Vec3::ZERO,
                     yaw: 0.0,
@@ -418,6 +436,7 @@ fn apply_level_change(
     mut time: ResMut<Time<Virtual>>,
     hold: Option<Res<LevelChangeHold>>,
     options: Res<Options>,
+    saved: Option<Res<exa_world::SavedLevelSection>>,
 ) {
     let Some(ready) = ready else {
         return;
@@ -471,11 +490,20 @@ fn apply_level_change(
         bc_supported: model::bc_supported(support.as_deref()),
     };
     info!("level change: loading {level} (spawn {spawn})");
+    // A save's load hands its own section for the level; it is used once.
+    let section = saved
+        .as_deref()
+        .filter(|saved| saved.is_for(&level))
+        .map(|saved| saved.bytes.clone());
+    if section.is_some() {
+        commands.remove_resource::<exa_world::SavedLevelSection>();
+    }
     let found = begin_level(
         &mut commands,
         &mut loader,
         &level,
         mechanism_bodies(&options),
+        section,
     );
     // The save unit's transition flow around the change: which copy the
     // destination comes from, the spawn matrix and the abort when the
@@ -516,8 +544,9 @@ fn begin_level(
     loader: &mut ModelLoader,
     name: &str,
     mechanism_bodies: exa_world::bodies::MechanismBodies,
+    saved: Option<std::sync::Arc<[u8]>>,
 ) -> bool {
-    let Some(mut load) = exa_world::LevelLoad::begin(commands, loader, name) else {
+    let Some(mut load) = exa_world::LevelLoad::begin_from(commands, loader, name, saved) else {
         return false;
     };
     load.mechanism_bodies = mechanism_bodies;

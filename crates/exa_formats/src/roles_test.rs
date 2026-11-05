@@ -127,6 +127,8 @@ fn database(records: &[(u32, Vec<u8>)]) -> Vec<u8> {
         table.extend(u32s(&[*id, 0, data.len() as u32, r.len() as u32]));
         data.extend(r);
     }
+    // The slot after the last entry, which the loader does not count.
+    table.extend([0u8; 16]);
     let mut b = u32s(&[MAGIC, table.len() as u32]);
     b.extend(table);
     b.extend(data);

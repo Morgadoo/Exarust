@@ -459,7 +459,7 @@ fn placements_and_their_database() {
     body.extend(middle(&[], &[]));
     body.extend(v7_rest(&[(8, 1, 0, &[])]));
     let rec = frame(7, &body);
-    let mut db = u32s(&[0xDBAC_CD00, 16, 2, 0, 0, rec.len() as u32]);
+    let mut db = u32s(&[0xDBAC_CD00, 32, 2, 0, 0, rec.len() as u32, 0, 0, 0, 0]);
     db.extend(&rec);
     let mut place = u32s(&[0x8000_0002]);
     for v in [2500.0f32, 0.0, -1000.0, 1.5] {
@@ -613,13 +613,13 @@ fn shipped_level_records() {
             }
         }
     }
-    // 478 records of version 7 (none of the 24 older ones is placed), 26
-    // deleted entries, and two stubs that are not records (in exanima07 and
-    // exanima07_sw).
+    // 478 records of version 7 (none of the 24 older ones is placed) and 24
+    // deleted entries. The slot after each table's last entry is not a
+    // record: two held an empty entry and two (exanima07 and exanima07_sw)
+    // bytes that read as a stub.
     assert_eq!(versions, [0, 0, 0, 0, 0, 4, 20, 478]);
-    assert_eq!(empty, 26);
-    assert_eq!(garbage.len(), 2, "{garbage:?}");
-    assert!(garbage.iter().all(|g| g.starts_with("exanima07")));
+    assert_eq!(empty, 24);
+    assert!(garbage.is_empty(), "{garbage:?}");
     let (mut placed, mut living, mut humans) = (0, 0, 0);
     let mut feral = std::collections::BTreeMap::<u32, usize>::new();
     for (_, level, records) in &levels {
@@ -1390,9 +1390,24 @@ fn a_sections_entries_carry_their_own_databases() {
     rec.extend(ACTOR_ITEMS.to_le_bytes());
     rec.extend((items.len() as u32).to_le_bytes());
     rec.extend(&items);
-    // Two table entries: the record at the table's end, and an empty slot
-    // whose entry is not a record.
-    let mut rdb = u32s(&[0xDBAC_CD00, 32, 3, 0, 0, rec.len() as u32, 0, 0, 0, 0]);
+    // Two table entries, the record at the table's end and an empty entry
+    // that is not a record, then the slot after the last entry.
+    let mut rdb = u32s(&[
+        0xDBAC_CD00,
+        48,
+        3,
+        0,
+        0,
+        rec.len() as u32,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]);
     rdb.extend(&rec);
     let mut b = 0i32.to_le_bytes().to_vec();
     b.extend(u32s(&[CHARACTER_DB, rdb.len() as u32]));

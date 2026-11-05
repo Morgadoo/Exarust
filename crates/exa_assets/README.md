@@ -608,7 +608,8 @@ trigger is not run: Exarust's characters carry no GI points.
 `live_objects::LiveObjects` is the running game's object database, the
 original's three tiers in one resource: the base tier (`objdb.rdb` and the
 shared `objstrings.rdb`, read the first time something asks), the local
-tier (the loaded level's own database, which the level load puts in place)
+tier (the loaded level's own database, which the level load puts in place
+and migrates whole from its templates, as every import's hook does)
 and the world tier (objects promoted out of levels, which a save's load
 fills and its save exports). Kits, container popups, the kit passes and the
 saves write records there; `changes_since` tells a decoded cache (the

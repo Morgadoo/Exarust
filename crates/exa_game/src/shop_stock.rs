@@ -265,13 +265,15 @@ mod tests {
         }
         let mut file = Vec::new();
         file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
-        file.extend_from_slice(&16u32.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
         file.extend_from_slice(&7u32.to_le_bytes());
         // The table's flags word: a weapon section (0x4000) the payload
         // does not hold, so the kinds come from the table, not the payload.
         file.extend_from_slice(&0x4000u32.to_le_bytes());
         file.extend_from_slice(&0u32.to_le_bytes());
         file.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        // The slot after the last entry, which the loader does not count.
+        file.extend_from_slice(&[0; 16]);
         file.extend_from_slice(&payload);
         let database = Database::parse(&file).unwrap();
         let mut stock = LiveShopStock::default();

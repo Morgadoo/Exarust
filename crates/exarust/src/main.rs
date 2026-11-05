@@ -96,6 +96,7 @@
 //!                                     stand-in for a loaded career's employee)
 //!          --hub-arsenal id,id,...    play arenahub: once the hub is entered, stow these items in the arsenal with no
 //!                                     flags (a debug stock for the loadout form's kit)
+//!          --hub-stash id,id,...      play arenahub: once the hub is entered, put these ids into the hub stash (debug tool)
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
@@ -528,6 +529,9 @@ pub struct Options {
     /// `--hub-arsenal id,...`: items stowed in the arsenal once the hub is
     /// entered (a debug tool).
     pub hub_arsenal: Vec<u32>,
+    /// `--hub-stash id,...`: ids put into the hub stash once the hub is
+    /// entered (a debug tool).
+    pub hub_stash: Vec<u32>,
     /// `--click-at x,y@frame;...`: the scripted pointer moves there and
     /// the left mouse button clicks, at frames after the load.
     pub clicks_at: Vec<([f32; 2], u32)>,
@@ -1119,6 +1123,16 @@ fn main() -> AppExit {
                     Some(items) => options.hub_arsenal = items,
                     None => {
                         eprintln!("--hub-arsenal: cannot read {list:?} (id,id,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--hub-stash" => {
+                let list = args.next().unwrap_or_default();
+                match parse_clicks(&list) {
+                    Some(items) => options.hub_stash = items,
+                    None => {
+                        eprintln!("--hub-stash: cannot read {list:?} (id,id,...)");
                         return AppExit::from_code(2);
                     }
                 }

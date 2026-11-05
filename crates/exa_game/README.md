@@ -947,8 +947,20 @@ request word `0x1000`), logged. `zone_scripts` runs the AI manager's zone
 check for the level's script zones live, for every character at its body
 frame's anchor (root x and z, pelvis height): a zone entered runs its
 routine with the character as its actor and `ZoneID` (`exanima01`'s
-`Checkpoint` zone runs `CheckpointSave(1);`, the others narrator topics). The level
-section and the world databases are not written yet.
+`Checkpoint` zone runs `CheckpointSave(1);`, the others narrator topics). Every
+save writes the current level's section after the world databases
+(`level_save`: the section the level was read from, `exa_world::LevelSource`,
+with the live local tier and the live placed objects written over it; gone
+objects leave with what they held, drops are added) and a story load reads
+the level from the save's own section (`exa_world::SavedLevelSection`). The
+arena's save runs its promotion pass first, with the id remap table on: the
+manager's record, the stash, the arsenal's boxes, each employee's record
+and list (`save_live::promote_arena_stores`), then the scene's entity ids.
+The travelling followers' promotion is ported (`save_live::promote_followers`;
+no live follower travels yet). The next practice fight carries the player's
+kit through the kit's temporary database across the arena's load
+(`Step::PreparePlayerKit`, `Step::EquipPlayerKit`, `save_kit::KitScratch`)
+instead of promoting it.
 
 A left click that is not a drag sends `hand::WorldClick`. A static mesh
 under a named scene node is that node (`hand::Hit::SceneNode`), the way the
@@ -1373,7 +1385,10 @@ records) with the rows their tables give, through
 `exa_items::randomise::Fill` (292 children in exanima01; the chest of
 drawers 0x80000054 gets boots twice, a shirt, a belt and trousers): a
 picked child takes the row's item with zero flags, an empty slot id 0
-with `0x100`. Stand-ins: the row's item id is used without the
+with `0x100`. The filled children are also written into the level's own
+record in the live local tier, so a save's level section keeps them; a
+level read from a save's section is not filled (the original's import of a
+saved section runs only the tier migration). Stand-ins: the row's item id is used without the
 instance copy and condition word, only placed containers are walked
 and the generator starts from `FILL_SEED`. Opening a popup logs each
 child's id, flags, model, icon slot, whether its icon has rendered and its

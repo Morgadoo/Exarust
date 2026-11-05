@@ -26,8 +26,8 @@
 //! item rides the cursor until the button that dragged it is let go.
 //!
 //! The debug flag `--gui-drop ID@FRAME` gives the player's pack the item
-//! and queues its drop at that frame after the load, as a drag out of the
-//! window would.
+//! (unless the pack holds it already) and queues its drop at that frame
+//! after the load, as a drag out of the window would.
 //!
 //! Evidence: the controls' GUI drag claim, the drop routine and its
 //! deferred task (`context/re/player-control-hand.md`).
@@ -195,12 +195,16 @@ fn scripted_gui_drop(
         info!("gui drop script: no player at frame {frame}");
         return;
     };
-    p.carried.push(exa_items::possession::Carried {
-        id,
-        flags: 0,
-        x: 0,
-        y: 0,
-    });
+    // An item the pack already holds (given at the start, perhaps used on
+    // since) is dropped as it is; otherwise the pack is given it first.
+    if !p.carried.iter().any(|carried| carried.id == id) {
+        p.carried.push(exa_items::possession::Carried {
+            id,
+            flags: 0,
+            x: 0,
+            y: 0,
+        });
+    }
     info!("gui drop script: {id:#x} dropped from the pack at frame {frame}");
     items.queue_drop(DropTask {
         item: id,
