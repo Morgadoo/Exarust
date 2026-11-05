@@ -905,6 +905,8 @@ Round 65 simthread3 (stage 3, increment 2): the whole fixed step runs behind the
 
 Round 66 simthread3 (stage 3 done): the simulation world runs the game's fixed step by default; the duel drift was query-filter markers the coverage check never saw.
 
+Round 67 simthread4a: the first stage-4 groups move frame work into the simulation and snapshot the cloths.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
