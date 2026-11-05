@@ -1764,20 +1764,21 @@ fn read_pad(
         .filter(|_| loading.is_none())
         .map(|mut scripted| scripted.next_sample());
     let sample = match (pads.iter().next(), scripted_sample) {
-        (Some(pad), _) => {
+        (_, Some(sample)) => {
+            // The scripted pad stands in for a connected one, in controller
+            // mode, ahead of any device the system reports as a gamepad (a
+            // keyboard's system-control node can show up as one).
+            status.connected = true;
+            status.auto = true;
+            Some(sample)
+        }
+        (Some(pad), None) => {
             status.connected = true;
             if !bindings.controller && !status.auto && pad_activity(pad) {
                 status.auto = true;
                 info!("gamepad: controller mode on");
             }
             Some(sample_pad(pad))
-        }
-        (None, Some(sample)) => {
-            // The scripted pad stands in for a connected one, in controller
-            // mode.
-            status.connected = true;
-            status.auto = true;
-            Some(sample)
         }
         (None, None) => None,
     };
@@ -1862,6 +1863,10 @@ impl ScriptedPad {
                     "use-power" => (Id::UsePower, Vec2::ZERO),
                     "combat" => (Id::Combat, Vec2::ZERO),
                     "pause" => (Id::PauseMenu, Vec2::ZERO),
+                    "inventory" => (Id::Inventory, Vec2::ZERO),
+                    "skills" => (Id::Skills, Vec2::ZERO),
+                    "swap" => (Id::SwapWeapon, Vec2::ZERO),
+                    "power-tree" => (Id::PowerTree, Vec2::ZERO),
                     _ => return None,
                 };
                 let (from, to) = match frames.split_once('-') {

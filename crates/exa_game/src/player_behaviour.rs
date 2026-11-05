@@ -1,7 +1,7 @@
 //! The player behaviour's own rules, outside its steering: the aim point's
 //! soft height lock and raised surface, the gamepad aim's point and screen
 //! ease, the near-contact list, the strongest engaged enemy and the late
-//! swing's practice check, the character nearest the cursor on screen.
+//! swing's practice check.
 //! Rules: `docs/PLAYER.md`.
 //!
 //! These are the parts of the original's player behaviour that are not the
@@ -12,13 +12,13 @@
 //! tests. The running game feeds the gamepad aim's point and ease, the
 //! auto-target and the bone lock ([`crate::player`]), and the contact list,
 //! the engaged enemy and the late-swing check ([`crate::player_practice`]);
-//! the screen-nearest character is a tested rule with no caller yet
-//! ([`closest_to_cursor`]). The look snap ([`look_snaps`]) is the combat
+//! the screen-nearest character the Talk key talks to is
+//! [`crate::dialogue_live::talk_target`]. The look snap ([`look_snaps`]) is the combat
 //! heading's, and the camera's follow step ([`camera_follow_yaw`]) runs
 //! while CamFollow is set.
 //!
 //! Evidence: the behaviour's aim point, gamepad aim, contacts, engaged
-//! enemy, screen-nearest character and its tick, read in the instructions
+//! enemy and its tick, read in the instructions
 //! (the tests below carry the numbers).
 
 // NaN-sensitive compares are kept as the original makes them.
@@ -56,9 +56,6 @@ pub const ENGAGED_SCORE: f32 = 2.0;
 /// The minimum squared distance (cm²) at which the engaged test accepts a
 /// character.
 const SELF_RANGE2: f32 = 1.0;
-/// The screen-nearest search starts from this squared distance (px²): a
-/// farther or unordered one is never taken.
-const SCREEN_FAR2: f32 = 3.4e38;
 
 /// A two-part value the behaviour keeps for frame interpolation: the
 /// previous and current copies and the interpolated one the draw reads.
@@ -463,30 +460,6 @@ pub fn late_swing_check(
         *lesson = threat;
     }
     flags | ENGAGED_FOE
-}
-
-/// The character closest to the cursor on screen: among the characters not
-/// dead, the one whose point shows nearest the cursor (squared pixels,
-/// `(dy)² + (dx)²`), strictly nearer than any before it and than 3.4e38.
-pub fn closest_to_cursor(
-    cursor: Vec2,
-    others: impl IntoIterator<Item = (u64, Vec2, bool)>,
-) -> Option<u64> {
-    let mut best: Option<u64> = None;
-    let mut best_d2 = SCREEN_FAR2;
-    for (body, screen, dead) in others {
-        if dead {
-            continue;
-        }
-        let dx = screen.x - cursor.x;
-        let dy = screen.y - cursor.y;
-        let d2 = dy * dy + dx * dx;
-        if best_d2 > d2 {
-            best_d2 = d2;
-            best = Some(body);
-        }
-    }
-    best
 }
 
 /// The behaviour's combat mode word, one combat tick: what the buttons
@@ -928,25 +901,6 @@ mod tests {
         assert_eq!(
             strongest_engaged(player, heading, 60.0, &[none]),
             (true, 0.0)
-        );
-    }
-
-    /// The character closest to the cursor's screen point, the dead left
-    /// out; an unordered distance is never taken.
-    #[test]
-    fn the_screen_nearest_character() {
-        let got = closest_to_cursor(
-            Vec2::new(100.0, 100.0),
-            [
-                (1, Vec2::new(150.0, 150.0), false),
-                (2, Vec2::new(110.0, 110.0), false),
-                (3, Vec2::new(101.0, 101.0), true),
-            ],
-        );
-        assert_eq!(got, Some(2));
-        assert_eq!(
-            closest_to_cursor(Vec2::ZERO, [(1, Vec2::new(f32::NAN, 0.0), false)]),
-            None
         );
     }
 

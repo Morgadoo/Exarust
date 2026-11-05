@@ -28,6 +28,11 @@
 //! character [`crate::dialogue_live`] found. The skills screen's opening is
 //! not in Exarust and the power tree has its own key reader.
 //!
+//! The pad's newly pressed commands go through [`pad_hotkeys`], the
+//! controls' per-frame pad routine: Powers, UsePower and the bar's steps,
+//! PowerTree, SwapWeapon, Inventory and Skills, with its own gates (no
+//! death test, the bar only with the player's own powers, Skills ungated).
+//!
 //! Evidence: the controls' key handler, the combat toggle and the swap and
 //! light requests, read in the instructions
 //! (`context/re/player-control-hand.md`, Hotkeys).
@@ -225,6 +230,64 @@ pub fn hotkey(key: u32, bindings: &Bindings, c: Context) -> Option<Hotkey> {
     }
 }
 
+/// What the pad's newly pressed command bits ask of the controls this
+/// frame, as the controls' per-frame pad routine decides it (the keyboard's
+/// counterpart is [`hotkey`]), in its order:
+///
+/// - Powers (`POWER_BAR`) toggles the bar when the player has a power (the
+///   player's own: the key also counts the companion's);
+/// - with the bar closed, UsePower uses the picked power when powers are
+///   allowed; with it open, UsePower uses it whatever the mask, else a
+///   step right moves the pick on and else a step left moves it back;
+/// - PowerTree (or Powers held 500 ms) opens the tree when powers are
+///   allowed and the player has one;
+/// - SwapWeapon asks for the swap when allowed;
+/// - Inventory opens it when allowed and, in a mode that hides it, only
+///   while collapsing;
+/// - Skills asks for the skill screen, with no permission test.
+///
+/// Unlike the key handler the routine does not test death. Talk, Select
+/// and the dialogue's steps are the conversation's ([`crate::dialogue_live`]),
+/// and the pause menu the menu's ([`crate::menu_screen`]). The routine also
+/// toggles combat mode on the `Combat` action's bit; Exarust's pad reads
+/// that bit as the attack (the original's pad attacks through the Steam
+/// controller layer's emulated mouse button), so it is left out here.
+pub fn pad_hotkeys(bits: u32, c: Context) -> Vec<Hotkey> {
+    use crate::gamepad::command;
+    let allowed = |bit: u32| c.allowed & bit != 0;
+    let mut out = Vec::new();
+    if bits & command::POWER_BAR != 0 && c.powers > 0 {
+        out.push(Hotkey::PowerBar);
+    }
+    if !c.power_bar {
+        if bits & command::USE_POWER != 0 && allowed(allow::POWERS) {
+            out.push(Hotkey::Power(-1));
+        }
+    } else if bits & command::USE_POWER != 0 {
+        out.push(Hotkey::Power(-1));
+    } else if bits & command::STEP_RIGHT != 0 {
+        out.push(Hotkey::StepPower(1));
+    } else if bits & command::STEP_LEFT != 0 {
+        out.push(Hotkey::StepPower(-1));
+    }
+    if bits & command::POWER_TREE != 0 && allowed(allow::POWERS) && c.powers > 0 {
+        out.push(Hotkey::PowerTree);
+    }
+    if bits & command::SWAP_WEAPON != 0 && allowed(allow::SWAP) {
+        out.push(Hotkey::SwapSets);
+    }
+    if bits & command::INVENTORY != 0
+        && allowed(allow::INVENTORY)
+        && (!c.hides_inventory || c.collapsing)
+    {
+        out.push(Hotkey::Inventory);
+    }
+    if bits & command::SKILLS != 0 {
+        out.push(Hotkey::Skills);
+    }
+    out
+}
+
 /// Entering combat mode: the hand lets go and the request's backpedal,
 /// keys' heading and turn-about bits clear. The original's cancel puts a
 /// lifted item back where its lift saved it and leaves a drag's link in
@@ -293,29 +356,26 @@ fn press_hotkeys(
         .get_just_pressed()
         .filter_map(|&k| virtual_key(k))
         .collect();
-    // The pad's presses go through the same handler as their keys. The
-    // original has no Steam action for combat mode; Exarust's pad turns it
-    // on and off with Look (the right stick's click), which has no Cursor
-    // Look meaning on a gamepad (Exarust's own). SwapWeapon is the
-    // original's action for the weapon-set swap. Each counts as its bound
-    // key, so the handler's gates apply to it.
-    if pad_status.as_ref().is_some_and(|s| s.active())
-        && let Some(frame) = pad.as_ref().map(|p| p.frame())
-    {
-        for (on, action) in [
-            (frame.look_pressed, Action::ToggleCombat),
-            (
-                frame.pressed & crate::gamepad::command::SWAP_WEAPON != 0,
-                Action::SwitchEquipped,
-            ),
-        ] {
-            let key = bindings.key(action);
-            if on && key != 0 {
-                pressed.push(key);
-            }
+    // Exarust's pad turns combat mode on and off with Look (the right
+    // stick's click), which has no Cursor Look meaning on a gamepad
+    // (Exarust's own: the original toggles it on the Combat action, which
+    // Exarust's pad reads as the attack). It counts as the bound key, so
+    // the key handler's gates apply to it.
+    let pad_frame = pad_status
+        .as_ref()
+        .is_some_and(|s| s.active())
+        .then(|| pad.as_ref().map(|p| p.frame()))
+        .flatten();
+    if let Some(frame) = pad_frame {
+        let key = bindings.key(Action::ToggleCombat);
+        if frame.look_pressed && key != 0 {
+            pressed.push(key);
         }
     }
-    if pressed.is_empty() {
+    // The pad's other commands, as the controls' per-frame pad routine
+    // reads them ([`pad_hotkeys`]).
+    let pad_bits = pad_frame.map_or(0, |frame| frame.pressed);
+    if pressed.is_empty() && pad_bits == 0 {
         return;
     }
     let mut hand = hand;
@@ -333,11 +393,17 @@ fn press_hotkeys(
             powers: caster.map_or(0, |c| c.known.len() as i32),
             ..Context::default()
         };
-        for &key in &pressed {
-            let Some(action) = hotkey(key, &bindings, context) else {
-                continue;
-            };
+        let keyed = pressed.iter().filter_map(|&key| {
+            let action = hotkey(key, &bindings, context)?;
             debug!("hotkey {key:#x}: {action:?}");
+            Some(action)
+        });
+        let padded = pad_hotkeys(pad_bits, context);
+        if !padded.is_empty() {
+            info!("pad commands {pad_bits:#x}: {padded:?}");
+        }
+        let actions: Vec<Hotkey> = keyed.chain(padded).collect();
+        for action in actions {
             match action {
                 Hotkey::ToggleCombat => {
                     if pb.toggle_combat() {
@@ -556,6 +622,74 @@ mod tests {
             ..hidden
         };
         assert_eq!(hotkey(0x49, &b, falling), Some(Hotkey::Inventory));
+    }
+
+    /// The pad's commands in the per-frame routine's order and gates: the
+    /// bar only with the player's own powers, UsePower gated by the mask
+    /// only with the bar closed, the steps only with it open and only when
+    /// UsePower is not pressed, the tree with powers allowed and known, the
+    /// swap and inventory under the key handler's gates, Skills ungated.
+    #[test]
+    fn the_pad_commands() {
+        use crate::gamepad::command as c;
+        let play = Context {
+            powers: 2,
+            ..Context::default()
+        };
+        assert_eq!(
+            pad_hotkeys(c::POWER_BAR | c::USE_POWER | c::POWER_TREE, play),
+            vec![Hotkey::PowerBar, Hotkey::Power(-1), Hotkey::PowerTree]
+        );
+        // The companion's powers do not open the bar from the pad.
+        let companion = Context {
+            powers: 0,
+            companion_powers: Some(3),
+            ..Context::default()
+        };
+        assert!(pad_hotkeys(c::POWER_BAR | c::POWER_TREE, companion).is_empty());
+        let bar = Context {
+            power_bar: true,
+            allowed: 0,
+            ..play
+        };
+        assert_eq!(
+            pad_hotkeys(c::USE_POWER | c::STEP_RIGHT, bar),
+            vec![Hotkey::Power(-1)]
+        );
+        assert_eq!(
+            pad_hotkeys(c::STEP_RIGHT | c::STEP_LEFT, bar),
+            vec![Hotkey::StepPower(1)]
+        );
+        assert_eq!(pad_hotkeys(c::STEP_LEFT, bar), vec![Hotkey::StepPower(-1)]);
+        // The steps mean nothing with the bar closed.
+        assert!(pad_hotkeys(c::STEP_LEFT | c::STEP_RIGHT, play).is_empty());
+        let none = Context { allowed: 0, ..play };
+        assert_eq!(
+            pad_hotkeys(
+                c::USE_POWER | c::POWER_TREE | c::SWAP_WEAPON | c::INVENTORY | c::SKILLS,
+                none
+            ),
+            vec![Hotkey::Skills]
+        );
+        assert_eq!(
+            pad_hotkeys(c::SWAP_WEAPON | c::INVENTORY, play),
+            vec![Hotkey::SwapSets, Hotkey::Inventory]
+        );
+        let hidden = Context {
+            hides_inventory: true,
+            ..play
+        };
+        assert!(pad_hotkeys(c::INVENTORY, hidden).is_empty());
+        let falling = Context {
+            collapsing: true,
+            ..hidden
+        };
+        assert_eq!(pad_hotkeys(c::INVENTORY, falling), vec![Hotkey::Inventory]);
+        // No death test; the attack bit, Talk, Select and the pause are
+        // other systems'.
+        let dead = Context { dead: true, ..play };
+        assert_eq!(pad_hotkeys(c::INVENTORY, dead), vec![Hotkey::Inventory]);
+        assert!(pad_hotkeys(c::ATTACK | c::TALK | c::USE | c::PAUSE | c::LOOK, play).is_empty());
     }
 
     /// The plugin's systems run three updates with and without a caster.
