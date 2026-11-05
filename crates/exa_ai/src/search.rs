@@ -1,8 +1,10 @@
 //! The search: a companion's idle activity (activity 6). It gathers the
 //! containers, loose items and corpses of the nearby rooms, walks to each,
-//! looks it over, kneels, and takes what beats its gear, or tells its
-//! leader about it; then it re-equips and leaves behind what it no longer
-//! needs.
+//! looks it over, settles beside it, and takes what beats its gear, or
+//! tells its leader about it; then it re-equips and leaves behind what it
+//! no longer needs. It plays no clip of its own: the settle stands the body
+//! in its idle motion (`0x13`) and the waits after it turn the head; the
+//! humanoid motion set's `Kneel` action is never asked for by the search.
 //!
 //! The tick, by state:
 //!
@@ -23,9 +25,10 @@
 //! 4. **Approach.** Paused while its own pack is open in the player's
 //!    window. On arrival (vertical distance halved), a container is looted
 //!    from its contents, a loose item is taken unless already searched, a
-//!    dead character's worn items then its pack; it settles and waits
-//!    1000 + draw(1000) ms → 5. Not there after the walk: three tries.
-//! 5. **Kneel.** Once the timer passes → 6 (a distraction renews 2000 ms).
+//!    dead character's worn items then its pack; it settles (the idle
+//!    motion, the head's look) and waits 1000 + draw(1000) ms → 5. Not
+//!    there after the walk: three tries.
+//! 5. **Settle.** Once the timer passes → 6 (a distraction renews 2000 ms).
 //! 6. **Loot.** Each 1000 + draw(500) ms one item is weighed. When the
 //!    source is exhausted the object (a corpse's pack tagged `0x20000000`) is
 //!    remembered, released → 1; a container is first tidied up, a loose
@@ -57,7 +60,10 @@
 //! container removes its first matching entry, taking a corpse's worn item
 //! releases it from the corpse's grip when it holds it there and otherwise
 //! removes it from the worn list, and taking a carried entry drops that
-//! entry. Wearing puts the item on before taking it from its source;
+//! entry. Wearing runs the equip conflict pass first (a worn piece it
+//! overlaps with a model byte over 50 refuses it; every other overlapping
+//! piece comes off into the carried list, the underwear excepted, which is
+//! dropped), then puts the item on before taking it from its source;
 //! carrying, wielding and stowing change the pack; dropping waits on a
 //! locked pack and needs the item's size within the container's largest
 //! item. Comments change no state.
@@ -96,6 +102,12 @@ pub const CONNECTED: u32 = 0x8_0000;
 pub const CORPSE_TAG: u32 = 0x2000_0000;
 /// Carried entries with this flag are skipped.
 pub const SKIP_FLAG: u32 = 0x100;
+/// A worn piece whose model byte is over this leaves no room and refuses to
+/// come off for another.
+pub const EQUIP_LOCK: u8 = 50;
+/// The underwear item: the equip conflict pass drops it instead of carrying
+/// it.
+pub const UNDERWEAR: u32 = 8;
 /// The attend levels the tick asks for.
 pub const ATTEND: f32 = 1.0;
 pub const ATTEND_WALKING: f32 = 5.1;
@@ -120,7 +132,7 @@ pub enum State {
     Look,
     Path,
     Approach,
-    Kneel,
+    Settle,
     Loot,
 }
 
@@ -479,7 +491,7 @@ pub fn wear_room(items: &BTreeMap<u32, Loot>, pack: &Pack, piece: &Apparel) -> f
     let mut room = piece.bulk();
     for worn in pack.worn.iter().filter_map(|w| apparel(items, *w)) {
         if worn.overlaps(piece) {
-            if 50 < worn.model_mark {
+            if EQUIP_LOCK < worn.model_mark {
                 return 0.0;
             }
             room -= worn.bulk();
@@ -1201,7 +1213,7 @@ impl Search {
                 }
             }
             State::Approach => self.approach(me, scene, now, &mut busy),
-            State::Kneel => {
+            State::Settle => {
                 if !me.attend(ATTEND) {
                     me.idle_look();
                 }
@@ -1297,7 +1309,7 @@ impl Search {
             }
             self.source = Source::Worn;
         }
-        self.state = State::Kneel;
+        self.state = State::Settle;
         me.settle();
         if !me.attend(ATTEND) {
             me.idle_look();
@@ -1628,9 +1640,12 @@ pub fn drop_item(scene: &mut Scene, pack: &mut Pack, container: u32, item: u32) 
 /// item releases it from the corpse's grip when it holds it there (the
 /// second hand slot, and its carried entry), and otherwise removes it from the worn
 /// list; taking a carried entry removes that entry. Carrying adds to the
-/// pack; wearing puts the item on, takes it out of the carried list and
-/// then out of its source; wielding fills the main hand and stowing the
-/// first stowed slot. Dropping waits while the pack is locked, needs the
+/// pack; wearing runs the equip conflict pass ([`equip_conflicts`]; a
+/// refusal changes nothing), puts the item on, takes it out of the carried
+/// list and then out of its source; wielding fills the main hand, its
+/// carried entry marked held and the old main's mark cleared, and stowing
+/// fills the first stowed slot; both leave the carried list holding the
+/// item, as the original's inventory keeps its hands' items. Dropping waits while the pack is locked, needs the
 /// item carried (or in a hand) and refuses when the item's size is unknown
 /// or over the container's largest item; it then appends the item and
 /// takes it out of the pack. A comment changes no state.
@@ -1655,6 +1670,9 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
             source,
             item,
         } => {
+            if !equip_conflicts(&scene.items, pack, *item) {
+                return false;
+            }
             if !pack.worn.contains(item) {
                 pack.worn.push(*item);
             }
@@ -1665,12 +1683,10 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
             true
         }
         Deed::Wield { item } => {
-            remove_from_pack(pack, *item);
-            pack.hands[0] = *item;
+            wield(pack, *item);
             true
         }
         Deed::Stow { item } => {
-            remove_from_pack(pack, *item);
             pack.hands[2] = *item;
             true
         }
@@ -1687,14 +1703,67 @@ pub fn apply_deeds(scene: &mut Scene, pack: &mut Pack, deeds: &[Deed]) -> usize 
         .count()
 }
 
-fn remove_from_pack(pack: &mut Pack, item: u32) {
-    pack.carried.retain(|c| c.item != item);
-    pack.worn.retain(|w| *w != item);
-    for hand in 0..pack.hands.len() {
-        if pack.hands[hand] == item {
-            pack.hands[hand] = 0;
+/// The equip conflict pass a wear runs before the item goes on. When a worn
+/// piece the item overlaps has a model byte over [`EQUIP_LOCK`], nothing
+/// changes and the wear is refused (false). Otherwise every worn piece it
+/// overlaps comes off, in order, into the carried list with no flags,
+/// except the underwear ([`UNDERWEAR`]), which is dropped. Worn pieces with
+/// no apparel record stay on.
+pub fn equip_conflicts(items: &BTreeMap<u32, Loot>, pack: &mut Pack, item: u32) -> bool {
+    let Some(new) = apparel(items, item) else {
+        return true;
+    };
+    let overlapping = |id: u32| apparel(items, id).filter(|worn| worn.overlaps(new));
+    if pack
+        .worn
+        .iter()
+        .any(|&w| overlapping(w).is_some_and(|worn| EQUIP_LOCK < worn.model_mark))
+    {
+        return false;
+    }
+    let mut kept = Vec::with_capacity(pack.worn.len());
+    for w in std::mem::take(&mut pack.worn) {
+        if overlapping(w).is_none() {
+            kept.push(w);
+        } else if w != UNDERWEAR {
+            pack.carried.push(Carried { item: w, flags: 0 });
         }
     }
+    pack.worn = kept;
+    true
+}
+
+/// Takes `item` in the main hand: the item that was there returns to the
+/// pack (its carried entry loses the held mark) and the item's first
+/// unmarked carried entry takes the mark, as the original's wield marks the
+/// entry and its hand job frees the hand first. Both stay listed.
+fn wield(pack: &mut Pack, item: u32) {
+    let old = pack.hands[0];
+    if old != 0
+        && old != item
+        && let Some(c) = pack
+            .carried
+            .iter_mut()
+            .find(|c| c.item == old && c.flags & SKIP_FLAG != 0)
+    {
+        c.flags &= !SKIP_FLAG;
+    }
+    match pack
+        .carried
+        .iter_mut()
+        .find(|c| c.item == item && c.flags & SKIP_FLAG == 0)
+    {
+        Some(c) => c.flags |= SKIP_FLAG,
+        None => {
+            if !pack.carried.iter().any(|c| c.item == item) {
+                pack.carried.push(Carried {
+                    item,
+                    flags: SKIP_FLAG,
+                });
+            }
+        }
+    }
+    pack.hands[0] = item;
 }
 
 fn take(scene: &mut Scene, object: usize, source: Source, item: u32) -> bool {

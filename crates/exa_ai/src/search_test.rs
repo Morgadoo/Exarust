@@ -721,13 +721,13 @@ fn a_search_loots_a_chest() {
     );
     me.centre = Vec3::new(0.0, 0.0, 20.0);
     step(&mut s, &mut me, &mut scene, anchor);
-    assert_eq!((s.state, s.source), (State::Kneel, Source::Container));
+    assert_eq!((s.state, s.source), (State::Settle, Source::Container));
     assert_eq!(me.settles, 1);
     let kneel = s.timer_ms;
     assert!((2000..3000).contains(&kneel));
     me.now = kneel;
     step(&mut s, &mut me, &mut scene, anchor);
-    assert_eq!(s.state, State::Kneel);
+    assert_eq!(s.state, State::Settle);
     me.now = kneel + 1;
     step(&mut s, &mut me, &mut scene, anchor);
     assert_eq!(s.state, State::Loot);
@@ -867,7 +867,7 @@ fn a_corpse_is_looted_worn_then_carried() {
     }
     assert_eq!(
         (s.state, s.source, s.corpse_pack),
-        (State::Kneel, Source::Worn, 60 | CORPSE_TAG)
+        (State::Settle, Source::Worn, 60 | CORPSE_TAG)
     );
     me.now = s.timer_ms + 1;
     step(&mut s, &mut me, &mut scene, anchor);
@@ -1102,8 +1102,8 @@ fn the_executors_take_from_each_source() {
 }
 
 /// Wearing takes an item out of its source and adds it to the worn list;
-/// carrying adds an entry; wielding fills the main hand; stowing the first
-/// stowed slot.
+/// carrying adds an entry; wielding fills the main hand and marks the
+/// entry held; stowing fills the first stowed slot.
 #[test]
 fn the_executors_carry_wear_wield_and_stow() {
     let mut scene = executor_scene();
@@ -1123,7 +1123,27 @@ fn the_executors_carry_wear_wield_and_stow() {
     assert_eq!(pack.carried.len(), 1);
     assert!(apply_deed(&mut scene, &mut pack, &Deed::Wield { item: 11 }));
     assert_eq!(pack.hands[0], 11);
-    assert!(pack.carried.is_empty());
+    // The wielded item stays listed, marked held.
+    assert_eq!(
+        pack.carried,
+        vec![Carried {
+            item: 11,
+            flags: SKIP_FLAG
+        }]
+    );
+    // Wielding another returns the first to the pack.
+    pack.carried.push(Carried { item: 13, flags: 0 });
+    assert!(apply_deed(&mut scene, &mut pack, &Deed::Wield { item: 13 }));
+    assert_eq!(
+        pack.carried,
+        vec![
+            Carried { item: 11, flags: 0 },
+            Carried {
+                item: 13,
+                flags: SKIP_FLAG
+            }
+        ]
+    );
     assert!(apply_deed(&mut scene, &mut pack, &Deed::Stow { item: 12 }));
     assert_eq!(pack.hands[2], 12);
     scene.sizes.insert(12, 4);
@@ -1137,6 +1157,68 @@ fn the_executors_carry_wear_wield_and_stow() {
     ));
     assert_eq!(scene.containers[&40].items, vec![7, 12]);
     assert_eq!(pack.hands[2], 0);
+}
+
+/// The equip conflict pass of a wear: the overlapping worn pieces come off
+/// into the carried list in order (the underwear is dropped instead), the
+/// others stay; a piece over the model byte limit refuses the wear, which
+/// then changes nothing and takes nothing from its source.
+#[test]
+fn wearing_takes_off_what_it_overlaps() {
+    let mut scene = executor_scene();
+    scene
+        .items
+        .insert(7, apparel_loot(piece(1, 100, 10, 0b011)));
+    scene
+        .items
+        .insert(UNDERWEAR, apparel_loot(piece(1, 10, 1, 0b001)));
+    scene
+        .items
+        .insert(30, apparel_loot(piece(1, 100, 10, 0b010)));
+    scene
+        .items
+        .insert(31, apparel_loot(piece(2, 100, 10, 0b100)));
+    let mut pack = Pack {
+        worn: vec![UNDERWEAR, 30, 31],
+        ..Pack::default()
+    };
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Wear {
+            object: 0,
+            source: Source::Container,
+            item: 7,
+        }
+    ));
+    assert_eq!(pack.worn, vec![31, 7]);
+    assert_eq!(pack.carried, carried(&[30]));
+    assert_eq!(scene.containers[&40].items, vec![8]);
+
+    let mut scene = executor_scene();
+    let mut locked = piece(1, 100, 10, 0b010);
+    locked.model_mark = EQUIP_LOCK + 1;
+    scene
+        .items
+        .insert(7, apparel_loot(piece(1, 100, 10, 0b011)));
+    scene.items.insert(30, apparel_loot(locked));
+    let mut pack = Pack {
+        worn: vec![30],
+        ..Pack::default()
+    };
+    let before = scene.containers[&40].clone();
+    assert!(!apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Wear {
+            object: 0,
+            source: Source::Container,
+            item: 7,
+        }
+    ));
+    assert_eq!(pack.worn, vec![30]);
+    assert!(pack.carried.is_empty());
+    assert_eq!(scene.containers[&40], before);
 }
 
 /// The object edits the deferred jobs ask for: an item's first container

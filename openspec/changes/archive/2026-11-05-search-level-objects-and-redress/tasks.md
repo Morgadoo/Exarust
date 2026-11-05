@@ -1,0 +1,8 @@
+- [x] REA: the gather's two lists and object tests, the arrival's sources, the settle and waits (no kneel motion), the wear, corpse-take, wield and stow jobs, the container index read; Derrin's recruitment scripts in charroles
+- [x] Search model: the equip conflict pass on wear, the wield's held mark, the stow kept listed, `Settle` for `Kneel` (exa_ai)
+- [x] Running game: placed objects and containers in the scene, level-local records and size bytes, popups as open containers (exa_game)
+- [x] World edits: taken loose objects leave the world with their colliders, containers written back, bodies dressed again with the corpse underwear rule and new hands (exa_game)
+- [x] `--searcher` applies the recruitment's role edits; `--searcher-shots <dir>` (exarust)
+- [x] Tests: conflict pass, wield marks, container write-back, worn changes, a follower that loots a chest and a loose blade, a robbed body dressed again
+- [x] GPU: Derrin (`--searcher 0x2b`) in exanima01 wears a jacket from a trunk and a dropped bascinet off the floor, both dressed again (context/artifacts/2026-10-30-npcsearch)
+- [x] READMEs (exa_ai, exa_game, exarust)
