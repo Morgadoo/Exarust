@@ -1460,7 +1460,11 @@ observer's roles' encounter entries for anyone, for the partner in its
 locale, or for one of the partner's roles, with the observer as actor 0 and
 the partner as actor 1 through `exa_script` (`Conversations::with_scene`),
 and the effects go out as `ScriptEffect`; the meeting time is renewed on
-the AI's relation and the cast's record (`LastEnc`) before they run. The follow and search, the golem sentry (`golem_body`), the encounter
+the AI's relation and the cast's record (`LastEnc`) before they run. The
+greeting the same pass reports runs right after (`run_greetings`): the
+brain's contacts are synced into the cast and the dialogue engine looks for
+a calm class 0 entry with the brain's mood code (arousal at most 1, not
+already talking). The follow and search, the golem sentry (`golem_body`), the encounter
 scripts (right after the AI tick that reported them) and the duellists'
 power system (`thaum::cast`: the answers before their combat state, the
 cast after it) run in the brains' chain (`exa_ai::BrainChain`), in the
@@ -1491,7 +1495,14 @@ move stick into up and down steps while the panel is open), Select picks
 the highlighted entry, a step down or up moves the highlight, and the pad's
 Talk closes an open panel or talks in the pad mode (`exa_script::PadTalk`),
 whose panel highlights its first entry on every layout; `--pad-press`
-scripts a pad for checks. `script_cast` makes the player body's character
+scripts a pad for checks. `script_cast` mirrors every brain's character
+contacts into the cast before and after the fixed step (concern, trust from
+the relation's last attitude, classification level, hostility, noticed
+level and attention as the hearing), writing back first what a script or a
+line changed (`sync_contacts`); the player's contacts are its behaviour's
+list. The cast's arousal is the brain's readiness word, which starts at the
+personality's 10. A script `Report` is logged as the engine's level-4
+message. `script_cast` makes the player body's character
 id the session's player; a new player's id is the original's new-character
 id, `0x4000_0001` (the emptied world database's first, with its tag), so
 it never meets a level character's. A story player who skipped the creator
@@ -1635,8 +1646,9 @@ action through the unforced action switch, the voice line through the pain
 voice's path, the narrator topics through `exa_script::Narrate`, the
 potential and class word on the record, the Raise Dead grant on the
 record's known powers (and the body's caster), and the sounds as
-`PointSounded` with the handler's flags. The flash, the witness event and
-the awakenings' body effects are logged, not applied. `--game-event
+`PointSounded` with the handler's flags. A memory fragment's witness event
+activates `XAU_Memory` in the player's contacts that hold XA_Derrin. The
+flash and the awakenings' body effects are logged, not applied. `--game-event
 CODE@FRAME,...` raises codes after the load (a debug aid).
 
 The main menu screen's F1 takes the flow's mode, phase and page state, and

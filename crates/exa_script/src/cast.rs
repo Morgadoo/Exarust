@@ -77,32 +77,38 @@ impl Relation {
     }
 }
 
-/// What a contact remembers of the other's voice: the loudest recent
-/// stimulus and the offset its decay starts from (the original's two
-/// floats beside the contact's AI pointer).
+/// What a contact remembers of the other's voice: the AI contact's noticed
+/// level and the attention offset beside it. A speech stimulus raises the
+/// noticed level (and clears the offset) or raises the floor the AI's
+/// notice score subtracts; the AI's own pass drifts both afterwards.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Hearing {
-    /// The loudest stimulus, already scaled by a quarter.
+    /// The noticed level (a stimulus is scaled by a quarter first).
     pub level: f32,
-    /// How far the level has faded before the next stimulus.
+    /// The attention offset: how far the level has faded before the next
+    /// stimulus.
     pub decay: f32,
 }
 
-/// An AI contact as scripts and dialogues see it.
+/// An AI contact as scripts and dialogues see it: the brain's record of
+/// one other character, mirrored each frame from the AI
+/// (`exa_game::script_cast`), with the concern and hearing a script or a
+/// line wrote going back to the brain.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Contact {
     /// The other character's id.
     pub other: u32,
     /// 0..=15.
     pub concern: f32,
-    /// Effective attitude toward the other (−100..100), as the AI rates it.
+    /// Trust toward the other (−100..100): the relation's last attitude
+    /// with the mind powers' overrides, the value the script `Trust` reads.
     pub attitude: f32,
-    /// The contact's state word: 1 = engaged with it, bit 2 = hostile.
+    /// The level the AI's target pass classified the contact at: 0 notice,
+    /// 1 watch, 2 and 3 engage, 4 flee. Bit 2 is the hostile mood code.
     pub state: u32,
-    /// A contact value the mood scales the attitude by: ((10 − x)/10)²
-    /// up to 10, nothing beyond. Its meaning in the AI is not determined
-    /// (a guess: how far the contact is, in metres).
-    pub range: f32,
+    /// The contact's hostility, which scales the attitude in the mood:
+    /// ((10 − x)/10)² up to 10, nothing beyond.
+    pub hostility: f32,
     /// What the contact heard of the other recently.
     pub hearing: Hearing,
 }
@@ -114,7 +120,7 @@ impl Contact {
             concern: 0.0,
             attitude: 0.0,
             state: 0,
-            range: 0.0,
+            hostility: 0.0,
             hearing: Hearing::default(),
         }
     }

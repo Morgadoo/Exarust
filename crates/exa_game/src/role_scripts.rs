@@ -19,6 +19,16 @@
 //! read; Exarust keeps the AI's in [`Relations`] and the scripts' in the
 //! session cast, so the meeting time the encounter renews is written to the
 //! cast's record too (scripts read it as `LastEnc`) before the scripts run.
+//!
+//! **Greetings.** Right after the encounter call, the original's pass greets
+//! the newly attended character when the brain's notice scale is not above
+//! 6, its readiness not above 1 and the other within 6 m (the pass's
+//! [`exa_ai::contacts::PassReport::greet`]). The greeting asks the dialogue
+//! engine for a calm class 0 entry node of the pair, with the brain's mood
+//! code toward the other: its arousal must not pass 1 and it must not be in
+//! a conversation already ([`exa_script::dialogue::Engine::greet`]). The
+//! brain's contacts are synced into the cast first, so the mood reads the
+//! level and concern the pass just left ([`crate::script_cast::sync_brain`]).
 
 use bevy::prelude::*;
 use exa_ai::brain::{CharacterId, Npc};
@@ -33,7 +43,8 @@ impl Plugin for RoleScriptsPlugin {
         // body tick, right after the AI tick that reported them.
         app.add_systems(
             exa_ai::BrainChain,
-            run_encounter_scripts
+            (run_encounter_scripts, run_greetings)
+                .chain()
                 .after(exa_ai::brain::ai_tick)
                 .before(exa_ai::DuelSystems),
         );
@@ -99,6 +110,69 @@ pub fn run_encounter_scripts(
     });
     for effect in out {
         effects.write(exa_script::ScriptEffect(effect));
+    }
+}
+
+/// Runs the greetings the last target passes reported, after their
+/// encounter scripts.
+#[allow(clippy::type_complexity)]
+pub fn run_greetings(
+    scripts: Option<Res<exa_script::Scripts>>,
+    conversations: Option<ResMut<exa_script::Conversations>>,
+    mirror: Option<ResMut<crate::script_cast::ContactMirror>>,
+    time: Option<Res<Time<Virtual>>>,
+    mut greeters: Query<(&CharacterId, &mut Npc, Option<&Relations>)>,
+    ids: Query<&CharacterId>,
+    mut effects: MessageWriter<exa_script::ScriptEffect>,
+) {
+    let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
+        return;
+    };
+    let mut local = crate::script_cast::ContactMirror::default();
+    let mut mirror = mirror;
+    let mirror = mirror.as_deref_mut().unwrap_or(&mut local);
+    let now = time.map_or(0, |t| t.elapsed().as_millis() as u32);
+    let character_of = |key: u64| {
+        Entity::try_from_bits(key)
+            .and_then(|e| ids.get(e).ok())
+            .map(|id| id.0)
+    };
+    for (id, mut npc, relations) in &mut greeters {
+        let Some(target) = npc.pass.greet.take() else {
+            continue;
+        };
+        let Some(partner) = character_of(target) else {
+            continue;
+        };
+        let me = id.0;
+        if partner == 0 || partner == me {
+            continue;
+        }
+        crate::script_cast::sync_brain(
+            &mut conversations.cast,
+            mirror,
+            me,
+            &mut npc,
+            relations,
+            character_of,
+        );
+        let mood = exa_script::dialogue::mood(&conversations.cast, me, partner);
+        let arousal = conversations.cast.get(me).map_or(0.0, |c| c.arousal);
+        let (started, out) = conversations.with_scene(&scripts, now, |engine, scene| {
+            engine.greet(scene, me, partner)
+        });
+        if started {
+            info!(
+                "character {me} greets {partner}: mood {mood:#x}, arousal {arousal:.2}, a greeting starts"
+            );
+        } else {
+            debug!(
+                "character {me} greets {partner}: mood {mood:#x}, arousal {arousal:.2}, no greeting"
+            );
+        }
+        for effect in out {
+            effects.write(exa_script::ScriptEffect(effect));
+        }
     }
 }
 

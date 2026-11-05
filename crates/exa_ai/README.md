@@ -280,8 +280,9 @@ contacts as the perception left them, and then the integration's drift
 (`contacts::drift`: hostility, concern, noticed level, attention and the
 aggregates), which reads the level, attention and stress the pass has just
 written, as the original's tick orders them; it reports
-the engagement, the leave, the encounter and the greeting (Exarust has no
-dialogue engine). The AI tick (`brain::ai_tick`) runs it after the
+the engagement, the leave, the encounter and the greeting (`exa_game`
+runs the encounter scripts and the greeting). The readiness, the arousal
+word greetings and dialogues test, starts at the personality's 10. The AI tick (`brain::ai_tick`) runs it after the
 perception pass filled the contact words and before the duellist's combat
 state, keeps the report (level, attention, stress, cursor) on the brain,
 and feeds the report's stress and the integration's total back into the
