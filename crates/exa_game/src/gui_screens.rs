@@ -1271,6 +1271,7 @@ impl Plugin for GameScreensPlugin {
             // The item panel's container popups read and write the item
             // records; init_resource keeps the table another plugin made.
             .init_resource::<crate::doll_view::DollItems>()
+            .init_resource::<exa_assets::live_objects::LiveObjects>()
             .add_message::<ScreenRequest>()
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<ContainerRequest>()
@@ -1487,31 +1488,64 @@ fn debug_open_container(
     });
 }
 
-/// Hands the loaded level's own records to the item catalogue once both
-/// are there (and again after each level load), so a level-local item's
-/// icon renders and its bulk counts in the panels.
+/// Hands the live database's tagged records to the item catalogue once it
+/// is loaded, and again whenever the database changes: the local tier (the
+/// loaded level's own records and the copies made in it) and the world
+/// tier, each under its tagged ids, so their icons render, their bulk
+/// counts and their cards read their own bytes. A record written in place
+/// is read again alone (a template's, or its tier's).
 fn register_level_items(
-    level: Option<Res<exa_world::LevelLocalItems>>,
-    records: Option<Res<exa_world::LevelLocalRecords>>,
+    live: Option<Res<exa_assets::live_objects::LiveObjects>>,
     catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
-    mut done: Local<bool>,
+    mut seen: Local<Option<u64>>,
 ) {
-    let (Some(level), Some(mut catalogue)) = (level, catalogue) else {
+    use exa_assets::live_objects::Changes;
+    use exa_formats::objdb::{TAG_MASK, Tier};
+    let (Some(live), Some(mut catalogue)) = (live, catalogue) else {
         return;
     };
-    if level.is_changed() || records.as_ref().is_some_and(|r| r.is_changed()) {
-        *done = false;
-    }
-    if *done || catalogue.is_empty() {
+    if catalogue.is_empty() {
+        *seen = None;
         return;
     }
-    catalogue.set_level_items(&level.0);
-    // The level's own records' description cards (a placed chest's).
-    if let Some(records) = records.as_deref() {
-        catalogue.set_level_cards(&records.records, records.strings.as_ref());
-        debug!("item catalogue: {} level cards", records.records.len());
+    let changes = seen.map_or(Changes::All, |seen| live.changes_since(seen));
+    let tiers: Vec<Tier> = match changes {
+        Changes::None => return,
+        Changes::All => vec![Tier::Local, Tier::World],
+        Changes::Records(ids) => {
+            let mut tiers = Vec::new();
+            for id in ids {
+                if id & TAG_MASK == 0 {
+                    if let Some(record) = live.db().base.find(id) {
+                        let base = &live.db().base;
+                        catalogue.refresh_record(id, record.payload(), |parent| {
+                            base.find(parent).map(|r| r.payload())
+                        });
+                    }
+                } else if !tiers.contains(&Tier::of(id)) {
+                    tiers.push(Tier::of(id));
+                }
+            }
+            tiers
+        }
+    };
+    for tier in tiers {
+        let store = live.db().store(tier);
+        let items: Vec<exa_formats::objdb::Item> =
+            store.records().filter_map(|r| r.item().ok()).collect();
+        let records: Vec<(u32, Vec<u8>)> = store
+            .records()
+            .map(|r| (r.id, r.payload().to_vec()))
+            .collect();
+        catalogue.set_tier_items(tier.tag(), &items);
+        catalogue.set_tier_cards(tier.tag(), &records, Some(live.db().library(tier)));
+        debug!(
+            "item catalogue: {} {:?} records from the live database",
+            records.len(),
+            tier
+        );
     }
-    *done = true;
+    *seen = Some(live.revision());
 }
 
 /// Writes the records the closed popups saved back into their objects'
@@ -1520,10 +1554,11 @@ fn store_saved_containers(
     mut screens: ResMut<GameScreens>,
     mut objects: Query<&mut exa_world::ObjectSections>,
     mut items: ResMut<crate::doll_view::DollItems>,
+    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
 ) {
     for (object, id, record) in screens.saved_containers.drain(..) {
         if object == Entity::PLACEHOLDER {
-            items.store_container(id, &record);
+            items.store_container(&mut live, id, &record);
             continue;
         }
         if let Ok(mut sections) = objects.get_mut(object)

@@ -60,6 +60,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::window::PrimaryWindow;
+use exa_assets::live_objects::{Changes, LiveObjects};
 use exa_assets::model::{self, ModelLoader};
 use exa_assets::{Game, ModelCache, PackKind};
 use exa_character::held::Hands;
@@ -290,16 +291,19 @@ pub struct DollDrop {
     pub right_half: bool,
 }
 
-/// The game's object records by id, read once when a drop first needs an
-/// apparel's occupancy and worn model.
+/// The game's object records by id, decoded for the readers that want an
+/// [`Item`]: the base templates, read once when a drop first needs an
+/// apparel's occupancy and worn model, and every record of the live
+/// database's local and world tiers under its tagged id, refreshed from
+/// [`LiveObjects`] whenever it changes ([`Self::sync`]). A kit's copy, a
+/// level's own record and a promoted record each read their own bytes.
 #[derive(Resource, Default)]
 pub struct DollItems {
     items: HashMap<u32, Item>,
-    /// Records of tagged ids (a kit's own copy, a level's or the
-    /// character's own record) that have been written, by their whole id:
-    /// a copy's dirt, wear and container list are its own, not its
-    /// template's.
+    /// The live database's tagged records, by their whole id.
     copies: HashMap<u32, Item>,
+    /// The live database's revision the copies were read at.
+    revision: u64,
     tried: bool,
 }
 
@@ -322,68 +326,69 @@ impl DollItems {
         self.items = items.into_iter().map(|item| (item.id, item)).collect();
     }
 
+    /// Reads again what the live database changed since the last sync: the
+    /// records written in place, or every tagged record after records came
+    /// or went.
+    pub fn sync(&mut self, live: &LiveObjects) {
+        match live.changes_since(self.revision) {
+            Changes::None => {}
+            Changes::Records(ids) => {
+                for id in ids {
+                    let Some(item) = live.item(id) else {
+                        continue;
+                    };
+                    if id & !ID_MASK == 0 {
+                        self.items.insert(id, item);
+                    } else {
+                        self.copies.insert(id, item);
+                    }
+                }
+            }
+            Changes::All => {
+                self.copies = live
+                    .tagged_items()
+                    .into_iter()
+                    .map(|item| (item.id, item))
+                    .collect();
+            }
+        }
+        self.revision = live.revision();
+    }
+
+    /// The record `id` names: a tagged id's own record in the live
+    /// database, an untagged id's template. A tagged id the live database
+    /// does not hold (an arena actor's own database's) reads its template's
+    /// [Exarust's fallback: those records live in the actor's own
+    /// database].
     pub fn get(&self, id: u32) -> Option<&Item> {
         self.copies
             .get(&id)
             .or_else(|| self.items.get(&(id & ID_MASK)))
     }
 
-    /// The record `id` names, to be written: a tagged id gets its own copy
-    /// of its template's record the first time; an untagged id is the
-    /// template's record itself.
-    fn get_mut(&mut self, id: u32) -> Option<&mut Item> {
-        if id & !ID_MASK == 0 {
-            return self.items.get_mut(&id);
+    /// Writes a container popup's children back into the item's record in
+    /// the live database (a tagged id's own, an untagged id's template's)
+    /// and reads it again. An id the database does not hold, or an item
+    /// with no container, is left as it was.
+    pub fn store_container(
+        &mut self,
+        live: &mut LiveObjects,
+        id: u32,
+        record: &crate::item_container::ContainerRecord,
+    ) {
+        let children: Vec<exa_formats::containers::Child> = record
+            .children
+            .iter()
+            .map(|child| exa_formats::containers::Child {
+                id: child.id,
+                flags: child.flags,
+                x: child.x,
+                y: child.y,
+            })
+            .collect();
+        if live.set_container_children(id, &children) {
+            self.sync(live);
         }
-        if !self.copies.contains_key(&id) {
-            let template = self.items.get(&(id & ID_MASK))?.clone();
-            self.copies.insert(id, template);
-        }
-        self.copies.get_mut(&id)
-    }
-
-    /// A kit's copy `to` of the record `from` takes that record's current
-    /// state as its own.
-    pub fn copy_record(&mut self, from: u32, to: u32) {
-        if from == to {
-            return;
-        }
-        if let Some(item) = self.get(from).cloned() {
-            self.copies.insert(to, item);
-        }
-    }
-
-    /// A kit's byte written back into the record: apparel or weapon, dirt
-    /// or wear. A missing record or section is left alone.
-    pub fn write_condition(&mut self, id: u32, apparel: bool, dirt: bool, value: u8) {
-        let Some(item) = self.get_mut(id) else {
-            return;
-        };
-        if apparel {
-            if let Some(appearance) = item.appearance.as_mut() {
-                if dirt {
-                    appearance.dirt = value;
-                } else {
-                    appearance.damage = value;
-                }
-            }
-        } else if let Some(weapon) = item.weapon.as_mut() {
-            if dirt {
-                weapon.dirt = value;
-            } else {
-                weapon.damage = value;
-            }
-        }
-    }
-
-    /// Writes a container popup's children back into the item's section:
-    /// a tagged id into its own copy. An id the database does not hold, or
-    /// an item with no container, is left as it was.
-    pub fn store_container(&mut self, id: u32, record: &crate::item_container::ContainerRecord) {
-        let Some(section) = self.get_mut(id).and_then(|item| item.container.as_mut()) else {
-            return;
-        };
-        crate::gui_screens::store_record(section, record);
     }
 }
 
@@ -1432,6 +1437,11 @@ fn cancel(screens: &mut GameScreens, drop: DollDrop) {
     }
 }
 
+/// Keeps [`DollItems`] on the live database's records.
+fn sync_doll_items(mut items: ResMut<DollItems>, live: Res<LiveObjects>) {
+    items.sync(&live);
+}
+
 /// The inventory's character view.
 pub struct DollViewPlugin;
 
@@ -1441,6 +1451,13 @@ impl Plugin for DollViewPlugin {
             .init_resource::<DollItems>()
             .init_resource::<DollDropScript>()
             .add_message::<DollDrop>()
+            .init_resource::<LiveObjects>()
+            .add_systems(
+                Update,
+                sync_doll_items
+                    .before(gui_screens::draw_screens)
+                    .before(crate::panel_live::track_pointer),
+            )
             .add_systems(
                 Update,
                 (
@@ -1509,19 +1526,37 @@ mod tests {
         }
     }
 
-    /// A kit's writes reach the shared record; a tagged copy keeps its own
-    /// bytes and its own container list, and leaves its template alone.
+    /// The records come from the live database: a kit's byte written
+    /// there reaches the decoded record of that id only, and a tagged
+    /// copy's container list is its own.
     #[test]
-    fn kit_writes_and_copies_keep_their_own_records() {
+    fn the_records_follow_the_live_database() {
+        use exa_formats::objdb::{ObjectDb, Store};
+        let section = |tag: u32, body: &[u8]| {
+            let mut out = tag.to_le_bytes().to_vec();
+            out.extend((body.len() as u32 + 8).to_le_bytes());
+            out.extend_from_slice(body);
+            out
+        };
+        let mut weapon = vec![0u8; 0x5A];
+        weapon[0x0D] = 0x60;
+        let mut container = vec![0u8; 0x18];
+        container[0] = 4;
+        let mut payload = section(0x1000_0000, &[0u8; 24]);
+        payload.extend(section(0x4000, &weapon));
+        payload.extend(section(exa_formats::objdb::CONTAINER, &container));
+        let mut db = ObjectDb::default();
+        db.base = Store::from_records([(0x12, 0x4000, payload.as_slice())]);
+        db.local = Store::from_records([(0x12, 0x4000, payload.as_slice())]);
+        let mut live = LiveObjects::of(db);
         let mut items = DollItems::default();
         items.items.insert(0x12, weapon_item(0x12));
-        items.write_condition(0x12, false, true, 0x20);
-        assert_eq!(items.get(0x12).unwrap().weapon.unwrap().dirt, 0x20);
+        items.sync(&live);
         let copy = 0x8000_0012;
-        items.copy_record(0x12, copy);
-        items.write_condition(copy, false, false, 0x10);
+        assert_eq!(items.get(copy).unwrap().weapon.unwrap().damage, 0x60);
+        live.write_condition(copy, false, false, 0x10);
+        items.sync(&live);
         assert_eq!(items.get(copy).unwrap().weapon.unwrap().damage, 0x10);
-        assert_eq!(items.get(copy).unwrap().weapon.unwrap().dirt, 0x20);
         assert_eq!(items.get(0x12).unwrap().weapon.unwrap().damage, 0x60);
         let record = crate::item_container::ContainerRecord {
             children: vec![crate::item_container::ContainerChild {
@@ -1530,7 +1565,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        items.store_container(copy, &record);
+        items.store_container(&mut live, copy, &record);
         let children = |items: &DollItems, id| {
             items
                 .get(id)
@@ -1539,6 +1574,10 @@ mod tests {
         };
         assert_eq!(children(&items, copy), 1);
         assert_eq!(children(&items, 0x12), 0);
+        // A level load swaps the tagged records out.
+        live.load_level("next", None, None);
+        items.sync(&live);
+        assert!(items.copies.is_empty());
     }
 
     /// A torch or off-hand root on the figure takes the pick's marker with

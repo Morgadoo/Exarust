@@ -4296,10 +4296,7 @@ fn apply_steps(
                             &mut character.record,
                             &mut [],
                             None,
-                            story
-                                .level
-                                .as_deref_mut()
-                                .map(|records| &mut records.database),
+                            story.objects.as_deref_mut().map(|live| live.db_mut()),
                         );
                     }
                     if let (Some(character), Some(possessions)) = (
@@ -4344,6 +4341,11 @@ fn apply_steps(
                 carried,
                 powers,
             } => {
+                // A new story starts with an empty world tier, as the
+                // original's new game clears it before the first level.
+                if let Some(objects) = story.objects.as_mut() {
+                    objects.db_mut().clear_world();
+                }
                 // The record the level load spawns the player from takes the
                 // start's writes before the load, as the original's does.
                 if let Some(record) = story.created.as_mut().and_then(|c| c.0.as_mut()) {
@@ -4450,9 +4452,10 @@ struct StoryParts<'w> {
     roles: Option<Res<'w, exa_ai::brain::RoleDatabase>>,
     start: Option<Res<'w, StoryStartPlayer>>,
     after_load: Option<ResMut<'w, AfterLoad>>,
-    /// The loaded level's local database, which the practice kit passes
-    /// copy through when the player carries no database of its own.
-    level: Option<ResMut<'w, exa_world::LevelLocalRecords>>,
+    /// The live object database (its local tier the loaded level's), which
+    /// the practice kit passes copy through when the player carries no
+    /// database of its own.
+    objects: Option<ResMut<'w, exa_assets::live_objects::LiveObjects>>,
     /// The death fade a session's leave, the story's exit and its respawn
     /// reset, and the game time it gives back.
     fade: Option<ResMut<'w, exa_ui::DeathFade>>,

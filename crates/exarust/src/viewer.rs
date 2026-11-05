@@ -1302,14 +1302,15 @@ fn spawn_players(
         if let Some(saved) = saved {
             // A loaded save's player wears and holds what its record does,
             // and its stats are its record's.
+            // A tagged id is the save's world record of that id (the
+            // save's world tier is the live one after the load); an untagged
+            // id is the game's template.
             let find = |id: u32| {
-                let id = id & exa_formats::characters::ID_MASK;
-                items.iter().find(|item| item.id == id).or_else(|| {
-                    saved
-                        .items
-                        .iter()
-                        .find(|item| item.id & exa_formats::characters::ID_MASK == id)
-                })
+                if id & exa_formats::objdb::TAG_MASK != 0 {
+                    saved.items.iter().find(|item| item.id == id)
+                } else {
+                    items.iter().find(|item| item.id == id)
+                }
             };
             let record = &player_record;
             let look = exa_world::record_look(record, find);

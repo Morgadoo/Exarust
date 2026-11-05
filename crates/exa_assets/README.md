@@ -602,3 +602,15 @@ and walls take none. In the shipped sets only `gefs_uwa01` (164 points, a
 box) and `gefs_uwb02` (964 points, the chute; about 130 ms in a release
 build, once per loaded set) have marked nodes. The character physics-body
 trigger is not run: Exarust's characters carry no GI points.
+
+## Live object database
+
+`live_objects::LiveObjects` is the running game's object database, the
+original's three tiers in one resource: the base tier (`objdb.rdb` and the
+shared `objstrings.rdb`, read the first time something asks), the local
+tier (the loaded level's own database, which the level load puts in place)
+and the world tier (objects promoted out of levels, which a save's load
+fills and its save exports). Kits, container popups, the kit passes and the
+saves write records there; `changes_since` tells a decoded cache (the
+panels' item records, the item catalogue) which records to read again: the
+ids written in place, or all of them after records came or went.

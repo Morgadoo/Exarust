@@ -399,11 +399,11 @@ type KitBody<'a> = (
 );
 
 /// Preparation then equip on one body that stays. An actor's own database
-/// is used when the body carries one; otherwise the loaded level's local
-/// database. With neither, own ids stay.
+/// is used when the body carries one; otherwise the live database, whose
+/// local tier is the loaded level's. With neither, own ids stay.
 fn redress(
     kits: &mut Query<KitBody<'_>>,
-    level: Option<&mut exa_world::LevelLocalRecords>,
+    level: Option<&mut exa_assets::live_objects::LiveObjects>,
     entity: Entity,
 ) {
     let Ok((_, mut data, mut held, mut own, _)) = kits.get_mut(entity) else {
@@ -411,7 +411,7 @@ fn redress(
     };
     let database = match own.as_deref_mut() {
         Some(own) => Some(&mut own.0),
-        None => level.map(|level| &mut level.database),
+        None => level.map(|level| level.db_mut()),
     };
     crate::save_kit::dress_kit(&mut data.record, &mut [], None, database);
     if let Some(held) = held.as_mut() {
@@ -690,7 +690,7 @@ fn continue_round(
     clock: Option<Res<crate::effects::EffectClock>>,
     (fighters, drawn): (Query<MatchBody<'_>>, Query<DrawBody<'_>>),
     mut kits: Query<KitBody<'_>>,
-    mut level: Option<ResMut<exa_world::LevelLocalRecords>>,
+    mut level: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
 ) {
@@ -807,7 +807,7 @@ fn stand_next_round(
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
     kits: &mut Query<KitBody<'_>>,
-    mut level: Option<&mut exa_world::LevelLocalRecords>,
+    mut level: Option<&mut exa_assets::live_objects::LiveObjects>,
     now_ms: u32,
     commands: &mut MessageWriter<SceneCommand>,
 ) {
@@ -889,7 +889,7 @@ fn stand_bracket_round(
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
     kits: &mut Query<KitBody<'_>>,
-    mut level: Option<&mut exa_world::LevelLocalRecords>,
+    mut level: Option<&mut exa_assets::live_objects::LiveObjects>,
     (sides, mode): (&[crate::career::SideFighter], i32),
     now_ms: u32,
     commands: &mut MessageWriter<SceneCommand>,

@@ -41,21 +41,31 @@ pub fn world_characters(package: &PackageImage) -> Option<exa_formats::character
 
 /// The save's world object database, read as the load's object database
 /// importer reads it: the `#worldobjdb` section's first chunk into the world
-/// tier and its second chunk (the data manager's table) into the string
-/// library the records resolve their text through. `None` when the section
-/// or its first chunk is missing or does not read; the original then clears
-/// the live database.
+/// tier and its second chunk into the world tier's own string library (the
+/// export writes that library: the tier's records name their own text
+/// there). `None` when the section or its first chunk is missing or does
+/// not read; the original then clears the live tier.
 pub fn world_objects(package: &PackageImage) -> Option<exa_formats::objdb::ObjectDb> {
+    let (world, strings) = world_object_tier(package)?;
+    let mut db = exa_formats::objdb::ObjectDb::default();
+    db.world = world;
+    db.world_strings = strings;
+    Some(db)
+}
+
+/// The save's world tier and its library, as [`world_objects`] reads them,
+/// ready for the live database's import
+/// ([`exa_formats::objdb::ObjectDb::import_world`]).
+pub fn world_object_tier(
+    package: &PackageImage,
+) -> Option<(exa_formats::objdb::Store, exa_formats::objstrings::Library)> {
     let section = package.section(save_package::WORLD_OBJECT_DB)?;
     let (objects, strings) = save_package::world_object_payloads(section)?;
     let world = exa_formats::objdb::Store::parse(objects).ok()?;
     let strings = strings
         .and_then(|bytes| exa_formats::objstrings::Library::parse(bytes).ok())
         .unwrap_or_default();
-    let mut db = exa_formats::objdb::ObjectDb::default();
-    db.world = world;
-    db.strings = strings;
-    Some(db)
+    Some((world, strings))
 }
 
 /// The two world databases as a save exports them, ready for
@@ -96,9 +106,9 @@ impl WorldExport {
 /// sections: the character database only when it holds a record (it is
 /// flushed first, so every live character's current record is written,
 /// then saved in its `0xDBACCD00` form), the object database only when its
-/// world tier holds a record (the tier's writer, then the string library's
-/// writer, the same library [`world_objects`] imports the second chunk
-/// into). The scene's characters are flushed into the character database
+/// world tier holds a record (the tier's writer, then the writer of the
+/// world tier's own string library, which [`world_objects`] imports the
+/// second chunk into). The scene's characters are flushed into the character database
 /// by the caller first ([`crate::arena_ids::flush_scene_character`]), as
 /// the original walks the scene's character list before the export.
 pub fn export_world_databases(
@@ -111,8 +121,7 @@ pub fn export_world_databases(
         characters.flush()?;
         Some(characters.save())
     };
-    let objects =
-        (!objects.world.is_empty()).then(|| (objects.world.write(), objects.strings.write()));
+    let objects = objects.export_world();
     Ok(WorldExport {
         characters,
         objects,
@@ -2188,7 +2197,7 @@ mod tests {
         let objects = ObjectDb::default();
         package.put_section(
             save_package::WORLD_OBJECT_DB,
-            &save_package::world_object_db(&objects.world.write(), &objects.strings.write()),
+            &save_package::world_object_db(&objects.world.write(), &objects.world_strings.write()),
         );
         let mut characters = world_characters(&package).unwrap();
         assert!(characters.contains(5));
@@ -2281,7 +2290,7 @@ mod tests {
         record.name = "Tobb".into();
         characters.add(3, record);
         objects.world = Store::from_records([(0x4000_0002, 0, &[1u8, 2, 3, 4][..])]);
-        let text = objects.strings.add(b"rusty key");
+        let text = objects.world_strings.add(b"rusty key");
         let export = export_world_databases(&mut characters, &objects).unwrap();
         let saved = export.characters.as_deref().unwrap();
         assert_eq!(&saved[0..4], &0xDBAC_CD00u32.to_le_bytes());
@@ -2297,7 +2306,12 @@ mod tests {
         assert_eq!(back.get(3).unwrap().record().name, "Tobb");
         let objects_back = world_objects(&package).unwrap();
         assert_eq!(objects_back.world.write(), objects.world.write());
-        assert_eq!(objects_back.strings.get(text).as_deref(), Some("rusty key"));
+        assert_eq!(
+            objects_back.world_strings.get(text).as_deref(),
+            Some("rusty key")
+        );
+        // The shared library is not the save's: it stays the game's.
+        assert!(objects_back.strings.is_empty());
         // A disabled save writes nothing at all.
         let dir2 = folder("world-export-disabled");
         let slots2 = Slots::story(&dir2);

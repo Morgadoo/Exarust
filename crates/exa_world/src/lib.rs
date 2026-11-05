@@ -84,45 +84,6 @@ pub struct PartBounds {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct LevelLocalItems(pub Vec<Item>);
 
-/// The loaded level's own records as stored and its string table, replaced
-/// at each level load: what the item catalogue builds the level's
-/// description cards from. `database` is those records in the local tier,
-/// which the fighter kit passes copy through.
-#[derive(Resource, Debug, Clone, Default)]
-pub struct LevelLocalRecords {
-    pub records: Vec<(u32, Vec<u8>)>,
-    pub strings: Option<exa_formats::objstrings::Library>,
-    /// The same records as a local object database. Empty when the level
-    /// had no local database: the kit passes then leave own ids alone.
-    pub database: exa_formats::objdb::ObjectDb,
-}
-
-impl LevelLocalRecords {
-    /// The level's local records and the database the kit passes read.
-    pub fn load(
-        records: Vec<(u32, Vec<u8>)>,
-        strings: Option<exa_formats::objstrings::Library>,
-    ) -> Self {
-        let mut database = exa_formats::objdb::ObjectDb::default();
-        if let Some(strings) = strings.clone() {
-            database.local_strings = strings;
-        }
-        for (id, payload) in &records {
-            let index = id & exa_formats::objdb::ID_MASK;
-            if index == 0 {
-                continue;
-            }
-            let (_, at) = database.local.insert(index);
-            database.local.store(at, payload);
-        }
-        Self {
-            records,
-            strings,
-            database,
-        }
-    }
-}
-
 /// Marks the root entity of a spawned level.
 #[derive(Component)]
 pub struct LevelRoot {
@@ -1848,10 +1809,20 @@ impl LevelLoad {
             }
         });
         commands.insert_resource(LevelLocalItems(scene.local_items.clone()));
-        commands.insert_resource(LevelLocalRecords::load(
-            scene.local_records.clone(),
-            scene.local_strings.clone(),
-        ));
+        // The live object database's local tier becomes the level's own
+        // database, as the level reader's local-database chunk replaces it
+        // (the base tier is read first when nothing has asked for it yet).
+        let records = scene.local_database.clone();
+        let strings = scene.local_strings.clone();
+        let level = entry.clone();
+        commands.queue(move |world: &mut World| {
+            let game = world.get_resource::<exa_assets::Game>().cloned();
+            let mut live = world.get_resource_or_init::<exa_assets::live_objects::LiveObjects>();
+            if let Some(game) = game {
+                live.ensure_base(&game.0);
+            }
+            live.load_level(&level, records, strings);
+        });
         let root = commands
             .spawn((
                 LevelRoot {
@@ -3579,6 +3550,7 @@ mod tests {
             }),
             local_items: Vec::new(),
             local_records: Vec::new(),
+            local_database: None,
             local_strings: None,
             local_string_error: None,
             placed_objects: Vec::new(),
@@ -3621,6 +3593,7 @@ mod tests {
                 ..item(3, "Trouser_At", "Trouser_A", 5)
             }],
             local_records: Vec::new(),
+            local_database: None,
             local_strings: None,
             local_string_error: None,
             placed_objects: Vec::new(),
