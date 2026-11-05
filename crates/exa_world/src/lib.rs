@@ -1826,6 +1826,8 @@ pub struct LevelLoad {
     player_focus: Option<Vec3>,
     /// The clock seed this load draws its day from, taken once.
     engine_seed: u32,
+    /// The outdoor preset's seed for this load, taken once.
+    preset_seed: u32,
     /// The scene's daylight scale for that day. Visibility rules use it
     /// while the level's models spawn; the lighting stage places the sun
     /// with the same seed.
@@ -1930,15 +1932,20 @@ impl LevelLoad {
         let locale = locales_bytes.and_then(|b| exa_formats::roles::locale_id(b, &entry));
         let locales = locales_bytes.and_then(|b| exa_formats::locales::LocaleDb::load(b).ok());
         let engine_seed = environment::clock_seed();
+        // The outdoor preset's seed is taken once for the load, as the
+        // original's map load takes one counter word, so the day this
+        // visibility pass sees is the day the lighting stage places.
+        let preset_seed = environment::clock_seed();
         let daylight = environment::level_lighting_scene(
             &entry,
             scene.environment.as_ref(),
             0,
             None,
             Some(environment::PresetInput {
-                seed: 0,
+                seed: preset_seed,
                 engine_seed,
                 now: 0,
+                log: false,
             }),
         )
         .env
@@ -1972,6 +1979,7 @@ impl LevelLoad {
             missing_database_objects: 0,
             player_focus: None,
             engine_seed,
+            preset_seed,
             daylight,
             bytes: source,
             from_save,
@@ -2297,7 +2305,8 @@ impl LevelLoad {
     fn finish(&mut self, commands: &mut Commands, loader: &mut ModelLoader<'_>) -> LoadProgress {
         // A level load applies the scene preset its name selects (the save
         // unit's indoor and outdoor presets), drawing the outdoor day and
-        // weather from the clock seed the original takes at scene creation.
+        // weather from the load's one counter seed, as the original's map
+        // load passes the counter word to its environment draw.
         let engine_seed = self.engine_seed;
         let scene_lighting = environment::level_lighting_scene(
             &self.entry,
@@ -2305,9 +2314,10 @@ impl LevelLoad {
             self.lights,
             None,
             Some(environment::PresetInput {
-                seed: 0,
+                seed: self.preset_seed,
                 engine_seed,
                 now: 0,
+                log: true,
             }),
         );
         environment::apply_lighting(commands, &scene_lighting.lighting, self.root);

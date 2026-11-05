@@ -68,7 +68,9 @@ pub struct ArenaMap {
     /// post processor; what it drives there is not traced). Outdoor 0.
     pub view_amount: f32,
     /// An outdoor arena lets the environment draw take its one-in-six
-    /// branch (time of day from 0.76 to 1).
+    /// night branch (time of day from 0.76 to 1). The map load hands the
+    /// draw this flag and a fresh counter word as its seed; nothing else of
+    /// the career (rank, day, matches fought) reaches the draw.
     pub late_draw: bool,
     /// An outdoor arena plays the `NtrA` bed by day instead of the wind.
     pub steady_bed: bool,
@@ -313,7 +315,8 @@ pub fn start_match(
 pub enum OutdoorBed {
     /// Rain over 0.01 (in double), or a calm day without the steady bed.
     Silent,
-    /// A time of day under 0.5: `NtrAN` at 0.3.
+    /// A daylight factor under 0.5 (the placed body's, not the time of
+    /// day): `NtrAN` at 0.3.
     Night,
     /// By day with the steady bed: `NtrA` at 1.
     Steady,
@@ -323,12 +326,14 @@ pub enum OutdoorBed {
     Wind { gain: f32, pitch: f32 },
 }
 
-/// The outdoor bed for an arena from the drawn rain, time of day and wind.
-pub fn outdoor_bed(arena: &ArenaMap, rain: f32, time_of_day: f32, wind: f32) -> OutdoorBed {
+/// The outdoor bed for an arena from the drawn rain target, the scene's
+/// daylight factor and the wind. The map load compares the field after the
+/// time of day, which the sun placement fills with the daylight factor.
+pub fn outdoor_bed(arena: &ArenaMap, rain: f32, daylight: f32, wind: f32) -> OutdoorBed {
     if f64::from(rain) > DEAD_HEALTH {
         return OutdoorBed::Silent;
     }
-    if 0.5f32 > time_of_day {
+    if 0.5f32 > daylight {
         return OutdoorBed::Night;
     }
     if arena.steady_bed {

@@ -235,7 +235,12 @@ pub struct SceneEnvRuntime {
     /// lightning strike is forced whenever none is running, so every frame
     /// after it is inside a strike and a capture always shows one.
     pub force_strike_at: Option<u32>,
+    /// The next frame a driven time of day (`EXA_TIME_SPEED`) is logged at.
+    pub time_log_at: u32,
 }
+
+/// Frames between two logs of a driven time of day.
+const TIME_LOG_FRAMES: u32 = 120;
 
 /// The forced strike's offset from the view, centimetres: 316 cm out, the
 /// distance the lightning tests use (an attenuation of about 0.877).
@@ -250,7 +255,11 @@ fn forced_strike_frame() -> Option<u32> {
 
 impl SceneEnvRuntime {
     /// A runtime over `env`, with both streams seeded from `seed`.
-    pub fn new(env: SceneEnvironment, seed: u32) -> Self {
+    pub fn new(mut env: SceneEnvironment, seed: u32) -> Self {
+        if let Some(speed) = debug_time_speed() {
+            env.time_speed = speed;
+            info!("EXA_TIME_SPEED: the time of day runs at {speed} days a second");
+        }
         Self {
             env,
             weather: WeatherRng::new(seed),
@@ -260,6 +269,7 @@ impl SceneEnvRuntime {
             now: 0,
             frames: 0,
             force_strike_at: forced_strike_frame(),
+            time_log_at: 0,
         }
     }
 }
@@ -342,13 +352,29 @@ pub struct PresetInput {
     pub seed: u32,
     pub engine_seed: u32,
     pub now: u32,
+    /// Log the draw (the load's lighting stage; its earlier visibility
+    /// pass draws the same day silently).
+    pub log: bool,
 }
 
-/// A seed for the presets' draws from the process clock, as the original
-/// takes one from the engine's clock when it creates a scene. This is read
-/// once per level load, never inside the fixed step. `EXA_SCENE_SEED=<n>`
-/// (a debug aid) fixes it, so two runs of an outdoor level draw the same
-/// day and weather for side-by-side screenshots.
+/// The seed the original's scene creation takes when it is given none: the
+/// low word of the performance counter with its four bytes reversed (the
+/// same counter word the arena's match start rolls from). Exarust's counter
+/// is the process clock in 100 ns ticks, the rate of the counter the
+/// original reads on Windows.
+pub fn counter_seed() -> u32 {
+    let ticks = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| (since.as_nanos() / 100) as u64);
+    (ticks as u32).swap_bytes()
+}
+
+/// A seed for the presets' draws, taken once per level load (never inside
+/// the fixed step) and used for every draw of that load, so the day the
+/// load's visibility rules see is the day the lighting places. It is
+/// [`counter_seed`], the original's own fallback; `EXA_SCENE_SEED=<n>` (a
+/// debug aid) fixes it, so two runs of an outdoor level draw the same day
+/// and weather for side-by-side screenshots.
 pub fn clock_seed() -> u32 {
     if let Some(seed) = std::env::var("EXA_SCENE_SEED")
         .ok()
@@ -356,10 +382,29 @@ pub fn clock_seed() -> u32 {
     {
         return seed;
     }
-    let clock = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_nanos() as u64);
-    (clock as u32) ^ ((clock >> 32) as u32)
+    counter_seed()
+}
+
+/// A debug aid (`EXA_TIME_SPEED=<days a second>`): the scene environment's
+/// time speed, which the weather tick advances the time of day by. The
+/// shipped game never writes that field (no code path stores into it, so it
+/// stays at the constructor's zero and every match keeps the time its draw
+/// gave); setting it shows the tick's driven sun, records and sky.
+pub fn debug_time_speed() -> Option<f32> {
+    std::env::var("EXA_TIME_SPEED")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+}
+
+/// A debug aid (`EXA_TIME_OF_DAY=<0..1>`): after the load's preset has
+/// drawn, the sun or moon is placed again at this time of day (the draw's
+/// rain, clouds, fog and wind stay), as the editor's time slider would.
+pub fn debug_time_of_day() -> Option<f32> {
+    std::env::var("EXA_TIME_OF_DAY")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| (0.0..=1.0).contains(v))
 }
 
 /// The engine's sRGB curve, the same helper the scene environment and the
@@ -431,14 +476,39 @@ pub fn level_lighting_scene(
         (LevelPreset::Indoor, Some(_)) => env.apply_indoor_preset(),
         (LevelPreset::Outdoor { night_allowed }, Some(input)) => {
             let mut engine = crate::scene_env::WeatherRng::new(input.engine_seed);
-            env.apply_outdoor_preset(
+            let mut used = input.seed;
+            let drawn = env.apply_outdoor_preset(
                 true,
                 night_allowed,
                 input.seed,
-                clock_seed,
+                || {
+                    used = counter_seed();
+                    used
+                },
                 input.now,
                 &mut engine,
             );
+            if input.log {
+                info!(
+                    "scene preset: {level} outdoor draw from seed {used:#010x} (night allowed {night_allowed}): time of day {:.4}, daylight {:.3}, rain target {:.3}, cloudiness {:.3}, fog distance {:.3}, wind {:.3}, view amount {:.4}",
+                    drawn.time_of_day,
+                    env.daylight,
+                    drawn.rain,
+                    drawn.cloudiness,
+                    drawn.fog_distance,
+                    drawn.wind,
+                    drawn.view_sun
+                );
+            }
+            if let Some(time) = debug_time_of_day() {
+                env.set_sun_position(env.azimuth, time);
+                if input.log {
+                    info!(
+                        "EXA_TIME_OF_DAY: {level} placed at {time:.4} (daylight {:.3})",
+                        env.daylight
+                    );
+                }
+            }
             preset_outdoor = true;
         }
         _ => {}
@@ -675,6 +745,7 @@ fn live_environment(
         now: tick_now,
         frames,
         force_strike_at,
+        time_log_at,
     } = &mut *runtime;
     env.view = view;
     let mut draws = || library.unit();
@@ -685,6 +756,19 @@ fn live_environment(
     *events = env.tick(now, weather, &mut draws);
     *tick_now = now;
     let frame = env.apply_frame(forward);
+    if 0.0 < env.time_speed && *frames >= *time_log_at {
+        *time_log_at = frames.saturating_add(TIME_LOG_FRAMES);
+        info!(
+            "time of day {:.4} (frame {frames}, {now} ms): daylight {:.3}, sun towards {:?}, sun light {:?} x {:.2}, ambient {:?}, fog {:?}",
+            env.time_of_day,
+            env.daylight,
+            env.sun_towards,
+            env.sun_light_colour,
+            frame.sun_intensity,
+            frame.ambient,
+            frame.fog.map(|f| (f.colour, f.far))
+        );
+    }
     if force_strike_at.is_some() && (frame.lightning > 0.0 || env.weather.lightning.active) {
         info!(
             "lightning frame {frames}: intensity {:.4}, clear {:?}, fog {:?}",
@@ -879,6 +963,7 @@ mod tests {
                 seed: 1,
                 engine_seed: 7,
                 now: 0,
+                log: false,
             }),
         );
         assert!(lit.sky);
@@ -904,6 +989,7 @@ mod tests {
             seed: 1,
             engine_seed: 7,
             now: 0,
+            log: false,
         };
         let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
         assert_eq!(
@@ -919,6 +1005,75 @@ mod tests {
         (a - b).abs().max_element() < 1e-5
     }
 
+    /// A load's two passes take the same seed, so they draw the same day:
+    /// the visibility rules and the lighting see one time of day.
+    #[test]
+    fn one_seed_draws_one_day_for_both_passes() {
+        for seed in [2u32, 15, 24, 66] {
+            let input = PresetInput {
+                seed,
+                engine_seed: 9,
+                now: 0,
+                log: false,
+            };
+            let first = level_lighting_scene("arenao3", None, 0, None, Some(input)).env;
+            let second = level_lighting_scene("arenao3", None, 3, None, Some(input)).env;
+            assert_eq!(first.time_of_day, second.time_of_day, "seed {seed}");
+            assert_eq!(first.daylight_scale, second.daylight_scale, "seed {seed}");
+            assert_eq!(first.weather.target, second.weather.target, "seed {seed}");
+        }
+    }
+
+    /// The counter seed is the counter's low word with its bytes reversed,
+    /// so its low byte is the counter's fourth: it moves slowly and the
+    /// high byte, which the draws' high-half products read first, fast.
+    #[test]
+    fn the_counter_seed_reverses_the_counter_word() {
+        assert_eq!(0x1234_5678u32.swap_bytes(), 0x7856_3412);
+        let seed = counter_seed();
+        assert_ne!(seed, 0);
+    }
+
+    /// With a time speed the tick drives the day: from a clear afternoon
+    /// the sun sinks, the daylight falls under the night bed's 0.5, the
+    /// moon takes over and the day record follows.
+    #[test]
+    fn a_time_speed_drives_the_day_into_the_night() {
+        let input = PresetInput {
+            seed: 15,
+            engine_seed: 15,
+            now: 0,
+            log: false,
+        };
+        let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+        let start = scene.env.time_of_day;
+        assert!(start > 0.5 && start < 0.74, "a day time {start}");
+        let mut runtime = SceneEnvRuntime::new(scene.env, 15);
+        runtime.env.time_speed = 0.01;
+        let mut daylights = Vec::new();
+        for f in 0..=3000u32 {
+            let SceneEnvRuntime {
+                env,
+                weather,
+                library,
+                ..
+            } = &mut runtime;
+            let mut draws = || library.unit();
+            env.tick(f * 17, weather, &mut draws);
+            if f % 500 == 0 {
+                daylights.push((env.time_of_day, env.daylight));
+            }
+        }
+        let (end, dark) = *daylights.last().unwrap();
+        // 51 s at 0.01 days a second: 0.51 days on, into the night.
+        assert!(
+            (end - (start + 0.51).rem_euclid(1.0)).abs() < 0.01,
+            "{daylights:?}"
+        );
+        assert!(dark < 0.5, "{daylights:?}");
+        assert!(daylights.iter().any(|&(_, d)| d >= 0.5), "{daylights:?}");
+    }
+
     /// The live frame republishes the load's lighting unchanged: the same
     /// sun (in lux, its unit direction and colour), the same ambient before
     /// the ×16, the same fog and clear colour. Only a lightning strike moves
@@ -931,6 +1086,7 @@ mod tests {
                 seed,
                 engine_seed: seed,
                 now: 0,
+                log: false,
             };
             let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
             let load = scene.lighting.clone();
@@ -1009,6 +1165,7 @@ mod tests {
             seed: 1,
             engine_seed: 7,
             now: 0,
+            log: false,
         };
         let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
         let load = scene.lighting.clone();
@@ -1090,6 +1247,7 @@ mod tests {
                 seed: 4,
                 engine_seed: 4,
                 now: 0,
+                log: false,
             }),
         );
         // Both are outdoor levels; the preset only redraws the day.
@@ -1289,6 +1447,7 @@ mod tests {
                     seed: 1,
                     engine_seed: 1,
                     now: 0,
+                    log: false,
                 }),
             );
             assert!(lit.sky, "{name}");
