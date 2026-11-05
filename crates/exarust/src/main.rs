@@ -2011,15 +2011,33 @@ fn main() -> AppExit {
     }
     app.add_systems(Startup, register_debug_commands);
     if schedule_ambiguities {
-        // A debug aid: the fixed step's systems that touch the same data
-        // with no order between them, logged as the schedule is built.
+        // A debug aid: the systems that touch the same data with no order
+        // between them, logged as each schedule is built: the fixed step's,
+        // the brains' chain, and the frame's (whose writers of the same
+        // transforms would otherwise win by thread timing).
         use bevy::ecs::schedule::ScheduleLabel;
-        for label in [FixedUpdate.intern(), exa_ai::BrainChain.intern()] {
+        for label in [
+            FixedUpdate.intern(),
+            exa_ai::BrainChain.intern(),
+            Update.intern(),
+            PostUpdate.intern(),
+        ] {
             app.edit_schedule(label, |schedule| {
                 schedule.set_build_settings(bevy::ecs::schedule::ScheduleBuildSettings {
                     ambiguity_detection: bevy::ecs::schedule::LogLevel::Warn,
                     ..Default::default()
                 });
+            });
+        }
+    }
+    if std::env::var("EXA_FRAME_EXECUTOR").is_ok_and(|v| v == "single") {
+        // A debug aid: the frame's schedules run their systems one at a
+        // time, in the schedule's order, so systems that touch the same
+        // data with no order between them run in the same order every run.
+        use bevy::ecs::schedule::ScheduleLabel;
+        for label in [Update.intern(), PostUpdate.intern()] {
+            app.edit_schedule(label, |schedule| {
+                schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
             });
         }
     }

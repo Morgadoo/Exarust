@@ -911,6 +911,8 @@ Round 68 simthread4b: one command queue carries the frame's writes into the simu
 
 Round 69 motiledyn: the player walks on the original's stepping feet instead of a gliding capsule.
 
+Round 70 simthread4c: the rise moves into the simulation, as in the original.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the

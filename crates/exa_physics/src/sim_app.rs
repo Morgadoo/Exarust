@@ -162,6 +162,10 @@ pub fn add_frame_start(app: &mut App) {
     }
     app.insert_resource(FrameStartRunner)
         .init_schedule(SimFrameStart)
+        // Its systems write the same bodies: one at a time, in order.
+        .edit_schedule(SimFrameStart, |schedule| {
+            schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        })
         .add_systems(
             RunFixedMainLoop,
             run_frame_start.in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop),

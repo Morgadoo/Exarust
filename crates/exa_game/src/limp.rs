@@ -50,14 +50,14 @@ impl Plugin for LimpPlugin {
         bridge_limp_types(app);
         app.add_systems(
             Update,
-            (
-                build_bodies,
-                go_limp,
-                crate::rise::rise_the_dead,
-                crate::rise::restore_revived,
-            )
-                .chain()
-                .after(AnimSystems),
+            (build_bodies, go_limp).chain().after(AnimSystems),
+        )
+        // The rise is the AI manager's, which the original runs on the
+        // simulation's thread (a hook its step calls): it runs in the
+        // simulation's frame start, the restore after it.
+        .add_systems(
+            exa_physics::sim_app::SimFrameStart,
+            (crate::rise::rise_the_dead, crate::rise::restore_revived).chain(),
         )
         .add_systems(
             FixedUpdate,
@@ -77,6 +77,8 @@ impl Plugin for LimpPlugin {
 fn bridge_limp_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<crate::limp::GroundPlacement>()
+        .bridge_copy::<LimpKept>()
+        .bridge_copy::<exa_combat::condition::DeathClock>()
         .bridge_copy::<crate::limp::SpawnWatch>()
         .bridge_copy_resource::<crate::limp::SpawnWatchTicks>();
 }
