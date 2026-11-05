@@ -686,7 +686,8 @@ rest translation, with no turn) and a soft world link; a torch, attached
 outside the table, gets its own two pivots at (0, −20, 0) and (10, 0, 0) cm
 and its soft world link at the item's origin. The grip's
 modes (`apply_mode`, `mode_from_clip`, `set_mode`) switch the second-hand,
-arm and extra links by the original's two callbacks, the polearm's main
+arm and extra links by the original's two callbacks (the two-hander's turns
+mode 2 into 1 for a lit burning blade), the polearm's main
 link slides at 15·scale cm, `relax` takes the post-change slack off the
 links enabled once, and `flip_step` turns the flip point about the item's y
 by `f·π` while a flip is active and the character is not attacking away

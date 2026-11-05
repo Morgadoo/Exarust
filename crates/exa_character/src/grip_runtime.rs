@@ -30,6 +30,16 @@ pub struct HeldRecord {
     pub holder: Holder,
 }
 
+/// A held item's ability type: the word its weapon section names (3 for
+/// the burning blade), kept on the item body by the ability check. The
+/// two-handed grip's callback reads it with its holder's lit-blade byte
+/// ([`crate::held::BurningGrip`]).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldAbility(pub u32);
+
+/// The ability type of the burning blade.
+pub const BURNING_ABILITY: u32 = 3;
+
 /// A character asked to turn its held item over.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlipWeaponRequest {
@@ -327,12 +337,13 @@ pub fn animate_grips(
         &mut HeldGrip,
         Option<&mut Blade>,
         Option<&HeldRecord>,
+        Option<&HeldAbility>,
     )>,
     bodies: Query<(Entity, &Ragdoll)>,
-    owners: Query<(&Animator, &Condition)>,
+    owners: Query<(&Animator, &Condition, Option<&crate::held::BurningGrip>)>,
     motions: Option<Res<Motions>>,
 ) {
-    for (item, mut grip, blade, record) in &mut held {
+    for (item, mut grip, blade, record, ability) in &mut held {
         let Ok((_, item_body)) = bodies.get(item) else {
             continue;
         };
@@ -342,7 +353,7 @@ pub fn animate_grips(
         else {
             continue;
         };
-        let Ok((anim, condition)) = owners.get(owner) else {
+        let Ok((anim, condition, burning_grip)) = owners.get(owner) else {
             continue;
         };
         let clip = motions
@@ -356,19 +367,14 @@ pub fn animate_grips(
         };
         let mode = mode_from_clip(clip, clip, condition.has(Condition::DOWN.0));
         if kind != GripKind::Other && links.mode != mode {
-            // The half-sword turn needs the weapon section's own thrust
-            // class; Exarust has not read that byte, so it passes the
-            // record's kind as the nearest value. [guess]
-            let thrust_three = blade.as_deref().is_some_and(|b| b.record.kind() == 3);
-            links.apply_mode(
-                mode,
-                kind,
-                scale,
-                thrust_three,
-                false,
-                item_body,
-                holder_body,
-            );
+            // The two-hander's callback reads the item's ability type and
+            // its holder's lit-blade byte.
+            let burning = ability.is_some_and(|a| a.0 == BURNING_ABILITY);
+            let lit = burning_grip.is_some_and(|b| b.0);
+            if burning && lit && mode == 2 {
+                info!("grip: {item:?} burns in a lit hand: its two-handed rest takes mode 1");
+            }
+            links.apply_mode(mode, kind, scale, burning, lit, item_body, holder_body);
         }
         if links.relaxing {
             links.relax();

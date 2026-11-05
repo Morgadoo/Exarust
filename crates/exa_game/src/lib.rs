@@ -137,6 +137,7 @@ pub mod shop_stock;
 pub mod shop_window;
 pub mod sim_control;
 pub mod slots;
+pub mod socket_drag;
 pub mod splash;
 pub mod staff;
 pub mod stages;
@@ -226,6 +227,7 @@ impl Plugin for GamePlugin {
                 glow_pulse::GlowPulsePlugin,
                 crystal_drain::CrystalDrainPlugin,
                 item_ability::ItemAbilityPlugin,
+                socket_drag::SocketDragPlugin,
             ),
             hw_config::HardwareConfigPlugin,
             destination::DestinationPlugin,

@@ -581,8 +581,9 @@ vanish's caller is its power effect node, and no AI reads the hazards.
 
 The per-character item effects (`item_effects`) are the body's effect
 list and its two impact counters, the held charge (the HUD shown while it
-is under its source), the hand-effect dispatch (electric, glow, flame), the
-power-curve glow with its level step, the worn item's light and the apparel
+is under its source), the held-item ability dispatch (lightning,
+self-sharpening, burning), the self-sharpening check and hit hook (the slash
+byte and its share), the worn item's light and the apparel
 effect with their 0.9/0.1 hysteresis, the skin material fade (the square of
 the value, first match) and the focus-item power slot. The golem guardians
 are in `exa_ai::golem`; `golem_alarm` runs their alarm zones live: the AI
@@ -881,13 +882,23 @@ click at a placed id). Charged crystals lose 2 charge a game second
 (`crystal_drain`: the collect pass at the end of a level load over the
 player's hands, worn and carried items, then the socket and inventory
 sources once a second; the container sources are not wired). A held
-item's ability runs once a game second (`item_ability`): a blade of
-ability type 3 ("Sword GSF 01") whose first socket holds a Power Crystal
-C lights its flame row (`effects::fire_row`, its warm light at the line's
-middle, its `FireS02` loop and its `_FlameMat01` ribbon), takes the
-"Flaming" moveset overlay and puts the player light out; a cold socket
-puts it out, and its hits sizzle (`--flame-sword` gives the player the
-sword with a crystal socketed); the next press of any
+item's ability runs once a game second for every character
+(`item_ability`): the lightning mace (ability 1) raises its hum arcs
+(`thaum::arcs::hum_arcs`) while its first socket holds a charged crystal A
+or AR, its hits shock with zero strength, charge the socket and spark; the
+self-sharpening sword (2) gains slash from a crystal B one run in eight and
+loses it on each hit; a blade of ability type 3 ("Sword GSF 01") whose
+first socket holds a Power Crystal C lights its flame row
+(`effects::fire_row`, its warm light at the line's middle, its `FireS02`
+loop and its `_FlameMat01` ribbon), takes the "Flaming" moveset overlay and
+the body's lit-blade byte (a lit two-hander rests in both hands) and puts
+the player light out; a cold socket puts it out, and its hits sizzle
+(`--ability-item N[,cold][,npc|,npc-only]` hands out an ability item with
+its crystal, `--flame-sword` is `--ability-item 3`). The item card's
+socket row takes crystals (`socket_drag`): a crystal dragged from a pack
+onto a socket goes in (the one there goes back to the player), one dragged
+out onto a pack comes out, and the row is written into the item's weapon
+or apparel section; the next press of any
 button ends the cursor and is taken, and the dispatcher's door unlock is
 applied (the other branches are reported in `UseReleased`). A cleaning
 or repair kit reads and writes the record in the live object database
@@ -1459,7 +1470,10 @@ answering its hand and slot), a left-press drag off the figure
 (the scheduled hand take-out with its promotion, or the garment off the
 worn list with the underwear rule and the pack charged its bulk), and the
 right-press card (`item_card::FigureCard`); `--figure-drag FROM>TO@FRAME`
-and `--figure-card AT@FRAME` script them. An open figure keeps its look
+and `--figure-card AT@FRAME` script them. A drag that starts on, or ends
+over, a socket of the shown card's row is the socket control's
+(`Panel::Socket`, `socket_drag`). The panels follow the scripted pointer,
+so `--drag-at` drives them. An open figure keeps its look
 until the inventory reopens (Exarust dresses a body once). No drag leaves the
 player's pack while the player's body swaps its weapon sets (a swap
 requested or its hand plan pending), the inventory's drag permission.

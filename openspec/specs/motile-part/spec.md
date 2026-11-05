@@ -118,13 +118,6 @@ The grip builder SHALL make the main links from the table's points scaled by the
 - **WHEN** a two-handed grip is built for a character of size 1.5
 - **THEN** the arm link's hand-side point is the table's point unscaled
 
-### Requirement: Grip mode store
-The grip mode setter SHALL store the requested mode before running the grip's callback, and SHALL mark the links as relaxing only when the grip has a callback. The two-hander's half-sword turn of mode 2 into mode 1 SHALL be local to the callback.
-
-#### Scenario: Half-sword thrust
-- **WHEN** mode 2 is asked for a half-sword thrust grip
-- **THEN** the links take mode 1's arrangement and the stored mode is 2
-
 ### Requirement: Weapon body impact
 A striking held item's contact with a non-limb part SHALL count on the item and run the hard impact on the owner's swing. A stab or an overhead records round(5 times the square root of the impact) as its strength, with a zero stall. The item SHALL then sound only when its own sound clock is below the game clock, at volume 0.005 times the impact plus 0.3 times the square of a hundredth of the impact, at most 1. The cooldown SHALL be 200 minus round(80 times the volume) ms.
 
@@ -421,3 +414,14 @@ While the player's state flags hold the wake (0x40), the player's behaviour SHAL
 #### Scenario: A click after the story revive
 - **WHEN** the revived player's flags are 0x70 and the left button is held
 - **THEN** its flags become 0x30
+
+### Requirement: Grip mode setter
+The grip mode setter SHALL store the requested mode before running the grip's callback, and SHALL mark the links as relaxing only when the grip has a callback. The two-hander's callback SHALL turn a requested mode 2 into mode 1 when its item's weapon section names ability 3 (the burning blade) and its holder's lit-blade byte is set, so the lit blade rests in both hands; that turn SHALL be local to the callback.
+
+#### Scenario: Lit burning two-hander
+- **WHEN** mode 2 is asked for a two-handed grip whose item is a burning blade held by a body with the lit-blade byte
+- **THEN** the links take mode 1's arrangement and the stored mode is 2
+
+#### Scenario: A duellist's lit greatsword
+- **WHEN** `exarust grid "play arena --ability-item 3,npc-only --opponent --still-opponent …"` runs
+- **THEN** the duellist's "Sword GSF 01" lights and its grip logs the turn to mode 1
