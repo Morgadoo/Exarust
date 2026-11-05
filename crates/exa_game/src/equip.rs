@@ -106,17 +106,21 @@ pub fn apply_head_height(
     let Some(catalogue) = catalogue.as_deref() else {
         return;
     };
+    let armed = |grip: &exa_physics::grip::HeldGrip| {
+        grip.kind == exa_physics::grip::HeldKind::Weapon
+            && grip.class & exa_physics::grip::ARMED_GRIP != 0
+    };
+    let holders = exa_physics::body::first_by_key(
+        held.iter()
+            .filter(|grip| armed(grip))
+            .map(|grip| grip.holder_key),
+        bodies.iter().map(|found| (found, found.0)),
+    );
     for mut grip in &mut held {
-        if grip.kind != exa_physics::grip::HeldKind::Weapon
-            || grip.class & exa_physics::grip::ARMED_GRIP == 0
-        {
+        if !armed(&grip) {
             continue;
         }
-        let Some((body, possessions, data)) = bodies.iter().find(|(body, _, _)| {
-            body.parts
-                .first()
-                .is_some_and(|part| part.entity == grip.holder_key)
-        }) else {
+        let Some(&(body, possessions, data)) = holders.get(&grip.holder_key) else {
             continue;
         };
         let physique = data.map_or(0.5, |data| data.record.physique[0]);

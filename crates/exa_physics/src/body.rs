@@ -673,6 +673,14 @@ impl Part {
         )
     }
 
+    /// The grid cell of [`Self::pose`] alone, computed the same way: the
+    /// pair stage tests a sleeping part's cell before it needs the rest.
+    pub(crate) fn cell(&self, origin: (i32, i32)) -> (i32, i32) {
+        let matrix = affine_from_points(&self.rest, &self.rest_inverse, &self.positions);
+        let box_centre = matrix.transform_point3(self.pairing.mesh.centre);
+        crate::sector::cell_of(box_centre * 100.0, origin)
+    }
+
     /// The part's transform `alpha` of the way from where the tick before
     /// last left it to where the last tick did: the original interpolates
     /// the four particles and builds the matrix from them, so the drawn
@@ -5247,6 +5255,34 @@ impl Level for MaskedLevel<'_> {
     fn floor_piece(&self, piece: u32) -> bool {
         self.world.floor_piece(piece)
     }
+}
+
+/// For each of `keys` (a body's key is its first part's entity), the
+/// first of `bodies`, in their order, with that key: what a `find` over
+/// `bodies` returns for each key, in one walk that ends once every key is
+/// found. Held items look their holders up by key; a level holds thousands
+/// of sleeping prop bodies, so a walk per item and tick cost more than the
+/// rest of the tick's bookkeeping.
+pub fn first_by_key<'a, T>(
+    keys: impl IntoIterator<Item = Entity>,
+    bodies: impl IntoIterator<Item = (T, &'a Ragdoll)>,
+) -> bevy::ecs::entity::EntityHashMap<T> {
+    let mut wanted: bevy::ecs::entity::EntityHashSet = keys.into_iter().collect();
+    let mut found = bevy::ecs::entity::EntityHashMap::default();
+    if wanted.is_empty() {
+        return found;
+    }
+    for (value, body) in bodies {
+        if let Some(first) = body.parts.first()
+            && wanted.remove(&first.entity)
+        {
+            found.insert(first.entity, value);
+            if wanted.is_empty() {
+                break;
+            }
+        }
+    }
+    found
 }
 
 /// The solver's tick over every body (the character ticks ran before it):
