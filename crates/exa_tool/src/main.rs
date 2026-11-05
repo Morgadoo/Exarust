@@ -91,6 +91,20 @@ enum Cmd {
         stem: String,
         out: PathBuf,
     },
+    /// Assemble a factory weapon (`Factories.rpk` name, without the `@`) as
+    /// the game does and write its painted atlas (`out`), the atlas with
+    /// the merged mesh's texture coordinates drawn over it (`*.uv.png`) and
+    /// its surface map (`*.surface.png`).
+    Factory {
+        name: String,
+        out: PathBuf,
+        /// The item's seed A (0: a fresh recipe with zero seeds).
+        #[arg(long, default_value = "0")]
+        seed: u32,
+        /// The item's quality byte.
+        #[arg(long, default_value = "0")]
+        quality: u8,
+    },
     /// Summarise the skeleton and motion set of a `.rsq`.
     Rsq {
         #[arg(default_value = "humanoid.rsq")]
@@ -353,6 +367,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Paint { model, stem, out } => paint_item(&game, &model, &stem, &out),
+        Cmd::Factory {
+            name,
+            out,
+            seed,
+            quality,
+        } => factory_atlas(&game, &name, seed, quality, &out),
         Cmd::Png { pack, entry, out } => {
             let rfi = Rfi::parse(entry_bytes(&game, &pack, &entry)?)?;
             let rgba = rfi.decode_rgba8()?;
@@ -728,6 +748,55 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
         write_png(&path, shade.width as u32, shade.height as u32, normal)?;
     }
     println!("{} ({}) -> {}", item.name, model, out.display());
+    Ok(())
+}
+
+fn factory_atlas(game: &GameData, name: &str, seed: u32, quality: u8, out: &Path) -> Result<()> {
+    let weapon = exa_formats::objdb::Weapon {
+        seeds: [seed, 0],
+        quality,
+        ..Default::default()
+    };
+    let preview = exa_assets::weapon::factory_preview(game, name, Some(&weapon))
+        .with_context(|| format!("factory {name} did not assemble"))?;
+    let (w, h) = preview.atlas;
+    write_png(out, w, h, &preview.colour)?;
+    write_png(&out.with_extension("surface.png"), w, h, &preview.surface)?;
+    // The texture coordinates' edges over the atlas.
+    let mut over = preview.colour.clone();
+    let mut dot = |u: f32, v: f32| {
+        let (x, y) = ((u * w as f32) as i64, (v * h as f32) as i64);
+        if (0..w as i64).contains(&x) && (0..h as i64).contains(&y) {
+            let i = (y as usize * w as usize + x as usize) * 4;
+            over[i..i + 4].copy_from_slice(&[255, 255, 0, 255]);
+        }
+    };
+    for t in &preview.triangles {
+        for k in 0..3 {
+            let a = preview.uvs[t[k] as usize];
+            let b = preview.uvs[t[(k + 1) % 3] as usize];
+            let steps = (((b[0] - a[0]) * w as f32).abs())
+                .max(((b[1] - a[1]) * h as f32).abs())
+                .ceil()
+                .max(1.0) as usize;
+            for s in 0..=steps {
+                let f = s as f32 / steps as f32;
+                dot(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f);
+            }
+        }
+    }
+    write_png(&out.with_extension("uv.png"), w, h, &over)?;
+    println!(
+        "{name}: one merged mesh, {} vertices, {} triangles; atlas {w}x{h}{} -> {}",
+        preview.vertices,
+        preview.triangles.len(),
+        if preview.normal.is_some() {
+            " with normals"
+        } else {
+            ""
+        },
+        out.display()
+    );
     Ok(())
 }
 

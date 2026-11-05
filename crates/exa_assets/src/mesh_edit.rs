@@ -324,6 +324,34 @@ pub fn material_split_flags(m: &Material) -> u32 {
 }
 
 impl EditMesh {
+    /// A mesh with no faces: an empty position channel and stream, no
+    /// groups. The original's assemblies create one and append every part
+    /// into it.
+    pub fn empty() -> Self {
+        Self {
+            channels: vec![Channel {
+                key: POSITION_CHANNEL,
+                corners: Vec::new(),
+            }],
+            streams: vec![Stream {
+                id: POSITION_STREAM.0,
+                format: POSITION_STREAM.1,
+                channel: 0,
+                data: StreamData::Vec3(Vec::new()),
+            }],
+            groups: Vec::new(),
+            face_flags: None,
+            face_edges: None,
+            face_extra: None,
+            face_group: None,
+            face_children: None,
+            render_flags: 0,
+            level: 0,
+            incidence: None,
+            smoothing: Smoothing::Unset,
+        }
+    }
+
     /// The editable form of a decoded mesh: each channel's corners are its
     /// map over the triangles. `group_flags` gives each group's split
     /// flags ([`material_split_flags`]).

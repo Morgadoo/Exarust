@@ -4,6 +4,7 @@
 //! into Bevy assets: images ([`texture`]) and models with their materials
 //! ([`model`]), each cached by name.
 
+pub mod atlas;
 pub mod content_stream;
 pub mod decomp;
 pub mod hair;

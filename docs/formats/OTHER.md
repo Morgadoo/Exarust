@@ -1511,26 +1511,59 @@ factory weapons of a real save, part for part and material for material.
   and repaints the existing assembled node, keeping its meshes; the
   striking extents are recomputed from the same geometry
   (`ModelLoader::repaint_factory`, keyed by the seeds and stored choices).
+- **Merged mesh** (REA, the assembly and the mesh append, checked against
+  the listing): every chosen part whose component loads, in recipe order,
+  is appended to one new mesh named after the factory (the `_PROCITEM`
+  name is on a branch the loop never reaches: the new mesh is made before
+  the first append). The component's first node is a
+  mesh; its matrix is reset and rebuilt as the turn of the part's angles
+  (runtime library sine and cosine), then every row multiplied
+  component-wise by the part's scale (the scale acts along the weapon's
+  axes, after the turn), then the placed position. Its first stream whose
+  low key is 0x10 (texture coordinates) is mapped to `uv · size + offset`
+  by the part's atlas rectangle (single-precision multiply, then add). The
+  append places only the position stream and skips the normal stream.
+  After the last part: regroup by material, weld (positions within 0.01 cm,
+  texture coordinates within √1e-9), render form (normals rebuilt from the
+  assembled shape), bounds refit, and the run-time material (`_procmat1`,
+  or `_procmatr` when an area's material has the alpha program bit) on
+  every sub-object. Shipped components share one material name, so a
+  weapon draws as one group.
+- **Atlas job**: one colour, normal and surface target at the factory's
+  atlas size (both halved, integer, below texture detail 3), cleared to
+  black, (½, ½) and (0, 0.01, 0). Every region's colour passes run first,
+  then every region's normal passes, then every region's specular passes
+  (which read the finished normal target). Each layer blends into the
+  target by its mask, so texels a region's masks leave clear keep what an
+  earlier region drew. Shipped recipes overlap their regions on purpose: a
+  sword's guard spans the blade's columns, a halberd's grip the whole atlas
+  (64 recipes overlap chosen regions with zero seeds); each component's
+  texture coordinates use only its own part of its region.
+  `exa_assets::atlas` places each region over the atlas texels whose
+  centres its quad covers, backwards for a negative size.
 - Not reproduced yet: texture-only overlay parts (part flag 1) and the
   mask-gated shade of parts flagged 2, the alternate normal program (part
-  flag 4), the shared factory atlas with one `_PROCITE` merged mesh and one
-  material per weapon, and the weapon's rigid body and impact sound
-  attachment.
+  flag 4), the alpha job's sRGB-alpha colour target (the atlas is opaque),
+  and a crop above 1 overhanging its region into the atlas.
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
   4 material slots (material, finish, colour, mode), stats, and the stored
   choices at +0x50.
 - **Striking extent**: a role 2/3 head (or a role 6 part) stores its
-  assembled Y range over the root's top in bytes `0x35`/`0x36` (or
-  `0x3B`/`0x3C`), ×200 rounded. The stat-only refresh does not assemble,
+  stored box's Y range over its placed position, as a fraction of the
+  merged mesh's box top (centre + half extent), in bytes `0x35`/`0x36` (or
+  `0x3B`/`0x3C`), ×200 rounded. The deforms move the position stream only
+  and never refit a part's box, so a head's box can reach past the merged
+  top: a real save stores end bytes of 201–206 for some tools. With the
+  merged top, 110 of that save's 143 factory weapons get their saved start
+  and end bytes (6 with the highest placed box top); the rest are tools
+  whose generation still differs. The stat-only refresh does not assemble,
   so it keeps the template's bytes.
 
-Exarust follows all of this (`exa_formats::factory`, `exa_assets::weapon`).
-Not yet: the shared atlas and its UV transform (each part keeps its own
-textures), the merged mesh and its rebuilt normals, the striking extent's
-denominator (Exarust takes the highest placed box top for the merged
-mesh's box), the TTetraRBD body and its impact sound, and icon-only
-builds. Stale state the original reads from its cached factory (an
+Exarust follows all of this (`exa_formats::factory`, `exa_assets::weapon`,
+`exa_assets::atlas`), including the merged mesh, the shared atlas and the
+weapon's body and impact sound (`exa_character::assembled_item_body`).
+Not yet: icon-only builds. Stale state the original reads from its cached factory (an
 unrolled area's previous material, a replayed area's previous mode and
 emblem record) is replaced by the defined values in the code.
 
