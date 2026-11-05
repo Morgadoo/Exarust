@@ -115,9 +115,6 @@ The pad's newly pressed commands SHALL act each frame, as the player controls' p
 - `Powers` SHALL toggle the power bar only when the player has a power of its own;
 - with the bar closed, `UsePower` SHALL use the picked power when powers are allowed;
 - with the bar open, `UsePower` SHALL use it whatever the mask, or else a step right or left SHALL move the pick;
-- `PowerTree` SHALL ask for the tree when powers are allowed and the player has one;
-- `WepSwp` and `Inventory` SHALL keep the key handler's gates;
-- `Skills` SHALL ask for the skill screen with no permission test;
 - `pause_menu` SHALL toggle the menu as F1 does.
 
 The commands SHALL not test death.
@@ -140,3 +137,10 @@ A hit SHALL raise both rumble motors by its amount, each held at 1, and each fra
 #### Scenario: Decay
 - **WHEN** both motors are at 1 and a frame passes
 - **THEN** each is 0.6 and its speed word is 39321, and nothing is sent to the pad
+
+### Requirement: Gamepad screen commands
+`PowerTree` SHALL ask for the power tree when powers are allowed and the player has one; `WepSwp` and `Inventory` SHALL keep the key handler's gates; `Skills` SHALL ask for the skill screen with no permission test.
+
+#### Scenario: The pad opens the inventory
+- **WHEN** the pad's Inventory command is newly pressed while the player stands
+- **THEN** the inventory screen opens as the key would open it
