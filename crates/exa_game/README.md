@@ -1350,8 +1350,10 @@ reader's camera-relative move, aim, the look routine at the orbit rate, the
 stepped zoom, the power-bar and dialogue step modes, the 500 ms power-tree
 hold, the command word and rumble. The player reads it for exploration
 movement (`pad_keys`), combat steps (its stick vector is the footwork's
-analog word once its squared length is over 0.01), aim, attack and alternate attack, crouch,
-sprint, weapon swap, combat mode and the chase camera's look and zoom; the
+analog word once its squared length is over 0.01), aim, the attack on
+the emulated left mouse button (Exarust's stand-in for Steam's mouse
+emulation, the original's only pad attack) and the alternate attack, crouch,
+sprint, weapon swap, the `Combat` action's combat-mode toggle and the chase camera's look and zoom; the
 controls page's `InputMode` drives its controller flag. There is no Steam
 library, no binding panel and no floating
 gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
@@ -1602,7 +1604,8 @@ body in its idle motion. `--searcher <record id>` gives a level character
 the role edits of Derrin's recruitment and the Explorer role with its
 Activity variable set to the follow (Derrin is `0x2b` in a new story's
 exanima01; its log lines start `search:`), and `--searcher-shots <dir>`
-saves a screenshot at each pick, settle, loot, take and re-dress. Not in:
+saves a screenshot at each pick, settle, loot, take and re-dress (in a
+grid quadrant, of the offscreen image: `debug_shot::window_shot`). Not in:
 the original's per-room body and static-collider lists (every placed object
 with a model stands in for them; model-less volumes and placeholders are
 left out) and the placement bit of a loose item without object sections.
@@ -1743,6 +1746,12 @@ the original's world reset, also sends `WorldReset`, even when a load in the
 batch does the teardown). The viewer loads
 the destination through the same staged `LevelLoad` as a start-up load, and
 `PlacePlayer` is carried across it in `level_change::PlayerPlacement`.
+A plain teardown (the menu's creator or save screens, a session leave)
+takes the surviving player's body out of the scene (`level_change::OutOfWorld`:
+out of the solver and the character ticks, hidden) until a level is in
+again, so it cannot fall through the emptied world and start the death
+fade over the menu's screens; the original destroys the body with the
+world.
 The transition screen runs live (`run_transition`, `transition_screen`):
 `exa_ui::transition`'s state machine on the real clock, the action at
 black, the level exit's long hold from its fade bit, each caller's music

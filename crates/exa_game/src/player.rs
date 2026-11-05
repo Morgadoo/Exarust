@@ -3559,15 +3559,15 @@ mod tests {
         (app, body)
     }
 
-    /// The pad's attack trigger requests the same attack the left button
-    /// does.
+    /// The pad's emulated left button requests the same attack the left
+    /// button does.
     #[test]
     fn the_pad_trigger_requests_an_attack() {
-        use crate::gamepad::{Id, PadSample, PadStatus, PlayContext, PlayPad};
+        use crate::gamepad::{PadSample, PadStatus, PlayContext, PlayPad};
         let (mut app, body) = attack_app();
         let mut sample = PadSample::default();
         sample.connected = true;
-        sample.set_digital(Id::Combat, true);
+        sample.mouse_left = true;
         let ctx = PlayContext::default();
         let mut pad = PlayPad::default();
         pad.update(0, &sample, ctx);

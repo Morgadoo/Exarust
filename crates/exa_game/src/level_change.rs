@@ -8,9 +8,94 @@
 //! [`PlayerPlacement`] carries the flow's `Step::PlacePlayer` across the load,
 //! so the player (whose entity, record and possessions survive the change) is
 //! put at the original's spawn after the level is in.
+//!
+//! A plain teardown (a session leave, the menu's creator or save screens)
+//! leaves no level behind. The original's teardown destroys the player's
+//! body with the world; Exarust keeps the player entity, so its body leaves
+//! the scene instead ([`OutOfWorld`]): out of the solver and the character
+//! ticks, and hidden, so it cannot fall through the emptied world, die and
+//! start the death fade over the menu's screens. It comes back once a level
+//! is loaded again.
 
 use bevy::prelude::*;
-use exa_world::level_lifecycle::LevelChangeRequest;
+use exa_physics::body::OutOfScene;
+use exa_world::level_lifecycle::{LevelChangeRequest, LevelChangeSystems, LevelEntity};
+
+use crate::player::PlayerBody;
+
+/// Takes the player's body out of the scene over a plain teardown and
+/// brings it back when a level is in.
+pub struct LevelChangeBridgePlugin;
+
+impl Plugin for LevelChangeBridgePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (return_to_world, leave_world)
+                .chain()
+                .after(LevelChangeSystems::Teardown),
+        );
+    }
+}
+
+/// Marks a player body a plain teardown took out of the scene (with
+/// [`OutOfScene`]), so the return does not wake a body the fall took out.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct OutOfWorld;
+
+/// A plain teardown (no level after it): the surviving player's body leaves
+/// the scene with its root hidden.
+#[allow(clippy::type_complexity)]
+fn leave_world(
+    mut commands: Commands,
+    mut requests: MessageReader<LevelChangeRequest>,
+    bodies: Query<(Entity, Option<&ChildOf>), (With<PlayerBody>, Without<OutOfScene>)>,
+) {
+    let plain = requests
+        .read()
+        .any(|request| request.teardown && request.level.is_none());
+    if !plain {
+        return;
+    }
+    for (body, parent) in &bodies {
+        commands
+            .entity(body)
+            .insert((OutOfScene, OutOfWorld, Visibility::Hidden));
+        if let Some(parent) = parent {
+            commands.entity(parent.parent()).insert(Visibility::Hidden);
+        }
+        info!(
+            "level change: no level follows the teardown; the player's body {body:?} leaves the scene"
+        );
+    }
+}
+
+/// Once a level is in again (a level root and no loading screen), the
+/// bodies a plain teardown took out come back into the scene.
+fn return_to_world(
+    mut commands: Commands,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    levels: Query<(), With<LevelEntity>>,
+    bodies: Query<(Entity, Option<&ChildOf>), With<OutOfWorld>>,
+) {
+    if bodies.is_empty() || loading.is_some() || levels.is_empty() {
+        return;
+    }
+    for (body, parent) in &bodies {
+        commands
+            .entity(body)
+            .remove::<(OutOfScene, OutOfWorld)>()
+            .insert(Visibility::Inherited);
+        if let Some(parent) = parent {
+            commands
+                .entity(parent.parent())
+                .insert(Visibility::Inherited);
+        }
+        info!(
+            "level change: the level is in; the player's body {body:?} comes back into the scene"
+        );
+    }
+}
 
 /// Where the player is put after a level change, in metres and radians.
 #[derive(Resource, Debug, Clone, Copy, PartialEq)]
@@ -60,5 +145,76 @@ mod tests {
         let at = PlayerPlacement::of_flow(&placement);
         assert!((at.position - Vec3::new(81.0, 0.3, 39.2)).length() < 1e-5);
         assert!((at.yaw - 150.0f32.to_radians()).abs() < 1e-5);
+    }
+
+    /// A plain teardown takes the player's body out of the scene, a change
+    /// with a level does not, and the body comes back once a level is in
+    /// and the loading screen is gone.
+    #[test]
+    fn a_plain_teardown_holds_the_player_out_of_the_world() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<LevelChangeRequest>()
+            .add_plugins(LevelChangeBridgePlugin);
+        let root = app.world_mut().spawn(Visibility::default()).id();
+        let body = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), Visibility::default(), ChildOf(root)))
+            .id();
+        let held = |app: &App| app.world().get::<OutOfScene>(body).is_some();
+        app.world_mut()
+            .write_message(LevelChangeRequest::change("exanima01", 0));
+        app.update();
+        assert!(!held(&app));
+        app.world_mut()
+            .write_message(LevelChangeRequest::teardown());
+        app.update();
+        assert!(held(&app));
+        assert!(app.world().get::<OutOfWorld>(body).is_some());
+        assert_eq!(
+            app.world().get::<Visibility>(root),
+            Some(&Visibility::Hidden)
+        );
+        // No level yet: it stays out.
+        app.update();
+        assert!(held(&app));
+        // A level loading: still out.
+        let level = app.world_mut().spawn(LevelEntity).id();
+        app.insert_resource(exa_ui::LoadingStatus {
+            title: String::new(),
+            stage: String::new(),
+            fraction: 0.0,
+        });
+        app.update();
+        assert!(held(&app));
+        app.world_mut().remove_resource::<exa_ui::LoadingStatus>();
+        app.update();
+        assert!(!held(&app));
+        assert!(app.world().get::<OutOfWorld>(body).is_none());
+        assert_eq!(
+            app.world().get::<Visibility>(body),
+            Some(&Visibility::Inherited)
+        );
+        app.world_mut().despawn(level);
+    }
+
+    /// A body the fall took out (no `OutOfWorld`) is not brought back.
+    #[test]
+    fn a_fallen_body_stays_out_of_the_scene() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<LevelChangeRequest>()
+            .add_plugins(LevelChangeBridgePlugin);
+        let body = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), OutOfScene, Visibility::Hidden))
+            .id();
+        app.world_mut().spawn(LevelEntity);
+        app.world_mut()
+            .write_message(LevelChangeRequest::teardown());
+        app.update();
+        app.update();
+        assert!(app.world().get::<OutOfScene>(body).is_some());
+        assert!(app.world().get::<OutOfWorld>(body).is_none());
     }
 }
