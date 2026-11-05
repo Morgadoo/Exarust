@@ -45,7 +45,7 @@ pub const WAVE: u32 = 0x204;
 pub const WAVE_MOTION: u32 = 0x24;
 
 /// A wave in the scene.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct LiveWave {
     pub wave: Wave,
     pub setup: BlastSetup,

@@ -92,6 +92,7 @@ pub struct ThaumEffectsPlugin;
 
 impl Plugin for ThaumEffectsPlugin {
     fn build(&self, app: &mut App) {
+        bridge_thaum_effects_types(app);
         app.add_message::<ArcShocked>()
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
@@ -162,6 +163,49 @@ impl Plugin for ThaumEffectsPlugin {
                     .after(TransformSystems::Propagate),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_thaum_effects_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<bevy::asset::Assets<bevy::audio::AudioSource>>()
+        .bridge_message::<exa_combat::impact::LimbImpact>()
+        .bridge_message::<crate::thaum::cast::Otherwhere>()
+        .bridge_message::<crate::thaum::hold_live::HoldEnd>()
+        .bridge_message::<crate::thaum::kinesis_live::KinesisPicked>()
+        .bridge_message::<crate::thaum::live::ArcShocked>()
+        .bridge_message::<crate::thaum::throw_live::ThrowFade>()
+        .bridge_copy::<exa_ai::DuelPowers>()
+        .bridge_copy_resource::<exa_assets::Game>()
+        .bridge_lend_resource::<exa_audio::SoundBank>()
+        .bridge_lend_resource::<exa_audio::AudioEnvironment>()
+        .bridge_copy::<exa_character::held::HeldMoveset>()
+        .bridge_copy::<crate::effects::danger::Hazard>()
+        .bridge_lend_resource::<crate::player::CursorGround>()
+        .bridge_copy::<crate::thaum::barrier_live::LiveBarrier>()
+        .bridge_copy::<crate::thaum::blast_live::LiveBlast>()
+        .bridge_copy::<crate::thaum::bubble_live::LiveBubble>()
+        .bridge_copy::<crate::thaum::cast::LiveShellAura>()
+        .bridge_copy::<crate::thaum::cast::PowerCaster>()
+        .bridge_copy::<crate::thaum::hold_live::StrikesAura>()
+        .bridge_lend_resource::<crate::thaum::kinesis_live::KinesisCursor>()
+        .bridge_lend_resource::<crate::thaum::kinesis_live::KinesisKeys>()
+        .bridge_lend_resource::<crate::thaum::kinesis_live::KinesisPickHook>()
+        .bridge_lend_resource::<crate::thaum::live::EffectDraws>()
+        .bridge_lend_resource::<crate::thaum::live::EffectRoll>()
+        .bridge_copy::<crate::thaum::live::LiveArcs>()
+        .bridge_copy::<crate::thaum::live::LiveBarricade>()
+        .bridge_copy::<crate::thaum::live::LiveWisps>()
+        .bridge_copy::<crate::thaum::live::NavStamped>()
+        .bridge_copy::<crate::thaum::live::ShockReady>()
+        .bridge_copy::<crate::thaum::torrent_live::LiveTorrent>()
+        .bridge_copy::<crate::thaum::user_stamp::UserStamp>()
+        .bridge_copy::<crate::thaum::vanish_live::LiveVanish>()
+        .bridge_copy::<crate::thaum::wave_live::LiveWave>()
+        .bridge_copy::<exa_physics::grip::GripRelease>()
+        .bridge_copy::<exa_physics::prop::PropBody>()
+        .bridge_lend_resource::<exa_physics::prop::StandIns>();
 }
 
 /// The runtime's random stream the effects draw from.
@@ -277,7 +321,7 @@ pub fn shock_reaction(
 /// Arcs in the scene: the body and bone whose part they ride (its place is
 /// their frame's anchor, the hand arcs' node offset turned with it), and
 /// the body that casts them.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct LiveArcs {
     pub arcs: ArcEmitter,
     pub hand: Option<(Entity, usize)>,
@@ -289,14 +333,14 @@ pub struct LiveArcs {
 }
 
 /// A barricade in the scene and who cast it.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct LiveBarricade {
     pub wall: Barricade,
     pub caster: Option<Entity>,
 }
 
 /// Wisps on a body: each strand rides the part of the body at its slot.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct LiveWisps {
     pub wisps: Wisps,
     pub body: Entity,
@@ -309,7 +353,7 @@ pub struct EffectMesh(pub Handle<Mesh>);
 
 /// The patch a barricade's line stamped on the navigation grid, taken back
 /// when its fall ends.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct NavStamped(pub NavPatch);
 
 /// The world place (cm) of a point given in a part's space (cm).

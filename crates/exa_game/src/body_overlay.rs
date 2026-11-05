@@ -119,6 +119,7 @@ pub struct BodyOverlayPlugin;
 
 impl Plugin for BodyOverlayPlugin {
     fn build(&self, app: &mut App) {
+        bridge_body_overlay_types(app);
         app.init_resource::<BodyOverlay>()
             .init_resource::<InspectedBody>()
             .insert_gizmo_config(BodyGizmos, on_top(LINE_WIDTH))
@@ -133,6 +134,16 @@ impl Plugin for BodyOverlayPlugin {
             )
             .add_systems(Update, show_panel.run_if(resource_changed::<BodyOverlay>));
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_body_overlay_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyFrameGizmos, ()>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyFrameGizmos, bevy::time::Fixed>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyGizmos, ()>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<crate::body_overlay::BodyGizmos, bevy::time::Fixed>>();
 }
 
 /// Gizmos drawn over the scene, `width` pixels wide.

@@ -158,6 +158,7 @@ pub struct TeleportPlugin;
 
 impl Plugin for TeleportPlugin {
     fn build(&self, app: &mut App) {
+        bridge_teleport_types(app);
         app.init_resource::<EffectClock>()
             .init_resource::<Possession>()
             .init_resource::<Latch>()
@@ -183,6 +184,29 @@ impl Plugin for TeleportPlugin {
             )
             .add_systems(Update, debug_scan);
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_teleport_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<crate::teleporters::DeviceSound>()
+        .bridge_message::<crate::teleporters::EndSession>()
+        .bridge_message::<crate::teleporters::OpenPortalScreen>()
+        .bridge_message::<crate::teleporters::SessionEnded>()
+        .bridge_message::<crate::teleporters::SlotReleased>()
+        .bridge_message::<crate::teleporters::UseDevice>()
+        .bridge_lend_resource::<crate::destination::PortalScreenState>()
+        .bridge_lend_resource::<crate::effects::scan::ScanBuild>()
+        .bridge_lend_resource::<crate::flow::Flow>()
+        .bridge_lend_resource::<crate::item_cursor::ItemCursor>()
+        .bridge_copy::<crate::teleporters::DeviceGlow>()
+        .bridge_copy::<crate::teleporters::GlowBase>()
+        .bridge_lend_resource::<crate::teleporters::Possession>()
+        .bridge_copy::<crate::teleporters::RecordIdentity>()
+        .bridge_copy::<exa_render::gi::VoxelLight>()
+        .bridge_copy::<exa_world::TeleportDevice>()
+        .bridge_lend_resource::<exa_world::teleporters::Latch>();
 }
 
 /// The device's model nodes the original sees as its children: the model's

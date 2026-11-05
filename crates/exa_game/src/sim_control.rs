@@ -162,6 +162,7 @@ pub struct SimControlPlugin;
 
 impl Plugin for SimControlPlugin {
     fn build(&self, app: &mut App) {
+        bridge_sim_control_types(app);
         app.init_resource::<SimControl>()
             .add_message::<exa_combat::Hit>()
             .add_systems(Update, start_speed.run_if(|c: Res<SimControl>| !c.started))
@@ -188,6 +189,14 @@ impl Plugin for SimControlPlugin {
                     .run_if(|c: Res<SimControl>| c.waits_for_pause()),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_sim_control_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<crate::sim_control::SimControl>()
+        .bridge_lend_resource::<exa_ui::loading::LoadingStatus>();
 }
 
 /// Sets the starting speed once the loading screen is gone, so that a slow

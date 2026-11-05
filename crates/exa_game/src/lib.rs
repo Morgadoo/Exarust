@@ -163,6 +163,7 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
+        bridge_game_types(app);
         app.add_plugins((
             exa_assets::AssetsPlugin,
             player::PlayerPlugin,
@@ -278,4 +279,15 @@ impl Plugin for GamePlugin {
             sim_control::SimControlPlugin,
         ));
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_game_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<crate::item_ability::ItemArcs>()
+        .bridge_move_resource::<crate::joint_trace::JointTrace>()
+        .bridge_move_resource::<crate::pair_trace::PairTrace>()
+        .bridge_lend_resource::<crate::path_probe::PathProbe>()
+        .bridge_move_resource::<crate::trace::BodyTrace>();
 }

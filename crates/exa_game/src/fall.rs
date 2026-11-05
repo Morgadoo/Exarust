@@ -42,6 +42,7 @@ pub struct FallPlugin;
 
 impl Plugin for FallPlugin {
     fn build(&self, app: &mut App) {
+        bridge_fall_types(app);
         app.add_systems(
             CharacterTick,
             fall_to_death
@@ -51,6 +52,14 @@ impl Plugin for FallPlugin {
         .add_systems(FixedUpdate, fall_out_of_world.after(BodySystems))
         .add_systems(Update, drive_death_fade);
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_fall_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<exa_combat::voice::CharacterVoice>()
+        .bridge_lend_resource::<exa_ui::fade::DeathFade>();
 }
 
 /// The death fade's world-bus gain and whether the game pauses, from how many

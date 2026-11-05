@@ -59,7 +59,7 @@ pub const BARRIER_HOOK: CastHook = CastHook::NEVER_KEEPS;
 pub const BARRIER_RADIUS: f32 = 100.0;
 
 /// A barrier in the scene.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct LiveBarrier {
     pub barrier: Barrier,
     pub caster: Entity,

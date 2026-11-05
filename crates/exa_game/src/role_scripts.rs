@@ -47,6 +47,7 @@ pub struct RoleScriptsPlugin;
 
 impl Plugin for RoleScriptsPlugin {
     fn build(&self, app: &mut App) {
+        bridge_role_scripts_types(app);
         // The encounters a target pass reports run in the brains' tick, every
         // body tick, right after the AI tick that reported them.
         app.add_systems(
@@ -57,6 +58,17 @@ impl Plugin for RoleScriptsPlugin {
                 .before(exa_ai::DuelSystems),
         );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_role_scripts_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<exa_script::ScriptEffect>()
+        .bridge_lend_resource::<crate::role_scripts::ExtraEncounterScript>()
+        .bridge_lend_resource::<crate::script_cast::ContactMirror>()
+        .bridge_lend_resource::<exa_script::Conversations>()
+        .bridge_lend_resource::<exa_script::Scripts>();
 }
 
 /// A debug tool (`exarust --encounter-script TEXT`): a script run as one

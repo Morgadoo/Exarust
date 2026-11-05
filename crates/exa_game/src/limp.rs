@@ -47,6 +47,7 @@ pub struct LimpPlugin;
 
 impl Plugin for LimpPlugin {
     fn build(&self, app: &mut App) {
+        bridge_limp_types(app);
         app.add_systems(
             Update,
             (
@@ -69,6 +70,15 @@ impl Plugin for LimpPlugin {
         .add_systems(Update, (pace_swings, install_limb_trees))
         .add_plugins(CharacterTickPlugin);
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_limp_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<crate::limp::GroundPlacement>()
+        .bridge_copy::<crate::limp::SpawnWatch>()
+        .bridge_copy_resource::<crate::limp::SpawnWatchTicks>();
 }
 
 /// Half extent of a part without a mesh, metres.
