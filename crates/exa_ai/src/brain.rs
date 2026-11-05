@@ -354,6 +354,12 @@ impl Npc {
             },
             ..Self::new(record.traits)
         };
+        // The personality's arousal is the brain's readiness word: the
+        // original's personality routine sets it (10) and the contact
+        // integration drifts it from there, so a new brain starts aroused
+        // and calms over the first seconds (no greeting nor dialogue
+        // before it falls to 1).
+        brain.integration.readiness = personality.arousal;
         let attached = personality::attach(record.profession(), false);
         if let Some(sense) = attached.sense {
             brain.sense = sense;

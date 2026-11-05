@@ -12,11 +12,12 @@
 //! conversation of the same graph and pair is reused.
 //!
 //! **Running a node.** Each actor's mood toward the other is a hostility
-//! code (0x600 hostile or engaged with concern above 4, 0x200 above 1.2)
+//! code (0x600 when the AI's contact level is an engagement, bit 2; at the
+//! watch level 1, 0x600 with concern above 4, 0x200 above 1.2)
 //! plus an attitude band (above 70: 0x10, above 30: 0x20, at least −30:
 //! 0x40, below that: 0x80; the following below −60 test can never pass and
 //! its 0x100 band is unreachable). The attitude is first scaled by
-//! ((10 − x)/10)² for a contact value x ≤ 10 (an unordered value
+//! ((10 − x)/10)² for the contact's hostility x ≤ 10 (an unordered value
 //! included); past 10 it counts for nothing. An unordered attitude takes
 //! the 0x40 band and an unordered concern no hostility code.
 //! Branches of the current group are tried in order: a line of either
@@ -418,7 +419,7 @@ pub enum Purpose {
 ///
 /// Each test is the original's ordered `>` / `<` (an unordered compare
 /// fails it), in the original's order: a NaN concern sets no hostility
-/// code, a NaN contact value still scales the attitude, and a NaN attitude
+/// code, a NaN hostility still scales the attitude, and a NaN attitude
 /// falls through to the neutral band.
 pub fn mood(cast: &Cast, a: u32, b: u32) -> u16 {
     let Some(ca) = cast.get(a) else { return 0 };
@@ -436,11 +437,11 @@ pub fn mood(cast: &Cast, a: u32, b: u32) -> u16 {
             }
         }
         // Past 10 the attitude counts for nothing; otherwise (an unordered
-        // value included) the contact value scales it by ((10 − x) / 10)².
-        att = if c.range > 10.0 {
+        // value included) the hostility scales it by ((10 − x) / 10)².
+        att = if c.hostility > 10.0 {
             0.0
         } else {
-            let s = f64::from(10.0 - c.range) * 0.1;
+            let s = f64::from(10.0 - c.hostility) * 0.1;
             (s * s * f64::from(att)) as f32
         };
     }
@@ -914,7 +915,8 @@ pub fn activate_with(
 /// holds it toward `actor`), activate `topic` of `role`'s dialogue aimed
 /// at `target` in that contact's memory of `actor`, filed under entry
 /// `target`, key `role`. When `target` is not a relation role, `actor`
-/// must hold it; a `target` the database lacks ends the call.
+/// must hold it; a `target` the database lacks ends the call. Returns how
+/// many witnesses' topic changed (Exarust's, for the log).
 pub fn witness_event(
     scene: &mut Scene<'_>,
     actor: u32,
@@ -922,31 +924,32 @@ pub fn witness_event(
     target: u32,
     mode: u32,
     topic: Name,
-) {
+) -> u32 {
     let library = scene.library;
     let Some(aimed) = library.roles.get(target) else {
-        return;
+        return 0;
     };
     let relation = aimed.is_relation_role_byte();
     let Some(me) = scene.cast.get(actor) else {
-        return;
+        return 0;
     };
     if !relation && !me.holds(target) {
-        return;
+        return 0;
     }
     let Some(graph) = library
         .roles
         .get(role)
         .and_then(|r| r.dialogue_for(target, 0))
     else {
-        return;
+        return 0;
     };
     let Some(n) = graph.find(&topic) else {
-        return;
+        return 0;
     };
     let flags = graph.node(n).map_or(0, |n| n.flags);
     let contacts: Vec<u32> = me.contacts.iter().map(|c| c.other).collect();
     let mut words = None;
+    let mut told = 0;
     for other in contacts {
         let witness = scene
             .cast
@@ -968,9 +971,11 @@ pub fn witness_event(
             now: scene.world_time,
         };
         if activate_word(scene, other, at, hit, &mut words) {
+            told += 1;
             report_invalid(scene, "Witness Event", actor);
         }
     }
+    told
 }
 
 /// A broadcast event (a hit, a fall, a spell): every contact of `actor`

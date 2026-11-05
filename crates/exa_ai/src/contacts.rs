@@ -459,7 +459,10 @@ pub struct Integration {
     pub total: f32,
     /// The worst hostility.
     pub anger: f32,
-    /// How ready the brain is, 0 through 1.
+    /// How aroused the brain is: the personality starts it at 10, it rises
+    /// toward the interest by 1 % a tick and otherwise falls 0.0125 a tick.
+    /// Greetings and dialogues need it at most 1 (the script cast's
+    /// arousal).
     pub readiness: f32,
     /// A per-tick value that damps the soothe term (it falls 0.001 a tick
     /// to 0).

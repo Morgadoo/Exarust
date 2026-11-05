@@ -386,10 +386,10 @@ fn moods_band_the_attitude() {
     let mut k = Contact::new(TRAVELLER);
     a.contacts.push(k);
     cast.characters.push(a);
-    let band = |cast: &mut Cast, att: f32, range: f32, state: u32, concern: f32| {
+    let band = |cast: &mut Cast, att: f32, hostility: f32, state: u32, concern: f32| {
         let c = &mut cast.characters[0].contacts[0];
         c.attitude = att;
-        c.range = range;
+        c.hostility = hostility;
         c.state = state;
         c.concern = concern;
         dialogue::mood(cast, GUARD, TRAVELLER)
@@ -957,7 +957,10 @@ fn a_witnessed_event_activates_the_contacts_topic() {
         characters: vec![person(GUARD, &[19], &db), player],
     };
     let mut s = scene(&db, None, &mut cast, 0);
-    dialogue::witness_event(&mut s, PLAYER, 19, 7, 1, name("XAU_Memory"));
+    assert_eq!(
+        dialogue::witness_event(&mut s, PLAYER, 19, 7, 1, name("XAU_Memory")),
+        1
+    );
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 7, 19).and_then(|m| m.words.clone());
     assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
@@ -1031,19 +1034,19 @@ fn the_mood_mask_and_code_test_exactly() {
     // 80 attitude 20, still the neutral band.
     set(&mut cast, &|c| {
         c.attitude = 80.0;
-        c.range = 5.0;
+        c.hostility = 5.0;
     });
     assert_eq!(mood(&cast, 1, 2), 0x40);
     // Past 10 the attitude counts for nothing; an unordered value scales
     // it to NaN, which also lands in the neutral band.
     set(&mut cast, &|c| {
         c.attitude = 80.0;
-        c.range = 11.0;
+        c.hostility = 11.0;
     });
     assert_eq!(mood(&cast, 1, 2), 0x40);
     set(&mut cast, &|c| {
         c.attitude = 80.0;
-        c.range = f32::NAN;
+        c.hostility = f32::NAN;
     });
     assert_eq!(mood(&cast, 1, 2), 0x40);
     // Concern over 4 makes a hostile code, over 1.2 a wary one; an

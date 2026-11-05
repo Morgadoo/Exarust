@@ -12,7 +12,7 @@ bubbles, scripted objects, and the story/journal state.
 |---|---|
 | `interp` | the one-pass text-walking interpreter: statements, terms, `[n]` actor slots, members, chained `Role(id)` objects, conditionals and `{ }` blocks, conditions, `{…}` line substitution |
 | `builtins` | the `Actor` and `Role` classes and the globals, and the `Host` trait they act through |
-| `cast` | characters as scripts see them: the shared role list (`exa_formats::roles::HeldRole`, inherit and reference counts), relation records with relation roles and memory blocks, AI contacts; `Cast::mirror` takes the running world's live fields (name, roles, health, arousal, out-of-action) and keeps the stored relations and role values, `Cast::forget` drops a character |
+| `cast` | characters as scripts see them: the shared role list (`exa_formats::roles::HeldRole`, inherit and reference counts), relation records with relation roles and memory blocks, AI contacts (concern, trust, classification level, hostility, noticed level and attention as the hearing); `Cast::mirror` takes the running world's live fields (name, roles, health, arousal, out-of-action) and keeps the stored relations and role values, `Cast::forget` drops a character |
 | `topics` | topic memory words: cooldowns, activation counts and windows, the memory load/store (with the original's shifted load) |
 | `bubbles` | speech bubbles: durations, the queue per speaker, CR splits, fades, the hearing stimulus and the contact hearing it leaves, the width/height measure, the frame's fade step and the placement (narrator centre, projected head, margins, the camera projection) |
 | `dialogue` | the conversation engine: the role-by-role search, conversations, entry-node starts and calm filters, the node evaluator (both player slots, the original's mood tests), branches and links, ending, event nodes, topic offers, the reply panel's list and pick, the narrator, witnessed and broadcast events, `StartDialogue` and the scripted-object script entry |
@@ -38,9 +38,10 @@ Formats: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md#roles-charrolesrd
 
 - Painting the bubbles and the reply panel in the running app (the
   placement, measure, box and glyph batches are in
-  `exa_ui::speech` / `exa_ui::dialogue_choices`); the AI that triggers
-  greetings and events (contacts, arousal, hearing) and fills the cast; the
-  attitude rule; zone markers (the rule is in `builtins::zone_match`, the
+  `exa_ui::speech` / `exa_ui::dialogue_choices`); the AI's round-robin
+  events (`exa_game` mirrors the contacts and runs the greetings); trust
+  toward a character that is not a contact (0 here, the relation in the
+  original); the attitude rule; zone markers (the rule is in `builtins::zone_match`, the
   world query is the app's); witness line of sight and the role grant (the
   range rule is in `builtins::witness_range`, the level walk is the app's);
   the AI's role-apply step; saving topic memory and relations with the

@@ -15,13 +15,38 @@
 //! player's id carries the world database's tag
 //! ([`exa_ai::brain::PLAYER_ID`]), so it never meets a level character's.
 //!
+//! **Contacts.** The original's mood, `Trust`, `Concern`, `AddConcern`, the
+//! speech hearing, `ActivateTopicN` and the witness broadcasts all read the
+//! one contact list the AI keeps on the character. Exarust keeps it in the
+//! brain ([`Npc::contacts`]) and mirrors each character contact into the
+//! cast ([`sync_contacts`]): the concern, the trust toward the other (the
+//! relation's last attitude, which the original's mood and `Trust` read
+//! through the same rule), the level the target pass classified it at, its
+//! hostility, and its noticed level and attention offset (the hearing). A
+//! concern or a hearing a script or a line changed since the last mirror
+//! goes back to the brain first, as the original writes the AI's record in
+//! place. The mirror runs before the fixed step (so the AI ticks on what the
+//! scripts wrote) and again after it (so the scripts read what the AI
+//! decided); the greeting syncs its brain itself
+//! ([`crate::role_scripts::run_greetings`]). The player behaviour's own
+//! list (rebuilt every tick, [`crate::player_practice::PlayerPractice`])
+//! gives the player's contacts: only the other character, the rest zero
+//! [guess: the player behaviour is not seen writing the concern, level or
+//! hostility words].
+//!
 //! The original keeps one character object the AI and the scripts both use;
 //! Exarust keeps the saved relation record in the script cast and mirrors
 //! the live fields (the split is Exarust's).
+//!
+//! A script's `Report` (an invalid role identifier after an event store or
+//! a dialogue step) goes through the original's message hook at level 4:
+//! logged and queued on screen as `title : text`. Exarust logs the line.
+
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 use exa_ai::brain::{CharacterId, Npc};
-use exa_ai::roles::Roles;
+use exa_ai::roles::{Relations, Roles};
 use exa_combat::{Condition, Fighter};
 use exa_script::Conversations;
 use exa_script::cast::Reading;
@@ -36,13 +61,17 @@ impl Plugin for ScriptCastPlugin {
             .add_message::<exa_combat::impact::BadFall>()
             .add_message::<exa_combat::DamageTaken>()
             .add_message::<exa_combat::condition::Awakened>()
+            .init_resource::<ContactMirror>()
+            .add_systems(PreUpdate, sync_contacts)
             .add_systems(
                 Update,
                 (
                     mirror_player,
                     grant_witness_roles,
                     mirror_cast,
+                    sync_contacts,
                     announce_witnessed,
+                    report_script_problems,
                 )
                     .chain(),
             );
@@ -77,6 +106,13 @@ fn mirror_player(
 /// 18 m of the player that the level's sight test can see. With no level
 /// grid the sight test answers yes. The role is added with the parents it
 /// inherits; the cast mirror copies the list on afterwards.
+///
+/// The original measures from the operative, the placed object whose use
+/// script is running, not from the player. Its one shipped caller is the
+/// Pedestal Hand's use script (`WitnessRole(Operative, $E1D1)`), and placed
+/// objects' use scripts do not run in Exarust yet, so nothing raises this
+/// in play; the player's place stands in for the operative's [Exarust
+/// stand-in: the effect carries no place].
 fn grant_witness_roles(
     mut effects: MessageReader<exa_script::ScriptEffect>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
@@ -117,7 +153,8 @@ fn grant_witness_roles(
 /// Copies every character's live fields into the session's cast. Health is
 /// the body's red (lasting) pool and its maximum, the pair the script
 /// `Health` property divides; out of action is the collapsing or dead
-/// condition bit; arousal is the brain's, zero for a body without one (a
+/// condition bit; arousal is the brain's readiness word (the one the
+/// greeting and the dialogue entries test), zero for a body without one (a
 /// player or a body the AI does not run). A role list a script changed goes
 /// the other way first.
 fn mirror_cast(
@@ -142,10 +179,157 @@ fn mirror_cast(
             roles: &roles.0,
             health: fighter.map(|f| (f.health.red, f.health.max)),
             awake: None,
-            arousal: Some(npc.and_then(|n| n.personality).map_or(0.0, |p| p.arousal)),
+            arousal: Some(npc.map_or(0.0, |n| n.integration.readiness)),
             out_of_action: condition.map(|c| c.dying()),
         };
         conversations.cast.mirror(&[reading]);
+    }
+}
+
+/// What the contact mirror last wrote into the cast, per brain character:
+/// each contact's brain key and the mirrored values. A cast value that
+/// differs from it was written by a script or a line since.
+#[derive(Resource, Debug, Default)]
+pub struct ContactMirror {
+    written: HashMap<u32, Vec<(u64, exa_script::cast::Contact)>>,
+}
+
+/// Whether two floats differ, an unordered value included (bitwise).
+fn changed(a: f32, b: f32) -> bool {
+    a.to_bits() != b.to_bits()
+}
+
+/// Syncs one brain with its cast character: what a script or a line wrote
+/// since the last mirror goes to the brain's contact (the concern, the
+/// noticed level and the attention offset), then every character contact
+/// of the brain replaces the cast's list. An object contact, or one whose
+/// other has no character id, is not a character contact (the original's
+/// walks skip a contact whose other is not a character). The trust is the
+/// relation's last attitude toward the other (0 without a relation, the
+/// value the original's relation query answers for a new one), with the
+/// mind powers' overrides (the brains run none).
+pub fn sync_brain(
+    cast: &mut exa_script::cast::Cast,
+    mirror: &mut ContactMirror,
+    me: u32,
+    npc: &mut Npc,
+    relations: Option<&Relations>,
+    character_of: impl Fn(u64) -> Option<u32>,
+) {
+    let Some(character) = cast.get_mut(me) else {
+        return;
+    };
+    if let Some(written) = mirror.written.get(&me) {
+        for now in &character.contacts {
+            let Some((key, was)) = written.iter().find(|(_, w)| w.other == now.other) else {
+                continue;
+            };
+            let Some(record) = npc.contacts.iter_mut().find(|c| c.id == *key) else {
+                continue;
+            };
+            if changed(now.concern, was.concern) {
+                debug!(
+                    "character {me}: a script set its concern for {} to {:.2}",
+                    now.other, now.concern
+                );
+                record.concern = now.concern;
+            }
+            if changed(now.hearing.level, was.hearing.level) {
+                record.noticed = now.hearing.level;
+            }
+            if changed(now.hearing.decay, was.hearing.decay) {
+                record.attention = now.hearing.decay;
+            }
+        }
+    }
+    let mut written = Vec::with_capacity(npc.contacts.len());
+    for record in &npc.contacts {
+        if record.object {
+            continue;
+        }
+        let Some(other) = character_of(record.id) else {
+            continue;
+        };
+        let raw = relations
+            .and_then(|r| r.find(other))
+            .map_or(0.0, |r| r.last);
+        let attitude = Entity::try_from_bits(record.id)
+            .map_or(raw, |e| exa_ai::combatant::trust(e, raw, false, &[]));
+        let contact = exa_script::cast::Contact {
+            other,
+            concern: record.concern,
+            attitude,
+            state: record.level as u32,
+            hostility: record.hostility,
+            hearing: exa_script::cast::Hearing {
+                level: record.noticed,
+                decay: record.attention,
+            },
+        };
+        written.push((record.id, contact));
+    }
+    character.contacts.clear();
+    character
+        .contacts
+        .extend(written.iter().map(|(_, contact)| *contact));
+    mirror.written.insert(me, written);
+}
+
+/// Syncs every brain's contacts with the cast ([`sync_brain`]) and gives the
+/// player its behaviour's list (the other characters only).
+pub fn sync_contacts(
+    conversations: Option<ResMut<Conversations>>,
+    mut mirror: ResMut<ContactMirror>,
+    mut brains: Query<(&CharacterId, &mut Npc, Option<&Relations>)>,
+    players: Query<(&CharacterId, &crate::player_practice::PlayerPractice)>,
+    ids: Query<&CharacterId>,
+) {
+    let Some(mut conversations) = conversations else {
+        return;
+    };
+    let character_of = |key: u64| {
+        Entity::try_from_bits(key)
+            .and_then(|e| ids.get(e).ok())
+            .map(|id| id.0)
+    };
+    for (id, mut npc, relations) in &mut brains {
+        if npc.contacts.is_empty() && !mirror.written.contains_key(&id.0) {
+            continue;
+        }
+        sync_brain(
+            &mut conversations.cast,
+            &mut mirror,
+            id.0,
+            &mut npc,
+            relations,
+            character_of,
+        );
+        if mirror.written.get(&id.0).is_some_and(Vec::is_empty) {
+            mirror.written.remove(&id.0);
+        }
+    }
+    for (id, practice) in &players {
+        let Some(character) = conversations.cast.get_mut(id.0) else {
+            continue;
+        };
+        character.contacts.clear();
+        character.contacts.extend(
+            practice
+                .contacts
+                .iter()
+                .filter_map(|c| character_of(c.body))
+                .map(exa_script::cast::Contact::new),
+        );
+    }
+}
+
+/// Logs a script's `Report` as the original's level-4 message: the title,
+/// `" : "` and the text.
+fn report_script_problems(mut effects: MessageReader<exa_script::ScriptEffect>) {
+    for effect in effects.read() {
+        if let exa_script::dialogue::Effect::Report(title, text) = &effect.0 {
+            warn!("{}", crate::frame::overlay_text(title, text));
+        }
     }
 }
 
@@ -506,5 +690,128 @@ mod tests {
         assert_eq!(run("BadFall", false), None);
         assert_eq!(run("DamageTaken", true), Some(vec![1, ACTIVATED]));
         assert_eq!(run("DamageTaken", false), None);
+    }
+
+    /// A brain's character contacts reach the cast: the concern, the trust
+    /// (the relation's last attitude), the level, the hostility and the
+    /// noticed level and attention as the hearing. An object contact and
+    /// one whose other has no character id are left out. A concern a
+    /// script wrote and a hearing a line raised go back to the brain on
+    /// the next sync; the AI's own later values come through after.
+    #[test]
+    fn a_brains_contacts_reach_the_cast_and_script_writes_go_back() {
+        use exa_ai::contacts::ContactRecord;
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin);
+        app.insert_resource(Conversations::default());
+        let other = app
+            .world_mut()
+            .spawn((CharacterId(7), Roles(Vec::new())))
+            .id();
+        let nameless = app.world_mut().spawn_empty().id();
+        let mut relations = Relations::default();
+        relations.global.insert(
+            7,
+            exa_ai::roles::Relation {
+                base: 0.0,
+                last: -45.0,
+                met_ms: 0,
+                roles: None,
+            },
+        );
+        let mut npc = Npc::new([0.0; 4]);
+        npc.contacts = vec![
+            ContactRecord {
+                id: other.to_bits(),
+                concern: 2.5,
+                hostility: 4.0,
+                level: 3,
+                noticed: 1.5,
+                attention: 0.25,
+                ..Default::default()
+            },
+            ContactRecord {
+                id: nameless.to_bits(),
+                ..Default::default()
+            },
+            ContactRecord {
+                id: other.to_bits() ^ 0x55,
+                object: true,
+                ..Default::default()
+            },
+        ];
+        let brain = app
+            .world_mut()
+            .spawn((CharacterId(3), Roles(Vec::new()), npc, relations))
+            .id();
+        app.update();
+        let cast = &app.world().resource::<Conversations>().cast;
+        let me = cast.get(3).unwrap();
+        assert_eq!(me.contacts.len(), 1);
+        let c = me.contacts[0];
+        assert_eq!(
+            (c.other, c.concern, c.attitude, c.state, c.hostility),
+            (7, 2.5, -45.0, 3, 4.0)
+        );
+        assert_eq!((c.hearing.level, c.hearing.decay), (1.5, 0.25));
+        // Engaged: the hostile code; the attitude scaled by 0.36 is -16.2,
+        // the neutral band.
+        assert_eq!(exa_script::dialogue::mood(cast, 3, 7), 0x640);
+
+        // A script raises the concern and a line is heard.
+        {
+            let mut conversations = app.world_mut().resource_mut::<Conversations>();
+            let c = &mut conversations.cast.get_mut(3).unwrap().contacts[0];
+            c.concern = 12.0;
+            c.hear(30.0);
+        }
+        app.update();
+        let record = app.world().get::<Npc>(brain).unwrap().contacts[0];
+        assert_eq!(
+            (record.concern, record.noticed, record.attention),
+            (12.0, 7.5, 0.0)
+        );
+        // The AI moves on; the cast follows it, the script's value is not
+        // written again.
+        app.world_mut().get_mut::<Npc>(brain).unwrap().contacts[0].concern = 11.0;
+        app.update();
+        let cast = &app.world().resource::<Conversations>().cast;
+        assert_eq!(cast.get(3).unwrap().contacts[0].concern, 11.0);
+        assert_eq!(
+            app.world().get::<Npc>(brain).unwrap().contacts[0].concern,
+            11.0
+        );
+    }
+
+    /// The player's contacts are its behaviour's list: the other
+    /// characters, nothing else.
+    #[test]
+    fn the_players_contacts_are_its_behaviours_list() {
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin);
+        app.insert_resource(Conversations::default());
+        let other = app
+            .world_mut()
+            .spawn((CharacterId(5), Roles(Vec::new())))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((CharacterId(1), Roles(Vec::new()), PlayerBody::new(0.0)))
+            .id();
+        app.world_mut()
+            .get_mut::<crate::player_practice::PlayerPractice>(player)
+            .unwrap()
+            .contacts = vec![crate::player_behaviour::Contact {
+            body: other.to_bits(),
+            score: 0.5,
+            closeness: 0.9,
+            facing: 0.5,
+        }];
+        app.update();
+        let cast = &app.world().resource::<Conversations>().cast;
+        assert_eq!(
+            cast.get(1).unwrap().contacts,
+            vec![exa_script::cast::Contact::new(5)]
+        );
     }
 }

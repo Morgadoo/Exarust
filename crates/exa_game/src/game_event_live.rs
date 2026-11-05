@@ -21,12 +21,17 @@
 //! - the sounds play as named one-shots at the player or at the origin,
 //!   with the handler's flags;
 //! - the flow keeps the fragments seen and the background unlock itself
-//!   ([`crate::flow::Flow::game_event`]).
+//!   ([`crate::flow::Flow::game_event`]);
+//! - a fragment's witness event goes to the player's contacts that hold
+//!   its role (`XA_Derrin`, 19): the dialogue engine's witness event
+//!   activates `XAU_Memory` of their dialogue toward the Player role (7)
+//!   in mode 1, in their memory of the player
+//!   ([`exa_script::dialogue::witness_event`]). The player's contacts are
+//!   its behaviour's list, mirrored into the cast
+//!   ([`crate::script_cast::sync_contacts`]).
 //!
 //! Not applied yet (logged): the post-process flash (no renderer for it),
-//! the fragment's witness event to the characters who hold its role (the
-//! role-event broadcast is not ported), and the mind and force awakenings'
-//! visual effects on the body.
+//! and the mind and force awakenings' visual effects on the body.
 //!
 //! The random draws come from the process generator the sounds use (the
 //! sound bank's), as the original takes them from its one generator.
@@ -162,6 +167,9 @@ pub struct EventOutputs<'w> {
     voices: MessageWriter<'w, PainSounded>,
     sounds: MessageWriter<'w, exa_audio::PointSounded>,
     narrator: MessageWriter<'w, exa_script::Narrate>,
+    scripts: Option<Res<'w, exa_script::Scripts>>,
+    conversations: Option<ResMut<'w, exa_script::Conversations>>,
+    time: Option<Res<'w, Time<Virtual>>>,
 }
 
 type EventPlayerQuery<'w, 's> = Query<
@@ -325,9 +333,61 @@ fn apply(
             first,
             second,
             name,
-        } => info!(
-            "game event {code:#x}: witness event {kind:#x} {first} {second} {name:?} (not ported)"
-        ),
+        } => {
+            let (Some(scripts), Some(conversations)) =
+                (out.scripts.as_deref(), out.conversations.as_deref_mut())
+            else {
+                info!("game event {code:#x}: witness event {name:?} (no dialogue loaded)");
+                return;
+            };
+            let Some(actor) = conversations.player else {
+                info!("game event {code:#x}: witness event {name:?} has no player");
+                return;
+            };
+            let now = out
+                .time
+                .as_ref()
+                .map_or(0, |t| t.elapsed().as_millis() as u32);
+            // Each contact and the roles it holds, for the log.
+            let contacts: Vec<(u32, Vec<u32>)> = conversations
+                .cast
+                .get(actor)
+                .map(|c| {
+                    c.contacts
+                        .iter()
+                        .map(|k| {
+                            let roles = conversations
+                                .cast
+                                .get(k.other)
+                                .map(|o| o.roles.iter().map(|r| r.id).collect())
+                                .unwrap_or_default();
+                            (k.other, roles)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (told, reports) = conversations.with_scene(scripts, now, |_, scene| {
+                exa_script::dialogue::witness_event(
+                    scene,
+                    actor,
+                    kind,
+                    first,
+                    second,
+                    exa_formats::roles::Name::from_bytes(name.as_bytes()),
+                )
+            });
+            info!(
+                "game event {code:#x}: witness event {name:?} (role {kind:#x} toward {first}, mode {second}) from {actor:#x}: {told} of {} contact(s) activated it; contacts (id, roles) {contacts:?}",
+                contacts.len()
+            );
+            // The witness event can only report an invalid role set; the
+            // message hook logs it.
+            for report in reports {
+                if let exa_script::dialogue::Effect::Report(title, text) = report {
+                    warn!("{}", crate::frame::overlay_text(&title, &text));
+                }
+            }
+        }
         Effect::MindAwakening | Effect::ForceAwakening => {
             info!("game event {code:#x}: {effect:?} (its body effect is not ported)")
         }
@@ -489,6 +549,96 @@ mod tests {
         assert!(app.world().resource::<FlowSteps>().steps.is_empty());
         let data = app.world().get::<CharacterData>(player).unwrap();
         assert_eq!(crate::game_event::potential(&data.record), 5.0);
+    }
+
+    /// A fragment's witness event reaches the player's contact holding
+    /// XA_Derrin (19): its XAU_Memory topic toward the Player role (7) is
+    /// activated in its memory of the player.
+    #[test]
+    fn a_memory_fragment_tells_its_witness() {
+        use exa_formats::roles::{Dialogue, DialogueActor, Name, Node, Role, RoleDb, RoleEntry};
+        let title = |s: &str| Name::from_bytes(s.as_bytes());
+        let db = RoleDb {
+            roles: vec![
+                Role {
+                    id: 19,
+                    name: title("XA_Derrin"),
+                    entries: vec![RoleEntry {
+                        kind: 0x2,
+                        target: 7,
+                        dialogue: Some(Dialogue {
+                            target: 7,
+                            actors: ["Actor 1", "Actor 2"]
+                                .iter()
+                                .map(|n| DialogueActor {
+                                    name: title(n),
+                                    ..DialogueActor::default()
+                                })
+                                .collect(),
+                            nodes: vec![Some(Node {
+                                flags: 0x100,
+                                title: title("XAU_Memory"),
+                                position: [0.0; 2],
+                                links: Vec::new(),
+                                branches: Vec::new(),
+                            })],
+                        }),
+                        ..RoleEntry::default()
+                    }],
+                    ..Role::default()
+                },
+                Role {
+                    id: 7,
+                    name: title("Player"),
+                    ..Role::default()
+                },
+            ],
+        };
+        let mut conversations = exa_script::Conversations::default();
+        let mut me = exa_script::cast::Character::new(1, "Player");
+        me.add_role(&db, 7);
+        me.contacts.push(exa_script::cast::Contact::new(9));
+        let mut derrin = exa_script::cast::Character::new(9, "Derrin");
+        derrin.add_role(&db, 19);
+        conversations.cast.characters = vec![me, derrin];
+        conversations.player = Some(1);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .insert_resource(conversations)
+            .insert_resource(exa_script::Scripts {
+                roles: db,
+                narrator: None,
+            })
+            .add_message::<exa_script::ScriptEffect>()
+            .add_message::<exa_script::Narrate>()
+            .add_message::<PainSounded>()
+            .add_message::<exa_audio::PointSounded>()
+            .add_systems(Update, run_game_events);
+        let mut record = CharacterRecord::new();
+        record.roles.push(exa_formats::characters::Role {
+            id: MEMORY_ROLE,
+            weight: 1.0,
+            explicit: true,
+            inherited: 0,
+            variables: Vec::new(),
+        });
+        app.world_mut().spawn((
+            PlayerBody::new(0.0),
+            GlobalTransform::default(),
+            CharacterData::of_record(record),
+        ));
+        app.world_mut().write_message(exa_script::ScriptEffect(
+            exa_script::dialogue::Effect::GameEvent(0xc0_0004),
+        ));
+        app.update();
+        let cast = &app.world().resource::<exa_script::Conversations>().cast;
+        let words = exa_script::topics::block(cast.get(9).unwrap(), 1, 7, 19)
+            .and_then(|m| m.words.clone())
+            .unwrap();
+        assert_eq!(words.len(), 2);
+        assert_ne!(words[1] & exa_script::topics::ACTIVATED, 0);
     }
 
     /// The mind awakening on the unknown background: the potential becomes
