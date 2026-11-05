@@ -94,7 +94,7 @@ Re-arming SHALL take the best weapon in the main hand and stow the next best, on
 - **THEN** the 4 is wielded and the 2.4 stowed, and the 3 and the half-good piece are left
 
 ### Requirement: Takes carried out
-A take SHALL despawn a loose item, remove a container's first matching entry, release an item from the corpse's grip (the second hand slot and its carried entry) or else remove it from the worn list, or remove a carried entry and clear the fourth hand slot when it holds the same item. Wearing SHALL run the equip conflict pass, then put the item on and out of the carried list before taking it from its source. Wielding SHALL fill the main hand and mark the item's carried entry held, clearing the old main item's mark; stowing SHALL fill the first stowed slot; both SHALL leave the item in the carried list.
+A take SHALL despawn a loose item, remove a container's first matching entry, release an item from the corpse's grip (the second hand slot and its carried entry) or else remove it from the worn list, or remove a carried entry and clear the fourth hand slot when it holds the same item.
 
 #### Scenario: Wearing over what it overlaps
 - **WHEN** a piece is worn over the underwear and a piece it overlaps, beside one it does not, and another piece is worn over a piece with a model byte over 50
@@ -148,7 +148,7 @@ The search's candidates in the running game SHALL include the level's dead bodie
 - **THEN** the follower gathers the body, looks it over, walks to it, settles and takes the sword: the body's worn list no longer holds it and the follower carries it
 
 ### Requirement: Searching the level's objects in the running game
-The search's candidates in the running game SHALL include every placed object with a model, listed in the 600 cm room cell of its first node's box centre with that box's half-extents and its tagged database id; one straight under the level SHALL be searchable, and a placement word with bit 0x8000 SHALL mark it fixed. Its record SHALL be weighed from the game's object database or, tagged local, the level's own. A container's contents SHALL be read from its sections each tick and a changed container SHALL be written back, keeping the entries that stayed; a loose item taken SHALL leave the world with its colliders. The containers open in the player's popups SHALL count as open.
+The search's candidates in the running game SHALL include every placed object with a model, listed in the 600 cm room cell of its first node's box centre with that box's half-extents and its tagged database id; one straight under the level SHALL be searchable, and a placement word with bit 0x8000 SHALL mark it fixed.
 
 #### Scenario: A chest and a loose blade
 - **WHEN** a follower stands 1.5 m from the player, with a placed chest holding a better sword 3 m away and a loose blade of another class 2 m away
@@ -174,3 +174,17 @@ While approaching, its own pack open on screen SHALL answer not busy; a walking 
 #### Scenario: The walk takes the tick
 - **WHEN** the approach's attention of 5.1 takes the tick
 - **THEN** the tick answers busy and the search stays approaching with no try counted
+
+### Requirement: Wearing and wielding a take
+Wearing SHALL run the equip conflict pass, then put the item on and out of the carried list before taking it from its source. Wielding SHALL fill the main hand and mark the item's carried entry held, clearing the old main item's mark; stowing SHALL fill the first stowed slot; both SHALL leave the item in the carried list.
+
+#### Scenario: A second weapon is wielded
+- **WHEN** a searcher already wielding a sword wields a dagger it took
+- **THEN** the dagger fills the main hand and is marked held, the sword's mark is cleared, and both stay in the carried list
+
+### Requirement: Weighing and writing back level objects
+A level object's record SHALL be weighed from the game's object database or, tagged local, the level's own. A container's contents SHALL be read from its sections each tick and a changed container SHALL be written back, keeping the entries that stayed; a loose item taken SHALL leave the world with its colliders. The containers open in the player's popups SHALL count as open.
+
+#### Scenario: A trunk is looted
+- **WHEN** a searcher takes a jacket from a level trunk
+- **THEN** the trunk's sections are written back without the jacket and keep the other entries

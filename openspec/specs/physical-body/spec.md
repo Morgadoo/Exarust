@@ -2060,7 +2060,7 @@ A foot's floor query SHALL be a point ray from 30 cm over its ground 60 cm down 
 - **THEN** the foot's ground and floor rise to the step top
 
 ### Requirement: Placement leg snap
-A living body placed into the scene SHALL probe each leg 5·scale cm along its shin from its clip ankle with a 10 cm sphere from the frame's height plus the leg's length 300 cm down, a miss 10 000 cm under the frame, and average the hits into the character's ground. Each anchor SHALL be its clip ankle at its ground plus the sole, its ground and floor that ground, and the standing leg IK SHALL write its corrections at once with no rate and no thigh turn, reading the character frame the body stands on.
+A living body placed into the scene SHALL probe each leg 5·scale cm along its shin from its clip ankle with a 10 cm sphere from the frame's height plus the leg's length 300 cm down, a miss 10 000 cm under the frame, and average the hits into the character's ground. Each anchor SHALL be its clip ankle at its ground plus the sole, its ground and floor that ground. The standing leg IK SHALL write its corrections at once, with no rate and no thigh turn, from the character frame.
 
 #### Scenario: A platform
 - **WHEN** a biped is placed over a platform 15 cm up
