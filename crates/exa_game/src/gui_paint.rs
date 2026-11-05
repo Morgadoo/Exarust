@@ -14,9 +14,10 @@
 //! The inventory draws through the game skin's own form draw
 //! ([`paint_line_form`]) with the words its show commits ([`commit_words`]):
 //! a top-level form gains the title bar, the shadow and the corner frame, a
-//! child is held and framed on its edges. The journal still draws with its
-//! constructor's words through the default background, so it shows no
-//! title bar.
+//! child is held and framed on its edges. The journal, the loot window, the
+//! container popup, the item card and the hub's windows draw the same way
+//! ([`paint_top_form`], [`paint_held_form`]) with their constructors' words
+//! ([`FormWords`]).
 
 use exa_ui::form::FormMetrics;
 use exa_ui::gui_core::GuiRect;
@@ -513,6 +514,103 @@ pub fn paint_line_form(
     }
 }
 
+/// A shown form's own words as its constructor leaves them, for the line
+/// skin's form draw: the style and attribute words before the show's
+/// commit ([`commit_words`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormWords {
+    pub style: u32,
+    pub attributes: u32,
+}
+
+/// The journal's words: the base form's attributes with 0x8000 and the
+/// centred-title style bits.
+pub const JOURNAL_WORDS: FormWords = FormWords {
+    style: SCREEN_STYLE,
+    attributes: JOURNAL_ATTRIBUTES,
+};
+/// The loot window's words: the base form's attributes and the
+/// centred-title style bits.
+pub const LOOT_WORDS: FormWords = FormWords {
+    style: SCREEN_STYLE,
+    attributes: FORM_ATTRIBUTES,
+};
+/// An item panel's words: its constructor sets the panel frame style
+/// (0x80) and the attribute bits 0x10 and 0x100000 over the base form's.
+pub const ITEM_PANEL_WORDS: FormWords = FormWords {
+    style: PACK_STYLE,
+    attributes: PACK_ATTRIBUTES,
+};
+/// The item card's words: its constructor writes the attribute word
+/// 0x310f0 and sets 0x3080 in the style word.
+pub const CARD_WORDS: FormWords = FormWords {
+    style: 0x3080,
+    attributes: 0x310f0,
+};
+/// The container popup's words: the card's, with the attribute word
+/// 0x830023 written over and the style's panel bit (0x80) cleared.
+pub const CONTAINER_WORDS: FormWords = FormWords {
+    style: 0x3000,
+    attributes: exa_ui::popups::CONTAINER_FLAGS,
+};
+/// A character view's words: the 3-D view's constructor's (style 0x88,
+/// the base attributes less 0x20 with 0x4c010), with the panel style bit
+/// and the attribute change the inventory and the trade window
+/// constructors both make (clear 0xc000, set 0x90).
+pub const DOLL_WORDS: FormWords = FormWords {
+    style: 0x88 | PACK_STYLE,
+    attributes: DOLL_ATTRIBUTES,
+};
+/// The trade window's words: the base attributes with 0x800000 (its
+/// children may draw their top bars), the style's centred-title and
+/// centring bits (0x3000, 0x800, 0x8000).
+pub const TRADE_WORDS: FormWords = FormWords {
+    style: 0xb800,
+    attributes: FORM_ATTRIBUTES | 0x80_0000,
+};
+
+/// Paints a top-level form (its owner is the task) through the line skin's
+/// form draw with the words its show commits: the shadow, the backdrop and
+/// the corner frame when the constructor's word has bit 0x10000, and the
+/// centred title when the form has one.
+pub fn paint_top_form(
+    rect: GuiRect,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    words: FormWords,
+    title: Option<FormTitle>,
+) -> (LineFormLayers, LineFormWords) {
+    let committed = commit_words(words.style, words.attributes, true);
+    let title = title.filter(|(text, _, _)| !text.is_empty());
+    (
+        paint_line_form(LineFormAt::top(rect), unit, palette, fade, committed, title),
+        committed,
+    )
+}
+
+/// Paints a child form held by a form whose client is `client` and whose
+/// committed attribute word is `owner_attributes`: the commit holds it, so
+/// it has no backdrop, and a panel-style child is framed on its edges.
+pub fn paint_held_form(
+    rect: GuiRect,
+    client: GuiRect,
+    owner_attributes: u32,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    words: FormWords,
+) -> LineFormLayers {
+    paint_line_form(
+        LineFormAt::child(rect, client, owner_attributes),
+        unit,
+        palette,
+        fade,
+        commit_words(words.style, words.attributes, false),
+        None,
+    )
+}
+
 /// Where a control's caption starts: the skin's own placement from the
 /// control's style (its x from bits 0x7000, its baseline from bits 0x700).
 pub(crate) fn caption_origin(
@@ -828,6 +926,59 @@ mod tests {
     use super::*;
     use exa_ui::game_gui::inventory_height;
     use exa_ui::gui_draw::{GuiFrame, GuiTextures, rasterise};
+
+    /// The words each form's show commits from its constructor's: a
+    /// top-level form gains the corner frame (style 0x10), the title and
+    /// the shadow (0x41); a held child loses its backdrop (0x20000).
+    #[test]
+    fn the_shown_forms_commit_their_constructors_words() {
+        let top = |words: FormWords| {
+            let c = commit_words(words.style, words.attributes, true);
+            (c.style, c.attributes)
+        };
+        assert_eq!(top(JOURNAL_WORDS), (0x3010, 0x3_8063));
+        assert_eq!(top(LOOT_WORDS), (0x3010, 0x3_0063));
+        // The card keeps its panel style beside the corner frame.
+        assert_eq!(top(CARD_WORDS), (0x3090, 0x3_10f1));
+        assert_eq!(top(CONTAINER_WORDS), (0x3010, 0x83_0063));
+        assert_eq!(top(TRADE_WORDS), (0xb810, 0x83_0063));
+        let held = commit_words(ITEM_PANEL_WORDS.style, ITEM_PANEL_WORDS.attributes, false);
+        assert_eq!((held.style, held.attributes), (0x80, 0x11_0032));
+        assert_ne!(held.state & exa_ui::line_skin::form_bits::HELD, 0);
+        assert_eq!(DOLL_WORDS.attributes, 0x7_0092);
+    }
+
+    /// The journal draws through the line form: its shadow and backdrop
+    /// first, its title and corner frame last.
+    #[test]
+    fn the_top_form_puts_its_frame_over_its_children() {
+        let palette = palette();
+        let font = &exa_ui::gui_font::RAYFORM_08;
+        let (mut form, words) = paint_top_form(
+            GuiRect::new(10, 20, 244, 520),
+            4,
+            &palette,
+            1.0,
+            JOURNAL_WORDS,
+            Some(("Journal", font, Some((256, 512)))),
+        );
+        assert_eq!(words.attributes & 0x41, 0x41);
+        assert_eq!(form.under().count(), 2);
+        let over: Vec<_> = form.over().collect();
+        assert_eq!(over.len(), 2);
+        assert_eq!(over[0].texture, LayerTexture::Named("Rayform08R"));
+        assert_eq!(over[1].texture, LayerTexture::Named(SKIN_TEXTURE));
+        // An empty title draws no text.
+        let (mut untitled, _) = paint_top_form(
+            GuiRect::new(0, 0, 200, 100),
+            4,
+            &palette,
+            1.0,
+            CARD_WORDS,
+            None,
+        );
+        assert_eq!(untitled.over().count(), 1);
+    }
 
     fn textures() -> GuiTextures {
         let font = &exa_ui::gui_font::RAYFORM_10;

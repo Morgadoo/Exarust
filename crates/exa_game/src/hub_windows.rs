@@ -45,7 +45,7 @@ use exa_ui::table_view;
 use crate::arena::Roster;
 use crate::arena_board;
 use crate::career::{Company, Member, Profession};
-use crate::gui_paint::{self, Frame};
+use crate::gui_paint;
 use crate::item_container::ListChild;
 use crate::manage::{ManageDay, ManageRecord, ManageRefresh, manage_refresh};
 use crate::report::ReportFighter;
@@ -64,9 +64,6 @@ pub const SHOP_SIZE: (i32, i32) = (
 /// The centred placement word the hub's forms use. The constructors' own
 /// placement words are not traced, so centring is a guess.
 pub const CENTRE: u32 = 0x8000 | 0x800;
-/// The form's title bit. The three windows carry a title string; whether
-/// their constructor words set this bit is a guess.
-pub const TITLE_BIT: u32 = 1;
 /// The button style the screens' constructors share.
 pub const BUTTON_STYLE: u32 = 0x40_3320;
 
@@ -1156,14 +1153,26 @@ impl HubFade {
     }
 }
 
-/// The window's frame.
-fn paint_window(painted: &mut gui_paint::Painted, bounds: GuiRect, title: &str, look: &Look) {
+/// The trade window's frame through the game skin's form draw: the layers
+/// under its children are pushed, the title and frame layers returned for
+/// after them, with the committed words its children are held by.
+fn paint_window(
+    painted: &mut gui_paint::Painted,
+    bounds: GuiRect,
+    title: &str,
+    look: &Look,
+) -> (gui_paint::LineFormLayers, gui_paint::LineFormWords) {
     let (font, size) = screen_font(look.textures, look.unit);
-    let mut frame = Frame::new(bounds, look.unit, title);
-    frame.attributes |= TITLE_BIT;
-    for layer in gui_paint::paint_frame(&frame, &look.palette, &font, size).layers {
-        painted.push(layer);
-    }
+    let (mut form, words) = gui_paint::paint_top_form(
+        bounds,
+        look.unit,
+        &look.palette,
+        look.fade,
+        gui_paint::TRADE_WORDS,
+        Some((title, &font, size)),
+    );
+    painted.layers.extend(form.under());
+    (form, words)
 }
 
 pub(crate) fn paint_text(painted: &mut gui_paint::Painted, rect: GuiRect, text: &str, look: &Look) {
@@ -1273,7 +1282,7 @@ fn paint_board(
     };
     let mut form = form.clone();
     sync_board_form(board, &mut form);
-    crate::hub_forms::paint_form(&mut painted, &form, look);
+    let frame = crate::hub_forms::paint_form(&mut painted, &form, look);
     let (ox, oy) = form.origin();
     let origin = GuiRect::new(ox, oy, r.w, r.h);
     for item in board.paint() {
@@ -1344,6 +1353,7 @@ fn paint_board(
             }
         }
     }
+    painted.layers.extend(frame);
     painted
 }
 
@@ -1371,7 +1381,7 @@ fn paint_manage(
         client: client(bounds),
         ..Default::default()
     };
-    crate::hub_forms::paint_form(&mut painted, form, look);
+    let frame = crate::hub_forms::paint_form(&mut painted, form, look);
     let pane = |i: usize| {
         form.child(i)
             .map(|c| GuiRect::new(c.x, c.y, c.w, c.h))
@@ -1439,6 +1449,7 @@ fn paint_manage(
         }
         paint_pen_text(&mut painted, pen, &line.text, None, look);
     }
+    painted.layers.extend(frame);
     painted
 }
 
@@ -1474,7 +1485,8 @@ fn paint_shop(
         client: client(bounds),
         ..Default::default()
     };
-    paint_window(&mut painted, bounds, crate::shop_window::TRADE_TITLE, look);
+    let (mut window, window_words) =
+        paint_window(&mut painted, bounds, crate::shop_window::TRADE_TITLE, look);
     // The children's places are in the page's client, inside its border.
     let border = crate::shop_window::BORDER;
     let inner = GuiRect::new(
@@ -1483,18 +1495,37 @@ fn paint_shop(
         bounds.width() - 2 * border,
         bounds.height() - 2 * border,
     );
+    // The children are held by the window: no backdrop, the panel frame
+    // on their edges.
+    let held = |rect: GuiRect, words: gui_paint::FormWords| {
+        gui_paint::paint_held_form(
+            rect,
+            inner,
+            window_words.attributes,
+            look.unit,
+            &look.palette,
+            look.fade,
+            words,
+        )
+    };
     let character = crate::shop_window::CHARACTER_VIEW;
     let character = at4(
         inner,
         (character[0], character[1], character[2], character[3]),
     );
-    paint_panel(&mut painted, character, look);
+    let mut view = held(character, gui_paint::DOLL_WORDS);
+    painted.layers.extend(view.under());
     // The preview's 3D view shows through the canvas there.
     painted.push(crate::gui_screens::clear_layer(character));
+    painted.layers.extend(view.over());
+    let mut panel_frames = Vec::new();
     for panel in crate::shop_panels::SHOP_PANELS {
         let [x, y, w, h] = panel.rect();
-        paint_panel(&mut painted, at4(inner, (x, y, w, h)), look);
+        let mut form = held(at4(inner, (x, y, w, h)), gui_paint::ITEM_PANEL_WORDS);
+        painted.layers.extend(form.under());
+        panel_frames.extend(form.over());
     }
+    let mut frames_drawn = false;
     if let Some(icons) = icons {
         for panel in crate::shop_panels::SHOP_PANELS {
             let [x, y, w, h] = panel.client();
@@ -1514,6 +1545,11 @@ fn paint_shop(
                 painted.push(layer);
             }
         }
+        // The panels' and the window's frames over the entries, under a
+        // dragged icon.
+        painted.layers.append(&mut panel_frames);
+        painted.layers.extend(window.over());
+        frames_drawn = true;
         if let (Some(drag), Some(pointer)) = (shop.preview_drag, pointer) {
             // A drag off the preview: its item's icon under the pointer.
             let shown = crate::item_container::Container {
@@ -1563,6 +1599,10 @@ fn paint_shop(
             &text,
             look,
         );
+    }
+    if !frames_drawn {
+        painted.layers.append(&mut panel_frames);
+        painted.layers.extend(window.over());
     }
     painted
 }
@@ -1731,14 +1771,14 @@ pub fn draw_hub_windows(
                 [0, 0, 0, u8::MAX],
             ));
         }
-        if open.window != crate::hub_forms::FormWindow::Manage {
-            crate::hub_forms::paint_form(&mut painted, &open.form, &shown);
-        }
+        let frame = (open.window != crate::hub_forms::FormWindow::Manage)
+            .then(|| crate::hub_forms::paint_form(&mut painted, &open.form, &shown));
         if open.window == crate::hub_forms::FormWindow::Loadout
             && let Some(kit) = kit.as_deref()
         {
             crate::loadout_kit::paint_kit(&mut painted, kit, icons.as_deref_mut(), &shown, pointer);
         }
+        painted.layers.extend(frame.into_iter().flatten());
     }
     debug!(
         "hub windows: {:?} at {:?} paints {} layers ({} stacked forms, fade {alpha})",
@@ -2336,10 +2376,11 @@ mod tests {
             let frames = app.world().resource::<GuiFrames>();
             // The game screens' pass cleared the queue, then the hub drew
             // Manage Company and Records over it.
-            // Without font textures the captions add no layers: the frames,
-            // panels, buttons and table panes give 15.
+            // Without font textures the captions add no layers: each
+            // window's shadow, backdrop and corner frame (the line skin's
+            // form draw), the panels, buttons and table panes give 19.
             assert_eq!(frames.frames.len(), 1);
-            assert_eq!(frames.frames[0].layers.len(), 15);
+            assert_eq!(frames.frames[0].layers.len(), 19);
             assert!(frames.primitives() > 0);
         }
     }

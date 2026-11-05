@@ -48,8 +48,9 @@ vertical and alpha-scaled gradients, striped bars, selection bands,
 rounded fills and textured frames, edge and bevel frames, solid and two-ink
 rectangles, drop shadows and embossed rings, clamped vertical gradients and
 the scroll arrows. The control faces, panels, marks, sliders and scroll
-bars are built from them in the original's ink order. `gui_draw` submits a
-frame: every `GuiLayer` carries a batch, the texture its textured
+bars are built from them in the original's ink order. `gui_draw` loads the
+skin atlas and all six GUI faces at start-up (the five Rayform faces from
+the executable's resources) and submits a frame: every `GuiLayer` carries a batch, the texture its textured
 primitives sample and an optional clip; the renderer walks the layers and
 their primitives in submission order and reproduces the skin's four
 programs (solid, textured with `TexCol`, rounded with `Scale`, and the
@@ -512,8 +513,8 @@ frame, glow, flame, link glow and new/picked rings, the bar's icons, marks,
 flames, glows and empty slots with its opening and closing animation, the
 creation prompt and the tooltip's caption and wrapped description (with the
 interface level's main font: its advances, glyph quad and line step, sampled
-from the level's atlas when installed or the base font's atlas scaled to the
-quad), the label mode and the dragged power's preview. Their texts take
+from the level's atlas, read from the executable's resources, or the base
+font's atlas scaled to the quad when it is missing), the label mode and the dragged power's preview. Their texts take
 the skin's text ink (`skin_text_ink`, the line skin's seventh label ink) and
 sit on the skin's shaded box (`skin_box`: the rounded program in black,
 grown by `unit · style · 4` pixels, style 4); label mode draws every box

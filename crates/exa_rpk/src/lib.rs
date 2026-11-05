@@ -8,11 +8,13 @@
 
 mod archive;
 mod mem_archive;
+mod module_resources;
 mod project;
 mod vfs;
 
 pub use archive::{Archive, Entry, MappedArchive, RPK_MAGIC};
 pub use mem_archive::{MemArchive, MemEntry};
+pub use module_resources::ModuleResources;
 pub use project::{PROJECT_MAGIC, Project};
 pub use vfs::{GameData, PackKind, locate_install};
 

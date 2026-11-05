@@ -50,7 +50,7 @@ use exa_ui::gui_text::draw_line;
 use exa_ui::icon_atlas::{IconAtlas, IconImage, IconQuad};
 use exa_ui::popups::{DESC_KEEP_OPEN, PopupFade, desc_hits, desc_hover, desc_mouse};
 
-use crate::gui_paint::{self, Frame};
+use crate::gui_paint;
 use crate::gui_screens::GameScreens;
 use crate::item_container::{Cell, Container, Entry, PanelEvent, panel_event};
 use crate::item_panel_draw::PanelIcons;
@@ -1078,10 +1078,26 @@ pub fn draw_card(
     let height =
         (desc_top + desc.len() as i32 * line_height + unit * 2).max(CARD_HEIGHT * unit / 4);
     let rect = GuiRect::new(card.at.0, card.at.1, width, height);
-    let mut frame = Frame::new(rect, unit, "");
-    frame.attributes = gui_paint::FORM_ATTRIBUTES;
-    frame.style = 0;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, Some(font_texture));
+    // The game skin's form draw with the words the show commits to a
+    // top-level form: the card constructor's style (0x3080: the panel
+    // frame) gains the corner frame, its attributes the title and shadow
+    // bits (the card sets no title string, so no title text). A card with
+    // neither a stats page nor a description takes the builder's plain
+    // word, which keeps the title strip off.
+    let words = if stats || !card.built.description.is_empty() {
+        gui_paint::CARD_WORDS
+    } else {
+        gui_paint::FormWords {
+            attributes: PLAIN_CARD_ATTRIBUTES,
+            ..gui_paint::CARD_WORDS
+        }
+    };
+    let (mut form, _) = gui_paint::paint_top_form(rect, unit, &palette, step.alpha, words, None);
+    let mut painted = gui_paint::Painted {
+        client: rect,
+        ..Default::default()
+    };
+    painted.layers.extend(form.under());
 
     // The name is the form's title. The stats card writes it in the strip
     // left of the icon, the plain card above its centred icon.
@@ -1275,6 +1291,7 @@ pub fn draw_card(
         ));
     }
 
+    painted.layers.extend(form.over());
     painted.submit(&mut frames);
 }
 

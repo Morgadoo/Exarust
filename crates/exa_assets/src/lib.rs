@@ -363,6 +363,43 @@ impl TreeSheets {
 
 #[cfg(test)]
 mod tests {
+    /// With an installation (`EXANIMA_DIR`): the five Rayform faces, which
+    /// no pack holds, decode from the executable's raw-data resources by
+    /// their bare names, as the GUI's texture loader asks for them.
+    #[test]
+    fn the_gui_fonts_decode_from_the_executable() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = crate::GameData::open(&dir) else {
+            return;
+        };
+        let game = crate::Game(std::sync::Arc::new(data));
+        for name in [
+            "Rayform06R",
+            "Rayform08R",
+            "Rayform10R",
+            "Rayform12R",
+            "Rayform16R",
+        ] {
+            assert!(game.0.texture_in(name).is_none(), "{name} is not in a pack");
+            let image = game.load_rgba(name).expect(name);
+            println!("{name}: {} x {}", image.width, image.height);
+            assert!(image.width >= 128 && image.height >= 128, "{name}");
+            assert_eq!(
+                image.pixels.len(),
+                image.width as usize * image.height as usize * 4
+            );
+            // The glyphs ink some texels and leave others clear.
+            let alphas = image.pixels.chunks(4).map(|p| p[3]);
+            let inked = alphas.clone().filter(|&a| a > 0).count();
+            assert!(inked > 0 && inked < image.pixels.len() / 4, "{name}");
+        }
+        // The glyph and symbol sheets are module images too.
+        assert!(game.0.module_image("GlphCommon").is_some());
+        assert!(game.0.module_image("GUISymbl").is_some());
+    }
+
     #[test]
     fn the_wheel_texture_is_resampled_to_thirty_two_units() {
         // A flat 96-pixel picture shrinks by three to 32 pixels at the
