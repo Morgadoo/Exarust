@@ -147,7 +147,9 @@
 //!          --schedule-ambiguities     log the fixed step's (and the brains' chain's) pairs of unordered systems that
 //!                                     touch the same data
 //!          --sim-inline               run the simulation's own world on the frame's thread instead of its thread
-//!          --sim-bridge               run the fixed step's schedules in the simulation's world (copy bridge; incomplete)
+//!          --sim-digest <file>        write a hash of every bridged type after each fixed step (one world vs bridge)
+//!          --hold-loading             hold game time while the loading screen shows (repeatable tick numbers)
+//!          --no-sim-bridge            keep the fixed step in the frame's world (default: the simulation's world, behind the copy bridge)
 //!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
 //!                                     schedules, by direction (the simulation thread's hand-off)
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
@@ -470,11 +472,17 @@ pub struct Options {
     pub schedule_ambiguities: bool,
     /// Run the simulation's world on the frame's thread (`--sim-inline`).
     pub sim_inline: bool,
-    /// Run the fixed step's schedules in the simulation's world behind the
-    /// lockstep copy bridge (`--sim-bridge`).
-    pub sim_bridge: bool,
+    /// Keep the fixed step's schedules in the frame's world instead of
+    /// running them in the simulation's behind the lockstep copy bridge
+    /// (`--no-sim-bridge`).
+    pub no_sim_bridge: bool,
     /// Write the fixed step's shared data here (`--sim-boundary`).
     pub sim_boundary: Option<PathBuf>,
+    /// Write a digest of every bridged type after each fixed step
+    /// (`--sim-digest`).
+    pub sim_digest: Option<PathBuf>,
+    /// Hold game time while the loading screen shows (`--hold-loading`).
+    pub hold_loading: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
@@ -1088,8 +1096,12 @@ fn main() -> AppExit {
             "--profiler" => options.profiler = true,
             "--schedule-ambiguities" => options.schedule_ambiguities = true,
             "--sim-inline" => options.sim_inline = true,
-            "--sim-bridge" => options.sim_bridge = true,
+            // The default now; kept so older command lines still run.
+            "--sim-bridge" => options.no_sim_bridge = false,
+            "--no-sim-bridge" => options.no_sim_bridge = true,
             "--sim-boundary" => options.sim_boundary = args.next().map(PathBuf::from),
+            "--sim-digest" => options.sim_digest = args.next().map(PathBuf::from),
+            "--hold-loading" => options.hold_loading = true,
             "--debug-column" => {
                 options.debug_column = args
                     .next()
@@ -1927,9 +1939,9 @@ fn main() -> AppExit {
             exa_physics::sim_app::SimMode::Thread
         },
     });
-    if options.sim_bridge {
-        // Stage 3, opt-in while the bridge does not carry every type the
-        // fixed step touches: its schedules run in the simulation's world.
+    if !options.no_sim_bridge {
+        // Stage 3: the fixed step's schedules run in the simulation's world,
+        // every type they touch copied across each step.
         use bevy::ecs::schedule::ScheduleLabel;
         app.add_plugins(exa_physics::sim_bridge::SimBridgePlugin {
             extra: vec![
@@ -1940,6 +1952,13 @@ fn main() -> AppExit {
     }
     if let Some(path) = options.sim_boundary.clone() {
         app.insert_resource(sim_boundary::SimBoundaryPath(path));
+    }
+    app.add_plugins(exa_physics::sim_digest::SimDigestPlugin);
+    if let Some(path) = options.sim_digest.clone() {
+        app.insert_resource(exa_physics::sim_digest::SimDigestPath(path));
+    }
+    if options.hold_loading {
+        app.add_systems(PreUpdate, frame_loop::hold_while_loading);
     }
     app.insert_resource(options).add_plugins((
         frame_loop::FrameLoopPlugin,
