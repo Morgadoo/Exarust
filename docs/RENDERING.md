@@ -2541,7 +2541,11 @@ surviving corners, and works in centimetres (×100):
   2h / size`, single precision, the same conversion) and the box extends
   ±8000 cm along the light from it.
 - **Softness and bias.** The same update writes the sun light's softness
-  `(c + 1)·(400 / h)` (c the light's own value, 0 by default); below 0.15
+  `(c + 1)·(400 / h)` (c the light's softness source, which every sun
+  placement under a sky writes: twice the capped cloud excess,
+  `2·min((cloudiness − 1.5)·0.4, 0.9)` when positive, plus
+  `1 − 10·|daylight − 0.44|` while the daylight is within 0.1 of the
+  sun/moon threshold; 0 without a sky); below 0.15
   (a double compare) it writes 0.15 and `c' = 0.15 / (the unfloored value)`
   in double precision. The render routine's polygon offset is
   `1 + 1000/h + 2000c'/h` with one offset unit, and it nudges the casters

@@ -2405,8 +2405,9 @@ sixteen bytes).
 in, read from the executable's arena tables: `arena1`–`arena7` indoor and
 `arenao1`–`arenao5` outdoor, each with the player's spawn spot in
 centimetres (the same spots as `exa_world::start`'s arena centres), an
-indoor post-process amount (0.3 for arena2, 0.6 for arena4, else 0; what the
-post processor does with it is not traced), an outdoor flag that lets the
+indoor post-process amount (0.3 for arena2, 0.6 for arena4, else 0; the
+view copies it into its post processor, which never reads it, so it changes
+nothing on screen), an outdoor flag that lets the
 environment draw take its one-in-six late branch (arenao1–arenao4), and an
 outdoor flag that plays the `NtrA` bed by day (arenao1, arenao3, arenao5;
 the others play `NtrW` when the wind is over 0.1). The match tracks and
