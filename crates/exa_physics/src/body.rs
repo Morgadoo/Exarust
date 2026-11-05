@@ -1712,9 +1712,8 @@ pub(crate) fn plain_law(gap: Vec3, slack: f32, strength: f32) -> Option<(Vec3, O
 }
 
 /// A simulated body: limp, or driven by its muscles when it has a
-/// [`Drive`]. The default is an empty body, the place holder the bridge
-/// leaves while a body is lent to the simulation's world.
-#[derive(Component, Debug, Default)]
+/// [`Drive`].
+#[derive(Component, Debug)]
 pub struct Ragdoll {
     pub parts: Vec<Part>,
     /// Every part's links, the skeleton's then its origin pivot, part by part.
@@ -2565,11 +2564,12 @@ impl Plugin for BodyPlugin {
 }
 
 /// The data the bodies' fixed systems touch, for the simulation's bridge
-/// ([`crate::sim_bridge`]): bodies and the solver's own state are lent for
-/// each step, the level's collision grid copied when it changes.
+/// ([`crate::sim_bridge`]): the collision world and the solver's own state are lent for
+/// each step, the level's collision grid copied when it changes. Bodies are
+/// copied when they change: most of a level's bodies sleep and stay home.
 pub fn bridge_body_types(app: &mut App) {
     use crate::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend::<Ragdoll>()
+    app.bridge_copy::<Ragdoll>()
         .bridge_copy::<OutOfScene>()
         .bridge_lend_resource::<Physics>()
         .bridge_copy_resource::<crate::StaticColliders>()
@@ -2586,7 +2586,17 @@ pub fn bridge_body_types(app: &mut App) {
         .bridge_copy::<crate::CharacterBody>()
         .bridge_message::<Shove>()
         .bridge_message::<Footstep>()
-        .bridge_message::<FootSounded>();
+        .bridge_message::<FootSounded>()
+        .bridge_message::<crate::body::lever_body::LightFade>()
+        .bridge_message::<crate::mechanism::MechanismSignal>()
+        .bridge_message::<crate::mechanism_sound::MechanismSounded>()
+        .bridge_copy::<crate::body::door_body::DoorBody>()
+        .bridge_copy::<crate::body::door_body::PendingDoor>()
+        .bridge_copy::<crate::body::lever_body::LeverBody>()
+        .bridge_copy::<crate::body::lever_body::PendingLever>()
+        .bridge_copy::<crate::body::plate_body::PendingPlate>()
+        .bridge_copy::<crate::body::slide_body::PendingSlide>()
+        .bridge_copy::<crate::grip::HeldRest>();
 }
 
 /// What building a body needs for each part.
@@ -5369,11 +5379,11 @@ pub fn step_bodies(
     mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
     mut stages: ResMut<SolverStages>,
-    mut bodies: Query<&mut Ragdoll, Without<OutOfScene>>,
+    mut bodies: Query<(Entity, &mut Ragdoll), Without<OutOfScene>>,
 ) {
     dealt.0.clear();
     for s in queue.0.drain(..) {
-        if let Ok(mut body) = bodies.get_mut(s.body) {
+        if let Ok((_, mut body)) = bodies.get_mut(s.body) {
             body.shove(s.bone, s.velocity, s.daze);
             if let Some(sag) = s.sag {
                 body.sag_from_blow(sag);
@@ -5386,7 +5396,13 @@ pub fn step_bodies(
     }
     let (mut awake, mut sleeping): (Vec<Mut<Ragdoll>>, Vec<Mut<Ragdoll>>) =
         (Vec::new(), Vec::new());
-    for mut body in &mut bodies {
+    // The bodies in entity order (the order they were spawned, as the
+    // original's list keeps its registrations), not the storage's: the
+    // solver's results then do not depend on how either world lays its
+    // tables out (`crate::sim_bridge`).
+    let mut ordered: Vec<(Entity, Mut<Ragdoll>)> = bodies.iter_mut().collect();
+    ordered.sort_unstable_by_key(|(e, _)| *e);
+    for (_, mut body) in ordered {
         match body.sleep {
             Sleep::Awake => awake.push(body),
             Sleep::Asleep => {

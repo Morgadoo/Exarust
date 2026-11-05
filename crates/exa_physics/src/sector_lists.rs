@@ -146,7 +146,10 @@ pub fn world_cell(centre_cm: Vec3) -> (i32, i32) {
 
 /// Rebuilds [`SectorBodies`] after the body step.
 pub fn rebuild_sector_bodies(mut grid: ResMut<SectorBodies>, bodies: Query<(Entity, &Ragdoll)>) {
-    grid.rebuild(bodies.iter());
+    // In entity order, as the solver walks them.
+    let mut ordered: Vec<(Entity, &Ragdoll)> = bodies.iter().collect();
+    ordered.sort_unstable_by_key(|(e, _)| *e);
+    grid.rebuild(ordered.into_iter());
 }
 
 /// One body mesh as the Height Query reads it: the part's frame, its
