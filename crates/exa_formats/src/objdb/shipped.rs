@@ -276,3 +276,55 @@ fn shipped_level_transition_markers() {
             .any(|m| m.0 == "exanima08.rfc" && m.3 == 0x40)
     );
 }
+
+/// Every level's local database reads as the live tier the level load puts
+/// in place: the scene's tier store holds the same records as its decoded
+/// list, and a marked template's copy takes the first id after them.
+#[test]
+fn shipped_levels_fill_the_live_local_tier() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let base = resource.get("objdb.rdb").unwrap();
+    let strings = resource.get("objstrings.rdb").unwrap();
+    let mut levels = 0;
+    for e in resource.entries() {
+        if !e.name.ends_with(".rfc") {
+            continue;
+        }
+        let Ok(scene) = crate::rfc::Scene::parse(resource.bytes(e)) else {
+            continue;
+        };
+        if scene.local_records.is_empty() {
+            continue;
+        }
+        let store = scene
+            .local_database
+            .clone()
+            .unwrap_or_else(|| panic!("{}: no tier store", e.name));
+        let ids: Vec<u32> = store.entries().iter().map(|e| e.id).collect();
+        let listed: Vec<u32> = scene.local_records.iter().map(|(id, _)| *id).collect();
+        // The tier reads the original's count (the table less its last
+        // slot); the decoded list also takes that slot as a record.
+        assert_eq!(&listed[..ids.len()], &ids[..], "{}", e.name);
+        assert!(listed.len() <= ids.len() + 1, "{}", e.name);
+        let mut db = ObjectDb::parse(base, strings).unwrap();
+        db.load_local(store, scene.local_strings.clone().unwrap_or_default());
+        let last = *ids.iter().max().unwrap();
+        let marked = db
+            .base
+            .records()
+            .find(|r| r.header_word() & INSTANCE_ON_USE != 0)
+            .unwrap()
+            .id;
+        let copy = db.instantiate(marked);
+        assert_eq!(copy & TAG_MASK, LOCAL, "{}", e.name);
+        assert!(db.find(copy).is_some());
+        assert!(ids.binary_search(&(copy & ID_MASK)).is_err());
+        assert!(copy & ID_MASK <= last + 1, "{}", e.name);
+        levels += 1;
+    }
+    assert_eq!(levels, 22);
+}

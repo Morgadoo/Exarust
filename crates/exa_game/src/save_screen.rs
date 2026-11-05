@@ -1313,7 +1313,12 @@ mod tests {
             position_cm: [100.0, 0.0, 200.0],
             heading: 0.5,
         };
-        let export = crate::save_live::story_player_world(&player, &mut session).unwrap();
+        let export = crate::save_live::story_player_world(
+            &player,
+            &mut session,
+            &exa_formats::objdb::ObjectDb::default(),
+        )
+        .unwrap();
         crate::save_live::save_new_slot(list, &session, Some(name), &export.save_world(None, false))
             .unwrap()
             .unwrap()

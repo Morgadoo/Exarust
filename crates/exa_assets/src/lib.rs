@@ -9,6 +9,7 @@ pub mod decomp;
 pub mod hair;
 pub mod human_skin;
 pub mod image_format;
+pub mod live_objects;
 pub mod material_manager;
 pub mod merge;
 pub mod mesh_edit;
@@ -108,6 +109,7 @@ impl Plugin for AssetsPlugin {
         let mut cache = ModelCache::default();
         cache.textures.set_streaming(true);
         app.insert_resource(cache);
+        app.init_resource::<live_objects::LiveObjects>();
         app.add_plugins(TextureStreamPlugin);
     }
 }

@@ -244,6 +244,8 @@ impl Plugin for SaveLivePlugin {
             .add_message::<crate::world_clock::RestoreWorldClock>()
             .init_resource::<ArenaStores>()
             .init_resource::<SaveReport>()
+            .init_resource::<exa_assets::live_objects::LiveObjects>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_systems(
                 Update,
                 (
@@ -258,8 +260,31 @@ impl Plugin for SaveLivePlugin {
                 )
                     .chain()
                     .run_if(resource_exists::<SaveFolder>),
+            )
+            .add_systems(
+                Update,
+                sync_before_level_change
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             );
     }
+}
+
+/// The level change's world sync: before the level goes, the surviving
+/// player's local items are promoted to the world tier, as the original's
+/// door transition does before it loads the destination, so they keep
+/// their records when the next level's database replaces the local tier.
+/// [Exarust's: a change after a world reset (an arena round, a scripted
+/// jump) is synced the same way; the original copies those items through a
+/// scratch database into the new level's local tier instead.]
+fn sync_before_level_change(
+    mut requests: MessageReader<exa_world::level_lifecycle::LevelChangeRequest>,
+    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
+    mut players: PlayerSaveQuery,
+) {
+    if requests.read().filter(|r| r.level.is_some()).count() == 0 {
+        return;
+    }
+    sync_players(&mut live, &mut players);
 }
 
 /// The consumer of the scripts' `CheckpointSave` calls (the story's
@@ -492,21 +517,23 @@ pub fn restore_body_health(
 
 /// The story player's share of a save: its record goes into a world
 /// character database under [`PLAYER_RECORD_ID`], which is exported as the
-/// save's `#worldchrdb`, and the session's placement becomes the player's
+/// save's `#worldchrdb`, the live object database's world tier is exported
+/// as its `#worldobjdb` (none when the tier is empty), and the session's
+/// placement becomes the player's
 /// (the record reference with the world bit, the position with its height
 /// as the floor, the heading, a living condition and an AI that saves no
 /// home or pose [guess: the player's controller writes neither]).
 pub fn story_player_world(
     player: &StoryPlayer,
     session: &mut Session,
+    objects: &exa_formats::objdb::ObjectDb,
 ) -> exa_formats::Result<crate::slots::WorldExport> {
     let mut db = exa_formats::character_db::CharacterDb::new(exa_formats::character_db::WORLD_TAG);
     let mut record = player.record.clone();
     // The save's reader finds the player by the low id the placement names.
     record.id = PLAYER_RECORD_ID;
     let _ = db.add(PLAYER_RECORD_ID, record);
-    let export =
-        crate::slots::export_world_databases(&mut db, &exa_formats::objdb::ObjectDb::default())?;
+    let export = crate::slots::export_world_databases(&mut db, objects)?;
     let body = exa_formats::rfc_write::ExportCharacter {
         record: exa_formats::characters::WORLD_DB | PLAYER_RECORD_ID,
         body_position: player.position_cm,
@@ -542,12 +569,163 @@ type PlayerSaveQuery<'w, 's> = Query<
     's,
     (
         &'static GlobalTransform,
-        Option<&'static exa_character::record::CharacterData>,
-        Option<&'static exa_items::possession::Possessions>,
+        Option<&'static mut exa_character::record::CharacterData>,
+        Option<&'static mut exa_items::possession::Possessions>,
         PlayerHealthParts,
     ),
     With<crate::player::PlayerBody>,
 >;
+
+/// The story's world sync on the player's possessions, as the original
+/// runs it before a save and before a level change: the link remap table
+/// on, the carried items promoted to the world tier
+/// ([`exa_formats::objdb::ObjectDb::promote_carried`]: worn list, out
+/// hands, stowed hands, then the pack with the hands' repeats following),
+/// then the local doors' links rewritten through the table and the table
+/// off. The possessions and the body's record take the new ids without
+/// counting as a change (the items are the same; nothing is re-dressed).
+/// Returns how many ids changed. The original also promotes the travelling
+/// followers' items; Exarust's followers keep theirs.
+pub fn promote_player_items(
+    db: &mut exa_formats::objdb::ObjectDb,
+    possessions: &mut exa_items::possession::Possessions,
+    data: Option<&mut exa_character::record::CharacterData>,
+) -> usize {
+    let mut record = record_with_possessions(CharacterRecord::default(), possessions);
+    let before = record.clone();
+    db.set_link_remaps(true);
+    db.promote_carried(&mut record);
+    let doors = db.apply_link_remaps();
+    let changed = before
+        .hands
+        .iter()
+        .zip(&record.hands)
+        .filter(|(a, b)| a.id != b.id)
+        .count()
+        + before
+            .worn
+            .iter()
+            .zip(&record.worn)
+            .filter(|(a, b)| a.id != b.id)
+            .count()
+        + before
+            .inventory
+            .iter()
+            .zip(&record.inventory)
+            .filter(|(a, b)| a.item != b.item)
+            .count();
+    if changed == 0 {
+        return 0;
+    }
+    crate::save_kit::mirror_kit(&record, possessions);
+    if let Some(data) = data {
+        data.record = record_with_possessions(data.record.clone(), possessions);
+    }
+    info!("world sync: {changed} carried item ids promoted to the world tier ({doors} door links)");
+    for (old, new) in before
+        .inventory
+        .iter()
+        .zip(&record.inventory)
+        .map(|(a, b)| (a.item, b.item))
+        .chain(
+            before
+                .worn
+                .iter()
+                .zip(&record.worn)
+                .map(|(a, b)| (a.id, b.id)),
+        )
+        .chain(
+            before
+                .hands
+                .iter()
+                .zip(&record.hands)
+                .map(|(a, b)| (a.id, b.id)),
+        )
+        .filter(|(old, new)| old != new)
+    {
+        let stored = db.stored_condition(new).unwrap_or_default();
+        info!(
+            "world sync: {old:#x} -> {new:#x}: apparel dirt {:?} wear {:?}, weapon dirt {:?} wear {:?}",
+            stored.apparel_dirt, stored.apparel_wear, stored.weapon_dirt, stored.weapon_wear
+        );
+    }
+    changed
+}
+
+/// [`promote_player_items`] on the player bodies of a save query.
+fn sync_players(live: &mut exa_assets::live_objects::LiveObjects, players: &mut PlayerSaveQuery) {
+    for (_, mut data, possessions, _) in players.iter_mut() {
+        let Some(mut possessions) = possessions else {
+            continue;
+        };
+        if !record_has_local(&possessions) {
+            continue;
+        }
+        let data = data.as_mut().map(|data| data.bypass_change_detection());
+        promote_player_items(live.db_mut(), possessions.bypass_change_detection(), data);
+    }
+}
+
+/// The arena save's world sync on the manager, as its save runs the
+/// record promotion: the id remap table on, the hands, worn list, the six
+/// per-rank loadouts and the pack promoted to the world tier
+/// ([`exa_formats::objdb::ObjectDb::promote_record`]), the table off. The
+/// body's possessions and the career's loadouts take the new ids. The
+/// original promotes the stash, the arsenal and every employee's record and
+/// list too; Exarust's keep theirs.
+fn promote_manager_items(
+    db: &mut exa_formats::objdb::ObjectDb,
+    players: &mut PlayerSaveQuery,
+    career: &mut crate::hub_windows::ArenaCareer,
+) {
+    for (_, mut data, possessions, _) in players.iter_mut() {
+        let Some(mut possessions) = possessions else {
+            continue;
+        };
+        let mut record = record_with_possessions(CharacterRecord::default(), &possessions);
+        record.loadouts = career.player.loadouts.to_vec();
+        let before = record.clone();
+        db.set_remaps(true);
+        db.promote_record(&mut record);
+        db.set_remaps(false);
+        if record == before {
+            continue;
+        }
+        crate::save_kit::mirror_kit(&record, possessions.bypass_change_detection());
+        for (slot, loadout) in career.player.loadouts.iter_mut().zip(&record.loadouts) {
+            *slot = loadout.clone();
+        }
+        if let Some(data) = data.as_mut() {
+            let data = data.bypass_change_detection();
+            data.record = record_with_possessions(data.record.clone(), &possessions);
+        }
+        info!("world sync: the manager's items promoted to the world tier");
+    }
+}
+
+/// The save's world object export, for the log.
+fn log_world_export(export: &crate::slots::WorldExport) {
+    match &export.objects {
+        Some((objects, strings)) => info!(
+            "save: #worldobjdb exported ({} record bytes, {} string bytes)",
+            objects.len(),
+            strings.len()
+        ),
+        None => info!("save: the world tier is empty; no #worldobjdb"),
+    }
+}
+
+/// Whether any of the possessions names a local-tier object.
+fn record_has_local(possessions: &exa_items::possession::Possessions) -> bool {
+    let local = |id: u32| id & exa_formats::objdb::TAG_MASK == exa_formats::objdb::LOCAL;
+    possessions
+        .out
+        .iter()
+        .chain(&possessions.stowed)
+        .any(|h| local(h.id))
+        || possessions.worn.iter().any(|w| local(w.id))
+        || possessions.carried.iter().any(|c| local(c.id))
+}
 
 /// What the save reads a player body's health from.
 type PlayerHealthParts = (
@@ -658,11 +836,12 @@ pub fn apply_loaded_discovery(
 fn story_save_world(
     session: &mut Session,
     player: Option<&StoryPlayer>,
+    objects: &exa_formats::objdb::ObjectDb,
 ) -> crate::slots::WorldExport {
     let Some(player) = player else {
         return crate::slots::WorldExport::default();
     };
-    match story_player_world(player, session) {
+    match story_player_world(player, session, objects) {
         Ok(export) => export,
         Err(error) => {
             warn!("save: the player's record does not export: {error}");
@@ -704,15 +883,16 @@ fn save_to_new_slot(
     levels: Query<&exa_world::LevelRoot>,
     clock: Option<Res<exa_combat::remedy::WorldClock>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
-    career: Option<Res<crate::hub_windows::ArenaCareer>>,
+    mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
     stores: Res<ArenaStores>,
     camera: Option<Res<SaveCamera>>,
     transition: Option<Res<crate::level_transition::LiveTransition>>,
-    players: PlayerSaveQuery,
+    mut players: PlayerSaveQuery,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     mut report: ResMut<SaveReport>,
     flow: Option<Res<crate::flow::Flow>>,
     experience: Option<Res<crate::experience_live::StoryExperience>>,
+    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
 ) {
     if requests.read().count() == 0 {
         return;
@@ -732,6 +912,16 @@ fn save_to_new_slot(
     let seconds = clock
         .as_ref()
         .map_or(0, |clock| crate::world_clock::stamped(clock, now));
+    let arena = level.is_some_and(crate::arena_hub_live::is_hub_level);
+    // The save's world sync: the arena promotes the manager's whole record
+    // with the id remap table on, the story the player's carried items.
+    if arena {
+        if let Some(career) = career.as_mut() {
+            promote_manager_items(live.db_mut(), &mut players, career);
+        }
+    } else {
+        sync_players(&mut live, &mut players);
+    }
     let fallback = crate::hub_windows::ArenaCareer::default();
     let career = career.as_deref().unwrap_or(&fallback);
     let mut session = live_session(level, seconds, career, &stores);
@@ -747,17 +937,18 @@ fn save_to_new_slot(
             // fighter's record.
             let player = live_story_player(&players, created.as_deref())
                 .map(|player| arena_manager(player, career));
-            let export = story_save_world(&mut session, player.as_ref());
+            let export = story_save_world(&mut session, player.as_ref(), live.db());
             (Some(career.player.name.clone()), export)
         }
         Mode::Story => {
             stamp_story(&mut session, flow.as_deref());
             stamp_discovery(&mut session, experience.as_deref());
             let player = live_story_player(&players, created.as_deref());
-            let export = story_save_world(&mut session, player.as_ref());
+            let export = story_save_world(&mut session, player.as_ref(), live.db());
             (player.map(|p| p.record.name), export)
         }
     };
+    log_world_export(&export);
     let world = export.save_world(None, false);
     match save_new_slot(
         lists.of_mode(session.mode),
@@ -793,11 +984,12 @@ fn run_save_steps(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     camera: Option<Res<SaveCamera>>,
     transition: Option<Res<crate::level_transition::LiveTransition>>,
-    players: PlayerSaveQuery,
+    mut players: PlayerSaveQuery,
     fighters: Query<&exa_combat::Fighter, With<crate::player::PlayerBody>>,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     experience: Option<Res<crate::experience_live::StoryExperience>>,
     mut report: ResMut<SaveReport>,
+    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
 ) {
     let steps: Vec<SaveStep> = steps.read().copied().collect();
     if steps.is_empty() {
@@ -854,8 +1046,10 @@ fn run_save_steps(
                     .stamp(&mut session);
                 stamp_story(&mut session, flow.as_deref());
                 stamp_discovery(&mut session, experience.as_deref());
+                sync_players(&mut live, &mut players);
                 let player = live_story_player(&players, created.as_deref());
-                let export = story_save_world(&mut session, player.as_ref());
+                let export = story_save_world(&mut session, player.as_ref(), live.db());
+                log_world_export(&export);
                 match list.save_current(&session, &export.save_world(None, false)) {
                     Ok(_) => {
                         info!(
@@ -891,8 +1085,12 @@ fn run_save_steps(
                     .stamp(&mut session);
                 stamp_story(&mut session, flow.as_deref());
                 stamp_discovery(&mut session, experience.as_deref());
+                // The checkpoint's pre-save world sync, as for a save.
+                if !disabled {
+                    sync_players(&mut live, &mut players);
+                }
                 let player = live_story_player(&players, created.as_deref());
-                let export = story_save_world(&mut session, player.as_ref());
+                let export = story_save_world(&mut session, player.as_ref(), live.db());
                 // The disable flag skips the save but not the copy: the
                 // old save becomes the checkpoint, as in the original.
                 let world = export.save_world(None, disabled);
@@ -933,12 +1131,7 @@ pub fn save_item_kinds(
 ) -> HashMap<u32, ItemKind> {
     let mut kinds = kinds_from_items(base);
     if let Some(world) = loaded.world_objects() {
-        let items: Vec<_> = world
-            .world
-            .records()
-            .filter_map(|record| record.item().ok())
-            .collect();
-        kinds.extend(kinds_from_items(&items));
+        kinds.extend(kinds_from_items(&world_items(&world.world)));
     }
     kinds
 }
@@ -1104,6 +1297,7 @@ fn load_arena_slot(
     mut stores: ResMut<ArenaStores>,
     mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
     mut report: ResMut<SaveReport>,
+    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
 ) {
     let (Some(request), Some(mut lists)) = (request, lists) else {
         return;
@@ -1140,6 +1334,11 @@ fn load_arena_slot(
     let Some(career) = career.as_mut() else {
         return;
     };
+    import_world_tier(
+        &mut live,
+        game.as_deref(),
+        crate::slots::world_object_tier(&loaded.package),
+    );
     let restored = restore_arena(&loaded, &kinds, career, &mut stores);
     clock.write(crate::world_clock::RestoreWorldClock {
         saved_seconds: restored.clock,
@@ -1178,8 +1377,12 @@ pub struct StoryRestore {
     pub player: Option<CharacterRecord>,
     /// Where the save placed the player.
     pub placement: Option<crate::flow::Placement>,
-    /// The save's world object records.
+    /// The save's world object records, under their world-tagged ids.
     pub items: Vec<exa_formats::objdb::Item>,
+    /// The save's world tier and its own library, for the live database's
+    /// import; `None` when the save has no `#worldobjdb` (the load then
+    /// clears the live tier).
+    pub world: Option<(exa_formats::objdb::Store, exa_formats::objstrings::Library)>,
     /// Which file was read.
     pub kind: save_package::SlotKind,
     /// The content-stream request the identity reset posts for the loaded
@@ -1226,14 +1429,10 @@ pub fn restore_story(
         .placement()
         .and_then(Result::ok)
         .map(|placement| placement_of(&placement));
-    let items = loaded
-        .world_objects()
-        .map(|db| {
-            db.world
-                .records()
-                .filter_map(|record| record.item().ok())
-                .collect()
-        })
+    let world = crate::slots::world_object_tier(&loaded.package);
+    let items = world
+        .as_ref()
+        .map(|(tier, _)| world_items(tier))
         .unwrap_or_default();
     Ok(StoryRestore {
         session,
@@ -1241,9 +1440,52 @@ pub fn restore_story(
         player,
         placement,
         items,
+        world,
         kind: loaded.kind,
         request,
     })
+}
+
+/// A world tier's records decoded as items under their world-tagged ids.
+pub fn world_items(tier: &exa_formats::objdb::Store) -> Vec<exa_formats::objdb::Item> {
+    tier.records()
+        .filter_map(|record| {
+            let mut item = record.item().ok()?;
+            item.id = record.id | exa_formats::objdb::WORLD;
+            Some(item)
+        })
+        .collect()
+}
+
+/// The save load's object database import into the live database: the
+/// world tier and its library replaced by the save's (cleared without
+/// one), then migrated from their templates, as the original's load does.
+pub fn import_world_tier(
+    live: &mut exa_assets::live_objects::LiveObjects,
+    game: Option<&exa_assets::Game>,
+    world: Option<(exa_formats::objdb::Store, exa_formats::objstrings::Library)>,
+) {
+    if let Some(game) = game {
+        live.ensure_base(&game.0);
+    }
+    let records = world.as_ref().map_or(0, |(tier, _)| tier.len());
+    let migrated = live.db_mut().import_world(world);
+    info!(
+        "save: world tier imported ({records} records, {migrated} visited by the template migration)"
+    );
+    for record in live.db().world.records() {
+        let id = record.id | exa_formats::objdb::WORLD;
+        if let Some(stored) = live.db().stored_condition(id) {
+            info!(
+                "save: world record {id:#x} {:?}: apparel dirt {:?} wear {:?}, weapon dirt {:?} wear {:?}",
+                record.header().map(|h| h.name).unwrap_or_default(),
+                stored.apparel_dirt,
+                stored.apparel_wear,
+                stored.weapon_dirt,
+                stored.weapon_wear
+            );
+        }
+    }
 }
 
 /// Runs a story load into the running game: the record becomes the next
@@ -1263,6 +1505,10 @@ fn load_story_slot(
     levels: Query<(), With<exa_world::level_lifecycle::LevelEntity>>,
     mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
     mut report: ResMut<SaveReport>,
+    (mut live, game): (
+        ResMut<exa_assets::live_objects::LiveObjects>,
+        Option<Res<exa_assets::Game>>,
+    ),
 ) {
     let Some(request) = requests.read().last().copied() else {
         return;
@@ -1272,7 +1518,8 @@ fn load_story_slot(
     };
     let restored = restore_story(&mut lists.story, request.number, request.prefer_checkpoint);
     let (level, placement) = match restored {
-        Ok(restored) => {
+        Ok(mut restored) => {
+            import_world_tier(&mut live, game.as_deref(), restored.world.take());
             info!(
                 "save: story slot {} loaded from {:?}: level {}, clock {} s, player {:?}, {} world object records",
                 request.number,
@@ -1552,7 +1799,12 @@ mod tests {
             &career,
         );
         assert_eq!(player.record.loadouts.len(), 6);
-        let export = story_player_world(&player, &mut session).unwrap();
+        let export = story_player_world(
+            &player,
+            &mut session,
+            &exa_formats::objdb::ObjectDb::default(),
+        )
+        .unwrap();
         save_new_slot(
             &mut lists.arena,
             &session,
@@ -1589,7 +1841,12 @@ mod tests {
         };
         let career = crate::hub_windows::ArenaCareer::default();
         let mut session = live_session(Some("exanima02"), 4321, &career, &ArenaStores::default());
-        let export = story_player_world(&player, &mut session).unwrap();
+        let export = story_player_world(
+            &player,
+            &mut session,
+            &exa_formats::objdb::ObjectDb::default(),
+        )
+        .unwrap();
         let number = save_new_slot(
             &mut lists.story,
             &session,
@@ -1630,6 +1887,115 @@ mod tests {
         assert_eq!(restored.kind, save_package::SlotKind::Save);
         // An index outside the list answers nothing.
         assert_eq!(list.character_screen_select(5, 1).availability, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A section's bytes: tag, size (body + 8), body.
+    fn section(tag: u32, body: &[u8]) -> Vec<u8> {
+        let mut out = tag.to_le_bytes().to_vec();
+        out.extend((body.len() as u32 + 8).to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A record with a header (name, flags) and an apparel body of the
+    /// given dirt and wear.
+    fn apparel_record(name: &str, flags: u32, dirt: u8, wear: u8) -> Vec<u8> {
+        let mut header = name.as_bytes().to_vec();
+        header.resize(16, 0);
+        header.extend(flags.to_le_bytes());
+        header.extend(0u32.to_le_bytes());
+        let mut body = vec![0u8; 0x224];
+        body[0x1B1] = wear;
+        body[0x1B2] = dirt;
+        let mut out = section(0x1000_0000, &header);
+        out.extend(section(0x1000, &body));
+        out
+    }
+
+    /// The live database end to end: a kit's copy of a marked template
+    /// takes the first id the level's own records leave free, its bytes are
+    /// written there, the save's world sync moves it to the world tier and
+    /// the pack names it there, the save exports the tier, and the load
+    /// brings the record back with its dirt and wear.
+    #[test]
+    fn a_kit_copy_keeps_its_condition_through_a_save_and_a_load() {
+        use exa_assets::live_objects::LiveObjects;
+        use exa_formats::objdb::{LOCAL, ObjectDb, Store, WORLD};
+        let base = || {
+            let mut db = ObjectDb::default();
+            db.base = Store::from_records([(
+                0x20,
+                0x1000_1000,
+                apparel_record("Tunic", exa_formats::objdb::INSTANCE_ON_USE, 0xC0, 0xA0).as_slice(),
+            )]);
+            db
+        };
+        let mut live = LiveObjects::of(base());
+        let level: Vec<Vec<u8>> = (1..=3)
+            .map(|id| apparel_record(&format!("Level{id}"), 0, 0, 0))
+            .collect();
+        live.load_level(
+            "test",
+            Some(Store::from_records(
+                level
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (i as u32 + 1, 0x1000_1000, p.as_slice())),
+            )),
+            None,
+        );
+        let copy = live.db_mut().instantiate(0x20);
+        assert_eq!(copy, LOCAL | 4, "the copy follows the level's own records");
+        assert!(live.write_condition(copy, true, true, 0x10));
+        assert!(live.write_condition(copy, true, false, 0x08));
+        let mut record = CharacterRecord::reset();
+        record.name = "Ash".to_string();
+        let mut possessions = exa_items::possession::Possessions::of_record(&record);
+        possessions.give(copy, 0);
+        possessions.give(0x20, 0);
+        let changed = promote_player_items(live.db_mut(), &mut possessions, None);
+        assert_eq!(changed, 1);
+        let ids: Vec<u32> = possessions.carried.iter().map(|c| c.id).collect();
+        assert!(ids.contains(&(WORLD | 1)) && ids.contains(&0x20));
+        assert!(live.db().find(LOCAL | 4).is_none());
+        // The level's own records stay local.
+        assert!(live.db().find(LOCAL | 3).is_some());
+        let dir = folder("kit-copy");
+        let mut lists = SlotLists::new(&dir);
+        let player = StoryPlayer {
+            record: record_with_possessions(record, &possessions),
+            position_cm: [0.0; 3],
+            heading: 0.0,
+        };
+        let career = crate::hub_windows::ArenaCareer::default();
+        let mut session = live_session(Some("exanima01"), 1, &career, &ArenaStores::default());
+        let export = story_player_world(&player, &mut session, live.db()).unwrap();
+        assert!(export.objects.is_some());
+        let number = save_new_slot(
+            &mut lists.story,
+            &session,
+            Some("Ash"),
+            &export.save_world(None, false),
+        )
+        .unwrap()
+        .unwrap();
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(list.any());
+        let mut restored = restore_story(&mut list, number, false).unwrap();
+        assert_eq!(restored.items[0].id, WORLD | 1);
+        let back = restored.player.clone().unwrap();
+        assert!(back.inventory.iter().any(|c| c.item == WORLD | 1));
+        let mut fresh = LiveObjects::of(base());
+        import_world_tier(&mut fresh, None, restored.world.take());
+        let stored = fresh.db().stored_condition(WORLD | 1).unwrap();
+        assert_eq!(
+            (stored.apparel_dirt, stored.apparel_wear),
+            (Some(0x10), Some(0x08))
+        );
+        // A save without a world tier clears the live one.
+        import_world_tier(&mut fresh, None, None);
+        assert!(fresh.db().world.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1693,7 +2059,12 @@ mod tests {
         };
         let career = crate::hub_windows::ArenaCareer::default();
         let mut session = live_session(Some("exanima01"), 60, &career, &ArenaStores::default());
-        let export = story_player_world(&player, &mut session).unwrap();
+        let export = story_player_world(
+            &player,
+            &mut session,
+            &exa_formats::objdb::ObjectDb::default(),
+        )
+        .unwrap();
         let number = save_new_slot(
             &mut lists.story,
             &session,

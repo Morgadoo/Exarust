@@ -41,6 +41,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_assets::Game;
+use exa_assets::live_objects::LiveObjects;
 use exa_items::possession::Possessions;
 use exa_physics::body::DoorBody;
 use exa_physics::mechanism_sound::{self, MechanismSounded};
@@ -112,6 +113,93 @@ impl UseScript {
             crate::gui_drop::parse_id(id)?,
             frame.trim().parse().ok()?,
         ))))
+    }
+}
+
+/// `--kit-use clean|repair:TARGET@FRAME,...` (debug): at each frame after
+/// the load, a cleaning brush or repair sphere is released on the pack
+/// entry that names `TARGET`, as a GUI use of the kit over the inventory
+/// would release it ([`UseRelease::CleanGui`] / [`UseRelease::RepairGui`]).
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct KitScript(pub Vec<KitUse>);
+
+/// One scripted kit release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KitUse {
+    pub repair: bool,
+    pub target: u32,
+    pub frame: u32,
+}
+
+impl KitScript {
+    pub fn parse(text: &str) -> Option<Self> {
+        text.split(',')
+            .map(|one| {
+                let (kind, rest) = one.split_once(':')?;
+                let repair = match kind.trim() {
+                    "repair" => true,
+                    "clean" => false,
+                    _ => return None,
+                };
+                let (target, frame) = rest.split_once('@')?;
+                Some(KitUse {
+                    repair,
+                    target: crate::gui_drop::parse_id(target)?,
+                    frame: frame.trim().parse().ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(Self)
+    }
+}
+
+/// The scripted kit releases ([`KitScript`]): the shipped brush (`0x34d`)
+/// or repair sphere (`0x48c`) on the player's pack entry naming the target.
+fn scripted_kit(
+    script: Res<KitScript>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    players: Query<&Possessions, With<PlayerBody>>,
+    mut released: MessageWriter<UseReleased>,
+) {
+    let Some(last) = script.0.iter().map(|kit| kit.frame).max() else {
+        return;
+    };
+    if loading.is_some() || *frames > last {
+        return;
+    }
+    *frames += 1;
+    for kit in script.0.iter().filter(|kit| kit.frame == *frames) {
+        let Some(pack) = players.iter().next() else {
+            info!("kit script: no player at frame {}", kit.frame);
+            continue;
+        };
+        let entry = pack
+            .carried
+            .iter()
+            .filter(|carried| carried.id != 0)
+            .position(|carried| carried.id == kit.target);
+        let Some(entry) = entry else {
+            info!("kit script: the pack holds no {:#x}", kit.target);
+            continue;
+        };
+        info!(
+            "kit script: {} on pack entry {entry} ({:#x}) at frame {}",
+            if kit.repair { "repair" } else { "clean" },
+            kit.target,
+            kit.frame
+        );
+        released.write(UseReleased {
+            release: if kit.repair {
+                UseRelease::RepairGui
+            } else {
+                UseRelease::CleanGui
+            },
+            item: if kit.repair { 0x48c } else { 0x34d },
+            target: None,
+            subject: kit.target,
+            subject_entry: Some((Panel::PlayerPack, entry)),
+        });
     }
 }
 
@@ -850,37 +938,26 @@ fn kit_bytes_from(stored: exa_formats::objdb::StoredCondition) -> KitBytes {
     }
 }
 
-/// The loaded object database. A kit reads and writes the record the item
-/// id names, so a local copy keeps its own dirt and wear.
-#[derive(Resource, Debug, Default)]
-struct LiveObjects {
-    db: Option<exa_formats::objdb::ObjectDb>,
-    tried: bool,
-}
-
-impl LiveObjects {
-    fn ensure(&mut self, game: Option<&Game>) {
-        if self.tried {
-            return;
-        }
-        self.tried = true;
-        let Some(game) = game else {
-            return;
-        };
-        let Some(pack) = game.0.pack(exa_assets::PackKind::Resource) else {
-            return;
-        };
-        let Some(bytes) = pack.get("objdb.rdb") else {
-            return;
-        };
-        let strings = pack.get("objstrings.rdb").unwrap_or_default();
-        self.db = exa_formats::objdb::ObjectDb::parse(bytes, strings).ok();
-    }
-
-    /// A marked template used on an item becomes its own local record. An
-    /// unmarked id, or a database that is not loaded, comes back unchanged.
-    fn instantiate(&mut self, id: u32) -> u32 {
-        self.db.as_mut().map(|db| db.instantiate(id)).unwrap_or(id)
+/// A kit's copy `to` of the item `from` takes the item's place in the
+/// player's pack: the pack entry the use landed on when it still names
+/// `from` (the panel lists the pack's non-empty entries in order), else the
+/// first entry naming it. The original's pack panel is the record's own
+/// list, so its rewrite is the record's.
+fn rewrite_carried(possessions: &mut Possessions, entry: Option<usize>, from: u32, to: u32) {
+    let at = entry
+        .and_then(|index| {
+            possessions
+                .carried
+                .iter()
+                .enumerate()
+                .filter(|(_, carried)| carried.id != 0)
+                .nth(index)
+                .filter(|(_, carried)| carried.id == from)
+                .map(|(at, _)| at)
+        })
+        .or_else(|| possessions.carried.iter().position(|c| c.id == from));
+    if let Some(at) = at {
+        possessions.carried[at].id = to;
     }
 }
 
@@ -937,8 +1014,9 @@ struct KitConditions {
 fn apply_kit(
     mut released: MessageReader<UseReleased>,
     mut kits: ResMut<KitConditions>,
-    mut objects: ResMut<LiveObjects>,
+    mut live: ResMut<LiveObjects>,
     players: Query<&GlobalTransform, With<PlayerBody>>,
+    mut packs: Query<&mut Possessions, With<PlayerBody>>,
     targets: Query<&GlobalTransform>,
     game: Option<Res<Game>>,
     mut items: ResMut<DollItems>,
@@ -947,11 +1025,12 @@ fn apply_kit(
     time: Option<Res<Time<Virtual>>>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut roll: Local<Option<crate::arena::Mt19937>>,
-    mut catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
 ) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
     let game = game.as_deref();
-    objects.ensure(game);
+    if let Some(game) = game {
+        live.ensure_base(&game.0);
+    }
     items.ensure(game);
     for release in released.read() {
         let kind = match release.release {
@@ -963,19 +1042,16 @@ fn apply_kit(
             continue;
         };
         let bytes = *kits.bytes.entry(subject).or_insert_with(|| {
-            objects
-                .db
-                .as_ref()
-                .and_then(|db| db.stored_condition(subject))
+            live.db()
+                .stored_condition(subject)
                 .map(kit_bytes_from)
                 .or_else(|| items.get(subject).map(kit_bytes))
                 .unwrap_or_default()
         });
         if kind == player_controls::REPAIR
-            && objects
-                .db
-                .as_ref()
-                .and_then(|db| db.stored_condition(subject))
+            && live
+                .db()
+                .stored_condition(subject)
                 .is_some_and(|stored| stored.repair_refused)
         {
             continue;
@@ -990,7 +1066,9 @@ fn apply_kit(
         };
         let mut subject = subject;
         if active {
-            let copy = objects.instantiate(subject);
+            // A marked template used on becomes its own local record, under
+            // the first id the level's local tier leaves free.
+            let copy = live.db_mut().instantiate(subject);
             if copy != subject {
                 if let Some((panel, index)) = release.subject_entry {
                     rewrite_entry(&mut screens, panel, index, subject, copy);
@@ -998,12 +1076,17 @@ fn apply_kit(
                 if let Some(bytes) = kits.bytes.remove(&subject) {
                     kits.bytes.insert(copy, bytes);
                 }
-                // The shared records take the copy too: the panels, the
-                // card and the worn figure read it under its own id.
-                items.copy_record(subject, copy);
-                if let Some(catalogue) = catalogue.as_mut() {
-                    catalogue.copy_card(subject, copy);
+                let entry = release
+                    .subject_entry
+                    .filter(|(panel, _)| *panel == Panel::PlayerPack)
+                    .map(|(_, index)| index);
+                if let Some(mut pack) = packs.iter_mut().next() {
+                    rewrite_carried(&mut pack, entry, subject, copy);
                 }
+                // The panels, the card and the worn figure read the copy
+                // under its own id from the next sync on.
+                items.sync(&live);
+                info!("kit: item {subject:#x} becomes its own record {copy:#x}");
                 subject = copy;
             }
         }
@@ -1065,35 +1148,32 @@ fn apply_kit(
 }
 
 /// One frame of the kits' timed bytes. A value is written only while it
-/// lowers the section's byte or arrives, apparel first. Each write reaches
-/// the kits' database and the shared records: the item records the panels
-/// and the worn figure read ([`DollItems`]) and the card's sentence (which
-/// reads the wear byte).
+/// lowers the section's byte or arrives, apparel first. Each write goes
+/// into the live database's record; the item records the panels and the
+/// worn figure read ([`DollItems`]) and the card's sentence (which reads
+/// the wear byte) are read again from it.
 fn tick_kits(
     time: Option<Res<Time<Virtual>>>,
     mut kits: ResMut<KitConditions>,
-    mut objects: ResMut<LiveObjects>,
+    mut live: ResMut<LiveObjects>,
     mut items: ResMut<DollItems>,
-    mut catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
 ) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
     let writes = settle_kits(&mut kits, now_ms);
+    if writes.is_empty() {
+        return;
+    }
     for (id, section, kind, value) in writes {
         let apparel = section == player_controls::APPAREL_SECTION;
         let dirt = kind == player_controls::CLEAN;
-        if let Some(db) = objects.db.as_mut() {
-            db.write_condition_byte(id, apparel, dirt, value);
-        }
-        items.write_condition(id, apparel, dirt, value);
-        if !dirt && let Some(catalogue) = catalogue.as_mut() {
-            catalogue.write_wear(id, apparel, value);
-        }
+        let written = live.write_condition(id, apparel, dirt, value);
         debug!(
-            "kit write: item {id:#x} {} {} = {value:#x}",
+            "kit write: item {id:#x} {} {} = {value:#x} (stored {written})",
             if apparel { "apparel" } else { "weapon" },
             if dirt { "dirt" } else { "wear" }
         );
     }
+    items.sync(&live);
 }
 
 fn settle_kits(kits: &mut KitConditions, now_ms: u32) -> Vec<(u32, u8, u8, u8)> {
@@ -1127,6 +1207,7 @@ impl Plugin for UseCursorPlugin {
         mechanism_sound::register(app);
         app.init_resource::<UseCursor>()
             .init_resource::<UseScript>()
+            .init_resource::<KitScript>()
             .init_resource::<DollItems>()
             .init_resource::<KitConditions>()
             .init_resource::<LiveObjects>()
@@ -1138,6 +1219,7 @@ impl Plugin for UseCursorPlugin {
                 (
                     end_use,
                     apply_pour,
+                    scripted_kit,
                     apply_kit,
                     transfer_gui,
                     tick_kits,
@@ -1275,6 +1357,48 @@ mod tests {
             DoorLock::Locked { key_matches: false }
         );
         assert_eq!(door_lock(false, 0xb, 0xb), DoorLock::Open);
+    }
+
+    /// A kit's copy takes its template's place in the pack: the entry the
+    /// use landed on (counting non-empty entries), else the first naming it.
+    #[test]
+    fn a_kit_copy_replaces_its_pack_entry() {
+        let mut pack = Possessions::default();
+        for id in [0, 7, 9, 7] {
+            pack.carried.push(exa_items::possession::Carried {
+                id,
+                flags: 0,
+                x: 0,
+                y: 0,
+            });
+        }
+        rewrite_carried(&mut pack, Some(2), 7, 0x8000_0010);
+        let ids: Vec<u32> = pack.carried.iter().map(|c| c.id).collect();
+        assert_eq!(ids, [0, 7, 9, 0x8000_0010]);
+        rewrite_carried(&mut pack, Some(1), 7, 0x8000_0011);
+        let ids: Vec<u32> = pack.carried.iter().map(|c| c.id).collect();
+        assert_eq!(ids, [0, 0x8000_0011, 9, 0x8000_0010]);
+        rewrite_carried(&mut pack, None, 9, 0x8000_0012);
+        assert_eq!(pack.carried[2].id, 0x8000_0012);
+        rewrite_carried(&mut pack, None, 5, 1);
+        assert_eq!(pack.carried.len(), 4);
+    }
+
+    #[test]
+    fn the_kit_script_reads_its_kind_target_and_frame() {
+        assert_eq!(
+            KitScript::parse("repair:0x8000003@120"),
+            Some(KitScript(vec![KitUse {
+                repair: true,
+                target: 0x8000003,
+                frame: 120
+            }]))
+        );
+        let two = KitScript::parse("clean:12@5,repair:1@9").unwrap();
+        assert_eq!(two.0.len(), 2);
+        assert!(!two.0[0].repair && two.0[1].repair);
+        assert_eq!(KitScript::parse("polish:12@5"), None);
+        assert_eq!(KitScript::parse("clean:12"), None);
     }
 
     #[test]

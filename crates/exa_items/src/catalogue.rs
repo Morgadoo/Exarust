@@ -49,7 +49,8 @@ pub struct ItemModel {
 
 /// Item kinds and container children of the game's object database, by
 /// record id. Ids with a database tag (a level's own items, the world's)
-/// are not in it.
+/// are read from the live database's tiers ([`Self::set_tier`]) and kept
+/// under their whole ids.
 #[derive(Resource, Debug, Default, Clone)]
 pub struct ItemCatalogue {
     kinds: HashMap<u32, ItemKind>,
@@ -81,8 +82,16 @@ pub struct ItemCatalogue {
     /// The game's object string library, kept for the level's own cards.
     strings: Option<Library>,
     /// The loaded level's own records' card facts, under their local-tagged
-    /// ids.
+    /// ids (and the world tier's under its world-tagged ids).
     level_cards: HashMap<u32, CardFacts>,
+    /// The tagged records' kinds, children, usable bytes, worn burdens and
+    /// shield records, under their whole ids: the live database's local
+    /// and world tiers ([`Self::set_tier`]).
+    tagged_kinds: HashMap<u32, ItemKind>,
+    tagged_contents: HashMap<u32, Vec<u32>>,
+    tagged_usable: HashMap<u32, [u8; 2]>,
+    tagged_burdens: HashMap<u32, Burden>,
+    tagged_shields: HashMap<u32, ShieldRecord>,
 }
 
 /// What one item's description card and weight rules read.
@@ -179,19 +188,7 @@ impl ItemCatalogue {
             db.records.iter().map(|r| (r.id, db.payload(r))).collect();
         for r in &db.records {
             let payload = db.payload(r);
-            let weapon = section(payload, WEAPON)
-                .and_then(|b| b.get(..4))
-                .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")));
-            out.kinds.insert(
-                r.id,
-                ItemKind {
-                    weapon,
-                    shield: section(payload, SHIELD).is_some(),
-                    light: section(payload, LIGHT).is_some(),
-                    sight: section(payload, BODY).map(exa_formats::objdb::special_kind)
-                        == Some(exa_formats::objdb::Burden::SEES_IN_THE_DARK),
-                },
-            );
+            out.kinds.insert(r.id, kind_of(payload));
             if let Some(c) = section(payload, CONTAINER).and_then(Container::parse) {
                 out.contents
                     .insert(r.id, c.children.iter().map(|c| c.id).collect());
@@ -218,7 +215,7 @@ impl ItemCatalogue {
     /// The kind of the game's item `id`.
     pub fn kind(&self, id: u32) -> Option<ItemKind> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.tagged_kinds.get(&id).copied();
         }
         self.kinds.get(&id).copied()
     }
@@ -226,7 +223,7 @@ impl ItemCatalogue {
     /// A container's children; `None` for anything that is not one.
     pub fn contents(&self, id: u32) -> Option<&[u32]> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.tagged_contents.get(&id).map(Vec::as_slice);
         }
         self.contents.get(&id).map(Vec::as_slice)
     }
@@ -244,7 +241,7 @@ impl ItemCatalogue {
     /// sort 11); `None` when the item cannot be used.
     pub fn usable(&self, id: u32) -> Option<[u8; 2]> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.tagged_usable.get(&id).copied();
         }
         self.usable.get(&id).copied()
     }
@@ -267,48 +264,37 @@ impl ItemCatalogue {
         self.cards.get(&id)
     }
 
-    /// A kit's copy `to` of the record `from` takes that record's card.
-    pub fn copy_card(&mut self, from: u32, to: u32) {
-        if from == to {
+    /// A game record's entries read again after its bytes changed in the
+    /// live database (a kit's write into a template): its card (the
+    /// sentence reads the wear byte), worn burden and icon appearance.
+    /// `find` gives another base record's payload, for inherited strings.
+    pub fn refresh_record<'a>(
+        &mut self,
+        id: u32,
+        payload: &[u8],
+        find: impl Fn(u32) -> Option<&'a [u8]>,
+    ) {
+        if id & !ID_MASK != 0 {
             return;
         }
-        let Some(facts) = self.card_facts(from).cloned() else {
-            return;
-        };
-        if to & !ID_MASK != 0 {
-            self.level_cards.insert(to, facts);
-        } else {
-            self.cards.insert(to, facts);
+        let facts = card_facts(payload, self.strings.as_ref(), find);
+        if let Some(burden) = facts.burden {
+            self.burdens.insert(id, burden);
         }
-    }
-
-    /// A kit's wear byte written back into the card's sentence source: the
-    /// weapon section's damage byte, or the apparel body's. The card reads
-    /// no dirt byte, and a sentence of the other kind is left alone.
-    pub fn write_wear(&mut self, id: u32, apparel: bool, value: u8) {
-        let facts = if id & !ID_MASK != 0 {
-            self.level_cards.get_mut(&id)
-        } else {
-            self.cards.get_mut(&id)
-        };
-        let Some(facts) = facts else {
-            return;
-        };
-        match facts.sentence.as_mut() {
-            Some(crate::desc_phrase::SentenceSource::Weapon { damage, .. }) if !apparel => {
-                *damage = value;
-            }
-            Some(crate::desc_phrase::SentenceSource::Apparel { damage, .. }) if apparel => {
-                *damage = value;
-            }
-            _ => {}
+        self.cards.insert(id, facts);
+        if let (Some(model), Ok(item)) = (
+            self.models.get_mut(&id),
+            exa_formats::objdb::Item::parse(id, payload),
+        ) {
+            model.appearance = item.appearance.or(model.appearance);
+            model.weapon = item.weapon.or(model.weapon);
         }
     }
 
     /// What wearing the item adds to its wearer's encumbrance.
     pub fn burden(&self, id: u32) -> Option<Burden> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.tagged_burdens.get(&id).copied();
         }
         self.burdens.get(&id).copied()
     }
@@ -316,7 +302,7 @@ impl ItemCatalogue {
     /// A held shield's weight, block and bulk.
     pub fn shield_record(&self, id: u32) -> Option<ShieldRecord> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.tagged_shields.get(&id).copied();
         }
         self.shields.get(&id).copied()
     }
@@ -340,20 +326,26 @@ impl ItemCatalogue {
     /// records, so their icons render and their bulk counts. [guess: a
     /// local instance without its own model name takes its template's]
     pub fn set_level_items(&mut self, items: &[exa_formats::objdb::Item]) {
-        use exa_formats::objdb::LOCAL;
-        self.level_models.clear();
-        self.level_bulk.clear();
-        self.level_tables = items
-            .iter()
-            .filter_map(|item| {
-                let table = item.random_table.clone()?;
-                Some((LOCAL | (item.id & ID_MASK), table))
-            })
-            .collect();
+        self.set_tier_items(exa_formats::objdb::LOCAL, items);
+    }
+
+    /// [`Self::set_level_items`] for the tier tagged `tag` (the local or the
+    /// world tier of the live database): that tier's previous entries go,
+    /// and a parent with the same tag is looked up in the same records.
+    pub fn set_tier_items(&mut self, tag: u32, items: &[exa_formats::objdb::Item]) {
+        use exa_formats::objdb::TAG_MASK;
+        let ours = |id: &u32| *id & TAG_MASK == tag;
+        self.level_models.retain(|id, _| !ours(id));
+        self.level_bulk.retain(|id, _| !ours(id));
+        self.level_tables.retain(|id, _| !ours(id));
+        self.level_tables.extend(items.iter().filter_map(|item| {
+            let table = item.random_table.clone()?;
+            Some((tag | (item.id & ID_MASK), table))
+        }));
         let by_id: HashMap<u32, &exa_formats::objdb::Item> =
             items.iter().map(|item| (item.id & ID_MASK, item)).collect();
         for item in items {
-            let tagged = LOCAL | (item.id & ID_MASK);
+            let tagged = tag | (item.id & ID_MASK);
             // Follow the template chain (bounded) to the first record
             // naming a model.
             let mut at = Some(item);
@@ -382,7 +374,7 @@ impl ItemCatalogue {
                 if parent == 0 {
                     break;
                 }
-                if parent & LOCAL != 0 {
+                if parent & TAG_MASK == tag {
                     at = by_id.get(&(parent & ID_MASK)).copied();
                 } else {
                     model = self
@@ -418,8 +410,37 @@ impl ItemCatalogue {
     /// at the low 30 bits; any other id the game's library. Without the
     /// game's library the records keep their own 16-byte names.
     pub fn set_level_cards(&mut self, records: &[(u32, Vec<u8>)], local: Option<&Library>) {
-        use exa_formats::objdb::LOCAL;
-        self.level_cards.clear();
+        self.set_tier_cards(exa_formats::objdb::LOCAL, records, local);
+    }
+
+    /// [`Self::set_level_cards`] for the tier tagged `tag`, whose own
+    /// library is `local`; the tier's other rules (kind, children, usable
+    /// bytes, burden, shield record) are read from the same records.
+    pub fn set_tier_cards(
+        &mut self,
+        tag: u32,
+        records: &[(u32, Vec<u8>)],
+        local: Option<&Library>,
+    ) {
+        use exa_formats::objdb::TAG_MASK;
+        let ours = |id: &u32| *id & TAG_MASK == tag;
+        self.level_cards.retain(|id, _| !ours(id));
+        self.tagged_kinds.retain(|id, _| !ours(id));
+        self.tagged_contents.retain(|id, _| !ours(id));
+        self.tagged_usable.retain(|id, _| !ours(id));
+        self.tagged_burdens.retain(|id, _| !ours(id));
+        self.tagged_shields.retain(|id, _| !ours(id));
+        for (id, payload) in records {
+            let tagged = tag | (id & ID_MASK);
+            self.tagged_kinds.insert(tagged, kind_of(payload));
+            if let Some(c) = section(payload, CONTAINER).and_then(Container::parse) {
+                self.tagged_contents
+                    .insert(tagged, c.children.iter().map(|c| c.id).collect());
+            }
+            if let Some(usable) = usable_of(payload) {
+                self.tagged_usable.insert(tagged, usable);
+            }
+        }
         let by_id: HashMap<u32, &[u8]> = records
             .iter()
             .map(|(id, payload)| (id & ID_MASK, payload.as_slice()))
@@ -435,7 +456,7 @@ impl ItemCatalogue {
                         return None;
                     } else if raw == INHERIT {
                         let parent = word(payload, 0x1C);
-                        if parent & LOCAL != 0 {
+                        if parent & TAG_MASK == tag {
                             let raw = by_id
                                 .get(&(parent & ID_MASK))
                                 .and_then(|p| section(p, MODEL))
@@ -463,7 +484,14 @@ impl ItemCatalogue {
                 facts.name = name.unwrap_or_default();
                 facts.description = text(DESCRIPTION_ID, |f| &f.description).unwrap_or_default();
             }
-            self.level_cards.insert(LOCAL | (id & ID_MASK), facts);
+            let tagged = tag | (id & ID_MASK);
+            if let Some(burden) = facts.burden {
+                self.tagged_burdens.insert(tagged, burden);
+            }
+            if let Some(shield) = facts.shield_record {
+                self.tagged_shields.insert(tagged, shield);
+            }
+            self.level_cards.insert(tagged, facts);
         }
     }
 }
@@ -617,6 +645,21 @@ fn card_facts<'a>(
     facts
 }
 
+/// The possession rules' kind of a record payload: its weapon flags, shield,
+/// held light and sight-in-the-dark body.
+fn kind_of(payload: &[u8]) -> ItemKind {
+    let weapon = section(payload, WEAPON)
+        .and_then(|b| b.get(..4))
+        .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")));
+    ItemKind {
+        weapon,
+        shield: section(payload, SHIELD).is_some(),
+        light: section(payload, LIGHT).is_some(),
+        sight: section(payload, BODY).map(exa_formats::objdb::special_kind)
+            == Some(exa_formats::objdb::Burden::SEES_IN_THE_DARK),
+    }
+}
+
 /// The model section's `+0x24` byte (body `+0x1C`): the bulk an item panel
 /// counts. `None` for an item without a model section or with a short one.
 fn model_bulk(payload: &[u8]) -> Option<u8> {
@@ -717,33 +760,40 @@ pub fn swap_weapon_sets(
 mod tests {
     use super::*;
 
-    /// A kit's wear write reaches the card's sentence of its own kind, and a
-    /// copy takes the card under its own id.
+    /// A template's bytes read again reach its card; a world record's
+    /// entries sit under its world id beside the local tier's, and each
+    /// tier's refresh replaces only its own.
     #[test]
-    fn a_kit_wear_write_reaches_the_card() {
+    fn a_refreshed_record_and_the_world_tier_have_their_own_entries() {
+        use exa_formats::objdb::{LOCAL, WORLD};
+        let mut weapon = vec![0u8; 0x48];
+        weapon[0x0D] = 0x60;
+        // A factory model: the weapon card's sentence reads the wear byte.
+        let factory = |weapon: &[u8]| {
+            let mut payload = section_bytes(MODEL, &model_body(b"@Falchion", 0, 0));
+            payload.extend(section_bytes(WEAPON, weapon));
+            payload
+        };
+        let payload = factory(&weapon);
         let mut catalogue = ItemCatalogue::default();
-        catalogue.cards.insert(
-            5,
-            CardFacts {
-                sentence: Some(SentenceSource::Weapon {
-                    seed: 1,
-                    quality: 2,
-                    damage: 0x60,
-                }),
-                ..CardFacts::default()
-            },
-        );
-        catalogue.write_wear(5, true, 0x10);
-        catalogue.write_wear(5, false, 0x20);
+        catalogue.refresh_record(5, &payload, |_| None);
         let damage = |c: &ItemCatalogue, id| match c.card_facts(id).and_then(|f| f.sentence) {
             Some(SentenceSource::Weapon { damage, .. }) => Some(damage),
             _ => None,
         };
+        assert_eq!(damage(&catalogue, 5), Some(0x60));
+        weapon[0x0D] = 0x20;
+        catalogue.refresh_record(5, &factory(&weapon), |_| None);
         assert_eq!(damage(&catalogue, 5), Some(0x20));
-        catalogue.copy_card(5, 0x8000_0005);
-        catalogue.write_wear(0x8000_0005, false, 0x08);
-        assert_eq!(damage(&catalogue, 0x8000_0005), Some(0x08));
-        assert_eq!(damage(&catalogue, 5), Some(0x20));
+        let records = vec![(1u32, factory(&weapon))];
+        catalogue.set_tier_cards(WORLD, &records, None);
+        catalogue.set_tier_cards(LOCAL, &records, None);
+        assert_eq!(damage(&catalogue, WORLD | 1), Some(0x20));
+        assert!(catalogue.kind(WORLD | 1).unwrap().weapon.is_some());
+        catalogue.set_tier_cards(LOCAL, &[], None);
+        assert!(catalogue.card_facts(LOCAL | 1).is_none());
+        assert!(catalogue.kind(LOCAL | 1).is_none());
+        assert!(catalogue.card_facts(WORLD | 1).is_some());
     }
     use crate::possession::{HELD, Hand};
 

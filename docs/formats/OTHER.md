@@ -558,6 +558,58 @@ or 255 there, rolled copies a variant); and the model's value word (compact form
 0.5)(2(1 − d')² + 0.5) · 0.5, with tq the template's quality and q', d' the
 instance's, each /255. Rounding is to nearest, ties to even.
 
+### The live tiers
+
+How the running game holds and moves the three tiers (REA on the object
+database unit's set-up, its tier load and tier pass, the level reader's
+local-database chunk, the save unit's export, import, pre-save sync and
+level transition, and the arena save and round loaders).
+
+- **Set-up**: the base tier has no tag and no library of its own (it reads
+  the shared `objstrings.rdb`); the local tier is tagged `0x80000000` and the
+  world tier `0x40000000`, each with its own string library. The base tier
+  and the shared library are read lazily, the first time the base tier is
+  asked for and is empty.
+- **Tier load**: loading a database into a tier copies the stored table and
+  blob as they are (the count is `table_len / 16 − 1`; below one the tier is
+  empty), then runs the older-layout converters. The level reader's
+  local-database chunk loads its `0xDBDB` records into the local tier and its
+  `0xDBCD` library into the local tier's library, replacing the previous
+  level's. A level read from a save's own level section then migrates the
+  whole local tier from its templates; one read from the archive does not.
+  A kit's or a use's copy made in the local tier therefore takes the first id
+  the level's own records leave free (`exanima01`: ids 1–10 are the level's,
+  so the first copy is `0x8000000B`).
+- **Save export**: when the world tier holds a record, the save writes
+  `#worldobjdb` as chunk `0xDBDB` (the world tier's writer) followed by chunk
+  `0xDBCD` (the writer of the **world tier's own** library, not the shared
+  one). The level section that follows carries the local tier.
+- **Save import**: a load reads `#worldobjdb`'s first chunk into the world
+  tier and its second into the world tier's library, then migrates every
+  world record from its template; without the section it clears the world
+  tier. A new story and the arena's start clear the world tier too.
+- **Pre-save and level-change sync**: before a story save (and before the
+  checkpoint's save) and before a door transition loads its destination, the
+  link remap table is switched on, the player's carried items are promoted
+  to the world tier, and so are the travelling followers'; then each local
+  door whose linked object was promoted takes its world id and the table is
+  switched off. The carried-items promotion goes: the worn list, the out pair
+  (hands 0 and 1, whose old and new ids also rewrite the held bodies' item
+  ids), the stowed pair (hands 2 and 3), then the pack, where an entry naming
+  a hand's old id takes that hand's new id (the out pair first) and any
+  other entry is promoted itself.
+- **Arena save**: with the id remap table on, the manager's record is
+  promoted whole (the four hands, the worn list, each loadout's four hands
+  and worn list, then each pack entry on its own), then the stash, the
+  arsenal's boxes, and every employee's record and list; the scene's entity
+  ids are rewritten through the table and the table is switched off.
+- **Arena rounds and starts**: these loads do not promote. The player's
+  local items (hands, worn list, pack; ids tagged exactly `0x80000000`) are
+  copied into a scratch database before the level goes and copied back into
+  the new level's local tier after it loads, with the record's ids
+  rewritten and the hand pairs' repeats in the pack following.
+
+
 ### The condition word of random-table rows
 
 A random table's rows (section `0x200`, see

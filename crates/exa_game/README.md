@@ -833,7 +833,20 @@ its class (`panel_use_class`) call the use hook; a world object with usable
 class 1, double-clicked unmarked, lifts the cursor with its record id and
 kind and stays in the scene (`object_click`); the next press of any
 button ends the cursor and is taken, and the dispatcher's door unlock is
-applied (the other branches are reported in `UseReleased`). `gui_drop`
+applied (the other branches are reported in `UseReleased`). A cleaning
+or repair kit reads and writes the record in the live object database
+(`exa_assets::live_objects::LiveObjects`): a marked template it lands on
+is first instantiated there, under the first local id the level's own
+records leave free, and the copy takes its template's place in the panel
+and in the player's pack; `DollItems` and the item catalogue read the
+tagged records back from the database whenever it changes
+(`--kit-use clean|repair:ID@FRAME,...` scripts a release on a pack entry).
+`save_live` runs the original's world sync before a story save, its
+checkpoint and a level change (the player's local items promoted to the
+world tier with the link remap table on, `promote_player_items`; the arena
+save promotes the manager's record with its loadouts), exports the world
+tier with its own library as `#worldobjdb`, and a load imports and
+migrates it (`import_world_tier`); a new story clears it. `gui_drop`
 runs the GUI drop: a pack drag held over the world in reach is claimed,
 run on the next frame through `run_spawn`, put where the cursor's ray meets
 the level (or the far placement limit's height) and lifted onto the item

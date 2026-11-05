@@ -153,6 +153,7 @@
 //!          --game-event CODE@FRAME,... debug: raise the story scripts' GameEvent CODE at frames after loading
 //!                                     (memory fragment 0xc00001, raise dead 0xda0115, awakenings 0xc10ec1-3)
 //!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
+//!          --kit-use clean|repair:ID@FRAME,... debug: release a brush or repair sphere on the pack entry ID at that frame
 //!                                     after loading, as its double click in the pack would (the use cursor)
 //!          --item-card ID@FRAME       debug: open the item's description card at the pointer (`--cursor`) at that frame
 //!                                     after loading, as a world object's click would
@@ -445,6 +446,8 @@ pub struct Options {
     pub clicks: Vec<u32>,
     /// `--object-click`: scripted clicks on the nearest placed container.
     pub object_clicks: Vec<exa_game::object_click::ScriptedObjectClick>,
+    /// `--kit-use clean|repair:ID@FRAME,...`: kits released on pack entries.
+    pub kit_use: exa_game::use_cursor::KitScript,
     /// `--use-item ID@FRAME`: the item's use hook, as its double click.
     pub use_item: exa_game::use_cursor::UseScript,
     /// `--game-event CODE@FRAME,...`: script `GameEvent` codes raised at
@@ -1164,6 +1167,16 @@ fn main() -> AppExit {
                     return AppExit::from_code(2);
                 }
             }
+            "--kit-use" => {
+                let text = args.next().unwrap_or_default();
+                match exa_game::use_cursor::KitScript::parse(&text) {
+                    Some(script) => options.kit_use = script,
+                    None => {
+                        eprintln!("--kit-use: cannot read {text:?} (clean|repair:ID@FRAME,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--use-item" | "--gui-drop" | "--doll-drop" | "--item-card" => {
                 let text = args.next().unwrap_or_default();
                 let ok =
@@ -1634,6 +1647,7 @@ fn main() -> AppExit {
         at_frame: options.toggle_door,
     })
     .insert_resource(options.use_item)
+    .insert_resource(options.kit_use.clone())
     .insert_resource(options.gui_drop)
     .insert_resource(options.item_card)
     .insert_resource(exa_game::thaum::debug_cast::DebugCasts(
