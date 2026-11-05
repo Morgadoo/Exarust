@@ -1804,7 +1804,8 @@ with more than two striking rows; 38 on a shield), each adding 0x14 or
 rescaled with the card. The description is a read-only text box in the
 small font at (4, 0xb4 + extra) in the client, 236 wide, as high as its
 lines and a unit; a plain card's box starts five units under its icon area
-(the icon's height up to 160; a stats card's area is 160) and a plain card
+(the icon's height up to the item GUI's icon size, 40 units; a stats
+card's area is 40 units) and a plain card
 with more than 200 bytes of text is 100 units wide. The card is two units
 and two borders taller than the box's bottom (without a box: the icon area
 and a unit, or `(extra / 4 + 44)` units for a stats card) and is placed

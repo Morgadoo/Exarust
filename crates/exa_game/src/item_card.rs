@@ -954,8 +954,9 @@ pub const TRADE_WINDOW_ATTRIBUTES: u32 = 0x830022;
 
 /// The card form's border at unit 4 (the constructor's 12).
 pub const CARD_BORDER: i32 = 0xc;
-/// The icon area's height: a stats card's, and a plain card's at most.
-pub const CARD_ICON_AREA: i32 = 0xa0;
+/// The icon area's height in units: a stats card's, and a plain card's at
+/// most (the item GUI's icon size, 40 units: 160 at unit 4).
+pub const CARD_ICON_UNITS: i32 = 0x28;
 /// The description box's left edge in the card's client at unit 4.
 const CARD_TEXT_LEFT: i32 = 4;
 /// A plain card's description longer than this many bytes widens the card
@@ -1108,8 +1109,8 @@ pub struct CardLayout {
 /// out at unit 4 in the 268 × 260 card's client (border 12), the
 /// description box (a child at 4, 0xb4 below the added rows' height,
 /// 0xa0 high, as wide as the client less 4 each side), all rescaled to the
-/// unit; then the icon area (160 for a stats card, the icon's height up to
-/// 160 for a plain one, whose description box then starts five units under
+/// unit; then the icon area (40 units for a stats card, the icon's height
+/// up to that for a plain one, whose description box then starts five units under
 /// it), a plain card with a description over 200 bytes widened to 100
 /// units, the box's height `text_height(width) + unit` (its lines' pitch
 /// times their count), and the card's height two units and two borders
@@ -1160,10 +1161,11 @@ pub fn card_layout(
     );
     let border = layout.border;
     let mut width = layout.size.0;
+    let area = CARD_ICON_UNITS * unit;
     let icon_height = if stats {
-        CARD_ICON_AREA
+        area
     } else {
-        plain_icon_height.min(CARD_ICON_AREA)
+        plain_icon_height.min(area)
     };
     let mut text_box = layout.children.first().copied();
     let body = match text_box.as_mut() {
