@@ -149,10 +149,6 @@ pub struct Locomotion {
     /// the cursor. None keeps the cursor.
     pub look_target: Option<Vec3>,
     pub look_until: u64,
-    /// Exarust's interim footwork: while set the body steps (it cannot
-    /// locomote) and its capsule takes this velocity (m/s), until the
-    /// original's steps replace it.
-    pub stepping: Option<Vec3>,
 }
 
 impl Default for Locomotion {
@@ -169,7 +165,6 @@ impl Default for Locomotion {
             slow_turn: false,
             look_target: None,
             look_until: 0,
-            stepping: None,
         }
     }
 }
@@ -480,6 +475,8 @@ pub struct Footing {
     /// 27 unsteady, and every posture stage takes one off; more than
     /// [`REBALANCE_MOST`] refuses the move.
     pub rebalance: i32,
+    /// Its body's step episode runs (any kind): the gates refuse the move.
+    pub stepping: bool,
     /// Its gait table.
     pub gaits: GaitTable,
 }
@@ -496,19 +493,21 @@ impl Footing {
             balance: 1.0,
             airborne: 0,
             rebalance: 0,
+            stepping: false,
             gaits: GaitTable::default(),
         }
     }
 
-    /// The footing of `body`: its energy, its most and its posture wait
-    /// from its drive, its balance steady (a body without a drive is
-    /// steady and rested).
+    /// The footing of `body`: its energy, its most, its posture wait and
+    /// its step from its drive, its balance steady (a body without a drive
+    /// is steady and rested).
     pub fn of(body: Option<&Ragdoll>, standing: Vec3, speed: f32) -> Self {
         let mut at = Footing::steady(standing, speed);
         if let Some(d) = body.and_then(|b| b.drive.as_ref()) {
             at.energy = d.energy;
             at.max_energy = d.max_energy();
             at.rebalance = d.posture_wait;
+            at.stepping = d.stepping();
         }
         at
     }
@@ -579,7 +578,7 @@ pub fn decide(req: &mut Locomotion, body: &mut Locomotor, at: &Footing) -> Decid
             }
         }
     }
-    let (gate, land) = gates(req.moving, req.stepping.is_some(), body, at);
+    let (gate, land) = gates(req.moving, at.stepping, body, at);
     let mut braked = false;
     if gate.is_some() {
         body.amount = 0.0;
@@ -824,8 +823,7 @@ impl Default for CapsuleGaits {
 }
 
 /// The velocity (m/s) a character's capsule standing at `standing` takes
-/// this tick from the decision: the interim footwork's while it steps;
-/// none standing; braking, `last` (its velocity last tick) slowed by the
+/// this tick from the decision: none standing; braking, `last` (its velocity last tick) slowed by the
 /// original's brake drive and limb retention, and toward a goal ahead at
 /// least enough to stop on it (v − v²/2d a tick, d the goal's distance
 /// along its way, in cm; Exarust's own, as the capsule has no feet to
@@ -839,9 +837,6 @@ pub fn capsule_velocity(
     last: Vec3,
     standing: Vec3,
 ) -> Vec3 {
-    if let Some(step) = req.stepping {
-        return step;
-    }
     if !body.moving() {
         return Vec3::ZERO;
     }

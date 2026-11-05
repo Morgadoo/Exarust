@@ -338,7 +338,6 @@ pub fn check_presence(
             }
             if let Some(mut locomotion) = locomotion {
                 locomotion.moving = false;
-                locomotion.stepping = None;
                 locomotion.flags = 0;
                 locomotion.free_walk = false;
                 locomotion.slow_turn = false;
@@ -521,7 +520,6 @@ mod tests {
                 body,
                 Locomotion {
                     moving: true,
-                    stepping: Some(Vec3::X),
                     flags: 0x4,
                     free_walk: true,
                     ..Locomotion::default()
@@ -551,7 +549,7 @@ mod tests {
             (1.0, 1.0, 1.0)
         );
         let locomotion = app.world().get::<Locomotion>(foe).unwrap();
-        assert!(!locomotion.moving && locomotion.stepping.is_none());
+        assert!(!locomotion.moving);
         assert_eq!((locomotion.flags, locomotion.free_walk), (0, false));
         let locomotor = app.world().get::<Locomotor>(foe).unwrap();
         assert_eq!(

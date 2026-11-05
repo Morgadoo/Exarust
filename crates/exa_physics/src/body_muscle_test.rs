@@ -1012,10 +1012,11 @@ fn the_golem_suit_and_a_stepping_foot_change_the_leg_gains() {
     // for 0.8s + 0.04.
     let index = body.legs.iter().position(|l| l.shin == shin).unwrap();
     body.legs[index].state = super::super::FootState(super::super::FootState::ANCHORED);
+    // The body's own step episode is what the bearing carries.
+    body.drive.as_mut().unwrap().steps.stepping = true;
     body.set_bearing(Bearing {
         moving: true,
         legs: LegMode::Run,
-        stepping: true,
         ..Bearing::default()
     });
     let before = body.links[limit].strength;
@@ -1354,10 +1355,8 @@ fn the_relaxed_blend_reads_the_stepping_flag() {
         let mut body = both_arms();
         body.drive.as_mut().unwrap().race = half;
         body.set_arm_stiffness(0.5);
-        body.set_bearing(Bearing {
-            stepping,
-            ..Bearing::default()
-        });
+        body.drive.as_mut().unwrap().steps.stepping = stepping;
+        body.set_bearing(Bearing::default());
         body.aim(Affine3A::IDENTITY, pose.clone());
         body.arm_stiffness().unwrap()
     };

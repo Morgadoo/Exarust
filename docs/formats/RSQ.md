@@ -1653,6 +1653,7 @@ is left empty.
 | `loco_flags`, `moving`, `free_walk` | the character's locomotion request (empty for a body without one, [Movement decision](#movement-decision)): its flag word in hex, the retail probe's locomotion flags (`0x1` move, `0x2` backwards, `0x4` run, `0x8` sprint latch, `0x10` brake, `0x20` stopping, `0x40` heading-driven, `0x200` turn-about), whether the decision moved the body (1/0) and whether it walks free |
 | `yaw`, `heading`, `turn_rate` | the body's yaw and the heading (degrees), and the turn rate this tick after every factor (degrees a second: 240 free walk standing still, 120 the slow turn, 300 otherwise) |
 | `align`, `speed`, `reach`, `stop` | the alignment, the speed along the heading (cm a tick), how far the move vector reached (cm: 200 in free walk, the goal's distance toward one) and why the body stands (`moving`, `standing`, `braked`, `arrived`, or the gate: `tired`, `cooldown`, `stepping`, `unsteady`, `unbalanced`, `airborne`, `rebalancing`) |
+| `step`, `step_balance`, `step_long`, `step_x`, `step_z`, `step_queue` | Exarust's own: the body's step (empty for a body without muscles): whether its episode runs, whether it is a balance step and of the long kind (1/0), its target across the ground (cm) and its queue word (1 waiting, −2/−1 taken, 0 none) |
 
 The joint trace (`--joint-trace`), one row per body part, and the body
 overlay are described in [`docs/DEBUGGING.md`](../DEBUGGING.md).

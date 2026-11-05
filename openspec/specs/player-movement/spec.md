@@ -104,7 +104,7 @@ The system SHALL walk the player toward the cursor's point on the plane 80 cm ab
 - **THEN** the movement decisions see the run bit and the sprint latch both set
 
 ### Requirement: Combat footwork
-The system SHALL toggle combat mode on Tab, and turn it on at a practice or arena fight's start. In combat mode the heading SHALL turn to the cursor once more than 30° off it, and follow it while the left button is held; the body SHALL turn toward it at the table's rate (300°/s standing). W, S, A and D SHALL step along and across the cursor's direction; their walk SHALL give back the clip it replaced; a walk or run from before combat mode SHALL stop softly and end in the stance as a walk ends.
+The system SHALL toggle combat mode on Tab, and turn it on at a practice or arena fight's start. In combat mode the heading SHALL turn to the cursor once more than 30° off it, and follow it while the left button is held; the body SHALL turn toward it at the table's rate (300°/s standing). W, S, A and D SHALL step along and across the cursor's direction on the body's own feet, in the stance clip; a walk or run from before combat mode SHALL stop softly and end in the stance as a walk ends.
 
 #### Scenario: Side step
 - **WHEN** A is held in combat mode
@@ -120,7 +120,7 @@ The system SHALL toggle combat mode on Tab, and turn it on at a practice or aren
 
 #### Scenario: Stepping from the guard
 - **WHEN** A is held and released while the player stands in the Defence stance
-- **THEN** it plays the combat walk while A is held and the Defence stance again after
+- **THEN** its feet step to its left while the Defence stance plays throughout
 
 #### Scenario: Tab while walking
 - **WHEN** Tab is pressed while the player walks out of combat mode, and the keys are released
@@ -342,11 +342,11 @@ On the player's third behaviour tick with a navigation grid and a body, unless i
 - **THEN** it is not moved, then or later
 
 ### Requirement: Footwork step targets
-A footwork goal SHALL be chest + v·(r·extension·√scale/|v|) cm: v the key sum (W, A, D, S; a side key 0.8, height dropped), r the step reach or, for a tapped word, (1.5 − 0.3·encumbrance)·reach in double, narrowed once. The line walk SHALL clamp it from the chest's x and z at the ground; it SHALL be taken only when over 400 cm² from the chest in three dimensions, then moved onto the grid's nearest walkable point across the ground.
+A footwork goal SHALL be chest + v·(r·extension·√scale/|v|) cm: v the key sum (W, A, D, S; a side key 0.8, height dropped), r the step reach or, tapped, (1.5 − 0.3·encumbrance)·reach in double, narrowed once, the step then long. The line walk SHALL clamp it from the chest's x and z at the ground, giving the body's step target; it SHALL be taken only when over 400 cm² from the chest in three dimensions, then moved onto the grid's nearest walkable point across the ground.
 
 #### Scenario: Footwork at a wall
 - **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead of the chest on its level, then 21 cm ahead
-- **THEN** the player takes no step and plays no walk, then it steps and plays the combat walk
+- **THEN** the player starts no step, then it starts one, its stance clip playing throughout
 
 #### Scenario: A diagonal weighs the side by 0.8
 - **WHEN** W and A are held together facing +Z, on open ground, for a fresh press of an 80 cm step
@@ -960,11 +960,15 @@ In combat mode the footwork SHALL lay no step while the condition word has any o
 - **THEN** no step starts
 
 ### Requirement: Footwork step under way
-A footwork step SHALL be under way while it has not landed, or while its target is strictly more than 20·scale cm from the chest across the ground; a NaN distance SHALL not be under way. With no step under way the footwork SHALL lay the movement goal from the held word and start a step when the goal is taken.
+A footwork step SHALL be under way while the body's step episode runs and either the episode is not a balance step (one the balance routine started from rest) or its target is strictly more than 20·scale cm from the feet centre across the ground; a NaN distance SHALL not be under way. With no step under way the footwork SHALL lay the movement goal from the held word and, when the goal is taken, start the body's step: stepping, no balance step, no landing yet in the episode, its clock now.
 
 #### Scenario: Started from rest
 - **WHEN** W is pressed in combat mode on open ground with an 80 cm reach
-- **THEN** a step starts toward a target 80 cm ahead
+- **THEN** the body starts a step toward a target 80 cm ahead
+
+#### Scenario: A settled balance step
+- **WHEN** W is pressed while the body's balance step has its target 10 cm from the feet, then while it has its target 30 cm from them
+- **THEN** the first starts a footwork step and the second does not
 
 ### Requirement: Young footwork step
 Within 300 ms of a step's start, a word not yet a tap SHALL queue the raw word when the held word differs from the step's own word, the analog word queueing even when the same; a tapped word SHALL re-lay the step's goal at the tapped stride unless the step is already long.
@@ -980,19 +984,12 @@ From 300 ms after a step's start any nonzero raw word SHALL queue the next step:
 - **WHEN** W is held from 1000 ms to 1300 ms with an 80 cm reach
 - **THEN** at 1300 ms the forward word is queued with an 80 cm step vector
 
-### Requirement: Footwork step landing
-The interim footwork SHALL move the capsule toward the step's target and land the step within 20·scale cm of it across the ground, or once it has run 1000 ms; a started step SHALL finish after the keys are released.
-
-#### Scenario: A released step finishes
-- **WHEN** W is tapped at 1000 ms and released at 1012 ms with the chest 30 cm short of the target, then 15 cm short
-- **THEN** the player still steps at 30 cm short and stands in its stance once 15 cm short
-
 ### Requirement: Queued step taken on landing
-A landing with a queued step SHALL take it by the body's queue rule: the target becomes the chest plus the queued vector, clamped by the line walk, and the queue count becomes −1 after the first landing. On the next tick the movement word SHALL take the queued word back, clear its tap flag and restart its change clocks.
+A landing with a queued step waiting SHALL take it by the body's queue rule: the target becomes the chest plus the queued vector, the step starts anew (no balance step, plain kind), the queue count −2 before the episode's first landing, −1 after. On the next behaviour tick the taken target SHALL be clamped by the line walk from the chest and moved onto the grid's nearest walkable point, and the movement word SHALL take the queued word back, clear its tap flag and restart its change clocks.
 
 #### Scenario: A landing takes the queue
-- **WHEN** a queued forward step waits and the chest reaches the step's target
-- **THEN** the new target is 80 cm further ahead, the queue count is −1, and on the next tick the word is forward with no tap
+- **WHEN** a queued forward step waits and the body lands a foot
+- **THEN** the body's new target is the chest plus 80 cm ahead, the queue count is −1, and on the next tick the target is clamped and the word is forward with no tap
 
 ### Requirement: Combat mode word
 Each combat tick the behaviour SHALL set its mode word: down or dazed (energy under 0.85, a NaN reading as enough) is idle and keeps the button word; switching held items or casting is idle and clears it; the right button walks; the left button's press attacks, a held left button keeps the mode and a swing makes it idle.

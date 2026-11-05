@@ -792,15 +792,18 @@ the right button's walk to the cursor in combat mode
 (`steering::Steering::combat_walk`), the chevrons showing while it walks.
 
 The combat footwork (`footwork`) is the original's step machine on
-Exarust's interim feet: the movement word (`steering::MoveWord`, the 200 ms
+the body's feet: the movement word (`steering::MoveWord`, the 200 ms
 tap persistence and tap flag) feeds a dispatcher that starts a step toward
 the movement goal (`steering::key_goal_direction`, `goal_stride`, the
 line walk and its 400 cm² test, then the grid snap), re-lays a young step
 at the tapped stride, or queues the next step on the body (`key_step`);
 a landing takes the queue by `exa_physics::body::queued_step`, and the
 word takes the queued word back. Its gate is the condition mask `0x82C1`,
-0.7 energy and no swing; the capsule walks toward the step's target and
-lands within 20·scale cm (or after a second, Exarust's own).
+0.7 energy and no swing. The step is the body's (`StepRecord` mirrors
+`exa_physics::body::FootworkStep`, read before the dispatcher and written
+back after it): the body walks it, ends it and takes the queue at a
+landing; the behaviour clamps a taken queued target by the line walk and
+the grid snap on its next tick. The stance clip plays throughout.
 
 The controls' rules (`player_controls`) are the click's and the
 double-click interaction's outcomes (a lock's key and first-unlock

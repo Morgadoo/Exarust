@@ -1248,7 +1248,7 @@ pub(crate) fn bearing(
 ) -> Bearing {
     let getting_up = condition == Condition::GETTING_UP;
     let moving = match locomotion {
-        Some((req, body)) => body.moving() || req.stepping.is_some(),
+        Some((_, body)) => body.moving(),
         None => controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
     };
     Bearing {

@@ -3,7 +3,7 @@
 //! character's place, is where the pelvis is less the pose's root offset,
 //! across the ground, at the pelvis's height. Each character tick moves it
 //! to the pelvis by the original's rules: onto the pelvis itself every tick
-//! while the body moves, exactly without support; standing on its feet,
+//! while the body moves or steps, exactly without support; standing on its feet,
 //! once the pelvis has drifted 5 cm while its support is under 0.95, and
 //! not at all at 0.95 or more, so a steady body keeps its stance spot;
 //! within 5 cm while it is down; within 10 cm while a get-up's clip is in
@@ -46,8 +46,8 @@ pub(super) enum Follow {
 /// How a body's frame follows its pelvis this tick, by what the body does
 /// (`bearing`), its balance and its support: collapsing exactly, every
 /// tick; a get-up within 10 cm in its clip's first quarter, then not at
-/// all; down (off balance, balance under 0.3) within 5 cm; moving onto the
-/// pelvis; without support exactly; standing within 5 cm under a support
+/// all; down (off balance, balance under 0.3) within 5 cm; moving or
+/// stepping onto the pelvis; without support exactly; standing within 5 cm under a support
 /// of 0.95, else not at all. The second value is whether the body stands
 /// on its feet, its frame's height kept at the pelvis's every tick.
 pub(super) fn follow(
@@ -70,7 +70,10 @@ pub(super) fn follow(
     if bearing.off_balance && balance < DOWN_BELOW {
         return (Follow::Within(DOWN_REACH), false);
     }
-    if bearing.moving {
+    // A step episode (any kind) sets the standing point onto the pelvis
+    // itself every tick, as the original's anchor routine does while its
+    // stepping byte is set; so does a moving body.
+    if bearing.moving || bearing.stepping {
         return (Follow::Pelvis, false);
     }
     if !has_support {

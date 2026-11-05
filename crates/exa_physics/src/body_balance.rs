@@ -535,6 +535,18 @@ impl Balance {
 
     /// Smooths the chest's velocity from where it was last tick and the
     /// tick before, then keeps where it is now.
+    /// A placement's restart: the chest point where the placed body has it,
+    /// as both this tick's and last tick's, its fast and slow velocities
+    /// zero, and the feet centre at `feet` (the mean of the placed
+    /// anchors).
+    fn placed(&mut self, chest: Vec3, feet: Vec3) {
+        self.chest = Some(chest);
+        self.before = Some(chest);
+        self.fast = Vec3::ZERO;
+        self.slow = Vec3::ZERO;
+        self.feet_centre = feet;
+    }
+
     fn follow_chest(&mut self, now: Vec3) {
         if let Some(last) = self.chest {
             let d = last - self.before.unwrap_or(last);
@@ -996,8 +1008,6 @@ impl Ragdoll {
                 scale,
                 bonus,
                 reach: drive.stats.foot_reach(),
-                extension: b.extension,
-                encumbrance: drive.stats.encumbrance,
                 frame,
                 landings: b.landings,
                 shock_stagger: bearing.shock_stagger,
@@ -1130,26 +1140,38 @@ impl Ragdoll {
             let landed = b.landings != drive.steps.landings_seen;
             drive.steps.landings_seen = b.landings;
             drive.steps.told_ai = false;
-            if landed && drive.steps.queued != Vec3::ZERO {
+            if landed {
                 // The queued step is taken through the body's own rule, so its
-                // target and its notice to the AI are one place.
-                let queued = drive.steps.queued;
-                drive.steps.queued = Vec3::ZERO;
+                // target and its notice to the AI are one place: the queue
+                // becomes its countdown, the step kind and the balance flag
+                // clear, and the step starts with its later stand-still stamp
+                // at 0. The vector stays (only the queue word says it waits).
+                let s = &mut drive.steps;
                 let landings = if b.landings < 1 { 0 } else { 1 };
                 if let Some(step) =
-                    steps::take_queued(queued, chest, drive.steps.target, forward, scale, landings)
+                    steps::take_queued(s.queue, s.queued, chest, s.target, forward, scale, landings)
                 {
-                    drive.steps.target = step.target;
-                    drive.steps.stepping = true;
-                    drive.steps.started = drive.steps.clock;
-                    drive.steps.near = 0;
-                    drive.steps.landed_from = b.landings;
-                    drive.steps.told_ai = step.tell_ai;
-                } else {
-                    drive.steps.queued = queued;
+                    s.queue = step.countdown;
+                    s.knockback = false;
+                    s.target = step.target;
+                    s.stepping = true;
+                    s.balance_step = false;
+                    s.started = s.clock;
+                    s.near = 0;
+                    s.landed_from = b.landings;
+                    s.still_plus = 0.0;
+                    s.told_ai = step.tell_ai;
                 }
             }
         }
+        // A body that is not stepping has no balance step and its step is
+        // of no kind (the feet routine's reset).
+        if !drive.steps.stepping {
+            drive.steps.balance_step = false;
+            drive.steps.knockback = false;
+        }
+        // The lift and the character's ground read this tick's step.
+        drive.bearing.stepping = drive.steps.stepping;
 
         // The down body's ground probe (the body tick's, before it calls
         // the feet routine): a body off its feet (the condition's bit
@@ -1458,7 +1480,7 @@ impl Ragdoll {
             } else {
                 // Stepping, the last anchored foot's ground; otherwise the
                 // lowest.
-                b.under = if bearing.stepping {
+                b.under = if drive.steps.stepping {
                     legs.iter()
                         .rev()
                         .find(|l| l.state.has(FootState::ANCHORED))
@@ -1683,8 +1705,15 @@ impl Ragdoll {
     /// pelvis's posed height onto that frame, at rest
     /// ([`super::placement::placed_parts`]); each foot's anchor is its
     /// posed contact on the frame less the clip root, unrotated, at its
-    /// ground plus the sole ([`super::placement::ground_foot_anchor`]); and
-    /// every slack link's smoothed length restarts where it is. Returns the
+    /// ground plus the sole ([`super::placement::ground_foot_anchor`]) and
+    /// its state is cleared; the chest point is taken anew on the placed
+    /// parts and kept as last tick's too, its velocities zeroed, and the
+    /// feet centre is the mean of the anchors
+    /// ([`super::placement::mean_point`]); and every slack link's smoothed
+    /// length restarts where it is. The original also puts every part's
+    /// pins on the frame and takes their mean, which its body tick takes
+    /// anew from the frame before any reader (Exarust's pins are taken
+    /// from the pose each pass: nothing to place). Returns the
     /// pelvis height it placed (cm), or None, leaving the body alone, when
     /// no foot finds ground [Exarust's own: the original then places the
     /// pelvis at the floor frame's own height, which Exarust's partial
@@ -1712,6 +1741,16 @@ impl Ragdoll {
             leg.anchor = at;
             leg.at = at;
             leg.before = at;
+        }
+        let chest = self.chest_point();
+        let anchors: Vec<Vec3> = self.legs.iter().map(|l| l.anchor).collect();
+        for leg in &mut self.legs {
+            leg.state = FootState(0);
+        }
+        if let (Some(chest), Some(drive)) = (chest, self.drive.as_mut()) {
+            // With no leg the original scales its zero sum by 1/0: NaN.
+            let feet = super::placement::mean_point(&anchors, Vec3::splat(f32::NAN));
+            drive.balance.placed(chest, feet);
         }
         self.reset_link_lengths();
         Some(height)
@@ -1772,6 +1811,8 @@ fn end_step(
 ) {
     steps.stepping = false;
     steps.out_of_balance = false;
+    steps.balance_step = false;
+    steps.knockback = false;
     steps.near = 0;
     let q = steps::end_query(chest, fast);
     let mut best: (usize, f32) = (0, NO_DISTANCE);

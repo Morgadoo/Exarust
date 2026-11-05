@@ -37,7 +37,7 @@ const LEAD_FAST: f32 = 2.0;
 const LEAD_REACH: f32 = 30.0;
 /// The stance origin stays within this many step lengths of the frame, and
 /// a foot's anchor within the second of the other foot.
-const ORIGIN_LENGTHS: f32 = 1.1;
+const ORIGIN_LENGTHS: f64 = 1.1;
 const ANCHOR_LENGTHS: f32 = 1.8;
 /// Step length (cm) at scale 1, before the leg extension. The trait and
 /// the fatigue that shorten it are 0.
@@ -94,10 +94,6 @@ pub(super) const LEAD_GAIN: f32 = 0.7;
 pub(super) const LEAD_KIND: f32 = 1.2;
 /// A knockback step's kind factor.
 pub(super) const KNOCKBACK_KIND: f32 = 1.0;
-/// A knockback step's length: (1.5 − 0.3·encumbrance) times the step
-/// length scaled by the leg extension, in double.
-const KNOCKBACK_LENGTH: f64 = 1.5;
-const KNOCKBACK_ENCUMBRANCE: f64 = 0.3;
 /// Direction: (h²/60 + 0.25) · 0.36 · how forward the error is.
 const LEAD_DIR_OVER: f32 = 60.0;
 const LEAD_DIR_BIAS: f32 = 0.25;
@@ -152,8 +148,18 @@ pub(super) struct Steps {
     /// the later one. NaN until written.
     pub still_at: f32,
     pub still_plus: f32,
-    /// A queued footwork step's vector (m), zero when none waits, and the
-    /// landings seen when it was queued.
+    /// The episode is a balance step: set when the balance routine starts
+    /// a step from rest, cleared by every other start (a footwork step, a
+    /// queued step, a knockback), by the step's end and on every tick the
+    /// body is not stepping. The player's footwork reads it: a balance
+    /// step is under way only while its target is far from the feet.
+    pub balance_step: bool,
+    /// The step queue: 1 while a queued footwork step waits, −2 or −1 once
+    /// the body took it (before or after the episode's first landing), 0
+    /// for none. The player's behaviour clears a taken queue.
+    pub queue: i32,
+    /// A queued footwork step's vector (m), and the landings seen when it
+    /// was queued.
     pub queued: Vec3,
     pub queued_landings: u32,
     /// The landings the feet last reported, so a new landing is recognised.
@@ -188,6 +194,8 @@ impl Default for Steps {
             knockback: false,
             still_at: f32::NAN,
             still_plus: f32::NAN,
+            balance_step: false,
+            queue: 0,
             queued: Vec3::ZERO,
             queued_landings: 0,
             landings_seen: 0,
@@ -206,6 +214,8 @@ pub(super) fn begin_knockback(steps: &mut Steps, target: Vec3) {
     steps.knockback = true;
     steps.stepping = true;
     steps.out_of_balance = false;
+    steps.balance_step = false;
+    steps.queue = 0;
     steps.target = target;
     if !steps.placed {
         steps.standing = target;
@@ -234,11 +244,6 @@ pub(super) struct Trigger {
     /// The footwork's reach (cm): 80·√scale·(1 − 0.2·encumbrance)·
     /// (1 − 0.3·feral), in place of the extension-scaled length.
     pub reach: f32,
-    /// The legs' extension factor (the stance level times the pelvis'
-    /// height share), which a knockback step's length is scaled by.
-    pub extension: f32,
-    /// The body's encumbrance, which shortens a knockback step.
-    pub encumbrance: f32,
     /// The character frame's origin (m).
     pub frame: Vec3,
     pub landings: u32,
@@ -314,15 +319,6 @@ pub fn foot_step_length(reach: f32, crouch: f32) -> f32 {
     reach * crouch_stride(crouch)
 }
 
-/// A knockback step's length (cm), as the feet routine rewrites the scaled
-/// step length each tick of a step of kind 2 or more: the step length times
-/// the leg extension in single precision, then times
-/// (1.5 − 0.3·encumbrance) in double.
-pub fn knockback_length(reach: f32, extension: f32, encumbrance: f32) -> f32 {
-    let scaled = reach * extension;
-    ((KNOCKBACK_LENGTH - f64::from(encumbrance) * KNOCKBACK_ENCUMBRANCE) * f64::from(scaled)) as f32
-}
-
 /// Crouched deeper than this, the footwork's steps are shorter.
 const CROUCH_SHORTENS_FROM: f32 = 0.5;
 /// A crouched step's share of the step length.
@@ -380,7 +376,8 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
             steps.stepping = false;
             return Plan::Ended;
         }
-        let length = knockback_length(t.reach, t.extension, t.encumbrance);
+        // The stance is clamped by the plain step length, as for any step.
+        let length = foot_step_length(t.reach, 0.0);
         return Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale));
     }
     steps.out_of_balance = false;
@@ -420,6 +417,7 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
         if clear > TARGET_CLEAR * t.scale {
             if !steps.stepping {
                 steps.stepping = true;
+                steps.balance_step = true;
                 steps.started = steps.clock;
                 steps.near = 0;
                 steps.landed_from = t.landings;
@@ -438,14 +436,21 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
 }
 
 /// The stance origin (m): the target, pulled back to within 1.1 step
-/// lengths × scale of the frame, at the frame's height.
+/// lengths × scale of the frame, at the frame's height. The step length is
+/// the plain step's (the body's stored reach) whatever the step's kind,
+/// and the limit `(step·1.1)·scale` is taken in double and compared with
+/// the squared distance (summed z + (y + x), the height zeroed); an
+/// unordered compare keeps the target.
 pub(super) fn stance_origin(target: Vec3, frame: Vec3, step_cm: f32, scale: f32) -> Vec3 {
-    let limit = ORIGIN_LENGTHS * step_cm * scale / CM;
-    let d = (target - frame).with_y(0.0);
-    let flat = if !limit.is_finite() || d.length() <= limit || limit <= 0.0 {
+    let limit = f64::from(step_cm) * ORIGIN_LENGTHS * f64::from(scale);
+    let d = cm((target - frame).with_y(0.0));
+    let len2 = d.z * d.z + (d.y * d.y + d.x * d.x);
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let flat = if !(limit * limit < f64::from(len2)) {
         target
     } else {
-        frame + d.normalize_or_zero() * limit
+        let factor = (limit / f64::from(len2.sqrt())) as f32;
+        frame + (d * factor) / CM
     };
     Vec3::new(flat.x, frame.y, flat.z)
 }
@@ -566,6 +571,7 @@ pub(super) struct FootView {
 /// and 1 after it (the original's countdown). Returns whether the AI is to
 /// be told the step points its way.
 pub(super) fn take_queued(
+    queue: i32,
     queued: Vec3,
     chest: Vec3,
     target: Vec3,
@@ -573,7 +579,7 @@ pub(super) fn take_queued(
     scale: f32,
     landings: i32,
 ) -> Option<super::feet::QueuedStep> {
-    if queued == Vec3::ZERO {
+    if queue <= 0 {
         return None;
     }
     super::feet::queued_step(chest, target, queued, facing, scale, landings)
@@ -769,8 +775,17 @@ pub(super) struct ChestLead {
     pub scale: f32,
     pub fast: Vec3,
     pub side: Vec3,
+    /// The character frame's forward axis (its third row).
+    pub forward: Vec3,
     /// 1.2 for a recovery step, 1 for a knockback step.
     pub kind: f32,
+    /// The step is of the long kind (2): the pelvis lead takes no
+    /// direction term.
+    pub long: bool,
+    /// The step length (cm) the pelvis lead's direction term scales by:
+    /// the reach times the legs' extension, as the feet routine rewrites it
+    /// each tick for a plain step.
+    pub length_cm: f32,
 }
 
 /// A thorax pin's posed target while a step leads it. The shift is the
@@ -807,6 +822,58 @@ pub(super) fn lead_pose(
         * lead.scale.max(0.0).sqrt()
         * lead.level;
     posed + error * factor
+}
+
+/// The pelvis pin lead's direction share (one tick's error, against the
+/// step length) and its gains: a step backwards keeps half its cosine,
+/// the share takes 0.75 of it on top of 1, and the gain is 1.2 × scale ×
+/// level (the product's 1.2 taken in double).
+const PELVIS_BACK: f32 = 0.5;
+const PELVIS_SHARE: f32 = 0.75;
+const PELVIS_GAIN: f64 = 1.2;
+/// Under this squared horizontal error (cm²) the pelvis lead takes no
+/// direction term.
+const PELVIS_TINY: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// The pelvis pin's posed target while a step leads it, as the body
+/// tick's point record of the root part is led before its clamp: the
+/// horizontal error from the pin's world point `at` to the posed target
+/// plus the step offset; for a plain step its direction term `s` is the
+/// cosine of the error with the frame's forward axis, scaled by the
+/// squared share of the error in the step length when it points ahead,
+/// halved when it points back (0 for a long step, a tiny error or no step
+/// length); the target moves by the error × the clip share (0.4 idle,
+/// else 0.7) × (0.75·s + 1) × 1.2·scale × level.
+pub(super) fn pelvis_lead_pose(
+    posed: Vec3,
+    target: Vec3,
+    standing: Vec3,
+    at: Vec3,
+    lead: &ChestLead,
+) -> Vec3 {
+    let error = (posed + (target - standing) - at).with_y(0.0);
+    let e = cm(error);
+    // z² + x² + 0, the height zeroed.
+    let len2 = e.z * e.z + e.x * e.x + 0.0;
+    let mut s = 0.0;
+    if !lead.long && len2 > PELVIS_TINY {
+        let len = len2.sqrt();
+        let f = lead.forward;
+        s = ((f.x * e.x + f.y * 0.0) + f.z * e.z) / len;
+        // An unordered cosine takes the backward branch.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(0.0 <= s) {
+            s *= PELVIS_BACK;
+        } else if lead.length_cm <= PELVIS_TINY || lead.length_cm.is_nan() {
+            s = 0.0;
+        } else {
+            let share = len / lead.length_cm;
+            s *= share * share;
+        }
+    }
+    let g = if lead.idle { LEAD_IDLE } else { LEAD_GAIN };
+    let gain = (f64::from(lead.scale) * PELVIS_GAIN) as f32 * lead.level;
+    posed + error * g * ((s * PELVIS_SHARE + 1.0) * gain)
 }
 
 fn foot_score(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx) -> f32 {

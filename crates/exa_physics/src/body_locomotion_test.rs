@@ -284,14 +284,15 @@ fn the_gates_hold_a_tired_or_unsteady_body() {
 #[test]
 fn stepping_refuses_and_still_stumbles() {
     let (mut req, mut body) = walker(true, Vec3::ZERO);
-    req.stepping = Some(Vec3::X);
-    let d = decide(&mut req, &mut body, &Footing::steady(Vec3::ZERO, 0.0));
+    let mut stepping = Footing::steady(Vec3::ZERO, 0.0);
+    stepping.stepping = true;
+    let d = decide(&mut req, &mut body, &stepping);
     assert_eq!(
         (body.stop, d.land, body.cooldown),
         (Stop::Stepping, false, 0)
     );
     req.moving = true;
-    let mut at = Footing::steady(Vec3::ZERO, 0.0);
+    let mut at = stepping;
     at.balance = 0.8;
     let d = decide(&mut req, &mut body, &at);
     assert_eq!(
@@ -335,8 +336,7 @@ fn the_alignment_follows_the_pelvis() {
 }
 
 /// The capsule: along the heading at 1.4 m/s walking and 3.6 running,
-/// −1.2245 m/s backwards, none standing, the interim footwork's velocity
-/// while it steps, and braking in free walk 0.97397 of last tick's a tick
+/// −1.2245 m/s backwards, none standing, and braking in free walk 0.97397 of last tick's a tick
 /// (the brake drive's 0.2 × 0.07984 and the limbs' 0.98977).
 #[test]
 fn the_capsule_executes_the_decision() {
@@ -356,10 +356,6 @@ fn the_capsule_executes_the_decision() {
     req.flags |= flags::BRAKE;
     let v = capsule_velocity(&req, &body, &gaits, Vec3::Z, o);
     assert!((v.z - 0.973_97).abs() < 1e-5, "{v}");
-    req.stepping = Some(Vec3::new(0.3, 0.0, 0.0));
-    let step = capsule_velocity(&req, &body, &gaits, Vec3::Z, o);
-    assert_eq!(step, Vec3::new(0.3, 0.0, 0.0));
-    req.stepping = None;
     body.stop = Stop::Braked;
     assert_eq!(
         capsule_velocity(&req, &body, &gaits, Vec3::Z, o),

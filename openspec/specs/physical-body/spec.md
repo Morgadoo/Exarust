@@ -810,10 +810,10 @@ While a leg is stepping, its thigh SHALL turn by 75% of the angle from its rest 
 - **THEN** the next tick it is 27°
 
 ### Requirement: Step lift
-An anchored stepping foot SHALL lift by −(1 − crouch) · f · (1.5 − the stance factor). s SHALL be 0.4 times the horizontal distance to the anchor and no more than 30 cm. r SHALL be D²/(3s)², D the distance to the anchor. f SHALL be ((2 − r)·r·3 − 2)·s when D is at most 3s, and 0.5·s otherwise. An unanchored foot's lift SHALL become 0.8 of itself each tick, and an anchored foot that is not stepping 0.9 of itself.
+An anchored stepping foot SHALL lift by −(1 − crouch) · f · (1.5 − the race's stance factor), whatever stance factor the body's gait or a knock-out has set. s SHALL be 0.4 times the horizontal distance to the anchor and no more than 30 cm. r SHALL be D²/(3s)², D the distance to the anchor. f SHALL be ((2 − r)·r·3 − 2)·s when D is at most 3s, and 0.5·s otherwise. An unanchored foot's lift SHALL become 0.8 of itself each tick, and an anchored foot that is not stepping 0.9 of itself.
 
 #### Scenario: A human step of 40 cm
-- **WHEN** the horizontal distance and D are both 40 cm, the crouch is 0 and the stance factor is 0.5
+- **WHEN** the horizontal distance and D are both 40 cm, the crouch is 0 and the race's stance factor is 0.5
 - **THEN** the lift is −11.5185 cm
 
 #### Scenario: Decay of a free foot
@@ -843,7 +843,7 @@ The sprint gait of a character SHALL be its race's sprint row when its feral lev
 - **THEN** it uses the jog row: thrust 350 per second
 
 ### Requirement: Character frame
-A living body's targets SHALL be its clip pose on a frame that turns with the body, its origin the pelvis less the pose's root offset across the ground, at the pelvis's height. Each character tick it SHALL follow the pelvis: moving, onto the pelvis; without support, exactly; standing, past 5 cm while support is under 0.95, else not at all; down (balance under 0.3), past 5 cm; getting up, past 10 cm in the clip's first quarter, then not at all.
+A living body's targets SHALL be its clip pose on a frame that turns with the body, its origin the pelvis less the pose's root offset across the ground, at the pelvis's height. Each character tick it SHALL follow the pelvis: moving or stepping (any step episode), onto the pelvis; without support, exactly; standing, past 5 cm while support is under 0.95, else not at all; down (balance under 0.3), past 5 cm; getting up, past 10 cm in the clip's first quarter, then not at all.
 
 #### Scenario: Steady stance
 - **WHEN** a standing body at support 1 is pushed 9 cm across the floor
@@ -859,6 +859,10 @@ A living body's targets SHALL be its clip pose on a frame that turns with the bo
 
 #### Scenario: Moving
 - **WHEN** a body moves
+- **THEN** its frame's origin is its pelvis origin every tick
+
+#### Scenario: Stepping
+- **WHEN** a steady body at support 1 runs a step episode
 - **THEN** its frame's origin is its pelvis origin every tick
 
 #### Scenario: Getting up
@@ -1207,14 +1211,14 @@ In each iteration a supported living body SHALL pull its two thorax pins and its
 - **THEN** later ticks of the real step bring the chest back toward the feet centre
 
 ### Requirement: Support pin targets
-With support, each thorax pin's target SHALL stay within (60 − 60·crouch)·0.6·scale cm of the feet centre, or within (60 − 30·crouch)·0.6·scale cm while a foot is stepping, and the pelvis pin's target within 60·scale cm. Crouch is 0 until a crouch exists, so a standing thorax reach is 36·scale cm.
+With support, each thorax pin's target SHALL stay within (60 − 60·crouch)·0.6·scale cm of the feet centre, or within (60 − 30·crouch)·0.6·scale cm while the body's step episode runs, and the pelvis pin's target within 60·scale cm. Crouch is 0 until a crouch exists, so a standing thorax reach is 36·scale cm.
 
 #### Scenario: Standing reach
-- **WHEN** a supported body of scale 1 is not crouching and no foot is stepping, and a thorax target lies 40 cm from the feet centre
+- **WHEN** a supported body of scale 1 is not crouching and runs no step episode, and a thorax target lies 40 cm from the feet centre
 - **THEN** the target used by the pull is 36 cm from the feet centre, and a pelvis target 80 cm out is brought in to 60 cm
 
 #### Scenario: Stepping reach
-- **WHEN** the same body crouches fully and a foot is stepping
+- **WHEN** the same body crouches fully and its step episode runs
 - **THEN** a thorax target is kept within 18 cm of the feet centre
 
 ### Requirement: Unsupported pin targets
@@ -1270,7 +1274,7 @@ While a step is wanted, the target SHALL be the chest plus a horizontal lead of 
 - **THEN** the lead is 30 cm along it
 
 ### Requirement: Stance origin
-During a step the foot spots SHALL be the pose's ankles shifted from the character frame onto the stance origin: the step target, pulled back to within 1.1 step lengths × scale of the frame, at the frame's height. The character frame itself SHALL not move. The step length SHALL be 80 · √scale cm. A stepping foot's anchor SHALL stay within 1.8 step lengths of the other foot.
+During a step the foot spots SHALL be the pose's ankles shifted from the character frame onto the stance origin: the step target, pulled back to within (1.1·step length)·scale of the frame (in double, whatever the step's kind), at the frame's height. The character frame itself SHALL not move. The step length SHALL be 80 · √scale cm. A stepping foot's anchor SHALL stay within 1.8 step lengths of the other foot.
 
 #### Scenario: Step length
 - **WHEN** scale is 1 and the leg extension is 1
@@ -1342,7 +1346,7 @@ A recovery step SHALL end after 100 ms with no foot anchored, after the chest ha
 - **THEN** the step does not end
 
 ### Requirement: Thorax lead
-A stepping chest inside the trigger SHALL shift each thorax pin target, before the feet-centre clamp, by the horizontal error from the pin to the posed target plus the step offset. Factor: 0.4 if Idle else 0.7 × (direction + 0.5) × (2 − 25·s) × 1.2 × √(body scale) × stance level. Direction is (h²/60 + 0.25)·0.36·forwardness (h in cm). Forwardness is 1 minus the error's absolute side-axis share. s is the fast speed along the error, or 0 when tiny or negative. The pelvis pin SHALL not shift.
+A stepping chest inside the trigger SHALL shift each thorax pin target, before the feet-centre clamp, by the horizontal error from the pin to the posed target plus the step offset. Factor: 0.4 if Idle else 0.7 × (direction + 0.5) × (2 − 25·s) × 1.2 × √(body scale) × stance level. Direction is (h²/60 + 0.25)·0.36·forwardness (h in cm). Forwardness is 1 − |error's side-axis share|; s is the fast speed along the error (0 when tiny or negative). The offset SHALL be taken from the frame's origin.
 
 #### Scenario: Sideways
 - **WHEN** the pin sits on its posed target, the step offset is 40 cm along the character's side, the chest is still, body scale is 1 and the stance level is 1
@@ -2069,11 +2073,15 @@ A living character spawned without a saved pose SHALL take its first clip's pose
 - **THEN** its target is 110 cm and its pelvis is placed 102 cm over its placement
 
 ### Requirement: Placement on the ground
-A placement on the ground SHALL run the leg snap from its frame, take the snap's frame height as the frame's, put every part at the current clip's pose-only sample lowered by the pelvis's posed height onto that frame at rest, anchor each foot at its posed contact on the frame less the clip root (unrotated) at its ground plus the sole, and restart every slack link's smoothed length. When no foot finds ground the body SHALL be left as it was.
+A placement on the ground SHALL run the leg snap from its frame and take its frame height, put every part at rest at the current clip's pose-only sample lowered by the pelvis's posed height onto that frame, anchor each foot at its posed contact on the frame less the clip root at its ground plus the sole and clear its state, restart the chest history and the feet centre, and restart every slack link's smoothed length. With no ground under any foot the body SHALL be left as it was.
 
 #### Scenario: A platform
 - **WHEN** a biped is placed on the ground over a platform 15 cm up
 - **THEN** its pelvis stands 15 cm higher than over the floor, at the snap's height, every part at rest at its posed offset from the pelvis
+
+#### Scenario: No chest velocity from the move
+- **WHEN** a body whose chest was moving is placed on the ground
+- **THEN** its chest velocities are zero, its next chest step reads none, every foot state is clear and its feet centre is its anchors' mean
 
 ### Requirement: Body tick adapters
 At the top of each body tick the support adapter SHALL be 0.9 + 0.09·S less 0.6·(1 − E) then 0.1·(1 − B), each floored at 0 by the processor's maximum; the rest adapter 1 − 0.01·S plus 0.05·(1 − B) then 0.3·(1 − E), each capped at 1 by its minimum, and 1 while a get-up is under 0.9 of its clip; sums in double, S last tick's support.
@@ -2597,3 +2605,28 @@ A character without muscles SHALL walk by its desired velocity and stand on the 
 #### Scenario: Without muscles
 - **WHEN** a character without muscles walks off a floor onto a 20 cm ledge and off its far edge
 - **THEN** it stands on the floor, then on the ledge, then falls
+
+### Requirement: Footwork step on the body
+The player's combat footwork SHALL read and write the body's step (stepping, balance step, target, long kind, queue and queued vector); the body SHALL walk it on its feet and the character SHALL follow the body's frame. The movement decision's gate, the leg muscles' anchored-foot rule and the lift's standing lead SHALL read the body's own step episode.
+
+#### Scenario: A footwork step refuses the walk
+- **WHEN** the player's footwork starts the body's step and the movement decision runs
+- **THEN** the decision refuses the move as stepping and the character takes no velocity of its own
+
+### Requirement: Step episode flags
+A body's step episode SHALL keep whether it is a balance step: set when the balance routine starts a step from rest, cleared by any other start, by the step's end and on any tick without a step; a tick without a step also clears the long kind. It SHALL keep a queue word: 1 while a queued step waits, the countdown once taken, 0 for none; a knockback SHALL clear it.
+
+#### Scenario: A queue that is not waiting
+- **WHEN** a foot lands while the queue word is 0 or a taken countdown
+- **THEN** no queued step is taken
+
+### Requirement: Pelvis lead
+While a step leads, the pelvis pin's posed target SHALL shift, before the feet-centre clamp, by the horizontal error e from its point to the posed target plus the step offset, times 0.7 (0.4 in Idle) × (0.75·s + 1) × 1.2·scale × level. For a plain step s is e's cosine with the frame's forward axis, halved when negative, else times (|e| / (reach·extension))²; a long step has s = 0.
+
+#### Scenario: Ahead and back
+- **WHEN** the pin sits on its posed target and the offset is 40 cm straight ahead, then straight back, with an 80 cm step length, scale and level 1
+- **THEN** the posed target moves 39.9 cm ahead, then 21 cm back
+
+#### Scenario: A held step backwards
+- **WHEN** footwork steps 50 cm behind the chest are laid whenever none runs, for three seconds on level ground
+- **THEN** the body never loses its support and moves more than 50 cm back

@@ -115,14 +115,15 @@ fn an_old_step_queues_any_raw_word() {
     assert_eq!(dispatch(&w, 0, 1300, &step, true, OPEN), StepAsk::Nothing);
 }
 
-/// A landed step stays under way while its target is strictly more than
-/// 20·scale cm from the chest across the ground; its height does not
-/// count, and a NaN distance is not under way.
+/// A footwork step is under way while the body steps; a balance step only
+/// while its target is strictly more than 20·scale cm from the feet centre
+/// across the ground; its height does not count, and a NaN distance is not
+/// under way.
 #[test]
-fn a_landed_step_is_under_way_until_near() {
+fn a_balance_step_is_under_way_until_near() {
     let mut step = started(0, false);
     assert!(step.under_way(Vec3::ZERO, 1.0));
-    step.landed = true;
+    step.balance_step = true;
     step.target = Vec3::new(0.0, 5.0, 0.2);
     assert!(!step.under_way(Vec3::ZERO, 1.0));
     step.target = Vec3::new(0.0, 0.0, 0.201);
@@ -237,4 +238,39 @@ fn a_lone_forward_step_bends_at_the_target() {
     );
     let inside = Vec3::new(40.0, 0.0, 0.0);
     assert_eq!(approach_bend(step, inside, target, 1.0), Vec3::ZERO);
+}
+
+/// The record reads the body's step as it is (its start the episode's age
+/// before now) and gives back what the behaviour writes.
+#[test]
+fn the_record_mirrors_the_body_step() {
+    let body = FootworkStep {
+        stepping: true,
+        balance_step: true,
+        long: true,
+        target: Vec3::X,
+        age_ms: 120.5,
+        queue: -1,
+        queued: Vec3::Z,
+        feet_centre: Vec3::Y,
+    };
+    let mut step = StepRecord::default();
+    step.read_body(&body, 1000);
+    assert_eq!(step.started_ms, 880);
+    assert!(step.active && step.balance_step && step.long);
+    assert_eq!(
+        (step.queue, step.queued, step.target),
+        (-1, Vec3::Z, Vec3::X)
+    );
+    let back = step.to_body();
+    assert_eq!(
+        back,
+        FootworkStep {
+            age_ms: 0.0,
+            feet_centre: Vec3::ZERO,
+            ..body
+        }
+    );
+    step.start(1000);
+    assert!(step.active && !step.balance_step && step.started_ms == 1000);
 }

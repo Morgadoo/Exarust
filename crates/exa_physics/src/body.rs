@@ -1933,6 +1933,28 @@ impl Clone for Ragdoll {
     }
 }
 
+/// The body's step fields the player's combat footwork reads and writes
+/// ([`Ragdoll::footwork_step`], [`Ragdoll::write_footwork`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FootworkStep {
+    /// A step episode runs (any kind).
+    pub stepping: bool,
+    /// The episode is a balance step (the balance routine started it).
+    pub balance_step: bool,
+    /// The step is of the long kind (2): a tapped stride or a knockback.
+    pub long: bool,
+    /// The step target (m).
+    pub target: Vec3,
+    /// How long ago the episode started (ms of the body's clock).
+    pub age_ms: f32,
+    /// The step queue: 1 waiting, −2 or −1 taken, 0 none.
+    pub queue: i32,
+    /// The queued step's vector (m).
+    pub queued: Vec3,
+    /// The feet centre (m): the mean of the foot contacts.
+    pub feet_centre: Vec3,
+}
+
 /// Muscles of a living body: the animated pose it follows.
 #[derive(Debug, Clone)]
 pub struct Drive {
@@ -2389,6 +2411,7 @@ impl Drive {
     /// Queues a footwork step whose vector is `vector` (m) for the landing
     /// after the step that is running (the original's step queue).
     pub fn queue_step(&mut self, vector: Vec3) {
+        self.steps.queue = 1;
         self.steps.queued = vector;
         self.steps.queued_landings = self.balance.landings();
     }
@@ -2879,6 +2902,52 @@ impl Ragdoll {
     /// How far the body crouches, 0 to 1.
     pub fn crouch(&self) -> f32 {
         self.drive.as_ref().map_or(0.0, |d| d.bearing.crouch)
+    }
+
+    /// The body's step as the player's combat footwork reads it (the
+    /// original's behaviour reads the body's own step fields): None without
+    /// a drive.
+    pub fn footwork_step(&self) -> Option<FootworkStep> {
+        let drive = self.drive.as_ref()?;
+        let s = &drive.steps;
+        Some(FootworkStep {
+            stepping: s.stepping,
+            balance_step: s.balance_step,
+            long: s.knockback,
+            target: s.target,
+            age_ms: steps::elapsed_ms(s),
+            queue: s.queue,
+            queued: s.queued,
+            feet_centre: drive.balance.feet_centre(),
+        })
+    }
+
+    /// Writes the player's combat footwork back into the body's step: its
+    /// target, its kind (`long`, the tapped stride's kind 2), its queue and
+    /// queued vector. With `start` the step starts as the original's
+    /// behaviour starts it: stepping on, no balance step, no landing yet in
+    /// the episode, its clock now and its later stand-still stamp 0. The
+    /// body then walks it: its stance moves to the target, its feet step
+    /// there one at a time, its chest pins lead toward it, and the
+    /// character follows its frame.
+    pub fn write_footwork(&mut self, step: &FootworkStep, start: bool) {
+        let Some(drive) = self.drive.as_mut() else {
+            return;
+        };
+        let landings = drive.balance.landings();
+        let s = &mut drive.steps;
+        s.target = step.target;
+        s.knockback = step.long;
+        s.queue = step.queue;
+        s.queued = step.queued;
+        if start {
+            s.stepping = true;
+            s.balance_step = false;
+            s.landed_from = landings;
+            s.started = s.clock;
+            s.near = 0;
+            s.still_plus = 0.0;
+        }
     }
 
     /// The step target (m) while a recovery or stagger step is running.
@@ -3428,10 +3497,13 @@ impl Ragdoll {
     }
 
     /// Tells a living body what its character does this tick (before it is
-    /// aimed).
+    /// aimed). Whether it steps is the body's own: its step episode.
     pub fn set_bearing(&mut self, bearing: Bearing) {
         if let Some(d) = self.drive.as_mut() {
-            d.bearing = bearing;
+            d.bearing = Bearing {
+                stepping: d.steps.stepping,
+                ..bearing
+            };
         }
     }
 

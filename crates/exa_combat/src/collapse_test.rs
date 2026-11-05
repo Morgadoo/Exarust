@@ -566,10 +566,11 @@ fn a_collapse_walks_the_stagger_it_starts() {
     assert_eq!(walked.foot, Some(0));
     assert!(!walked.ended);
     assert_eq!(walked.states, vec![FootState::ANCHORED, 0]);
-    assert_eq!(walked.origin.x.to_bits(), 0x3f07_2b02);
+    // The stance clamp is taken in double, as the balance routine takes it.
+    assert_eq!(walked.origin.x.to_bits(), 0x3f07_2b03);
     assert_eq!(walked.origin.y.to_bits(), 0);
     assert_eq!(walked.origin.z.to_bits(), 0x3f34_3958);
-    assert_eq!(walked.anchors[0].x.to_bits(), 0x3f53_f7cf);
+    assert_eq!(walked.anchors[0].x.to_bits(), 0x3f53_f7d0);
     assert_eq!(walked.anchors[0].y.to_bits(), 0xbe4c_cccc);
     assert_eq!(walked.anchors[0].z.to_bits(), 0x3f34_3958);
 }
