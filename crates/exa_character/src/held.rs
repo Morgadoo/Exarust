@@ -214,32 +214,52 @@ pub fn choose(hands: &Hands, claws: bool) -> HeldMoveset {
 
 /// Overlay bits a held item's state asks the moveset choice for on top of
 /// what the hands hold: the "Flaming" overlay ([`MovesetConfig::FLAMING`])
-/// while a held blade burns. The original passes them to its moveset
-/// choice, which ORs them into the config it picked.
+/// a held blade asks for when it lights. The original passes them to that
+/// one moveset choice, which ORs them into the config it picked; the next
+/// choice (the hands dressed again) is made without them, and putting the
+/// blade out does not choose again.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeldModifier(pub u32);
+
+/// The body's lit-blade byte: raised when a held blade lights, right after
+/// the moveset choice it asks for; every moveset choice clears it first.
+/// While it is set, a two-handed grip whose item is a burning blade
+/// (ability 3) keeps both hands on the grip at rest
+/// ([`exa_physics::grip::GripLinks::apply_mode`]).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BurningGrip(pub bool);
 
 /// Picks the moveset config of every body whose hands (or held item
 /// modifier) changed, and switches its clips to it: the body keeps its
 /// race's own moveset as the base, and the clip playing goes on in the new
 /// table. The stance class is copied onto the attacker, which the swing
-/// reads when it sets the arms.
+/// reads when it sets the arms. A choice made because the hands changed
+/// drops the held item's overlay and clears the lit-blade byte, as the
+/// original's moveset choice does when it runs without them.
 #[allow(clippy::type_complexity)]
 pub(crate) fn choose_held_movesets(
     mut bodies: Query<
         (
-            &Hands,
+            Ref<Hands>,
             &mut HeldMoveset,
             Option<&mut Animator>,
             Option<&mut Attacker>,
-            Option<&HeldModifier>,
+            Option<&mut HeldModifier>,
+            Option<&mut BurningGrip>,
         ),
         Or<(Changed<Hands>, Changed<HeldModifier>)>,
     >,
 ) {
-    for (hands, mut held, anim, attacker, modifier) in &mut bodies {
-        let mut chosen = choose(hands, false);
-        if let Some(modifier) = modifier {
+    for (hands, mut held, anim, attacker, modifier, burning) in &mut bodies {
+        let redressed = hands.is_changed() && !hands.is_added();
+        let mut chosen = choose(&hands, false);
+        if let Some(mut modifier) = modifier {
+            if redressed {
+                modifier.set_if_neq(HeldModifier(0));
+                if let Some(mut burning) = burning {
+                    burning.set_if_neq(BurningGrip(false));
+                }
+            }
             chosen.config = chosen.config.with(MovesetConfig(modifier.0));
         }
         if let Some(mut anim) = anim

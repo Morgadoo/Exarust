@@ -1,31 +1,59 @@
 //! Item abilities: a held item whose weapon section names an ability, and
-//! the burning blade it gives.
+//! what each ability does while its crystal sits in the item's first
+//! socket.
 //!
 //! A weapon section's body carries an ability type (the word at byte
 //! [`ABILITY_AT`]) and, from byte [`SOCKET_AT`], its crystal sockets: the
 //! first socket's kind in the low byte and the crystal's charge in the high
 //! one ([`exa_items::item_gui::Sockets`]). In the shipped object database
 //! four items have a type: 1 "UB5 FlangedMace", 2 "Swrd Self Sharp", 3
-//! "Sword GSF 01" and 4 "Sceptre A"; the story's seventh level places the
-//! only copy of "Sword GSF 01" in its local database. No routine writes an
-//! ability's state: it comes from the socket a crystal is dropped into.
+//! "Sword GSF 01" and 4 "Sceptre A" (type 4 installs nothing). The sockets
+//! are filled through the item card's socket row ([`crate::socket_drag`]).
 //!
-//! **Type 3, the burning blade.** Every game second, while either hand holds
-//! an item with an ability, the original runs each held item's ability
-//! check. For type 3 the check ([`fire_row::held_tick`]) lights the blade
-//! when its first socket holds a Power Crystal C (kind 4) whose charge byte
-//! is below 254 and no live flame row is on it, and puts a burning blade out
-//! once the crystal is gone. Nothing drains a kind-4 crystal, so a socketed
-//! blade burns until the crystal is taken out.
+//! **The list.** When the hands are dressed the original registers one
+//! check per held item of type 1, 2 or 3 on the character's item-effect
+//! list; every game second the body tick runs the list, whose counter
+//! advances on each run. A check whose item is no longer in a hand is
+//! dropped. Exarust scans every character's two hand slots once a second
+//! instead ([`ability_tick`]), from the live object database
+//! ([`LiveObjects`]), and counts the runs per character ([`AbilityClock`]).
+//!
+//! **Type 1, the lightning mace** ([`lightning_charged`]): a first socket
+//! of kind 1 (Power Crystal A) with a charge below 0xfe, or of kind 0x11
+//! (Power Crystal AR) with a charge below 0x7f, raises the mace's hum arcs
+//! ([`crate::thaum::arcs::hum_arcs`]) on a node 53 cm along the item's +Y
+//! when none are live; a spent socket ends them. While they are up, a hit
+//! with the mace shocks the struck character with zero strength
+//! ([`crate::thaum::live::ArcShocked`]), then charges the socket by 10 (by
+//! 0x80 for a kind with bit 0x10) until it would reach 0xff, where it is
+//! set to 0xff and the arcs end, and leaves a spark burst at the contact.
+//!
+//! **Type 2, the self-sharpening blade** ([`item_effects::sharpen_tick`]):
+//! on every run whose counter's low three bits are all set, a first socket
+//! of kind 2 (Power Crystal B) with a charge below 0xff and a slash byte
+//! (weapon byte 0x37) below 0x8c gains one in the charge and two in the
+//! slash byte, and the weapon record's slash share (W11) is rewritten from
+//! the slash byte. Every hit with the blade blunts it
+//! ([`item_effects::blunt_on_hit`]): a slash byte above 0x40 loses four,
+//! otherwise it becomes 0x3c, and the share follows.
+//!
+//! **Type 3, the burning blade** ([`fire_row::held_tick`]): lights the
+//! blade when its first socket holds a Power Crystal C (kind 4) whose
+//! charge byte is below 254 and no live flame row is on it, and puts a
+//! burning blade out once the crystal is gone. Nothing drains a kind-4
+//! crystal, so a socketed blade burns until the crystal is taken out.
 //!
 //! - **Lighting** raises the item's lit flag ([`LitBlade`]), puts a flame
 //!   row on the item along its own +Y from 30 to 115 cm, fading in
-//!   ([`fire_row::ignition`]), asks the moveset choice for the "Flaming"
-//!   overlay ([`HeldModifier`]) and re-runs the player light's switch, which
-//!   a lit blade in the first hand turns off.
+//!   ([`fire_row::ignition`]), chooses the moveset again with the
+//!   "Flaming" overlay ([`HeldModifier`]), raises the body's lit-blade
+//!   byte ([`BurningGrip`]), sets the grip mode again (a burning two-hander
+//!   at rest keeps both hands on its grip) and re-runs the player light's
+//!   switch, which a lit blade in the first hand turns off.
 //! - **Putting out** sets the row's extinguish flag (it fades out and leaves
-//!   the scene), clears the lit flag and the overlay, and re-runs the
-//!   switch.
+//!   the scene), clears the lit flag and re-runs the switch. It does not
+//!   choose the moveset again: the overlay and the byte stay until the
+//!   hands are dressed again.
 //! - **A hit** with a burning blade plays `FireSizzleA` at the contact,
 //!   volume 0.3 and pitch `0.8 + 0.2·u` ([`fire_row::sizzle`]).
 //!
@@ -35,19 +63,21 @@
 //! ([`exa_render::flame_row`]) over the `flameletsa3` picture the material's
 //! built-in record names.
 //!
-//! Exarust runs the check for the player's two hand slots, from the live
-//! object database ([`LiveObjects`]); the original runs it for every
-//! character. Types 1 and 2 (a lightning mace and a self-sharpening sword)
-//! are not ported.
+//! Debug tool: `--ability-item N[,cold][,npc]` (the binary's flag; `--flame-sword`
+//! is `--ability-item 3`) gives the player the type-N item and drops its
+//! crystal (A, B or C) into the first socket through the item GUI's socket
+//! rule; `cold` leaves the socket empty, `npc` also puts the item in the
+//! hands of every other character that holds its model, `npc-only` only
+//! there.
 //!
-//! Debug tool: `--flame-sword` (the binary's flag) gives the player "Sword
-//! GSF 01" and drops a Power Crystal C into its first socket through the
-//! item GUI's socket rule.
-//!
-//! Evidence: the held-item ability install, its once-a-second tick, the
-//! type-3 check, lighting and putting out, the hit callback, the flame
-//! row's node, the item GUI's socket drop and the player light's switch,
-//! read from `Exanima.exe` and checked against the disassembly.
+//! Evidence: the held-item ability install, the list's run, the three
+//! checks, the arcs' raise and end, the lightning hit hook and its
+//! deferred charge, the self-sharpening check and hit hook, the burning
+//! blade's lighting and putting out, the hit callback, the flame row's
+//! node, the moveset choice's lit-blade byte and the two-handed grip
+//! callback that reads it, the item GUI's socket drop and the player
+//! light's switch, read from `Exanima.exe` and checked against the
+//! disassembly.
 
 use std::collections::HashMap;
 
@@ -56,15 +86,21 @@ use bevy::prelude::*;
 use exa_assets::live_objects::LiveObjects;
 use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader};
 use exa_audio::{AudioEnvironment, SoundBank, VoiceHandle, voice_flags};
-use exa_character::held::HeldModifier;
+use exa_character::grip_runtime::{HeldAbility, HeldRecord};
+use exa_character::held::{BurningGrip, HeldModifier};
 use exa_combat::attack::Slot;
 use exa_combat::{Blade, Hit};
 use exa_formats::rsq::MovesetConfig;
+use exa_formats::weapon_stats::at;
 use exa_items::possession::Possessions;
+use exa_physics::grip::HeldGrip;
 use exa_render::flame_row::{FlameRowMaterial, gradient_image};
 
 use crate::effects::fire_row::{self, AttachedRow, Flame, HeldFire, ItemAbility};
+use crate::item_effects;
 use crate::player::PlayerBody;
+use crate::thaum::arcs::{HUM_ARCS_OFFSET, hum_arcs, spark_burst};
+use crate::thaum::live::{ArcShocked, EffectDraws, LiveArcs};
 
 /// The weapon section's tag.
 pub const WEAPON_SECTION: u32 = 0x4000;
@@ -72,18 +108,31 @@ pub const WEAPON_SECTION: u32 = 0x4000;
 pub const ABILITY_AT: usize = 0x44;
 /// The first socket's word (kind, then charge) in the weapon section's body.
 pub const SOCKET_AT: usize = 0x48;
-/// The ability type of a blade a crystal sets alight.
+/// The ability types.
+pub const LIGHTNING: u32 = 1;
+pub const SELF_SHARPENING: u32 = 2;
 pub const BURNING_BLADE: u32 = fire_row::BURNING_ABILITY;
 /// How often the held items' abilities are checked (ms of game time).
 pub const TICK_MS: u64 = 1000;
-/// "Sword GSF 01", the one burning blade of the shipped database.
+/// The three ability items of the shipped database and their models:
+/// "UB5 FlangedMace" (a factory mace), "Swrd Self Sharp" and "Sword GSF
+/// 01", the one burning blade.
+pub const LIGHTNING_MACE: u32 = 0x1D3;
+pub const SELF_SHARPENING_SWORD: u32 = 0x433;
 pub const FLAME_SWORD: u32 = 0x487;
-/// Its model in `Objects.rpk`.
+pub const LIGHTNING_MACE_MODEL: &str = "@UBM Mace1H S1";
+pub const SELF_SHARPENING_MODEL: &str = "SwrdOrgSlfShA";
 pub const FLAME_SWORD_MODEL: &str = "Sword GSF 01";
 /// The flame row's material picture (`_FlameMat01`'s built-in record).
 pub const FLAME_TEXTURE: &str = "flameletsa3";
 /// Where along the item's +Y the row's light sits (cm): the line's middle.
 pub const LIGHT_AT_CM: f32 = (fire_row::START_CM + fire_row::END_CM) * 0.5;
+/// The lightning hit's shock strength.
+pub const LIGHTNING_SHOCK: f32 = 0.0;
+/// What a lightning hit adds to the socket's charge: 10, or 0x80 for a
+/// kind with bit 0x10 (Power Crystal AR).
+pub const LIGHTNING_DRAIN: u8 = 10;
+pub const LIGHTNING_DRAIN_AR: u8 = 0x80;
 
 pub struct ItemAbilityPlugin;
 
@@ -94,12 +143,19 @@ impl Plugin for ItemAbilityPlugin {
             .add_systems(
                 Update,
                 (
-                    debug_flame_sword,
+                    debug_ability_item,
                     ability_tick,
-                    sizzle_on_hit,
+                    hit_hooks,
                     (flame_row_lights, flame_row_draws, flame_row_loops)
                         .after(fire_row::frame_rows),
-                ),
+                )
+                    .chain(),
+            )
+            .add_systems(
+                FixedUpdate,
+                follow_items
+                    .after(exa_physics::body::BodySystems)
+                    .before(crate::thaum::live::tick_arcs),
             );
     }
 }
@@ -125,11 +181,29 @@ pub fn ability_of(body: &[u8]) -> Option<Ability> {
     })
 }
 
+/// Whether the install registers a check for an ability type: 1, 2 and 3.
+pub fn installs(kind: u32) -> bool {
+    item_effects::hand_effect(kind as i32).is_some()
+}
+
 /// The item's render lit flag: its flame row burns. Kept on the held item
 /// (the [`Blade`]) with the row it carries.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LitBlade {
     pub row: Entity,
+}
+
+/// The lightning mace's live hum arcs, kept on the held item.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HumArcs {
+    pub arcs: Entity,
+}
+
+/// Arcs that ride a held item, `offset` cm along its own frame.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct ItemArcs {
+    pub item: Entity,
+    pub offset: Vec3,
 }
 
 /// The light a flame row shows, at the middle of its line.
@@ -144,26 +218,103 @@ pub struct FlameRowDraw {
     pub row: Entity,
 }
 
-/// The ability tick's clock: the game time (ms) a player's next check is
-/// due, as the original keeps one per character.
+/// The ability list's clock, as the original keeps one per character: the
+/// game time (ms) the next run is due, and how many runs the list made.
 #[derive(Resource, Debug, Default)]
 pub struct AbilityClock {
     pub next_ms: HashMap<Entity, u64>,
+    pub runs: HashMap<Entity, i32>,
 }
 
-/// Debug tool (`--flame-sword`): the player holds "Sword GSF 01" with a
-/// Power Crystal C in its first socket. Applied once the player and the
-/// live database are there.
+/// Debug tool (`--ability-item`): the player holds the type-`kind` item,
+/// with its crystal in the first socket unless `cold`; with `npcs`, every
+/// other character holding its model holds it too (and with `player`
+/// false, only they do). Applied once the player
+/// and the live database are there.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DebugFlameSword {
+pub struct DebugAbilityItem {
+    pub kind: u32,
+    pub cold: bool,
+    pub npcs: bool,
+    /// The player holds it too.
+    pub player: bool,
     pub applied: bool,
 }
 
-/// What the check does to one held item this tick.
+impl DebugAbilityItem {
+    pub fn new(kind: u32, cold: bool, npcs: bool) -> Self {
+        Self {
+            kind,
+            cold,
+            npcs,
+            player: true,
+            applied: false,
+        }
+    }
+
+    /// The item, its model and the crystal its ability takes.
+    pub fn item(kind: u32) -> Option<(u32, &'static str, u32)> {
+        use exa_items::possession::crystal;
+        match kind {
+            LIGHTNING => Some((LIGHTNING_MACE, LIGHTNING_MACE_MODEL, crystal::A)),
+            SELF_SHARPENING => Some((SELF_SHARPENING_SWORD, SELF_SHARPENING_MODEL, crystal::B)),
+            BURNING_BLADE => Some((FLAME_SWORD, FLAME_SWORD_MODEL, crystal::C)),
+            _ => None,
+        }
+    }
+}
+
+/// What the burning check does to one held item this tick.
 pub fn check(ability: Option<Ability>, row: AttachedRow) -> HeldFire {
     match ability {
         Some(a) if a.kind == BURNING_BLADE => fire_row::held_tick(Some(a.socket), row).action,
         _ => HeldFire::None,
+    }
+}
+
+/// The lightning check's charge test on the first socket's word: kind 1
+/// with a charge below 0xfe, or kind 0x11 with a charge below 0x7f (the
+/// kind is the word's low five bits).
+pub fn lightning_charged(word: u16) -> bool {
+    let charge = (word >> 8) as u8;
+    match word & 0x1f {
+        1 => charge < 0xfe,
+        0x11 => charge < 0x7f,
+        _ => false,
+    }
+}
+
+/// What the lightning check does: raise the arcs when charged and none are
+/// live, end live arcs when spent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArcsAction {
+    None,
+    Raise,
+    End,
+}
+
+pub fn lightning_check(word: u16, live: bool) -> ArcsAction {
+    match (lightning_charged(word), live) {
+        (true, false) => ArcsAction::Raise,
+        (false, true) => ArcsAction::End,
+        _ => ArcsAction::None,
+    }
+}
+
+/// A lightning hit's charge on the socket word: 10 (0x80 for a kind with
+/// bit 0x10) is added while the sum stays below 0xff; otherwise the charge
+/// becomes 0xff and the arcs end (`true`).
+pub fn lightning_hit_charge(word: u16) -> (u16, bool) {
+    let step = if word & 0x10 == 0 {
+        LIGHTNING_DRAIN
+    } else {
+        LIGHTNING_DRAIN_AR
+    };
+    let charge = (word >> 8) as u8;
+    if i32::from(charge) < 0xff - i32::from(step) {
+        ((word & 0xff) | u16::from(charge + step) << 8, false)
+    } else {
+        ((word & 0xff) | 0xff00, true)
     }
 }
 
@@ -175,42 +326,91 @@ pub fn blade_puts_light_out(kinds: [Option<u32>; 2], first_lit: bool) -> bool {
         .any(|&k| crate::player_light::weapon_puts_out(k.map(|k| k as u8), first_lit))
 }
 
-fn debug_flame_sword(
-    debug: Option<ResMut<DebugFlameSword>>,
+/// Writes a socket word into an item's weapon section.
+fn write_socket(objects: &mut LiveObjects, id: u32, word: u16) {
+    let [low, high] = word.to_le_bytes();
+    objects.write_section_byte(id, WEAPON_SECTION, SOCKET_AT, low);
+    objects.write_section_byte(id, WEAPON_SECTION, SOCKET_AT + 1, high);
+}
+
+#[allow(clippy::type_complexity)]
+fn debug_ability_item(
+    debug: Option<ResMut<DebugAbilityItem>>,
     game: Option<Res<Game>>,
-    mut players: Query<&mut Possessions, With<PlayerBody>>,
+    mut characters: Query<(
+        Entity,
+        Option<&mut Possessions>,
+        Option<&exa_character::Wielded>,
+        Has<PlayerBody>,
+        Has<exa_character::record::CharacterData>,
+    )>,
     objects: Option<ResMut<LiveObjects>>,
+    mut given: Local<Vec<Entity>>,
+    mut commands: Commands,
 ) {
     let (Some(mut debug), Some(game), Some(mut objects)) = (debug, game, objects) else {
         return;
     };
-    if debug.applied {
-        return;
-    }
-    let Some(mut possessions) = players.iter_mut().next() else {
+    let Some((id, model, crystal)) = DebugAbilityItem::item(debug.kind) else {
         return;
     };
-    if !objects.ensure_base(&game.0) {
+    if !debug.applied {
+        if !characters
+            .iter()
+            .any(|(_, p, _, player, _)| player && p.is_some())
+            || !objects.ensure_base(&game.0)
+        {
+            return;
+        }
+        debug.applied = true;
+        let Some(body) = objects.db().section(id, WEAPON_SECTION) else {
+            warn!("--ability-item: \"{model}\" has no weapon section");
+            return;
+        };
+        let mut sockets = exa_items::item_gui::Sockets::of_section(body, SOCKET_AT);
+        let dropped = if debug.cold {
+            None
+        } else {
+            Some(sockets.drop_crystal(0, crystal, 0, false))
+        };
+        write_socket(&mut objects, id, sockets.0[0]);
+        let ability = objects
+            .db()
+            .section(id, WEAPON_SECTION)
+            .and_then(ability_of);
+        info!(
+            "--ability-item: {id:#x} \"{model}\", crystal {crystal} into its first socket ({dropped:?}): {ability:?}"
+        );
+    }
+    if objects.db().section(id, WEAPON_SECTION).is_none() {
         return;
     }
-    debug.applied = true;
-    possessions.out[0].id = FLAME_SWORD;
-    let Some(body) = objects.db().section(FLAME_SWORD, WEAPON_SECTION) else {
-        warn!("--flame-sword: the database has no \"{FLAME_SWORD_MODEL}\" weapon section");
-        return;
-    };
-    let mut sockets = exa_items::item_gui::Sockets::of_section(body, SOCKET_AT);
-    let dropped = sockets.drop_crystal(0, exa_items::possession::crystal::C, 0, false);
-    let [low, high] = sockets.0[0].to_le_bytes();
-    objects.write_section_byte(FLAME_SWORD, WEAPON_SECTION, SOCKET_AT, low);
-    objects.write_section_byte(FLAME_SWORD, WEAPON_SECTION, SOCKET_AT + 1, high);
-    let ability = objects
-        .db()
-        .section(FLAME_SWORD, WEAPON_SECTION)
-        .and_then(ability_of);
-    info!(
-        "--flame-sword: the player holds {FLAME_SWORD:#x} \"{FLAME_SWORD_MODEL}\"; Power Crystal C into its first socket ({dropped:?}): {ability:?}"
-    );
+    for (entity, possessions, wielded, player, recorded) in &mut characters {
+        // A character with a record gets its possession list from it; wait
+        // for that.
+        if given.contains(&entity) || (possessions.is_none() && (player || recorded)) {
+            continue;
+        }
+        let holds_model = wielded.is_some_and(|w| w.model.eq_ignore_ascii_case(model));
+        if !((player && debug.player) || (!player && debug.npcs && holds_model)) {
+            continue;
+        }
+        given.push(entity);
+        // A debug duellist keeps no possession list: it gets one holding
+        // the item.
+        match possessions {
+            Some(mut possessions) => possessions.out[0].id = id,
+            None => {
+                let mut possessions = Possessions::default();
+                possessions.out[0].id = id;
+                commands.entity(entity).insert(possessions);
+            }
+        }
+        info!(
+            "--ability-item: {entity:?} holds {id:#x} \"{model}\"{}",
+            if player { " (the player)" } else { "" }
+        );
+    }
 }
 
 /// The row a held item carries and whether it is on its way out.
@@ -224,95 +424,202 @@ fn attached_row(lit: Option<&LitBlade>, rows: &Query<&mut Flame>) -> AttachedRow
     }
 }
 
-/// Once a game second, each of the player's held items' ability check.
+/// A held item's place in the tick: the character's blade in the slot and
+/// what it carries.
+type BladeItem<'a> = (
+    Entity,
+    &'a mut Blade,
+    Option<&'a LitBlade>,
+    Option<&'a HumArcs>,
+    Option<&'a mut HeldRecord>,
+    Option<&'a mut HeldGrip>,
+    Option<&'a HeldAbility>,
+);
+
+/// Once a game second, every character's held items' ability checks.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn ability_tick(
+pub(crate) fn ability_tick(
     mut commands: Commands,
     mut clock: ResMut<AbilityClock>,
     time: Option<Res<Time<Virtual>>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
-    mut players: Query<(Entity, &Possessions, Option<&mut HeldModifier>), With<PlayerBody>>,
-    objects: Option<Res<LiveObjects>>,
-    blades: Query<(Entity, &Blade, Option<&LitBlade>)>,
+    mut characters: Query<(
+        Entity,
+        &Possessions,
+        Option<&mut HeldModifier>,
+        Option<&mut BurningGrip>,
+    )>,
+    objects: Option<ResMut<LiveObjects>>,
+    mut blades: Query<BladeItem>,
     mut rows: Query<&mut Flame>,
+    mut arcs: Query<&mut LiveArcs>,
+    draws: Option<ResMut<EffectDraws>>,
     mut seed: Local<u32>,
 ) {
-    let (Some(time), Some(objects)) = (time, objects) else {
+    let (Some(time), Some(mut objects), Some(mut draws)) = (time, objects, draws) else {
         return;
     };
     if loading.is_some() {
         return;
     }
     let now = time.elapsed().as_millis() as u64;
-    for (player, possessions, modifier) in &mut players {
-        let next = clock.next_ms.entry(player).or_insert(0);
+    for (character, possessions, modifier, burning_grip) in &mut characters {
+        let next = clock.next_ms.entry(character).or_insert(0);
         if now < *next {
             continue;
         }
         *next = now + TICK_MS;
-        let abilities = [0, 1].map(|slot| {
+        let held = [0, 1].map(|slot| {
             let id = possessions.out[slot].id;
             (id != 0)
                 .then(|| objects.db().section(id, WEAPON_SECTION))
                 .flatten()
                 .and_then(ability_of)
+                .filter(|a| installs(a.kind))
+                .map(|a| (id, a))
         });
-        // Nothing held has an ability: no check runs (the original's list
-        // is empty).
-        if abilities.iter().all(|a| a.is_none_or(|a| a.kind == 0)) {
+        // Nothing held has an ability: the list is empty and does not run.
+        if held.iter().all(Option::is_none) {
             continue;
         }
+        let runs = clock.runs.entry(character).or_insert(0);
+        *runs = runs.wrapping_add(1);
+        let run = *runs;
         let mut flaming = modifier.as_ref().is_some_and(|m| m.0 != 0);
-        for (slot, ability) in abilities.into_iter().enumerate() {
+        let mut lit_byte = burning_grip.as_ref().is_some_and(|b| b.0);
+        for (slot, entry) in held.into_iter().enumerate() {
+            let Some((id, ability)) = entry else {
+                continue;
+            };
             let want = if slot == 0 { Slot::First } else { Slot::Second };
-            let Some((blade, _, lit)) = blades
-                .iter()
-                .find(|(_, b, _)| b.wielder == player && b.slot == want)
+            // A check whose item is no longer in a hand drops out.
+            let Some((blade, mut record, lit, hum, held_record, grip, known)) = blades
+                .iter_mut()
+                .find(|(_, b, ..)| b.wielder == character && b.slot == want)
             else {
                 continue;
             };
-            let row = attached_row(lit, &rows);
-            match check(ability, row) {
-                HeldFire::None => {}
-                HeldFire::Ignite => {
-                    *seed = seed.wrapping_add(1);
-                    let lit = fire_row::ignition();
-                    let row = commands
-                        .spawn((
-                            Name::new("FlameRow"),
-                            Flame::new(lit.start_cm, lit.end_cm, lit.flags, *seed),
-                            Transform::IDENTITY,
-                            ChildOf(blade),
-                        ))
-                        .id();
-                    commands.spawn((
-                        Name::new("FlameRowLight"),
-                        FlameRowLight { row },
-                        exa_world::light_bundle(&fire_row::light_record()),
-                        Transform::from_xyz(0.0, LIGHT_AT_CM / 100.0, 0.0),
-                        ChildOf(blade),
-                    ));
-                    commands.entity(blade).insert(LitBlade { row });
-                    flaming = true;
-                    info!(
-                        "item ability: slot {slot} {:#x} lights its blade (socket {:#06x}, flame row {row:?})",
-                        possessions.out[slot].id,
-                        ability.map_or(0, |a| a.socket.kind)
-                    );
-                }
-                HeldFire::Extinguish => {
-                    if let Some(lit) = lit
-                        && let Ok(mut flame) = rows.get_mut(lit.row)
-                    {
-                        flame.extinguish();
+            if known.is_none_or(|k| k.0 != ability.kind) {
+                commands.entity(blade).insert(HeldAbility(ability.kind));
+            }
+            match ability.kind {
+                LIGHTNING => {
+                    let live = hum.is_some_and(|h| arcs.get(h.arcs).is_ok_and(|a| !a.arcs.ending));
+                    match lightning_check(ability.socket.kind as u16, live) {
+                        ArcsAction::None => {}
+                        ArcsAction::Raise => {
+                            let arcs_entity = commands
+                                .spawn((
+                                    Name::new("_MaceArcs"),
+                                    LiveArcs {
+                                        arcs: hum_arcs(&mut draws.0),
+                                        hand: None,
+                                        weapon: None,
+                                        caster: Some(character),
+                                        keep: false,
+                                    },
+                                    ItemArcs {
+                                        item: blade,
+                                        offset: HUM_ARCS_OFFSET,
+                                    },
+                                ))
+                                .id();
+                            commands.entity(blade).insert(HumArcs { arcs: arcs_entity });
+                            info!(
+                                "item ability: {character:?} slot {slot} {id:#x} raises its arcs (socket {:#06x}, arcs {arcs_entity:?})",
+                                ability.socket.kind
+                            );
+                        }
+                        ArcsAction::End => {
+                            if let Some(hum) = hum {
+                                end_arcs(&mut arcs, hum.arcs);
+                            }
+                            commands.entity(blade).remove::<HumArcs>();
+                            info!(
+                                "item ability: {character:?} slot {slot} {id:#x} ends its arcs (socket {:#06x})",
+                                ability.socket.kind
+                            );
+                        }
                     }
-                    commands.entity(blade).remove::<LitBlade>();
-                    flaming = false;
-                    info!(
-                        "item ability: slot {slot} {:#x} puts its blade out",
-                        possessions.out[slot].id
-                    );
                 }
+                SELF_SHARPENING => {
+                    let Some(body) = objects.db().section(id, WEAPON_SECTION) else {
+                        continue;
+                    };
+                    let mut slash = body.get(at::SLASH).copied().unwrap_or(0);
+                    let word = ability.socket.kind as u16;
+                    let mut charge = (word >> 8) as u8;
+                    let before = (slash, charge);
+                    let tick = item_effects::sharpen_tick(true, word, &mut charge, &mut slash, run);
+                    if (slash, charge) != before {
+                        objects.write_section_byte(id, WEAPON_SECTION, at::SLASH, slash);
+                        objects.write_section_byte(id, WEAPON_SECTION, SOCKET_AT + 1, charge);
+                    }
+                    if let Some(share) = tick.slash_share {
+                        set_slash(&mut record, held_record, slash, share);
+                        info!(
+                            "item ability: {character:?} slot {slot} {id:#x} sharpens on run {run}: slash {} -> {slash}, charge {} -> {charge}, W11 {share:.4}",
+                            before.0, before.1
+                        );
+                    }
+                }
+                BURNING_BLADE => {
+                    let row = attached_row(lit, &rows);
+                    match check(Some(ability), row) {
+                        HeldFire::None => {}
+                        HeldFire::Ignite => {
+                            *seed = seed.wrapping_add(1);
+                            let ignition = fire_row::ignition();
+                            let row = commands
+                                .spawn((
+                                    Name::new("FlameRow"),
+                                    Flame::new(
+                                        ignition.start_cm,
+                                        ignition.end_cm,
+                                        ignition.flags,
+                                        *seed,
+                                    ),
+                                    Transform::IDENTITY,
+                                    ChildOf(blade),
+                                ))
+                                .id();
+                            commands.spawn((
+                                Name::new("FlameRowLight"),
+                                FlameRowLight { row },
+                                exa_world::light_bundle(&fire_row::light_record()),
+                                Transform::from_xyz(0.0, LIGHT_AT_CM / 100.0, 0.0),
+                                ChildOf(blade),
+                            ));
+                            commands.entity(blade).insert(LitBlade { row });
+                            // The moveset is chosen again with the overlay
+                            // (which clears the byte), then the byte is
+                            // raised and the grip mode set again.
+                            flaming = true;
+                            lit_byte = true;
+                            if let Some(mut grip) = grip
+                                && let Some(links) = grip.links.as_mut()
+                            {
+                                links.mode = -1;
+                            }
+                            info!(
+                                "item ability: {character:?} slot {slot} {id:#x} lights its blade (socket {:#06x}, flame row {row:?})",
+                                ability.socket.kind
+                            );
+                        }
+                        HeldFire::Extinguish => {
+                            if let Some(lit) = lit
+                                && let Ok(mut flame) = rows.get_mut(lit.row)
+                            {
+                                flame.extinguish();
+                            }
+                            commands.entity(blade).remove::<LitBlade>();
+                            info!(
+                                "item ability: {character:?} slot {slot} {id:#x} puts its blade out"
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         let wanted = if flaming { MovesetConfig::FLAMING.0 } else { 0 };
@@ -321,36 +628,167 @@ fn ability_tick(
                 m.set_if_neq(HeldModifier(wanted));
             }
             None if wanted != 0 => {
-                commands.entity(player).insert(HeldModifier(wanted));
+                commands.entity(character).insert(HeldModifier(wanted));
+            }
+            None => {}
+        }
+        match burning_grip {
+            Some(mut b) => {
+                b.set_if_neq(BurningGrip(lit_byte));
+            }
+            None if lit_byte => {
+                commands.entity(character).insert(BurningGrip(true));
             }
             None => {}
         }
     }
 }
 
-/// A hit with a burning blade sizzles at the contact.
-fn sizzle_on_hit(
+/// Writes a slash byte and its share into the held item's record (the
+/// share is W11, written whichever side strikes) and the copy of the
+/// section a flip rebuilds from.
+fn set_slash(record: &mut Blade, held: Option<Mut<HeldRecord>>, slash: u8, share: f32) {
+    record.record.slash = share;
+    record.record.stats.set(at::SLASH, slash);
+    if let Some(mut held) = held {
+        held.section.stats.set(at::SLASH, slash);
+    }
+}
+
+/// Ends arcs: they stop respawning and leave once their points are gone.
+fn end_arcs(arcs: &mut Query<&mut LiveArcs>, entity: Entity) {
+    if let Ok(mut live) = arcs.get_mut(entity) {
+        live.arcs.respawns = false;
+        live.arcs.ending = true;
+    }
+}
+
+/// The hit hooks of the held items: a burning blade sizzles, a
+/// self-sharpening blade blunts, and a lightning mace with live arcs
+/// shocks the struck character, charges its socket and leaves a spark
+/// burst. The original's lightning hook defers the charge and the burst to
+/// the game's event queue [guess: Exarust runs them at once].
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn hit_hooks(
     mut hits: MessageReader<Hit>,
-    lit: Query<(), With<LitBlade>>,
+    mut blades: Query<(
+        &mut Blade,
+        Option<&LitBlade>,
+        Option<&HumArcs>,
+        Option<&mut HeldRecord>,
+    )>,
+    possessions: Query<&Possessions>,
+    objects: Option<ResMut<LiveObjects>>,
+    mut arcs: Query<&mut LiveArcs>,
+    draws: Option<ResMut<EffectDraws>>,
     mut bank: ResMut<SoundBank>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
+    mut shocked: MessageWriter<ArcShocked>,
+    mut commands: Commands,
 ) {
+    let (Some(mut objects), Some(mut draws)) = (objects, draws) else {
+        for _ in hits.read() {}
+        return;
+    };
     for hit in hits.read() {
-        if !lit.contains(hit.striker) {
+        let Ok((mut blade, lit, hum, held_record)) = blades.get_mut(hit.striker) else {
             continue;
+        };
+        let id = possessions
+            .get(blade.wielder)
+            .map_or(0, |p| p.out[blade.slot.index()].id);
+        let ability = (id != 0)
+            .then(|| objects.db().section(id, WEAPON_SECTION))
+            .flatten()
+            .and_then(ability_of);
+        if lit.is_some() {
+            let sizzle = fire_row::sizzle(f64::from(bank.random_unit()));
+            info!(
+                "item ability: a burning blade's hit sizzles at {:?} (volume {}, pitch {:.3})",
+                hit.point, sizzle.volume, sizzle.pitch
+            );
+            sounds.write(exa_audio::PointSounded {
+                name: fire_row::SIZZLE_SOUND.into(),
+                position: hit.point,
+                volume: sizzle.volume,
+                pitch: sizzle.pitch,
+                flags: 0,
+            });
         }
-        let sizzle = fire_row::sizzle(f64::from(bank.random_unit()));
-        info!(
-            "item ability: a burning blade's hit sizzles at {:?} (volume {}, pitch {:.3})",
-            hit.point, sizzle.volume, sizzle.pitch
-        );
-        sounds.write(exa_audio::PointSounded {
-            name: fire_row::SIZZLE_SOUND.into(),
-            position: hit.point,
-            volume: sizzle.volume,
-            pitch: sizzle.pitch,
-            flags: 0,
-        });
+        match ability.map(|a| a.kind) {
+            Some(SELF_SHARPENING) => {
+                let Some(mut slash) = objects
+                    .db()
+                    .section(id, WEAPON_SECTION)
+                    .and_then(|b| b.get(at::SLASH).copied())
+                else {
+                    continue;
+                };
+                let before = slash;
+                let share = item_effects::blunt_on_hit(&mut slash);
+                objects.write_section_byte(id, WEAPON_SECTION, at::SLASH, slash);
+                set_slash(&mut blade, held_record, slash, share);
+                info!(
+                    "item ability: {id:#x}'s hit blunts it: slash {before} -> {slash}, W11 {share:.4}"
+                );
+            }
+            Some(LIGHTNING) if hum.is_some_and(|h| arcs.contains(h.arcs)) => {
+                let direction = hit.velocity.normalize_or_zero();
+                shocked.write(ArcShocked {
+                    body: hit.target,
+                    direction,
+                    strength: LIGHTNING_SHOCK,
+                });
+                let word = ability.map_or(0, |a| a.socket.kind as u16);
+                let (charged, spent) = lightning_hit_charge(word);
+                write_socket(&mut objects, id, charged);
+                if spent && let Some(hum) = hum {
+                    end_arcs(&mut arcs, hum.arcs);
+                    commands.entity(hit.striker).remove::<HumArcs>();
+                }
+                let mut burst = spark_burst(&mut draws.0);
+                burst.anchor = Some(hit.point * 100.0);
+                commands.spawn((
+                    Name::new("_MaceSpark"),
+                    LiveArcs {
+                        arcs: burst,
+                        hand: None,
+                        weapon: None,
+                        caster: Some(blade.wielder),
+                        keep: false,
+                    },
+                ));
+                info!(
+                    "item ability: {id:#x}'s arcs shock {:?} at {:?}: socket {word:#06x} -> {charged:#06x}{}",
+                    hit.target,
+                    hit.point,
+                    if spent { ", spent: the arcs end" } else { "" }
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Arcs riding a held item follow it: their frame sits `offset` along the
+/// item's own axes and turns with it. Arcs whose item is gone end.
+fn follow_items(
+    mut commands: Commands,
+    mut arcs: Query<(Entity, &mut LiveArcs, &ItemArcs)>,
+    items: Query<&GlobalTransform>,
+) {
+    for (entity, mut live, riding) in &mut arcs {
+        match items.get(riding.item) {
+            Ok(place) => {
+                live.arcs.anchor = Some(place.transform_point(riding.offset / 100.0) * 100.0);
+                live.arcs.frame = place.rotation();
+            }
+            Err(_) => {
+                live.arcs.respawns = false;
+                live.arcs.ending = true;
+                commands.entity(entity).remove::<ItemArcs>();
+            }
+        }
     }
 }
 
@@ -603,5 +1041,78 @@ mod tests {
         assert!(!blade_puts_light_out([Some(1), None], true));
         assert_eq!(LIGHT_AT_CM, 72.5);
         assert_eq!(FLAME_TEXTURE, "flameletsa3");
+    }
+
+    /// Crystal A (kind 1) charges the mace below 0xfe, crystal AR (0x11)
+    /// below 0x7f; nothing else does.
+    #[test]
+    fn the_lightning_mace_runs_on_crystal_a_or_ar() {
+        assert!(lightning_charged(0x0081));
+        assert!(lightning_charged(0xFD81));
+        assert!(!lightning_charged(0xFE81));
+        assert!(lightning_charged(0x7E91));
+        assert!(!lightning_charged(0x7F91));
+        assert!(!lightning_charged(0x0084));
+        assert!(!lightning_charged(0x0080));
+        assert_eq!(lightning_check(0x0081, false), ArcsAction::Raise);
+        assert_eq!(lightning_check(0x0081, true), ArcsAction::None);
+        assert_eq!(lightning_check(0x0080, true), ArcsAction::End);
+        assert_eq!(lightning_check(0x0080, false), ArcsAction::None);
+    }
+
+    /// A lightning hit charges the socket by 10 (0x80 with bit 0x10) while
+    /// that stays below 0xff; past it the charge is 0xff and the arcs end.
+    #[test]
+    fn a_lightning_hit_charges_the_socket() {
+        assert_eq!(lightning_hit_charge(0x0081), (0x0A81, false));
+        assert_eq!(lightning_hit_charge(0xF481), (0xFE81, false));
+        assert_eq!(lightning_hit_charge(0xF581), (0xFF81, true));
+        assert_eq!(lightning_hit_charge(0x0091), (0x8091, false));
+        assert_eq!(lightning_hit_charge(0x7F91), (0xFF91, true));
+        // An AR crystal's second hit spends it: its check stops at 0x7f.
+        assert!(!lightning_charged(0x8091));
+        // Ten hits from empty: 100, and the check still runs below 0xfe.
+        let mut word = 0x0081;
+        for _ in 0..10 {
+            word = lightning_hit_charge(word).0;
+        }
+        assert_eq!(word, 0x6481);
+        assert!(lightning_charged(word));
+    }
+
+    /// Types 1, 2 and 3 install a check; 0 and the sceptre's 4 do not.
+    #[test]
+    fn the_install_takes_types_one_to_three() {
+        assert!(installs(LIGHTNING) && installs(SELF_SHARPENING) && installs(BURNING_BLADE));
+        assert!(!installs(0) && !installs(4));
+        assert_eq!(
+            DebugAbilityItem::item(SELF_SHARPENING),
+            Some((
+                SELF_SHARPENING_SWORD,
+                SELF_SHARPENING_MODEL,
+                exa_items::possession::crystal::B
+            ))
+        );
+    }
+
+    /// The self-sharpening blade: two slash a run in eight with crystal B,
+    /// blunted by four a hit down to 0x3c.
+    #[test]
+    fn the_self_sharpening_blade_sharpens_and_blunts() {
+        let (mut charge, mut slash) = (0u8, 80u8);
+        for run in 1..=16 {
+            item_effects::sharpen_tick(true, 0x0082, &mut charge, &mut slash, run);
+        }
+        assert_eq!((charge, slash), (2, 84));
+        assert_eq!(
+            item_effects::blunt_on_hit(&mut slash),
+            item_effects::slash_share(80)
+        );
+        let mut low = 0x40;
+        item_effects::blunt_on_hit(&mut low);
+        assert_eq!(low, 0x3c);
+        // The share is the record build's.
+        let share = item_effects::slash_share(80);
+        assert!((share - 0.5 * 0.8f32.powf(0.7)).abs() < 1e-6);
     }
 }

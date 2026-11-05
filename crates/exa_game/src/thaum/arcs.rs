@@ -1463,6 +1463,28 @@ pub fn weapon_arcs() -> ArcParams {
     }
 }
 
+/// The lightning mace's hum arcs (ability 1): 20 records of 5 points at
+/// size 2, the first timed 10–19 ticks, every record respawning (10 to 19
+/// ticks of life), light 24, the `electricity03` hum at 0.075, the segment
+/// shortened to 0.75, and the record's voxel light ((0.6, 0.6, 1), base
+/// 16, 180 cm, starting dark). No shock strength: a limb the arcs touch is
+/// shocked with zero.
+pub fn hum_arcs(draws: &mut impl Draws) -> ArcEmitter {
+    let mut arc = ArcEmitter::allocate(20, 5, 2.0);
+    arc.tendrils[0].timer = draws.below(10) + 10;
+    arc.respawns = true;
+    arc.light = 24.0;
+    arc.volume = 0.075;
+    arc.sound = Some("electricity03");
+    arc.length *= 0.75;
+    arc.light_kind = ArcLight::Voxel;
+    arc.voxel = Some(VoxelLamp::record());
+    arc
+}
+
+/// Where the hum arcs' node sits on the mace: 53 cm along its +Y.
+pub const HUM_ARCS_OFFSET: Vec3 = Vec3::new(0.0, 53.0, 0.0);
+
 /// A spark burst: 20 records of 5 points at size 3, six started at once
 /// (10–19 ticks each) and the segment doubled, light 8, volume 0.05, an
 /// ending emitter with a voxel light.

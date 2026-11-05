@@ -35,6 +35,7 @@ use bevy::window::PrimaryWindow;
 use exa_items::catalogue::{ItemCatalogue, PendingHands, SwapRequested};
 use exa_items::inventory_window::{DragPermission, SWAP_STATE, permission};
 use exa_items::possession::Possessions;
+use exa_ui::ScriptedPointer;
 use exa_ui::game_gui::GameScreen;
 use exa_ui::gui_core::GuiRect;
 
@@ -58,13 +59,18 @@ pub enum Panel {
     /// The inventory's character view: a drag off the figure
     /// ([`crate::figure_pick`]). It has no item container of its own.
     Figure,
+    /// A socket of the shown item card's socket row: a crystal dragged out
+    /// of it ([`crate::socket_drag`]). It has no item container either.
+    Socket(u8),
 }
 
 impl Panel {
     /// The record side the panel shows.
     pub fn kind(self) -> PanelKind {
         match self {
-            Panel::PlayerPack | Panel::BodyPack(_) | Panel::Container(_) => PanelKind::Pack,
+            Panel::PlayerPack | Panel::BodyPack(_) | Panel::Container(_) | Panel::Socket(_) => {
+                PanelKind::Pack
+            }
             Panel::BodyEquipment(_) | Panel::Figure => PanelKind::Equipment,
         }
     }
@@ -72,7 +78,7 @@ impl Panel {
     /// The body a loot panel belongs to, or `None` for the player's pack.
     pub fn body(self) -> Option<i32> {
         match self {
-            Panel::PlayerPack | Panel::Container(_) | Panel::Figure => None,
+            Panel::PlayerPack | Panel::Container(_) | Panel::Figure | Panel::Socket(_) => None,
             Panel::BodyPack(body) | Panel::BodyEquipment(body) => Some(body),
         }
     }
@@ -89,9 +95,14 @@ impl Panel {
             Panel::Container(id) => id | 0xC000_0000,
             // The pack's linked panel: the inventory's view.
             Panel::Figure => crate::doll_view::DOLL_PANEL,
+            Panel::Socket(i) => SOCKET_PANEL | u32::from(i),
         }
     }
 }
+
+/// A socket's number in a drag's source and destination fields (the
+/// socket's index in the low bits).
+pub const SOCKET_PANEL: u32 = 0xA000_0000;
 
 /// The drag in flight: the panel it started in and the entry it took.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -160,7 +171,7 @@ pub(crate) fn container(screens: &GameScreens, panel: Panel) -> Option<&Containe
         Panel::BodyPack(body) => screens.loot_window(body).map(|window| &window.pack),
         Panel::BodyEquipment(body) => screens.loot_window(body).map(|window| &window.worn),
         Panel::Container(id) => screens.popup(id).map(|popup| &popup.panel),
-        Panel::Figure => None,
+        Panel::Figure | Panel::Socket(_) => None,
     }
 }
 
@@ -182,7 +193,7 @@ pub(crate) fn container_mut(screens: &mut GameScreens, panel: Panel) -> Option<&
             .iter_mut()
             .find(|popup| popup.id == id)
             .map(|popup| &mut popup.panel),
-        Panel::Figure => None,
+        Panel::Figure | Panel::Socket(_) => None,
     }
 }
 
@@ -238,7 +249,7 @@ fn owner_present(
     if matches!(panel, Panel::Container(_)) {
         return true;
     }
-    if panel == Panel::Figure {
+    if matches!(panel, Panel::Figure | Panel::Socket(_)) {
         return player.is_some();
     }
     match panel.body() {
@@ -271,7 +282,9 @@ type SwappingPlayer = (
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScriptedRelease(pub Option<IVec2>);
 
-/// Starts a drag on the entry under the pointer.
+/// Starts a drag on the entry under the pointer, or on the crystal in the
+/// shown card's socket under it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn press(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -280,6 +293,9 @@ pub(crate) fn press(
     catalogue: Option<Res<ItemCatalogue>>,
     swapping: Query<(), SwappingPlayer>,
     use_cursor: Option<Res<crate::player_controls::UseCursor>>,
+    scripted: Option<Res<ScriptedPointer>>,
+    cards: Res<crate::item_card::CardView>,
+    mut icons: ResMut<PanelIcons>,
 ) {
     // The press that ended the use cursor is the cursor's: the desk holds
     // the mouse for the world view while it is up.
@@ -292,10 +308,31 @@ pub(crate) fn press(
     let Ok(window) = windows.single() else {
         return;
     };
-    let Some(pointer) = window.cursor_position() else {
+    let Some(pointer) = pointer_of(window, scripted.as_deref()) else {
         return;
     };
     let at = (pointer * window.scale_factor()).as_ivec2();
+    // A press on a socket of the shown card's row that holds a crystal
+    // starts dragging it out; the socket keeps it until the drag ends.
+    if let Some(card) = cards.shown.as_ref()
+        && let Some(i) = crate::socket_drag::socket_at(card, at)
+        && let Some((id, flags)) = card.sockets.and_then(|s| s.start_drag(i))
+    {
+        let (icon, (half, _)) = icons.reserve(id, flags, catalogue.as_deref());
+        *drag = PanelDrag {
+            source: Some(Panel::Socket(i as u8)),
+            icon,
+            grab: crate::item_container::Cell::new(half, half),
+            id,
+            flags,
+            bulk: bulk_of(id, catalogue.as_deref()),
+        };
+        info!(
+            "socket row: crystal {id} (flags {flags:#x}) dragged out of {:#x}'s socket {i}",
+            card.item
+        );
+        return;
+    }
     let panels = open_panels(&screens);
     let Some((panel, local)) = panel_at(&panels, at) else {
         return;
@@ -481,6 +518,11 @@ pub(crate) fn release(
     mut scripted: ResMut<ScriptedRelease>,
     mut figure: MessageWriter<crate::figure_pick::FigureRelease>,
     mut ended: MessageWriter<crate::use_cursor::GuiDragEnded>,
+    (mut cards, mut objects, pointer): (
+        ResMut<crate::item_card::CardView>,
+        Option<ResMut<exa_assets::live_objects::LiveObjects>>,
+        Option<Res<ScriptedPointer>>,
+    ),
 ) {
     let scripted = scripted.0.take();
     if (scripted.is_none() && !buttons.just_released(MouseButton::Left)) || drag.source.is_none() {
@@ -494,10 +536,32 @@ pub(crate) fn release(
         return;
     };
     let at = scripted.or_else(|| {
-        window
-            .cursor_position()
+        pointer_of(window, pointer.as_deref())
             .map(|pointer| (pointer * window.scale_factor()).as_ivec2())
     });
+    // A crystal dragged out of a socket: onto another socket of the row, or
+    // into a panel; anywhere else the socket keeps it.
+    if let Panel::Socket(from) = source {
+        let from = usize::from(from);
+        let accepted = release_socket_drag(
+            &mut screens,
+            &mut icons,
+            catalogue.as_deref(),
+            &mut bodies,
+            player,
+            *drag,
+            from,
+            at,
+            cards.shown.as_mut(),
+            objects.as_deref_mut(),
+        );
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted,
+            id: drag.id,
+        });
+        *drag = PanelDrag::default();
+        return;
+    }
     if source == Panel::Figure {
         figure.write(crate::figure_pick::drop_from_figure(
             &mut screens,
@@ -508,6 +572,60 @@ pub(crate) fn release(
         ));
         ended.write(crate::use_cursor::GuiDragEnded {
             accepted: false,
+            id: drag.id,
+        });
+        *drag = PanelDrag::default();
+        return;
+    }
+    // A release over a socket of the shown card's row is the socket
+    // control's drop: a power crystal goes in and the source's drag ends
+    // as accepted; anything else is refused and the drag is cancelled.
+    if let Some(at) = at
+        && let Some(card) = cards.shown.as_mut()
+        && let Some(i) = crate::socket_drag::socket_at(card, at)
+    {
+        let landing = objects.as_deref_mut().map(|objects| {
+            crate::socket_drag::drop_on_socket(card, objects, i, drag.id, drag.flags, None)
+        });
+        let accepted = landing.is_some_and(|l| l.code == exa_items::item_gui::DROP_HANDLED);
+        if let Some(container) = container_mut(&mut screens, source) {
+            container.finish_drag(
+                Panel::Socket(i as u8).number(),
+                !accepted,
+                true,
+                0,
+                drag.bulk,
+            );
+        }
+        if accepted {
+            take_from_source(&mut bodies, player, source, drag.id, drag.flags);
+            info!(
+                "socket row: crystal {} (flags {:#x}) from {source:?} into {:#x}'s socket {i}: {:04x?}",
+                drag.id,
+                drag.flags,
+                card.item,
+                card.sockets.map(|s| s.0)
+            );
+            if let Some(back) = landing.and_then(|l| l.back)
+                && let Some(player) = player
+                && let Ok((_, mut p)) = bodies.get_mut(player)
+            {
+                crate::socket_drag::give_back(
+                    &mut screens,
+                    &mut icons,
+                    catalogue.as_deref(),
+                    &mut p,
+                    back,
+                );
+            }
+        } else {
+            info!(
+                "socket row: {:#x}'s socket {i} refuses {} from {source:?}",
+                card.item, drag.id
+            );
+        }
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted,
             id: drag.id,
         });
         *drag = PanelDrag::default();
@@ -641,27 +759,7 @@ fn move_item(
     unit: i32,
     vscale: f32,
 ) {
-    let take_from = |bodies: &mut Query<(Entity, &mut Possessions)>| -> Option<u32> {
-        match source {
-            Panel::PlayerPack => {
-                let mut p = bodies.get_mut(player?).ok()?.1;
-                body_inventory::take(&mut p, PanelKind::Pack, id)
-            }
-            Panel::BodyPack(body) => {
-                let entity = body_entity(bodies, body)?;
-                let mut p = bodies.get_mut(entity).ok()?.1;
-                body_inventory::take(&mut p, PanelKind::Pack, id)
-            }
-            Panel::BodyEquipment(body) => {
-                let entity = body_entity(bodies, body)?;
-                let mut p = bodies.get_mut(entity).ok()?.1;
-                body_inventory::take(&mut p, PanelKind::Equipment, id)
-            }
-            Panel::Container(_) => Some(flags & !exa_items::possession::HELD),
-            Panel::Figure => None,
-        }
-    };
-    let Some(flags) = take_from(bodies) else {
+    let Some(flags) = take_from_source(bodies, player, source, id, flags) else {
         return;
     };
     match destination {
@@ -688,8 +786,129 @@ fn move_item(
                 commands.entity(entity).insert(activation);
             }
         }
-        Panel::Container(_) | Panel::Figure => {}
+        Panel::Container(_) | Panel::Figure | Panel::Socket(_) => {}
     }
+}
+
+/// Takes the dragged item out of its source's possession list and answers
+/// the flags it leaves with. A container popup's side has none: the
+/// dragged entry's flags go on. A crystal out of a socket keeps its drag
+/// flags (its charge).
+fn take_from_source(
+    bodies: &mut Query<(Entity, &mut Possessions)>,
+    player: Option<Entity>,
+    source: Panel,
+    id: u32,
+    flags: u32,
+) -> Option<u32> {
+    match source {
+        Panel::PlayerPack => {
+            let mut p = bodies.get_mut(player?).ok()?.1;
+            body_inventory::take(&mut p, PanelKind::Pack, id)
+        }
+        Panel::BodyPack(body) => {
+            let entity = body_entity(bodies, body)?;
+            let mut p = bodies.get_mut(entity).ok()?.1;
+            body_inventory::take(&mut p, PanelKind::Pack, id)
+        }
+        Panel::BodyEquipment(body) => {
+            let entity = body_entity(bodies, body)?;
+            let mut p = bodies.get_mut(entity).ok()?.1;
+            body_inventory::take(&mut p, PanelKind::Equipment, id)
+        }
+        Panel::Container(_) => Some(flags & !exa_items::possession::HELD),
+        Panel::Socket(_) => Some(flags),
+        Panel::Figure => None,
+    }
+}
+
+/// The pointer in logical window pixels: a debug script's, else the
+/// mouse's.
+fn pointer_of(window: &Window, scripted: Option<&ScriptedPointer>) -> Option<Vec2> {
+    scripted.map_or_else(|| window.cursor_position(), |s| s.position(window))
+}
+
+/// Ends a drag out of socket `from` of the shown card. A release on another
+/// socket of the row drops the crystal there; one on a panel that takes it
+/// puts it there. Either way the socket it left is emptied (its bare mark;
+/// the charge byte stays) and the row committed. Anywhere else the drag is
+/// cancelled and the socket keeps its crystal. Answers whether it landed.
+#[allow(clippy::too_many_arguments)]
+fn release_socket_drag(
+    screens: &mut GameScreens,
+    icons: &mut PanelIcons,
+    catalogue: Option<&ItemCatalogue>,
+    bodies: &mut Query<(Entity, &mut Possessions)>,
+    player: Option<Entity>,
+    drag: PanelDrag,
+    from: usize,
+    at: Option<IVec2>,
+    card: Option<&mut crate::item_card::ShownCard>,
+    objects: Option<&mut exa_assets::live_objects::LiveObjects>,
+) -> bool {
+    let (Some(card), Some(objects)) = (card, objects) else {
+        icons.release(drag.icon);
+        return false;
+    };
+    let socket = at.and_then(|at| crate::socket_drag::socket_at(card, at));
+    let landed = match socket {
+        Some(to) => {
+            let landing = crate::socket_drag::drop_on_socket(
+                card,
+                objects,
+                to,
+                drag.id,
+                drag.flags,
+                Some(from),
+            );
+            icons.release(drag.icon);
+            if landing.code != exa_items::item_gui::DROP_HANDLED {
+                return false;
+            }
+            if let Some(back) = landing.back
+                && let Some(player) = player
+                && let Ok((_, mut p)) = bodies.get_mut(player)
+            {
+                crate::socket_drag::give_back(screens, icons, catalogue, &mut p, back);
+            }
+            true
+        }
+        None => {
+            let release = crate::figure_pick::drop_from_figure(screens, icons, catalogue, drag, at);
+            match release.landed {
+                Some((destination, cell, unit, vscale)) => {
+                    let owner = match destination {
+                        Panel::PlayerPack => player,
+                        Panel::BodyPack(body) => body_entity(bodies, body),
+                        _ => None,
+                    };
+                    if let Some(owner) = owner
+                        && let Ok((_, mut p)) = bodies.get_mut(owner)
+                    {
+                        body_inventory::give(&mut p, drag.id, drag.flags, cell, unit, vscale);
+                    }
+                    true
+                }
+                None => {
+                    icons.release(drag.icon);
+                    false
+                }
+            }
+        }
+    };
+    if landed {
+        let mut sockets = crate::socket_drag::live_sockets(objects, card.item)
+            .or(card.sockets)
+            .unwrap_or_default();
+        sockets.drag_ended(from);
+        crate::socket_drag::commit(objects, card.item, &sockets);
+        card.sockets = Some(sockets);
+        info!(
+            "socket row: crystal {} left {:#x}'s socket {from}: {:04x?}",
+            drag.id, card.item, sockets.0
+        );
+    }
+    landed
 }
 
 /// Whether the pointer is over an open screen, so the world's own press and

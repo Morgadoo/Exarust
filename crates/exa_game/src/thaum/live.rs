@@ -322,7 +322,7 @@ fn bone_part(body: &Ragdoll, bone: usize) -> Option<usize> {
     body.parts.iter().position(|p| p.bone == bone)
 }
 
-fn tick_arcs(
+pub(crate) fn tick_arcs(
     mut arcs: Query<&mut LiveArcs>,
     bodies: Query<(Entity, &Ragdoll)>,
     physics: Option<Res<Physics>>,

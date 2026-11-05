@@ -89,6 +89,10 @@ pub struct ShownCard {
     pub world: bool,
     /// The item's four socket words, when the card draws a socket row.
     pub sockets: Option<Sockets>,
+    /// Where the socket row was last drawn (window pixels) and the unit it
+    /// was drawn at: a drop or a drag on it is the socket control's
+    /// ([`crate::socket_drag`]).
+    pub socket_row: Option<(GuiRect, i32)>,
 }
 
 impl ShownCard {
@@ -482,6 +486,7 @@ fn show(
         form_flags: 0,
         world,
         sockets,
+        socket_row: None,
     });
 }
 
@@ -1464,6 +1469,21 @@ pub fn draw_card(
                 }
             }
             SOCKETS_CLASS => {
+                if card.sockets.is_some() {
+                    let row = GuiRect::new(x, y, c.w, c.h);
+                    if card.socket_row.map(|(r, _)| r) != Some(row) {
+                        info!(
+                            "item card: {:#x}'s socket row at ({}, {}) {}x{}, sockets {:04x?}",
+                            card.item,
+                            x,
+                            y,
+                            c.w,
+                            c.h,
+                            card.sockets.map(|s| s.0)
+                        );
+                    }
+                    card.socket_row = Some((row, unit));
+                }
                 if let (Some(sockets), Some(sheet)) = (card.sockets.as_ref(), socket_sheet.as_ref())
                     && let Some(layer) = socket_row_layer(
                         sheet,
@@ -1777,6 +1797,7 @@ mod tests {
             form_flags: 0,
             world: false,
             sockets: None,
+            socket_row: None,
         };
         // Not hit before its shown flag is set.
         assert!(!card.hit((110, 110), 4));

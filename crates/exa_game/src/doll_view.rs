@@ -1235,7 +1235,7 @@ fn equip_dropped(
                 .iter_mut()
                 .find(|entry| entry.0.index().index() as i32 == body)
                 .and_then(|mut b| body_inventory::take(&mut b.1, PanelKind::Pack, drop.id)),
-            Panel::BodyEquipment(_) | Panel::Figure => None,
+            Panel::BodyEquipment(_) | Panel::Figure | Panel::Socket(_) => None,
             Panel::Container(_) => Some(drop.flags & !HELD),
         };
         let Some(flags) = flags else {

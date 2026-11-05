@@ -316,7 +316,9 @@ tested rules of their own.
   `HeldMoveset`: the original's moveset config (the weapon moveset and the
   Torch overlay, looked up under the race's own moveset), the stance class
   and the weapon class (the fists `0x80`); a body's `HeldModifier` (the
-  game crate's burning blade asks for "Flaming") is ORed into the config.
+  game crate's burning blade asks for "Flaming" when it lights) is ORed into
+  the config. A choice made because the hands changed drops the modifier
+  and clears `BurningGrip`, the lit-blade byte the burning blade raises.
   Dressing puts a wielded weapon
   in the main hand, the game crate puts a lit torch in its hand, and a
   system after dressing writes the config into the body's `Animator`
@@ -365,7 +367,9 @@ tested rules of their own.
   bodies exist and pulls the item to the hand; the item never meets its
   holder's body. The grip runtime (`grip_runtime`) reads the holder's clip
   every tick (after the AI's behaviour, `exa_physics::body::TickBehaviour`,
-  as after the player's input, so a switch either asks is taken that tick), applies the grip table entry's mode, steps an active flip
+  as after the player's input, so a switch either asks is taken that tick), applies the grip table entry's mode (a
+  burning blade, `HeldAbility` 3, held by a body with `BurningGrip` rests in
+  both hands), steps an active flip
   (started by a `FlipWeaponRequest` for the character's entity, refused
   while the character switches or the weapon section has no flipped-side
   kind byte) and rebuilds its `Blade` record from the flipped weapon

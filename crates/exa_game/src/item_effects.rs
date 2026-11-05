@@ -17,12 +17,13 @@
 //!   `source·0.004`; while that stays at or under the source the player's
 //!   HUD is shown for 1000 ms and the counter byte advances, and once it
 //!   passes the source it is held there.
-//! - **The hand effects** ([`hand_effect`]): an item in either hand whose
-//!   power record names effect 1, 2 or 3 attaches the electric, glow or
-//!   flame tick; the glow also installs the level callback on the item
-//!   ([`step_glow`]). The glow tick ([`step_charged_glow`]) raises the
-//!   record's level by two every eighth body tick until 0x8c and sets the
-//!   item's light from it.
+//! - **The held-item abilities** ([`hand_effect`]): an item in either hand
+//!   whose weapon section names ability 1, 2 or 3 attaches the lightning,
+//!   self-sharpening or burning check ([`crate::item_ability`] runs them);
+//!   the self-sharpening blade also gets its hit hook ([`blunt_on_hit`]).
+//!   Its check ([`sharpen_tick`]) raises the slash byte by two every eighth
+//!   run of the list until 0x8c, spending one of the socketed Power
+//!   Crystal B's charge, and rewrites the record's slash share from it.
 //! - **Worn items** ([`register_worn`], [`step_worn`]): an odd item kind with
 //!   a counter byte below 0xff lights the item (0.75) and fades its skin
 //!   material to `1 − byte/255`; otherwise a body word gains two and the
@@ -53,15 +54,16 @@
 //!
 //! Evidence: the item-effect list, its attach, the charge tick and its
 //! registration, the worn and apparel ticks and registrations, the light
-//! switches, the material fade, the glow level callback and tick, the hand
+//! switches, the material fade, the self-sharpening hit hook and check, the held-item
 //! effect dispatch and the focus-item check of `Exanima.exe`, checked
 //! against their instructions.
 
 /// The charge gained per tick as a share of the source value (0.004).
 pub const CHARGE_RATE: f64 = 0.004;
 
-/// The glow level used when a stored level is at most 0x40 (0x3c).
-pub const FLICKER_FLOOR: u8 = 0x3c;
+/// The slash byte a self-sharpening blade's hit leaves when it was at most
+/// 0x40 (0x3c).
+pub const BLUNT_FLOOR: u8 = 0x3c;
 
 /// The parameter word of the worn item's skin material: the two characters
 /// `*4`.
@@ -76,8 +78,8 @@ pub const FOCUS_SLOT_BIT: u32 = 0x100;
 /// The body flag-word bit that gives a held item the charge tick.
 pub const HELD_EFFECTS_BIT: u32 = 2;
 
-/// The level past which a glow item stops rising (0x8c).
-pub const ITEM_LEVEL_CAP: u8 = 0x8c;
+/// The slash byte at which a self-sharpening blade stops sharpening (0x8c).
+pub const SHARPEN_CAP: u8 = 0x8c;
 /// The worn item's light while it is on (0.75).
 pub const WORN_LIGHT: f32 = 0.75;
 /// What a newly worn unlit item adds to the body's word (2).
@@ -108,28 +110,26 @@ pub fn charge_step(current: f32, source: f32) -> (f32, bool) {
     }
 }
 
-/// The glow level after one step: above 0x40 it loses four, otherwise it
-/// falls to 0x3c.
-pub fn flicker_level(level: u8) -> u8 {
-    if level > 0x40 {
-        level - 4
-    } else {
-        FLICKER_FLOOR
-    }
+/// The slash byte after a self-sharpening blade's hit: above 0x40 it loses
+/// four, otherwise it becomes 0x3c.
+pub fn blunted_slash(level: u8) -> u8 {
+    if level > 0x40 { level - 4 } else { BLUNT_FLOOR }
 }
 
-/// The glow intensity from a stored level: `0.5·exp(0.7·ln(0.01·level))`
-/// in double.
-pub fn flicker_intensity(level: u8) -> f32 {
+/// The weapon record's slash share (W11) from a slash byte:
+/// `0.5·exp(0.7·ln(0.01·byte))` in double, as the record's build computes
+/// it (the ability writes it even for a zero byte, where the build writes
+/// zero).
+pub fn slash_share(level: u8) -> f32 {
     let log = (f64::from(level) * 0.01).ln();
     (0.5 * (log * 0.7).exp()) as f32
 }
 
-/// The level callback a glow item carries: the stored level is stepped
-/// ([`flicker_level`]) and the light takes its intensity.
-pub fn step_glow(level: &mut u8) -> f32 {
-    *level = flicker_level(*level);
-    flicker_intensity(*level)
+/// The hit hook a self-sharpening blade carries: the slash byte is blunted
+/// ([`blunted_slash`]) and the record's slash share follows it.
+pub fn blunt_on_hit(level: &mut u8) -> f32 {
+    *level = blunted_slash(*level);
+    slash_share(*level)
 }
 
 /// The apparel registration's value: 1 for an odd kind whose counter byte
@@ -207,27 +207,27 @@ pub fn register_charge(body_flags: u32) -> bool {
     body_flags & HELD_EFFECTS_BIT != 0
 }
 
-/// The effect tick a hand item's power record names.
+/// The ability check a held item's weapon section names
+/// ([`crate::item_ability`] runs them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemEffectKind {
-    /// Effect 1: the electrified item's arcs (its tick is outside this
-    /// component).
-    Electric,
-    /// Effect 2: the glow level rises while the item is held.
-    Glow,
-    /// Effect 3: the item's flame row (its tick is outside this component).
-    Flame,
+    /// Ability 1: the lightning mace's arcs.
+    Lightning,
+    /// Ability 2: the self-sharpening blade.
+    SelfSharpening,
+    /// Ability 3: the burning blade's flame row.
+    Burning,
 }
 
-/// The hand-effect dispatch: effect 1, 2 or 3 of the power record (the whole
-/// word, not a masked part) attaches its tick; any other value attaches
-/// nothing. The glow also installs [`step_glow`] as the item's level
-/// callback.
+/// The held-item install's dispatch: ability type 1, 2 or 3 of the weapon
+/// section (the whole word, not a masked part) attaches its check; any
+/// other value attaches nothing. Type 2 also installs [`blunt_on_hit`] as
+/// the item's hit hook.
 pub fn hand_effect(effect: i32) -> Option<ItemEffectKind> {
     match effect {
-        1 => Some(ItemEffectKind::Electric),
-        2 => Some(ItemEffectKind::Glow),
-        3 => Some(ItemEffectKind::Flame),
+        1 => Some(ItemEffectKind::Lightning),
+        2 => Some(ItemEffectKind::SelfSharpening),
+        3 => Some(ItemEffectKind::Burning),
         _ => None,
     }
 }
@@ -408,46 +408,41 @@ pub fn step_apparel(kind: u16, sub: &mut u8, value: f32, counter: f32) -> Appare
     }
 }
 
-/// One glow tick.
+/// One run of the self-sharpening check.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GlowTick {
-    /// The effect stays (its item is in a hand and has a record).
+pub struct SharpenTick {
+    /// The check stays (its item is in a hand and has a weapon section).
     pub keep: bool,
-    /// The light the item takes, on the eighth tick.
-    pub light: Option<f32>,
+    /// The weapon record's slash share, written on every eighth run.
+    pub slash_share: Option<f32>,
 }
 
-/// The glow tick: the item must be in a hand and have a record, or the
-/// effect drops out. On a body tick whose low three bits are all set, a
-/// record of kind 2 (low five bits) with a counter byte below 0xff and a
-/// level below 0x8c gains one in the byte and two in the level, and the
-/// item's light takes the level's intensity.
-pub fn step_charged_glow(
-    held: bool,
-    kind: u16,
-    sub: &mut u8,
-    level: &mut u8,
-    tick: i32,
-) -> GlowTick {
+/// The self-sharpening check: the item must be in a hand and have a weapon
+/// section, or the check drops out. On a run whose list counter has its
+/// low three bits all set, a first socket of kind 2 (Power Crystal B, low
+/// five bits) with a charge below 0xff and a slash byte below 0x8c gains
+/// one in the charge and two in the slash byte; on that run the record's
+/// slash share (W11) is rewritten from the slash byte either way.
+pub fn sharpen_tick(held: bool, kind: u16, sub: &mut u8, level: &mut u8, tick: i32) -> SharpenTick {
     if !held {
-        return GlowTick {
+        return SharpenTick {
             keep: false,
-            light: None,
+            slash_share: None,
         };
     }
     if tick & 7 != 7 {
-        return GlowTick {
+        return SharpenTick {
             keep: true,
-            light: None,
+            slash_share: None,
         };
     }
-    if *level < ITEM_LEVEL_CAP && kind & KIND_MASK == 2 && *sub != 0xff {
+    if *level < SHARPEN_CAP && kind & KIND_MASK == 2 && *sub != 0xff {
         *sub = sub.wrapping_add(1);
         *level = level.wrapping_add(2);
     }
-    GlowTick {
+    SharpenTick {
         keep: true,
-        light: Some(flicker_intensity(*level)),
+        slash_share: Some(slash_share(*level)),
     }
 }
 
@@ -651,15 +646,15 @@ mod tests {
     }
 
     #[test]
-    fn the_flicker_follows_the_power_curve() {
+    fn the_slash_share_follows_the_power_curve() {
         let floor = 0.5 * (0.6f64.ln() * 0.7).exp() as f32;
-        assert!((flicker_intensity(0x3c) - floor).abs() < 1e-6);
-        assert!((flicker_intensity(0x40) - 0.5 * (0.64f64.ln() * 0.7).exp() as f32).abs() < 1e-6);
-        assert_eq!(flicker_level(0x40), 0x3c);
-        assert_eq!(flicker_level(0x41), 0x3d);
-        assert_eq!(flicker_level(0x44), 0x40);
+        assert!((slash_share(0x3c) - floor).abs() < 1e-6);
+        assert!((slash_share(0x40) - 0.5 * (0.64f64.ln() * 0.7).exp() as f32).abs() < 1e-6);
+        assert_eq!(blunted_slash(0x40), 0x3c);
+        assert_eq!(blunted_slash(0x41), 0x3d);
+        assert_eq!(blunted_slash(0x44), 0x40);
         let mut level = 0x44;
-        assert_eq!(step_glow(&mut level), flicker_intensity(0x40));
+        assert_eq!(blunt_on_hit(&mut level), slash_share(0x40));
         assert_eq!(level, 0x40);
     }
 
@@ -715,9 +710,9 @@ mod tests {
 
     #[test]
     fn the_hand_effects_are_dispatched_by_the_whole_word() {
-        assert_eq!(hand_effect(1), Some(ItemEffectKind::Electric));
-        assert_eq!(hand_effect(2), Some(ItemEffectKind::Glow));
-        assert_eq!(hand_effect(3), Some(ItemEffectKind::Flame));
+        assert_eq!(hand_effect(1), Some(ItemEffectKind::Lightning));
+        assert_eq!(hand_effect(2), Some(ItemEffectKind::SelfSharpening));
+        assert_eq!(hand_effect(3), Some(ItemEffectKind::Burning));
         assert_eq!(hand_effect(0x22), None, "not masked");
         assert_eq!(hand_effect(4), None);
         assert!(register_charge(HELD_EFFECTS_BIT));
@@ -807,33 +802,33 @@ mod tests {
     }
 
     #[test]
-    fn a_charged_glow_rises_one_tick_in_eight() {
+    fn a_self_sharpening_blade_sharpens_one_run_in_eight() {
         let mut sub = 1;
         let mut level = 0x3c;
-        let tick = step_charged_glow(true, 2, &mut sub, &mut level, 5);
+        let tick = sharpen_tick(true, 2, &mut sub, &mut level, 5);
         assert_eq!(
             tick,
-            GlowTick {
+            SharpenTick {
                 keep: true,
-                light: None
+                slash_share: None
             }
         );
-        let tick = step_charged_glow(true, 2, &mut sub, &mut level, 7);
+        let tick = sharpen_tick(true, 2, &mut sub, &mut level, 7);
         assert_eq!((sub, level), (2, 0x3e));
-        assert_eq!(tick.light, Some(flicker_intensity(0x3e)));
+        assert_eq!(tick.slash_share, Some(slash_share(0x3e)));
         let mut sub = 0xff;
         let mut level = 0x3c;
         assert!(
-            step_charged_glow(true, 2, &mut sub, &mut level, 15)
-                .light
+            sharpen_tick(true, 2, &mut sub, &mut level, 15)
+                .slash_share
                 .is_some()
         );
         assert_eq!((sub, level), (0xff, 0x3c));
         let mut sub = 0;
         let mut level = 0x8c;
-        step_charged_glow(true, 2, &mut sub, &mut level, 7);
+        sharpen_tick(true, 2, &mut sub, &mut level, 7);
         assert_eq!(level, 0x8c);
-        assert!(!step_charged_glow(false, 2, &mut sub, &mut level, 7).keep);
+        assert!(!sharpen_tick(false, 2, &mut sub, &mut level, 7).keep);
     }
 
     #[test]
@@ -842,7 +837,7 @@ mod tests {
         let mut list = EffectList {
             entries: vec![
                 entry(1, EffectTick::Charge),
-                entry(2, EffectTick::Hand(ItemEffectKind::Glow)),
+                entry(2, EffectTick::Hand(ItemEffectKind::SelfSharpening)),
                 entry(3, EffectTick::Worn),
                 entry(4, EffectTick::Apparel),
             ],

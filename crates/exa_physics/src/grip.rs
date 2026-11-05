@@ -833,9 +833,11 @@ impl GripLinks {
     /// callback. The two-hander's main link takes a 4 cm slack; modes 0, 1,
     /// 2 and 3 switch the second hand's, arm's and extra links (the extra
     /// with the current distance as its slack), and a polearm's main link
-    /// slides with a 15·scale cm slack in modes 1 and 3. `thrust_three` is
-    /// the weapon record's thrust class (class 3, which turns a two-handed
-    /// mode 2 into 1 for a half-sword grip, `stab_grip`). The callback runs
+    /// slides with a 15·scale cm slack in modes 1 and 3. `burning` says the
+    /// item's weapon section names ability 3 (the burning blade) and `lit`
+    /// that its holder's lit-blade byte is set: together they turn a
+    /// two-handed mode 2 into 1, so a burning two-hander keeps both hands on
+    /// its grip at rest. The callback runs
     /// only when the mode changed, as the mode setter does. Returns false
     /// for a configuration missing a link index (the original reports an
     /// invalid configuration and writes nothing).
@@ -845,8 +847,8 @@ impl GripLinks {
         mode: i32,
         kind: GripKind,
         scale: f32,
-        thrust_three: bool,
-        stab_grip: bool,
+        burning: bool,
+        lit: bool,
         item: &Ragdoll,
         hand: &Ragdoll,
     ) -> bool {
@@ -856,7 +858,7 @@ impl GripLinks {
         let current = |links: &GripLinks, i: usize| -> Option<f32> {
             link_distance(links.links.get(i)?, item, hand)
         };
-        // The setter stores the requested mode; the callback's half-sword
+        // The setter stores the requested mode; the callback's burning-blade
         // turn of mode 2 into 1 is local to the callback.
         let requested = mode;
         match kind {
@@ -871,11 +873,7 @@ impl GripLinks {
                 // The main grip link's slack is 4 cm.
                 self.links[self.main].slack = 0.04;
                 self.links[self.main].length = 0.04;
-                let mode = if mode == 2 && thrust_three && stab_grip {
-                    1
-                } else {
-                    mode
-                };
+                let mode = if mode == 2 && burning && lit { 1 } else { mode };
                 match mode {
                     0 => {
                         self.links[second].disable();
@@ -1368,8 +1366,9 @@ mod tests {
         assert!(links.apply_mode(3, GripKind::TwoHanded, 1.0, false, false, &item, &hand));
         assert!(links.links[2].enabled());
         assert!(!links.links[0].enabled());
-        // A half-sword thrust turns mode 2 into 1 inside the callback; the
-        // stored mode stays the requested 2, so asking again does nothing.
+        // A burning blade whose holder has the lit byte turns mode 2 into 1
+        // inside the callback; the stored mode stays the requested 2, so
+        // asking again does nothing.
         assert!(links.apply_mode(2, GripKind::TwoHanded, 1.0, true, true, &item, &hand));
         assert_eq!(links.mode, 2);
         assert!(links.links[0].enabled());

@@ -104,7 +104,12 @@
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
 //!          --flame-sword              debug: the player holds "Sword GSF 01" with a Power Crystal C in its first
-//!                                     socket, so its blade lights (the item ability's flame row)
+//!                                     socket, so its blade lights (the item ability's flame row); `--ability-item 3`
+//!          --ability-item N[,cold][,npc|,npc-only]  debug: the player holds the type-N ability item (1 the
+//!                                     lightning mace with a Power Crystal A, 2 the self-sharpening sword with a
+//!                                     B, 3 the flame sword with a C) in its first socket; `cold` leaves the socket
+//!                                     empty, `npc` also hands it to every other character holding its model,
+//!                                     `npc-only` only to them
 //!          --no-torch                 play mode: the player starts without the carried torch (a new story then
 //!                                     lays the start's torch beside the player, as the original's start does)
 //!          --floor-torch x,y,z[,rx,ry,rz]  a lit torch lying on the floor here (metres; optionally its frame as X, Y, Z degrees), as the story start has it
@@ -399,8 +404,9 @@ pub struct Options {
     pub debug_nav: bool,
     /// Play mode: the player carries no torch (Exarust's debug option).
     pub no_torch: bool,
-    /// Debug: the player holds the flame sword with a crystal socketed.
-    pub flame_sword: bool,
+    /// Debug (`--ability-item`, `--flame-sword`): the player holds an
+    /// ability item, with its crystal socketed unless cold.
+    pub ability_item: Option<exa_game::item_ability::DebugAbilityItem>,
     /// A lit torch lying on the floor here (metres; Exarust's debug option).
     pub floor_torch: Option<Vec<f32>>,
     /// Log the point lights within this many metres of the player.
@@ -996,8 +1002,32 @@ fn main() -> AppExit {
             "--debug-nav" => options.debug_nav = true,
             "--no-torch" => options.no_torch = true,
             "--flame-sword" => {
-                options.flame_sword = true;
+                options.ability_item = Some(exa_game::item_ability::DebugAbilityItem::new(
+                    exa_game::item_ability::BURNING_BLADE,
+                    false,
+                    false,
+                ));
                 options.weapon = Some(exa_game::item_ability::FLAME_SWORD_MODEL.into());
+            }
+            "--ability-item" => {
+                let text = args.next().unwrap_or_default();
+                let mut words = text.split(',');
+                let kind = words.next().and_then(|k| k.trim().parse().ok());
+                let rest: Vec<&str> = words.map(str::trim).collect();
+                let Some((kind, (_, model, _))) = kind.and_then(|k| {
+                    exa_game::item_ability::DebugAbilityItem::item(k).map(|item| (k, item))
+                }) else {
+                    eprintln!("--ability-item: 1, 2 or 3 [,cold][,npc], not {text:?}");
+                    return AppExit::from_code(2);
+                };
+                let mut item = exa_game::item_ability::DebugAbilityItem::new(
+                    kind,
+                    rest.contains(&"cold"),
+                    rest.contains(&"npc") || rest.contains(&"npc-only"),
+                );
+                item.player = !rest.contains(&"npc-only");
+                options.ability_item = Some(item);
+                options.weapon = Some(model.into());
             }
             "--floor-torch" => {
                 options.floor_torch = args.next().and_then(|v| {
@@ -1669,8 +1699,8 @@ fn main() -> AppExit {
     if let Some(blood) = options.weapon_blood {
         app.insert_resource(blood);
     }
-    if options.flame_sword {
-        app.insert_resource(exa_game::item_ability::DebugFlameSword { applied: false });
+    if let Some(item) = options.ability_item {
+        app.insert_resource(item);
     }
     if options.thaum_debug != exa_game::thaum::live::ThaumDebug::default() {
         app.insert_resource(options.thaum_debug);
