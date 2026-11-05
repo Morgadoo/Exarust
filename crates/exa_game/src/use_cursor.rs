@@ -562,6 +562,7 @@ struct UseUnder<'w, 's> {
     sources: PickSources<'w>,
     bodies: Query<'w, 's, OtherBodies, Without<PlayerBody>>,
     doors: Query<'w, 's, &'static mut DoorBody>,
+    fixed: ResMut<'w, exa_physics::sim_app::FixedCommands>,
     objects: Query<'w, 's, ObjectIds>,
     over: Option<Res<'w, PointerOverGui>>,
     screens: Res<'w, GameScreens>,
@@ -669,14 +670,25 @@ fn end_use(
     {
         let now = time.map_or(0, |t| t.elapsed().as_millis() as i32);
         let partner = under.doors.get(body).ok().and_then(|leaf| leaf.partner);
-        let unlocked = match partner.and_then(|p| under.doors.get_many_mut([body, p]).ok()) {
-            Some([mut leaf, mut other]) => Some((
-                leaf.door.unlock(Some(&mut other.door), now),
-                leaf.door.record,
-                leaf.handle_point(),
-            )),
+        // The unlock is a write to the door's simulation data: posted for
+        // the next step ([`exa_physics::sim_app::FixedCommands::write`]).
+        let fixed = &mut under.fixed;
+        let unlocked = match partner.and_then(|p| {
+            under
+                .doors
+                .get_many_mut([body, p])
+                .ok()
+                .map(|leaves| (p, leaves))
+        }) {
+            Some((p, mut leaves)) => {
+                let sound = fixed.write_many([body, p], &mut leaves, move |[leaf, other]| {
+                    leaf.door.unlock(Some(&mut other.door), now)
+                });
+                let [leaf, _] = leaves;
+                Some((sound, leaf.door.record, leaf.handle_point()))
+            }
             None => under.doors.get_mut(body).ok().map(|mut leaf| {
-                let sound = leaf.door.unlock(None, now);
+                let sound = fixed.write(body, &mut leaf, move |leaf| leaf.door.unlock(None, now));
                 (sound, leaf.door.record, leaf.handle_point())
             }),
         };
@@ -1303,6 +1315,7 @@ pub struct UseCursorPlugin;
 
 impl Plugin for UseCursorPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_fixed_commands(app);
         mechanism_sound::register(app);
         app.init_resource::<UseCursor>()
             .init_resource::<UseScript>()

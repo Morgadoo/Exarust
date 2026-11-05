@@ -3521,6 +3521,7 @@ pub enum FlowSystems {
 
 impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .init_resource::<AfterLoad>()
@@ -3535,6 +3536,7 @@ impl Plugin for FlowPlugin {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .init_resource::<crate::transition_screen::TransitionOverlay>()
@@ -4220,7 +4222,8 @@ fn apply_steps(
                     }
                     write_player(&mut commands, &mut player, condition, flags, knock);
                     if let Some(body) = player.ragdoll.as_mut() {
-                        body.knock_out();
+                        out.fixed
+                            .write(player.entity, body, |body| body.knock_out());
                     }
                 }
             }
@@ -4245,15 +4248,17 @@ fn apply_steps(
                     }
                     write_player(&mut commands, &mut player, condition, flags, revival.knock);
                     if let Some(body) = player.ragdoll.as_mut() {
-                        if body.drive.is_some() {
-                            body.knock_out();
-                        } else {
-                            // A limp body gets its muscles back over the
-                            // race and stats it had (`crate::rise` gives
-                            // its clips and controller back).
-                            let drive = body.revival_drive().unwrap_or_default();
-                            body.revive(drive);
-                        }
+                        out.fixed.write(player.entity, body, |body| {
+                            if body.drive.is_some() {
+                                body.knock_out();
+                            } else {
+                                // A limp body gets its muscles back over the
+                                // race and stats it had (`crate::rise` gives
+                                // its clips and controller back).
+                                let drive = body.revival_drive().unwrap_or_default();
+                                body.revive(drive);
+                            }
+                        });
                     }
                 }
             }
@@ -4289,13 +4294,18 @@ fn apply_steps(
                         wake_write(knock);
                         commands.entity(*entity).insert(*knock);
                     }
-                    if let Some(drive) = player.ragdoll.as_mut().and_then(|b| b.drive.as_mut()) {
-                        if let Some(stance) = pose.move_factor {
-                            drive.set_stance(stance);
-                        }
-                        if let Some(tone) = pose.turn_factor {
-                            drive.tone = tone;
-                        }
+                    if let Some(body) = player.ragdoll.as_mut() {
+                        let (stance, tone) = (pose.move_factor, pose.turn_factor);
+                        out.fixed.write(player.entity, body, move |body| {
+                            if let Some(drive) = body.drive.as_mut() {
+                                if let Some(stance) = stance {
+                                    drive.set_stance(stance);
+                                }
+                                if let Some(tone) = tone {
+                                    drive.tone = tone;
+                                }
+                            }
+                        });
                     }
                 }
             }
@@ -4318,11 +4328,12 @@ fn apply_steps(
                             }
                         }
                     }
-                    if let (Some(tone), Some(drive)) = (
-                        turn_factor,
-                        player.ragdoll.as_mut().and_then(|b| b.drive.as_mut()),
-                    ) {
-                        drive.tone = tone;
+                    if let (Some(tone), Some(body)) = (turn_factor, player.ragdoll.as_mut()) {
+                        out.fixed.write(player.entity, body, move |body| {
+                            if let Some(drive) = body.drive.as_mut() {
+                                drive.tone = tone;
+                            }
+                        });
                     }
                 }
             }
@@ -4610,6 +4621,9 @@ struct FlowOutputs<'w> {
     saves: MessageWriter<'w, crate::save_live::SaveStep>,
     discovery: MessageWriter<'w, crate::experience_live::DiscoveryTick>,
     bodies: MessageWriter<'w, crate::scene_bodies::SceneCommand>,
+    /// The steps' writes to the player's body, posted for the next step
+    /// ([`exa_physics::sim_app::FixedCommands::write`]).
+    fixed: ResMut<'w, exa_physics::sim_app::FixedCommands>,
 }
 
 /// The resources the story start's and the tips' steps write.
@@ -5256,6 +5270,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
         let foe = app.world_mut().spawn_empty().id();
         let mut body = crate::player::PlayerBody::new(0.0).with_target(foe);
@@ -5304,6 +5319,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .insert_resource(exa_anim::Motions::fallback())
             .add_systems(Update, apply_steps);
         let player = app
@@ -5352,6 +5368,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
         let req = exa_physics::body::locomotion::Locomotion {
             flags: BACK | KEYS | TURN_ABOUT | SPRINT,
@@ -7474,6 +7491,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, (release_after_load, apply_steps).chain());
         let view = Viewport {
             width: 1600,
@@ -7626,6 +7644,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
         let steps = app.world_mut().resource_mut::<Flow>().knock_out(0);
         assert!(steps.contains(&Step::Tip(2)));
@@ -7690,6 +7709,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
         let placement = Placement {
             rotation: yaw(90.0),
@@ -7831,6 +7851,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.max = 100.0;
@@ -7888,6 +7909,7 @@ mod tests {
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.red = 0.5;
