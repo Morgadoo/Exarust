@@ -310,7 +310,9 @@ creation mode on the creator's record (`power_screen::CreatorPowerTree`);
 the prompt's BEGIN (or Enter) commits the record with the powers the tree
 wrote, its BACK (or Escape) shows the form again, after which the final
 button rebuilds the equipment page and the creator's BACK leaves
-(`--open-creator powers` drives it unattended). The name warning
+(`--open-creator powers` drives it unattended). The tree's texts take the
+GUI font atlas of the current interface level (reloaded on a unit change)
+and sample it as the GUI's text draw does. The name warning
 keeps its `Character Name` / `Please name your character` box and code
 0xc1, the reset-to-portal and delete-confirmation dialogs take the creator
 as owner and centre at -1, and the icon sheet carries the 0x203 word, the

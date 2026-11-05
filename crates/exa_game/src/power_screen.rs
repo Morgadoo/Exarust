@@ -74,6 +74,9 @@ pub struct PowerScreen {
     pub sheets: TreeSheets,
     /// The GUI font atlas the tree's text samples and its texture name.
     pub font_atlas: Option<(&'static str, (u16, u16))>,
+    /// The interface unit the atlas was loaded for: a change of unit loads
+    /// the new level's atlas (the start's default unit is not the window's).
+    font_unit: Option<i32>,
     pub font: Option<GameFont>,
     /// The sound the tree's last action names, for the audio path: showing
     /// it plays `ThaumShow02`; a hidden screen is silent. The running game
@@ -117,6 +120,7 @@ impl Default for PowerScreen {
             domain_files: [None, None, None, None, None, None, None],
             sheets: TreeSheets::default(),
             font_atlas: None,
+            font_unit: None,
             font: None,
             sound: None,
             dirty: true,
@@ -397,7 +401,9 @@ fn load_screen(
 /// install ships it, else the base font's atlas that the packs carry. The
 /// level's metrics stay either way (see [`font_with_fallback`]).
 fn load_tree_font(game: &Game, unit: Option<i32>, screen: &mut PowerScreen) {
-    let level = gui_level(level_for_unit(unit.unwrap_or(4))).main;
+    let unit = unit.unwrap_or(4);
+    screen.font_unit = Some(unit);
+    let level = gui_level(level_for_unit(unit)).main;
     let loaded = game
         .load_rgba(level.texture)
         .ok()
@@ -755,6 +761,7 @@ struct CanvasState {
 #[allow(clippy::too_many_arguments)]
 fn draw(
     time: Res<Time>,
+    game: Option<Res<Game>>,
     mut screen: ResMut<PowerScreen>,
     gui: Option<Res<exa_ui::GuiScale>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -846,6 +853,15 @@ fn draw(
     // window's physical height; the tree's layout and its font level both
     // come from it.
     let scale = gui.as_deref().map_or(4, |gui| gui.scale) as f32;
+    // The text atlas follows the interface level, as the wheel's texture
+    // does: the unit the screen loaded with is the start's default, and
+    // another level's atlas gives no glyphs.
+    if let Some(game) = game.as_deref()
+        && screen.font_unit.is_some_and(|unit| unit != scale as i32)
+    {
+        load_tree_font(game, Some(scale as i32), &mut screen);
+        screen.canvas.invalidate();
+    }
     let (draw, canvas_height) = frame_draw(&mut screen, width, height, scale, now);
     let PowerScreen {
         canvas: cache,
@@ -1943,8 +1959,12 @@ fn shade(
         }
         Program::SkinText => {
             // The skin's textured program with `TexCol` one: the atlas
-            // colour multiplies the run's ink.
-            let tex = sample(texture, vertex.u, vertex.v);
+            // colour multiplies the run's ink. The glyph cells (row over 16
+            // from the decoded atlas's first row, the quad's top on the far
+            // row, as the glyphs are stored upside down) address the atlas
+            // as the GUI's own text draw does, so its rows are read from the
+            // first down, not through the sheets' flipped rows.
+            let tex = sample(texture, vertex.u, 1.0 - vertex.v);
             let tex_col = uniforms.par0[0];
             [
                 col[0] * (tex[0] * tex_col + 1.0 - tex_col),
@@ -2379,6 +2399,55 @@ mod tests {
             .take()
             .expect("BEGIN answered");
         assert!(answer.begin);
+    }
+
+    /// With the installed packs the creation tree's prompt is drawn: its
+    /// title's letters light the band an eighth down the window, also when
+    /// the screen loaded its atlas at the start's default interface unit
+    /// and the window's unit is another.
+    #[test]
+    fn the_creation_prompt_draws_its_title() {
+        let Some(game) = installed_game() else {
+            return;
+        };
+        let mut app = scripted_tree_app(Some(&game), Vec::new());
+        app.insert_resource(exa_ui::GuiScale { size: 0, scale: 5 });
+        app.update();
+        app.world_mut().resource_mut::<exa_ui::GuiScale>().scale = 4;
+        app.world_mut().resource_mut::<CreatorPowerTree>().request = Some(PowerRecord::starter());
+        for _ in 0..120 {
+            app.update();
+        }
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(screen.open);
+        let (draw, _) = {
+            let screen = &mut *app.world_mut().resource_mut::<PowerScreen>();
+            frame_draw(screen, 1280, 720, 4.0, 2000)
+        };
+        let fonts = draw
+            .batches
+            .iter()
+            .filter(|b| matches!(b.texture, Texture::Font(_)))
+            .count();
+        let mut canvases = app.world_mut().query::<&ImageNode>();
+        let handle = canvases
+            .iter(app.world())
+            .next()
+            .expect("the canvas")
+            .image
+            .clone();
+        let images = app.world().resource::<Assets<Image>>();
+        let image = images.get(&handle).expect("the canvas image");
+        let data = image.data.as_ref().expect("the pixels");
+        let lit = (85..110)
+            .flat_map(|y| (300..980).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let at = ((y * 1280 + x) * 4) as usize;
+                data[at + 3] > 8 && data[at..at + 3].iter().any(|&c| c > 64)
+            })
+            .count();
+        assert!(fonts > 0);
+        assert!(lit > 100, "{lit}");
     }
 
     /// The open tree's frames as the GPU check takes them (1280 by 720, a

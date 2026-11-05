@@ -694,6 +694,11 @@ The appearance page's back action SHALL leave for the arena when recruiting. Oth
 - **WHEN** a named versus character's READY is pressed with no lobby form
 - **THEN** the creator stays on the equipment page and no session starts
 
+#### Scenario: The unknown background's character
+- **WHEN** the story creator opens for the unknown background
+- **THEN** its record knows the two starting powers
+- **AND** the equipment page's final button keeps the label it had and opens the power tree
+
 ### Requirement: Creation continue chooser
 Selecting a save slot SHALL ask the save manager what it offers; a zero mask SHALL change nothing, otherwise a missing save SHALL fall back to the checkpoint and a missing checkpoint to the save. The toggle SHALL switch kinds only when the slot offers the other. Stepping and list picks SHALL select the checkpoint of the new slot; a pick of the current slot SHALL do nothing.
 
@@ -836,3 +841,25 @@ Opening the continue page SHALL, when the save manager's list has entries, selec
 #### Scenario: Three saves
 - **WHEN** the page opens on three entries
 - **THEN** the label selects 1 of 3 with the first display string and the name box shows the first name
+
+### Requirement: Creation power tree
+Opening the power tree from the creator SHALL hide the creator's form, set its page state to 2 and show the tree in its creation mode on the creator's record, with no calling form and no power bar.
+
+#### Scenario: Opening
+- **WHEN** a named unknown-background character presses the equipment page's final button
+- **THEN** the creator's form hides and the tree shows its creation prompt, without the power bar
+
+### Requirement: Creation power tree BEGIN
+The tree's BEGIN (or the form's confirm key) SHALL close the tree and commit the record with the powers the tree wrote, starting the story in story mode and creating the character in every other mode.
+
+#### Scenario: BEGIN
+- **WHEN** the tree opened from the creator writes a new power and its BEGIN is pressed
+- **THEN** the creator commits a record that knows the two starting powers and the new one, and the story starts
+
+### Requirement: Creation power tree BACK
+The tree's BACK (or the form's cancel key) SHALL close the tree and show the creator's form again with the page state left at 2: the final button then rebuilds the equipment page, and the creator's back action leaves the creator.
+
+#### Scenario: BACK
+- **WHEN** the tree's BACK is pressed
+- **THEN** the creator's form shows again, its final button rebuilds the equipment page and a second press opens the tree again
+- **AND** the creator's back action before that second press leaves for the menu
