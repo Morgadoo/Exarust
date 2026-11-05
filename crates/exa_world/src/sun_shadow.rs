@@ -26,9 +26,10 @@
 //! the small depth nudge that push the casters away from the receivers. The
 //! nudge goes into the drawing matrix only; Bevy's shadow pass uses
 //! `clip_from_cascade` to draw and `clip_from_world` to sample, so receivers
-//! keep the unbiased lookup as in the original. The polygon offset itself has
-//! no Bevy equivalent on the caster side and stays a returned value
-//! ([`exa_render::sun_fit::SunFit::caster_bias`]). Rules:
+//! keep the unbiased lookup as in the original. The polygon offset and the
+//! receivers' filter radius go to the shaders as
+//! [`exa_render::sun_fit::SunShadowFilter`], from the fit of the active
+//! camera drawn first (the one with the lowest order). Rules:
 //! `docs/RENDERING.md` (Sun shadow fit).
 
 use bevy::light::cascade::Cascade;
@@ -40,8 +41,8 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_physics::intersect::ConvexVolume;
 use exa_render::sun_fit::{
-    CAMERA_FAR_CM, LightBasis, MIN_HALF_EXTENT_CM, SceneBox, SunFit, SunMatrices, VerticalRange,
-    frustum_volume, view_clip_planes,
+    CAMERA_FAR_CM, LightBasis, MIN_HALF_EXTENT_CM, SceneBox, SunFit, SunMatrices, SunShadowFilter,
+    VerticalRange, frustum_volume, view_clip_planes,
 };
 
 /// Centimetres in a metre.
@@ -131,35 +132,97 @@ pub fn fitted_range() -> f32 {
 /// cascades (which this overwrites) and before it derives the shadow frusta
 /// from them.
 fn fit_sun_shadows(
-    mut lights: Query<
-        (
-            &GlobalTransform,
-            &DirectionalLight,
-            &mut CascadeShadowConfig,
-            &mut Cascades,
-            &mut SunFitState,
-        ),
-        Without<Camera>,
-    >,
-    cameras: Query<
-        (Entity, &GlobalTransform, &Projection, &Camera),
-        Without<exa_render::supersample::Offscreen>,
-    >,
+    mut lights: SunLights,
+    cameras: SunCameras,
     region: Option<Res<SunShadowRegion>>,
     enabled: Res<SunShadowFit>,
     shadow_map: Option<Res<DirectionalLightShadowMap>>,
+    filter: Option<ResMut<SunShadowFilter>>,
+) {
+    let mut primary: Option<(isize, SunShadowFilter)> = None;
+    fit_lights(
+        &mut lights,
+        &cameras,
+        region.as_deref(),
+        enabled.0,
+        shadow_map.as_deref(),
+        &mut primary,
+    );
+    // Without a fitted map the shaders keep Bevy's filter.
+    let value = primary.map(|(_, f)| f).unwrap_or_default();
+    if let Some(mut filter) = filter
+        && *filter != value
+    {
+        debug!(
+            "sun shadow filter: radius {:.6} of the map, polygon factor {:.4}, units {:.3e}",
+            value.radius, value.polygon_factor, value.polygon_units
+        );
+        *filter = value;
+    }
+}
+
+type SunLights<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static GlobalTransform,
+        &'static DirectionalLight,
+        &'static mut CascadeShadowConfig,
+        &'static mut Cascades,
+        &'static mut SunFitState,
+    ),
+    Without<Camera>,
+>;
+
+type SunCameras<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GlobalTransform,
+        &'static Projection,
+        &'static Camera,
+    ),
+    Without<exa_render::supersample::Offscreen>,
+>;
+
+/// `EXA_SUN_SOFTNESS=<c>` (debug): the sun light's softness source the map
+/// update reads, in place of the sun placement's, to see the filter and the
+/// caster offset at a chosen softness.
+fn softness_override() -> Option<f32> {
+    static OVERRIDE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *OVERRIDE.get_or_init(|| {
+        let c = std::env::var("EXA_SUN_SOFTNESS")
+            .ok()?
+            .parse::<f32>()
+            .ok()?;
+        info!("EXA_SUN_SOFTNESS: the sun map reads softness source {c}");
+        Some(c)
+    })
+}
+
+/// The fit itself; `primary` gets the filter of the active camera with the
+/// lowest order.
+fn fit_lights(
+    lights: &mut SunLights,
+    cameras: &SunCameras,
+    region: Option<&SunShadowRegion>,
+    enabled: bool,
+    shadow_map: Option<&DirectionalLightShadowMap>,
+    primary: &mut Option<(isize, SunShadowFilter)>,
 ) {
     let Some(region) = region else {
         return;
     };
-    if !enabled.0 {
+    if !enabled {
         return;
     }
+    let c = softness_override().unwrap_or(region.c);
     let size = shadow_map
         .map(|map| map.size)
         .unwrap_or(exa_render::SUN_SHADOW_SIZE);
     let map_size = UVec2::splat(u32::try_from(size).unwrap_or(u32::MAX));
-    for (transform, light, mut config, mut cascades, mut state) in &mut lights {
+    for (transform, light, mut config, mut cascades, mut state) in lights.iter_mut() {
         if !light.shadow_maps_enabled {
             continue;
         }
@@ -187,16 +250,16 @@ fn fit_sun_shadows(
             };
         }
         let mut seen = Vec::new();
-        for (view, camera_transform, projection, camera) in &cameras {
+        for (view, camera_transform, projection, camera) in cameras.iter() {
             if !camera.is_active {
                 continue;
             }
             seen.push(view);
             let entry = state.views.entry(view).or_default();
             if region.fitted {
-                let volume = fitted_volume(camera_transform, projection, &region);
+                let volume = fitted_volume(camera_transform, projection, region);
                 if entry.fit.fit(&volume, &basis, map_size) {
-                    entry.fit.apply_softness(region.c);
+                    entry.fit.apply_softness(c);
                     entry.matrices = Some(entry.fit.matrices(&basis, map_size));
                 }
             } else {
@@ -207,7 +270,7 @@ fn fit_sun_shadows(
                     region.far_cm,
                     &basis,
                     region.min_half_extent_cm,
-                    region.c,
+                    c,
                 );
                 entry.matrices = Some(entry.fit.matrices(&basis, map_size));
             }
@@ -216,6 +279,9 @@ fn fit_sun_shadows(
             let Some(mut matrices) = entry.matrices else {
                 continue;
             };
+            if primary.is_none_or(|(order, _)| camera.order < order) {
+                *primary = Some((camera.order, SunShadowFilter::of(&entry.fit)));
+            }
             // The render routine's caster-side depth nudge: its sampling
             // matrix has no nudge, only the casters' projection does, so the
             // drawing matrix alone is shifted. The engine's [−1, 1] shift is
@@ -336,6 +402,26 @@ mod tests {
             .get(&camera)
             .unwrap()
             .fit
+    }
+
+    /// The shaders get the camera's fit as the sun filter: the receivers'
+    /// radius from the written softness and the casters' polygon offset;
+    /// without the fit they get zeros, which keeps Bevy's filter.
+    #[test]
+    fn the_fit_reaches_the_sun_filter() {
+        let (mut app, camera, sun) = test_app();
+        app.init_resource::<SunShadowFilter>();
+        app.update();
+        let fit = fitted(&app, sun, camera);
+        let filter = *app.world().resource::<SunShadowFilter>();
+        assert_eq!(filter, SunShadowFilter::of(&fit));
+        assert!(filter.radius > 0.0 && filter.polygon_factor > 1.0);
+        app.insert_resource(SunShadowFit(false));
+        app.update();
+        assert_eq!(
+            *app.world().resource::<SunShadowFilter>(),
+            SunShadowFilter::default()
+        );
     }
 
     #[test]

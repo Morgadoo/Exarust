@@ -2589,8 +2589,24 @@ surviving corners, and works in centimetres (×100):
   the engine's `[−1, 1]` depth that is 1.5625e-4 at the constructor's
   16 000 cm and `c' = 0`. Exarust writes the nudge into Bevy's drawing
   matrix only, halved into its `[0, 1]` reverse-Z range, so receivers keep
-  the unbiased lookup; the polygon offset has no Bevy counterpart on the
-  caster side and stays a returned value.
+  the unbiased lookup. The polygon offset is written by the caster's
+  fragment (wgpu's depth bias is fixed per pipeline): its depth less
+  `factor · max(|∂z/∂x|, |∂z/∂y|) + 2⁻¹⁶` (the 16-bit map's step; GL
+  allows the max for the gradient's length), clamped to [0, 1].
+- **Receiving filter.** The light slot writes the sun's radius
+  `softness · 0.5 · 0.005` (the halving single, the 0.005 double); the
+  `lights` template adds the fragment's eight `SdwSmp` taps, turned per
+  pixel as the point lights' are, times that radius to the map position
+  `vrSdw.xy`, keeps `vrSdw.z` unbiased, and sums the hardware 2 × 2
+  comparisons (the colour is pre-divided by the tap count). In world terms
+  the radius is `(c + 1)·2 cm` in the fitted mode above the floor (2.25 cm
+  at the constructor's fit), `(c + 1)·1 cm` in the whole-scene mode, times
+  each tap's length (0.40–0.98). Exarust's `sun_shadow` (`shading.wesl`)
+  does the same on Bevy's map with its comparison sampler (linear, clamp to
+  edge): no far bound, and outside the map the border texels stand, as the
+  original's do. The radius, factor and unit reach the shaders as
+  `exa_render::sun_fit::SunShadowFilter` in the light records' first
+  element, from the fit of the active camera with the lowest order.
 
 The render routine's caster pass walks the scene's caster list: a node
 without the caster flag is skipped, a flagged node clears its map-visible
@@ -2605,12 +2621,19 @@ its map-visible bit, an outside part clears it and draws nothing, an inside
 part sets it, switches to the cull face its flag picks (front or back,
 through the cached switch) and draws each of its meshes whose draw flag is
 set, plainly or, for a mesh marked alpha-cut, through the alpha-tested
-program with the mesh's texture bound and another geometry state (taken to
-be culling off; the state word is not decoded). Exarust models the walk
-in `exa_render::sun_casters` and pins it with tests; nothing drives it yet
-(Bevy's shadow pass draws the cascade's casters with its own frustum culling,
-and Exarust has no scene-node caster flag or per-part box at the original's
-fields). The caster volume itself is built out of the component by the
+program with the part's cut texture on unit 0 and `GL_CULL_FACE` disabled
+around the draw (`if (texture(Tex0, vrTex).w < 0.5) discard;`: the
+texture's alpha alone, not the material's opacity). Exarust models the walk
+in `exa_render::sun_casters` and pins it with tests; it does not drive
+Bevy's shadow pass, which draws the map's casters with its own frustum
+culling (Exarust has no scene-node caster flag or per-part box at the
+original's fields). What reaches Bevy's pass is the per-draw state
+(`specialize_sun_caster`): every sun caster takes the polygon offset, plain
+ones cull their back faces and never discard, alpha-tested ones
+(`ExaMaterial::cuts_shadow`) cull nothing and cut as above. Two-sided
+materials and cloth draws keep Exarust's own rule (no cull, or the draw's
+face), as its cube casters do [whether the original's drawing state reads
+the two-sided bit was not traced]. The terrain casts as a plain caster. The caster volume itself is built out of the component by the
 intersection unit (the light-facing faces of the view volume plus side
 planes extruded along the sun through the silhouette edges, vertices merged
 within 5 cm² and edges shorter than 1 cm² skipped); that builder is not
@@ -2667,18 +2690,17 @@ What the fitted map looks like: one texel is `2h/4096`, a few centimetres
 for a view the scene bounds to a few tens of metres; the centre snap keeps
 texels still while the camera moves and the hysteresis keeps the size still
 until the view grows or shrinks by a fraction of a step, so the edges do not
-swim. Bevy's normal bias scales with the cascade's texel size, which the
-fit reports, and its depth bias is in metres along the light, so the bias
-holds as for its own cascades: no new acne or peter-panning. The depth range
-is 160 m in a 32-bit float map. Casters up-sun of the box's near plane are
-still drawn (Bevy culls directional casters without the near plane and
-clamps their depth). Receivers outside the fitted box are lit, where the
-original's clamp-to-edge map repeats its border texel.
+swim. Bevy's receiver-side depth and normal biases do not apply to the
+fitted map: the casters carry the original's offset and nudge, and the
+receivers look up unbiased. The depth range is 160 m in a 32-bit float map.
+Casters up-sun of the box's near plane are still drawn (Bevy culls
+directional casters without the near plane and clamps their depth).
+`EXA_SUN_SOFTNESS=<c>` pins the softness source the map reads (on
+`arenao3` at 0.70 with a camera 3 m over the player, sources 0, 1 and 3 give
+2, 4 and 8 cm radii on the 800 cm map).
 
-Not reproduced: the softness upload, which needs a filter-radius uniform
-Bevy's directional shadows only have with its PCSS feature (the value is
-computed); the polygon offset (Bevy's own depth and normal biases apply);
-the other camera mode; the caster-volume builder; the map's own GL lifecycle
+Not reproduced: the other camera mode; a second active camera's own radius
+and offset (every camera reads the main view's); the caster-volume builder; the map's own GL lifecycle
 (Bevy allocates a 32-bit float depth map where the original asks for 16-bit,
 and the original's optional RGB8 colour twin behind a debug switch that
 ships off). The scene box is a

@@ -23,14 +23,22 @@
 //! switch is made once per part, before its meshes. Each of the part's
 //! meshes with its draw flag set then draws: plainly, or, when the mesh is
 //! marked alpha-cut, through the alpha-tested program with the mesh's
-//! texture bound and a different geometry state (\[guess: culling off, so
-//! both sides cast; the state word is not decoded]), after which the plain
-//! program and state are restored.
+//! texture bound and culling disabled (both sides cast), after which the
+//! plain program and culling are restored.
 //!
 //! The pass sets the depth function to less, enables the polygon offset with
 //! the fit's [`crate::sun_fit::CasterBias`] and disables it again at the end.
-//! Bevy's shadow pass owns the equivalent state; the values and the draw list
-//! are what this module pins, and nothing reads them yet.
+//! The alpha-tested program is `if (texture(Tex0, vrTex).w < 0.5) discard;`
+//! over the part's cut texture, drawn with culling disabled (the pass turns
+//! `GL_CULL_FACE` off around the part and back on after it).
+//!
+//! Bevy's shadow pass draws Exarust's sun map, and the walk above is not
+//! what drives it (Bevy culls casters by the map's frustum). What reaches
+//! Bevy's pass is the per-draw state ([`specialize_sun_caster`]): every
+//! caster's fragment takes the polygon offset (`sun_caster.wesl`, the factor
+//! and units from [`crate::sun_fit::SunShadowFilter`]), plain casters cull
+//! their back faces, and alpha-tested ones cull nothing and cut by their
+//! texture's alpha alone. A caster's draw does not discard otherwise.
 //!
 //! Everything is in the engine's centimetres. Rules: `docs/RENDERING.md`
 //! (Sun shadow fit, the caster pass).
@@ -266,6 +274,115 @@ pub fn caster_draws(nodes: &[CasterNode], volume: &mut ShadowVolume) -> CasterPa
     cull.end_pass();
     pass.cull = cull;
     pass
+}
+
+/// The faces a sun caster culls in Bevy's shadow pass: none for an
+/// alpha-tested caster (the original disables culling around it); otherwise
+/// the back faces, as the original's plain caster does. Exarust keeps two
+/// exceptions of its own: a cloth draw culls the face it is the draw of (the
+/// material's two passes together draw both), and a two-sided material culls
+/// nothing, as Exarust's cube casters do \[the original's plain draw
+/// does not read the material's two-sided bit; whether its drawing state
+/// does was not traced].
+pub fn sun_caster_cull(
+    alpha_cut: bool,
+    two_sided: bool,
+    cloth: Option<bevy::render::render_resource::Face>,
+) -> Option<bevy::render::render_resource::Face> {
+    if let Some(face) = cloth {
+        return Some(face);
+    }
+    if alpha_cut || two_sided {
+        return None;
+    }
+    Some(bevy::render::render_resource::Face::Back)
+}
+
+/// The fragment shader a sun caster without a prepass shader of its own
+/// takes ([`CasterShader::Plain`]), or the surface material's
+/// ([`CasterShader::Material`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CasterShader {
+    /// `sun_caster_prepass.wesl`: the polygon offset only.
+    Plain,
+    /// `exa_prepass.wesl`: the offset and the alpha test.
+    Material,
+}
+
+static CASTER_SHADERS: std::sync::OnceLock<[bevy::asset::Handle<bevy::shader::Shader>; 2]> =
+    std::sync::OnceLock::new();
+
+/// Loads the two caster shaders once, for [`specialize_sun_caster`]. Without
+/// an asset server (headless tests) the casters keep Bevy's state.
+pub(crate) fn load_caster_shaders(app: &bevy::app::App) {
+    use bevy::asset::{AssetPath, AssetServer, embedded_path};
+    let Some(server) = app.world().get_resource::<AssetServer>() else {
+        return;
+    };
+    let path = |p: std::path::PathBuf| AssetPath::from_path_buf(p).with_source("embedded");
+    let plain = server.load(path(embedded_path!("sun_caster_prepass.wesl")));
+    let material = server.load(path(embedded_path!("exa_prepass.wesl")));
+    let _ = CASTER_SHADERS.set([plain, material]);
+}
+
+/// The shader reference of [`CasterShader::Plain`], for a material's
+/// `prepass_fragment_shader`.
+pub fn plain_caster_shader() -> bevy::shader::ShaderRef {
+    use bevy::asset::{AssetPath, embedded_path};
+    bevy::shader::ShaderRef::Path(
+        AssetPath::from_path_buf(embedded_path!("sun_caster_prepass.wesl")).with_source("embedded"),
+    )
+}
+
+/// Whether `mesh_key` is a draw into a directional light's map: Bevy's
+/// shadow pass marks those depth-only, orthographic and unclipped.
+pub fn is_sun_caster(mesh_key: bevy::pbr::MeshPipelineKey) -> bool {
+    use bevy::pbr::MeshPipelineKey as K;
+    mesh_key.contains(K::DEPTH_PREPASS | K::UNCLIPPED_DEPTH_ORTHO)
+}
+
+/// Gives a draw into the sun map the original's caster state: a fragment
+/// stage with the polygon offset (`shader`'s, added when the draw had none,
+/// with `SUN_CASTER`, and `SUN_CUT` for an alpha-tested caster) and the
+/// faces [`sun_caster_cull`] picks. Other pipelines are left alone; returns
+/// whether this was a sun caster.
+pub fn specialize_sun_caster(
+    descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+    mesh_key: bevy::pbr::MeshPipelineKey,
+    shader: CasterShader,
+    cull: Option<bevy::render::render_resource::Face>,
+    alpha_cut: bool,
+) -> bool {
+    if !is_sun_caster(mesh_key) {
+        return false;
+    }
+    descriptor.primitive.cull_mode = cull;
+    let fragment = match descriptor.fragment.as_mut() {
+        Some(fragment) => fragment,
+        None => {
+            let Some(shaders) = CASTER_SHADERS.get() else {
+                return true;
+            };
+            let handle = match shader {
+                CasterShader::Plain => shaders[0].clone(),
+                CasterShader::Material => shaders[1].clone(),
+            };
+            descriptor
+                .fragment
+                .insert(bevy::render::render_resource::FragmentState {
+                    shader: handle,
+                    shader_defs: descriptor.vertex.shader_defs.clone(),
+                    entry_point: None,
+                    targets: Vec::new(),
+                    constants: Vec::new(),
+                })
+        }
+    };
+    fragment.shader_defs.push("SUN_CASTER".into());
+    if alpha_cut {
+        fragment.shader_defs.push("SUN_CUT".into());
+    }
+    true
 }
 
 #[cfg(test)]
@@ -566,5 +683,32 @@ mod tests {
             .unwrap();
         assert_eq!(face.offset, -10.0);
         assert_eq!(face.distance(v(10.0, 0.0, 0.0)), 0.0);
+    }
+
+    /// Alpha-tested casters cull nothing, plain ones their back faces; a
+    /// cloth draw keeps its own face and a two-sided material culls nothing.
+    #[test]
+    fn sun_casters_cull_as_the_original_pass() {
+        use bevy::render::render_resource::Face;
+        assert_eq!(sun_caster_cull(false, false, None), Some(Face::Back));
+        assert_eq!(sun_caster_cull(true, false, None), None);
+        assert_eq!(sun_caster_cull(false, true, None), None);
+        assert_eq!(
+            sun_caster_cull(true, false, Some(Face::Front)),
+            Some(Face::Front)
+        );
+    }
+
+    /// Only Bevy's directional shadow draws are sun casters.
+    #[test]
+    fn only_directional_shadow_draws_are_sun_casters() {
+        use bevy::pbr::MeshPipelineKey as K;
+        assert!(is_sun_caster(
+            K::DEPTH_PREPASS | K::VIEW_PROJECTION_ORTHOGRAPHIC | K::UNCLIPPED_DEPTH_ORTHO
+        ));
+        assert!(!is_sun_caster(
+            K::DEPTH_PREPASS | K::VIEW_PROJECTION_PERSPECTIVE
+        ));
+        assert!(!is_sun_caster(K::VIEW_PROJECTION_ORTHOGRAPHIC));
     }
 }

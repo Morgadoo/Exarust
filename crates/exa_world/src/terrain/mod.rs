@@ -354,6 +354,29 @@ impl Material for TerrainSplat {
     fn fragment_shader() -> ShaderRef {
         shader()
     }
+
+    /// The terrain casts into the sun map as the head of the original's
+    /// caster list: plain, back faces culled, with the caster pass's polygon
+    /// offset (`exa_render::sun_casters`).
+    fn prepass_fragment_shader() -> ShaderRef {
+        exa_render::sun_casters::plain_caster_shader()
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        exa_render::sun_casters::specialize_sun_caster(
+            descriptor,
+            key.mesh_key,
+            exa_render::sun_casters::CasterShader::Plain,
+            exa_render::sun_casters::sun_caster_cull(false, false, None),
+            false,
+        );
+        Ok(())
+    }
 }
 
 /// A tile waiting for its material, added by [`apply_splats`] which has
