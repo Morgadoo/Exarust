@@ -1380,19 +1380,35 @@ An item dropped back to the arsenal SHALL ask the company arsenal's lend query o
 - **WHEN** the form's list holds item 7 lent under 0x400 and the company arsenal also holds it lent
 - **THEN** the form's entry loses 0x400 and the company arsenal's entry keeps it
 
-### Requirement: Spectated match
-A match's participants SHALL be the board's lineup in entry order, each company entry standing for its pool slot (0 the manager, roster member `i` slot `i + 1`), whose name, health and participant id its body takes. The first participant the player may control SHALL be the player; when none is (only hired employees are entered), the match start SHALL leave the scene without a player body, start the controls' Spectate mode with the camera looking at the arena's spawn spot, and stand every entrant from the generator. The return to the hub SHALL build the manager again from his record, with his possessions and health, and end the Spectate mode (Character mode again).
-
-#### Scenario: An employee fights alone
-- **WHEN** a career with one hired combatant begins a duel with the lineup [1] (`--hub-enter 1`)
-- **THEN** the manager is benched, the spectate session starts, the combatant and the opponent are stood and duel each other, and the return to the hub stands the manager again and ends the session
+### Requirement: Spectated match participants
+A match's participants SHALL be the board's lineup in entry order, each company entry standing for its pool slot (0 the manager, roster member `i` slot `i + 1`), whose name, health and participant id its body takes. The first participant the player may control SHALL be the player.
 
 #### Scenario: Entry order maps the roster
 - **WHEN** the lineup is [2, 0]
 - **THEN** company entry 0 is roster member 2 with id 2 and entry 1 is the manager with id 0
 
+### Requirement: Spectated match
+When no participant is one the player may control (only hired employees are entered), the match start SHALL leave the scene without a player body, start the controls' Spectate mode with the camera looking at the arena's spawn spot, and stand every entrant from the generator.
+
+#### Scenario: An employee fights alone
+- **WHEN** a career with one hired combatant begins a duel with the lineup [1] (`--hub-enter 1`)
+- **THEN** the manager is benched, the spectate session starts, the combatant and the opponent are stood and duel each other
+
+### Requirement: Return from a spectated match
+The return to the hub after a spectated match SHALL build the manager again from his record, with his possessions and health, and end the Spectate mode (Character mode again).
+
+#### Scenario: The manager stands again
+- **WHEN** a spectated match ends and the career returns to the hub
+- **THEN** the manager stands in the hub with his possessions and health, and the spectate session has ended
+
 ### Requirement: Dressed candidates
-With the object database read, each hire-list candidate SHALL be dressed after its record from the same sequence: a combatant by its level with a twentieth of it as the height bias, its six loadouts copies of that kit with those of the ranks below its level trimmed to their rank; a physician from the profile 0x14, 0, 100, 10, 10 and a merchant or trainer from 4, 0, 100, 10, 10, holding nothing. The listed price SHALL add four fifths of the outfit's value (each worn and held item's value word as a shop line), and the hire SHALL keep the outfit and loadouts.
+With the object database read, each hire-list candidate SHALL be dressed after its record from the same sequence: a combatant by its level with a twentieth of it as the height bias, its six loadouts copies of that kit with those of the ranks below its level trimmed to their rank; a physician from the profile 0x14, 0, 100, 10, 10 and a merchant or trainer from 4, 0, 100, 10, 10, holding nothing.
+
+#### Scenario: A combatant candidate is dressed
+- **WHEN** the hire list rolls a combatant candidate of level 10
+- **THEN** it wears the kit of its level with a height bias of a twentieth of it, and its six loadouts copy that kit, those of ranks below its level trimmed to their rank
+### Requirement: Candidate price and hire with the outfit
+A dressed candidate's listed price SHALL add four fifths of the outfit's value (each worn and held item's value word as a shop line), and the hire SHALL keep the outfit and loadouts.
 
 #### Scenario: The outfit is priced
 - **WHEN** a candidate wears items worth 100 and holds one worth 12 in value words
