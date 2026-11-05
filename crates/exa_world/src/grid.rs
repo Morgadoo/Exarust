@@ -683,7 +683,14 @@ impl GridBuild {
         if done && !self.shells_spawned {
             self.shells_spawned = true;
             self.stats.shelled_rooms = spawn_shells(commands, loader.meshes, &self.shells);
-            self.shells = Vec::new();
+            // The level's rooms keep the strips for the room manager's ray
+            // queries ([`ray_blocks`]).
+            let shells = Arc::new(std::mem::take(&mut self.shells));
+            commands.queue(move |world: &mut World| {
+                if let Some(mut level) = world.get_resource_mut::<crate::room_view::LevelRooms>() {
+                    level.shells = shells;
+                }
+            });
         }
         done
     }
@@ -798,9 +805,10 @@ impl Strip {
 /// active (`active`, the tracker's [`crate::rooms::RoomTracker::is_active`]
 /// in the game). Rooms are visited in
 /// order; an active room with no such shell ends the query with "no", as
-/// the original returns at once on a missing shell. Its callers pick under
-/// the cursor and test a segment ([`segment_blocks`]); Exarust has neither
-/// yet.
+/// the original returns at once on a missing shell. Its callers: the hand's
+/// reach and the dragged item's placement (the cursor ray up to its hit,
+/// occluders), and the kinesis's clear line (occluders, then lids); see
+/// [`crate::room_view::LevelRooms::shell_ray`].
 pub fn ray_blocks(
     shells: &[ShellStrips],
     active: impl Fn(u16) -> bool,

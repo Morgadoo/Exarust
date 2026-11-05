@@ -2425,6 +2425,33 @@ fn lift_region(
     }
 }
 
+/// The reach test's region: the lift's ([`lift_region`]), and then no
+/// active room's occluder may stand on the cursor's ray between the eye and
+/// the picked point, as the original asks the room manager's shell query
+/// with the pick's ray and hit distance (a point seen across a wall's
+/// hollow is out of reach).
+fn reach_region(
+    rooms: Option<&exa_world::room_view::LevelRooms>,
+    hip: Vec3,
+    at: Vec3,
+    ray: Option<Ray3d>,
+) -> pick::Region {
+    let region = lift_region(rooms, hip, at);
+    match (region, rooms, ray) {
+        (pick::Region::Inside, Some(rooms), Some(ray))
+            if rooms.shell_ray(
+                ray.origin,
+                *ray.direction,
+                (at - ray.origin).length(),
+                false,
+            ) =>
+        {
+            pick::Region::Outside
+        }
+        _ => region,
+    }
+}
+
 /// Hands the items let go this frame to the navigation grid's refresh.
 fn send_let_go(mut items: ResMut<ItemCursor>, mut moved: MessageWriter<exa_world::nav::NavMoved>) {
     if !items.let_go.is_empty() {
@@ -2523,7 +2550,7 @@ fn reach_hand(
                     to,
                     height_cm: p.at.y * CM,
                     offset_cm: offset * CM,
-                    region: lift_region(rooms.as_deref(), hip, p.at),
+                    region: reach_region(rooms.as_deref(), hip, p.at, ray),
                     region_applies: true,
                 })
             })
@@ -3582,5 +3609,43 @@ mod tests {
         );
         assert_eq!(lift_region(Some(&level), hip, hip), pick::Region::Inside);
         assert_eq!(lift_region(None, hip, across), pick::Region::None);
+
+        // The reach adds the shell query: an active room's occluder on the
+        // cursor ray before the picked point puts it out of reach.
+        let room = level.rooms.room_at(Vec2::new(hip.x, hip.z)).unwrap();
+        let mut shells = vec![exa_world::grid::ShellStrips::default(); level.rooms.len()];
+        // Facing up, 1 m over the hip's cell.
+        shells[room as usize].occluder = exa_world::grid::Strip {
+            positions: vec![
+                [hip.x - 3.0, 1.0, hip.z - 3.0],
+                [hip.x - 3.0, 1.0, hip.z + 3.0],
+                [hip.x + 3.0, 1.0, hip.z - 3.0],
+            ],
+            indices: vec![0, 1, 2],
+        };
+        level.shells = Arc::new(shells);
+        let point = hip + Vec3::new(-1.0, 0.0, -1.0);
+        let ray = Some(Ray3d::new(point + Vec3::Y * 5.0, Dir3::NEG_Y));
+        assert_eq!(
+            reach_region(Some(&level), hip, point, ray),
+            pick::Region::Inside
+        );
+        level
+            .tracker
+            .update(&level.rooms.clone(), Vec2::new(hip.x, hip.z), 0);
+        level
+            .tracker
+            .update(&level.rooms.clone(), Vec2::new(hip.x, hip.z), 2000);
+        assert!(level.tracker.is_active(room));
+        assert_eq!(
+            reach_region(Some(&level), hip, point, ray),
+            pick::Region::Outside
+        );
+        // Seen from under the occluder (its back), the point stays in reach.
+        let below = Some(Ray3d::new(point - Vec3::Y * 0.5, Dir3::Y));
+        assert_eq!(
+            reach_region(Some(&level), hip, point + Vec3::Y * 0.2, below),
+            pick::Region::Inside
+        );
     }
 }
