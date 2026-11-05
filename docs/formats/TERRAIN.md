@@ -290,8 +290,8 @@ masked, `0x10000000` an additive group and `0x20000000` the normal pass's
 | colour | colour set | D | linear tint × 1.5·min(f9, 1), alpha f9, sharpness f2/f3 |
 | gloss | gloss set | G | f10 × 1.5·min(f9, 1), alpha f9, sharpness f2/f3 |
 | displacement | displacement set, half size | B | f20, f21, f22, 1; sharpness f4/f5 |
-| mask | the tile's 240² mask viewport | M | f12, f13, f14, 1; cover f9; sharpness f2/f3 |
-| height | the tile's 244² height viewport | H | f16, f17, f18, 1; cover f9, boosted by min(1.5·a, 1); sharpness f2/f3 |
+| mask | the tile's 240² mask viewport | M (the mask itself, no layer texture) | f12, f13, f14, 1 (cover forced to 1); sharpness f2/f3 |
+| height | the tile's 244² height viewport | H | f16, f17, f18, 1 (cover forced to 1); opacity min(1.5·a, 1), never sharpened |
 
 The sharpness pair travels to the shaders as `(s, t/s + 1)`. Every pass
 uploads each layer group's mask window from texel `(by·256 + bx)·30` of the
@@ -368,13 +368,49 @@ pass reads its handle in any case.
 G, B and the M mask are packed into one texture per material by
 `exa_world::terrain::surface_image`.
 
-The H pass is evaluated per vertex on the CPU and moves the mesh as the
-original does, by `(byte − 127) × 1.25 × (2 − normal y)` cm. The opacity
-there is boosted by 1.5, and each material contributes
-`f16 + (H − f17) × f18`. Neutral materials (0.5) store as byte 128, so painted
-ground rests about 1.25 cm above dungeon floors laid at 0 and covers them
-(dirt over flagstones). Grass and plants grow from the mask pass (see
-Vegetation); the plant records only give their colour.
+### Tile bake
+
+The original bakes each built tile once, before inserting it: the worker
+sets the tile's bake bit (0x1000) whenever the renderer's feature word reads
+bake planes back, which the terrain manager's constructor always asks for
+(0x3000: the packed plane and the heights). The frame hook then runs the
+mask pass and the height pass into one 244² working target and reads each
+back; the next frame's hand-off copies the 244² red plane into the record's
+vertex channel and gives the 240² RGB plane to the plant system, and only
+then is the tile inserted. Exarust runs the two passes on the tile worker
+(`exa_world::terrain::tile_bake`) with the GPU's rules:
+
+- Pixel centres on the passes' quads. The mask pass maps its 240 pixels
+  onto the palette `[0, 4] × [0, −4]` and the weight texcoords `0.5/256` to
+  `240.5/256`, so pixel i reads the weights halfway between vertices i and
+  i + 1 (cell centres). The height pass maps 241 of its 244 pixels onto
+  `[0, 4.016667]` and `0` to `241/256`, so pixel i reads vertex i's own
+  weight and the palette half a cell past it; its last three rows and
+  columns keep the 0.5 clear (byte 128). The palette's v runs negative.
+- The weight upload is the merged weight bytes, filtered linearly without
+  mip levels. Layer 0 of the first group of four ignores its weight; later
+  layers mix in by it (the height pass boosting it by 1.5 and never
+  sharpening it; the mask pass sharpening a material that has an M map by
+  `(s, t/s + 1)`, where `s = 0` gives NaN, which the GPU's clamp takes to
+  0). The first group overwrites; the group starting at layer 4 switches
+  blending to `ONE, SRC_ALPHA`, its alpha the share it leaves below.
+- The material maps are uploaded with the terrain loader's word `0x70140`
+  (repeat, mipmapped, data; no linear bits, and the loader does not join the
+  quality mask), so they sample the nearest texel of the nearest level, with
+  the bind's LOD bias (−0.75 at the retail settings) and a level of detail
+  of `log2(side · f0 / 60)` (one pixel is 1/60 of a palette unit in both
+  passes).
+- Writes are 8-bit. The working target is sRGB and the mask pass turns
+  sRGB writes on, so the mask plane holds the sRGB encoding of the layered
+  colour; the height pass writes plain bytes. The read-back is assumed to
+  return the stored bytes (desktop GL; not observable in the binary).
+
+The height plane moves vertex (i, j) by its texel (i, j):
+`(byte − 127) × 1.25 × (2 − normal y)` cm. Neutral materials (0.5) store as
+byte 128, so painted ground rests about 1.25 cm above dungeon floors laid at
+0 and covers them (dirt over flagstones). Grass and plants grow from the
+mask plane's green (see Vegetation); the plant records only give their
+colour.
 
 ### Plant (104 bytes)
 
@@ -412,11 +448,13 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   delete moves the tail in). The set
   is partitioned in place into 8 × 8 chunks of 6 m, rows first.
 - **Density**: the mask pass layers each material's f13 (green), with cover
-  forced to 1. A point reads it as a byte, d = G/255 − 0.2, or −1 in a hole.
+  forced to 1, and stores it sRGB-encoded (Tile bake). A point reads it as
+  a byte, d = G/255 − 0.2, or −1 in a hole.
   The mask is 240 × 240 texels: a vertex step `p` reads texel
   `round(p × 239/240)`, while the hole bit uses `round(p)`. Nothing grows
-  below d = 0.35, so only materials with f13 ≥ 0.55 (e.g. `Mat GrassT`)
-  carry plants.
+  below d = 0.35, a stored green of 0.55, which a fully covering material
+  reaches from f13 ≈ 0.27 once encoded: `Mat GrassT` and the plain
+  `Mat Grass` (0.4 to 0.8) carry plants, `Mat GrsDr` (0.2 to 0.27) does not.
 - **Choice** (tile seed, the `.rft` tile word after x and y): for every
   point in chunk order, two steps decide: grass when (s·N)>>32 < 10 with
   N = round(50d²), then the variant. A second pass, two steps per point,

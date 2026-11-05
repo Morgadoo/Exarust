@@ -17,6 +17,8 @@ use bevy::math::{Mat3, Vec2, Vec3};
 use exa_physics::engine_math::round_to_i64;
 
 use super::composite::{LIGHT_SORT_BIAS, NO_LIGHT_DISTANCE};
+use super::manager::{READBACK_HEIGHTS, READBACK_PACKED};
+use super::tile_bake::MANAGER_FEATURES;
 
 /// Distance (metres) within which a block gets a high-resolution composite:
 /// the original compares the squared distance in centimetres against
@@ -363,12 +365,16 @@ pub mod tile_flags {
     /// the terrain clears it, so an inserted tile stays in the walk and is
     /// passed over while it needs nothing).
     pub const STREAM: u32 = 0x800;
-    /// The tile's data changed and its GPU side must be reloaded (the worker
-    /// sets this when the terrain's flags ask); the frame hook unloads it.
-    pub const RELOAD: u32 = 0x1000;
-    /// The tile has been unloaded.
-    pub const UNLOADED: u32 = 0x2000;
-    /// The tile's GPU data waits for an upload (cleared by the upload).
+    /// The tile's bake is due: the worker sets it whenever the renderer
+    /// reads a bake plane back (the shipped manager reads both), and the
+    /// frame hook then runs the tile's mask and height passes
+    /// ([`super::super::tile_bake`]).
+    pub const BAKE: u32 = 0x1000;
+    /// The bake's read-back is pending: the next frame's hand-off copies the
+    /// planes ([`super::super::manager::take_readback`]).
+    pub const READBACK: u32 = 0x2000;
+    /// The tile's GPU data waits for an upload (the read-back hand-off sets
+    /// it; the insert or the upload clears it).
     pub const UPLOAD: u32 = 0x4000;
 }
 
@@ -381,8 +387,9 @@ pub enum TileAction {
     Insert,
     /// Upload the tile's GPU data.
     Upload,
-    /// Unload the tile's GPU data.
-    Unload,
+    /// Run the tile's bake (its mask and height passes), whose read-back
+    /// the next frame takes.
+    Bake,
 }
 
 /// One tile's streaming state: the bits above, and the refresh delay the
@@ -410,12 +417,12 @@ impl TileStream {
     }
 
     /// The worker finished the tile's geometry and masks: state
-    /// `(state & ~0x10) | 0x828`, plus the reload bit when the terrain's
-    /// flags ask for one.
-    pub fn mark_built(&mut self, reload: bool) {
+    /// `(state & ~0x10) | 0x828`, plus the bake bit when the renderer's
+    /// feature word reads a bake plane back (`features & 0x3000`).
+    pub fn mark_built(&mut self, features: u32) {
         self.state = (self.state & !0x10) | 0x828;
-        if reload {
-            self.state |= tile_flags::RELOAD;
+        if features & (READBACK_PACKED | READBACK_HEIGHTS) != 0 {
+            self.state |= tile_flags::BAKE;
         }
     }
 
@@ -430,12 +437,12 @@ impl TileStream {
     }
 
     /// The frame hook's choice for this tile. The insert test is the
-    /// original's `(state & 0x309f) == 0xf`; the upload test is
-    /// `(state & 0x4080) == 0x4080`; a reload bit wins over both and is
-    /// handled by unloading the tile.
+    /// original's `(state & 0x309f) == 0xf`, so a tile waiting for its bake
+    /// or read-back is not inserted; the upload test is
+    /// `(state & 0x4080) == 0x4080`; a due bake wins over both.
     pub fn action(&self) -> TileAction {
-        if self.state & tile_flags::RELOAD != 0 {
-            return TileAction::Unload;
+        if self.state & tile_flags::BAKE != 0 {
+            return TileAction::Bake;
         }
         if self.state & 0x309f == 0xf {
             return TileAction::Insert;
@@ -447,7 +454,8 @@ impl TileStream {
     }
 
     /// Applies the frame hook's action: the state transitions its branches
-    /// make (an insert also uploads, so it clears the upload bit too).
+    /// make (an insert also uploads, so it clears the upload bit too; a bake
+    /// leaves its read-back pending).
     pub fn apply(&mut self, action: TileAction) {
         match action {
             TileAction::Insert => {
@@ -457,8 +465,8 @@ impl TileStream {
             TileAction::Upload => {
                 self.state &= !tile_flags::UPLOAD;
             }
-            TileAction::Unload => {
-                self.state = (self.state & !tile_flags::RELOAD) | tile_flags::UNLOADED;
+            TileAction::Bake => {
+                self.state = (self.state & !tile_flags::BAKE) | tile_flags::READBACK;
             }
             TileAction::None => {}
         }
@@ -485,8 +493,10 @@ pub struct FrameStep {
     /// a ready, inserted tile passed on the walk (its ready bit cleared), and
     /// a tile just inserted.
     pub wanted: Vec<usize>,
-    /// The one tile handled (insert, upload or unload), which ends the walk.
+    /// The one tile handled (insert, upload or bake), which ends the walk.
     pub handled: Option<(usize, TileAction)>,
+    /// The tile whose bake read-back the frame took before its walk.
+    pub read_back: Option<usize>,
 }
 
 /// A level's tiles as the frame hook streams them: at most one tile handled
@@ -496,27 +506,42 @@ pub struct TerrainStream {
     pub tiles: Vec<TileStream>,
     /// The terrain's refresh delay; while positive, frames only decrease it.
     pub delay: i32,
+    /// The tile whose bake waits for its read-back (one at a time: the
+    /// bake's pending record).
+    pub pending: Option<usize>,
 }
 
 impl TerrainStream {
     pub fn new(tiles: Vec<TileStream>) -> Self {
-        Self { tiles, delay: 0 }
+        Self {
+            tiles,
+            delay: 0,
+            pending: None,
+        }
     }
 
     /// The frame hook's walk. While the delay is positive the frame only
     /// counts it down (`None`: no walk and no block selection). Otherwise
-    /// the tiles are walked in order: a tile without the stream bit is
-    /// passed; a ready, inserted one has its blocks marked wanted and its
-    /// ready bit cleared; then the first tile with an action (reload first,
-    /// then insert, then upload) is handled, its transition applied, and
-    /// the walk ends. A tile with no action is passed. The block selection
-    /// runs after the walk.
+    /// a pending bake's read-back is taken first (the record loses its
+    /// read-back bit and gains the upload bit), then the tiles are walked in
+    /// order: a tile without the stream bit is passed; a ready, inserted one
+    /// has its blocks marked wanted and its ready bit cleared; then the
+    /// first tile with an action (bake first, then insert, then upload) is
+    /// handled, its transition applied, and the walk ends. A tile with no
+    /// action is passed. The block selection runs after the walk.
     pub fn frame(&mut self) -> Option<FrameStep> {
         if self.delay >= 1 {
             self.delay -= 1;
             return None;
         }
         let mut step = FrameStep::default();
+        if let Some(index) = self.pending.take() {
+            if let Some(tile) = self.tiles.get_mut(index) {
+                let mut pending = Some(&mut tile.state);
+                let _ = super::manager::take_readback(MANAGER_FEATURES, &mut pending);
+            }
+            step.read_back = Some(index);
+        }
         for (index, tile) in self.tiles.iter_mut().enumerate() {
             if tile.state & tile_flags::STREAM == 0 {
                 continue;
@@ -532,6 +557,9 @@ impl TerrainStream {
             tile.apply(action);
             if action == TileAction::Insert {
                 step.wanted.push(index);
+            }
+            if action == TileAction::Bake {
+                self.pending = Some(index);
             }
             step.handled = Some((index, action));
             break;
@@ -763,7 +791,7 @@ mod tests {
         assert_eq!(tile.action(), TileAction::None);
         // The worker clears bit 0x10 and ORs 0x828 into the reader's 7, so
         // the insert test (low bits 0xf, no 0x3000) passes.
-        tile.mark_built(false);
+        tile.mark_built(0);
         assert_eq!(tile.state, 0x82f);
         assert_eq!(tile.action(), TileAction::Insert);
         tile.apply(TileAction::Insert);
@@ -774,14 +802,42 @@ mod tests {
         assert_eq!(tile.action(), TileAction::Upload);
         tile.apply(TileAction::Upload);
         assert_eq!(tile.state, 0x88f);
-        // A reload request (bit 0x1000) on a fresh tile is handled by
-        // unloading.
-        let mut reload = TileStream::raw();
-        reload.mark_built(true);
-        assert_eq!(reload.state, 0x182f);
-        assert_eq!(reload.action(), TileAction::Unload);
-        reload.apply(TileAction::Unload);
-        assert_eq!(reload.state, 0x282f);
+        // With the shipped feature word the worker also asks for the bake
+        // (bit 0x1000), which leaves the read-back pending (0x2000).
+        let mut baked = TileStream::raw();
+        baked.mark_built(MANAGER_FEATURES);
+        assert_eq!(baked.state, 0x182f);
+        assert_eq!(baked.action(), TileAction::Bake);
+        baked.apply(TileAction::Bake);
+        assert_eq!(baked.state, 0x282f);
+        // Neither the bake nor the read-back lets the insert through.
+        assert_eq!(baked.action(), TileAction::None);
+    }
+
+    #[test]
+    fn a_baked_tile_is_inserted_after_its_read_back() {
+        let mut stream = TerrainStream::new(vec![TileStream::raw(); 2]);
+        for tile in &mut stream.tiles {
+            tile.mark_built(MANAGER_FEATURES);
+        }
+        // Frame 1 bakes tile 0.
+        let step = stream.frame().unwrap();
+        assert_eq!(step.handled, Some((0, TileAction::Bake)));
+        assert_eq!(step.read_back, None);
+        assert_eq!(stream.pending, Some(0));
+        // Frame 2 takes its read-back (0x2000 off, 0x4000 on), which lets
+        // the walk insert it (the insert also clears the upload bit).
+        let step = stream.frame().unwrap();
+        assert_eq!(step.read_back, Some(0));
+        assert_eq!(step.handled, Some((0, TileAction::Insert)));
+        assert_eq!(stream.tiles[0].state, 0x88f);
+        // Then tile 1 goes the same way.
+        assert_eq!(stream.frame().unwrap().handled, Some((1, TileAction::Bake)));
+        assert_eq!(
+            stream.frame().unwrap().handled,
+            Some((1, TileAction::Insert))
+        );
+        assert!(stream.all_inserted());
     }
 
     #[test]
@@ -865,7 +921,7 @@ mod tests {
         // No tile is in the walk yet.
         assert_eq!(stream.frame(), Some(FrameStep::default()));
         for tile in &mut stream.tiles {
-            tile.mark_built(false);
+            tile.mark_built(0);
         }
         // The first tile is inserted, its blocks wanted, and the walk ends.
         let step = stream.frame().unwrap();

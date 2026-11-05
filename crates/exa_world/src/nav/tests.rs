@@ -549,7 +549,11 @@ fn shipped_levels() {
                 passable: [14_670, 3678],
                 sky: [2867, 270],
             },
-            5005,
+            // The terrain's vertices now move by the tile bake's height
+            // plane (each cell sampled half a cell past its vertex, v
+            // mirrored, the map's nearest level and no mask sharpening),
+            // which takes three cells out of the start's reach.
+            5002,
             34,
         ),
         (
@@ -557,10 +561,10 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [190_536, 319_102, 2362, 0],
-                floors: [221_482, 2279],
-                passable: [221_418, 2279],
-                sky: [99_982, 83],
+                columns_by_spans: [190_536, 319_103, 2361, 0],
+                floors: [221_449, 2276],
+                passable: [221_385, 2276],
+                sky: [100_015, 85],
             },
             // The height and mask planes now decode with the original's
             // truncating block arithmetic (no rounding term), which moves one
@@ -575,6 +579,9 @@ fn shipped_levels() {
             // The floor sets' flagged pieces (gefs_uwa01's box, gefs_uwb02's
             // chute) now carry their runtime-generated points, as the
             // original's floor-set load gives them, adding 632 floor columns.
+            // The terrain's vertices now move by the tile bake's height
+            // plane, which turns 33 lower and 3 upper floor cells to sky
+            // and leaves the reach as it was.
             46_225,
             682,
         ),
@@ -656,8 +663,9 @@ fn shipped_levels() {
                 built.movers.clear();
                 let open = built.build();
                 let r_open = reach(&open, start);
-                // 195 049 before the floor sets' generated points.
-                assert_eq!(r_open.len(), 195_709);
+                // 195 049 before the floor sets' generated points, 195 709
+                // before the tile bake's height plane.
+                assert_eq!(r_open.len(), 195_684);
                 let (sx, sz) = open.cell_at(Vec3::new(8.9, -1.0, 64.0)).unwrap();
                 assert!(r_open.iter().any(|&(x, z, _)| (x, z) == (sx, sz)));
                 // Over its 477 closed rooms only the walls' edges have floors
@@ -676,7 +684,8 @@ fn shipped_levels() {
                     *tile = Arc::new((**tile).clone().with_blocks(GroundTile::ALL_BLOCKS));
                 }
                 let g = whole.build();
-                assert_eq!(floors_over_closed_rooms(&g, &grid), 186_721);
+                // 186 721 before the tile bake's height plane.
+                assert_eq!(floors_over_closed_rooms(&g, &grid), 186_724);
                 assert_eq!(reach(&g, start).len(), 46_425);
             }
             _ => {}

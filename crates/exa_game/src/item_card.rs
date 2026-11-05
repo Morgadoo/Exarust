@@ -30,8 +30,15 @@
 //! bit 0x10) in opaque white and the crystal (cells 3 to 6 for A, B, C and
 //! AR) added in white at alpha 255 less its charge.
 //!
+//! The value's coin control ([`CoinSheet`]) writes each present
+//! denomination's count on the control's text baseline in the label
+//! group's sixth ink and stands the coin sheet's icon (at the coin
+//! manager's side, four units) on that baseline before it, in white at the
+//! card's GUI alpha. The rating dots take the label group's seventh shade.
+//!
 //! Evidence: the card builder and its helpers (`docs/UI.md`, item GUI), the
-//! socket control's draw and the item GUI's sheet loader.
+//! socket control's draw, the coin control's draw and the item GUI's sheet
+//! loader.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -143,6 +150,10 @@ pub struct CardView {
     /// The rating dots' cells (the inventory's sheet), loaded once.
     pub dots: Option<crate::doll_view::DotSheet>,
     dots_tried: bool,
+    /// The coin control's three icons, made at the coin manager's side.
+    pub coins: Option<CoinSheet>,
+    /// The coin side the icons were last tried at.
+    coins_tried: Option<i32>,
     /// A map's parchment the card builder asked for in place of a card,
     /// opened by [`crate::parchment`].
     pub parchment: Option<crate::parchment::OpenParchment>,
@@ -867,6 +878,102 @@ impl SocketSheet {
     }
 }
 
+/// The coin sheet's index among the item GUI's sheets.
+const COIN_SHEET: usize = 1;
+
+/// The coin control's icons: the coin sheet's three cells (gold, silver,
+/// copper) resampled to the coin manager's side, `4 · unit`, in one atlas.
+pub struct CoinSheet {
+    pub atlas: IconAtlas,
+    pub texture: GuiTexture,
+    /// The handles of the gold, silver and copper icons.
+    pub cells: [i32; 3],
+    pub side: i32,
+}
+
+impl CoinSheet {
+    /// From the sheet's decoded cells (square, `cell` pixels) at `side`.
+    pub fn of_cells(cells: &[Vec<u8>], cell: usize, side: i32) -> Option<Self> {
+        let format = exa_items::item_gui::SHEET_ATLASES[COIN_SHEET].format;
+        let out = side.max(1) as usize;
+        let mut atlas = IconAtlas::new(side.max(1), 4);
+        let mut handles = [0; 3];
+        for (i, handle) in handles.iter_mut().enumerate() {
+            let resampled = exa_render::mipmap::resample_rgba8_to_size(
+                cells.get(i)?,
+                cell,
+                cell,
+                out,
+                out,
+                format,
+                0,
+            );
+            (resampled.len() == out * out * 4).then_some(())?;
+            *handle = atlas.add(
+                &IconImage {
+                    width: out as u16,
+                    height: out as u16,
+                    channels: 4,
+                    pixels: resampled,
+                },
+                i as i32 + 1,
+            );
+            (*handle > 0).then_some(())?;
+        }
+        let texture = GuiTexture::from_bottom_up(
+            u32::from(atlas.image.width),
+            u32::from(atlas.image.height),
+            &atlas.image.pixels,
+        )?;
+        Some(Self {
+            atlas,
+            texture,
+            cells: handles,
+            side,
+        })
+    }
+
+    /// The icon quads of a coin draw's parts, in its order.
+    pub fn quads(&self, parts: &[exa_items::item_gui::CoinPart]) -> Vec<IconQuad> {
+        let mut quads = Vec::new();
+        for part in parts {
+            if let Some(&handle) = usize::from(part.icon)
+                .checked_sub(1)
+                .and_then(|i| self.cells.get(i))
+            {
+                quads.extend(self.atlas.draw(handle, part.icon_at.0, part.icon_at.1));
+            }
+        }
+        quads
+    }
+
+    /// The icons of a coin draw's parts in white at the GUI `alpha` (0–1);
+    /// `None` when nothing draws.
+    pub fn layer(&self, parts: &[exa_items::item_gui::CoinPart], alpha: f32) -> Option<GuiLayer> {
+        let ink = [
+            255,
+            255,
+            255,
+            (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+        ];
+        let quads = self.quads(parts);
+        (!quads.is_empty()).then(|| {
+            GuiLayer::new(
+                icon_batch(&quads, ink),
+                LayerTexture::Owned(self.texture.clone()),
+            )
+        })
+    }
+}
+
+/// Reads the coin sheet and makes its icons at `side`.
+fn load_coin_sheet(game: &exa_assets::Game, side: i32) -> Option<CoinSheet> {
+    let sheet = &SPRITE_SHEETS[COIN_SHEET];
+    let name = sheet.name.strip_suffix(".rfi").unwrap_or(sheet.name);
+    let loaded = load_sheet(sheet, game.0.texture(name)?)?;
+    CoinSheet::of_cells(&loaded.cells, sheet.cell as usize, side)
+}
+
 /// Reads the rating-dot and crystal sheets and makes the socket cells at
 /// `side`.
 fn load_socket_sheet(game: &exa_assets::Game, side: i32) -> Option<SocketSheet> {
@@ -1272,10 +1379,27 @@ pub fn draw_card(
             warn!("item card: the rating-dot sheet did not load");
         }
     }
+    let coin_side = exa_items::item_gui::coin_cell(unit);
+    if view.coins_tried != Some(coin_side)
+        && view
+            .shown
+            .as_ref()
+            .is_some_and(|c| c.built.content.is_some())
+    {
+        view.coins_tried = Some(coin_side);
+        view.coins = game
+            .as_deref()
+            .and_then(|game| load_coin_sheet(game, coin_side));
+        match &view.coins {
+            Some(_) => info!("item card: coin icons made at {coin_side} px"),
+            None => warn!("item card: the coin sheet did not load"),
+        }
+    }
     let CardView {
         shown,
         sockets: socket_sheet,
         dots: dot_sheet,
+        coins: coin_sheet,
         ..
     } = view.into_inner();
     let Some(card) = shown else {
@@ -1424,7 +1548,7 @@ pub fn draw_card(
                         c.value,
                         (x, y, c.h),
                         unit,
-                        palette.text[7],
+                        palette.text[6],
                     )
                 }) {
                     painted.push(layer);
@@ -1440,32 +1564,29 @@ pub fn draw_card(
                 );
             }
             COIN_CLASS => {
-                let amount = c.value as u32;
-                for (_, coin_x, n) in
-                    exa_items::item_gui::coin_layout(amount, x as f32, unit as f32, |n| {
+                // The coin control's draw: each count's text on the
+                // control's baseline in the label group's sixth ink, then
+                // the coin icons standing on that baseline in white at the
+                // GUI alpha.
+                let baseline = exa_items::item_gui::coin_baseline(y, c.h, font.ascent);
+                let parts =
+                    exa_items::item_gui::coin_draw(c.value as u32, x, baseline, unit, |n| {
                         font.text_width(n.to_string().as_bytes()) as f32
-                    })
-                {
-                    // The denomination's icon takes the four units before
-                    // the number; the coin icons are not drawn. [The
-                    // number's baseline is a guess: the row labels' middle
-                    // row (style 0x300).]
-                    let number = n.to_string();
-                    let w = font.text_width(number.as_bytes()) + unit;
-                    let place = GuiRect::new(coin_x as i32 + 4 * unit, y, w, c.h);
-                    for layer in gui_paint::paint_label(
-                        place,
-                        0x300,
-                        unit,
-                        &palette,
+                    });
+                for part in &parts {
+                    painted.push(gui_paint::caption_layer(
                         &font,
-                        Some(font_texture),
-                        &number,
-                    )
-                    .layers
-                    {
-                        painted.push(layer);
-                    }
+                        font_texture,
+                        part.count.to_string().as_bytes(),
+                        (part.text_x as i32, baseline),
+                        palette.text[5],
+                    ));
+                }
+                if let Some(layer) = coin_sheet
+                    .as_ref()
+                    .and_then(|sheet| sheet.layer(&parts, step.alpha))
+                {
+                    painted.push(layer);
                 }
             }
             SOCKETS_CLASS => {
@@ -1680,6 +1801,41 @@ mod tests {
     fn uv(sheet: &SocketSheet, handle: i32) -> [f32; 2] {
         let c = sheet.atlas.draw(handle, 0.0, 0.0)[0].corners[0];
         [c[2], c[3]]
+    }
+
+    #[test]
+    fn the_coin_icons_stand_on_the_baseline_in_the_coin_order() {
+        let flat = |v: u8| vec![v; 8 * 8 * 4];
+        let sheet =
+            CoinSheet::of_cells(&[flat(10), flat(20), flat(30)], 8, 16).expect("the cells fit");
+        assert_eq!(sheet.side, 16);
+        // One gold and three copper at x 40 on baseline 55, unit 4: gold's
+        // icon at 40, its text at 56 (6 wide), copper's icon two units on.
+        let parts = exa_items::item_gui::coin_draw(0x0001_0003, 40, 55, 4, |_| 6.0);
+        let quads = sheet.quads(&parts);
+        assert_eq!(quads.len(), 2);
+        let corner = |q: &IconQuad| {
+            [
+                q.corners[0][0],
+                q.corners[0][1],
+                q.corners[0][2],
+                q.corners[0][3],
+            ]
+        };
+        let cell = |handle: i32| corner(&sheet.atlas.draw(handle, 0.0, 0.0)[0]);
+        assert_eq!(&corner(&quads[0])[..2], &[40.0, 39.0]);
+        assert_eq!(&corner(&quads[1])[..2], &[70.0, 39.0]);
+        assert_eq!(&corner(&quads[0])[2..], &cell(sheet.cells[0])[2..]);
+        assert_eq!(&corner(&quads[1])[2..], &cell(sheet.cells[2])[2..]);
+        let layer = sheet.layer(&parts, 0.5).expect("two icons");
+        assert!(
+            layer
+                .batch
+                .vertices
+                .iter()
+                .all(|v| v.ink == [255, 255, 255, 128])
+        );
+        assert!(sheet.layer(&[], 1.0).is_none());
     }
 
     #[test]

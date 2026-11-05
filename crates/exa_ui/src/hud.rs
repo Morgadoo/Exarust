@@ -361,6 +361,22 @@ pub fn paint_bars(
     texture: &FrameTexture,
     window_height: u32,
 ) {
+    paint_bars_with(canvas, hud, layout, fade, texture, window_height, true);
+}
+
+/// [`paint_bars`] with the HUD's red floor optional: the HUD passes no
+/// lasting-damage share for a red value of at most 0.01, the character
+/// view's preview bars pass the record's share as it is (`red_floor`
+/// false).
+pub fn paint_bars_with(
+    canvas: &mut Canvas,
+    hud: &HudBars,
+    layout: &Layout,
+    fade: f32,
+    texture: &FrameTexture,
+    window_height: u32,
+    red_floor: bool,
+) {
     let h = window_height as i32;
     let g = layout.gui;
     let line = (FRAME_ALPHA * fade).round_ties_even() / 255.0;
@@ -376,7 +392,7 @@ pub fn paint_bars(
     let fill = fade * fade;
     let inner = (INNER_SHADOW_ALPHA * fade).round_ties_even() / 255.0;
     let share = |v: f32| if hud.max > 0.0 { v / hud.max } else { 0.0 };
-    let red = if hud.red <= RED_FLOOR {
+    let red = if red_floor && hud.red <= RED_FLOOR {
         0.0
     } else {
         share(hud.red)
