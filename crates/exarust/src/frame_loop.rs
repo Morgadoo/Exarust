@@ -228,3 +228,17 @@ pub fn launch_window_mode(fullscreen: bool) -> WindowMode {
         WindowMode::Windowed
     }
 }
+
+/// `--hold-loading`: game time stands still while the loading screen shows,
+/// so the fixed step's first tick after a load is the same from run to run
+/// (a load takes a varying number of frames).
+pub fn hold_while_loading(
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut time: ResMut<Time<Virtual>>,
+) {
+    match (loading.is_some(), time.is_paused()) {
+        (true, false) => time.pause(),
+        (false, true) => time.unpause(),
+        _ => {}
+    }
+}

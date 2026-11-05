@@ -277,6 +277,8 @@ Round 50 doornav (W1): the backlog premise was wrong; a door never changes the n
 
 Round 65 terrain: the original's tile bake replaces a per-vertex stand-in; plain grass now carries plants, pending a retail check.
 
+Round 66 gridenvs: room lids close the point-light cube shadows and the shell query serves the hand and kinesis.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -900,6 +902,8 @@ Round 63 simthread (stage 1 of 7): the original's driver ported and the fixed st
 Round 64 simthread3 (stage 3, increment 1): the simulation world runs the fixed step behind a copy bridge, opt-in until every type is registered. Also (gridstall): wgpu's upload buffers no longer use the 3090's shared 256 MiB BAR window without a resizable BAR (patched gpu-allocator), which ended the second grid game's 0.5–1.6 s render stalls; the grid host plays no audio, ending the multi-GB ALSA log spam.
 
 Round 65 simthread3 (stage 3, increment 2): the whole fixed step runs behind the bridge; one divergence to find before it becomes the default.
+
+Round 66 simthread3 (stage 3 done): the simulation world runs the game's fixed step by default; the duel drift was query-filter markers the coverage check never saw.
 
 ### Phase 4 — Combat and items (started)
 

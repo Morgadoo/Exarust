@@ -21,6 +21,12 @@ pub(super) fn floor(at: Vec3) -> Physics {
 #[derive(Component)]
 pub(super) struct Aim(pub Box<dyn Fn(u64) -> (Affine3A, Vec<Affine3A>) + Send + Sync>);
 
+impl std::fmt::Debug for Aim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Aim")
+    }
+}
+
 impl Default for Aim {
     fn default() -> Self {
         Self::still(Vec::new())

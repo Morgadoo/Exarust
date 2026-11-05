@@ -749,7 +749,7 @@ pub fn attach_frame(transform: &GlobalTransform) -> Frame {
 }
 
 /// A row that has taken its first ends from its item.
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Debug)]
 pub struct Attached;
 
 #[allow(clippy::type_complexity)]

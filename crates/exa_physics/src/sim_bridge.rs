@@ -175,6 +175,9 @@ impl Removals {
 
 // ---------------------------------------------------------------- components
 
+/// The entities whose `T` changed since a tick, with their values.
+type ChangedQuery<T> = QueryState<(Entity, &'static T), (Changed<T>, Without<IsResource>)>;
+
 /// Every entity's value of a bridged component (not resources).
 type ValueQuery<D> = QueryState<(Entity, D), Without<IsResource>>;
 
@@ -190,6 +193,9 @@ struct CopyComponentHalf<T: Component + Clone> {
     refs: fn(&T) -> Option<Entity>,
     id: Option<ComponentId>,
     query: Option<ValueQuery<Ref<'static, T>>>,
+    /// The values changed since a tick, filtered in the storage's change
+    /// ticks (no per-value `Ref`).
+    changed: Option<ChangedQuery<T>>,
     removals: Removals,
     since: Tick,
 }
@@ -223,6 +229,7 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
             refs: self.refs,
             id: None,
             query: None,
+            changed: None,
             removals: Removals::new(),
             since: Tick::new(0),
         })
@@ -259,6 +266,7 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
     fn init(&mut self, world: &mut World) -> ComponentId {
         let id = component_id::<T>(world, &mut self.id);
         self.query = Some(world.query_filtered());
+        self.changed = Some(world.query_filtered());
         id
     }
 
@@ -273,14 +281,29 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         self.drain_removed(world);
         let now = world.change_tick();
         let since = self.since;
-        let Some(query) = self.query.as_mut() else {
-            return Gathered::empty();
+        let values: Vec<(Entity, T, bool)> = if all {
+            let Some(query) = self.query.as_mut() else {
+                return Gathered::empty();
+            };
+            query
+                .iter(world)
+                .map(|(e, v)| (e, T::clone(&v), true))
+                .collect()
+        } else {
+            let Some(changed) = self.changed.as_mut() else {
+                return Gathered::empty();
+            };
+            // SAFETY: a read-only query of a world this half holds `&mut`
+            // to; the state was made from this world.
+            let query = unsafe {
+                changed.query_unchecked_with_ticks(
+                    world.as_unsafe_world_cell_readonly(),
+                    since,
+                    now,
+                )
+            };
+            query.iter().map(|(e, v)| (e, T::clone(v), true)).collect()
         };
-        let values: Vec<(Entity, T, bool)> = query
-            .iter(world)
-            .filter(|(_, v)| all || v.last_changed().is_newer_than(since, now))
-            .map(|(e, v)| (e, T::clone(&v), true))
-            .collect();
         let seen = self.removals.take();
         let removed = live_removals::<T>(world, &seen);
         // A relationship's target must exist on the other side too.
@@ -650,6 +673,7 @@ pub struct ChildrenOrder;
 struct ChildrenOrderHalf {
     id: Option<ComponentId>,
     query: Option<ValueQuery<Ref<'static, Children>>>,
+    changed: Option<ChangedQuery<Children>>,
     since: Tick,
 }
 
@@ -662,6 +686,7 @@ impl BridgeType for ChildrenOrder {
         Box::new(ChildrenOrderHalf {
             id: None,
             query: None,
+            changed: None,
             since: Tick::new(0),
         })
     }
@@ -675,6 +700,7 @@ impl BridgeHalf for ChildrenOrderHalf {
     fn init(&mut self, world: &mut World) -> ComponentId {
         let id = component_id::<Children>(world, &mut self.id);
         self.query = Some(world.query_filtered());
+        self.changed = Some(world.query_filtered());
         id
     }
 
@@ -683,14 +709,25 @@ impl BridgeHalf for ChildrenOrderHalf {
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
         let now = world.change_tick();
         let since = self.since;
-        let Some(query) = self.query.as_mut() else {
-            return Gathered::empty();
+        let orders: Vec<(Entity, Vec<Entity>)> = if ctx.all {
+            let Some(query) = self.query.as_mut() else {
+                return Gathered::empty();
+            };
+            query.iter(world).map(|(e, c)| (e, c.to_vec())).collect()
+        } else {
+            let Some(changed) = self.changed.as_mut() else {
+                return Gathered::empty();
+            };
+            // SAFETY: as in `CopyComponentHalf::gather`.
+            let query = unsafe {
+                changed.query_unchecked_with_ticks(
+                    world.as_unsafe_world_cell_readonly(),
+                    since,
+                    now,
+                )
+            };
+            query.iter().map(|(e, c)| (e, c.to_vec())).collect()
         };
-        let orders: Vec<(Entity, Vec<Entity>)> = query
-            .iter(world)
-            .filter(|(_, c)| ctx.all || c.last_changed().is_newer_than(since, now))
-            .map(|(e, c)| (e, c.to_vec()))
-            .collect();
         Gathered {
             values: orders.len(),
             packet: Box::new(orders),
@@ -845,13 +882,24 @@ impl<T: Component> BridgeHalf for SimOnlyHalf<T> {
 pub struct SimBridgeTypes {
     types: Vec<Box<dyn BridgeType>>,
     seen: HashSet<TypeId>,
+    /// Makers of each digestible type's digester (`crate::sim_digest`).
+    digests: Vec<DigestMaker>,
 }
 
+/// Makes a digester for one bridged type.
+pub type DigestMaker = fn() -> Box<dyn crate::sim_digest::Digester>;
+
 impl SimBridgeTypes {
-    fn add(&mut self, t: impl BridgeType) {
+    fn add(&mut self, t: impl BridgeType, digest: Option<DigestMaker>) {
         if self.seen.insert(t.type_id()) {
             self.types.push(Box::new(t));
+            self.digests.extend(digest);
         }
+    }
+
+    /// A fresh digester for every digestible bridged type.
+    pub fn digesters(&self) -> Vec<Box<dyn crate::sim_digest::Digester>> {
+        self.digests.iter().map(|make| make()).collect()
     }
 
     pub fn len(&self) -> usize {
@@ -883,18 +931,36 @@ impl SimBridgeTypes {
 /// read when the bridge starts.
 pub trait SimBridgeAppExt {
     /// A component copied when it changed.
-    fn bridge_copy<T: Component<Mutability = Mutable> + Clone>(&mut self) -> &mut Self;
+    fn bridge_copy<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self;
     /// A relationship such as `ChildOf` (immutable) copied by re-inserting
     /// it when it changed; its target is spawned on the other side too.
-    fn bridge_relationship<T: Relationship + Clone>(&mut self) -> &mut Self;
+    fn bridge_relationship<T: Relationship + Clone + std::fmt::Debug>(&mut self) -> &mut Self;
     /// A component lent to the simulation for each step.
-    fn bridge_lend<T: Component<Mutability = Mutable> + Default>(&mut self) -> &mut Self;
+    fn bridge_lend<T: Component<Mutability = Mutable> + Default + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self;
     /// A resource copied when it changed.
-    fn bridge_copy_resource<T: Resource + Component<Mutability = Mutable> + Clone>(
+    fn bridge_copy_resource<
+        T: Resource + Component<Mutability = Mutable> + Clone + std::fmt::Debug,
+    >(
         &mut self,
     ) -> &mut Self;
     /// A resource lent to the simulation for each step.
-    fn bridge_lend_resource<T: Resource + Component<Mutability = Mutable> + Default>(
+    fn bridge_lend_resource<
+        T: Resource + Component<Mutability = Mutable> + Default + std::fmt::Debug,
+    >(
+        &mut self,
+    ) -> &mut Self;
+    /// A lent resource without `Debug` (Bevy's gizmo storages, the collision
+    /// world): left out of the digest (`crate::sim_digest`).
+    fn bridge_lend_opaque_resource<T: Resource + Component<Mutability = Mutable> + Default>(
+        &mut self,
+    ) -> &mut Self;
+    /// A copied resource left out of the digest (large read-only data:
+    /// the game's files, the motion set).
+    fn bridge_copy_opaque_resource<T: Resource + Component<Mutability = Mutable> + Clone>(
         &mut self,
     ) -> &mut Self;
     /// A message type forwarded both ways.
@@ -910,42 +976,76 @@ pub trait SimBridgeAppExt {
 }
 
 impl SimBridgeAppExt for App {
-    fn bridge_copy<T: Component<Mutability = Mutable> + Clone>(&mut self) -> &mut Self {
-        add_type(
+    fn bridge_copy<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
             self,
             CopyComponent::<T> {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 _t: PhantomData,
             },
+            Some(crate::sim_digest::component::<T>),
         )
     }
 
-    fn bridge_relationship<T: Relationship + Clone>(&mut self) -> &mut Self {
-        add_type(
+    fn bridge_relationship<T: Relationship + Clone + std::fmt::Debug>(&mut self) -> &mut Self {
+        add_digested(
             self,
             CopyComponent::<T> {
                 assign: assign_by_insert::<T>,
                 refs: |r| Some(r.get()),
                 _t: PhantomData,
             },
+            Some(crate::sim_digest::component::<T>),
         )
     }
 
-    fn bridge_lend<T: Component<Mutability = Mutable> + Default>(&mut self) -> &mut Self {
-        add_type(self, LendComponent::<T>(PhantomData))
-    }
-
-    fn bridge_copy_resource<T: Resource + Component<Mutability = Mutable> + Clone>(
+    fn bridge_lend<T: Component<Mutability = Mutable> + Default + std::fmt::Debug>(
         &mut self,
     ) -> &mut Self {
-        add_type(self, CopyResource::<T>(PhantomData))
+        add_digested(
+            self,
+            LendComponent::<T>(PhantomData),
+            Some(crate::sim_digest::component::<T>),
+        )
     }
 
-    fn bridge_lend_resource<T: Resource + Component<Mutability = Mutable> + Default>(
+    fn bridge_copy_resource<
+        T: Resource + Component<Mutability = Mutable> + Clone + std::fmt::Debug,
+    >(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
+            self,
+            CopyResource::<T>(PhantomData),
+            Some(crate::sim_digest::resource::<T>),
+        )
+    }
+
+    fn bridge_lend_resource<
+        T: Resource + Component<Mutability = Mutable> + Default + std::fmt::Debug,
+    >(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
+            self,
+            LendResource::<T>(PhantomData),
+            Some(crate::sim_digest::resource::<T>),
+        )
+    }
+
+    fn bridge_lend_opaque_resource<T: Resource + Component<Mutability = Mutable> + Default>(
         &mut self,
     ) -> &mut Self {
         add_type(self, LendResource::<T>(PhantomData))
+    }
+
+    fn bridge_copy_opaque_resource<T: Resource + Component<Mutability = Mutable> + Clone>(
+        &mut self,
+    ) -> &mut Self {
+        add_type(self, CopyResource::<T>(PhantomData))
     }
 
     fn bridge_message<M: Message + Clone>(&mut self) -> &mut Self {
@@ -953,7 +1053,11 @@ impl SimBridgeAppExt for App {
     }
 
     fn bridge_children_order(&mut self) -> &mut Self {
-        add_type(self, ChildrenOrder)
+        add_digested(
+            self,
+            ChildrenOrder,
+            Some(crate::sim_digest::component::<Children>),
+        )
     }
 
     fn bridge_sim_only<T: Component>(&mut self) -> &mut Self {
@@ -966,9 +1070,13 @@ impl SimBridgeAppExt for App {
 }
 
 fn add_type(app: &mut App, t: impl BridgeType) -> &mut App {
+    add_digested(app, t, None)
+}
+
+fn add_digested(app: &mut App, t: impl BridgeType, digest: Option<DigestMaker>) -> &mut App {
     app.world_mut()
         .get_resource_or_init::<SimBridgeTypes>()
-        .add(t);
+        .add(t, digest);
     app
 }
 
@@ -1360,16 +1468,16 @@ pub fn bridge_bevy_types(app: &mut App) {
         .bridge_copy_resource::<Time<Fixed>>()
         .bridge_copy_resource::<Time<Virtual>>()
         .bridge_copy_resource::<Time<Real>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, ()>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, ()>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, ()>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, ()>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, ()>>()
-        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, bevy::time::Fixed>>();
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, ()>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, ()>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, ()>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, ()>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, ()>>()
+        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, bevy::time::Fixed>>();
 }
 
 fn count_frame(mut bridge: ResMut<FrameBridge>, order: Option<Res<FixedMainScheduleOrder>>) {
@@ -1516,6 +1624,9 @@ fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
     // The shell's own resources, and Bevy's message registry: its fixed-step
     // signal is sent by the frame after each step (`frame_apply`).
     for id in [
+        // Bevy's default query filters (every query has them).
+        world.register_component::<bevy::ecs::entity_disabling::Disabled>(),
+        world.register_component::<IsResource>(),
         world.register_component::<MessageRegistry>(),
         world.register_component::<crate::sim_app::SimClock>(),
         world.register_component::<crate::sim_app::SimLinks>(),
@@ -1612,12 +1723,22 @@ fn note_access(
         coverage.whole_world.insert(name);
         return;
     };
-    for kind in kinds {
-        let id = match kind {
+    // Query filters (`With`, `Without`) are not in the combined access but
+    // decide which entities match: a marker the bridge does not carry would
+    // match nothing (or everything) in the simulation's world.
+    let filters: Vec<ComponentId> = set
+        .filtered_accesses()
+        .iter()
+        .flat_map(|f| f.with_filters().chain(f.without_filters()))
+        .collect();
+    let ids = kinds
+        .map(|kind| match kind {
             ComponentAccessKind::Shared(id)
             | ComponentAccessKind::Exclusive(id)
             | ComponentAccessKind::Archetypal(id) => id,
-        };
+        })
+        .chain(filters);
+    for id in ids {
         if !covered.contains(&id) {
             let type_name = world
                 .components()
@@ -1668,12 +1789,18 @@ fn report_unbridged_components(world: &World, bridge: &mut SimBridge) {
         }
         for &id in archetype.components() {
             if bridge.unbridged_seen.insert(id) {
-                let name = world
-                    .components()
-                    .get_name(id)
-                    .map_or_else(|| format!("{id:?}"), |n| n.to_string());
+                let name_of = |id: ComponentId| {
+                    world
+                        .components()
+                        .get_name(id)
+                        .map_or_else(|| format!("{id:?}"), |n| n.to_string())
+                };
+                let with: Vec<String> =
+                    archetype.components().iter().map(|&c| name_of(c)).collect();
                 warn!(
-                    "simulation bridge: the simulation's entities carry {name}, which is not bridged"
+                    "simulation bridge: the simulation's entities carry {}, which is not bridged (with {})",
+                    name_of(id),
+                    with.join(", ")
                 );
             }
         }

@@ -248,6 +248,10 @@ pub struct SteerView<'a> {
     /// How far along the same ray (m) a kinesis mesh is first hit. The
     /// nearer of this and the level hit is the one the aim uses.
     pub mesh: &'a dyn Fn(Vec3, Vec3, f32) -> Option<f32>,
+    /// Whether an active room's occluder or lid stands on a ray (origin,
+    /// unit direction, length; m): the room manager's shell queries, which
+    /// the original's clear line asks first.
+    pub shells: &'a dyn Fn(Vec3, Vec3, f32) -> bool,
 }
 
 /// The first thing a ray meets: the level hit or a kinesis mesh, whichever
@@ -315,7 +319,10 @@ pub fn steer(kinesis: &mut Kinesis, body: &mut Ragdoll, children: f32, view: &St
         let length = to.length();
         // The mesh that set the aim is not what blocks the line from the
         // head. Only the level hit does.
-        let clear = length > 0.0 && (view.hit)(view.head, to / length, length).is_none();
+        let clear = length > 0.0 && {
+            let dir = to / length;
+            !(view.shells)(view.head, dir, length) && (view.hit)(view.head, dir, length).is_none()
+        };
         if clear {
             kinesis.aim = settle_aim(point, dir, view.caster_y * CM).to_array();
         }
@@ -349,7 +356,7 @@ pub fn child_parts(body: &Ragdoll) -> f32 {
 }
 
 /// Each body tick, the player's running kinesis steers what it holds.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn steer_kinesis(
     mut casters: Query<(&mut PowerCaster, Option<&Ragdoll>), Without<PropBody>>,
     mut props: Query<(Entity, &mut Ragdoll), (With<PropBody>, Without<PowerCaster>)>,
@@ -358,6 +365,7 @@ pub(super) fn steer_kinesis(
     keys: Res<KinesisKeys>,
     physics: Option<Res<Physics>>,
     stand_ins: Option<Res<StandIns>>,
+    rooms: Option<Res<exa_world::room_view::LevelRooms>>,
 ) {
     // Only a caster with a running kinesis and a held body steers anything.
     // The per-prop triangle meshes below cost more than the whole rest of the
@@ -447,6 +455,12 @@ pub(super) fn steer_kinesis(
             })
             .collect();
         let mesh = |origin: Vec3, dir: Vec3, max: f32| mesh_distance(&others, origin, dir, max);
+        // The occluders first, then the lids, as the original asks them.
+        let shells = |origin: Vec3, dir: Vec3, max: f32| {
+            rooms.as_deref().is_some_and(|r| {
+                r.shell_ray(origin, dir, max, false) || r.shell_ray(origin, dir, max, true)
+            })
+        };
         let view = SteerView {
             cursor: cursor.0,
             head,
@@ -455,6 +469,7 @@ pub(super) fn steer_kinesis(
             keys: keys.0,
             hit: &hit,
             mesh: &mesh,
+            shells: &shells,
         };
         let children = child_parts(&body);
         steer(kinesis, &mut body, children, &view);
@@ -508,6 +523,7 @@ mod tests {
             keys: 0,
             hit,
             mesh: &|_, _, _| None,
+            shells: &|_, _, _| false,
         }
     }
 
@@ -572,6 +588,25 @@ mod tests {
         };
         let far = mesh_distance(&[past], Vec3::new(3.0, 10.0, 0.0), Vec3::NEG_Y, 40.0);
         assert!(far.is_none() || far.is_some_and(|d| d > 10.0), "{far:?}");
+    }
+
+    /// A room's occluder or lid on the line from the head blocks the aim as
+    /// the level does: the last aim stays.
+    #[test]
+    fn a_shell_on_the_line_keeps_the_last_aim() {
+        let mut body = crate_body();
+        let mut k = running();
+        k.aim = [1.0, 2.0, 3.0];
+        let floor = |origin: Vec3, dir: Vec3, _max: f32| {
+            (dir == Vec3::NEG_Y && origin.y > 5.0).then_some(10.0)
+        };
+        let mut v = view(1.0, &floor);
+        v.shells = &|_, _, _| true;
+        steer(&mut k, &mut body, 0.0, &v);
+        assert_eq!(k.aim, [1.0, 2.0, 3.0]);
+        v.shells = &|_, _, _| false;
+        steer(&mut k, &mut body, 0.0, &v);
+        assert_ne!(k.aim, [1.0, 2.0, 3.0]);
     }
 
     /// Without a cursor hit nothing is pushed and the aim stays; a blocked

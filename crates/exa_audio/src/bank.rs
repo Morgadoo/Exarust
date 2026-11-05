@@ -239,7 +239,7 @@ impl<'a> SoundSet<'a> {
 }
 
 /// Decoded sounds by name, the loaded sets, and the generator.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct SoundBank {
     /// The direct asset lookup game code uses for one-off sounds.
     loaded: HashMap<String, Option<Handle<AudioSource>>>,

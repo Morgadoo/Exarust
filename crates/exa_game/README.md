@@ -425,7 +425,9 @@ the node's frame, `effectbarrier_f`/`effectbubble_f` through
 (`thaum::dome_sound`: the cast's `thmfrc_ss`, the looping `thmfrc_bc02`
 hum at the frame's levels, the contacts' `thmfrc_bi` and the Bubble's
 break `thmfrc_brf`); a Barrier cast out of combat mode ends at once (its
-hook answers the controller's out-of-combat ask). A kinesis's shell hums
+hook answers the controller's out-of-combat ask). A kinesis's aim is taken
+only when the line from the caster's head to it crosses no active room's
+occluder or lid and no level geometry (`thaum::kinesis_live::steer`). A kinesis's shell hums
 (`thaum::shell_hum`: the looping `thmfrc_knsdr` from `r·0.8` of its length
 in, at the shell's levels and its node's box centre, freed with the shell),
 every held shell carries its `gi_cuboid` box light and every strikes aura
@@ -698,6 +700,9 @@ toward the cursor until the release, a lever turned by the wheel drag
 (`exa_physics::body::LeverBody`: no link, its hand angle set each frame from
 the cursor on the plane across its axle, or across its arm at 30 cm while
 the view lies across the axle, clamped to the swing; let go out of 300 cm),
+the reach test's room check (the hip's room or its open door, and no active
+room's occluder on the cursor ray up to the picked point, through
+`exa_world::room_view::LevelRooms::shell_ray`; doors are exempt),
 the double-click interaction pushing a clickable push surface
 (`PlateBody::push`), the sliding-door drag's record until the release, a cloth
 vertex's grab and its per-frame target (the pick near the vertex, else the
