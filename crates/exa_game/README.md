@@ -451,7 +451,20 @@ spheres with the original's sight program (`exa_render::mind_sight`), its
 per-entry uniforms and the 256² animated noise picture; nothing creates an
 anchor yet, so the pass idles. The spirit screen's 512² picture and noise
 setup are in (`sight::spirit_screen_init`); its own quad and the casting AI
-are not in.
+are not in. `mind::runtime` runs the domain in the game: every character
+carries a `MindBody` (its Mind list and status word: the handover bit
+`0x10_0000`, the control bits `0x60_0000`, the spirit's `0x22_0000`); the
+bar's Mind words run the front end and the casts at the mind pick under the
+pointer (`--debug-cast` aims it at the nearest character); each body tick
+walks Control Mind's binding (the player takes the target's body after
+2 s: the caster's behaviour held, the target's AI set aside, the player
+root and camera moved), the possession marker and Spirit Form's drain; the
+hand-backs run behind the transition screen; Spirit Form's wraith body
+(built by the viewer) takes the player, the powers and the list and gives
+them back; a blow on a body with the handover bit ends its Spirit Form or
+Control Mind; and the lists are fed to the perception as `MindPowers`. The
+other Mind classes' ticks, the spirit screen's draw and the cast sounds
+are not wired.
 
 The small effect nodes (`effects`) are in, on the original's game clock
 in whole milliseconds: a level portal marker (the `0x3DD0E004` emitter

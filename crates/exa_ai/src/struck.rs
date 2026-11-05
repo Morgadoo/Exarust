@@ -19,8 +19,10 @@
 //!    the struck brain's nearby list) plus the kind's share.
 //!
 //! The base also ends a running Spirit Form or Control Mind of the struck
-//! body when its state has the mind bit; Exarust's mind powers keep no such
-//! bit on the body, so that call is not made (see the change's design).
+//! body when its status has the handover bit (`0x10_0000`); the game's mind
+//! runtime makes that call on every noticed blow, after these reactions, for
+//! every body with a mind, the player's left-behind body among them
+//! (`exa_game::mind::runtime::break_on_blows`).
 
 use bevy::prelude::*;
 use exa_combat::swing::SwingState;

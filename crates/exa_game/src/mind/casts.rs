@@ -49,8 +49,8 @@ use bevy::prelude::Entity;
 use crate::thaum::casting::{CastBody, FALLEN_OR_DYING, PERSISTENT, TickScale, price, spend};
 use crate::thaum::power::mind::{
     CONFUSED, CommandDeadCaster, CommandDeadTarget, ControlMindCaster, ENRAGED, LoyaltyCaster,
-    LoyaltyTarget, MASKED, MindMask, MindMaskInstant, MindSense, MindSenseInstant, SpiritPower,
-    TimedBitPower, TimedEffect,
+    LoyaltyTarget, MASKED, MindMask, MindMaskInstant, MindSense, MindSenseInstant, Possession,
+    SpiritPower, TimedBitPower, TimedEffect,
 };
 use crate::thaum::power::{ENDING, PowerBase};
 
@@ -286,6 +286,8 @@ pub enum MindClass {
     CommandDead(CommandDeadCaster),
     CommandDeadMark(CommandDeadTarget),
     ControlMind(ControlMindCaster),
+    /// The possession marker a controlled body carries.
+    Possession(Possession),
     Spirit(SpiritPower),
     /// A power of another domain, or a marker the casts only read.
     Other(PowerBase),
@@ -306,6 +308,7 @@ impl MindClass {
             MindClass::CommandDead(p) => p.state,
             MindClass::CommandDeadMark(p) => p.state,
             MindClass::ControlMind(p) => p.state,
+            MindClass::Possession(p) => p.state,
             MindClass::Spirit(p) => p.state,
             MindClass::Other(p) => p.state,
         }
@@ -325,6 +328,7 @@ impl MindClass {
             MindClass::CommandDead(p) => &mut p.state,
             MindClass::CommandDeadMark(p) => &mut p.state,
             MindClass::ControlMind(p) => &mut p.state,
+            MindClass::Possession(p) => &mut p.state,
             MindClass::Spirit(p) => &mut p.state,
             MindClass::Other(p) => &mut p.state,
         }
@@ -358,7 +362,7 @@ impl MindPower {
         power
     }
 
-    fn new(id: u32, class: MindClass) -> Self {
+    pub(crate) fn new(id: u32, class: MindClass) -> Self {
         Self {
             id,
             caster: None,
@@ -372,7 +376,9 @@ impl MindPower {
         self.class.state()
     }
 
-    fn end(&mut self) {
+    /// Tells the power to end, as the original's end call writes its state
+    /// word 2.
+    pub(crate) fn end(&mut self) {
         *self.class.state_mut() = ENDING;
     }
 }

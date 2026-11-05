@@ -24,6 +24,10 @@ flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--bevy-sun-cascades`,
 `--weapon-blood`, `--debug-spray`, `--perks`) and keys are in
 [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md).
+A Spirit Form cast asks the viewer for its spirit body
+(`exa_game::mind::runtime::SpiritBodyAsked`): `spawn_spirit_bodies` builds a
+record of race byte 14 through the placed-character path and marks the
+body as the caster's spirit, which the mind runtime then hands the player.
 `--max-fps <n|auto>` is the original's frame-rate cap (a rate, or `auto`
 for the display's rate) and, like the settings file's `FPSLimit`, is off
 unless given, so no frame is held; `src/frame_loop.rs` applies it from the
