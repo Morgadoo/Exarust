@@ -80,6 +80,10 @@ pub struct CreatorScene {
     pub view: GuiRect,
     /// The hub loadout preview's revision the figure was built from.
     pub kit_revision: u64,
+    /// The record the figure was last built or re-textured from, which a
+    /// change is compared with to pick the rebuild path
+    /// ([`exa_character::rebuild::preview_change`]).
+    pub built: Option<CharacterRecord>,
 }
 
 /// The preview's state while the creator is open.
@@ -99,7 +103,7 @@ impl Plugin for CreatorViewPlugin {
         app.init_resource::<CreatorView>()
             .add_systems(
                 Update,
-                (sync_view, build_figure)
+                (sync_view, script_edits, build_figure)
                     .chain()
                     .after(crate::creator_screen::CreatorSystems),
             )
@@ -201,6 +205,7 @@ fn spawn_scene(commands: &mut Commands, images: &mut Assets<Image>, view: GuiRec
         figure: None,
         view,
         kit_revision: 0,
+        built: None,
     }
 }
 
@@ -283,6 +288,7 @@ fn build_figure(
         Option<Res<crate::loadout_kit::KitPreview>>,
         Option<ResMut<crate::doll_view::DollItems>>,
     ),
+    figures: FigureState,
 ) {
     let Some(scene) = view.scene.as_mut() else {
         return;
@@ -351,12 +357,46 @@ fn build_figure(
     if !rebuild {
         return;
     }
+    // A creator edit takes the path its control calls: a re-texture or a
+    // hair rebuild keeps the figure; the whole rebuild builds it again in
+    // the pose it stood in.
+    let change = match (&scene.built, scene.figure) {
+        (Some(built), Some(_)) if outfit.is_none() => {
+            exa_character::rebuild::preview_change(built, record)
+        }
+        _ => exa_character::rebuild::PreviewChange {
+            rebuild: true,
+            ..Default::default()
+        },
+    };
+    if let Some(figure) = scene.figure.filter(|_| !change.rebuild) {
+        renew_in_place(&mut commands, &game, record, figure, change, &figures);
+        scene.built = Some(record.clone());
+        return;
+    }
+    // The whole rebuild saves the old body's motion and turn and gives
+    // them to the new one, as the original keeps the character's frames
+    // across its rebuild.
+    let kept = scene
+        .figure
+        .and_then(|old| figures.kept.get(old).ok())
+        .map(|(animator, turn)| (animator.cloned(), turn.copied()));
     if let Some(old) = scene.figure.take()
         && let Ok(mut e) = commands.get_entity(old)
     {
         e.despawn();
     }
     scene.figure = spawn_figure(&mut commands, &mut loader, &game, record);
+    scene.built = scene.figure.map(|_| record.clone());
+    if let (Some(figure), Some((animator, turn))) = (scene.figure, kept) {
+        let mut e = commands.entity(figure);
+        if let Some(animator) = animator {
+            e.insert(animator);
+        }
+        if let Some(turn) = turn {
+            e.insert(turn);
+        }
+    }
     if let (Some(figure), Some(outfit)) = (scene.figure, outfit) {
         info!(
             "loadout preview: {} (race {}) wears {} garments, figure {figure:?}",
@@ -367,6 +407,125 @@ fn build_figure(
         commands.entity(figure).insert(outfit);
     }
 }
+
+/// A debug edit script for the preview (`EXA_CREATOR_EDITS=1`): frames
+/// after the creator opens it changes the skin tone (a re-texture), the
+/// hair style (a hair rebuild) and the physique (the whole rebuild), one
+/// at a time, so a run shows each path in the log.
+fn script_edits(mut screen: ResMut<CreatorScreen>, mut frame: Local<u32>) {
+    if std::env::var_os("EXA_CREATOR_EDITS").is_none() {
+        return;
+    }
+    let Some(creator) = screen.creator.as_mut() else {
+        *frame = 0;
+        return;
+    };
+    *frame += 1;
+    match *frame {
+        120 => creator.edit_record(|r| r.skin = [0x2000, 0xC000]),
+        240 => creator.edit_record(|r| r.hair_style = r.hair_style % 8 + 1),
+        360 => creator.edit_record(|r| r.hair_colour = [200, 40, 120, r.hair_colour[3]]),
+        480 => creator.edit_record(|r| r.physique = [0.9, -0.6]),
+        _ => return,
+    }
+    info!("creator edits: frame {} edit sent", *frame);
+}
+
+/// What the narrow rebuild paths read and change on a built figure.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct FigureState<'w, 's> {
+    kept: Query<
+        'w,
+        's,
+        (
+            Option<&'static exa_anim::Animator>,
+            Option<&'static crate::char_view::PreviewTurn>,
+        ),
+    >,
+    hair: Query<'w, 's, &'static exa_character::hair::Hair>,
+    children: Query<'w, 's, &'static Children>,
+    hair_roots: Query<'w, 's, (), With<exa_character::hair::HairRoot>>,
+}
+
+/// The race of `record` from the game's race table.
+fn race_of(game: &Game, record: &CharacterRecord) -> Option<exa_formats::races::Race> {
+    let races = game
+        .0
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("races.rdb"))
+        .and_then(|b| exa_formats::races::parse(b).ok())
+        .unwrap_or_default();
+    exa_formats::races::of_character(&races, record.race).cloned()
+}
+
+/// The narrow rebuild paths on the built `figure`: the skin job built again
+/// from `record` (the texture-only rebuild), and the hair removed and grown
+/// again (the hair rebuild: nothing grows again when the race has no hair,
+/// [`exa_character::rebuild::hair_rebuild`]). A hair-colour edit also
+/// grows the hair again, as Exarust's hair parts carry the colour in their
+/// own materials (the original's route from the colour picker to the
+/// scalp's material is not traced; its re-texture repaints the beard).
+fn renew_in_place(
+    commands: &mut Commands,
+    game: &Game,
+    record: &CharacterRecord,
+    figure: Entity,
+    change: exa_character::rebuild::PreviewChange,
+    figures: &FigureState,
+) {
+    let race = race_of(game, record);
+    let look_word = race.as_ref().map_or(0, |r| r.look);
+    if change.retexture {
+        let model_name = race
+            .as_ref()
+            .map_or_else(|| model::BODY_MODEL.to_string(), |r| r.model());
+        let physique = exa_formats::morph::Physique::of_record(record);
+        let (look, job) = crate::scene_bodies::character_retexture(
+            &game.0,
+            &model_name,
+            record,
+            look_word,
+            &physique,
+            record.id ^ FIGURE_SEED,
+            &[],
+        );
+        let mut e = commands.entity(figure);
+        e.insert(look);
+        match job {
+            Some(job) => e.insert(job),
+            None => e.remove::<exa_assets::SkinCompositeJob>(),
+        };
+    }
+    let mut hair = hair_of(record, race.as_ref());
+    let old = figures.hair.get(figure).ok().copied();
+    if let Some(old) = old {
+        hair.head_word = old.head_word;
+    }
+    if !change.hair && old == Some(hair) {
+        return;
+    }
+    let decision =
+        exa_character::rebuild::hair_rebuild(std::iter::empty(), look_word, hair.head_word);
+    if decision.remove_only {
+        hair.style = 0;
+    }
+    for part in figures.children.iter_descendants(figure) {
+        if figures.hair_roots.contains(part) {
+            commands.entity(part).despawn();
+        }
+    }
+    commands
+        .entity(figure)
+        .insert(hair)
+        .remove::<exa_character::hair::HairAttached>();
+    info!(
+        "creator: figure {figure:?} renewed in place (re-texture {}, hair {})",
+        change.retexture, change.hair
+    );
+}
+
+/// The seed the figure's skin job draws a fresh look seed from.
+const FIGURE_SEED: u32 = 0x51ED_270B;
 
 /// The figure of `record`: its race's body morphed by its physique, its
 /// skin, hair and the underwear, idling at the scene's origin.
@@ -396,7 +555,7 @@ pub fn spawn_figure(
         record,
         race.map_or(0, |r| r.look),
         &morph.physique,
-        record.id ^ 0x51ED_270B,
+        record.id ^ FIGURE_SEED,
     );
     let figure = exa_world::spawn_model(commands, &body, None);
     commands.entity(figure).insert((

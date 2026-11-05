@@ -665,6 +665,13 @@ impl Creator {
         self.dirty = true;
     }
 
+    /// Changes the record as an edit would and lets the preview rebuild
+    /// (the debug edit script, [`crate::creator_view`]).
+    pub fn edit_record(&mut self, edit: impl FnOnce(&mut CharacterRecord)) {
+        edit(&mut self.record);
+        self.changed();
+    }
+
     /// Advances the regeneration clock a frame.
     pub fn tick(&mut self) {
         self.clock = self.clock.wrapping_add(1);

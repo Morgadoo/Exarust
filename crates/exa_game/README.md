@@ -1968,11 +1968,21 @@ routines that were read from the original.
 - `creator_view` is the creator's preview: an off-screen camera at the
   preview's eye over `sgccflr01.rfc` with its own lights and the figure
   built from the creator's record (body morphed by its physique, skin,
-  hair, underwear), rebuilt when the record changes, shown under the GUI
+  hair, underwear), shown under the GUI
   canvas in the viewport. With no creator open it shows the hub loadout
   form's preview (`loadout_kit::KitPreview`): the record wearing the shown
   rank's worn items, lit by the view's stand-in light (the level's light
   list leaves the floor scene's lights out); the held items are not drawn.
+  A creator edit takes the generator's path for it
+  (`exa_character::rebuild::preview_change`): a tone, hair-colour or beard
+  edit re-textures the built figure in place
+  (`scene_bodies::character_retexture`, through `rebuild::retexture_only`),
+  a hair-style or straight/wavy edit removes and grows only its hair
+  (`rebuild::hair_rebuild` decides whether anything grows), and any other
+  edit builds the figure again, keeping its motion and turn as the
+  original keeps the character's frames. `EXA_CREATOR_EDITS=1` is a debug
+  script that sends a tone, style, hair-colour and physique edit one at a
+  time (frames 120 to 480 after the creator opens).
 
 ## Content stream requests
 

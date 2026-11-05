@@ -807,6 +807,50 @@ pub fn character_skin(
     )
 }
 
+/// The texture-only rebuild of a built body's skin
+/// ([`exa_character::rebuild::retexture_only`]): the skin job built again
+/// from `record`, which takes the first apparel texture of `apparel`, as
+/// [`character_skin`] gives it.
+pub fn character_retexture(
+    game: &GameData,
+    model_name: &str,
+    record: &CharacterRecord,
+    look_word: u32,
+    physique: &exa_formats::morph::Physique,
+    seed: u32,
+    apparel: &[Option<String>],
+) -> (SkinLook, Option<exa_assets::SkinCompositeJob>) {
+    let lower = model_name.to_ascii_lowercase();
+    let stem = lower.strip_suffix("base.rfc").unwrap_or(&lower).to_string();
+    let weights = physique.weights(12);
+    let mut state = seed;
+    let mut fresh = || {
+        state = exa_character::look::random_step(state);
+        state
+    };
+    let exists = |name: &str| game.texture(name).is_some();
+    let job = exa_character::rebuild::retexture_only(
+        exa_character::factory::PIXEL_FORMAT,
+        &stem,
+        record,
+        look_word,
+        &weights,
+        &mut fresh,
+        &exists,
+        apparel,
+    );
+    let female = exa_character::look::skin_set(look_word, record.female)
+        == exa_character::look::SkinSet::Female;
+    (
+        SkinLook {
+            stem,
+            tone: record.skin,
+            female,
+        },
+        job.composite_job(),
+    )
+}
+
 /// Races with the human frame (human, skeleton, ancient): their bodies take
 /// the skeleton's physical links and fit human apparel.
 pub fn human_frame(race: u8) -> bool {
