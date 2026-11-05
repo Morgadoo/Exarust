@@ -36,6 +36,7 @@ pub mod shock;
 pub mod signal;
 pub mod sim_app;
 pub mod sim_bridge;
+pub mod sim_digest;
 pub mod sim_object;
 pub mod step_driver;
 pub mod volume;
@@ -240,7 +241,7 @@ pub fn solid(_: ColliderHandle, collider: &Collider) -> bool {
 /// returns the node rather than the plain level. Level builders put it on the
 /// nodes they spawn from a model; generated geometry (walls, floors, terrain)
 /// carries none and stays the level.
-#[derive(Component)]
+#[derive(Component, Clone, Debug)]
 pub struct StaticNode;
 
 /// Which scene node built each static collider, by collider handle. One entry

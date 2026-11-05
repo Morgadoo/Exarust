@@ -2569,14 +2569,17 @@ impl Plugin for BodyPlugin {
 /// copied when they change: most of a level's bodies sleep and stay home.
 pub fn bridge_body_types(app: &mut App) {
     use crate::sim_bridge::SimBridgeAppExt;
-    app.bridge_copy::<Ragdoll>()
+    app.bridge_copy::<crate::StaticNode>()
+        .bridge_copy::<GoLimp>()
+        .bridge_copy::<crate::grip::ReplaceHeld>()
+        .bridge_copy::<Ragdoll>()
         .bridge_copy::<OutOfScene>()
-        .bridge_lend_resource::<Physics>()
+        .bridge_lend_opaque_resource::<Physics>()
         .bridge_copy_resource::<crate::StaticColliders>()
         .bridge_lend_resource::<ShoveQueue>()
         .bridge_lend_resource::<DealtShoves>()
         .bridge_copy_resource::<BodyTicks>()
-        .bridge_lend_resource::<SolverStages>()
+        .bridge_lend_opaque_resource::<SolverStages>()
         .bridge_lend_resource::<crate::sector_lists::SectorBodies>()
         .bridge_sim_only::<TickedCharacter>()
         .bridge_copy::<Fallen>()
