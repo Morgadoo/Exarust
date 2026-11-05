@@ -350,6 +350,7 @@ struct IkTick {
     snap: bool,
     /// The run flag (the locomotion flags' bit 4).
     running: bool,
+    /// The race's stance factor the step lift reads.
     stance: f32,
     crouch: f32,
     frame: Affine3A,
@@ -496,7 +497,9 @@ impl Ragdoll {
             stepping: drive.steps.stepping,
             snap: false,
             running: drive.bearing.legs == LegMode::Run,
-            stance: drive.stance,
+            // The step lift reads the race's stance factor (a human's 0.5),
+            // not the stance factor the body's gait raises.
+            stance: drive.race.stance,
             crouch: drive.bearing.crouch,
             frame: drive.frame.unwrap_or(Affine3A::IDENTITY),
             sole: *sole,
@@ -536,7 +539,7 @@ impl Ragdoll {
             stepping: false,
             snap: true,
             running: false,
-            stance: drive.stance,
+            stance: drive.race.stance,
             crouch: drive.bearing.crouch,
             frame,
             sole: *sole,
