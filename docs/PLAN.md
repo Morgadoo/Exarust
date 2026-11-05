@@ -1565,6 +1565,8 @@ Round 61 reflections (S8): the original has no planar reflection; its local refl
 
 Round 65 gamegui: the card's coins and the loadout preview's bars draw; a block of registered GUI controls is never used by 0.9.5.
 
+Round 76 playerctl: the arena spectate session is ported (reachable once the arena fields company employees).
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
