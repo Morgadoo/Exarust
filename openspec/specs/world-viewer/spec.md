@@ -315,7 +315,7 @@ The system SHALL, with `--profiler` or `--perf-log`, measure each frame's main-t
 - **THEN** the plan has two points at cost 20 and the player's footprint is back afterwards, and half a metre of movement does not plan again
 
 ### Requirement: Light comparison options
-The viewer SHALL offer, as debug options: `--debug-lights M`, which logs once, two seconds into play, every point light within M metres of the player with its colour, intensity, range, GI multiplier and shaping, plus the GI base ambient and the scene ambient; `--no-torch`, which starts play without the carried torch; and `--floor-torch x,y,z[,rx,ry,rz]`, which lays a lit torch at that point once the player stands in the level, on its side or, with six values, in the frame those X, Y, Z angles (degrees) give.
+The viewer SHALL offer, as debug options: `--debug-lights M`, which logs once, two seconds into play, every point light within M metres of the player with its colour, intensity, range, GI multiplier and shaping, plus the GI base ambient and the scene ambient; `--no-torch`, which starts play without the carried torch; and `--floor-torch x,y,z[,rx,ry,rz]`, which lays a lit torch at that point once the player stands in the level, on its side or, with six values, turned by those X, Y, Z degrees.
 
 #### Scenario: The start room's lights
 - **WHEN** exanima01 is played with `--debug-lights 15 --no-torch`
