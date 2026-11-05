@@ -409,7 +409,16 @@ queued the pending streamed character nearest the focus point (squared
 distance, strict `<`, so the first of equal distances wins), else idle. A
 request that builds nothing is dropped. `StreamThread::new` holds the
 thread's two empty data streams, as the original's constructor creates
-them (unused so far); the loop above runs on the executor that drives it. A placed object whose node kind
+them (unused so far). Each ring step is its own method (`take_job`,
+`next_object`/`finish_object`, `next_character`/`finish_character`,
+`next_streamed`/`finish_streamed`): a request stays at its ring's front
+while it is built and leaves only after its result is pushed, so a fetch
+made during the build answers `Pending`; an object that builds nothing
+raises `missing_requested`. `stream_worker::StreamWorker` is the stream
+thread: posts push under the stream's lock and signal it, and its passes
+run one at a time on the async compute pool (a plain thread without one)
+with the lock taken only around the ring steps, until a pass is idle with
+no signal since it began; the next post starts it again. A placed object whose node kind
 (`LevelNode::class`, the word the database builder left on the node:
 `OBJECT_DOOR` checked first, then `OBJECT_OPERATIVE`, then `OBJECT_VOLUME`)
 is the operative one and whose operative kind is the one the session's

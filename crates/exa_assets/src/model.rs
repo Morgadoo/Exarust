@@ -677,24 +677,13 @@ impl ModelLoader<'_> {
     /// built meshes and the materials, as [`ModelLoader::model`] does at
     /// once.
     pub fn model_job(&mut self, pack: PackKind, entry: &str) -> Option<ModelJob> {
-        let Some(bytes) = self.game.pack(pack).and_then(|p| p.get(entry)) else {
-            self.warn_once(format!("model {}/{entry} not found", pack.file_stem()));
-            return None;
-        };
-        let scene = match Scene::parse(bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                self.warn_once(format!("model {}/{entry}: {e}", pack.file_stem()));
-                return None;
+        match ModelJob::from_game(self.game, pack, entry) {
+            Ok(job) => Some(job),
+            Err(message) => {
+                self.warn_once(message);
+                None
             }
-        };
-        Some(ModelJob {
-            pack,
-            entry: entry.to_string(),
-            scene,
-            morph: None,
-            smooth: None,
-        })
+        }
     }
 
     /// The model a [`ModelJob`] built, its meshes and materials added and
@@ -2129,6 +2118,35 @@ struct BuiltNode {
 }
 
 impl ModelJob {
+    /// The job of `entry` in `pack`, read and parsed from the installation
+    /// alone, so any thread can make it (the content stream's thread does).
+    /// The error is the message [`ModelLoader::model_job`] warns with.
+    pub fn from_game(game: &GameData, pack: PackKind, entry: &str) -> Result<Self, String> {
+        let bytes = game
+            .pack(pack)
+            .and_then(|p| p.get(entry))
+            .ok_or_else(|| format!("model {}/{entry} not found", pack.file_stem()))?;
+        let scene =
+            Scene::parse(bytes).map_err(|e| format!("model {}/{entry}: {e}", pack.file_stem()))?;
+        Ok(ModelJob {
+            pack,
+            entry: entry.to_string(),
+            scene,
+            morph: None,
+            smooth: None,
+        })
+    }
+
+    /// The cache key the built model is kept under
+    /// ([`ModelLoader::finish_model`]): the morphed variant's, else the
+    /// plain model's.
+    pub fn key(&self) -> String {
+        match &self.morph {
+            Some(m) => m.key.clone(),
+            None => model_key(self.pack, &self.entry),
+        }
+    }
+
     /// Works out the skin weights and builds the meshes, the groups of a
     /// node on every thread of `pool` when given (one by one, a large
     /// model's meshes, their tangents most of all, took hundreds of

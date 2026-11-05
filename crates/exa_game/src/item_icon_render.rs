@@ -215,6 +215,7 @@ fn prepare_icon_scenes(
     materials: Option<ResMut<Assets<exa_render::material::ExaMaterial>>>,
     images: Option<ResMut<Assets<Image>>>,
     support: Option<Res<CompressedImageFormatSupport>>,
+    requests: Option<Res<crate::content_requests::ContentRequests>>,
 ) {
     if icons.pending.iter().all(|pending| pending.scene.is_some()) {
         return;
@@ -279,15 +280,46 @@ fn prepare_icon_scenes(
         };
         let model = match model_info.model.strip_prefix('@') {
             Some(factory) => loader.factory_weapon(factory, model_info.weapon.as_ref()),
-            None => [PackKind::Objects, PackKind::Objlib]
-                .into_iter()
-                .find(|&pack| {
-                    loader
-                        .game
-                        .pack(pack)
-                        .is_some_and(|archive| archive.get(&model_info.model).is_some())
-                })
-                .and_then(|pack| loader.model(pack, &model_info.model)),
+            None => {
+                let pack = [PackKind::Objects, PackKind::Objlib]
+                    .into_iter()
+                    .find(|&pack| {
+                        loader
+                            .game
+                            .pack(pack)
+                            .is_some_and(|archive| archive.get(&model_info.model).is_some())
+                    });
+                let loaded = pack.and_then(|pack| loader.loaded_model(pack, &model_info.model));
+                match (loaded, requests.as_deref()) {
+                    // A model the cache holds is drawn at once.
+                    (Some(loaded), _) => loaded,
+                    // Otherwise the icon's object request goes to the
+                    // content stream and the icon waits on its fetch.
+                    (None, Some(requests)) => {
+                        match stream_icon_model(
+                            requests,
+                            &mut icons.pending[index],
+                            &model_info.model,
+                        ) {
+                            StreamedIcon::Waiting => {
+                                index += 1;
+                                continue;
+                            }
+                            StreamedIcon::Built(built) => {
+                                info!(
+                                    "icon: {:#x} {} came from the content stream (built off the main thread in {:.1} ms)",
+                                    id,
+                                    model_info.model,
+                                    built.took.as_secs_f64() * 1000.0
+                                );
+                                loader.finish_model(built.model)
+                            }
+                            StreamedIcon::Missing => None,
+                        }
+                    }
+                    (None, None) => pack.and_then(|pack| loader.model(pack, &model_info.model)),
+                }
+            }
         };
         let Some(model) = model else {
             let pending = &mut icons.pending[index];
@@ -359,6 +391,46 @@ fn prepare_icon_scenes(
         icons.pending[index].scene = Some(scene);
         budget -= 1;
         index += 1;
+    }
+}
+
+/// Where a pending icon's streamed model stands.
+enum StreamedIcon {
+    /// Posted, or still being built: the icon waits.
+    Waiting,
+    Built(Box<crate::content_requests::Built>),
+    /// The stream built nothing for it.
+    Missing,
+}
+
+/// The icon's object request and fetch: the first look posts the request
+/// (the item's id, its render variant with the streamed bit, the icon
+/// scene), each later one fetches, as the original's draw spins on the
+/// fetch between texture upload passes.
+fn stream_icon_model(
+    requests: &crate::content_requests::ContentRequests,
+    pending: &mut PendingIcon,
+    entry: &str,
+) -> StreamedIcon {
+    use crate::content_requests::{FetchedModel, ICON_SCENE, STREAMED};
+    let flags = pending.variant | STREAMED;
+    if !pending.posted {
+        pending.posted = true;
+        requests.request_object(pending.id, flags, ICON_SCENE, entry);
+        debug!(
+            "icon: {:#x} {entry} posted to the content stream (flags {flags:#x})",
+            pending.id
+        );
+        return StreamedIcon::Waiting;
+    }
+    match requests.fetch_object(pending.id, flags, ICON_SCENE) {
+        FetchedModel::Ready(built) => StreamedIcon::Built(built),
+        FetchedModel::Pending => StreamedIcon::Waiting,
+        FetchedModel::Missing => {
+            // A miss posts again on the next look, up to the attempts.
+            pending.posted = false;
+            StreamedIcon::Missing
+        }
     }
 }
 
@@ -1423,6 +1495,7 @@ mod tests {
             scene: None,
             attempts: 0,
             waited: 0,
+            posted: false,
         };
         let job = world.resource_scope(|world, mut images: Mut<Assets<Image>>| {
             let mut queue = bevy::ecs::world::CommandQueue::default();

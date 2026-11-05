@@ -53,6 +53,9 @@ pub struct PendingIcon {
     pub attempts: u32,
     /// The frames the prepared scene has waited for its textures.
     pub waited: u32,
+    /// Its object request went to the content stream
+    /// ([`crate::content_requests`]): the icon waits on the fetch.
+    pub posted: bool,
 }
 
 /// The item manager's icon atlas and cache, and the texture the panel
@@ -184,6 +187,7 @@ impl PanelIcons {
             scene: None,
             attempts: 0,
             waited: 0,
+            posted: false,
         });
         (entry + 1, (half_width, half_height))
     }
@@ -351,6 +355,7 @@ impl PanelIcons {
                 scene: None,
                 attempts: 0,
                 waited: 0,
+                posted: false,
             });
         }
     }

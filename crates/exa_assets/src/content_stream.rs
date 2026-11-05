@@ -27,8 +27,15 @@
 //! A placed level object may be the player: the session's arrival word names
 //! the operative kind the player's object has, and a marker record names it
 //! when its first word equals the arrival word. The player's position
-//! becomes the focus point the streamed characters are ordered by. Exarust drives [`ContentStream::step`] from its own executor; the
-//! original runs the same loop on its stream thread.
+//! becomes the focus point the streamed characters are ordered by.
+//!
+//! Each ring step is its own method ([`ContentStream::next_object`],
+//! [`ContentStream::finish_object`], …) so a thread can hold the rings
+//! only around them, as the original's per-ring locks do: a request stays
+//! at the front of its ring while it is built and leaves it only after its
+//! result is pushed. [`ContentStream::step`] runs a whole pass on the
+//! caller's thread (the level loader does); [`crate::stream_worker`] runs
+//! the passes on the stream thread.
 
 use std::collections::VecDeque;
 
@@ -38,8 +45,8 @@ use exa_formats::data_stream::DataStream;
 /// The stream thread's two data streams, which the original's constructor
 /// creates (two different stream classes). Which one reads what is a guess:
 /// the names follow how the thread's loaders use them. Nothing uses the
-/// type yet; the scheduler above runs on whichever executor drives it
-/// (Bevy's task pool here).
+/// type yet: Exarust's builders read the packs directly, and the loop runs
+/// in [`crate::stream_worker`].
 #[derive(Debug, Default)]
 pub struct StreamThread {
     chunk_stream: DataStream,
@@ -97,8 +104,8 @@ pub struct CharacterRequest {
 pub enum CharacterSink {
     /// A new character for the scene.
     Scene,
-    /// A character attached to an existing entity (its request had flag
-    /// `0x400`).
+    /// A character attached to an existing entity (its request had
+    /// [`ATTACH`]).
     Attach,
     /// A streamed character built in place, which the pump inserts.
     Streamed,
@@ -372,6 +379,13 @@ pub fn character_scales(base: f32, words: [u16; 2]) -> (f32, f32) {
 /// both the AI start and the saved AI pose restore.
 pub const MARK_NODE: u32 = 0x2000;
 pub const NO_AI_START: u32 = 0x1000;
+/// The request flag that sends the built character to the attachment ring
+/// (a character for an existing entity) instead of the result ring.
+pub const ATTACH: u32 = 0x400;
+/// The request flag that has the thread free the request (and its saved
+/// state) once the character is built: the requests a caller allocates for
+/// the stream alone carry it (`0x500` = this and [`ATTACH`]).
+pub const FREE_REQUEST: u32 = 0x100;
 /// The node flag [`MARK_NODE`] sets.
 pub const NODE_MARK: u32 = 0x1000;
 
@@ -536,6 +550,8 @@ pub struct ContentStream {
     scene: u64,
     focus: [f32; 3],
     level: LevelObjects,
+    /// Requested database objects that built nothing.
+    missing_requested: usize,
     terminated: bool,
 }
 
@@ -564,6 +580,7 @@ impl ContentStream {
             scene: 0,
             focus: [0.0; 3],
             level: LevelObjects::default(),
+            missing_requested: 0,
             terminated: false,
         }
     }
@@ -715,43 +732,20 @@ impl ContentStream {
             };
         }
         let mut job = false;
-        if let Some(next) = self.jobs.pop() {
+        if let Some(next) = self.take_job() {
             (next.work)();
-            if let Some(done) = next.done {
-                self.completions.push(done);
-            }
+            self.finish_job(next.done);
             job = true;
         }
         // A request that builds nothing is dropped.
-        let object = self.object_requests.pop().map(|request| {
+        let object = self.next_object().map(|request| {
             let built = builders.object(&request);
-            if let Some(node) = built {
-                self.object_results.push(ObjectResult { request, node });
-            }
+            self.finish_object(&request, built);
             built.is_some()
         });
-        let character = self.character_requests.pop().map(|request| {
+        let character = self.next_character().map(|request| {
             let built = builders.character(&request);
-            if let Some(node) = built {
-                let sink = if request.flags & 0x400 != 0 {
-                    CharacterSink::Attach
-                } else {
-                    CharacterSink::Scene
-                };
-                let result = CharacterResult {
-                    owner: request.owner,
-                    scene: request.scene,
-                    node,
-                    sink,
-                    placeholder: None,
-                };
-                match sink {
-                    CharacterSink::Attach => self.attachments.push(result),
-                    CharacterSink::Scene | CharacterSink::Streamed => {
-                        self.character_results.push(result)
-                    }
-                }
-            }
+            self.finish_character(&request, built);
             built.is_some()
         });
         if job || object.is_some() || character.is_some() {
@@ -761,36 +755,163 @@ impl ContentStream {
                 character,
             };
         }
-        if self.stream_cursor < self.streamed.len() {
-            let mut best = self.stream_cursor;
-            let mut best_distance =
-                distance(self.streamed[self.stream_cursor].position, self.focus);
-            for index in self.stream_cursor + 1..self.streamed.len() {
-                let candidate = distance(self.streamed[index].position, self.focus);
-                // Strictly nearer: the first of equal distances wins.
-                if candidate < best_distance {
-                    best = index;
-                    best_distance = candidate;
-                }
-            }
-            self.streamed.swap(self.stream_cursor, best);
-            let character = self.streamed[self.stream_cursor];
+        if let Some(character) = self.next_streamed() {
             let built = builders.streamed_character(&character);
-            if let Some(node) = built {
-                self.streamed_results.push(CharacterResult {
-                    owner: character.node,
-                    scene: character.scene,
-                    node,
-                    sink: CharacterSink::Streamed,
-                    placeholder: Some(character.node),
-                });
-            }
-            self.stream_cursor += 1;
+            self.finish_streamed(&character, built);
             return Step::Streamed {
                 built: built.is_some(),
             };
         }
         Step::Idle
+    }
+
+    /// Whether the level's object list is unfinished: a pass then builds
+    /// its next entry and nothing else.
+    pub fn level_pending(&self) -> bool {
+        !self.terminated && self.level.done < self.level.total
+    }
+
+    /// Takes the next generic job off its ring (the thread runs it with no
+    /// lock held).
+    pub fn take_job(&mut self) -> Option<Job> {
+        if self.terminated {
+            return None;
+        }
+        self.jobs.pop()
+    }
+
+    /// Queues a finished job's completion for the main-thread pump.
+    pub fn finish_job(&mut self, done: Option<Completion>) {
+        if let Some(done) = done {
+            self.completions.push(done);
+        }
+    }
+
+    /// The object request at the front of its ring, left queued while it is
+    /// built: the original peeks it, builds it, pushes the result and only
+    /// then pops the request, so a fetch made meanwhile answers "pending"
+    /// ([`Fetch::Pending`]) rather than "missing".
+    pub fn next_object(&self) -> Option<ObjectRequest> {
+        if self.terminated {
+            return None;
+        }
+        self.object_requests.front().copied()
+    }
+
+    /// Ends the build of `request`, the ring's front: the built node goes
+    /// to the result ring first, then the request leaves its ring. A build
+    /// that gave nothing counts a missing requested object (the original's
+    /// counter, which nothing reports). A request no longer at the front
+    /// (Exarust cancelled it while it was built) is left alone and its node
+    /// dropped; `false` then.
+    pub fn finish_object(&mut self, request: &ObjectRequest, built: Option<u64>) -> bool {
+        if self.object_requests.front() != Some(request) {
+            return false;
+        }
+        match built {
+            Some(node) => self.object_results.push(ObjectResult {
+                request: *request,
+                node,
+            }),
+            None => self.missing_requested += 1,
+        }
+        self.object_requests.advance();
+        true
+    }
+
+    /// The character request at the front of its ring, left queued while it
+    /// is built, as [`ContentStream::next_object`].
+    pub fn next_character(&self) -> Option<CharacterRequest> {
+        if self.terminated {
+            return None;
+        }
+        self.character_requests.front().copied()
+    }
+
+    /// Ends the build of `request`: a request with [`ATTACH`] goes to the
+    /// attachment ring the pump drains, any other to the result ring its
+    /// caller fetches from; then the request leaves its ring. `false` for a
+    /// request no longer at the front.
+    pub fn finish_character(&mut self, request: &CharacterRequest, built: Option<u64>) -> bool {
+        if self.character_requests.front() != Some(request) {
+            return false;
+        }
+        if let Some(node) = built {
+            let sink = if request.flags & ATTACH != 0 {
+                CharacterSink::Attach
+            } else {
+                CharacterSink::Scene
+            };
+            let result = CharacterResult {
+                owner: request.owner,
+                scene: request.scene,
+                node,
+                sink,
+                placeholder: None,
+            };
+            match sink {
+                CharacterSink::Attach => self.attachments.push(result),
+                CharacterSink::Scene | CharacterSink::Streamed => {
+                    self.character_results.push(result)
+                }
+            }
+        }
+        self.character_requests.advance();
+        true
+    }
+
+    /// The pending streamed character nearest the focus point, swapped into
+    /// the cursor's place (the first of equal distances wins); the cursor
+    /// moves on in [`ContentStream::finish_streamed`].
+    pub fn next_streamed(&mut self) -> Option<StreamedCharacter> {
+        if self.terminated || self.stream_cursor >= self.streamed.len() {
+            return None;
+        }
+        let mut best = self.stream_cursor;
+        let mut best_distance = distance(self.streamed[self.stream_cursor].position, self.focus);
+        for index in self.stream_cursor + 1..self.streamed.len() {
+            let candidate = distance(self.streamed[index].position, self.focus);
+            // Strictly nearer: the first of equal distances wins.
+            if candidate < best_distance {
+                best = index;
+                best_distance = candidate;
+            }
+        }
+        self.streamed.swap(self.stream_cursor, best);
+        Some(self.streamed[self.stream_cursor])
+    }
+
+    /// Ends the build of the streamed character at the cursor: a built one
+    /// is queued for the pump, and the cursor moves on either way.
+    pub fn finish_streamed(&mut self, character: &StreamedCharacter, built: Option<u64>) {
+        if self.streamed.get(self.stream_cursor).map(|c| c.node) != Some(character.node) {
+            return;
+        }
+        if let Some(node) = built {
+            self.streamed_results.push(CharacterResult {
+                owner: character.node,
+                scene: character.scene,
+                node,
+                sink: CharacterSink::Streamed,
+                placeholder: Some(character.node),
+            });
+        }
+        self.stream_cursor += 1;
+    }
+
+    /// The requested database objects that built nothing so far.
+    pub fn missing_requested(&self) -> usize {
+        self.missing_requested
+    }
+
+    /// Whether any request or streamed character is still to be built.
+    pub fn has_work(&self) -> bool {
+        !self.terminated
+            && (self.level_pending()
+                || !self.jobs.is_empty()
+                || !self.object_requests.is_empty()
+                || !self.character_requests.is_empty()
+                || self.stream_cursor < self.streamed.len())
     }
 
     /// Adopts a built placed object as the player when it is an operative
@@ -825,17 +946,29 @@ impl ContentStream {
     /// for [`ContentStream::fetch_character`].
     pub fn pump(&mut self) -> Pumped {
         let mut pumped = Pumped::default();
-        while let Some(completion) = self.completions.pop() {
+        for completion in self.take_completions() {
             completion();
             pumped.completions += 1;
         }
+        self.drain_results(&mut pumped);
+        pumped
+    }
+
+    /// The completion callbacks queued so far, for a caller that runs them
+    /// without holding the stream (the threaded stream's pump).
+    pub fn take_completions(&mut self) -> Vec<Completion> {
+        std::iter::from_fn(|| self.completions.pop()).collect()
+    }
+
+    /// The pump's hand-over of the streamed characters, then the attached
+    /// ones, after the completions ran.
+    pub fn drain_results(&mut self, pumped: &mut Pumped) {
         while let Some(result) = self.streamed_results.pop() {
             pumped.added.push(result);
         }
         while let Some(result) = self.attachments.pop() {
             pumped.attached.push(result);
         }
-        pumped
     }
 
     /// Fetches a finished database object by the key it was requested with:

@@ -26,6 +26,7 @@ pub mod polyhedra;
 pub mod skin;
 pub mod skin_composite;
 pub mod stream;
+pub mod stream_worker;
 pub mod tangents;
 pub mod texture;
 pub mod texture_cache;

@@ -1042,7 +1042,13 @@ type SpawnSources<'w> = (
     Option<Res<'w, LevelChangeHold>>,
     Option<Res<'w, exa_game::creator_screen::CreatedCharacter>>,
     Option<Res<'w, exa_game::save_live::SavedPlayer>>,
+    Option<Res<'w, exa_game::save_live::LoadedPlayerStream>>,
+    Option<Res<'w, exa_game::content_requests::ContentRequests>>,
 );
+
+/// How long the player spawn waits on the loaded player's character
+/// request before it builds the body itself.
+const STREAM_PLAYER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Spawns the player and the level's characters once the level's collision
 /// is built (the level root loses its `StaticGeometry`).
@@ -1069,7 +1075,7 @@ fn finish_collision(
         ),
     >,
     mut time: ResMut<Time<Virtual>>,
-    (hold, created, saved): SpawnSources,
+    (hold, created, saved, streamed, requests): SpawnSources,
 ) {
     if building.contains(pending.root) {
         if pending.since.elapsed() < STAGE_TIMEOUT {
@@ -1079,6 +1085,44 @@ fn finish_collision(
             return;
         }
         warn!("level collision still building after {STAGE_TIMEOUT:?}; starting anyway");
+    }
+    // A loaded save's player was posted to the content stream's character
+    // ring: the spawn fetches its body, waiting while the stream thread
+    // builds it (the original's import spins on the fetch).
+    if let (Some(stream), Some(requests)) = (streamed.as_deref(), requests.as_deref()) {
+        let Some(posted) = stream.posted else {
+            return;
+        };
+        let request = stream.request;
+        match requests.fetch_character(request.owner, request.scene) {
+            Some(built) => {
+                let started = std::time::Instant::now();
+                let mut loader = ModelLoader {
+                    game: &game.0,
+                    cache: &mut cache,
+                    meshes: &mut meshes,
+                    materials: &mut materials,
+                    images: &mut images,
+                    bc_supported: model::bc_supported(support.as_deref()),
+                };
+                let key = built.key.clone();
+                loader.finish_model(built.model);
+                info!(
+                    "content stream: the loaded player is fetched {:.1} ms after its post (body {key} built off the main thread in {:.1} ms, its assets added in {:.1} ms)",
+                    posted.elapsed().as_secs_f64() * 1000.0,
+                    built.took.as_secs_f64() * 1000.0,
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+                commands.remove_resource::<exa_game::save_live::LoadedPlayerStream>();
+            }
+            None if posted.elapsed() < STREAM_PLAYER_WAIT => return,
+            None => {
+                warn!(
+                    "content stream: the loaded player is not built after {STREAM_PLAYER_WAIT:?}; the spawn builds it"
+                );
+                commands.remove_resource::<exa_game::save_live::LoadedPlayerStream>();
+            }
+        }
     }
     commands.remove_resource::<PendingCollision>();
     if let Some(hold) = hold {
@@ -1104,6 +1148,7 @@ fn finish_collision(
         images: &mut images,
         bc_supported: model::bc_supported(support.as_deref()),
     };
+    let started = std::time::Instant::now();
     spawn_players(
         &mut commands,
         &mut loader,
@@ -1114,6 +1159,10 @@ fn finish_collision(
         existing,
         created.as_ref().and_then(|c| c.0.as_ref()),
         saved.as_deref(),
+    );
+    info!(
+        "player spawn: {:.1} ms on the main thread",
+        started.elapsed().as_secs_f64() * 1000.0
     );
 }
 
