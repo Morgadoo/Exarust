@@ -18,8 +18,11 @@ impl Plugin for MaterialsPlugin {
     fn build(&self, app: &mut App) {
         bevy::shader::load_shader_library!(app, "shading.wesl");
         bevy::shader::load_shader_library!(app, "hair.wesl");
+        bevy::shader::load_shader_library!(app, "sun_caster.wesl");
         embedded_asset!(app, "exa.wesl");
         embedded_asset!(app, "exa_prepass.wesl");
+        embedded_asset!(app, "sun_caster_prepass.wesl");
+        crate::sun_casters::load_caster_shaders(app);
         app.add_plugins(MaterialPlugin::<ExaMaterial>::default())
             .init_resource::<FadeToBlack>()
             .add_systems(PostUpdate, (mark_shadowless, sync_fade_to_black));
@@ -590,6 +593,8 @@ pub fn set_texture_bias(materials: &mut Assets<ExaMaterial>, bias: f32) -> usize
 pub struct ExaMaterialKey {
     two_sided: bool,
     cloth_cull: Option<bevy::render::render_resource::Face>,
+    /// The surface casts the alpha-tested way ([`ExaMaterial::cuts_shadow`]).
+    cuts_shadow: bool,
 }
 
 impl From<&ExaMaterial> for ExaMaterialKey {
@@ -597,6 +602,7 @@ impl From<&ExaMaterial> for ExaMaterialKey {
         Self {
             two_sided: m.params.flags & flags::TWO_SIDED != 0,
             cloth_cull: m.cloth_cull,
+            cuts_shadow: m.cuts_shadow(),
         }
     }
 }
@@ -631,6 +637,17 @@ impl Material for ExaMaterial {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        let data = key.bind_group_data;
+        // A draw into the sun map takes the original's caster state.
+        if crate::sun_casters::specialize_sun_caster(
+            descriptor,
+            key.mesh_key,
+            crate::sun_casters::CasterShader::Material,
+            crate::sun_casters::sun_caster_cull(data.cuts_shadow, data.two_sided, data.cloth_cull),
+            data.cuts_shadow,
+        ) {
+            return Ok(());
+        }
         if let Some(face) = key.bind_group_data.cloth_cull {
             descriptor.primitive.cull_mode = Some(face);
         } else if key.bind_group_data.two_sided {

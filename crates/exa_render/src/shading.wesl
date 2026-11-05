@@ -9,6 +9,7 @@ import bevy_pbr::render::{
     mesh_view_types,
     clustered_forward as clustering,
     shadows,
+    shadow_sampling,
 };
 
 // The level ambient scales the GI volume ×15 (passed ×16).
@@ -260,6 +261,34 @@ fn light_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, t: Taps, tag: u32, receiv
     return shadow;
 }
 
+// The sun's shadow through the original's single map
+// (`exa_render::sun_fit::SunShadowFilter`): the receiver's map position,
+// unbiased (the casters carry the bias), and the fragment's disc taps
+// around it at the light slot's radius (`0.0025 · softness` of the map),
+// each a hardware 2 × 2 comparison, averaged. Outside the map the
+// clamp-to-edge sampler repeats the border texels, as the original's does,
+// and there is no far bound. Without the fitted map (a zero radius, or
+// Bevy's own cascades) Bevy's filter stands in.
+fn sun_shadow(i: u32, world_position: vec4<f32>, nrm: vec3<f32>, view_z: f32, frag: vec2<f32>, t: Taps) -> f32 {
+    let sun = &view_bindings::lights.directional_lights[i];
+    let radius = bitcast<f32>(exa_lights[0].y);
+    if (*sun).num_cascades != 1u || !(radius > 0.0) {
+        return shadows::fetch_directional_shadow(i, world_position, nrm, view_z, frag);
+    }
+    let clip = (*sun).cascades[0].clip_from_world * vec4(world_position.xyz, 1.0);
+    // Bevy's map rows run down from the top: the original's texture v (and
+    // its taps' y) point the other way.
+    let uv = clip.xy * vec2(0.5, -0.5) + vec2(0.5);
+    let depth = clamp(clip.z, 0.0, 1.0);
+    let layer = i32((*sun).depth_texture_base_index);
+    var lit = 0.0;
+    for (var j = t.first; j < t.first + t.count; j++) {
+        let rs = tap(t, j);
+        lit += shadow_sampling::sample_shadow_map_hardware(uv + vec2(rs.x, -rs.y) * radius, depth, layer);
+    }
+    return lit / f32(t.count);
+}
+
 fn cube_compare(dir: vec3<f32>, id: u32, depth: f32) -> f32 {
     @if(NO_CUBE_ARRAY_TEXTURES_SUPPORT)
     return textureSampleCompare(
@@ -365,7 +394,7 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
         let sun = &view_bindings::lights.directional_lights[i];
         var shadow = 1.0;
         if receiver && ((*sun).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = shadows::fetch_directional_shadow(i, world_position, nrm, view_z, frag);
+            shadow = sun_shadow(i, world_position, nrm, view_z, frag, t);
         }
         let lit = light(s, (*sun).direction_to_light, (*sun).color.rgb / SUN_LUX * shadow);
         out.diffuse += lit.diffuse;

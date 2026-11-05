@@ -9,10 +9,9 @@ import bevy_pbr::render::{
     mesh_view_types,
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
     clustered_forward as clustering,
-    shadows,
 };
 import exa_render::shading::{
-    Surface, Lit, Taps, taps, lit_by, light_shadow, light, light_skin, schlick, view_depth, vertical_shaping,
+    Surface, Lit, Taps, taps, lit_by, light_shadow, sun_shadow, light, light_skin, schlick, view_depth, vertical_shaping,
     gi_frame, gi_tap, gi_slot, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
     REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -581,7 +580,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let sun = &view_bindings::lights.directional_lights[i];
         var shadow = 1.0;
         if receiver && ((*sun).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = shadows::fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy);
+            shadow = sun_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy, disc);
         }
         if self_shadowed {
             shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, shadow_normal, h0);

@@ -15,7 +15,10 @@
 //!
 //! Records and lists share one storage buffer, bound to every surface
 //! material at binding 130. The buffer is stored under the default asset id,
-//! so a material's default handle already points at it.
+//! so a material's default handle already points at it. Its first element
+//! also carries the sun map's filter radius and caster polygon offset
+//! ([`crate::sun_fit::SunShadowFilter`]), which the surface shaders and the
+//! sun caster pass read from the same binding.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::ecs::entity::EntityHashMap;
@@ -28,6 +31,7 @@ pub struct LightsPlugin;
 impl Plugin for LightsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LightTable>()
+            .init_resource::<crate::sun_fit::SunShadowFilter>()
             .configure_sets(
                 PostUpdate,
                 (
@@ -155,17 +159,25 @@ struct LightTable {
     free: Vec<u32>,
     /// Which mesh holds each slot.
     slot_of: EntityHashMap<u32>,
+    /// The sun map's filter and caster offset, in element 0.
+    sun: crate::sun_fit::SunShadowFilter,
     dirty: bool,
 }
 
 /// The buffer's layout, as `array<vec4<u32>>`: element 0 holds the index of
-/// the first list; element 1 + id holds light `id`'s record (shaping y, z and
+/// the first list, then the sun's filter radius, polygon factor and polygon
+/// units as f32 bits; element 1 + id holds light `id`'s record (shaping y, z and
 /// radius as f32 bits, cube slot + 1); each mesh slot takes two elements
 /// from the first list on.
 fn layout(table: &LightTable) -> Vec<[u32; 4]> {
     let first_list = 1 + table.records.len().max(1) as u32;
     let mut data = Vec::with_capacity(first_list as usize + table.lists.len() * 2 + 2);
-    data.push([first_list, 0, 0, 0]);
+    data.push([
+        first_list,
+        table.sun.radius.to_bits(),
+        table.sun.polygon_factor.to_bits(),
+        table.sun.polygon_units.to_bits(),
+    ]);
     data.extend(table.records.iter().map(|r| {
         [
             r.shaping.x.to_bits(),
@@ -316,7 +328,15 @@ fn free_mesh_slots(
     }
 }
 
-fn upload(mut table: ResMut<LightTable>, mut buffers: ResMut<Assets<ShaderBuffer>>) {
+fn upload(
+    mut table: ResMut<LightTable>,
+    sun: Res<crate::sun_fit::SunShadowFilter>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+) {
+    if table.sun != *sun {
+        table.sun = *sun;
+        table.dirty = true;
+    }
     if !table.dirty {
         return;
     }
@@ -386,5 +406,27 @@ mod tests {
         assert_eq!(f32::from_bits(data[1][3]), 7.5);
         assert_eq!(data[3], [2, 7, 9, 0]);
         assert_eq!(data[4], [0; 4]);
+    }
+
+    /// The first element carries the sun map's filter radius and caster
+    /// polygon offset after the list index; with no fitted map all three
+    /// are zero.
+    #[test]
+    fn element_zero_carries_the_sun_filter() {
+        let data = layout(&LightTable::default());
+        assert_eq!(&data[0][1..], &[0, 0, 0]);
+        let table = LightTable {
+            sun: crate::sun_fit::SunShadowFilter {
+                radius: 0.000375,
+                polygon_factor: 2.0,
+                polygon_units: crate::sun_fit::DEPTH16_STEP,
+            },
+            ..default()
+        };
+        let data = layout(&table);
+        assert_eq!(data[0][0], 2);
+        assert_eq!(f32::from_bits(data[0][1]), 0.000375);
+        assert_eq!(f32::from_bits(data[0][2]), 2.0);
+        assert_eq!(f32::from_bits(data[0][3]), 1.0 / 65536.0);
     }
 }

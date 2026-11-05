@@ -43,13 +43,11 @@
 //! - Fewer than two corners fit nothing: the original then leaves its map
 //!   and matrices as they were, which [`SunFit::fit`] reports.
 //!
-//! Not reproduced here: the caster-side polygon offset and depth nudge of
-//! the render routine are computed and returned ([`SunFit::caster_bias`])
-//! but Bevy's shadow pass has no caster-side bias state of its own; the
-//! softness the update writes into the sun's light is computed
-//! ([`sun_softness`], [`whole_scene_softness`]) and can be read by a shader
-//! filter, but Bevy's directional shadows have no filter-radius uniform
-//! without its PCSS feature. The eight-tap `SdwSmp` upload itself is
+//! The caster-side polygon offset and the softness the update writes reach
+//! the shaders as [`SunShadowFilter`]: the receivers' filter radius
+//! (`shading.wesl`, `sun_shadow`) and the casters' offset
+//! (`sun_caster.wesl`, through [`crate::sun_casters::specialize_sun_caster`]).
+//! The eight-tap `SdwSmp` upload itself is
 //! [`crate::shader_bindings::SHADOW_TAPS`]. Rules: `docs/RENDERING.md` (Sun shadow fit).
 //!
 //! Evidence: the procedure listings and decompiler dump of the component, the
@@ -672,6 +670,57 @@ pub fn caster_bias(half_extent_cm: f32, caster_softness: f32, depth_cm: f32) -> 
     }
 }
 
+/// The smallest step of the original's 16-bit sun map, the polygon offset's
+/// unit in the [0, 1] window depth: 2⁻¹⁶ \[the driver's exact `r` for a
+/// 16-bit depth buffer is not pinned; it is 2⁻¹⁶ or 1/65535].
+pub const DEPTH16_STEP: f32 = 1.0 / 65536.0;
+
+/// What the surface and caster shaders need of the sun map beyond its
+/// matrices: the receivers' filter radius and the casters' polygon offset.
+/// All zero leaves the shaders on Bevy's own directional filter (no fitted
+/// map: `--bevy-sun-cascades`, or no level region).
+#[derive(bevy::prelude::Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct SunShadowFilter {
+    /// The disc radius in the map's [0, 1] texture space, the light slot's
+    /// `softness · 0.5 · 0.005` (the halving single, the 0.005 double).
+    /// Eight taps of [`crate::shader_bindings::SHADOW_TAPS`], turned per
+    /// pixel, each a hardware 2 × 2 comparison, sit this far times the tap's
+    /// length from the receiver's map position.
+    pub radius: f32,
+    /// The polygon offset's slope factor ([`CasterBias::polygon_factor`]).
+    pub polygon_factor: f32,
+    /// The polygon offset's constant, in window depth: its one unit times
+    /// [`DEPTH16_STEP`].
+    pub polygon_units: f32,
+}
+
+impl SunShadowFilter {
+    /// The filter and offset of the fit `fit`.
+    pub fn of(fit: &SunFit) -> Self {
+        let bias = fit.caster_bias();
+        Self {
+            radius: sun_filter_radius(fit.softness),
+            polygon_factor: bias.polygon_factor,
+            polygon_units: bias.polygon_units * DEPTH16_STEP,
+        }
+    }
+
+    /// The window-depth offset the polygon offset gives a caster fragment
+    /// whose depth changes by `slope` per map texel (the larger of its two
+    /// screen derivatives, as GL allows): `factor·slope + units`. The caster
+    /// shader subtracts it, reverse-Z counting away from the sun downwards.
+    pub fn polygon_offset(&self, slope: f32) -> f32 {
+        self.polygon_factor * slope + self.polygon_units
+    }
+}
+
+/// The sun's filter radius in map texture space for softness `s`: the light
+/// slot writes `s·0.5` in single precision times the double `0.005`,
+/// narrowed (`crate::light_slots`).
+pub fn sun_filter_radius(softness: f32) -> f32 {
+    (f64::from(softness * 0.5) * 0.005) as f32
+}
+
 /// The smallest sphere around a clipped view volume's corners, in
 /// centimetres; `None` below two corners.
 pub fn fitted_sphere(volume: &ConvexVolume) -> Option<Sphere> {
@@ -1230,5 +1279,29 @@ mod tests {
         assert!((p.x - 1.0).abs() < 1e-6);
         assert!((p.y - 1.0).abs() < 1e-6);
         assert!((p.z - 1.0).abs() < 1e-6);
+    }
+
+    /// The constructor's 3000 cm fit at `c = 0`: the softness floors at
+    /// 0.15, so the filter radius is 0.15·0.5·0.005 of the map (2.25 cm
+    /// across its 60 m) and the floor's overshoot `c' = 1.125` raises the
+    /// polygon factor to 1 + 1000/3000 + 2000·1.125/3000.
+    #[test]
+    fn the_filter_follows_the_softness_and_the_offset_the_fit() {
+        let mut fit = SunFit::default();
+        fit.apply_softness(0.0);
+        let filter = SunShadowFilter::of(&fit);
+        assert_eq!(filter.radius, ((0.15f32 * 0.5) as f64 * 0.005) as f32);
+        assert!((filter.radius * 2.0 * fit.half_extent_cm - 2.25).abs() < 1e-4);
+        assert!((filter.polygon_factor - (1.0 + 1.0 / 3.0 + 0.75)).abs() < 1e-5);
+        assert_eq!(filter.polygon_units, DEPTH16_STEP);
+        // A softer sky (c = 1) lifts the softness over the floor: c' = c.
+        fit.apply_softness(1.0);
+        let soft = SunShadowFilter::of(&fit);
+        assert!((soft.radius - (2.0 * 400.0 / 3000.0) * 0.5 * 0.005).abs() < 1e-8);
+        assert!(soft.radius > filter.radius);
+        assert!((soft.polygon_factor - (1.0 + 1.0 / 3.0 + 2.0 / 3.0)).abs() < 1e-5);
+        // A texel of slope 1e-4 moves the caster 1e-4·factor + one unit.
+        let offset = soft.polygon_offset(1e-4);
+        assert!((offset - (soft.polygon_factor * 1e-4 + DEPTH16_STEP)).abs() < 1e-10);
     }
 }
