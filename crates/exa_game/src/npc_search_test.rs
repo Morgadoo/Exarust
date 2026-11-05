@@ -127,6 +127,28 @@ fn the_room_grid_lists_the_characters() {
     assert_eq!(grid.flags, flags);
 }
 
+/// The sector's lists place each object in the cells given, in the order
+/// given, wherever its box is; an index off the grid is left out and an
+/// object may sit in several cells (a wide static mesh).
+#[test]
+fn the_sector_lists_place_the_objects() {
+    let size = exa_ai::rooms::RoomGridSize {
+        width: 4,
+        height: 4,
+    };
+    let flags = connected_flags(size, |_| true);
+    let grid = room_grid_in_cells(
+        size,
+        &flags,
+        &[Some(Vec3::new(10.0, 0.0, 10.0))],
+        &[(7, 10), (3, 10), (7, 11), (9, 16), (9, -1)],
+    );
+    assert_eq!(grid.characters[10], vec![0]);
+    assert_eq!(grid.objects[10], vec![7, 3]);
+    assert_eq!(grid.objects[11], vec![7]);
+    assert_eq!(grid.objects.iter().flatten().count(), 3);
+}
+
 /// A worn list's changes: each id of the old list is matched once in the
 /// new one; what is left over on either side came off or went on.
 #[test]

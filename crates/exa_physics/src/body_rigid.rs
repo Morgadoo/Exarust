@@ -140,6 +140,7 @@ impl Part {
             gravity: gravity_shares(s.point_masses),
             spheres: Arc::new(s.spheres.clone()),
             triangles: s.triangles.clone(),
+            tree: s.triangles.as_ref().and_then(crate::mesh_tree::shared_tree),
             sphere_grid: SphereGrid::build(&s.spheres).map(Arc::new),
             pairing: {
                 let mut pairing = Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility);

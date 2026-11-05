@@ -22,6 +22,7 @@ pub mod kdtree;
 pub mod lever;
 pub mod mechanism;
 pub mod mechanism_sound;
+pub mod mesh_tree;
 pub mod motile;
 pub mod part;
 pub mod plate;
@@ -29,6 +30,7 @@ pub mod prop;
 pub mod race_runtime;
 pub mod relay;
 pub mod sector;
+pub mod sector_lists;
 pub mod shape;
 pub mod shock;
 pub mod signal;
@@ -300,6 +302,9 @@ pub struct StaticColliders {
     /// Each piece's level mask ([`sector::static_mask`]): 1, or 1|4 for a
     /// thin horizontal plate.
     masks: HashMap<u32, u32>,
+    /// The mesh each record was built from, by record id (the NPC search
+    /// finds the placed object a record belongs to through it).
+    meshes: Vec<Option<Entity>>,
 }
 
 impl Default for StaticColliders {
@@ -307,6 +312,7 @@ impl Default for StaticColliders {
         Self {
             grid: sector::StaticGrid::new(Self::COLUMNS, Self::ROWS, Self::ORIGIN),
             masks: HashMap::new(),
+            meshes: Vec::new(),
         }
     }
 }
@@ -338,6 +344,38 @@ impl StaticColliders {
     pub fn clear(&mut self) {
         self.grid.clear();
         self.masks.clear();
+        self.meshes.clear();
+    }
+
+    /// Records a fixed collider as [`StaticColliders::insert_aabb`] does,
+    /// with the mesh entity it was built from.
+    pub fn insert_mesh_aabb(
+        &mut self,
+        piece: u32,
+        (mins, maxs): (Vec3, Vec3),
+        node: u32,
+        mask: u32,
+        mesh: Entity,
+    ) {
+        self.insert_aabb(piece, mins, maxs, node, mask);
+        self.meshes.resize(self.grid.len(), None);
+        if let Some(slot) = self.meshes.last_mut() {
+            *slot = Some(mesh);
+        }
+    }
+
+    /// The mesh record `id` was built from, if it was recorded.
+    pub fn mesh_of(&self, id: usize) -> Option<Entity> {
+        self.meshes.get(id).copied().flatten()
+    }
+
+    /// The records listed in world cell `cell` (the grid's cells offset by
+    /// its origin), in the order they were inserted.
+    pub fn in_world_cell(&self, cell: (i32, i32)) -> &[usize] {
+        self.grid.cells().get((
+            cell.0.wrapping_add(Self::ORIGIN.0),
+            cell.1.wrapping_add(Self::ORIGIN.1),
+        ))
     }
 
     /// Records a fixed collider's world AABB (metres) as level piece
@@ -396,7 +434,14 @@ struct RootBuild {
 /// A built collider, for a rigid body's stand-in the body's root node and
 /// the part it follows, and the scene node whose subtree the mesh was under,
 /// with the mesh's level mask.
-type BuiltCollider = (Collider, Option<(Entity, usize)>, Option<Entity>, bool, u32);
+type BuiltCollider = (
+    Collider,
+    Option<(Entity, usize)>,
+    Option<Entity>,
+    bool,
+    u32,
+    Entity,
+);
 
 impl StaticBuild {
     /// The share of the meshes queued since the last idle moment that are
@@ -597,7 +642,7 @@ fn build_static_colliders(
             let Some(colliders) = block_on(poll_once(task)) else {
                 return true;
             };
-            for (mut collider, owner, node, pick_only, mask) in colliders {
+            for (mut collider, owner, node, pick_only, mask, mesh) in colliders {
                 if owner.is_some() {
                     collider.user_data = prop::STAND_IN;
                 } else if pick_only {
@@ -615,12 +660,12 @@ fn build_static_colliders(
                 }
                 if let Some(aabb) = aabb {
                     // The sector's static grid, in the original's centimetres.
-                    statics.insert_aabb(
+                    statics.insert_mesh_aabb(
                         handle.into_raw_parts().0,
-                        aabb.mins,
-                        aabb.maxs,
+                        (aabb.mins, aabb.maxs),
                         node.map_or(0, |n| n.index().index()),
                         mask,
+                        mesh,
                     );
                 }
             }
@@ -651,6 +696,7 @@ fn build_static_colliders(
                     copy.owner = moved_by(e, root.root, &parents, &body_nodes);
                     copy.node = scene_node_of(e, root.root, &parents, &static_nodes);
                     copy.pick_only = pick_only.contains(e);
+                    copy.mesh = Some(e);
                     triangles += copy.indices.len() / 3;
                     batch.push(copy);
                 }
@@ -663,7 +709,9 @@ fn build_static_colliders(
                         let owner = copy.owner;
                         let (node, pick_only) = (copy.node, copy.pick_only);
                         let mask = copy.static_mask();
-                        copy.collider().map(|c| (c, owner, node, pick_only, mask))
+                        let mesh = copy.mesh?;
+                        copy.collider()
+                            .map(|c| (c, owner, node, pick_only, mask, mesh))
                     })
                     .collect()
             });
@@ -734,6 +782,8 @@ struct MeshCopy {
     node: Option<Entity>,
     /// The mesh is [`PickOnly`].
     pick_only: bool,
+    /// The mesh entity it was copied from.
+    mesh: Option<Entity>,
 }
 
 impl MeshCopy {
@@ -747,6 +797,7 @@ impl MeshCopy {
             owner: None,
             node: None,
             pick_only: false,
+            mesh: None,
         })
     }
 

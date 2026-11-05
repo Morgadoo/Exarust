@@ -2559,3 +2559,10 @@ A living body whose race hovers SHALL run its balance and feet each tick whateve
 #### Scenario: The wraith stands
 - **WHEN** a legless hovering body's pose puts its pelvis 100 cm over its frame, over a floor at 0 and then at 30 cm
 - **THEN** its target is 90 cm both times, its support and balance stay 1 and its pelvis floats about 92 cm up
+
+### Requirement: Height Query mesh mode
+The ground placement's Height Query SHALL take, besides the level, the body meshes listed in the nine sector cells around its point. It SHALL leave out a body out of the world and a living character's limb, and keep a dead character's limb. Each mesh SHALL be pre-tested by the segment against its box and the swept sphere against its bounding sphere, then swept down its tree's column. The highest surface met SHALL win.
+
+#### Scenario: A crate on the floor
+- **WHEN** a Height Query of radius 10 cm comes down over a 40 cm crate body standing on the floor, and another beside it
+- **THEN** the first finds 40 cm and the second the floor

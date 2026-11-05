@@ -1173,6 +1173,74 @@ fn a_fast_sphere_is_caught_by_the_swept_mesh_query() {
     assert_eq!(run(true), (swept, touches));
 }
 
+/// The wall of [`wall`] cut into a 6 x 6 grid of squares (72 triangles,
+/// fronts toward +x): enough for the mesh to get its kd-tree.
+fn gridded_wall() -> Vec<[Vec3; 3]> {
+    let mut out = Vec::new();
+    let at = |i: usize, j: usize| {
+        Vec3::new(
+            0.0,
+            -2.0 + i as f32 * 4.0 / 6.0,
+            -2.0 + j as f32 * 4.0 / 6.0,
+        )
+    };
+    for i in 0..6 {
+        for j in 0..6 {
+            let (p00, p10, p01, p11) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
+            out.push([p00, p11, p01]);
+            out.push([p00, p10, p11]);
+        }
+    }
+    assert!(out.iter().all(|t| (t[1] - t[0]).cross(t[2] - t[0]).x > 0.0));
+    out
+}
+
+/// A mesh of more than ten triangles is answered through its kd-tree: the
+/// sphere in front of the gridded wall is pushed off it as off the single
+/// triangle, and the fast sphere is caught by the tree's swept walk.
+#[test]
+fn a_parts_mesh_tree_answers_as_its_triangles_do() {
+    let b = mesh_side(gridded_wall());
+    assert!(b.parts[0].tree.is_some());
+    assert!(mesh_side(wall()).parts[0].tree.is_none());
+    let push = |mesh: Vec<[Vec3; 3]>| {
+        // The centre projects well inside one of the grid's triangles.
+        let mut a = ball(1, 11, Vec3::new(0.05, 0.15, 0.45), 0.1);
+        let mut b = mesh_side(mesh);
+        let (mut pair, mut touch) = fresh();
+        collide(
+            &mut a.parts[0],
+            &mut b.parts[0],
+            &mut pair,
+            &mut touch,
+            None,
+        );
+        assert!(touch.met && touch.hits >= 1, "{touch:?}");
+        assert!(
+            pair.points[0].normal.x > 0.99,
+            "{:?}",
+            pair.points[0].normal
+        );
+        a.parts[0].positions
+    };
+    let single = push(wall());
+    let gridded = push(gridded_wall());
+    // The same push to within a millimetre (the neighbouring triangles'
+    // edges, in reach of the pushed sphere, may add a small second push).
+    for (g, s) in gridded.iter().zip(single) {
+        assert!((g.x - s.x).abs() < 1e-3, "{g} vs {s}");
+    }
+    // The fast sphere.
+    let mut a = ball(1, 11, Vec3::new(0.3, 0.1, 0.1), 0.1);
+    let mut b = mesh_side(gridded_wall());
+    a.set_velocity(Vec3::NEG_X * 60.0);
+    let mut stages = pairs();
+    step(&mut [&mut a, &mut b], NONE, &mut stages);
+    assert_eq!(the_pairs(&stages).touches().len(), 1);
+    let x = a.parts[0].positions[0].x;
+    assert!((-0.15..0.3).contains(&x), "swept to {x}");
+}
+
 /// The contact offset array a placed body's hits record is readable by its
 /// owner and cleared by the integration while the body is placed, as the
 /// original's contact offset array is.
