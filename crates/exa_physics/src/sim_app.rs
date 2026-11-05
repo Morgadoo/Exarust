@@ -63,13 +63,34 @@ pub struct SimStep;
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SimFrameStart;
 
-/// Runs [`SimFrameStart`] in the frame's world, unless the bridge runs it
-/// in the simulation's (from the first step on; it must not run here
-/// first, or it could not move).
-fn run_frame_start(world: &mut World) {
-    if world.contains_resource::<crate::sim_bridge::FrameBridge>() {
+/// The order of [`SimFrameStart`]'s work, as the frame ran it before it
+/// moved: what ran in `Update` (the rise), then what ran in `PostUpdate`
+/// (the hit chain and its readers), then the bodies' own frame start, which
+/// queues the blows the others sent.
+#[derive(bevy::ecs::schedule::SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimFrameStartSystems {
+    Early,
+    Late,
+    Bodies,
+}
+
+/// The step of the fixed order that runs [`SimFrameStart`]: after the
+/// lockstep, before the posted commands, on the first fixed pass of each
+/// frame. It moves with the fixed step behind the bridge, so both worlds
+/// run the frame start at the same point, in the same order.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FrameStartStep;
+
+/// Runs [`SimFrameStart`] on the first fixed pass of a frame (Bevy's frame
+/// count, which the bridge copies, tells the frames apart).
+fn run_frame_start(world: &mut World, mut last: Local<Option<u32>>) {
+    let frame = world
+        .get_resource::<bevy::diagnostic::FrameCount>()
+        .map(|f| f.0);
+    if frame.is_some() && *last == frame {
         return;
     }
+    *last = frame;
     let _ = world.try_run_schedule(SimFrameStart);
 }
 
@@ -166,10 +187,29 @@ pub fn add_frame_start(app: &mut App) {
         .edit_schedule(SimFrameStart, |schedule| {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         })
-        .add_systems(
-            RunFixedMainLoop,
-            run_frame_start.in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop),
-        );
+        .configure_sets(
+            SimFrameStart,
+            (
+                SimFrameStartSystems::Early,
+                SimFrameStartSystems::Late,
+                SimFrameStartSystems::Bodies,
+            )
+                .chain(),
+        )
+        .init_schedule(FrameStartStep)
+        .add_systems(FrameStartStep, run_frame_start);
+    let mut order = app.world_mut().resource_mut::<FixedMainScheduleOrder>();
+    let before = if order.labels.contains(&FixedCommandsStep.intern()) {
+        FixedCommandsStep.intern()
+    } else {
+        FixedFirst.intern()
+    };
+    let at = order
+        .labels
+        .iter()
+        .position(|l| *l == before)
+        .unwrap_or(order.labels.len());
+    order.labels.insert(at, FrameStartStep.intern());
 }
 
 /// The frame's schedule that steps the simulation in lockstep, run before
@@ -442,12 +482,9 @@ fn step_world(
     snapshots: &SnapshotBuffer<SimSnapshot>,
 ) -> Stepped {
     let bridged = request.bridge.is_some();
-    let (mut coverage, mut apply_us, mut frame_began) = (None, 0, false);
+    let (mut coverage, mut apply_us) = (None, 0);
     if let Some(bridge_in) = request.bridge {
-        (coverage, apply_us, frame_began) = sim_apply(world, bridge_in);
-    }
-    if frame_began {
-        let _ = world.try_run_schedule(SimFrameStart);
+        (coverage, apply_us, _) = sim_apply(world, bridge_in);
     }
     for command in request.commands {
         command(world);

@@ -129,8 +129,8 @@ fn a_blow_sets_the_sag() {
     assert!(limp.drive.is_none());
 }
 
-/// A blow sent in a frame that runs no tick waits in the queue and is
-/// dealt by the next tick.
+/// A blow sent in a frame that runs no tick waits and is dealt by the next
+/// tick.
 #[test]
 fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
     let frame = 1.0 / 240.0;
@@ -165,7 +165,8 @@ fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
     });
     app.update();
     assert_eq!(ticks(&app), before, "the frame ran a tick");
-    assert_eq!(app.world().resource::<ShoveQueue>().0.len(), 1);
+    // The blow waits as a message: the bodies' frame start that queues it
+    // runs with the next frame's first tick.
     assert_eq!(energy(&app), 1.0, "dealt without a tick");
     while ticks(&app) == before {
         app.update();

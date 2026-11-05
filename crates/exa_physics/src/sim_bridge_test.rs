@@ -317,7 +317,7 @@ fn ids_are_shared_and_unchanged_values_stay_home() {
     assert_eq!(sim_sparks, frame_sparks);
     assert_eq!(frame_sparks.iter().map(|s| s.1).collect::<Vec<_>>(), [5, 6]);
     // Steady state: only what changed crosses: in, the lent `Heavy`,
-    // `Tally` and command queue and Bevy's four clocks; out, the two moving
+    // `Tally` and command queue, Bevy's four clocks and its frame count; out, the two moving
     // bodies' `Pos`, `Heavy`, `Tally`, the queue and the fixed step's log.
     // The three still bodies stay home.
     let before = world.resource::<FrameBridge>().cost;
@@ -326,7 +326,7 @@ fn ids_are_shared_and_unchanged_values_stay_home() {
     assert_eq!(after.steps, before.steps + 1);
     let values_in = after.values_in - before.values_in;
     let values_out = after.values_out - before.values_out;
-    assert_eq!(values_in, 7, "{before:?} -> {after:?}");
+    assert_eq!(values_in, 8, "{before:?} -> {after:?}");
     assert_eq!(values_out, 6, "{before:?} -> {after:?}");
 }
 

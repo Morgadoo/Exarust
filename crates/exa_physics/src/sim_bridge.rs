@@ -1498,6 +1498,7 @@ pub fn bridge_bevy_types(app: &mut App) {
         .bridge_copy::<Transform>()
         .bridge_copy::<GlobalTransform>()
         .bridge_copy::<Name>()
+        .bridge_copy_resource::<bevy::diagnostic::FrameCount>()
         .bridge_copy_resource::<Time>()
         .bridge_copy_resource::<Time<Fixed>>()
         .bridge_copy_resource::<Time<Virtual>>()
@@ -1682,11 +1683,15 @@ fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
         covered.insert(id);
     }
     world.insert_resource(SimFixedOrder(setup.fixed_order));
+    // Bevy's own bookkeeping of a changed hierarchy is not reported.
+    let mut unbridged_seen = covered.clone();
+    unbridged_seen
+        .insert(world.register_component::<bevy::transform::components::TransformTreeChanged>());
     world.insert_resource(SimBridge {
         side,
         pool: IdPool::default(),
         archetypes_seen: 0,
-        unbridged_seen: covered.clone(),
+        unbridged_seen,
     });
     // Build the moved schedules now, to read what their systems touch.
     for mut schedule in setup.schedules {
@@ -1829,8 +1834,14 @@ fn report_unbridged_components(world: &World, bridge: &mut SimBridge) {
     }
     bridge.archetypes_seen = archetypes.len();
     let resource = world.components().component_id::<IsResource>();
+    // One-shot systems (the frame's posted writes) are entities too.
+    let system = world
+        .components()
+        .component_id::<bevy::ecs::system::SystemIdMarker>();
     for archetype in archetypes.iter() {
-        if resource.is_some_and(|r| archetype.contains(r)) {
+        if resource.is_some_and(|r| archetype.contains(r))
+            || system.is_some_and(|s| archetype.contains(s))
+        {
             continue;
         }
         for &id in archetype.components() {
