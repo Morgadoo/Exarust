@@ -840,7 +840,16 @@ state and restores cursor mode 4 (`player_controls::{use_begin, use_end,
 UseCursor}`). `use_cursor` runs it live: the item panels' double click and
 its class (`panel_use_class`) call the use hook; a world object with usable
 class 1, double-clicked unmarked, lifts the cursor with its record id and
-kind and stays in the scene (`object_click`); the next press of any
+kind and stays in the scene (`object_click`); a scripted device's use
+(class 2, kind 3: the PedestalHand of `exanima67`) pulses the object's glow
+for 1.2 s up and 1.2 s down and plays its section's sound at 0.3
+(`glow_pulse`: every part of the object's mesh, a child mesh's first part
+and the child voxel lights' intensity follow the level, which ends at 0;
+a level load cancels the pulses; `--object-click F#id` aims a scripted
+click at a placed id). Charged crystals lose 2 charge a game second
+(`crystal_drain`: the collect pass at the end of a level load over the
+player's hands, worn and carried items, then the socket and inventory
+sources once a second; the container sources are not wired); the next press of any
 button ends the cursor and is taken, and the dispatcher's door unlock is
 applied (the other branches are reported in `UseReleased`). A cleaning
 or repair kit reads and writes the record in the live object database
@@ -1229,6 +1238,11 @@ facts through the card's own page, value, tint, row and description rules
 (the description first rewritten into the generated quality and condition
 sentence from the executable's phrase tables, the apparel title taking its
 variant word),
+the hub's trade window asks for the same card on a right press over a
+stock row (flags `0x80000000`, the whole value) or a pack row (a quarter),
+and the right release after it does not close the window; the card draws
+after the hub windows, as the original's upper-layer card form stays over
+the normal-layer trade window;
 the card holds the panel manager's icon and fades on the popup's squared
 curve, and leaving it starts the fade (from the moment it leaves, without
 reversing a fade-in, and only once the card takes the pointer and is not

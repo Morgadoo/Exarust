@@ -652,7 +652,16 @@ pub struct HubWindows {
     /// A table-built form took this frame's press or release; the world
     /// click it makes is not the hub's.
     pub took_pointer: bool,
+    /// The last right press was an item panel's card request (or the
+    /// card's own): its release does not close the window.
+    pub card_press: bool,
 }
+
+/// The flags the trade window's stock panel loads its items with: the
+/// shop's own items. Its buy basket takes only items with the bit, its pack
+/// and sell basket only items without it, and an item card shows the value
+/// of an item with the bit whole (else a quarter).
+pub const SHOP_ITEM_FLAGS: u32 = 0x8000_0000;
 
 impl HubWindows {
     pub fn is_open(&self) -> bool {
@@ -670,6 +679,39 @@ impl HubWindows {
         self.board.as_mut().map_or(BoardAction::None, |board| {
             board.click((point.0 - border, point.1 - border))
         })
+    }
+
+    /// The item under a form-local point of the open trade window and the
+    /// flags its panel holds it with: a stock row (the shop's flag) or a
+    /// row of the player's pack (none). The baskets' items are not drawn as
+    /// rows and are not found.
+    pub fn shop_item_at(&self, point: (i32, i32)) -> Option<(u32, u32)> {
+        let shop = self.shop.as_ref()?;
+        let row_at = |panel: [i32; 4]| {
+            let rect = GuiRect::new(panel[0], panel[1], panel[2], panel[3]);
+            if !rect.contains(point.0, point.1) {
+                return None;
+            }
+            let row = (point.1 - rect.top - 4).div_euclid(ROW_HEIGHT);
+            (row >= 0 && rect.top + 4 + ROW_HEIGHT * (row + 1) <= rect.bottom)
+                .then_some(row as usize)
+        };
+        let panels = shop.window.panels();
+        if let Some(row) = row_at(panels[4]) {
+            return shop
+                .stock
+                .get(row)
+                .map(|(id, _)| (*id, SHOP_ITEM_FLAGS))
+                .filter(|(id, _)| *id != 0);
+        }
+        if let Some(row) = row_at(panels[1]) {
+            return shop
+                .goods
+                .get(row)
+                .map(|(id, _)| (*id, 0))
+                .filter(|(id, _)| *id != 0);
+        }
+        None
     }
 
     /// The shop's trade button from a form-local click: the button is inside
@@ -1423,13 +1465,16 @@ pub fn sync_hub_screen(
 
 /// Adds the hub windows' draw to `app`, after the in-game screens' draw:
 /// that pass clears the GUI's queue every frame, so a hub frame pushed
-/// before it would never reach the canvas.
+/// before it would never reach the canvas. The item card draws after the
+/// windows: it is an upper-layer form and the windows are on the normal
+/// layer ([`crate::item_card::CARD_ATTRIBUTES`]).
 pub fn add_hub_draw(app: &mut App) {
     app.add_systems(
         Update,
         draw_hub_windows
             .after(crate::gui_screens::draw_screens)
-            .after(crate::arena_hub_live::HubWindowSystems),
+            .after(crate::arena_hub_live::HubWindowSystems)
+            .before(crate::item_card::draw_card),
     );
 }
 
@@ -1872,6 +1917,40 @@ mod tests {
         assert!(windows.shop_click(point, &mut career));
         assert_eq!(career.goods, [7]);
         assert!(!career.company.stock.contains(&7));
+    }
+
+    /// A stock row's item is held with the shop's flag, a pack row's with
+    /// none; the panels' frames and the space past the last row hold none.
+    #[test]
+    fn the_trade_window_finds_the_item_a_card_is_asked_for() {
+        let mut career = career();
+        career.company.stock = vec![7, 8];
+        career.goods = vec![9];
+        let names = HubItemNames::default();
+        let mut windows = HubWindows::default();
+        windows.open_shop(false, &career, &names);
+        let model = windows.shop.as_ref().unwrap();
+        let stock = model.window.panels()[4];
+        let pack = model.window.panels()[1];
+        assert_eq!(
+            windows.shop_item_at((stock[0] + 6, stock[1] + 6)),
+            Some((7, SHOP_ITEM_FLAGS))
+        );
+        assert_eq!(
+            windows.shop_item_at((stock[0] + 6, stock[1] + 6 + ROW_HEIGHT)),
+            Some((8, SHOP_ITEM_FLAGS))
+        );
+        assert_eq!(
+            windows.shop_item_at((stock[0] + 6, stock[1] + 6 + 2 * ROW_HEIGHT)),
+            None
+        );
+        assert_eq!(
+            windows.shop_item_at((pack[0] + 6, pack[1] + 6)),
+            Some((9, 0))
+        );
+        assert_eq!(windows.shop_item_at((stock[0] + 6, stock[1] + 1)), None);
+        let sell = model.window.panels()[2];
+        assert_eq!(windows.shop_item_at((sell[0] + 6, sell[1] + 6)), None);
     }
 
     #[test]

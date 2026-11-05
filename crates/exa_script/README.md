@@ -16,7 +16,7 @@ bubbles, scripted objects, and the story/journal state.
 | `topics` | topic memory words: cooldowns, activation counts and windows, the memory load/store (with the original's shifted load) |
 | `bubbles` | speech bubbles: durations, the queue per speaker, CR splits, fades, the hearing stimulus and the contact hearing it leaves, the width/height measure, the frame's fade step and the placement (narrator centre, projected head, margins, the camera projection) |
 | `dialogue` | the conversation engine: the role-by-role search, conversations, entry-node starts and calm filters, the node evaluator (both player slots, the original's mood tests), branches and links, ending, event nodes, topic offers, the reply panel's list and pick, the narrator, witnessed and broadcast events, `StartDialogue` and the scripted-object script entry |
-| `objects` | using a scripted world object (its script actor slot, role and sound), the glow pulse tasks and their mesh/light writes, the raise-dead revelation, the crystal collect pass, the drain sources and kinds and the container/record/inventory walks |
+| `objects` | using a scripted world object (its script actor slot, role and sound), the glow pulse tasks and their mesh/light writes, the raise-dead revelation, the crystal collect pass, the drain sources and kinds and the container/record/inventory walks; the pulses and the drain run live in `exa_game::glow_pulse` and `exa_game::crystal_drain` |
 | `story` | campaign order, the journal page |
 
 `ScriptPlugin` loads `charroles.rdb` and `narrator.rcd` (`Scripts`) once

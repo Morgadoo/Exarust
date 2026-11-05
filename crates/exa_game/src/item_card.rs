@@ -974,9 +974,25 @@ pub fn socket_row_layer(
     })
 }
 
-/// Draws the open card into the GUI's queue, after the screens.
+/// The card form's attribute word as its constructor writes it: the
+/// upper layer (`0x1000`) among the frame bits, so a raised window of the
+/// normal layer (the hub's trade window, attributes `0x830022`) still goes
+/// under it.
+pub const CARD_ATTRIBUTES: u32 = 0x310f0;
+/// The attribute word the builder gives a card that is neither a stats
+/// card nor has a description: no upper layer.
+pub const PLAIN_CARD_ATTRIBUTES: u32 = 0x830020;
+/// The trade window's attribute word: the form's default `0x30022` with
+/// `0x800000`.
+pub const TRADE_WINDOW_ATTRIBUTES: u32 = 0x830022;
+
+/// Draws the open card into the GUI's queue, after the screens and the
+/// hub's windows: the card is an upper-layer form, drawn over the normal
+/// layer's windows whichever was raised last. [Exarust stand-in: a plain
+/// card without a description is on the normal layer in the original and
+/// would go under a window raised after it; Exarust draws it on top too]
 #[allow(clippy::too_many_arguments)]
-fn draw_card(
+pub fn draw_card(
     mut view: ResMut<CardView>,
     screens: Res<GameScreens>,
     mut icons: ResMut<PanelIcons>,
@@ -1313,6 +1329,22 @@ impl Plugin for ItemCardPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_stays_over_a_raised_trade_window() {
+        use exa_ui::form::{attribute, raise_top_level_index};
+        assert_ne!(CARD_ATTRIBUTES & attribute::UPPER_LAYER, 0);
+        assert_eq!(TRADE_WINDOW_ATTRIBUTES & attribute::UPPER_LAYER, 0);
+        assert_eq!(PLAIN_CARD_ATTRIBUTES & attribute::UPPER_LAYER, 0);
+        // Draw order: the trade window, then the card. Raising the window
+        // keeps it below the upper layer: the card stays on top.
+        let siblings = [TRADE_WINDOW_ATTRIBUTES, CARD_ATTRIBUTES];
+        assert_eq!(raise_top_level_index(&siblings, 0), 0);
+        assert_eq!(raise_top_level_index(&siblings, 1), 1);
+        // A plain card would go under the raised window.
+        let siblings = [TRADE_WINDOW_ATTRIBUTES, PLAIN_CARD_ATTRIBUTES];
+        assert_eq!(raise_top_level_index(&siblings, 0), 1);
+    }
 
     #[test]
     fn a_marked_model_reports_its_rarity_tier() {

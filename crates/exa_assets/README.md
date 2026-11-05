@@ -611,7 +611,8 @@ shared `objstrings.rdb`, read the first time something asks), the local
 tier (the loaded level's own database, which the level load puts in place
 and migrates whole from its templates, as every import's hook does)
 and the world tier (objects promoted out of levels, which a save's load
-fills and its save exports). Kits, container popups, the kit passes and the
-saves write records there; `changes_since` tells a decoded cache (the
+fills and its save exports). Kits, container popups, the kit passes, the
+crystal drain (`write_section_byte`, a socket's charge) and the saves write
+records there; `changes_since` tells a decoded cache (the
 panels' item records, the item catalogue) which records to read again: the
 ids written in place, or all of them after records came or went.

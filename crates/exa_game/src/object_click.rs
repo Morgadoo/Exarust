@@ -214,6 +214,8 @@ pub struct ClickOutputs<'w> {
     divination: MessageWriter<'w, OpenDivination>,
     /// A kind-7 take asks to load the level its header names.
     levels: MessageWriter<'w, ReadNamedLevel>,
+    /// A scripted device's use pulses the object's glow.
+    pulses: MessageWriter<'w, crate::glow_pulse::PulseGlow>,
 }
 
 /// The dialogue side a narration goes through.
@@ -269,6 +271,41 @@ fn use_device(devices: &mut DeviceClock, kind: u8, id: u32, now: u64) -> bool {
     })
 }
 
+/// What a scripted device's use (kind 3) does beside its script, once the
+/// use said yes: the object's glow pulses (fade 1200, hold 0) and the sound
+/// its usable section names (at most 15 characters) plays at the object at
+/// 0.3. The script run itself is not wired here.
+fn scripted_device_use(
+    out: &mut ClickOutputs,
+    entity: Entity,
+    usable: &exa_formats::objdb::Operative,
+    position: Vec3,
+) {
+    if usable.kind != player_controls::DEVICE_SLOW_LINE {
+        return;
+    }
+    let (fade, hold) = exa_script::objects::USE_PULSE;
+    out.pulses.write(crate::glow_pulse::PulseGlow {
+        object: entity,
+        fade,
+        hold,
+    });
+    if let Some(name) = player_controls::use_sound_name(usable) {
+        let name: String = name.chars().take(15).collect();
+        info!("object click: scripted device sound {name:?} at 0.3");
+        out.sounds.write(exa_audio::PointSounded {
+            name,
+            position,
+            volume: exa_script::objects::USE_VOLUME,
+            pitch: 1.0,
+            flags: SCRIPTED_USE_SOUND_FLAGS,
+        });
+    }
+}
+
+/// The sound flags a scripted device's use plays with.
+pub const SCRIPTED_USE_SOUND_FLAGS: u32 = 0x400;
+
 /// The single and double clicks on placed objects.
 #[allow(clippy::too_many_arguments)]
 pub fn run_object_clicks(
@@ -306,10 +343,12 @@ pub fn run_object_clicks(
                     let Some(usable) = sections.as_deref().and_then(|s| s.usable) else {
                         continue;
                     };
-                    if usable.class == USABLE_DEVICE
-                        && use_device(&mut out.devices, usable.kind, id, now)
-                        && !description.is_empty()
-                    {
+                    let used = usable.class == USABLE_DEVICE
+                        && use_device(&mut out.devices, usable.kind, id, now);
+                    if used {
+                        scripted_device_use(&mut out, entity, &usable, position);
+                    }
+                    if used && !description.is_empty() {
                         let delay = if usable.kind == player_controls::DEVICE_SLOW_LINE {
                             player_controls::DEVICE_LINE_SLOW_MS
                         } else {
@@ -349,7 +388,11 @@ pub fn run_object_clicks(
                         .with_strings(named, !description.is_empty());
                     let used = match sections.as_deref().and_then(|s| s.usable) {
                         Some(usable) if usable.class == USABLE_DEVICE => {
-                            use_device(&mut out.devices, usable.kind, id, now)
+                            let used = use_device(&mut out.devices, usable.kind, id, now);
+                            if used {
+                                scripted_device_use(&mut out, entity, &usable, position);
+                            }
+                            used
                         }
                         _ => false,
                     };
@@ -479,30 +522,41 @@ fn close_card(out: &mut ClickOutputs, now: u32) {
 
 /// One scripted object click (`exarust --object-click`), a debug tool: the
 /// frame after the load it fires on, whether it is the double click's
-/// interaction, and whether it is sent as a hit on plain level geometry at
+/// interaction, whether it is sent as a hit on plain level geometry at
 /// the object's box centre (which exercises the point search) rather than
-/// on the object's node.
+/// on the object's node, and the placed id it aims at (the container
+/// nearest the player without one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScriptedObjectClick {
     pub frame: u32,
     pub double: bool,
     pub level: bool,
+    pub target: Option<u32>,
 }
 
 impl ScriptedObjectClick {
-    /// Reads `F[d][l],...`: a frame, `d` for the double click, `l` for a
-    /// level hit. `None` on anything else.
+    /// Reads `F[d][l][#id],...`: a frame, `d` for the double click, `l` for
+    /// a level hit, and `#` with a hexadecimal placed id (its base id, the
+    /// tier tag left off). `None` on anything else.
     pub fn parse_list(list: &str) -> Option<Vec<Self>> {
         list.split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|item| {
+                let (item, target) = match item.split_once('#') {
+                    Some((head, id)) => (
+                        head,
+                        Some(u32::from_str_radix(id.trim_start_matches("0x"), 16).ok()?),
+                    ),
+                    None => (item, None),
+                };
                 let digits = item.trim_end_matches(['d', 'l']);
                 let flags = &item[digits.len()..];
                 Some(Self {
                     frame: digits.parse().ok()?,
                     double: flags.contains('d'),
                     level: flags.contains('l'),
+                    target,
                 })
             })
             .collect()
@@ -542,14 +596,20 @@ pub fn scripted_object_clicks(
     let nearest = objects
         .placed
         .iter()
-        .filter(|(_, _, sections, ..)| sections.as_ref().is_some_and(|s| s.container.is_some()))
+        .filter(|(_, placed, sections, ..)| match click.target {
+            Some(id) => placed.id & exa_formats::objdb::ID_MASK == id,
+            None => sections.as_ref().is_some_and(|s| s.container.is_some()),
+        })
         .map(|(e, placed, _, transform, ..)| (e, placed.tagged_id, transform.translation()))
         .min_by(|a, b| {
             a.2.distance_squared(feet)
                 .total_cmp(&b.2.distance_squared(feet))
         });
     let Some((entity, id, at)) = nearest else {
-        info!("object click script: no placed container");
+        info!(
+            "object click script: no placed object for {:?}",
+            click.target
+        );
         return;
     };
     let centre = objects.bounds_of(entity).map_or(at, |(bounds, frame)| {
@@ -561,7 +621,7 @@ pub fn scripted_object_clicks(
         Hit::SceneNode { node: entity }
     };
     info!(
-        "object click script: frame {frame}, {} on container {id:#x} at {centre:?} ({:.0} cm away), {hit:?}",
+        "object click script: frame {frame}, {} on object {id:#x} at {centre:?} ({:.0} cm away), {hit:?}",
         if click.double {
             "double click"
         } else {
@@ -615,6 +675,7 @@ mod tests {
             .add_message::<OpenDivination>()
             .add_message::<ReadNamedLevel>()
             .add_message::<exa_audio::PointSounded>()
+            .add_message::<crate::glow_pulse::PulseGlow>()
             .init_resource::<PendingUses>()
             .init_resource::<DeviceClock>()
             .init_resource::<crate::player_controls::UseCursor>()
@@ -893,5 +954,56 @@ mod tests {
         );
         assert_eq!(ScriptedObjectClick::parse_list("x1"), None);
         assert_eq!(ScriptedObjectClick::parse_list("d"), None);
+        // `#` aims at a placed id, in hexadecimal.
+        let aimed = ScriptedObjectClick::parse_list("200#587,210l#0x24c").unwrap();
+        assert_eq!(aimed[0].target, Some(0x587));
+        assert_eq!((aimed[1].frame, aimed[1].level), (210, true));
+        assert_eq!(aimed[1].target, Some(0x24c));
+        assert_eq!(ScriptedObjectClick::parse_list("1#zz"), None);
+    }
+
+    /// A scripted device's use (class 2, kind 3) pulses the object and
+    /// plays its section's sound at 0.3.
+    #[test]
+    fn a_scripted_device_pulses_its_glow_and_plays_its_sound() {
+        let mut app = app();
+        // The kind's 2400 ms clock starts at zero: the first use waits.
+        let mut time = Time::<Virtual>::default();
+        time.advance_by(std::time::Duration::from_millis(3000));
+        app.insert_resource(time);
+        let device = placed(
+            &mut app,
+            0x587,
+            Some(sections(Some((USABLE_DEVICE, 3)), false, 0)),
+            Vec3::ZERO,
+        );
+        app.world_mut().write_message(ObjectClick {
+            hit: Hit::SceneNode { node: device },
+            at: Vec3::ZERO,
+            pointer: IVec2::ZERO,
+            double: false,
+        });
+        app.update();
+        let pulses: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::glow_pulse::PulseGlow>>()
+            .drain()
+            .collect();
+        assert_eq!(
+            pulses,
+            [crate::glow_pulse::PulseGlow {
+                object: device,
+                fade: 1200,
+                hold: 0
+            }]
+        );
+        let sounds: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<exa_audio::PointSounded>>()
+            .drain()
+            .collect();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!(sounds[0].name, "Gulp");
+        assert_eq!((sounds[0].volume, sounds[0].flags), (0.3, 0x400));
     }
 }

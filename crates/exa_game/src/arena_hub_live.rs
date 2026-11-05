@@ -191,6 +191,7 @@ impl Plugin for ArenaHubPlugin {
                     scripted_shop,
                     hub_restock,
                     hub_session_fall,
+                    shop_item_cards,
                     close_hub_windows,
                 )
                     .chain()
@@ -983,9 +984,7 @@ fn scripted_shop(
             }
         }
         2 => {
-            // The trade window closes first so the card is seen alone (the
-            // hub windows and the card share no draw order).
-            windows.close();
+            // The card opens over the trade window (an upper-layer form).
             info!("shop buy script: the card of {:#x}", buy.bought);
             cards.write(crate::item_card::WorldCard {
                 item: buy.bought,
@@ -1256,17 +1255,88 @@ fn hub_session_fall(
     info!("arena hub: the manager fell; the session ends (wipe {wipe})");
 }
 
-/// Escape and the windows' own close end the open hub window.
+/// A right press over an item of the trade window asks for its card, as
+/// the window's item panels do: the item and the flags its panel holds it
+/// with ([`crate::hub_windows::SHOP_ITEM_FLAGS`] for the stock), delayed
+/// on the card timer for use kinds 0 to 2, at once for anything else. A
+/// press over the shown card is the card's own. Either way the release
+/// that follows does not close the window.
+#[allow(clippy::too_many_arguments)]
+fn shop_item_cards(
+    buttons: Res<ButtonInput<MouseButton>>,
+    screen: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    scripted: Option<Res<exa_ui::ScriptedPointer>>,
+    mut windows: ResMut<HubWindows>,
+    view: Option<Res<crate::item_card::CardView>>,
+    screens: Option<Res<crate::gui_screens::GameScreens>>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut cards: MessageWriter<crate::item_card::WorldCard>,
+) {
+    if !buttons.just_pressed(MouseButton::Right) || !windows.is_kind(HubWindowKind::Shop) {
+        return;
+    }
+    let Ok(window) = screen.single() else {
+        return;
+    };
+    let pointer = match scripted.as_deref() {
+        Some(scripted) => scripted.position(window),
+        None => window.cursor_position(),
+    };
+    let Some(pointer) = pointer.map(|p| (p * window.scale_factor()).as_ivec2()) else {
+        return;
+    };
+    let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
+    if view
+        .as_deref()
+        .and_then(|view| view.shown.as_ref())
+        .is_some_and(|card| card.hit((pointer.x, pointer.y), unit.max(1)))
+    {
+        windows.card_press = true;
+        return;
+    }
+    let Some(bounds) = windows.bounds() else {
+        return;
+    };
+    let local = (pointer.x - bounds.left, pointer.y - bounds.top);
+    let Some((item, flags)) = windows.shop_item_at(local) else {
+        return;
+    };
+    windows.card_press = true;
+    let kind = catalogue.as_deref().and_then(|c| c.card_kind(item));
+    let pending = screens
+        .as_deref()
+        .is_some_and(|screens| screens.card.timer.due.is_some());
+    let delayed = match crate::item_container::card_action(true, pending, kind) {
+        crate::item_container::CardAction::None => return,
+        crate::item_container::CardAction::Delayed { .. } => true,
+        crate::item_container::CardAction::Immediate => false,
+    };
+    info!(
+        "hub shop: the card of {item:#x} (flags {flags:#x}) asked at {:?}{}",
+        (pointer.x, pointer.y),
+        if delayed { ", delayed" } else { "" }
+    );
+    cards.write(crate::item_card::WorldCard {
+        item,
+        flags,
+        delayed,
+    });
+}
+
+/// Escape and the windows' own close end the open hub window. A right
+/// release after an item's card request is the item panel's, not the
+/// window's.
 fn close_hub_windows(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut windows: ResMut<HubWindows>,
     mut hub: ResMut<ArenaHub>,
 ) {
-    if windows.is_open()
-        && (keys.just_pressed(KeyCode::Escape) || buttons.just_released(MouseButton::Right))
-        && windows.close_top()
-    {
+    let right = buttons.just_released(MouseButton::Right);
+    if right && std::mem::take(&mut windows.card_press) {
+        return;
+    }
+    if windows.is_open() && (keys.just_pressed(KeyCode::Escape) || right) && windows.close_top() {
         hub.busy = false;
     }
 }
