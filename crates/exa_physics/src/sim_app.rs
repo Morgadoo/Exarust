@@ -218,6 +218,11 @@ impl FixedCommands {
         self.bridged = bridged;
     }
 
+    /// The bridge is on: the frame's copies of simulation data are copies.
+    pub fn bridged(&self) -> bool {
+        self.bridged
+    }
+
     /// The queued snapshot writes, for the step's packet.
     pub fn take_writes(&mut self) -> Vec<SimCommand> {
         std::mem::take(queue(&mut self.writes))
