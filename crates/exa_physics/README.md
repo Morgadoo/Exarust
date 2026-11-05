@@ -64,7 +64,15 @@ bridged (one a system inserts by command). Changed values are found in the stora
 ticks (`Changed<T>` with the half's own tick), not one `Ref` per value.
 `BridgeCost` counts the values and the time each half of the copy took, and
 each side logs its costliest types every 1000 steps; `EXA_BRIDGE_ALL=1` copies every value every step (a
-debug aid). Every plugin with fixed-step systems registers its data (a
+debug aid). The hierarchy and transforms (`ChildOf`, `Children`'s order,
+`Transform`, `GlobalTransform`, `Name`) cross only for the entities the
+simulation holds: on the frame's side an entity is marked `SimShared` once
+another bridged type crosses for it (either way), with its ancestors, and
+only marked entities are scanned; a newly marked one sends its hierarchy
+whole. The frame's own entities (meshes, bones, lights, the GUI) stay home:
+in exanima01 and exanima06 the simulation holds about a third to a half of
+the frame's transforms. A `Children` order moves only the children it
+names. `EXA_BRIDGE_WIDE=1` scans every entity again (a debug aid). Every plugin with fixed-step systems registers its data (a
 `bridge_*_types` function next to its build); bodies are copied when they
 change, the collision world, the navigation grid, the cloths and the
 solver's stages are lent. The game runs its fixed step this way by default
