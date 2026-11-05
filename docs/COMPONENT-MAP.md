@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **76.1% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 68.7% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **76.2% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 68.9% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **45.4%** reproduced.
 
 ## By section
@@ -21,11 +21,11 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Physics, bodies & cloth | 363 | 242 | 13 | 82% | 0% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 78% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
-| Items, materials & crafting | 341 | 140 | 40 | 77% | 0% | TArsenalContFrame |
+| Items, materials & crafting | 341 | 140 | 40 | 78% | 0% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 86% | 0% |  |
-| Thaumaturgy & effects | 697 | 296 | 83 | 79% | 0% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 80% | 0% |  |
 | Audio | 59 | 18 | 4 | 85% | 0% |  |
-| Script, dialogue & story | 184 | 46 | 11 | 84% | 0% |  |
+| Script, dialogue & story | 184 | 46 | 11 | 86% | 0% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 85% | 0% |  |
 | UI | 959 | 312 | 63 | 82% | 0% | RF_GUI_3DViewport, TMessageBox |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
