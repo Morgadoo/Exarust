@@ -212,10 +212,18 @@ pub fn choose(hands: &Hands, claws: bool) -> HeldMoveset {
     }
 }
 
-/// Picks the moveset config of every body whose hands changed, and switches
-/// its clips to it: the body keeps its race's own moveset as the base, and
-/// the clip playing goes on in the new table. The stance class is copied
-/// onto the attacker, which the swing reads when it sets the arms.
+/// Overlay bits a held item's state asks the moveset choice for on top of
+/// what the hands hold: the "Flaming" overlay ([`MovesetConfig::FLAMING`])
+/// while a held blade burns. The original passes them to its moveset
+/// choice, which ORs them into the config it picked.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldModifier(pub u32);
+
+/// Picks the moveset config of every body whose hands (or held item
+/// modifier) changed, and switches its clips to it: the body keeps its
+/// race's own moveset as the base, and the clip playing goes on in the new
+/// table. The stance class is copied onto the attacker, which the swing
+/// reads when it sets the arms.
 #[allow(clippy::type_complexity)]
 pub(crate) fn choose_held_movesets(
     mut bodies: Query<
@@ -224,12 +232,16 @@ pub(crate) fn choose_held_movesets(
             &mut HeldMoveset,
             Option<&mut Animator>,
             Option<&mut Attacker>,
+            Option<&HeldModifier>,
         ),
-        Changed<Hands>,
+        Or<(Changed<Hands>, Changed<HeldModifier>)>,
     >,
 ) {
-    for (hands, mut held, anim, attacker) in &mut bodies {
-        let chosen = choose(hands, false);
+    for (hands, mut held, anim, attacker, modifier) in &mut bodies {
+        let mut chosen = choose(hands, false);
+        if let Some(modifier) = modifier {
+            chosen.config = chosen.config.with(MovesetConfig(modifier.0));
+        }
         if let Some(mut anim) = anim
             && anim.config != chosen.config
         {

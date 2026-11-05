@@ -1345,6 +1345,38 @@ fn a_releasing_foot_steps_and_splashes() {
     assert_eq!(release_step_clock(10, &mut roll), 260);
 }
 
+/// A scene is wet when its terrain's wetness is above 0.4: its water lies
+/// 25 cm under the floor's zero; otherwise far below every floor.
+#[test]
+fn a_wet_terrain_floods_its_scene_at_minus_twenty_five() {
+    assert_eq!(water_level(0.5), WET_SCENE_WATER_CM);
+    assert_eq!(water_level(0.0), NO_WATER_CM);
+    // The single 0.4 is a shade above the double 0.4, so it is wet.
+    assert_eq!(water_level(0.4), WET_SCENE_WATER_CM);
+    assert_eq!(water_level(0.399), NO_WATER_CM);
+    assert_eq!(WaterLevel::default().0, NO_WATER_CM);
+}
+
+/// The walk's wet step follows the gait's thrust: deeper water louder up
+/// to 20 cm, nothing for a foot at or over the surface.
+#[test]
+fn a_planted_foot_under_the_water_splashes_by_the_thrust() {
+    assert!(gait_wet_step(-25.0, -25.0, 1.0, 1.0, 0.5, 0.5).is_none());
+    assert!(gait_wet_step(NO_WATER_CM, -40.0, 1.0, 1.0, 0.5, 0.5).is_none());
+    // A foot 30 cm down: share min(1, 0.05·(25 − 1 + 30)) = 1.
+    let deep = gait_wet_step(-25.0, -30.0, 2.0, 1.0, 0.0, 0.0).unwrap();
+    // gain = 1 · 1 · 1 · 0.2 · (0.01·4 + 0.01) = 0.01.
+    assert!(close(deep.gain, 0.01, 1e-7), "{}", deep.gain);
+    // pitch = 0.9 · (0.1 + 0.9) = 0.9.
+    assert!(close(deep.pitch, 0.9, 1e-6), "{}", deep.pitch);
+    // The share is −water − 1 − foot over 20: any foot under −25 cm is
+    // more than 49 cm "deep", so the share is always the full one.
+    let shallow = gait_wet_step(-25.0, -25.5, 2.0, 1.0, 1.0, 1.0).unwrap();
+    let full = gait_wet_step(-25.0, -60.0, 2.0, 1.0, 1.0, 1.0).unwrap();
+    assert_eq!(shallow, full);
+    assert!(close(full.pitch, 1.2, 1e-6), "{}", full.pitch);
+}
+
 /// The feet routine's modes: the flat-floor bit wins over hovering.
 #[test]
 fn the_feet_modes() {
@@ -1423,6 +1455,7 @@ fn the_sound_pass_cues_step_starts_and_ends() {
             leg: 1,
             loudness: 0.5,
             contact_cm: 0.1 * CM,
+            at: ankles[1],
         }
     );
     work.cues.clear();

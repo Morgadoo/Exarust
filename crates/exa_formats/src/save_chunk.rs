@@ -104,24 +104,25 @@ pub const LOAD_SETTINGS_TAG: [f32; 3] = [0.0, 1_100_000.0, 0.0];
 
 /// What the save load resets globally. `old` is the old-tag flag (clear),
 /// `tag` the twelve-byte tag, `saved` the settings chunk's saved word and
-/// `sun_height` the scene's sun height (zero).
+/// `terrain_wetness` the scene's terrain wetness (zero), which the water
+/// level reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoadReset {
     pub old: bool,
     pub tag: [f32; 3],
     pub saved: u32,
-    pub sun_height: f32,
+    pub terrain_wetness: f32,
 }
 
 /// The globals the load resets before it opens a level: the old-tag flag
-/// clear, the default tag, a zero saved word and the scene's sun height
+/// clear, the default tag, a zero saved word and the scene's terrain wetness
 /// zero.
 pub fn load_reset() -> LoadReset {
     LoadReset {
         old: false,
         tag: LOAD_SETTINGS_TAG,
         saved: LOAD_SETTINGS_WORD,
-        sun_height: 0.0,
+        terrain_wetness: 0.0,
     }
 }
 
@@ -535,6 +536,6 @@ mod tests {
         assert!(!reset.old);
         assert_eq!(reset.tag, [0.0, 1_100_000.0, 0.0]);
         assert_eq!(reset.saved, 0);
-        assert_eq!(reset.sun_height, 0.0);
+        assert_eq!(reset.terrain_wetness, 0.0);
     }
 }
