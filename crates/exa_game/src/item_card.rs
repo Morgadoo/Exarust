@@ -1440,13 +1440,15 @@ pub fn draw_card(
                     })
                 {
                     // The denomination's icon takes the four units before
-                    // the number; the coin icons are not drawn.
+                    // the number; the coin icons are not drawn. [The
+                    // number's baseline is a guess: the row labels' middle
+                    // row (style 0x300).]
                     let number = n.to_string();
                     let w = font.text_width(number.as_bytes()) + unit;
                     let place = GuiRect::new(coin_x as i32 + 4 * unit, y, w, c.h);
                     for layer in gui_paint::paint_label(
                         place,
-                        0,
+                        0x300,
                         unit,
                         &palette,
                         &font,
