@@ -9,6 +9,14 @@ builders (`shape`), the shared intersection maths (`intersect`), the engine's ow
 
 `weapon_mass` redistributes a weapon's part tree in two passes, parent before children. A saved mass of zero is latched from the live mass. The live mass becomes 1.25 times that saved mass and the inverse word its reciprocal. Both words then become the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale. A second pass inflates the saved mass again. The equip pass calls it over a held weapon model's rigid nodes, with the record's table mass as the scale, divides the root part's mass word by the holder's size, and keeps the distributed parts as `WeaponMass` for the solver (`exa_character::weapon_mass_of`); no solver stage reads it yet.
 
+`step_driver` is the original's simulation step clock, without a thread:
+wrapping 32-bit milliseconds from a base, a step due once the time since the
+base reaches the next step's end, the backlog dropped (the base moved so the
+step ends now) when a step is more than four steps late, and otherwise a wait
+one millisecond short of the next step, at most 100 ms. The frame-coupled
+fixed loop does not use it yet: it is the clock of the simulation thread the
+fixed step is moving to (design: OpenSpec `plan-the-simulation-thread`).
+
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
 `MINSS`/`MAXSS`/clamp compares, the floor and ceiling conversions (the
