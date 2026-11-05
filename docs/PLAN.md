@@ -271,6 +271,8 @@ Round 48 world: the lever light fades and a shut door keeps its route closed.
 
 Round 48b world: mechanism light jobs and sequence relays run, light operatives start their device arcs at load, fire records follow the daylight, and the importer's visibility rules hide lights and fires.
 
+Round 50 doornav (W1): the backlog premise was wrong; a door never changes the navigation grid in the original, only the room route follows it.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1657,6 +1659,10 @@ Round 47 zones: stay zones and level exits run and the zone kinds are corrected.
 Round 48b aitick: the NPC combat tick reads the live body (balance, tone, support, feral, race flags, swing flags, speed) and weighs every contact, a step-led estimate, character switches and force foci, instead of the defaults it had.
 
 Round 49 auditfix: the 1 November death fade froze the game after a pit death; fixed with four other audit findings.
+
+Round 50 npcsearch (P7): the backlog's kneel clip does not exist in the original; only Derrin searches, after his recruitment topics.
+
+Round 50 spawnsnap (C13): the default spawn follows the original's placement; the old 4.5 cm drop was the debug flag's double snap.
 
 ### Phase 7 — Game modes and content
 
