@@ -94,6 +94,62 @@ pub trait BridgeHalf: Send + Sync + 'static {
     /// After an apply: forgets the removals and messages the apply itself
     /// made, and marks the tick changes are measured from.
     fn settle(&mut self, world: &mut World, since: Tick);
+    /// The hierarchy and transforms (`ChildOf`, `Children`'s order,
+    /// `Transform`, `GlobalTransform`, `Name`): on the frame's side only the
+    /// entities the simulation holds ([`SimShared`]) are scanned.
+    fn hierarchy(&self) -> bool {
+        false
+    }
+}
+
+/// Frame side: an entity the simulation's world holds, because a bridged
+/// type other than the hierarchy and transforms crossed for it (either
+/// way), or it is an ancestor of one. Only these entities' hierarchy and
+/// transforms are scanned and sent: the frame's other entities (meshes,
+/// bones, lights, the GUI) stay home.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct SimShared;
+
+/// Frame side, during a gather: the entities marked [`SimShared`] in it,
+/// whose hierarchy and transforms go whole.
+#[derive(Resource, Default)]
+struct NewlyShared(EntityHashSet);
+
+/// The hierarchy types narrowed to [`SimShared`] entities.
+fn is_hierarchy(id: TypeId) -> bool {
+    id == TypeId::of::<Transform>()
+        || id == TypeId::of::<GlobalTransform>()
+        || id == TypeId::of::<ChildOf>()
+        || id == TypeId::of::<Name>()
+}
+
+/// Whether the frame's hierarchy scans are narrowed to [`SimShared`]
+/// entities (a debug aid turns it off: `EXA_BRIDGE_WIDE=1`, or
+/// `EXA_BRIDGE_ALL=1`).
+fn narrowed() -> bool {
+    static WIDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*WIDE.get_or_init(|| std::env::var("EXA_BRIDGE_WIDE").is_ok_and(|v| v == "1"))
+        && !copy_everything()
+}
+
+/// Marks `entity` and its ancestors [`SimShared`]; those newly marked go
+/// into `newly`.
+fn mark_shared(world: &mut World, entity: Entity, newly: &mut EntityHashSet) {
+    let mut at = entity;
+    loop {
+        let Ok(mut e) = world.get_entity_mut(at) else {
+            return;
+        };
+        if e.contains::<SimShared>() {
+            return;
+        }
+        e.insert(SimShared);
+        newly.insert(at);
+        match e.get::<ChildOf>() {
+            Some(parent) => at = parent.parent(),
+            None => return,
+        }
+    }
 }
 
 /// One half's gathered changes.
@@ -207,9 +263,16 @@ struct CopyComponentHalf<T: Component + Clone> {
     /// The values changed since a tick, filtered in the storage's change
     /// ticks (no per-value `Ref`).
     changed: Option<ChangedQuery<T>>,
+    /// The frame's changed values of [`SimShared`] entities (hierarchy
+    /// types).
+    shared_changed: Option<SharedChangedQuery<T>>,
     removals: Removals,
     since: Tick,
 }
+
+/// Changed values of the entities the simulation holds.
+type SharedChangedQuery<T> =
+    QueryState<(Entity, &'static T), (Changed<T>, With<SimShared>, Without<IsResource>)>;
 
 /// Changed values and removals of one component.
 struct ComponentPacket<T> {
@@ -245,6 +308,7 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
             id: None,
             query: None,
             changed: None,
+            shared_changed: None,
             removals: Removals::new(),
             since: Tick::new(0),
         })
@@ -274,6 +338,47 @@ fn apply_removals<T: Component>(world: &mut World, removed: &[Entity]) {
 }
 
 impl<T: Component + Clone> CopyComponentHalf<T> {
+    /// The frame's side of a hierarchy type: the changed values of the
+    /// entities the simulation holds, and every value of those marked in
+    /// this gather.
+    fn gather_shared(&mut self, world: &mut World) -> Gathered {
+        let now = world.change_tick();
+        let since = self.since;
+        let Some(changed) = self.shared_changed.as_mut() else {
+            return Gathered::empty();
+        };
+        let world: &World = world;
+        let newly = &world.resource::<NewlyShared>().0;
+        // SAFETY: a read-only query of the world; the state was made from it.
+        let query = unsafe {
+            changed.query_unchecked_with_ticks(world.as_unsafe_world_cell_readonly(), since, now)
+        };
+        let mut values: Vec<(Entity, T, bool)> = query
+            .iter()
+            .filter(|(e, _)| !newly.contains(e))
+            .map(|(e, v)| (e, T::clone(v), true))
+            .collect();
+        values.extend(
+            newly
+                .iter()
+                .filter_map(|&e| world.get::<T>(e).map(|v| (e, v.clone(), true))),
+        );
+        let seen = self.removals.take();
+        let removed = live_removals::<T>(world, &seen);
+        let touched = values
+            .iter()
+            .flat_map(|(e, v, _)| [Some(*e), (self.refs)(v)])
+            .flatten()
+            .collect();
+        let n = values.len() + removed.len();
+        Gathered {
+            packet: Box::new(ComponentPacket { removed, values }),
+            touched,
+            removed: seen,
+            values: n,
+        }
+    }
+
     /// The frame's side of a snapshot: the values the frame inserted since
     /// the last copy out, and its removals; a value it only changed is not
     /// sent (warned once: a write that should have been posted).
@@ -329,7 +434,12 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         self.query = Some(world.query_filtered());
         self.changed = Some(world.query_filtered());
         self.added = Some(world.query_filtered());
+        self.shared_changed = Some(world.query_filtered());
         id
+    }
+
+    fn hierarchy(&self) -> bool {
+        is_hierarchy(TypeId::of::<T>())
     }
 
     fn drain_removed(&mut self, world: &World) {
@@ -347,6 +457,9 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         }
         if self.snapshot && !ctx.sim && !all {
             return self.gather_inserted(world);
+        }
+        if !ctx.sim && world.contains_resource::<NewlyShared>() && self.hierarchy() {
+            return self.gather_shared(world);
         }
         let now = world.change_tick();
         let since = self.since;
@@ -743,6 +856,7 @@ struct ChildrenOrderHalf {
     id: Option<ComponentId>,
     query: Option<ValueQuery<Ref<'static, Children>>>,
     changed: Option<ChangedQuery<Children>>,
+    shared_changed: Option<SharedChangedQuery<Children>>,
     since: Tick,
 }
 
@@ -756,6 +870,7 @@ impl BridgeType for ChildrenOrder {
             id: None,
             query: None,
             changed: None,
+            shared_changed: None,
             since: Tick::new(0),
         })
     }
@@ -770,7 +885,12 @@ impl BridgeHalf for ChildrenOrderHalf {
         let id = component_id::<Children>(world, &mut self.id);
         self.query = Some(world.query_filtered());
         self.changed = Some(world.query_filtered());
+        self.shared_changed = Some(world.query_filtered());
         id
+    }
+
+    fn hierarchy(&self) -> bool {
+        true
     }
 
     fn drain_removed(&mut self, _: &World) {}
@@ -778,25 +898,58 @@ impl BridgeHalf for ChildrenOrderHalf {
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
         let now = world.change_tick();
         let since = self.since;
-        let orders: Vec<(Entity, Vec<Entity>)> = if ctx.all {
-            let Some(query) = self.query.as_mut() else {
-                return Gathered::empty();
+        let orders: Vec<(Entity, Vec<Entity>)> =
+            if !ctx.sim && world.contains_resource::<NewlyShared>() {
+                // The order among the children the simulation holds, of the
+                // parents it holds: changed ones and those marked now.
+                let Some(changed) = self.shared_changed.as_mut() else {
+                    return Gathered::empty();
+                };
+                let world: &World = world;
+                let newly = &world.resource::<NewlyShared>().0;
+                let shared = |c: &Children| -> Vec<Entity> {
+                    c.iter()
+                        .filter(|&e| world.get::<SimShared>(e).is_some())
+                        .collect()
+                };
+                // SAFETY: as in `CopyComponentHalf::gather`.
+                let query = unsafe {
+                    changed.query_unchecked_with_ticks(
+                        world.as_unsafe_world_cell_readonly(),
+                        since,
+                        now,
+                    )
+                };
+                let mut orders: Vec<(Entity, Vec<Entity>)> = query
+                    .iter()
+                    .filter(|(e, _)| !newly.contains(e))
+                    .map(|(e, c)| (e, shared(c)))
+                    .collect();
+                orders.extend(
+                    newly
+                        .iter()
+                        .filter_map(|&e| world.get::<Children>(e).map(|c| (e, shared(c)))),
+                );
+                orders
+            } else if ctx.all {
+                let Some(query) = self.query.as_mut() else {
+                    return Gathered::empty();
+                };
+                query.iter(world).map(|(e, c)| (e, c.to_vec())).collect()
+            } else {
+                let Some(changed) = self.changed.as_mut() else {
+                    return Gathered::empty();
+                };
+                // SAFETY: as in `CopyComponentHalf::gather`.
+                let query = unsafe {
+                    changed.query_unchecked_with_ticks(
+                        world.as_unsafe_world_cell_readonly(),
+                        since,
+                        now,
+                    )
+                };
+                query.iter().map(|(e, c)| (e, c.to_vec())).collect()
             };
-            query.iter(world).map(|(e, c)| (e, c.to_vec())).collect()
-        } else {
-            let Some(changed) = self.changed.as_mut() else {
-                return Gathered::empty();
-            };
-            // SAFETY: as in `CopyComponentHalf::gather`.
-            let query = unsafe {
-                changed.query_unchecked_with_ticks(
-                    world.as_unsafe_world_cell_readonly(),
-                    since,
-                    now,
-                )
-            };
-            query.iter().map(|(e, c)| (e, c.to_vec())).collect()
-        };
         Gathered {
             values: orders.len(),
             packet: Box::new(orders),
@@ -820,9 +973,28 @@ impl BridgeHalf for ChildrenOrderHalf {
             if **children == order[..] {
                 continue;
             }
+            // Only the children the order names move, among the places
+            // they hold; the others (the frame's own) keep theirs.
             let at: bevy::ecs::entity::EntityHashMap<usize> =
                 order.iter().enumerate().map(|(i, &e)| (e, i)).collect();
-            children.sort_by_key(|e| at.get(e).copied().unwrap_or(usize::MAX));
+            let places: Vec<usize> = children
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| at.contains_key(e))
+                .map(|(i, _)| i)
+                .collect();
+            let mut named: Vec<Entity> = places.iter().map(|&i| children[i]).collect();
+            named.sort_by_key(|e| at[e]);
+            if places.iter().zip(&named).all(|(&i, e)| children[i] == *e) {
+                continue;
+            }
+            let mut list: Vec<Entity> = children.to_vec();
+            for (&i, &e) in places.iter().zip(&named) {
+                list[i] = e;
+            }
+            let rank: bevy::ecs::entity::EntityHashMap<usize> =
+                list.iter().enumerate().map(|(i, &e)| (e, i)).collect();
+            children.sort_by_key(|e| rank.get(e).copied().unwrap_or(usize::MAX));
             n += 1;
         }
         n
@@ -1306,6 +1478,10 @@ pub struct BridgeSide {
     /// Per half: values gathered, values applied, nanoseconds (both).
     stats: Vec<(u64, u64, u64)>,
     gathers: u64,
+    /// Frame side: ancestors of entities the simulation sent, marked
+    /// [`SimShared`] at the apply; their hierarchy goes whole at the next
+    /// gather.
+    pending_shared: EntityHashSet,
 }
 
 impl BridgeSide {
@@ -1319,6 +1495,7 @@ impl BridgeSide {
             sim: !first,
             stats: Vec::new(),
             gathers: 0,
+            pending_shared: EntityHashSet::default(),
         }
     }
 
@@ -1365,25 +1542,57 @@ impl BridgeSide {
             all: std::mem::take(&mut self.first) || copy_everything(),
             sim: self.sim,
         };
-        let mut packets = Vec::with_capacity(self.halves.len());
+        let mut packets: Vec<Option<Packet>> = (0..self.halves.len()).map(|_| None).collect();
         let mut touched = EntityHashSet::default();
         let mut despawned = EntityHashSet::default();
         let mut values = 0;
         self.stats.resize(self.halves.len(), (0, 0, 0));
-        for (half, stat) in self.halves.iter_mut().zip(&mut self.stats) {
-            let started = Instant::now();
-            let g = half.gather(world, ctx);
-            stat.0 += g.values as u64;
-            stat.2 += started.elapsed().as_nanos() as u64;
-            values += g.values;
-            touched.extend(g.touched);
-            despawned.extend(
-                g.removed
-                    .into_iter()
-                    .filter(|&e| !world.entities().contains_spawned(e)),
-            );
-            packets.push(g.packet);
+        // The frame narrows its hierarchy scans: the other types first,
+        // then the entities they name (and their ancestors) are marked
+        // shared, then the hierarchy of the shared entities.
+        let narrow = !self.sim && narrowed();
+        for pass in 0..2 {
+            if narrow && pass == 1 {
+                let mut newly = std::mem::take(&mut self.pending_shared);
+                let mut named: Vec<Entity> = touched.iter().copied().collect();
+                named.sort_unstable();
+                for e in named {
+                    mark_shared(world, e, &mut newly);
+                }
+                newly.retain(|&e| world.entities().contains_spawned(e));
+                world.insert_resource(NewlyShared(newly));
+            }
+            for ((half, stat), slot) in self
+                .halves
+                .iter_mut()
+                .zip(&mut self.stats)
+                .zip(&mut packets)
+            {
+                let late = narrow && half.hierarchy();
+                if late != (pass == 1) {
+                    continue;
+                }
+                let started = Instant::now();
+                let g = half.gather(world, ctx);
+                stat.0 += g.values as u64;
+                stat.2 += started.elapsed().as_nanos() as u64;
+                values += g.values;
+                touched.extend(g.touched);
+                despawned.extend(
+                    g.removed
+                        .into_iter()
+                        .filter(|&e| !world.entities().contains_spawned(e)),
+                );
+                *slot = Some(g.packet);
+            }
         }
+        if narrow {
+            world.remove_resource::<NewlyShared>();
+        }
+        let packets: Vec<Packet> = packets
+            .into_iter()
+            .map(|p| p.unwrap_or_else(|| Box::new(())))
+            .collect();
         let mut touched: Vec<Entity> = touched.into_iter().collect();
         touched.sort_unstable();
         let mut despawned: Vec<Entity> = despawned.into_iter().collect();
@@ -1413,6 +1622,20 @@ impl BridgeSide {
         }
         for &e in &packet.touched {
             ensure_spawned(world, e);
+        }
+        // The frame holds what the simulation sent as shared: those
+        // entities are in sync; their ancestors go whole at the next gather.
+        if !sim && narrowed() {
+            for &e in &packet.touched {
+                if let Ok(mut entity) = world.get_entity_mut(e)
+                    && !entity.contains::<SimShared>()
+                {
+                    entity.insert(SimShared);
+                    if let Some(parent) = entity.get::<ChildOf>().map(ChildOf::parent) {
+                        mark_shared(world, parent, &mut self.pending_shared);
+                    }
+                }
+            }
         }
         let ctx = ApplyCtx {
             sim,
@@ -1560,10 +1783,13 @@ impl Plugin for SimBridgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimBridgeTypes>()
             .insert_resource(FrameBridge {
-                extra: [crate::sim_app::SimFrameStart.intern()]
-                    .into_iter()
-                    .chain(self.extra.iter().copied())
-                    .collect(),
+                extra: [
+                    crate::sim_app::SimPreStep.intern(),
+                    crate::sim_app::SimFrameStart.intern(),
+                ]
+                .into_iter()
+                .chain(self.extra.iter().copied())
+                .collect(),
                 fixed_order: Vec::new(),
                 side: None,
                 frames: 0,

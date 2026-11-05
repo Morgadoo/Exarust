@@ -52,14 +52,12 @@ impl Plugin for LimpPlugin {
             Update,
             (build_bodies, go_limp).chain().after(AnimSystems),
         )
-        // The rise is the AI manager's, which the original runs on the
-        // simulation's thread (a hook its step calls): it runs in the
-        // simulation's frame start, the restore after it.
+        // The rise is the AI manager's frame routine, which the original
+        // installs as its simulation loop's pre-step hook: it runs before
+        // every step, the restore after it.
         .add_systems(
-            exa_physics::sim_app::SimFrameStart,
-            (crate::rise::rise_the_dead, crate::rise::restore_revived)
-                .chain()
-                .in_set(exa_physics::sim_app::SimFrameStartSystems::Early),
+            exa_physics::sim_app::SimPreStep,
+            (crate::rise::rise_the_dead, crate::rise::restore_revived).chain(),
         )
         .add_systems(
             FixedUpdate,

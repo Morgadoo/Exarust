@@ -64,7 +64,15 @@ bridged (one a system inserts by command). Changed values are found in the stora
 ticks (`Changed<T>` with the half's own tick), not one `Ref` per value.
 `BridgeCost` counts the values and the time each half of the copy took, and
 each side logs its costliest types every 1000 steps; `EXA_BRIDGE_ALL=1` copies every value every step (a
-debug aid). Every plugin with fixed-step systems registers its data (a
+debug aid). The hierarchy and transforms (`ChildOf`, `Children`'s order,
+`Transform`, `GlobalTransform`, `Name`) cross only for the entities the
+simulation holds: on the frame's side an entity is marked `SimShared` once
+another bridged type crosses for it (either way), with its ancestors, and
+only marked entities are scanned; a newly marked one sends its hierarchy
+whole. The frame's own entities (meshes, bones, lights, the GUI) stay home:
+in exanima01 and exanima06 the simulation holds about a third to a half of
+the frame's transforms. A `Children` order moves only the children it
+names. `EXA_BRIDGE_WIDE=1` scans every entity again (a debug aid). Every plugin with fixed-step systems registers its data (a
 `bridge_*_types` function next to its build); bodies are copied when they
 change, the collision world, the navigation grid, the cloths and the
 solver's stages are lent. The game runs its fixed step this way by default
@@ -96,13 +104,19 @@ where the copy used to land it, and a simulation running apart from the
 frame can take it in order. Posted so far: the viewer's fells and mechanism
 poke, the door toggle, going limp, finished limb trees, the hand's door and
 lever releases, the grab a hotkey's entry into combat lets go of. Coupled writers move into the simulation instead, with their
-same-frame readers: the rise and its restore run in `SimFrameStart` (the
-original's AI manager frame runs them on its simulation thread, as a hook
-its step calls), then the golem alarm's zone check (the manager frame's,
-after its rise), and so do the hit chain (wounds, blade tracking, hit
-detection, the reaction and the bites: the original's damage routine takes
-a pending hit in its dynamics' post-step) with the brains' reaction to
-blows and the debug pauses that read it.
+same-frame readers: the rise and its restore, then the golem alarm's zone
+check, run in `SimPreStep` before every fixed step (the original installs
+its AI manager's frame routine as its simulation loop's pre-step hook, which
+the loop calls before each 12 ms step; the routine has no rate guard of its
+own, the zone check only its 3 cm movement test). The hit chain (wounds,
+blade tracking, hit detection, the reaction and the bites) with the brains'
+reaction to blows and the debug pauses that read it runs in `SimFrameStart`,
+on the first step of each frame: the original's damage routine takes a
+pending hit in its dynamics' post-step, every step, but Exarust's blade
+tracking reads the blade frames the frame propagates, so it stays once a
+frame until blade frames are taken from the parts within the step. The
+bodies' frame start (the blows queued, the per-frame tick count) also stays
+there, after the hit chain that sends the blows.
 
 The hand stays in the frame, as the original's hand runs on its main thread
 per input event (the GUI's cursor handlers) and writes the bodies directly.

@@ -63,10 +63,18 @@ pub struct SimStep;
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SimFrameStart;
 
+/// Work the original runs before every step on its simulation thread: the
+/// AI manager's frame routine is the loop's pre-step hook, called before
+/// each 12 ms step (the rise and its restore, then the alarm zones). It runs
+/// every fixed pass, before [`SimFrameStart`], in both worlds.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SimPreStep;
+
 /// The order of [`SimFrameStart`]'s work, as the frame ran it before it
-/// moved: what ran in `Update` (the rise), then what ran in `PostUpdate`
-/// (the hit chain and its readers), then the bodies' own frame start, which
-/// queues the blows the others sent.
+/// moved: what ran in `Update` (`Early`: nothing now, the rise went to
+/// [`SimPreStep`]), then what ran in `PostUpdate` (the hit chain and its
+/// readers), then the bodies' own frame start, which queues the blows the
+/// others sent.
 #[derive(bevy::ecs::schedule::SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SimFrameStartSystems {
     Early,
@@ -81,9 +89,11 @@ pub enum SimFrameStartSystems {
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FrameStartStep;
 
-/// Runs [`SimFrameStart`] on the first fixed pass of a frame (Bevy's frame
-/// count, which the bridge copies, tells the frames apart).
+/// Runs [`SimPreStep`] on every fixed pass, then [`SimFrameStart`] on the
+/// first fixed pass of a frame (Bevy's frame count, which the bridge
+/// copies, tells the frames apart).
 fn run_frame_start(world: &mut World, mut last: Local<Option<u32>>) {
+    let _ = world.try_run_schedule(SimPreStep);
     let frame = world
         .get_resource::<bevy::diagnostic::FrameCount>()
         .map(|f| f.0);
@@ -218,6 +228,11 @@ impl FixedCommands {
         self.bridged = bridged;
     }
 
+    /// The bridge is on: the frame's copies of simulation data are copies.
+    pub fn bridged(&self) -> bool {
+        self.bridged
+    }
+
     /// The queued snapshot writes, for the step's packet.
     pub fn take_writes(&mut self) -> Vec<SimCommand> {
         std::mem::take(queue(&mut self.writes))
@@ -284,8 +299,12 @@ pub fn add_frame_start(app: &mut App) {
     }
     app.insert_resource(FrameStartRunner)
         .init_schedule(SimFrameStart)
-        // Its systems write the same bodies: one at a time, in order.
+        .init_schedule(SimPreStep)
+        // Their systems write the same bodies: one at a time, in order.
         .edit_schedule(SimFrameStart, |schedule| {
+            schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        })
+        .edit_schedule(SimPreStep, |schedule| {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         })
         .configure_sets(

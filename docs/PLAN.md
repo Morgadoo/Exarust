@@ -923,6 +923,10 @@ Round 74 determinism: the simulation starts after the load, as in the original, 
 
 Round 75 simthread4e: bodies are snapshots and the frame's writes to them are posted, as the original's threads share them.
 
+Round 77 simthread4f: the bridge copies only what the simulation holds; the original's free loop is traced for stage 6.
+
+Round 78 simthread6a: the AI manager frame runs before every simulation step, as the original's pre-step hook.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the

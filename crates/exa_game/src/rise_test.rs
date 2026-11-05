@@ -224,7 +224,7 @@ fn the_unarmed_set_up_reads_the_record_out_set() {
 /// same corpse alike.
 #[test]
 fn the_rise_runs_alike_behind_the_bridge() {
-    use exa_physics::sim_app::{SimFrameStart, SimMode, SimShellPlugin};
+    use exa_physics::sim_app::{SimMode, SimPreStep, SimShellPlugin};
     use exa_physics::sim_bridge::{SimBridgeAppExt, SimBridgePlugin};
     let run = |mode: Option<SimMode>| {
         let mut app = App::new();
@@ -234,7 +234,7 @@ fn the_rise_runs_alike_behind_the_bridge() {
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
             ))
-            .add_systems(SimFrameStart, (rise_the_dead, restore_revived).chain());
+            .add_systems(SimPreStep, (rise_the_dead, restore_revived).chain());
         if let Some(mode) = mode {
             app.add_plugins((
                 SimShellPlugin { mode },

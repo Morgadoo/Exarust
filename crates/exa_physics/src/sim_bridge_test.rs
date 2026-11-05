@@ -434,3 +434,52 @@ fn a_snapshot_takes_posted_writes_and_keeps_the_frames_own_home() {
         assert_eq!(alone_frame, frame, "{mode:?}");
     }
 }
+
+/// The frame's hierarchy and transforms cross only for the entities the
+/// simulation holds: one a bridged type crossed for, and its ancestors.
+#[test]
+fn only_shared_entities_hierarchy_crosses() {
+    let mut app = app(Some(SimMode::Inline));
+    let world = app.world_mut();
+    let parent = world.spawn(Transform::from_xyz(1.0, 0.0, 0.0)).id();
+    let body = world
+        .spawn((Tag(1), Pos(0.0), Transform::default(), ChildOf(parent)))
+        .id();
+    let mesh = world.spawn((Transform::default(), ChildOf(body))).id();
+    let lone = world.spawn(Transform::default()).id();
+    for _ in 0..3 {
+        app.update();
+    }
+    let in_sim = |app: &App, e: Entity| {
+        app.world()
+            .resource::<crate::sim_app::SimShell>()
+            .with_world(|sim| sim.get::<Transform>(e).copied())
+            .unwrap()
+    };
+    assert_eq!(
+        in_sim(&app, parent),
+        Some(Transform::from_xyz(1.0, 0.0, 0.0))
+    );
+    assert!(in_sim(&app, body).is_some());
+    assert_eq!(in_sim(&app, mesh), None, "a frame-only child crossed");
+    assert_eq!(in_sim(&app, lone), None, "a frame-only entity crossed");
+    // The body's parent keeps crossing when it moves; the frame's own
+    // entities do not, and their order among the body's children is kept.
+    app.world_mut()
+        .get_mut::<Transform>(parent)
+        .unwrap()
+        .translation
+        .x = 2.0;
+    app.world_mut()
+        .get_mut::<Transform>(lone)
+        .unwrap()
+        .translation
+        .x = 3.0;
+    app.update();
+    assert_eq!(in_sim(&app, parent).unwrap().translation.x, 2.0);
+    assert_eq!(in_sim(&app, lone), None);
+    assert_eq!(
+        app.world().get::<Children>(body).map(|c| c.to_vec()),
+        Some(vec![mesh])
+    );
+}

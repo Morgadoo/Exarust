@@ -141,13 +141,11 @@ impl Plugin for GolemAlarmPlugin {
         app.init_resource::<AlarmVolumes>()
             .init_resource::<GolemAlarm>()
             // The zone check is the original's AI manager frame's, after its
-            // rise (a hook the simulation thread's step calls): it runs in
-            // the simulation's frame start, after the rise and its restore.
+            // rise (the simulation loop's pre-step hook): it runs before
+            // every step, after the rise and its restore.
             .add_systems(
-                exa_physics::sim_app::SimFrameStart,
-                check_alarm_zones
-                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Early)
-                    .after(crate::rise::restore_revived),
+                exa_physics::sim_app::SimPreStep,
+                check_alarm_zones.after(crate::rise::restore_revived),
             )
             .add_systems(
                 Update,
