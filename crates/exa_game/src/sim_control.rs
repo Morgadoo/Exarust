@@ -162,18 +162,21 @@ pub struct SimControlPlugin;
 
 impl Plugin for SimControlPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_frame_start(app);
         bridge_sim_control_types(app);
         app.init_resource::<SimControl>()
             .add_message::<exa_combat::Hit>()
             .add_systems(Update, start_speed.run_if(|c: Res<SimControl>| !c.started))
             .add_systems(
-                PostUpdate,
+                // After the hit chain, in the simulation's frame start.
+                exa_physics::sim_app::SimFrameStart,
                 (
                     arm_pause_on_hit.run_if(|c: Res<SimControl>| c.pause_on_hit.is_some()),
                     arm_pause_after_collapse
                         .run_if(|c: Res<SimControl>| c.pause_after_collapse.is_some()),
                     refill_undying,
                 )
+                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Late)
                     .after(exa_combat::CombatSystems),
             )
             .add_systems(FixedUpdate, refill_undying.after(BodySystems))
@@ -602,7 +605,8 @@ mod tests {
     }
 
     /// `--pause-on-hit 3`: the duellist's blow arms nothing; the player's
-    /// first blow pauses the run three ticks after the tick it landed in,
+    /// first blow pauses the run three ticks after the tick count of the
+    /// frame start that took it (the hit chain runs before the ticks),
     /// and a later blow no longer moves the pause.
     #[test]
     fn pause_three_ticks_after_the_players_blow() {
@@ -642,8 +646,10 @@ mod tests {
         app.update();
         assert_eq!(app.world().resource::<SimControl>().pause_at_tick, None);
         app.world_mut().write_message(blow(player));
-        app.update();
+        // The hit chain runs at the frame's start, before its ticks: the
+        // blow lands at the tick count the frame starts on.
         let landed = ticks(&app);
+        app.update();
         assert_eq!(
             app.world().resource::<SimControl>().pause_at_tick,
             Some(landed + 3)
@@ -670,8 +676,9 @@ mod tests {
         }
         assert_eq!(app.world().resource::<SimControl>().pause_at_tick, None);
         *app.world_mut().get_mut::<Condition>(fighter).unwrap() = Condition::COLLAPSING;
-        app.update();
+        // Seen at the frame's start, before its ticks.
         let collapsed = ticks(&app);
+        app.update();
         assert_eq!(
             app.world().resource::<SimControl>().pause_at_tick,
             Some(collapsed + 83)

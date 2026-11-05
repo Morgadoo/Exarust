@@ -77,6 +77,7 @@ pub struct DuelSystems;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_frame_start(app);
         bridge_ai_types(app);
         app.init_resource::<presence::ActivationArea>()
             .init_resource::<rooms::RoomCells>()
@@ -87,10 +88,13 @@ impl Plugin for AiPlugin {
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::BlowNoticed>()
             .add_message::<struck::Taught>()
+            // The brains' reaction to this frame's blows follows the hit
+            // chain into the simulation's frame start.
             .add_systems(
-                PostUpdate,
+                exa_physics::sim_app::SimFrameStart,
                 struck::react_to_blows
                     .in_set(struck::HitReactions)
+                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Late)
                     .after(exa_combat::CombatSystems),
             )
             .add_systems(
@@ -153,7 +157,8 @@ impl Plugin for AiPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_ai_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_copy::<crate::brain::RatedPlayer>()
+    app.bridge_message::<crate::struck::Taught>()
+        .bridge_copy::<crate::brain::RatedPlayer>()
         .bridge_message::<crate::brain::StatueByte>()
         .bridge_message::<crate::presence::Entered>()
         .bridge_message::<exa_combat::AttackAskedHook>()

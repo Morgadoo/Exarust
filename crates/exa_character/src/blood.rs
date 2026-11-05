@@ -1070,6 +1070,12 @@ mod tests {
     fn wounds_paint_the_struck_characters_own_meshes() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            // One fixed pass an update: the hit chain runs in the fixed
+            // step's frame start (`exa_physics::sim_app::SimFrameStart`).
+            .insert_resource(Time::<Fixed>::from_hz(exa_physics::STEP_HZ))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+            ))
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
             .add_plugins(BloodPlugin);
@@ -1189,6 +1195,12 @@ mod tests {
         use exa_physics::body::{BodyTicks, Shove};
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            // One fixed pass an update: the hit chain runs in the fixed
+            // step's frame start (`exa_physics::sim_app::SimFrameStart`).
+            .insert_resource(Time::<Fixed>::from_hz(exa_physics::STEP_HZ))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+            ))
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
             .init_resource::<BodyTicks>()
@@ -1408,6 +1420,12 @@ mod tests {
     fn staining() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            // One fixed pass an update: the hit chain runs in the fixed
+            // step's frame start (`exa_physics::sim_app::SimFrameStart`).
+            .insert_resource(Time::<Fixed>::from_hz(exa_physics::STEP_HZ))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+            ))
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
             .init_resource::<Assets<StainMaterial>>()
