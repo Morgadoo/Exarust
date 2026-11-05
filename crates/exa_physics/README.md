@@ -87,11 +87,24 @@ when the frame builds one, never back). A type a moved system touches that no
 plugin registered stops a debug or test build at the first step; a play
 build warns and skips the system.
 
+`sim_app::FixedCommands` carries the frame's writes to simulation data: a
+frame system that decides a change posts it (`post`, or `run` with a cached
+one-shot system and its input), and `FixedCommandsStep`, first after the
+lockstep in the fixed order, runs the queue at the start of the next fixed
+step on the world that runs the step (the frame's in one world; behind the
+bridge the queue is lent to the simulation for the step). The change lands
+where the copy used to land it, and a simulation running apart from the
+frame can take it in order. Posted so far: the viewer's fells and mechanism
+poke, the door toggle, going limp, finished limb trees, the hand's door and
+lever releases.
+
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own
 schedule after `FixedLast`, which moves with the fixed step: a one-world run
 and a bridged one compare tick by tick and type by type, and
-`EXA_DIGEST_DUMP=<step>[-<step>]` writes the values themselves. It found the
+`EXA_DIGEST_DUMP=<step>[-<step>]` writes the values themselves. Behind the
+bridge the frame's copy is digested too (`<file>.frame.tsv`, after each
+step's copy out). It found the
 bridged duel's drift: query filters were not in the coverage, so `With<Player>`
 matched nothing in the simulation's world.
 
