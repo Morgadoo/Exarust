@@ -179,6 +179,11 @@ impl Node {
     /// word, set by [`Scene::apply_visibility_flags`]).
     pub const HIDDEN: u32 = 0x2;
 
+    /// `flags2` bit: the node is floor. The original's Ground Query (the
+    /// feet routine's point ray under the toe) meets only meshes and rigid
+    /// bodies whose node carries it.
+    pub const FLOOR: u32 = 0x80_0000;
+
     /// Whether the node's scene class is a light: the class bits its
     /// registration masks with `0x5f` are `5`.
     pub fn is_light_node(&self) -> bool {

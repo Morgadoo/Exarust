@@ -1219,6 +1219,8 @@ fn the_sole_floor_is_the_ground_querys_rule() {
     assert_eq!(sole_floor(100.0, false, 2.5, None, 200.0), 102.5);
     assert_eq!(sole_floor(100.0, false, 0.0, Some(300.0), 150.0), 150.0);
     assert_eq!(sole_floor(100.0, false, 0.0, None, 95.0), 95.0);
+    // An unordered compare keeps the low floor: a NaN hit is not taken.
+    assert_eq!(sole_floor(100.0, false, 0.0, Some(f32::NAN), 200.0), 100.0);
 }
 
 /// A walking footstep's gain and pitch from the two draws: at a walk's

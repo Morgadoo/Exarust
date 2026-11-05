@@ -1526,6 +1526,14 @@ fn spawn_node(
                 to_cell: *local,
             });
         }
+        // The original merges a cell's floor (the floor set's pieces and the
+        // wall pieces' `+F` strips) into one `+Floor` node whose second flag
+        // word gains the floor bit ([`MERGED_FLOOR_FLAGS`]); a set piece's
+        // own floor nodes (stairs, steps) carry it in the file. The Ground
+        // Query meets only these.
+        if floor.is_some() || n.floor {
+            commands.entity(part).insert(exa_physics::FloorMesh);
+        }
         if let Some(room) = room {
             commands.entity(part).insert(InRoom(room));
         }
@@ -1583,6 +1591,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
             gi_centred: false,
+            floor: false,
             gi_thin: false,
             rigid: None,
             tracks: Vec::new(),

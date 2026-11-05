@@ -207,6 +207,9 @@ pub struct GripLinks {
     pub flip_active: bool,
     /// The grip mode, -1 before the first callback.
     pub mode: i32,
+    /// The holder's clip the mode was last derived from (the original
+    /// derives it when a motion starts), -1 before the first.
+    pub motion: i32,
     /// A link still relaxing after a grip change.
     pub relaxing: bool,
     /// The flip finished and the item's record must be rebuilt.
@@ -640,6 +643,7 @@ pub fn build(
         flipped: flip,
         flip_active: false,
         mode: -1,
+        motion: -1,
         relaxing: false,
         record_dirty: false,
         world_soft: None,
@@ -758,6 +762,7 @@ pub fn torch_links(
         flipped: false,
         flip_active: false,
         mode: -1,
+        motion: -1,
         relaxing: false,
         record_dirty: false,
         world_soft: Some(world),
@@ -848,6 +853,7 @@ pub fn shield_links(
         flipped: false,
         flip_active: false,
         mode: -1,
+        motion: -1,
         relaxing: false,
         record_dirty: false,
         world_soft: Some(world),
@@ -1134,6 +1140,33 @@ pub fn mode_from_clip(clip: i32, current_clip: i32, down: bool) -> i32 {
     }
 }
 
+/// The clip the locomotion starts (the walk, clip 0).
+pub const WALK_CLIP: i32 = 0;
+
+/// The grip mode a held item has after its holder's tick. The original
+/// writes the mode in two places of the body tick: a motion's start derives
+/// it from the clip ([`mode_from_clip`]), and the locomotion routine, on
+/// each tick it runs, sets its own (`locomotion`: the general mode running
+/// or in combat, else the walk's). The behaviour starts its clips before
+/// the locomotion, so the locomotion's mode wins over them; the walk it
+/// starts itself comes after, so that start's mode wins. `last_clip` is the
+/// clip the mode was last derived from: a different `clip` is a start.
+/// Without a start or a locomotion tick the mode stays `current`.
+pub fn tick_mode(
+    current: i32,
+    last_clip: i32,
+    clip: i32,
+    down: bool,
+    locomotion: Option<i32>,
+) -> i32 {
+    let started = clip != last_clip;
+    match locomotion {
+        Some(mode) if !(started && clip == WALK_CLIP) => mode,
+        _ if started => mode_from_clip(clip, clip, down),
+        _ => current,
+    }
+}
+
 /// A part's weights as the builder needs them (the original's rest frame).
 pub fn part_weights(part: &Part, local: Vec3) -> [f32; 4] {
     let edges = bevy::math::Mat3::from_cols(
@@ -1181,6 +1214,7 @@ mod tests {
             flipped: false,
             flip_active: false,
             mode: -1,
+            motion: -1,
             relaxing: false,
             record_dirty: false,
             world_soft: None,
@@ -1597,6 +1631,7 @@ mod tests {
             flipped: false,
             flip_active: false,
             mode: -1,
+            motion: -1,
             relaxing: false,
             record_dirty: false,
             world_soft: None,
@@ -1647,6 +1682,28 @@ mod tests {
         assert_eq!(mode_from_clip(0x1F, 0, false), 0);
         assert_eq!(mode_from_clip(5, 0x2C, false), 0);
         assert_eq!(mode_from_clip(5, 0, true), 0);
+    }
+
+    /// The mode after a holder's tick: a start derives it from the clip, a
+    /// locomotion tick writes its own over a behaviour's start, the walk the
+    /// locomotion starts wins over the locomotion's, and nothing else
+    /// changes it (a held clip keeps a mode the locomotion wrote).
+    #[test]
+    fn the_mode_follows_starts_and_the_locomotion() {
+        // A start without locomotion: the clip's mode.
+        assert_eq!(tick_mode(-1, -1, 0x13, false, None), 2);
+        assert_eq!(tick_mode(2, 0x13, 5, false, None), 1);
+        // No start, no locomotion: kept.
+        assert_eq!(tick_mode(1, 0x13, 0x13, false, None), 1);
+        // Running (or walking in combat) the locomotion's 1 holds while the
+        // walk plays, where the clip alone would give 2.
+        assert_eq!(tick_mode(2, WALK_CLIP, WALK_CLIP, false, Some(1)), 1);
+        // The walk's own start comes after the locomotion's write.
+        assert_eq!(tick_mode(1, 0x13, WALK_CLIP, false, Some(1)), 2);
+        // A behaviour's start (a stab) while moving: the locomotion wins.
+        assert_eq!(tick_mode(2, WALK_CLIP, 0x0B, false, Some(2)), 2);
+        // A knocked-down start: 0.
+        assert_eq!(tick_mode(1, 0x13, 0x20, true, None), 0);
     }
 
     #[test]

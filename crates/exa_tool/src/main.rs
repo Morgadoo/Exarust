@@ -261,6 +261,9 @@ enum CorpusKind {
     RenderWords,
     /// The mesh colour stream per pack: meshes with one, their alpha and RGB.
     Colours,
+    /// Every node whose second flag word has the floor bit (0x800000), the
+    /// bit the original's Ground Query meets.
+    FloorNodes,
 }
 
 fn main() -> Result<()> {
@@ -476,6 +479,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Colours,
         } => corpus::colours(&game),
+        Cmd::Corpus {
+            what: CorpusKind::FloorNodes,
+        } => corpus::floor_nodes(&game),
         Cmd::Nav { level, png } => nav::nav(&game, &level, png.as_deref()),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)

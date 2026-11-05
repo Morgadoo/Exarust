@@ -1297,6 +1297,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
             gi_centred: false,
+            floor: false,
             gi_thin: false,
             rigid: None,
             tracks: Vec::new(),

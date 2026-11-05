@@ -114,7 +114,11 @@ Header, shared by every kind:
 ```
 char name[16]
 u32  flags         top 20 bits stored; low 12 bits are a class id (0x89 for meshes)
-u32  flags2        bit 31 is the deprecated fading flag (a mesh body's
+u32  flags2        bit 23 (0x800000) the floor bit (the feet's Ground Query
+                   and the barricade's floor cast meet only such meshes:
+                   their node-word tests, REA; 875 mesh nodes in 0.9.5,
+                   `exa-tool corpus floor-nodes`);
+                   bit 31 is the deprecated fading flag (a mesh body's
                    reader replaces it by bit 24)
 u32  instance      1-based index of the node that owns this one (0: its own);
                    non-zero nodes store no body or sub-chunks

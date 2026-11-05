@@ -142,6 +142,36 @@ impl Physics {
         self.0.colliders.len()
     }
 
+    /// The original's floor cast (the force barricade's probe): straight
+    /// down from `origin` at most `max` metres against the static meshes
+    /// of floor nodes only (`statics`' floor records; a rigid body's
+    /// stand-in is skipped). Returns how far down the floor is.
+    pub fn static_floor_below(
+        &self,
+        statics: &StaticColliders,
+        origin: Vec3,
+        max: f32,
+    ) -> Option<f32> {
+        use contact::Level;
+        struct StaticFloors<'a>(body::MaskedLevel<'a>);
+        impl Level for StaticFloors<'_> {
+            fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+                self.0.pieces(lo, hi, out);
+            }
+            fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+                self.0.triangles(piece, lo, hi, out);
+            }
+            fn floor_piece(&self, piece: u32) -> bool {
+                !self.0.movable(piece) && self.0.floor_piece(piece)
+            }
+        }
+        let level = StaticFloors(body::MaskedLevel {
+            world: &self.0,
+            masks: Some(statics),
+        });
+        level.floor_below(origin, max).map(|y| origin.y - y)
+    }
+
     /// How far along `direction` (unit) from `origin` the first fixed
     /// collider lies, within `max` metres.
     /// Pick-only geometry ([`PickOnly`]) is not met.
@@ -215,6 +245,14 @@ pub struct StaticGeometry;
 /// with. Its subtree is skipped whole.
 #[derive(Component)]
 pub struct NoStaticCollider;
+
+/// A mesh under a [`StaticGeometry`] root whose scene node is floor (its
+/// second flag word's `0x800000`, or a grid cell's merged floor, which the
+/// original's grid loader gives that bit). The original's Ground Query (the
+/// point ray under a foot's toe) meets only such meshes, static or moved by
+/// a rigid body ([`StaticColliders::is_floor`]).
+#[derive(Component)]
+pub struct FloorMesh;
 
 /// A mesh under a [`StaticGeometry`] root that the cursor's pick meets but
 /// nothing collides with: a model's `_null` group, which the original never
@@ -304,6 +342,9 @@ pub struct StaticColliders {
     /// The mesh each record was built from, by record id (the NPC search
     /// finds the placed object a record belongs to through it).
     meshes: Vec<Option<Entity>>,
+    /// The colliders (level pieces and rigid bodies' stand-ins) built from
+    /// a [`FloorMesh`], by index with their generation.
+    floors: HashMap<u32, u32>,
 }
 
 impl Default for StaticColliders {
@@ -312,6 +353,7 @@ impl Default for StaticColliders {
             grid: sector::StaticGrid::new(Self::COLUMNS, Self::ROWS, Self::ORIGIN),
             masks: HashMap::new(),
             meshes: Vec::new(),
+            floors: HashMap::new(),
         }
     }
 }
@@ -344,6 +386,25 @@ impl StaticColliders {
         self.grid.clear();
         self.masks.clear();
         self.meshes.clear();
+        self.floors.clear();
+    }
+
+    /// Records that `collider` was built from a [`FloorMesh`].
+    pub fn insert_floor(&mut self, collider: ColliderHandle) {
+        let (index, generation) = collider.into_raw_parts();
+        self.floors.insert(index, generation);
+    }
+
+    /// Whether `collider` was built from a [`FloorMesh`]: the only
+    /// colliders the original's Ground Query meets.
+    pub fn is_floor(&self, collider: ColliderHandle) -> bool {
+        let (index, generation) = collider.into_raw_parts();
+        self.floors.get(&index) == Some(&generation)
+    }
+
+    /// How many colliders were built from a [`FloorMesh`].
+    pub fn floor_count(&self) -> usize {
+        self.floors.len()
     }
 
     /// Records a fixed collider as [`StaticColliders::insert_aabb`] does,
@@ -426,13 +487,15 @@ pub struct StaticBuild {
 struct RootBuild {
     root: Entity,
     parts: Vec<Entity>,
+    /// How many of the parts are [`FloorMesh`]es.
+    floors: usize,
     handed: usize,
     tasks: Vec<(usize, Task<Vec<BuiltCollider>>)>,
 }
 
 /// A built collider, for a rigid body's stand-in the body's root node and
 /// the part it follows, and the scene node whose subtree the mesh was under,
-/// with the mesh's level mask.
+/// with the mesh's level mask and whether the mesh is floor.
 type BuiltCollider = (
     Collider,
     Option<(Entity, usize)>,
@@ -440,6 +503,7 @@ type BuiltCollider = (
     bool,
     u32,
     Entity,
+    bool,
 );
 
 impl StaticBuild {
@@ -613,6 +677,7 @@ fn build_static_colliders(
     shapes: Query<(&Mesh3d, &GlobalTransform)>,
     no_collider: Query<(), With<NoStaticCollider>>,
     pick_only: Query<(), With<PickOnly>>,
+    floor_meshes: Query<(), With<FloorMesh>>,
     meshes: Res<Assets<Mesh>>,
     mut statics: ResMut<StaticColliders>,
 ) {
@@ -625,9 +690,11 @@ fn build_static_colliders(
             .filter(|&e| shapes.contains(e) && !no_collider.contains(e))
             .collect();
         build.total += parts.len();
+        let floors = parts.iter().filter(|&&e| floor_meshes.contains(e)).count();
         build.roots.push(RootBuild {
             root,
             parts,
+            floors,
             handed: 0,
             tasks: Vec::new(),
         });
@@ -640,7 +707,7 @@ fn build_static_colliders(
             let Some(colliders) = block_on(poll_once(task)) else {
                 return true;
             };
-            for (mut collider, owner, node, pick_only, mask, mesh) in colliders {
+            for (mut collider, owner, node, pick_only, mask, mesh, floor) in colliders {
                 if owner.is_some() {
                     collider.user_data = prop::STAND_IN;
                 } else if pick_only {
@@ -651,6 +718,9 @@ fn build_static_colliders(
                 let level = owner.is_none() && !pick_only;
                 let aabb = level.then(|| collider.compute_aabb());
                 let handle = physics.0.insert_collider(collider, None);
+                if floor && !pick_only {
+                    statics.insert_floor(handle);
+                }
                 if let Some((body, part)) = owner {
                     stand_ins.0.entry(body).or_default().push((handle, part));
                 } else if let Some(node) = node {
@@ -694,6 +764,7 @@ fn build_static_colliders(
                     copy.owner = moved_by(e, root.root, &parents, &body_nodes);
                     copy.node = scene_node_of(e, root.root, &parents, &static_nodes);
                     copy.pick_only = pick_only.contains(e);
+                    copy.floor = floor_meshes.contains(e);
                     copy.mesh = Some(e);
                     triangles += copy.indices.len() / 3;
                     batch.push(copy);
@@ -705,11 +776,11 @@ fn build_static_colliders(
                     .into_iter()
                     .filter_map(|copy| {
                         let owner = copy.owner;
-                        let (node, pick_only) = (copy.node, copy.pick_only);
+                        let (node, pick_only, floor) = (copy.node, copy.pick_only, copy.floor);
                         let mask = copy.static_mask();
                         let mesh = copy.mesh?;
                         copy.collider()
-                            .map(|c| (c, owner, node, pick_only, mask, mesh))
+                            .map(|c| (c, owner, node, pick_only, mask, mesh, floor))
                     })
                     .collect()
             });
@@ -721,6 +792,13 @@ fn build_static_colliders(
         let finished = root.handed == root.parts.len() && root.tasks.is_empty();
         if finished {
             debug!("static colliders built: {} meshes", root.parts.len());
+            if root.floors > 0 {
+                info!(
+                    "static colliders built: {} meshes, {} of them floor (the Ground Query's)",
+                    root.parts.len(),
+                    root.floors
+                );
+            }
             if roots.contains(root.root) {
                 commands.entity(root.root).remove::<StaticGeometry>();
             }
@@ -780,6 +858,8 @@ struct MeshCopy {
     node: Option<Entity>,
     /// The mesh is [`PickOnly`].
     pick_only: bool,
+    /// The mesh is a [`FloorMesh`].
+    floor: bool,
     /// The mesh entity it was copied from.
     mesh: Option<Entity>,
 }
@@ -795,6 +875,7 @@ impl MeshCopy {
             owner: None,
             node: None,
             pick_only: false,
+            floor: false,
             mesh: None,
         })
     }
@@ -984,6 +1065,77 @@ mod tests {
             std::f32::consts::FRAC_PI_2,
         )));
         assert_eq!(mask(&flat, &turned), sector::MASK_SMALL);
+    }
+
+    /// Only a floor node's mesh takes part in the Ground Query: two flat
+    /// meshes over each other, the upper one plain level, the lower one a
+    /// [`FloorMesh`]; the query from above passes the plain one and finds
+    /// the floor, and the static colliders record the floor collider alone.
+    #[test]
+    fn the_ground_query_meets_only_floor_meshes() {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<StaticBuild>()
+            .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<StaticColliders>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_static_colliders);
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::default().mesh().size(2.0, 2.0));
+        let root = app
+            .world_mut()
+            .spawn((StaticGeometry, Transform::default()))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            GlobalTransform::from_xyz(0.0, 0.2, 0.0),
+            ChildOf(root),
+        ));
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            GlobalTransform::default(),
+            FloorMesh,
+            ChildOf(root),
+        ));
+        for _ in 0..2000 {
+            if !app.world().entity(root).contains::<StaticGeometry>() {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!app.world().entity(root).contains::<StaticGeometry>());
+        app.world_mut().resource_mut::<Physics>().0.step();
+        use crate::contact::Level;
+        let world = &app.world().resource::<Physics>().0;
+        let statics = app.world().resource::<StaticColliders>();
+        assert_eq!(statics.floor_count(), 1);
+        let masked = body::MaskedLevel {
+            world,
+            masks: Some(statics),
+        };
+        let hit = masked.floor_below(Vec3::new(0.1, 0.3, 0.1), 0.6).unwrap();
+        assert!(
+            hit.abs() < 1e-5,
+            "the floor at 0, not the plain mesh: {hit}"
+        );
+        // Without the records nothing is floor, as in a world with none.
+        let bare = body::MaskedLevel { world, masks: None };
+        assert_eq!(bare.floor_below(Vec3::new(0.1, 0.3, 0.1), 0.6), None);
+        // The barricade's floor cast: how far down the floor node is.
+        let physics = app.world().resource::<Physics>();
+        let depth = physics
+            .static_floor_below(statics, Vec3::new(0.1, 0.3, 0.1), 0.6)
+            .unwrap();
+        assert!((depth - 0.3).abs() < 1e-5, "{depth}");
+        assert_eq!(
+            physics.static_floor_below(statics, Vec3::new(0.1, 0.3, 0.1), 0.2),
+            None
+        );
     }
 
     #[test]

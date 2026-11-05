@@ -1790,6 +1790,7 @@ mod wiring_tests {
                 flipped: false,
                 flip_active: false,
                 mode: -1,
+                motion: -1,
                 relaxing: false,
                 record_dirty: false,
                 world_soft: None,

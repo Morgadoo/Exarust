@@ -1191,8 +1191,11 @@ pub fn sole_floor(
     knee_cm: f32,
 ) -> f32 {
     let low = ground_cm - if touching { FLOOR_TOUCHING } else { 0.0 } + offset_cm;
+    // The hit only when the low floor is under it (an unordered compare
+    // keeps the low floor).
     let floor = match hit {
-        Some(hit) => hit.max(low),
+        Some(hit) if low < hit => hit,
+        Some(_) => low,
         None => ground_cm + offset_cm,
     };
     floor.min(knee_cm)

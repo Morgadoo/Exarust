@@ -5387,9 +5387,9 @@ fn begin_frame(
 
 /// The level as body detection reads it: the physics world's pieces, their
 /// masks from [`crate::StaticColliders`] when it is loaded.
-struct MaskedLevel<'a> {
-    world: &'a rapier3d::prelude::PhysicsWorld,
-    masks: Option<&'a crate::StaticColliders>,
+pub(crate) struct MaskedLevel<'a> {
+    pub(crate) world: &'a rapier3d::prelude::PhysicsWorld,
+    pub(crate) masks: Option<&'a crate::StaticColliders>,
 }
 
 impl Level for MaskedLevel<'_> {
@@ -5410,8 +5410,15 @@ impl Level for MaskedLevel<'_> {
         self.world.movable(piece)
     }
 
+    /// A piece built from a floor node's mesh (the static colliders'
+    /// record), level geometry or a rigid body's stand-in.
     fn floor_piece(&self, piece: u32) -> bool {
-        self.world.floor_piece(piece)
+        self.masks.is_some_and(|m| {
+            self.world
+                .colliders
+                .get_unknown_gen(piece)
+                .is_some_and(|(_, handle)| m.is_floor(handle))
+        })
     }
 }
 

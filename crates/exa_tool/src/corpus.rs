@@ -1554,6 +1554,66 @@ pub fn render_words(game: &GameData) -> Result<()> {
     Ok(())
 }
 
+/// `corpus floor-nodes`: every node of every chunk tree whose second flag
+/// word has the floor bit (`0x800000`), the only nodes the original's
+/// Ground Query meets: its pack, entry, name, kind, whether it is an
+/// instance and whether it draws a mesh (its own or its owner's), then a
+/// tally per pack, with every pack's mesh nodes and those with the line
+/// cast's bit (`0x200000`).
+pub fn floor_nodes(game: &GameData) -> Result<()> {
+    let mut per_pack: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut meshes: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for (kind, pack) in game.packs() {
+        for e in pack.entries() {
+            let b = pack.bytes(e);
+            if !matches!(
+                FileKind::detect(b),
+                FileKind::ChunkTree | FileKind::ChunkTreeAlt
+            ) {
+                continue;
+            }
+            let Ok(scene) = Scene::parse(b) else { continue };
+            for (i, node) in scene.nodes.iter().enumerate() {
+                if node.flags & 0x89 == 0x89 {
+                    let row = meshes.entry(kind.file_stem().to_string()).or_default();
+                    row.0 += 1;
+                    row.1 += usize::from(node.flags2 & 0x20_0000 != 0);
+                }
+                if node.flags2 & exa_formats::rfc::Node::FLOOR == 0 {
+                    continue;
+                }
+                let mesh = scene.mesh_of(i).is_some();
+                let row = per_pack.entry(kind.file_stem().to_string()).or_default();
+                row.0 += 1;
+                row.1 += usize::from(mesh);
+                println!(
+                    "{}/{}:{} kind {:#x} flags {:#x} flags2 {:#x}{}{}",
+                    kind.file_stem(),
+                    e.name,
+                    node.name,
+                    node.kind,
+                    node.flags,
+                    node.flags2,
+                    if node.instance.is_some() {
+                        " instance"
+                    } else {
+                        ""
+                    },
+                    if mesh { " mesh" } else { "" }
+                );
+            }
+        }
+    }
+    println!();
+    for (pack, (nodes, meshes)) in per_pack {
+        println!("{pack}: {nodes} floor nodes, {meshes} with a mesh");
+    }
+    for (pack, (all, cast)) in meshes {
+        println!("{pack}: {all} mesh nodes (class 0x89), {cast} with 0x200000");
+    }
+    Ok(())
+}
+
 /// `corpus colours`: the RGBA8 colour stream of every mesh, per pack: how
 /// many meshes carry one, how many of those have a vertex whose alpha is
 /// below 255 (the blood channel's "wounded" values) and how many have a

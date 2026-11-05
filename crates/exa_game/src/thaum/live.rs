@@ -1227,6 +1227,7 @@ fn spawn_debug_effects(
     debug: Res<ThaumDebug>,
     players: Query<(Entity, &Ragdoll, &Locomotor), With<PlayerBody>>,
     physics: Option<Res<Physics>>,
+    statics: Option<Res<exa_physics::StaticColliders>>,
     ticks: Option<Res<BodyTicks>>,
     mut draws: ResMut<EffectDraws>,
     mut roll: ResMut<EffectRoll>,
@@ -1267,11 +1268,21 @@ fn spawn_debug_effects(
             normal: Vec3::Y,
             exact: true,
         };
+        // The original's floor cast: static meshes of floor nodes only.
         let floor = |from: Vec3, reach: f32| {
-            physics
+            let depth = physics
                 .as_deref()
-                .and_then(|p| p.fixed_hit(from / CM, Vec3::NEG_Y, reach / CM))
-                .map(|d| d * CM)
+                .zip(statics.as_deref())
+                .and_then(|(p, s)| p.static_floor_below(s, from / CM, reach / CM));
+            let depth = depth.map(|d| d * CM);
+            info!(
+                "barricade floor cast: from {:.0} cm, {}",
+                from.y,
+                depth.map_or("no floor node within 210 cm".to_string(), |d| format!(
+                    "a floor node {d:.1} cm down"
+                ))
+            );
+            depth
         };
         let place = place_barricade(hit, at, floor, roll.0.unit());
         let frame = WallFrame::facing(place.centre, place.facing);

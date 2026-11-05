@@ -1358,6 +1358,11 @@ impl Ragdoll {
                     && ground <= h
                     && h != ground
                 {
+                    debug!(
+                        "ground query: leg {i} steps onto a floor node {:.1} cm over its ground ({:.1} -> {h:.1} cm)",
+                        h - ground,
+                        ground
+                    );
                     leg.smoothed = h / CM;
                     leg.ground = Some(leg.smoothed);
                 }
