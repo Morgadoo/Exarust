@@ -7,9 +7,13 @@
 //! and two fields rounded (all 23 fields read from the stored block). A level's environment record
 //! adds its decay offset, `1.49 s + offset`, worked in double precision.
 //!
-//! Bevy's rodio backend has no EFX or auxiliary sends, so Exarust computes and
-//! stores the whole parameter block (and the reverb send each voice would get)
-//! without applying it. See the crate README.
+//! The outdoor arena preset turns the reverb off again (indoor arenas and the
+//! story levels keep it), so an outdoor arena is dry.
+//!
+//! Each upload goes field by field through `alEffectf`; OpenAL refuses a
+//! decay outside the EFX range (0.1 to 20 s) and the effect keeps the decay
+//! it had. [`Reverb::effect`] is the block the effect holds after the
+//! uploads, which the backend (`efx`, `efx_bus`) plays.
 
 /// The preset's base decay time in seconds, the double-precision constant
 /// the offset is added to.
@@ -19,14 +23,40 @@ use bevy::prelude::*;
 
 use crate::AudioEnvironment;
 
-/// A level's reverb decay offset (its environment record's field).
-#[derive(Resource, Clone, Copy, Debug, Default)]
+/// A level's reverb: its environment record's decay offset, and whether
+/// the scene leaves the reverb on (every scene turns it on; the outdoor
+/// arena preset turns it off).
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct LevelReverb {
     pub decay_offset: f32,
+    pub enabled: bool,
 }
 
-/// Enables the reverb and applies the level's decay when the resource
-/// changes.
+impl Default for LevelReverb {
+    fn default() -> Self {
+        Self {
+            decay_offset: 0.0,
+            enabled: true,
+        }
+    }
+}
+
+impl LevelReverb {
+    /// A level's reverb from whether it takes the outdoor arena preset and
+    /// its record's `decay_offset`: off outdoors, where the preset disables
+    /// it.
+    pub fn for_level(outdoor: bool, decay_offset: f32) -> Self {
+        Self {
+            decay_offset,
+            enabled: !outdoor,
+        }
+    }
+}
+
+/// Applies the level's reverb when the resource changes, in the original's
+/// order: the scene turns the reverb on, the level record sets the decay
+/// (uploaded at once, the reverb being on), then an outdoor preset turns it
+/// off.
 pub(crate) fn apply_level_reverb(
     mut env: ResMut<AudioEnvironment>,
     level: Option<Res<LevelReverb>>,
@@ -37,8 +67,21 @@ pub(crate) fn apply_level_reverb(
     if !level.is_changed() {
         return;
     }
-    env.reverb.set_decay_offset(level.decay_offset);
     env.reverb.set_enabled(true);
+    env.reverb.set_decay_offset(level.decay_offset);
+    env.reverb.set_enabled(level.enabled);
+    let effect = env.reverb.effect();
+    info!(
+        "audio reverb: level decay offset {:.3} s, block decay {:.3} s, effect decay {:.3} s, {}",
+        level.decay_offset,
+        env.reverb.decay_s(),
+        effect.decay_s,
+        if env.reverb.enabled {
+            "on (world voices send to the slot)"
+        } else {
+            "off (outdoor preset: dry)"
+        }
+    );
 }
 
 /// Parameter order and values of the effect's property block.
@@ -110,10 +153,14 @@ pub struct Reverb {
     pub enabled: bool,
     /// The level's decay offset in seconds.
     pub decay_offset: f32,
-    /// Whether a backend could create the effect; Exarust always reports
-    /// success and keeps the parameters for a future EFX-capable backend.
+    /// Whether a backend could create the effect; Exarust's own reverb
+    /// always can.
     pub effect_ready: bool,
     params: EaxReverb,
+    /// The block the effect holds, `None` until the first upload.
+    effect: Option<EaxReverb>,
+    /// How many uploads have reached the effect.
+    uploads: u32,
 }
 
 impl Default for Reverb {
@@ -123,6 +170,8 @@ impl Default for Reverb {
             decay_offset: 0.0,
             effect_ready: true,
             params: EaxReverb::default(),
+            effect: None,
+            uploads: 0,
         }
     }
 }
@@ -140,7 +189,39 @@ impl Reverb {
         self.decay_offset = offset;
         if self.enabled {
             self.apply_decay();
+            self.upload();
         }
+    }
+
+    /// The block the effect slot plays: the stored block as last uploaded,
+    /// with the last decay OpenAL accepted. Before any upload, the EFX
+    /// defaults' decay (1.49 s) with the stored block.
+    pub fn effect(&self) -> EaxReverb {
+        self.effect.unwrap_or_default()
+    }
+
+    /// Whether an effect is attached to the slot yet (after the first
+    /// enable).
+    pub fn has_effect(&self) -> bool {
+        self.effect.is_some()
+    }
+
+    /// The number of uploads so far; a change tells the backend to refresh.
+    pub fn uploads(&self) -> u32 {
+        self.uploads
+    }
+
+    /// Uploads the block field by field and attaches it to the slot. A decay
+    /// outside the EFX range is refused and the effect keeps its old one.
+    fn upload(&mut self) {
+        let old_decay = self.effect().decay_s;
+        let mut effect = self.params;
+        let decay = effect.decay_s;
+        if !(crate::efx::MIN_DECAY_S..=crate::efx::MAX_DECAY_S).contains(&decay) {
+            effect.decay_s = old_decay;
+        }
+        self.effect = Some(effect);
+        self.uploads = self.uploads.wrapping_add(1);
     }
 
     /// Turns the reverb on or off. Enabling for the first time needs an
@@ -158,6 +239,7 @@ impl Reverb {
             return false;
         }
         self.apply_decay();
+        self.upload();
         self.enabled = true;
         true
     }
@@ -229,6 +311,46 @@ mod tests {
         reverb.set_decay_offset(10.0);
         assert!((reverb.params().decay_s - 1.0).abs() < 1e-6);
         assert_eq!(reverb.decay_s(), 11.49);
+    }
+
+    /// The effect takes each upload; a decay out of the EFX range is refused
+    /// and the effect keeps the decay it had, while the stored block takes
+    /// the new one.
+    #[test]
+    fn the_effect_refuses_an_out_of_range_decay() {
+        let mut reverb = Reverb::default();
+        assert!(!reverb.has_effect());
+        assert_eq!(reverb.effect().decay_s, 1.49);
+        reverb.set_decay_offset(0.51);
+        assert_eq!(reverb.uploads(), 0);
+        assert!(reverb.set_enabled(true));
+        assert_eq!(reverb.uploads(), 1);
+        assert_eq!(reverb.effect().decay_s, reverb.decay_s());
+        let accepted = reverb.effect().decay_s;
+        reverb.set_decay_offset(-1.45);
+        assert_eq!(reverb.uploads(), 2);
+        assert!(reverb.params().decay_s < 0.1);
+        assert_eq!(reverb.effect().decay_s, accepted);
+        reverb.set_decay_offset(25.0);
+        assert_eq!(reverb.effect().decay_s, accepted);
+        reverb.set_decay_offset(0.0);
+        assert_eq!(reverb.effect().decay_s, 1.49);
+        assert_eq!(reverb.effect().gain, EaxReverb::default().gain);
+    }
+
+    /// A level's reverb: on with the record's offset indoors, off outdoors;
+    /// disabling keeps the effect attached.
+    #[test]
+    fn an_outdoor_level_turns_the_reverb_off() {
+        assert!(LevelReverb::for_level(false, 0.2).enabled);
+        assert!(!LevelReverb::for_level(true, 0.2).enabled);
+        let mut reverb = Reverb::default();
+        reverb.set_enabled(true);
+        reverb.set_decay_offset(0.2);
+        reverb.set_enabled(false);
+        assert!(!reverb.enabled);
+        assert!(reverb.has_effect());
+        assert!((reverb.effect().decay_s - 1.69).abs() < 1e-6);
     }
 
     /// Without an effect the enable fails and leaves the reverb off, as the

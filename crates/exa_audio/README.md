@@ -4,8 +4,9 @@ Audio: PCM sound playback, positional 3D sound, reverb environments, footstep/im
 
 **Phase:** Phase 5 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: the
 sound bank and its numbered sets, the original's virtual-voice mixer, its
-OpenAL distance model, music crossfades, area ambience and the reverb
-parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
+OpenAL distance model, music crossfades, area ambience and the EFX reverb
+(a port of OpenAL Soft's EAX reverb and source send, played by a reverb
+bus next to the rodio sources) are in.
 
 ## Modules
 
@@ -15,7 +16,9 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 | `environment` | the 512-voice pool, listener and bus gains, audibility ranking, the quicksort, source binding, the per-update state machine and the OpenAL distance model |
 | `music` | the two-track crossfader (A/B), its four states and the level's track; the overlay requests (`MusicOverlay`, Spirit Form's realm music); a story level's track, volume, ambience and preset by the bytes of its name, and whether entering it changes the music |
 | `ambience` | an area's looping bed and its scheduled one-shots |
-| `reverb` | the global EAX reverb parameter block and the level's decay offset |
+| `reverb` | the global EAX reverb parameter block, the level's decay offset and on/off, and the block the effect holds |
+| `efx` | OpenAL Soft 1.21's EAX reverb (`ReverbDsp`) and a source's send to it (`wet_send`) |
+| `efx_bus` | the reverb slot as a Bevy audio source: wet copies of the sending source slots, summed into the reverb on rodio's audio thread; `EXA_EFX_LOG`, `EXA_EFX_RECORD` |
 | `hits`, `footsteps` | the game's first two users of the mixer; the footsteps read the body's gait plants (`exa_physics::body::Footstep`) with the original's gain and pitch, and keep a speed timer for bodies without a ragdoll |
 | `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the part impact's classes in the item byte's order (`BdyCol` or `SkelHit` for 0, then `HitClt`, `HitLtr`, `HitChn`, `HitPlt`, `HitHbr`, `HitGlm`) and the foley loops (`FoleyClt`, `FoleyLtr`, `FoleyChn`, `FoleyPlt`, `FoleyHbr` by class, `FoleyPlH`, `Golem_Foley`) |
 | `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair |
@@ -309,6 +312,37 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   remembered while it is off.
 - Enabling needs an effect; disabling only clears the flag. There are no
   per-room zones in the original, only the per-level decay.
+- Every upload goes field by field; OpenAL refuses a decay outside 0.1 to
+  20 s and the effect keeps its previous one (`Reverb::effect`).
+- Every scene turns the reverb on; the outdoor arena preset turns it off
+  (`LevelReverb::for_level`), so outdoor arenas are dry. The level's reverb
+  is logged at load (`audio reverb: …`, then the effect's whole block,
+  `audio efx: slot effect …`). Every level read so far has offset 0.
+
+### EFX (`efx`, `efx_bus`)
+
+- The source's send follows OpenAL Soft 1.21 with the original's settings
+  (no room rolloff, air absorption, send filter or metres per unit; slot
+  gain 1 and automatic send gain): the gain clamped like the dry path, then,
+  past 4 m, `0.001^(d / (decay × 343.3))` with d the clamped distance past
+  4 m **in centimetres** (OpenAL takes the engine's units as metres), and
+  the high band over the decay times the HF ratio. At 1.49 s a sound 5 m
+  from the listener keeps 26 % of its send, at 6 m 7 %: the reverb is the
+  near sounds'.
+- The send is decided at bind time, as the original sets it only there: a
+  world voice bound while the reverb is on sends until it is rebound;
+  interface voices never send.
+- The reverb is OpenAL Soft 1.21's EAX reverb at 48 kHz: input HF and LF
+  shelves (OpenAL Soft's biquads meet the band gain at the reference
+  frequency), a main delay with four early taps, a vector all-pass and an
+  early delay for the reflections, four late lines with T60 shelves, a
+  density gain and a second all-pass, A-Format to B-Format and the
+  first-order stereo panning decoder, divided by what that decoder gives a
+  centred dry source (Exarust's dry path plays it at 1 per ear).
+- The bus is one Bevy `AudioPlayer` of its own source. It cannot tap rodio's
+  sinks, so it decodes each sending buffer once and plays a wet copy per
+  source slot with the mixer's commands (play, restart, pause, resume, stop,
+  pitch and send each frame), linearly resampled.
 
 ### Backend (`playback`)
 
@@ -325,10 +359,14 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 
 ## Gaps
 
-- **EFX.** Bevy's rodio backend has no EFX or auxiliary sends. The reverb
-  block ([`reverb::EaxReverb`]) and the send each voice would get
-  (`SourcePlay::reverb`) are computed and stored, but nothing is applied.
-  `LevelReverb` feeds the level's decay offset.
+- **EFX route.** OpenAL Soft would be the exact backend, but the toolbox has
+  no `openal-soft` library (and nothing can be installed without sudo), so
+  the reverb is a port. Not reproduced: the source's direction into the
+  reverb's four inputs (the send is omnidirectional), OpenAL Soft's
+  crossfade when the block changes (only at a level load), its resampler
+  (the wet copy interpolates linearly), and the dry path's ambisonic panning.
+  The wet copy starts on the audio thread's next poll, up to a frame from
+  the dry sink. No A/B against the retail output has been made.
 - **Listener orientation.** The original takes its at/up vectors from the
   camera in the scene editor; no in-game writer is known. Exarust takes them
   from the chase camera, so the listener sits 3 m along the camera's up
@@ -370,13 +408,15 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 
 ## Tests
 
-`bank`, `environment`, `music`, `ambience`, `reverb`, `hits`, `bodies` and `playback`
+`bank`, `environment`, `music`, `ambience`, `reverb`, `efx`, `efx_bus`, `hits`, `bodies` and `playback`
 each pin their rules to synthetic numbers: generator words, variant picks,
 WAV layouts and walk steps, durations, frame-rounded lengths, audibility
 ranks, the distance slope, sorting, bus products and focus steps, source
 assignment, eviction, pause, handles, fades, mirrored starts, ambience
-placement and names, the arena weather choice, the reverb block's stored bits
-and the backend's restart rule. The installed-sets test reads `EXANIMA_DIR`
+placement and names, the arena weather choice, the reverb block's stored bits,
+the refused decay, the send's distance and band gains, the reverb's taps,
+shelves and decay time, the bus's send, stop and tail, and the backend's
+restart rule. The installed-sets test reads `EXANIMA_DIR`
 and skips when it is not set.
 
 `voices` holds the original's voice choice (a body with a feral level above
