@@ -662,8 +662,8 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
 }
 
 /// The target follows the ground: a body standing on a 30 cm platform that
-/// is taken away drops onto the floor (carried by its controller, it keeps
-/// its balance in the air), and its target and pelvis settle 30 cm lower.
+/// is taken away drops onto the floor, and its target and pelvis settle 30
+/// cm lower.
 #[test]
 fn the_target_follows_a_30_cm_step() {
     let (mut body, pose) = standing_at(Vec3::new(0.0, 0.3, 0.0));
@@ -676,7 +676,6 @@ fn the_target_follows_a_30_cm_step() {
     for _ in 0..500 {
         stand(&mut body, &pose, &low);
         lowest = lowest.min(pelvis(&body));
-        assert!(drive(&body).balance().value > 0.6);
     }
     let dropped = target - drive(&body).lift_target().unwrap();
     assert!(close(dropped, 0.3, 1e-4), "the target dropped {dropped}");

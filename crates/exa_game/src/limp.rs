@@ -1246,7 +1246,6 @@ pub(crate) fn bearing(
         getting_up,
         rising: false,
         crouch,
-        carried: controller.is_none_or(|c| c.grounded),
         turn: match locomotion {
             Some((req, body)) if !condition.helpless() => req.turn_left(body),
             _ => 0.0,

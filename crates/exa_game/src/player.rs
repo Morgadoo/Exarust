@@ -76,7 +76,7 @@ impl CursorLook {
 }
 /// Without a navigation grid the look-ahead's line walk casts from this
 /// far above the feet (hip height, m), and clamps its goal a grid cell (m)
-/// more than the capsule's radius short of what it meets.
+/// more than [`NO_GRID_CLEARANCE`] short of what it meets.
 const HIP: f32 = 0.9;
 const GRID_CELL: f32 = 0.3;
 /// The cursor's point lies on the plane this far above the player's ground
@@ -974,9 +974,7 @@ pub(crate) fn steer_player(
                 req.stepping = None;
                 continue;
             }
-            let line = |from: Vec3, to: Vec3| {
-                line_walk(nav.as_deref(), &physics, from, to, capsule.radius)
-            };
+            let line = |from: Vec3, to: Vec3| line_walk(nav.as_deref(), &physics, from, to);
             // While the idle camera turns the cursor is not read.
             let to_cursor = cursor
                 .0
@@ -1143,16 +1141,19 @@ pub(crate) fn steer_player(
 /// grid's ([`exa_world::nav::line_walk`]), which ends before the first cell
 /// that blocks; without a grid (Exarust's own) a ray from hip height over
 /// `from`, a fixed collider on the way blocking the walk and clamping the
-/// goal a capsule's `radius` and a grid cell short of it (never behind
+/// goal [`NO_GRID_CLEARANCE`] and a grid cell short of it (never behind
 /// `from`), at the goal's height as the grid keeps it (a footwork step
 /// asks from the ground toward a target at chest height). Returns the
 /// goal, clamped, and whether something blocked it.
+/// Without a grid the look-ahead stops this far (m) short of a wall, half
+/// a body's width (Exarust's own).
+const NO_GRID_CLEARANCE: f32 = 0.28;
+
 fn line_walk(
     nav: Option<&exa_world::nav::NavGrid>,
     physics: &Physics,
     from: Vec3,
     to: Vec3,
-    radius: f32,
 ) -> (Vec3, bool) {
     if let Some(grid) = nav {
         let hit = exa_world::nav::line_walk(grid, from, to);
@@ -1166,7 +1167,7 @@ fn line_walk(
     let dir = way / length;
     match physics.fixed_hit(from + Vec3::Y * HIP, dir, length) {
         Some(hit) => (
-            (from + dir * (hit - radius - GRID_CELL).max(0.0)).with_y(to.y),
+            (from + dir * (hit - NO_GRID_CLEARANCE - GRID_CELL).max(0.0)).with_y(to.y),
             true,
         ),
         None => (to, false),

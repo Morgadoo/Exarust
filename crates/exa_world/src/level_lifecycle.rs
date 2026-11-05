@@ -120,7 +120,6 @@ fn apply_requests(
     mut nav_state: ResMut<nav::NavState>,
     mut installed: ResMut<nav::InstalledPathfinder>,
     levels: Query<Entity, With<LevelEntity>>,
-    handles: Query<Entity, With<exa_physics::CharacterHandles>>,
 ) {
     // Two requests in one frame (a session leave's teardown and the load
     // behind it) see the same level roots: only the first tears them down,
@@ -138,7 +137,6 @@ fn apply_requests(
                 &mut nav_state,
                 &mut installed,
                 levels.iter().collect(),
-                handles.iter().collect(),
             );
             state.changes = state.changes.wrapping_add(1);
         }
@@ -152,9 +150,8 @@ fn apply_requests(
 
 /// Takes the loaded level down: every [`LevelEntity`] subtree, every body and
 /// collider in the physics world, and the level's GI, navigation grid, rooms,
-/// wall set, terrain ground and fitted sun map. Surviving controlled
-/// characters lose their [`exa_physics::CharacterHandles`] so the fixed step
-/// makes them a new capsule in the emptied world.
+/// wall set, terrain ground and fitted sun map. Surviving characters keep
+/// nothing in the physics world.
 #[allow(clippy::too_many_arguments)]
 pub fn teardown(
     commands: &mut Commands,
@@ -163,27 +160,17 @@ pub fn teardown(
     nav_state: &mut nav::NavState,
     installed: &mut nav::InstalledPathfinder,
     levels: Vec<Entity>,
-    handled: Vec<Entity>,
 ) {
-    // The handles go first: a placed character's root is also a level
-    // root, and a command on it after its despawn would fail.
-    for entity in handled {
-        commands
-            .entity(entity)
-            .remove::<exa_physics::CharacterHandles>();
-    }
     for entity in levels {
         commands.entity(entity).despawn();
     }
     // The level's geometry and bodies are all fixed or stand-in colliders;
-    // emptying the world frees them (and the player's old capsule) in one
-    // go. The fixed step registers the player's capsule again next tick.
+    // emptying the world frees them in one go.
     physics.clear();
     commands.insert_resource(exa_physics::StaticBuild::default());
     commands.insert_resource(exa_physics::ColliderNodes::default());
     commands.insert_resource(exa_physics::StaticColliders::default());
     commands.insert_resource(exa_physics::prop::StandIns::default());
-    commands.insert_resource(exa_physics::PendingKinematics::default());
     commands.remove_resource::<room_view::LevelRooms>();
     commands.remove_resource::<shadow_links::LevelWalls>();
     commands.remove_resource::<terrain::ground::TerrainGround>();
@@ -264,14 +251,11 @@ mod tests {
                 crate::LevelRoot {
                     name: "player-holder".into(),
                 },
-                exa_physics::CharacterHandles {
-                    body: rapier3d::prelude::RigidBodyHandle::invalid(),
-                    collider: rapier3d::prelude::ColliderHandle::invalid(),
-                },
+                exa_physics::CharacterBody::default(),
             ))
             .id();
         // The player's root is not a level entity even when it holds a
-        // level-looking marker: the lifecycle removes its old capsule only.
+        // level-looking marker: the lifecycle leaves its character.
         app.world_mut()
             .entity_mut(player)
             .remove::<crate::LevelRoot>();
@@ -306,8 +290,8 @@ mod tests {
         );
         assert!(
             app.world()
-                .get::<exa_physics::CharacterHandles>(player)
-                .is_none()
+                .get::<exa_physics::CharacterBody>(player)
+                .is_some()
         );
         let physics = app.world().resource::<exa_physics::Physics>();
         assert_eq!(physics.body_count(), 0);

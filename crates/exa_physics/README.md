@@ -4,7 +4,7 @@ Rigid-body and articulated-body simulation: the core of Exanima's feel (physical
 
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
 body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`), the
-character controller (`lib`), the dynamics world unit (`dynamics`), the rigid-body shape
+character's place (`lib`, `CharacterBody`), the dynamics world unit (`dynamics`), the rigid-body shape
 builders (`shape`), the shared intersection maths (`intersect`), the engine's own maths unit (`engine_math`) and the weapon part tree's mass redistribution (`weapon_mass`).
 
 `weapon_mass` redistributes a weapon's part tree in two passes, parent before children. A saved mass of zero is latched from the live mass. The live mass becomes 1.25 times that saved mass and the inverse word its reciprocal. Both words then become the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale. A second pass inflates the saved mass again. The equip pass calls it over a held weapon model's rigid nodes, with the record's table mass as the scale, divides the root part's mass word by the holder's size, and keeps the distributed parts as `WeaponMass` for the solver (`exa_character::weapon_mass_of`); no solver stage reads it yet.
@@ -107,20 +107,32 @@ of generated level geometry has no `StaticNode` above it and keeps no
 entry. A rigid body's mesh is its stand-in instead and is not in the map.
 A `PickOnly` mesh (a model's `_null` group, never drawn) becomes a
 pick-only collider (`PICK_ONLY`, no collision or solver groups): only
-`Physics::fixed_pick`, the hand's cursor pick, meets it; the character
-controller, the bodies' level contacts, `fixed_hit`, `fixed_pick_except`
+`Physics::fixed_pick`, the hand's cursor pick, meets it; the bodies'
+level contacts, `fixed_hit`, `fixed_pick_except`
 and `level_sweep` pass through it (`solid`).
 
 `Physics::clear` empties the world (every body, collider and joint) and
 re-applies the fixed gravity and step; `body_count` and `collider_count`
 report what it holds. A level change uses it after despawning the old
-level's entities, with `CharacterHandles` removed from the surviving player
-so the fixed step registers its capsule again.
+level's entities (characters keep nothing in it).
+
+A character has no capsule and no swept controller, as the original has
+none (its character position is its frame, which follows the pelvis; walls,
+props and other bodies block the body's own parts). `CharacterBody::step`,
+at the start of each fixed step, puts a character at once where its body's
+frame was last placed (`CharacterBody::follow`, across the ground; the
+carry leaves that move out) and at the character's ground its body measured
+(`CharacterBody::ground`, from `Ragdoll::character_ground`; without support
+it goes down with the pelvis, never under that ground). A character without
+muscles walks by its desired velocity and stands on the level under it (one
+ray down), falling where there is none. In the sewer this took the fixed
+tick from about 100 ms to under 10 ms (round 62's capsule spent it on its
+ground contact against dense prop meshes).
 
 Each fixed tick (83 Hz) first runs the behaviour (`body::TickBehaviour`:
 the AI's brains, `exa_ai::BrainTick`; the grips, the mechanisms'
 registration and the held weapons' sync are ordered after it), moves the
-character controllers (`CharacterControllers`), then runs the
+characters to their bodies' frames (`CharacterControllers`), then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
 each living character, player last, runs the nine stages of the
 `body::CharacterTick` schedule, `body::CharacterStage`, before the next one
@@ -528,8 +540,8 @@ current clip's pose-only sample lowered onto that frame at rest,
 re-anchors each foot at its posed contact on the frame less the clip root
 at its ground plus the sole (`placement::ground_foot_anchor`) and
 restarts the slack links' smoothed lengths; no ground leaves the body
-alone. The controller keeps its place (its capsule holds the feet on the
-floor; moving it to the snap's ground made the earlier squat). The leg
+alone. The character keeps its place (its feet on the character's ground;
+moving it to the snap's ground made the earlier squat). The leg
 snap (`Ragdoll::snap_placement`):
 each probe is the clip ankle plus 5·scale cm
 along the shin, a 10 cm sphere from the frame's height plus the leg's

@@ -264,14 +264,6 @@ pub struct Bearing {
     /// How far it crouches, 0 to 1: its chest is measured 10 cm back at a
     /// full crouch.
     pub crouch: f32,
-    /// Its character controller stands on the ground (a body without one
-    /// counts as carried). Exarust's own: the controller's capsule carries
-    /// a standing body across the ground and may stand where its feet do
-    /// not (perched on a stone), so a carried standing body keeps its
-    /// balance while no foot is grounded, dropping onto its feet; a fallen
-    /// one is not carried. The lift reads each foot's own ground; the
-    /// controller's floor does not raise it, and the legs bend onto it.
-    pub carried: bool,
     /// What is left of its turn toward its heading (rad).
     pub turn: f32,
     /// How high (m) its lowest ankle sits in the gait pose a moving body
@@ -384,7 +376,6 @@ impl Default for Bearing {
             getting_up: false,
             rising: false,
             crouch: 0.0,
-            carried: true,
             turn: 0.0,
             gait_floor: None,
             collapsing: false,

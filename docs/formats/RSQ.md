@@ -777,11 +777,11 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   getting up with no foot grounded and its pelvis within 30 cm of that
   ground has support at half its balance; the fall check reads it too
   ([Falling to death](#falling-to-death)).
-- Exarust's own, while a capsule leads the body: its controller's capsule
-  (28 cm radius) may stand where the feet do not (perched on a stone the
-  feet hang beside, or spawned over the floor), so a standing body whose
-  controller stands on the ground keeps its balance while no foot is
-  grounded (S is still 0, so it drops onto its feet).
+- The reset of the balance has no exception: a body that does not
+  locomote and has no grounded foot has balance 0, getting up included
+  (the get-up's support near the ground is then half of 0). Exarust kept
+  a standing body's balance while its capsule stood on the ground; the
+  capsule is gone (below) and so is that rule.
 - Measuring costs about 15 µs a body a tick in exanima01 (two queries; the
   query tries a 2 m column before the whole depth, with an exact drop onto
   each face, edge and corner).
@@ -818,26 +818,30 @@ moves the stance toward the feet (C15).
 Only the targets' rotations drive the muscles; their places matter to the
 support pins (below) and the feet's stance spots ([Feet](#feet)).
 
-Exarust's own, for a body whose capsule still moves it across the ground
-(a body without muscles; a body with muscles walks by its carry):
+The character's place. The original has no capsule and no kinematic
+controller (REA: every writer of the character position, read in the
+assembly: the anchor routine above, the dead falling body and the get-up
+start onto the pelvis, the placements, the spawn and the out-of-scene path
+follower; the per-tick snap to the navigation grid is the grid's base slot,
+which returns false). Walls, props and other bodies block the body's parts
+(level contacts, pairs); steps are the feet's probes, the lift and the leg
+IK. Exarust keeps its model root at the feet:
 
-- The body is carried with its root's (its character controller's) motion
+- Each fixed step the character goes at once, across the ground, to where
+  the frame's origin puts the body root, and stands at the character's
+  ground its body measured (with support the lowest foot's, the feet's
+  blend walking; without, the ground under the pelvis), going down with
+  the pelvis's own drop while unsupported, never under that ground.
+  Nothing is swept. A character without muscles walks by its desired
+  velocity and stands on the level under it (a short ray), falling where
+  there is none (Exarust's own).
+- The body is carried with its root's (its character's) motion
   since the last tick across the ground and about the vertical only, its
   frame with it: its height is the lift's. Where the last tick left each
   part, its level contacts, its feet's anchors and last tick's targets are
   carried with it.
-  The controller's moves to follow the frame are left out (the body made
+  The character's moves to follow the frame are left out (the body made
   them already).
-- The controller follows the frame. Each fixed step moves its feet a
-  tenth of the way to where the frame's origin puts the body root, at most
-  2 cm, through the controller (stopped by walls, stepping up as a walk
-  does), before its own walk. The controller, the player's position (the
-  camera follows the drawn pelvis), so stays with a shoved or falling body,
-  and glides after a get-up's re-anchoring instead of jumping: that can be
-  a metre, since Exarust's
-  lying clip (Unconcious 1, until C11) keeps its pelvis 57 cm off its
-  root, and the controller stands at the frame's origin while the body
-  lies.
 - The support pins, in each solver iteration: the two thorax pins once,
   and the pelvis pin (its origin) twice, are pulled horizontally toward
   their points on the frame. The pins are applied in sequence, so the
@@ -1461,18 +1465,17 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
   0.6·(heading·pelvis forward)² moving by the keys, 0.4 + 0.6·max(0,
   wanted·facing) moving by the mouse; the amount is then × the alignment (the walk's
   drive will read it).
-- **The capsule** follows the body (Exarust's own): a body with muscles
-  walks by its carry and its capsule walks nowhere, following the
-  character frame a tenth of the way a step (at most 2 cm). A body without
-  muscles is still carried by the capsule: along the heading at its walk
+- **The character** follows the body: a body with muscles walks by its
+  carry and its character goes where its frame is. A body without
+  muscles is still carried by its character (Exarust's own): along the heading at its walk
   (1.4 m/s) blended toward its run (3.6 m/s; sprinting × the feral sprint
   thrust over the jog's, 472.2/350 at feral 0) by the run blend
   ([Locomotion](#locomotion)), backwards at 1.22 m/s, the interim
   footwork's velocity while it steps; braking it keeps
   (1 − 0.2·550/83²)·0.98977 of its speed a tick and, toward a goal ahead,
   slows at least by v²/2d to stop on it. The decision's speed is the
-  body's own measured one when the carry walks it, the capsule's commanded
-  one otherwise.
+  body's own measured one when the carry walks it, the character's
+  commanded one otherwise.
 
 The player's behaviour that writes the request is in
 [PLAYER.md](../PLAYER.md) (Movement).
@@ -1640,7 +1643,7 @@ is left empty.
 | `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | the foot contacts in leg order (`r` the lower leg 03, `l` 06): the state in hex ([Feet](#feet)) and the anchor |
 | `motion`, `clock` | the action's index in the motion set, and the clip clock |
 | `countdown`, `sleep` | Exarust's own, after the probe's: the body's sleep countdown and state (`awake`, `asleep`, `deep`) |
-| `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character controller stands), across the ground |
+| `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character stands), across the ground |
 | `blend`, `hold` | Exarust's own: the blend (frames) the clip still has from its start's capture (0 once its first key is reached), and how far the sample was pulled toward the pose the body holds |
 | `rate`, `progress`, `clip_end` | Exarust's own: the frames the clip clock gained this tick, the progress the sampler wrote ((clock − blend) / the last key) and whether the clock's end test fired this tick (1: the clip wrapped, started its follow-up or finished) |
 | `ankle_{r,l}_{x,y,z}` | Exarust's own: each foot contact's ankle where the tick left it, so a foot's slide from its anchor shows |

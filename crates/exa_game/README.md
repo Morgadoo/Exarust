@@ -2015,8 +2015,7 @@ and a duellist or placed-character brain — the same components a level's
 placed characters carry. The physical body's race muscles take the character
 init's race presets over the race record's balance bonus and arm relaxation
 (`character_muscles`; a human keeps its record's). A `SceneCommand::Despawn` naming the root or the
-body model releases the character capsule and removes the root's whole
-subtree. The generator reads the game's tables once, on its first command;
+body model removes the root's whole subtree. The generator reads the game's tables once, on its first command;
 frames without one cost nothing. The arena's generic and hire-list
 opponents take `BodyLook::Generated` plans (`opponent_plan`,
 `hire_opponent_plan`) and write their own record in `arena_records`: the

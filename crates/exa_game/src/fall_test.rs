@@ -66,7 +66,6 @@ fn falling_biped() -> Ragdoll {
     body.fall();
     body.set_bearing(Bearing {
         off_balance: true,
-        carried: false,
         ..Bearing::default()
     });
     for _ in 0..20 {

@@ -238,18 +238,12 @@ fn an_upright_body_never_falls() {
 
 /// With no ground under its feet a standing body has no balance and no
 /// support, and counts the ticks it is airborne; a moving one keeps its
-/// balance but has no support either, and so does one its character
-/// controller carries (Exarust's own, while capsules carry bodies).
+/// balance but has no support either. No controller holds a standing body
+/// up: the original has none.
 #[test]
 fn balance_is_0_without_ground() {
     let mut body = biped();
-    bearing(
-        &mut body,
-        Bearing {
-            carried: false,
-            ..Bearing::default()
-        },
-    );
+    bearing(&mut body, Bearing::default());
     body.measure_balance(floor().as_slice());
     for tick in 1..=5 {
         body.measure_balance(NONE);
@@ -265,20 +259,15 @@ fn balance_is_0_without_ground() {
     }
     let moving = Bearing {
         moving: true,
-        carried: false,
         ..Bearing::default()
     };
-    let carried = Bearing::default();
-    for kept in [moving, carried] {
-        let mut body = biped();
-        bearing(&mut body, kept);
-        body.measure_balance(NONE);
-        assert_eq!(drive(&body).balance().value, 1.0, "{kept:?}");
-        assert_eq!(drive(&body).support(), 0.0);
-    }
-    // A fallen body is not carried by its controller.
     let mut body = biped();
-    body.fall();
+    bearing(&mut body, moving);
+    body.measure_balance(NONE);
+    assert_eq!(drive(&body).balance().value, 1.0);
+    assert_eq!(drive(&body).support(), 0.0);
+    // Standing on the default bearing, it has none either.
+    let mut body = biped();
     body.measure_balance(NONE);
     assert_eq!(drive(&body).balance().value, 0.0);
 }
@@ -289,10 +278,7 @@ fn balance_is_0_without_ground() {
 /// support it does not.
 #[test]
 fn without_support_the_ground_under_the_pelvis() {
-    let unsupported = Bearing {
-        carried: false,
-        ..Bearing::default()
-    };
+    let unsupported = Bearing::default();
     let mut standing = biped();
     standing.measure_balance(floor().as_slice());
     assert!(drive(&standing).balance().has_support());
@@ -675,7 +661,9 @@ fn a_walking_probe_sways_forward_and_widens() {
 
 /// Getting up, balance rises 0.05 a tick and the counter falls by 5 while
 /// above 2; a body with no foot grounded and its pelvis within 30 cm of the
-/// ground under it has support at half its balance.
+/// ground under it has support at half its balance, which the feet routine
+/// has just zeroed (not locomoting, no foot grounded): the original's order,
+/// so it has none until a foot finds the ground.
 #[test]
 fn getting_up_finds_support_near_the_ground() {
     // Upside down, the pelvis 20 cm off the floor and the feet in the air.
@@ -699,15 +687,16 @@ fn getting_up_finds_support_near_the_ground() {
     body.measure_balance(floor().as_slice());
     let b = drive(&body).balance();
     assert!(body.legs().iter().all(|l| !l.grounded));
-    assert_eq!((b.value, b.counter()), (0.05, 95));
+    assert_eq!((b.value, b.counter()), (0.0, 95));
     assert!(b.has_support());
-    assert!((drive(&body).support() - 0.025).abs() < 1e-6);
+    assert_eq!(drive(&body).support(), 0.0);
     for _ in 0..30 {
         body.measure_balance(floor().as_slice());
     }
     let b = drive(&body).balance();
-    assert_eq!((b.value, b.counter()), (1.0, 0));
-    assert_eq!(drive(&body).support(), 0.5);
+    assert_eq!((b.value, b.counter()), (0.0, 0));
+    assert!(b.has_support());
+    assert_eq!(drive(&body).support(), 0.0);
 }
 
 /// The Height Query sweeps a sphere down: it finds the floor under it, the

@@ -4,8 +4,11 @@
 //! controller's follow), then put on its character frame, which follows
 //! its pelvis, and its lift holds its pelvis over the ground under its
 //! feet (`Ragdoll::aim`, the sampler's anchor step; without a sample it
-//! keeps last tick's, `Ragdoll::hold`). Its controller is told to follow
-//! the frame: its feet go where the frame's origin puts the body root.
+//! keeps last tick's, `Ragdoll::hold`). Its character is told to follow
+//! the frame, as the original's character position is its frame: its feet
+//! go where the frame's origin puts the body root, at the character's
+//! ground the body measured (without support, no lower than its pelvis
+//! sank this tick).
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -17,8 +20,8 @@ use exa_physics::body::{TickedCharacter, world_with};
 
 use super::sampler::SampledPose;
 
-/// Aims the ticked body at its sampled pose and has its controller follow
-/// its frame.
+/// Aims the ticked body at its sampled pose and has its character follow
+/// its frame onto its ground.
 pub(crate) fn aim_body(
     ticked: Res<TickedCharacter>,
     mut sampled: ResMut<SampledPose>,
@@ -58,7 +61,21 @@ pub(crate) fn aim_body(
     if let (Some(c), Some(anchor)) = (ticked.character, anchor)
         && let Ok(mut controller) = controllers.get_mut(c)
     {
-        let lead = Vec3::from(root_world.translation - world(c).translation);
+        let feet = world(c).translation;
+        let lead = Vec3::from(root_world.translation) - Vec3::from(feet);
         controller.follow = Some(anchor - lead);
+        let ground = body.character_ground();
+        let supported = body
+            .drive
+            .as_ref()
+            .is_some_and(|d| d.balance().has_support());
+        controller.ground = if supported {
+            ground
+        } else {
+            // Without support the body falls by its own parts; its place
+            // goes down with its pelvis, never under its ground.
+            let sunk = feet.y + body.root_moved().y.min(0.0);
+            Some(ground.map_or(sunk, |g| sunk.max(g)))
+        };
     }
 }

@@ -12,9 +12,9 @@
 //! duellist AI for a match opponent, or the placed-character brain for a
 //! company entrant or a hub NPC.
 //!
-//! A body is removed through [`SceneCommand::Despawn`]: its character
-//! capsule leaves the physics world first and the root with its whole
-//! subtree is despawned, so no collider is left behind.
+//! A body is removed through [`SceneCommand::Despawn`]: the root with its
+//! whole subtree is despawned (a character keeps nothing in the rapier
+//! world).
 //!
 //! An arena opponent takes a [`BodyLook::Generated`] plan: the spawn writes
 //! its own character record with [`crate::arena_records::generated_record`]
@@ -948,8 +948,8 @@ pub struct SceneActors {
 
 /// Runs the scene body generator.
 ///
-/// It sits in `Update`, after the physics plugin's character registration, so
-/// its commands apply before the frame's body draw. Without the game's packs
+/// It sits in `Update`, so its commands apply before the frame's body
+/// draw. Without the game's packs
 /// (`Game`) it drops its commands, which lets a test app schedule the
 /// generator without an installation.
 pub struct SceneBodiesPlugin;
@@ -966,7 +966,6 @@ impl Plugin for SceneBodiesPlugin {
 #[allow(clippy::too_many_arguments)]
 fn apply_scene_commands(
     mut commands: Commands,
-    mut physics: ResMut<exa_physics::Physics>,
     game: Option<Res<Game>>,
     clock: Option<Res<crate::effects::EffectClock>>,
     mut actors: ResMut<SceneActors>,
@@ -976,7 +975,7 @@ fn apply_scene_commands(
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<bevy::image::CompressedImageFormatSupport>>,
     players: Query<Entity, With<crate::player::Player>>,
-    bodies: Query<Option<&exa_physics::CharacterHandles>>,
+    bodies: Query<Entity>,
     models: Query<&ChildOf, With<SceneFighter>>,
     mut tables: Local<Option<GameTables>>,
     mut messages: MessageReader<SceneCommand>,
@@ -1061,14 +1060,10 @@ fn apply_scene_commands(
             }
             SceneCommand::Despawn(entity) => {
                 // A body is named by its root or by its body model (the
-                // entity the match's queries see); the capsule hangs on the
-                // root (until the body goes limp), so a model's root goes
-                // with it.
+                // entity the match's queries see); a model's root goes with
+                // it.
                 let root = models.get(*entity).map_or(*entity, ChildOf::parent);
-                if let Ok(handles) = bodies.get(root) {
-                    if let Some(handles) = handles {
-                        physics.0.remove_body_with_colliders(handles.body, true);
-                    }
+                if bodies.get(root).is_ok() {
                     commands.entity(root).despawn();
                 }
             }
@@ -1414,31 +1409,26 @@ mod tests {
                 .get::<exa_physics::body::Physical>(built[0].body.model)
                 .is_some()
         );
-        // The capsule was registered on the root.
-        let capsules = app
-            .world()
-            .resource::<exa_physics::Physics>()
-            .0
-            .bodies
-            .len();
+        // The character stands on the root, with nothing in the rapier
+        // world.
         assert!(
             app.world()
-                .get::<exa_physics::CharacterHandles>(built[0].body.root)
+                .get::<exa_physics::CharacterBody>(built[0].body.root)
                 .is_some()
         );
-        // A despawn by the body model (what the match's queries see)
-        // removes the root, its capsule and the body with it.
-        app.world_mut()
-            .write_message(SceneCommand::Despawn(built[0].body.model));
-        app.update();
         assert_eq!(
             app.world()
                 .resource::<exa_physics::Physics>()
                 .0
                 .bodies
                 .len(),
-            capsules - 1
+            0
         );
+        // A despawn by the body model (what the match's queries see)
+        // removes the root and the body with it.
+        app.world_mut()
+            .write_message(SceneCommand::Despawn(built[0].body.model));
+        app.update();
         assert!(app.world().get_entity(built[0].body.root).is_err());
         assert!(app.world().get_entity(built[0].body.model).is_err());
     }

@@ -274,15 +274,12 @@ pub fn restore_revived(
             }
             entity.insert(anim);
         }
-        if let Some((character, controller)) = &kept.character {
+        if let Some((character, _)) = &kept.character {
             if let (Some(pelvis), Ok(mut at)) = (pelvis, roots.get_mut(*character)) {
                 at.translation.x = pelvis.x;
                 at.translation.z = pelvis.z;
             }
-            let mut fresh = CharacterBody::default();
-            fresh.radius = controller.radius;
-            fresh.half_height = controller.half_height;
-            commands.entity(*character).insert(fresh);
+            commands.entity(*character).insert(CharacterBody::default());
         }
         info!(
             "{root:?} revived: clips and controller back, pelvis at {:?}",

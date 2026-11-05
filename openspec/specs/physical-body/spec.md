@@ -583,7 +583,7 @@ The level SHALL answer the original's Height Query: a sphere whose lowest point 
 - **THEN** the first is passed through, and nothing is found
 
 ### Requirement: Support
-Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle from 70 cm above it (from it, down or getting up), walking with the gait probe, else with a sphere of 5 cm + 10 cm × an anchored foot's share. Ground over half the leg under the pelvis is out of reach, but getting up. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
+Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle from 70 cm above it (from it, down or getting up), walking with the gait probe, else with a sphere of 5 cm + 10 cm × an anchored foot's share. Ground over half the leg under the pelvis is out of reach, but getting up. S SHALL be grounded × balance; a body that does not locomote and has no grounded foot SHALL lose its balance, getting up included, before the get-up's support near the ground.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -593,17 +593,13 @@ Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ank
 - **WHEN** a standing body has no ground under its feet
 - **THEN** its balance and support are 0 and it counts the ticks it is airborne; a moving body keeps its balance
 
-#### Scenario: Perched
-- **WHEN** a standing body's controller stands on a stone its feet hang beside
-- **THEN** it keeps its balance, with support 0
-
 #### Scenario: Out of reach
 - **WHEN** a 65 cm block stands under one foot of a standing human
 - **THEN** that foot has no ground, the other is grounded, and its support is 1
 
 #### Scenario: Getting up near the ground
 - **WHEN** a body getting up has no foot grounded and its pelvis 20 cm over the ground
-- **THEN** its support is half its balance, which rises 0.05 a tick
+- **THEN** it has support, at half its balance, which the feet routine has set to 0, so S is 0 until a foot is grounded
 
 #### Scenario: Down
 - **WHEN** a body lying or getting up has a shelf 40 cm over its ankle, and a 5 cm step's edge 7 cm beside its probe
@@ -761,27 +757,27 @@ While a body moves, a negative slow vertical chest speed v (cm a tick) SHALL mul
 - **THEN** the moving target stays 60 cm, or the standing target stays 65 cm
 
 ### Requirement: Climbing with the controller
-The lift SHALL read each foot's own ground. The character controller's floor SHALL NOT raise that ground, on level ground, on stairs, perched or fallen.
+The lift SHALL read each foot's own ground. The character's floor SHALL NOT raise that ground, on level ground, on stairs or fallen.
 
 #### Scenario: Level ground
-- **WHEN** a body walks or stands with its controller floating 0, 2 or 5 cm over a level floor
+- **WHEN** a body walks or stands with its character floating 0, 2 or 5 cm over a level floor
 - **THEN** its target is the original's every tick: in `--autowalk play arena` the same as without the rule, the pelvis 99.4–102.2 cm walking and 101.5 cm standing
 
 #### Scenario: Stairs
-- **WHEN** a body walks up four 18 cm steps, stopping on the third, with its controller and without it
-- **THEN** its feet stay on the floor and its pelvis stops short of the first riser, its balance stays at 1 carried or not, and the two pelvis heights agree
+- **WHEN** a body walks up four 18 cm steps, stopping on the third
+- **THEN** its feet stay on the floor and its pelvis stops short of the first riser, its balance stays at 1
 
 #### Scenario: Stair room
-- **WHEN** `exarust --autowalk --at 7.5,-0.95,64.4 play exanima01` or `--at 7.6,-1.3,66.2` walks the player up the stairs to the door
-- **THEN** the four-step synthetic walk is this change's stair gate; a fall on that exanima01 walk is the missing gait probe and is recorded, and the controller floor is not restored
+- **WHEN** `exarust --autowalk --at 7.5,-0.95,64.4 play exanima01` walks the player up the stairs to the door
+- **THEN** it climbs onto the landing at the door, its balance and support 1 throughout
 
 #### Scenario: Perched
-- **WHEN** a body's grounded controller stands 12 cm over the floor under its feet, or is in the air
-- **THEN** its target is the original's in both cases
+- **WHEN** a body's character stands 12 cm over the floor under its feet
+- **THEN** its target is the original's
 
 #### Scenario: Fallen
-- **WHEN** a body has just fallen, its feet on the floor and its grounded controller 12 cm over it
-- **THEN** its target is the original's every tick, as with its controller on the floor
+- **WHEN** a body has just fallen, its feet on the floor and its character 12 cm over it
+- **THEN** its target is the original's every tick, as with its character on the floor
 
 ### Requirement: Leg bend
 A leg SHALL bend onto its bend target. The knee SHALL be the law of cosines on the two bones: 30° over the double 0.866, 180° at or below −1, else the engine's arc cosine. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, through the sampler's IK step. Lying down it SHALL release instead.
@@ -876,21 +872,6 @@ A living body's targets SHALL be its clip pose on a frame that turns with the bo
 #### Scenario: Far from the origin
 - **WHEN** a steady standing body 90 m from the world's origin stands for 600 ticks
 - **THEN** its frame does not move at all
-
-### Requirement: Controller follows the frame
-A living character's controller SHALL follow its body's frame (Exarust's own): each fixed step, before its own walk, it moves its feet a tenth of the way across the ground to where the frame's origin puts the body root, at most 2 cm, through the controller. The body's carry SHALL leave that move out.
-
-#### Scenario: Glide
-- **WHEN** the frame's origin is 50 cm from the feet
-- **THEN** the feet go 2 cm a step until it is 20 cm away, then a tenth of the rest, and stop within a millimetre of it
-
-#### Scenario: Follow left out of the carry
-- **WHEN** a standing body's root moves 30 cm across the ground, by the controller's follow or by its walk
-- **THEN** the body and its frame stay where they are, or are carried 30 cm
-
-#### Scenario: Shoved over
-- **WHEN** `exarust --trace t.csv --shove 60 play arena` knocks the player over and it gets up
-- **THEN** its controller follows the falling body, never moves more than 2 cm a tick, and comes to stand at the frame's origin
 
 ### Requirement: Pose hold
 A living body's sampled turns SHALL be pulled toward the pose it holds (its pelvis's and legs' targets, its other parts' physical turns, taken while it is dazed, its blow sag on or its support under 1) by w = 1 − (1 − S)²·(1 − s)·(E/Emax)⁴ while dazed (energy more than 0.05 under its most, in double precision), else (1 − S)·s, when w is over 1.19e-7. The sag SHALL fade 0.01 a tick and be 0 once the body falls.
@@ -2598,3 +2579,21 @@ The pair stage SHALL test a sleeping part's grid cell, computed as its pose comp
 #### Scenario: A far sleeper
 - **WHEN** a sleeping part's cell is two cells from every awake part
 - **THEN** it is not found for the tick, and its cell equals its pose's cell bit for bit
+
+### Requirement: Character follows its body
+A living character SHALL have no capsule and no swept controller: each fixed step it SHALL go at once, across the ground, to where its body's frame origin puts the body root, and stand at the character's ground its body measured that tick. Without support it SHALL go down with its pelvis's drop that tick, never under that ground; a ground more than 3 m under the pelvis, or above it, SHALL be ignored. The carry SHALL leave the follow out; walls, props and bodies SHALL block the body's parts.
+
+#### Scenario: Follow
+- **WHEN** the frame's origin is 50 cm across the ground from the feet and the body measured its ground 18 cm up
+- **THEN** the feet stand there, 18 cm up, after one step, through any collider between, and the body is not carried by that move
+
+#### Scenario: Sewer
+- **WHEN** `exarust grid` runs `play exanima05_sw` on the round 62 build and on this one side by side
+- **THEN** the fixed tick no longer spends its time on character sweeps (about a tenth of the round 62 tick in the same grid)
+
+### Requirement: Character without muscles
+A character without muscles SHALL walk by its desired velocity and stand on the level under its feet, falling where there is none.
+
+#### Scenario: Without muscles
+- **WHEN** a character without muscles walks off a floor onto a 20 cm ledge and off its far edge
+- **THEN** it stands on the floor, then on the ledge, then falls

@@ -278,9 +278,9 @@ fn no_support_no_pose_drive_and_a_fall_keeps_the_tone() {
             body.measure_balance(floor_quad(0.0, 5.0).as_slice());
             assert!(!body.drive.as_ref().unwrap().balance().has_support());
         } else {
-            // Carried by its controller, it keeps its balance.
+            // Standing with no ground, it has no balance either.
             body.measure_balance(none);
-            assert_eq!(body.drive.as_ref().unwrap().balance().value, 1.0);
+            assert_eq!(body.drive.as_ref().unwrap().balance().value, 0.0);
             assert!(!body.drive.as_ref().unwrap().balance().has_support());
         }
         body.aim(Affine3A::IDENTITY, turned);
