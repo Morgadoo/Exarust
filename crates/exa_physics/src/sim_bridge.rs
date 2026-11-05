@@ -1783,10 +1783,13 @@ impl Plugin for SimBridgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimBridgeTypes>()
             .insert_resource(FrameBridge {
-                extra: [crate::sim_app::SimFrameStart.intern()]
-                    .into_iter()
-                    .chain(self.extra.iter().copied())
-                    .collect(),
+                extra: [
+                    crate::sim_app::SimPreStep.intern(),
+                    crate::sim_app::SimFrameStart.intern(),
+                ]
+                .into_iter()
+                .chain(self.extra.iter().copied())
+                .collect(),
                 fixed_order: Vec::new(),
                 side: None,
                 frames: 0,
