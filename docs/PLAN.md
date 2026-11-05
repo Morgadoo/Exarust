@@ -1273,6 +1273,8 @@ Round 56 weaponfactory (S6): factory weapons draw as one mesh with one atlas; th
 
 Round 60 itemability (S12, S13): item abilities are crystal sockets, not a record word; the sewer's water level was misread as a sun height.
 
+Round 61 crystalsockets (S12): the crystal sockets and all three item abilities are live for every character.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1522,6 +1524,8 @@ Round 58 formsrest: the remaining forms take the original's line-skin draw, and 
 Round 59 forminput (S9): windows move, close, scroll and show hover inks as the original's form base does; hub tables have no scroll bar in the original.
 
 Round 59 suncaster (S8, shadows): the sun caster pass, its softness filter and polygon offset follow the original.
+
+Round 61 reflections (S8): the original has no planar reflection; its local reflection on glass is ported, and the sewer water is the wet-floor gloss.
 
 ### Phase 6 — AI (started)
 
