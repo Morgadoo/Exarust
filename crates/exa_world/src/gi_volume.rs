@@ -238,7 +238,7 @@ fn base_ambient_share(high_quality: bool) -> f32 {
 }
 
 /// The GI sample points of a mesh node, in its space (metres).
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct GiPoints(pub Arc<Vec<Vec3>>);
 
 /// A GI mesh the original counts as thin: its sample points weigh a quarter

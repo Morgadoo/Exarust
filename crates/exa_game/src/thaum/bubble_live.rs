@@ -54,7 +54,7 @@ pub const BUBBLE_HOOK: CastHook = CastHook { keeps: 0x28 };
 pub const BUBBLE_RADIUS: f32 = 120.0;
 
 /// A bubble in the scene.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct LiveBubble {
     pub bubble: Bubble,
     pub caster: Entity,

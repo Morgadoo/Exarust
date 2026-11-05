@@ -169,7 +169,7 @@ impl Plugin for ThaumEffectsPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_thaum_effects_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_resource::<bevy::asset::Assets<bevy::audio::AudioSource>>()
+    app.bridge_lend_opaque_resource::<bevy::asset::Assets<bevy::audio::AudioSource>>()
         .bridge_message::<exa_combat::impact::LimbImpact>()
         .bridge_message::<crate::thaum::cast::Otherwhere>()
         .bridge_message::<crate::thaum::hold_live::HoldEnd>()
@@ -177,7 +177,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_message::<crate::thaum::live::ArcShocked>()
         .bridge_message::<crate::thaum::throw_live::ThrowFade>()
         .bridge_copy::<exa_ai::DuelPowers>()
-        .bridge_copy_resource::<exa_assets::Game>()
+        .bridge_copy_opaque_resource::<exa_assets::Game>()
         .bridge_lend_resource::<exa_audio::SoundBank>()
         .bridge_lend_resource::<exa_audio::AudioEnvironment>()
         .bridge_copy::<exa_character::held::HeldMoveset>()
@@ -209,7 +209,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
 }
 
 /// The runtime's random stream the effects draw from.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct EffectDraws(pub Mt19937);
 
 impl Default for EffectDraws {
@@ -220,7 +220,7 @@ impl Default for EffectDraws {
 }
 
 /// The engine's own generator, for the effects that use it.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct EffectRoll(pub Roll);
 
 /// Which test effects to put on the player (the debug flags).
@@ -321,7 +321,7 @@ pub fn shock_reaction(
 /// Arcs in the scene: the body and bone whose part they ride (its place is
 /// their frame's anchor, the hand arcs' node offset turned with it), and
 /// the body that casts them.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct LiveArcs {
     pub arcs: ArcEmitter,
     pub hand: Option<(Entity, usize)>,
@@ -333,14 +333,14 @@ pub struct LiveArcs {
 }
 
 /// A barricade in the scene and who cast it.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct LiveBarricade {
     pub wall: Barricade,
     pub caster: Option<Entity>,
 }
 
 /// Wisps on a body: each strand rides the part of the body at its slot.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct LiveWisps {
     pub wisps: Wisps,
     pub body: Entity,
@@ -353,7 +353,7 @@ pub struct EffectMesh(pub Handle<Mesh>);
 
 /// The patch a barricade's line stamped on the navigation grid, taken back
 /// when its fall ends.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct NavStamped(pub NavPatch);
 
 /// The world place (cm) of a point given in a part's space (cm).

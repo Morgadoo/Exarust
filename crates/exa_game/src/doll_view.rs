@@ -301,7 +301,7 @@ pub struct DollDrop {
 /// database's local and world tiers under its tagged id, refreshed from
 /// [`LiveObjects`] whenever it changes ([`Self::sync`]). A kit's copy, a
 /// level's own record and a promoted record each read their own bytes.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct DollItems {
     items: HashMap<u32, Item>,
     /// The live database's tagged records, by their whole id.

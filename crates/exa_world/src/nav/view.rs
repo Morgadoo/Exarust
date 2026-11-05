@@ -67,7 +67,11 @@ impl Plugin for NavPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_nav_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_message::<crate::nav::view::NavMoved>()
+    app.bridge_copy::<crate::LevelRoot>()
+        .bridge_copy::<crate::db_objects::ContainerVolume>()
+        .bridge_copy::<crate::db_objects::PlaceholderNode>()
+        .bridge_copy::<MovingMesh>()
+        .bridge_message::<crate::nav::view::NavMoved>()
         .bridge_copy::<crate::gi_volume::GiPoints>()
         .bridge_lend_resource::<crate::nav::view::NavMovers>()
         .bridge_lend_resource::<crate::nav::view::NavRevision>()

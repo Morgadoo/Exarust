@@ -77,7 +77,7 @@ pub struct ClothSkipped;
 pub const LOOSE_PIN: f32 = cloth::LOOSE_PIN;
 
 /// A cloth simulated over a mesh part.
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, Default)]
 pub struct ClothInstance {
     pub cloth: Cloth,
     /// The mesh whose vertices the cloth drives.
@@ -1196,7 +1196,7 @@ fn bridge_cloth_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_lend_resource::<crate::cloth::ClothContacts>()
         .bridge_lend_resource::<crate::cloth::ClothDebug>()
-        .bridge_copy::<crate::cloth::ClothInstance>()
+        .bridge_lend::<crate::cloth::ClothInstance>()
         .bridge_lend_resource::<crate::cloth::ClothObjects>();
 }
 

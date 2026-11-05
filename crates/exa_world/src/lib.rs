@@ -85,7 +85,7 @@ pub struct PartBounds {
 pub struct LevelLocalItems(pub Vec<Item>);
 
 /// Marks the root entity of a spawned level.
-#[derive(Component)]
+#[derive(Component, Clone, Debug)]
 pub struct LevelRoot {
     pub name: String,
 }

@@ -145,7 +145,7 @@ pub struct HeldPlayer(pub PlayerBody);
 
 /// The AI behaviour a possessed body sets aside: the original keeps it in
 /// the Control Mind power and marks it held.
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug, Default, Clone)]
 pub struct HeldBehaviour {
     pub duellist: Option<Duellist>,
     pub npc: Option<Npc>,
@@ -235,7 +235,8 @@ impl Plugin for MindRuntimePlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_mind_runtime_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_message::<exa_audio::PointSounded>()
+    app.bridge_copy::<HeldBehaviour>()
+        .bridge_message::<exa_audio::PointSounded>()
         .bridge_message::<exa_combat::BlowNoticed>()
         .bridge_copy::<exa_ai::combatant::MindPowers>()
         .bridge_copy::<crate::mind::casts::MindBody>();
