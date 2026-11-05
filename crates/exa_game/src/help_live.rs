@@ -36,7 +36,7 @@ use exa_ui::help_system::{self, Manual, ManualSource, TopicRef};
 use exa_ui::skin::SkinBatch;
 
 use crate::flow::{FlowSteps, Step};
-use crate::gui_paint::{self, Frame};
+use crate::gui_paint;
 use crate::menu_pages::MenuCommand;
 use crate::menu_screen::{MenuChoice, MenuScreenSystems};
 
@@ -332,16 +332,54 @@ fn paint_manual(
     let fonts = exa_ui::gui_font::gui_level(level);
     let (font, atlas) = list_font(unit, textures);
     let rect = manual_rect(size, unit);
-    let mut frame = Frame::new(rect, unit, help_system::MANUAL_TITLE);
-    frame.attributes |= help_system::MANUAL_ATTRIBUTES;
-    frame.style |= help_system::POPUP_STYLE;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, atlas);
+    // The game skin's form draw with the words the show commits: a
+    // top-level form (titled, shadowed, corner-framed); its topic list (an
+    // item view) and its page (a text box with the scroll bar) are held.
+    let (mut outer, committed) = gui_paint::paint_top_form(
+        rect,
+        unit,
+        &palette,
+        1.0,
+        gui_paint::MANUAL_WORDS,
+        Some((help_system::MANUAL_TITLE, &font, atlas)),
+    );
+    let client = GuiRect::new(
+        rect.left + gui_paint::BORDER,
+        rect.top + gui_paint::BORDER,
+        rect.width() - 2 * gui_paint::BORDER,
+        rect.height() - 2 * gui_paint::BORDER,
+    );
+    let mut painted = gui_paint::Painted {
+        client,
+        ..Default::default()
+    };
+    painted.layers.extend(outer.under());
     let (list, page) = manual_parts(rect, unit);
-    for part in [list, page] {
-        let panel = gui_paint::paint_panel(part, unit, &palette, 0, 0);
-        painted.layers.extend(panel.layers);
-    }
+    let mut list_frame = gui_paint::paint_held_form(
+        list,
+        client,
+        committed.attributes,
+        unit,
+        &palette,
+        1.0,
+        gui_paint::MANUAL_LIST_WORDS,
+    );
+    let mut page_frame = gui_paint::paint_held_scrolling(
+        page,
+        client,
+        committed.attributes,
+        unit,
+        &palette,
+        1.0,
+        gui_paint::MANUAL_PAGE_WORDS,
+        screen.scroll,
+    );
+    painted.layers.extend(list_frame.under());
+    painted.layers.extend(page_frame.under());
     let Some(atlas) = atlas else {
+        painted.layers.extend(list_frame.over());
+        painted.layers.extend(page_frame.over());
+        painted.layers.extend(outer.over());
         painted.submit(&mut frames);
         return;
     };
@@ -420,6 +458,9 @@ fn paint_manual(
         let batch = exa_ui::gui_draw::glyph_batch(&font, &glyphs, atlas, 1.0);
         painted.push(GuiLayer::new(batch, LayerTexture::Named(font.texture)));
     }
+    painted.layers.extend(list_frame.over());
+    painted.layers.extend(page_frame.over());
+    painted.layers.extend(outer.over());
     painted.submit(&mut frames);
 }
 

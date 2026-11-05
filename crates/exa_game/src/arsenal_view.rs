@@ -39,16 +39,16 @@ use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinPalette;
 
-use crate::gui_paint::{self, Frame, Painted};
+use crate::gui_paint::{self, Painted};
 use crate::item_container::Container;
 use crate::item_panel_draw::PanelIcons;
 
-/// The form's title [guess: the constructor sets no caption that was
-/// traced; its call with 7 loads the eight-entry control template, controls
-/// 0 to 7].
-pub const TITLE: &str = "Arsenal";
-/// The form's style: the base constructor's centred-title bits.
-pub const STYLE: u32 = gui_paint::SCREEN_STYLE;
+/// The form's title: the constructor sets no caption (its call with 7
+/// loads the eight-entry control template, controls 0 to 7, whose first
+/// label reads "ARSENAL"), so the committed title bar has no text.
+pub const TITLE: &str = "";
+/// The form's style: the constructor sets no style bits of its own.
+pub const STYLE: u32 = gui_paint::ARSENAL_WORDS.style;
 /// The two scroll arrows' stand-in captions (the template's picture 6).
 pub const LEFT_ARROW: &str = "<";
 pub const RIGHT_ARROW: &str = ">";
@@ -230,10 +230,41 @@ pub fn paint_arsenal(window: &ArsenalWindow, textures: &GuiTextures) -> ArsenalP
     let (font, size) =
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let layout = window.layout();
-    let mut frame = Frame::new(window.bounds, window.unit, TITLE);
-    frame.style = STYLE;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    // The game skin's form draw with the words the show commits: the
+    // arsenal is a base form, so top-level it is titled, shadowed and
+    // corner-framed; its column frame (style 0x10), its columns (item
+    // panels) and the embedded inventory are held.
+    let (mut outer, committed) = gui_paint::paint_top_form(
+        window.bounds,
+        window.unit,
+        &palette,
+        1.0,
+        gui_paint::ARSENAL_WORDS,
+        Some((TITLE, &font, size)),
+    );
+    let client = GuiRect::new(
+        window.bounds.left + gui_paint::BORDER,
+        window.bounds.top + gui_paint::BORDER,
+        window.bounds.width() - 2 * gui_paint::BORDER,
+        window.bounds.height() - 2 * gui_paint::BORDER,
+    );
+    let mut painted = Painted {
+        client,
+        ..Painted::default()
+    };
+    painted.layers.extend(outer.under());
     let origin = (window.bounds.left, window.bounds.top);
+    let held = |rect: GuiRect, owner: GuiRect, owner_attributes: u32, words| {
+        gui_paint::held_layers(
+            rect,
+            owner,
+            owner_attributes,
+            window.unit,
+            &palette,
+            1.0,
+            words,
+        )
+    };
     // The column frame child.
     let frame_rect = GuiRect::new(
         origin.0 + layout.frame.0,
@@ -241,19 +272,23 @@ pub fn paint_arsenal(window: &ArsenalWindow, textures: &GuiTextures) -> ArsenalP
         layout.frame_width,
         window.form().height,
     );
-    let child = gui_paint::paint_child(
+    painted.layers.extend(held(
         frame_rect,
-        window.unit,
-        &palette,
-        gui_paint::PACK_ATTRIBUTES,
-        gui_paint::PACK_STYLE,
-        0,
-        None,
+        client,
+        committed.attributes,
+        gui_paint::COLUMN_FRAME_WORDS,
+    ));
+    let frame_client = GuiRect::new(
+        frame_rect.left + 4,
+        frame_rect.top + 4,
+        frame_rect.width() - 8,
+        frame_rect.height() - 8,
     );
-    let frame_client = child.client;
-    for layer in child.layers {
-        painted.push(layer);
-    }
+    let frame_words = gui_paint::commit_words(
+        gui_paint::COLUMN_FRAME_WORDS.style,
+        gui_paint::COLUMN_FRAME_WORDS.attributes,
+        false,
+    );
     // The visible columns, in the frame's client.
     let mut columns = Vec::new();
     for (shown, x, place) in window.column_places(&layout) {
@@ -267,18 +302,12 @@ pub fn paint_arsenal(window: &ArsenalWindow, textures: &GuiTextures) -> ArsenalP
             place.height.min(frame_client.height()),
         );
         columns.push(rect);
-        let column = gui_paint::paint_child(
+        painted.layers.extend(held(
             rect,
-            window.unit,
-            &palette,
-            gui_paint::PACK_ATTRIBUTES,
-            gui_paint::PACK_STYLE,
-            0,
-            None,
-        );
-        for layer in column.layers {
-            painted.push(layer);
-        }
+            frame_client,
+            frame_words.attributes,
+            gui_paint::ITEM_PANEL_WORDS,
+        ));
     }
     // The embedded inventory to the left of the frame.
     if window.inventory_shown {
@@ -288,16 +317,12 @@ pub fn paint_arsenal(window: &ArsenalWindow, textures: &GuiTextures) -> ArsenalP
             arsenal::INVENTORY_SHARE * window.unit,
             window.inventory_height(),
         );
-        let panel = gui_paint::paint_panel(
+        painted.layers.extend(held(
             inventory,
-            window.unit,
-            &palette,
-            gui_paint::PACK_ATTRIBUTES,
-            gui_paint::PACK_STYLE,
-        );
-        for layer in panel.layers {
-            painted.push(layer);
-        }
+            client,
+            committed.attributes,
+            gui_paint::EMBEDDED_INVENTORY_WORDS,
+        ));
     }
     // The control row.
     let controls = window.controls(&layout);
@@ -346,6 +371,7 @@ pub fn paint_arsenal(window: &ArsenalWindow, textures: &GuiTextures) -> ArsenalP
         };
         push_button(*index, *at, label, &mut painted);
     }
+    painted.layers.extend(outer.over());
     ArsenalPaint {
         painted,
         frame_client,

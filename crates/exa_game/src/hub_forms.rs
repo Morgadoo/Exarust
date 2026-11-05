@@ -716,17 +716,18 @@ pub fn apply_staff_changes(
 /// (the coin controls' amounts, the image buttons' frames and the combo
 /// box's panel and text beside the basic classes). The shadow and backdrop
 /// are pushed first; the title and frame layers come back for the caller
-/// to push after the form's other children.
+/// to push after the form's other children, with the committed words its
+/// child views are held by.
 #[must_use]
 pub(crate) fn paint_form(
     painted: &mut gui_paint::Painted,
     form: &RecordForm,
     look: &Look,
-) -> Vec<exa_ui::gui_draw::GuiLayer> {
+) -> (Vec<exa_ui::gui_draw::GuiLayer>, gui_paint::LineFormWords) {
     let r = form.rect();
     let bounds = GuiRect::new(r.x, r.y, r.w, r.h);
     let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
-    let (mut frame, _) = gui_paint::paint_top_form(
+    let (mut frame, committed) = gui_paint::paint_top_form(
         bounds,
         look.unit,
         &look.palette,
@@ -805,7 +806,7 @@ pub(crate) fn paint_form(
             ),
         }
     }
-    frame.over().collect()
+    (frame.over().collect(), committed)
 }
 
 /// `--open-hub-window <name>`: once the hub is entered and the manager

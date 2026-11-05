@@ -75,8 +75,8 @@ use exa_ui::skin::{SkinBatch, SkinPalette};
 
 use crate::create;
 use crate::creator_screen::{
-    self, COMPACT_BELOW, CREATION_ATTRIBUTES, CreatorScreen, CreatorSystems, EDITOR_ATTRIBUTES,
-    ICONS, design, hidden, px, scaled, takes_hits,
+    self, COMPACT_BELOW, CreatorScreen, CreatorSystems, ICONS, design, hidden, px, scaled,
+    takes_hits,
 };
 use crate::flow::{Flow, FlowSteps, Phase};
 use crate::gui_paint::{self, Frame, Painted};
@@ -315,9 +315,8 @@ impl SaveScreen {
         GuiRect::new((self.screen.0 - w) / 2, (self.screen.1 - h) / 2, w, h)
     }
 
-    fn confirm_client(&self) -> GuiRect {
-        let mut frame = Frame::new(self.confirm_px(), self.unit, DELETE_TITLE);
-        frame.attributes = gui_paint::FORM_ATTRIBUTES | creation_forms::DELETE_ATTRIBUTES;
+    pub(crate) fn confirm_client(&self) -> GuiRect {
+        let frame = Frame::new(self.confirm_px(), self.unit, DELETE_TITLE);
         frame.client()
     }
 
@@ -1130,24 +1129,33 @@ pub fn paint_saves(saves: &SaveScreen, textures: &GuiTextures) -> Painted {
     let (font, size) =
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let text = crate::settings_form::Text { font: &font, size };
-    let mut frame = Frame::new(GuiRect::new(0, 0, saves.screen.0, saves.screen.1), unit, "");
-    frame.attributes = CREATION_ATTRIBUTES;
-    frame.style = 0;
-    frame.spacing = 0;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    // The continue form through the game skin's form draw: the creation
+    // form's words draw nothing of its own; its children are held by it.
+    let screen_rect = GuiRect::new(0, 0, saves.screen.0, saves.screen.1);
+    let (mut form, _) = gui_paint::paint_top_form(
+        screen_rect,
+        unit,
+        &palette,
+        1.0,
+        creator_screen::CREATION_WORDS,
+        None,
+    );
+    let mut painted = Painted {
+        client: screen_rect,
+        ..Painted::default()
+    };
+    painted.layers.extend(form.under());
+    painted.layers.extend(form.over());
     // The preview viewport, cleared for the 3D view under it.
     let view = saves.preview_px();
     let preview = create::preview_view();
-    let panel = gui_paint::paint_child(
+    painted.layers.extend(creator_screen::creation_child(
         view,
+        saves.screen,
         unit,
         &palette,
-        preview.style(EDITOR_ATTRIBUTES),
-        preview.form_flags,
-        preview.border,
-        None,
-    );
-    painted.layers.extend(panel.layers);
+        creator_screen::preview_words(),
+    ));
     painted.push(crate::gui_screens::clear_layer(GuiRect::new(
         view.left + preview.border,
         view.top + preview.border,
@@ -1173,8 +1181,13 @@ pub fn paint_saves(saves: &SaveScreen, textures: &GuiTextures) -> Painted {
     // The item container: its panel and, [guess] for its icons, the
     // entries' names.
     let inventory = saves.inventory_px();
-    let child = gui_paint::paint_child(inventory, unit, &palette, EDITOR_ATTRIBUTES, 0x80, 0, None);
-    painted.layers.extend(child.layers);
+    painted.layers.extend(creator_screen::creation_child(
+        inventory,
+        saves.screen,
+        unit,
+        &palette,
+        gui_paint::pane_words(0x80),
+    ));
     let lines = saves.inventory_lines().join("\n");
     if let Some(layer) = wrapped_layer(
         &font,
@@ -1224,8 +1237,13 @@ pub fn paint_saves(saves: &SaveScreen, textures: &GuiTextures) -> Painted {
     // The open drop-down list.
     let row = saves.row_height();
     if let Some((rect, count)) = saves.list_px(row) {
-        let child = gui_paint::paint_child(rect, unit, &palette, EDITOR_ATTRIBUTES, 0x80, 0, None);
-        painted.layers.extend(child.layers);
+        painted.layers.extend(creator_screen::creation_child(
+            rect,
+            saves.screen,
+            unit,
+            &palette,
+            gui_paint::pane_words(0x80),
+        ));
         for i in 0..count {
             let item: &[u8] = match saves.list {
                 Some(DropList::Slots) => &saves.names[i],
@@ -1254,11 +1272,21 @@ pub fn paint_saves(saves: &SaveScreen, textures: &GuiTextures) -> Painted {
     }
     // The delete box over everything.
     if let Some(confirm) = &saves.confirm {
-        let mut frame = Frame::new(saves.confirm_px(), unit, DELETE_TITLE);
-        frame.attributes = gui_paint::FORM_ATTRIBUTES | creation_forms::DELETE_ATTRIBUTES;
-        let box_paint = gui_paint::paint_frame(&frame, &palette, &font, size);
-        painted.layers.extend(box_paint.layers);
-        let client = frame.client();
+        // The delete box's words: style 0xb800, the upper layer (0x1000);
+        // a top-level form, titled, shadowed and corner-framed.
+        let (mut form, _) = gui_paint::paint_top_form(
+            saves.confirm_px(),
+            unit,
+            &palette,
+            1.0,
+            gui_paint::FormWords {
+                style: creation_forms::DELETE_STYLE,
+                attributes: gui_paint::FORM_ATTRIBUTES | creation_forms::DELETE_ATTRIBUTES,
+            },
+            Some((DELETE_TITLE, &font, size)),
+        );
+        painted.layers.extend(form.under());
+        let client = saves.confirm_client();
         for c in confirm {
             creator_screen::paint_record(
                 c,
@@ -1271,6 +1299,7 @@ pub fn paint_saves(saves: &SaveScreen, textures: &GuiTextures) -> Painted {
                 &mut painted,
             );
         }
+        painted.layers.extend(form.over());
     }
     painted
 }

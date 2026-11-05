@@ -32,12 +32,12 @@ use exa_ui::settings::{
     HIDDEN, HOVER_BITS, HOVERED, Part, SEPARATOR_CLASS,
 };
 use exa_ui::skin::{
-    FormScroll, GuiRect as SkinRect, SkinBatch, SkinInk, SkinPalette, SliderPlace, check_box_quads,
+    GuiRect as SkinRect, SkinBatch, SkinInk, SkinPalette, SliderPlace, check_box_quads,
     draw_flat_slider, draw_style_frames, four_stop_rect, line_skin_batch, push_line_quads,
 };
 
 use crate::bindings::Bindings;
-use crate::gui_paint::{self, Frame, Painted};
+use crate::gui_paint::{self, Painted};
 use crate::hw_config::{
     BindingEditor, BindingsApplied, HardwareConfig, ShaderWarmScreen, binding_rows,
 };
@@ -548,44 +548,82 @@ pub fn paint_form(form: &FormState, textures: &GuiTextures) -> Painted {
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let text = Text { font: &font, size };
     let g = &form.geometry;
-    let mut frame = Frame::new(
-        GuiRect::new(g.form.x, g.form.y, g.form.w, g.form.h),
+    let bounds = GuiRect::new(g.form.x, g.form.y, g.form.w, g.form.h);
+    // The game skin's form draw with the words the show commits: the
+    // constructor's style 0xb810 and attributes 0x31022, a top-level form,
+    // so titled, shadowed and corner-framed.
+    let (mut outer, committed) = gui_paint::paint_top_form(
+        bounds,
         unit,
-        settings::TITLE,
+        &palette,
+        1.0,
+        gui_paint::FormWords {
+            style: settings::FORM_STYLE,
+            attributes: settings::FORM_ATTRIBUTES,
+        },
+        Some((settings::TITLE, &font, size)),
     );
-    frame.attributes = settings::FORM_ATTRIBUTES;
-    frame.style = settings::FORM_STYLE;
-    frame.spacing = settings::BORDER;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    let mut painted = Painted {
+        client: GuiRect::new(
+            g.form.x + settings::BORDER,
+            g.form.y + settings::BORDER,
+            g.form.w - 2 * settings::BORDER,
+            g.form.h - 2 * settings::BORDER,
+        ),
+        ..Painted::default()
+    };
+    painted.layers.extend(outer.under());
     let origin = form.origin();
     for c in &g.main {
         paint_control(c, origin, unit, &palette, &text, None, &mut painted);
     }
+    // The page in view, held by the form: the Settings page is a base form
+    // with no frame style (it draws nothing of its own), the Controls page
+    // has the panel frame (0x88) and the scroll bar (0x200).
     let page = form.page_screen();
     let part = form.page_part();
-    let (attributes, style, vertical) = if part == Part::Controls {
-        let bar = form.scrollbar();
-        (
-            CONTROLS_ATTRIBUTES,
-            CONTROLS_STYLE,
-            Some(FormScroll {
-                position: bar.thumb_y,
-                length: bar.thumb,
-            }),
-        )
+    let page_rect = GuiRect::new(page.x, page.y, page.w, page.h);
+    let mut at = gui_paint::LineFormAt::child(page_rect, painted.client, committed.attributes);
+    let (attributes, style) = if part == Part::Controls {
+        let page_client = form.page_client();
+        let held = gui_paint::commit_words(CONTROLS_STYLE, CONTROLS_ATTRIBUTES, false);
+        let rail = exa_ui::line_skin::refresh_line_scroll(
+            exa_ui::line_skin::LineScrollPlace {
+                style: held.state,
+                x: at.in_owner.0,
+                y: at.in_owner.1,
+                w: page.w,
+                h: page.h,
+                client_top: page_client.y - page.y,
+                client_bottom: page_client.y - page.y + page_client.h,
+                owner_left: 0,
+                owner_top: 0,
+                owner_right: at.owner_client.0,
+                owner_bottom: at.owner_client.1,
+                fraction: form.scroll,
+            },
+            unit,
+        );
+        at.scroll = Some(exa_ui::line_skin::LineFormScroll {
+            client_top: page_client.y - page.y,
+            client_right: page_client.x - page.x + page_client.w,
+            client_bottom: page_client.y - page.y + page_client.h,
+            thumb: rail.thumb,
+            options: 0,
+        });
+        (CONTROLS_ATTRIBUTES, CONTROLS_STYLE)
     } else {
-        (CHILD_ATTRIBUTES, 0, None)
+        (CHILD_ATTRIBUTES, 0)
     };
-    let panel = gui_paint::paint_child(
-        GuiRect::new(page.x, page.y, page.w, page.h),
+    let mut panel = gui_paint::paint_line_form(
+        at,
         unit,
         &palette,
-        attributes,
-        style,
-        settings::BORDER,
-        vertical,
+        1.0,
+        gui_paint::commit_words(style, attributes, false),
+        None,
     );
-    painted.layers.extend(panel.layers);
+    painted.layers.extend(panel.under());
     let client = form.page_client();
     let clip = Some([client.x, client.y, client.w, client.h]);
     let origin = form.part_origin(part);
@@ -604,6 +642,8 @@ pub fn paint_form(form: &FormState, textures: &GuiTextures) -> Painted {
         let rect = GuiRect::new(origin.0 + help.x, origin.1 + help.y, help.w, help.h);
         paint_help(rect, unit, &palette, &text, clip, &mut painted);
     }
+    painted.layers.extend(panel.over());
+    painted.layers.extend(outer.over());
     painted
 }
 

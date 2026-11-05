@@ -196,11 +196,11 @@ pub use hud_extra::{
     compass_point, compass_uv,
 };
 pub use line_skin::{
-    LINE_SCHEME, LINE_STRIP_CAP, LineForm, LineFormInk, LineFormPlace, LineIcon, LineIconAlpha,
-    LineIconInk, LineMetrics, LineScroll, LineScrollPlace, WINDOW_CORNER, WindowFrame,
-    WindowFrameInk, WindowFramePlace, draw_line_form, draw_line_icon, draw_line_progress,
-    draw_open_span, draw_window_frame, line_inks, line_palette, refresh_line_scroll,
-    register_line_skin, set_line_metrics,
+    LINE_SCHEME, LINE_STRIP_CAP, LineForm, LineFormInk, LineFormPlace, LineFormScroll, LineIcon,
+    LineIconAlpha, LineIconInk, LineMetrics, LineScroll, LineScrollPlace, WINDOW_CORNER,
+    WindowFrame, WindowFrameInk, WindowFramePlace, draw_line_form, draw_line_icon,
+    draw_line_progress, draw_open_span, draw_window_frame, line_inks, line_palette,
+    refresh_line_scroll, register_line_skin, set_line_metrics,
 };
 pub use loading::LoadingStatus;
 pub use loadout::{

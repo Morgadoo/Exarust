@@ -592,6 +592,23 @@ pub struct LineFormPlace {
     /// The mark under the pointer (-4 the close mark, which then draws in
     /// the hover colour after the frame).
     pub hover_mark: i32,
+    /// The vertical scroll bar's place, read for a panel with the scroll
+    /// bar attribute (0x200).
+    pub scroll: Option<LineFormScroll>,
+}
+
+/// What the panel frame's scroll-bar branch reads of a form: its client's
+/// top, right and bottom edges (form-local), the thumb's place the line
+/// skin's scroll refresh stores ([`refresh_line_scroll`]) and the form's
+/// option word, whose bit 0x200 keeps the rail outside a free right edge
+/// off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineFormScroll {
+    pub client_top: i32,
+    pub client_right: i32,
+    pub client_bottom: i32,
+    pub thumb: i32,
+    pub options: u32,
 }
 
 /// The ink the frame quads take.
@@ -627,7 +644,8 @@ pub struct LineForm {
     /// free one).
     pub edges: u32,
     /// False when the form takes a frame branch that is not ported here
-    /// (a scroll bar or the wide frame); its frame quads are then missing.
+    /// (the wide frame, or a scroll bar with no place given); its frame
+    /// quads are then missing.
     pub complete: bool,
 }
 
@@ -644,7 +662,10 @@ pub struct LineForm {
 /// outside. Every term the original adds is a whole number, so the float
 /// sums are exact.
 pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
-    use crate::skin::{FORM_ALT, FORM_CAP, FORM_CLOSE_INK, FORM_CORNER, FORM_EDGE, HELD_FLIP};
+    use crate::skin::{
+        FORM_ALT, FORM_CAP, FORM_CLOSE_INK, FORM_CORNER, FORM_EDGE, HELD_END, HELD_FLIP, HELD_OVER,
+        HELD_POST, HELD_RIGHT, HELD_TAB, WIDE_CAP,
+    };
     use form_bits::*;
     let held = place.state & HELD != 0;
     let backdrop = (place.attributes & BACKDROP != 0 && !held).then_some([
@@ -771,7 +792,18 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
     if place.style & PANEL_STYLE != 0x80 {
         return form;
     }
-    if place.attributes & (WIDE | SCROLL) != 0 {
+    let scroll = if place.attributes & SCROLL != 0 {
+        match place.scroll {
+            Some(scroll) => Some(scroll),
+            None => {
+                form.complete = false;
+                return form;
+            }
+        }
+    } else {
+        None
+    };
+    if place.attributes & WIDE != 0 {
         form.complete = false;
         return form;
     }
@@ -823,6 +855,42 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
             0,
         ));
     }
+    // The scroll bar: the two arrows a unit past the client's right edge
+    // (and 0.15 of a unit, rounded), two or three units in from the
+    // client's top and bottom, and the thumb at its stored place.
+    if let Some(bar) = scroll {
+        let x = i64::from(bar.client_right) + (f64::from(unit) * 0.15).round_ties_even() as i64;
+        let up = i64::from(bar.client_top) + if edges & 5 == 5 { u * 3 } else { u * 2 };
+        form.frame.push(quad64(
+            HELD_TAB,
+            [
+                (u + x, u * 2 + up),
+                (u + x, up),
+                (u * 3 + x, up),
+                (u * 3 + x, u * 2 + up),
+            ],
+        ));
+        let down = i64::from(bar.client_bottom) - if edges & 0xc == 0xc { u * 3 } else { u * 2 };
+        form.frame.push(quad64(
+            HELD_TAB,
+            [
+                (u + x, down - u * 2),
+                (u + x, down),
+                (u * 3 + x, down),
+                (u * 3 + x, down - u * 2),
+            ],
+        ));
+        let thumb = i64::from(bar.thumb) - u;
+        form.frame.push(quad64(
+            HELD_POST,
+            [
+                (x, u * 4 + thumb),
+                (x, thumb),
+                (u * 4 + x, thumb),
+                (u * 4 + x, u * 4 + thumb),
+            ],
+        ));
+    }
     let top_pair = (!titled && !owner_titled) || owner_open;
     let frame = &mut form.frame;
     frame.push(quad64(
@@ -856,7 +924,17 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
             ],
         ));
     }
-    if edges & 5 == 5 {
+    if edges & 5 == 5 && scroll.is_some() {
+        frame.push(quad64(
+            HELD_END,
+            [
+                (w - near, outer),
+                (w - near, inner),
+                (w - u * 6, inner),
+                (w - u * 6, outer),
+            ],
+        ));
+    } else if edges & 5 == 5 {
         frame.push(quad64(
             LINE_STRIP_CAP,
             [
@@ -879,7 +957,11 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
         }
     } else {
         frame.push(quad64(
-            HELD_FLIP,
+            if scroll.is_some() {
+                HELD_OVER
+            } else {
+                HELD_FLIP
+            },
             [
                 (w + inner, -inner),
                 (w + inner, outer),
@@ -888,15 +970,61 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
             ],
         ));
     }
-    frame.push(quad64(
-        WIDE_BAR,
-        [
-            (w - near, h - outer),
-            (w - inner, h - outer),
-            (w - inner, outer),
-            (w - near, outer),
-        ],
-    ));
+    if let Some(bar) = scroll {
+        // The right bar moves in beside the scroll bar; a right edge clear
+        // of the owner's client gets the rail outside it, unless the
+        // option word's bit 0x200 is set.
+        frame.push(quad64(
+            HELD_RIGHT,
+            [
+                (w - far, outer),
+                (w - far, h - outer),
+                (w - far - u * 2, h - outer),
+                (w - far - u * 2, outer),
+            ],
+        ));
+        if edges & 4 == 0 && bar.options & 0x200 == 0 {
+            let four = u * 4;
+            let rail = w + (f64::from(unit) * 0.2).round_ties_even() as i64;
+            frame.push(quad64(
+                WIDE_BAR,
+                [
+                    (u + rail, h - four),
+                    (rail - u, h - four),
+                    (rail - u, four),
+                    (u + rail, four),
+                ],
+            ));
+            frame.push(quad64(
+                WIDE_CAP,
+                [
+                    (u + rail, four),
+                    (rail - u, four),
+                    (rail - u, near),
+                    (u + rail, near),
+                ],
+            ));
+            frame.push(quad64(
+                WIDE_CAP,
+                [
+                    (u + rail, h - four),
+                    (rail - u, h - four),
+                    (rail - u, h - near),
+                    (u + rail, h - near),
+                ],
+            ));
+        }
+    } else {
+        frame.push(quad64(
+            WIDE_BAR,
+            [
+                (w - near, h - outer),
+                (w - inner, h - outer),
+                (w - inner, outer),
+                (w - near, outer),
+            ],
+        ));
+    }
     if edges & 10 == 10 {
         frame.push(quad64(
             LINE_STRIP_CAP,
@@ -937,15 +1065,27 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
         ],
     ));
     if edges & 0xc == 0xc {
-        frame.push(quad64(
-            LINE_STRIP_CAP,
-            [
-                (w - near, h - inner),
-                (w - far, h - inner),
-                (w - far, h - outer),
-                (w - near, h - outer),
-            ],
-        ));
+        if scroll.is_some() {
+            frame.push(quad64(
+                HELD_END,
+                [
+                    (w - near, h - outer),
+                    (w - near, h - inner),
+                    (w - near - u * 4, h - inner),
+                    (w - near - u * 4, h - outer),
+                ],
+            ));
+        } else {
+            frame.push(quad64(
+                LINE_STRIP_CAP,
+                [
+                    (w - near, h - inner),
+                    (w - far, h - inner),
+                    (w - far, h - outer),
+                    (w - near, h - outer),
+                ],
+            ));
+        }
         frame.push(quad64(
             LINE_STRIP_CAP,
             [
@@ -957,7 +1097,11 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
         ));
     } else {
         frame.push(quad64(
-            HELD_FLIP,
+            if scroll.is_some() {
+                HELD_OVER
+            } else {
+                HELD_FLIP
+            },
             [
                 (w + inner, h + inner),
                 (w + inner, h - outer),
@@ -1314,7 +1458,71 @@ mod shown_tests {
             owner_client: (0, 0),
             title_width: 0,
             hover_mark: 0,
+            scroll: None,
         }
+    }
+
+    #[test]
+    fn a_held_scrolling_panel_draws_its_arrows_thumb_and_rail() {
+        use crate::skin::{HELD_END, HELD_OVER, HELD_POST, HELD_RIGHT, HELD_TAB, WIDE_CAP};
+        // The Settings form's Controls page: held at the owner's client's
+        // top-left, its right edge clear of the owner's client.
+        let page = LineFormPlace {
+            attributes: 0x3_02a2,
+            style: 0x88,
+            state: 0x1004,
+            owner_attributes: 0x3_1063,
+            owner_client: (420, 520),
+            scroll: Some(LineFormScroll {
+                client_top: 2,
+                client_right: 380,
+                client_bottom: 414,
+                thumb: 40,
+                options: 0,
+            }),
+            ..place(400, 416)
+        };
+        let form = draw_line_form(4, page);
+        assert!(form.complete);
+        assert_eq!(form.edges, 3);
+        let tabs: Vec<_> = form.frame.iter().filter(|q| q.sample == HELD_TAB).collect();
+        assert_eq!(tabs.len(), 2);
+        // x = 380 + round(0.6) = 381; up arrow 2 units under the top (the
+        // top-right corner is not flush), down arrow 2 units over the bottom.
+        assert_eq!(
+            tabs[0].corners,
+            [(385, 18), (385, 10), (393, 10), (393, 18)]
+        );
+        assert_eq!(
+            tabs[1].corners,
+            [(385, 398), (385, 406), (393, 406), (393, 398)]
+        );
+        let thumb = form.frame.iter().find(|q| q.sample == HELD_POST).unwrap();
+        assert_eq!(thumb.corners, [(381, 52), (381, 36), (397, 36), (397, 52)]);
+        // Held: near 0, far 2 units; the right bar sits 2 to 4 units in.
+        let right = form.frame.iter().find(|q| q.sample == HELD_RIGHT).unwrap();
+        assert_eq!(
+            right.corners,
+            [(392, 24), (392, 392), (384, 392), (384, 24)]
+        );
+        // The rail outside the free right edge: x = 400 + round(0.8) = 401.
+        let caps = form.frame.iter().filter(|q| q.sample == WIDE_CAP).count();
+        assert_eq!(caps, 2);
+        // Neither right corner is flush: the scroll bar's corner pieces.
+        assert_eq!(
+            form.frame.iter().filter(|q| q.sample == HELD_OVER).count(),
+            2
+        );
+        assert!(!form.frame.iter().any(|q| q.sample == HELD_END));
+        // Without its place, the scroll branch is not drawn.
+        let unplaced = draw_line_form(
+            4,
+            LineFormPlace {
+                scroll: None,
+                ..page
+            },
+        );
+        assert!(!unplaced.complete);
     }
 
     #[test]

@@ -346,11 +346,13 @@ pub mod delete_box {
     pub const CANCEL: usize = 2;
 }
 
-/// The delete confirmation's title, size and attribute bits (0x800, 0x8000
-/// and 0x3000 over the base form's).
+/// The delete confirmation's title, size, style bits (0x800, 0x8000 and
+/// 0x3000: centred across and down, the centred title) and attribute bit
+/// (the upper layer, 0x1000) over the base form's. Its border is 0.
 pub const DELETE_TITLE: &str = "Delete Character";
 pub const DELETE_SIZE: (i32, i32) = (0x188, 0x70);
-pub const DELETE_ATTRIBUTES: u32 = 0x800 | 0x8000 | 0x3000;
+pub const DELETE_STYLE: u32 = 0x800 | 0x8000 | 0x3000;
+pub const DELETE_ATTRIBUTES: u32 = 0x1000;
 /// What the question ends with after the name.
 pub const DELETE_QUESTION_END: &str = "?";
 

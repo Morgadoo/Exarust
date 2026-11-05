@@ -420,7 +420,9 @@ flags, its title's x and its frame quads: a top-level form's corner frame
 (ornaments, close mark, edge bars split around the title, the title strip)
 and a child's panel frame, free (two units in) or held (on its edges, with
 an edge mask against the owner's client choosing joints or curled
-corners). The line skin's own control draws are in
+corners), with its scroll bar when the panel has one (`LineFormScroll`: the
+arrows, the thumb at `refresh_line_scroll`'s place, the moved right bar,
+the rail and the bar's corner pieces). The line skin's own control draws are in
 `skin` too: each quad's eight-float sample record (`sample_corners`, from
 the skin's whole record table `LINE_SAMPLE_RECORDS`), the
 check box and its mark (`check_box_quads`) and the textured batch they go

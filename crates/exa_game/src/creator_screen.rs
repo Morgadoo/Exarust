@@ -69,7 +69,7 @@ use crate::create::{
     HAIR_EDITOR_STYLE, HAIR_EDITOR_TOP, NameWarning, PageDestination, SubmitInput,
 };
 use crate::flow::{Background, Flow, FlowSteps, Phase};
-use crate::gui_paint::{self, Frame, Painted};
+use crate::gui_paint::{self, Painted};
 use crate::menu_pages::MenuCommand;
 use crate::menu_screen::{MenuChoice, MenuScreenSystems};
 use crate::practice::Ladder;
@@ -82,6 +82,48 @@ pub const ICONS: &str = create::CREATION_ICON_SHEET;
 pub const CREATION_ATTRIBUTES: u32 = 0x80_0020;
 /// The editors' attribute word: the base form constructor's.
 pub const EDITOR_ATTRIBUTES: u32 = gui_paint::FORM_ATTRIBUTES;
+
+/// The creation form's words: no style bits, the attribute word
+/// [`CREATION_ATTRIBUTES`] (no 0x10000, so the show commits nothing more:
+/// the line skin's form draw then draws nothing of the form itself, and
+/// its children may draw their top bars, 0x800000).
+pub const CREATION_WORDS: gui_paint::FormWords = gui_paint::FormWords {
+    style: 0,
+    attributes: CREATION_ATTRIBUTES,
+};
+
+/// The preview viewport's words: the 3-D view constructor's (style 0x88,
+/// the base attributes less 0x20 with 0x4c010) with the preview builder's
+/// changes ([`create::preview_view`]: style bits 0xf0080 or-ed in, the
+/// attribute bits 0xc000 cleared and 0x90 set). [The preview being the
+/// inventory's 3-D view class is assumed from the matching builder words.]
+pub fn preview_words() -> gui_paint::FormWords {
+    let preview = create::preview_view();
+    gui_paint::FormWords {
+        style: 0x88 | preview.form_flags,
+        attributes: preview.style((gui_paint::FORM_ATTRIBUTES & !0x20) | 0x4_c010),
+    }
+}
+
+/// A child of a full-screen creation-style form drawn through the line
+/// skin's form draw: held by the form (no backdrop), framed by its style.
+pub fn creation_child(
+    rect: GuiRect,
+    screen: (i32, i32),
+    unit: i32,
+    palette: &SkinPalette,
+    words: gui_paint::FormWords,
+) -> Vec<GuiLayer> {
+    gui_paint::held_layers(
+        rect,
+        GuiRect::new(0, 0, screen.0, screen.1),
+        CREATION_ATTRIBUTES,
+        unit,
+        palette,
+        1.0,
+        words,
+    )
+}
 /// The physique and tone pickers' places in the body editor (the tone
 /// picker's height is 112 in the compact layout).
 pub const PHYSIQUE_AT: (i32, i32) = (8, 0x40);
@@ -1989,29 +2031,28 @@ pub fn paint_creator(creator: &Creator, textures: &GuiTextures) -> Painted {
     let (font, size) =
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let text = crate::settings_form::Text { font: &font, size };
-    let mut frame = Frame::new(
-        GuiRect::new(0, 0, creator.screen.0, creator.screen.1),
-        unit,
-        "",
-    );
-    frame.attributes = CREATION_ATTRIBUTES;
-    frame.style = 0;
-    frame.spacing = 0;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    // The creation form through the game skin's form draw: its words draw
+    // nothing of its own; its children are held by it.
+    let screen_rect = GuiRect::new(0, 0, creator.screen.0, creator.screen.1);
+    let (mut form, _) =
+        gui_paint::paint_top_form(screen_rect, unit, &palette, 1.0, CREATION_WORDS, None);
+    let mut painted = Painted {
+        client: screen_rect,
+        ..Painted::default()
+    };
+    painted.layers.extend(form.under());
+    painted.layers.extend(form.over());
     // The viewport: its own frame (border 2, the preview's words), then the
     // canvas cleared inside so the 3D view under it shows.
     let view = creator.preview_px();
     let preview = create::preview_view();
-    let panel = gui_paint::paint_child(
+    painted.layers.extend(creation_child(
         view,
+        creator.screen,
         unit,
         &palette,
-        preview.style(EDITOR_ATTRIBUTES),
-        preview.form_flags,
-        preview.border,
-        None,
-    );
-    painted.layers.extend(panel.layers);
+        preview_words(),
+    ));
     painted.push(crate::gui_screens::clear_layer(GuiRect::new(
         view.left + preview.border,
         view.top + preview.border,
@@ -2055,8 +2096,13 @@ fn paint_editors(
 ) {
     let unit = creator.unit;
     let base = creator.base_rect();
-    let child = gui_paint::paint_child(base, unit, palette, EDITOR_ATTRIBUTES, 0, 0, None);
-    painted.layers.extend(child.layers);
+    painted.layers.extend(creation_child(
+        base,
+        creator.screen,
+        unit,
+        palette,
+        gui_paint::pane_words(0),
+    ));
     for c in &creator.base {
         paint_record(
             c,
@@ -2108,16 +2154,13 @@ fn paint_editors(
     ));
     // The hair editor.
     let hair = creator.hair_rect();
-    let child = gui_paint::paint_child(
+    painted.layers.extend(creation_child(
         hair,
+        creator.screen,
         unit,
         palette,
-        EDITOR_ATTRIBUTES,
-        HAIR_EDITOR_STYLE,
-        0,
-        None,
-    );
-    painted.layers.extend(child.layers);
+        gui_paint::pane_words(HAIR_EDITOR_STYLE),
+    ));
     for c in &creator.hair {
         paint_record(
             c,
@@ -2156,8 +2199,13 @@ fn paint_editors(
     ));
     // The style list: one row per style, bald first, the record's framed.
     let (list, step) = creator.hair_list_rect();
-    let child = gui_paint::paint_child(list, unit, palette, EDITOR_ATTRIBUTES, 0x80, 0, None);
-    painted.layers.extend(child.layers);
+    painted.layers.extend(creation_child(
+        list,
+        creator.screen,
+        unit,
+        palette,
+        gui_paint::pane_words(0x80),
+    ));
     let clip = Some([list.left, list.top, list.width(), list.height()]);
     let rows = std::iter::once("-".to_string()).chain(
         creator
@@ -2217,8 +2265,13 @@ fn paint_equipment(creator: &Creator, palette: &SkinPalette, painted: &mut Paint
     }
     for p in places {
         let rect = GuiRect::new(px(p.x, unit), px(p.y, unit), px(p.w, unit), px(p.h, unit));
-        let child = gui_paint::paint_child(rect, unit, palette, EDITOR_ATTRIBUTES, 0x80, 0, None);
-        painted.layers.extend(child.layers);
+        painted.layers.extend(creation_child(
+            rect,
+            creator.screen,
+            unit,
+            palette,
+            gui_paint::pane_words(0x80),
+        ));
     }
 }
 
@@ -2235,10 +2288,21 @@ fn paint_warning(
     let unit = creator.unit;
     let (w, h) = (px(320, unit), px(96, unit));
     let rect = GuiRect::new((creator.screen.0 - w) / 2, (creator.screen.1 - h) / 2, w, h);
-    let mut frame = Frame::new(rect, unit, warning.title);
-    frame.attributes = gui_paint::FORM_ATTRIBUTES | 1;
-    let box_paint = gui_paint::paint_frame(&frame, palette, font, size);
-    painted.layers.extend(box_paint.layers);
+    // The message box's words (style 0x808 with the centred-title bits,
+    // the upper layer): a top-level form, titled and corner-framed.
+    let (mut form, _) = gui_paint::paint_top_form(
+        rect,
+        unit,
+        palette,
+        1.0,
+        gui_paint::FormWords {
+            style: 0x808 | 0x3000,
+            attributes: gui_paint::FORM_ATTRIBUTES | 0x1000,
+        },
+        Some((warning.title, font, size)),
+    );
+    painted.layers.extend(form.under());
+    painted.layers.extend(form.over());
     let width = font.text_width(warning.text.as_bytes());
     if let Some(layer) = text_layer(
         font,
@@ -2273,13 +2337,19 @@ pub fn paint_class_select(
         [0, 0, 0, 255],
     ));
     let form = exa_ui::class_select::class_select_form();
-    let mut frame = Frame::new(GuiRect::new(0, 0, screen.0, screen.1), unit, form.title);
-    frame.attributes = form.flags;
-    frame.style = 0;
-    frame.spacing = 0;
-    painted
-        .layers
-        .extend(gui_paint::paint_frame(&frame, &palette, &font, size).layers);
+    let (mut frame, _) = gui_paint::paint_top_form(
+        GuiRect::new(0, 0, screen.0, screen.1),
+        unit,
+        &palette,
+        1.0,
+        gui_paint::FormWords {
+            style: 0,
+            attributes: form.flags,
+        },
+        Some((form.title, &font, size)),
+    );
+    painted.layers.extend(frame.under());
+    painted.layers.extend(frame.over());
     let draw = exa_ui::class_select::class_select_draw(
         (screen.0.max(0) as u32, screen.1),
         picker.available,
@@ -2654,8 +2724,10 @@ mod tests {
         // Four cards of four corners each.
         assert_eq!(strip.batch.vertices.len(), 16);
         // The hovered card's name and description are drawn when the font
-        // is loaded; without it only the backdrop, form and cards draw.
-        assert!(painted.layers.len() >= 3);
+        // is loaded; without it only the backdrop and the cards draw (the
+        // picker's form words give the line skin's form draw nothing to
+        // draw: no frame style, no backdrop bit).
+        assert!(painted.layers.len() >= 2);
         assert_eq!(
             CreatorEntry::parse("story-all"),
             Some(CreatorEntry::story(0))

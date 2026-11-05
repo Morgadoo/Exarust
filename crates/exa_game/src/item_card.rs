@@ -37,16 +37,15 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use exa_items::card::{BuiltCard, CardBuildInput, CardGates, CardItem, build_card};
-use exa_items::card::{CARD_SOCKET_HEIGHT, CardContent};
+use exa_items::card::{CARD_SOCKET_HEIGHT, CardContent, CardPage};
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::desc_phrase::{PhraseBook, describe};
 use exa_items::item_gui::{SPRITE_SHEETS, SocketIcons, Sockets, load_sheet, popup_place};
 use exa_ui::ScriptedPointer;
+use exa_ui::gui_controls::{self, Control};
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{BLEND_ADDITIVE, GuiTexture, icon_batch};
-use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture, text_batch};
-use exa_ui::gui_font::GuiFont;
-use exa_ui::gui_text::draw_line;
+use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture};
 use exa_ui::icon_atlas::{IconAtlas, IconImage, IconQuad};
 use exa_ui::popups::{DESC_KEEP_OPEN, PopupFade, desc_hits, desc_hover, desc_mouse};
 
@@ -76,6 +75,11 @@ pub struct ShownCard {
     pub icon: usize,
     /// The card's top-left in physical pixels.
     pub at: (i32, i32),
+    /// The card's size, once laid out (its least size until then).
+    pub size: (i32, i32),
+    /// The pointer the card was asked for at: the show places the laid-out
+    /// card over it ([`popup_place`]).
+    pub pointer: (i32, i32),
     pub fade: PopupFade,
     /// The card form's flag word; a left press over the card sets its
     /// keep-open bit ([`DESC_KEEP_OPEN`]).
@@ -90,8 +94,8 @@ pub struct ShownCard {
 impl ShownCard {
     /// Whether the card takes the pointer at a physical point: inside its
     /// form, once its forced pointer test has run (the popup's hit rule).
-    pub fn hit(&self, pointer: (i32, i32), unit: i32) -> bool {
-        let (width, height) = card_size(unit);
+    pub fn hit(&self, pointer: (i32, i32), _unit: i32) -> bool {
+        let (width, height) = self.size;
         let inside =
             GuiRect::new(self.at.0, self.at.1, width, height).contains(pointer.0, pointer.1);
         desc_hits(self.fade.pointer_ready, i32::from(inside)) != 0
@@ -132,6 +136,9 @@ pub struct CardView {
     pub sockets: Option<SocketSheet>,
     /// The large-icon side the socket cells were last tried at.
     sockets_tried: Option<i32>,
+    /// The rating dots' cells (the inventory's sheet), loaded once.
+    pub dots: Option<crate::doll_view::DotSheet>,
+    dots_tried: bool,
     /// A map's parchment the card builder asked for in place of a card,
     /// opened by [`crate::parchment`].
     pub parchment: Option<crate::parchment::OpenParchment>,
@@ -469,6 +476,8 @@ fn show(
         built,
         icon,
         at,
+        size: (width, height),
+        pointer,
         fade,
         form_flags: 0,
         world,
@@ -771,49 +780,6 @@ fn tick_card(
     }
 }
 
-/// A text layer at a window point.
-fn text_layer(
-    font: &GuiFont,
-    texture: (u16, u16),
-    text: &str,
-    x: i32,
-    y: i32,
-    ink: [u8; 4],
-) -> GuiLayer {
-    let quads = draw_line(font, text.as_bytes(), x, y);
-    GuiLayer::new(
-        text_batch(font, &quads, ink, texture),
-        LayerTexture::Named(font.texture),
-    )
-}
-
-/// Greedy word wrapping at `width`, as the card's text box does.
-fn wrap(font: &GuiFont, text: &str, width: i32) -> Vec<String> {
-    let mut lines = Vec::new();
-    for paragraph in text.split('\n') {
-        let mut line = String::new();
-        for word in paragraph.split_whitespace() {
-            let candidate = if line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{line} {word}")
-            };
-            if !line.is_empty() && font.text_width(candidate.as_bytes()) > width {
-                lines.push(line);
-                line = word.to_string();
-            } else {
-                line = candidate;
-            }
-        }
-        lines.push(line);
-    }
-    lines
-}
-
-fn value_text(value: f32) -> String {
-    format!("{value:.2}")
-}
-
 /// The socket control's width at unit four.
 pub const SOCKET_ROW_WIDTH: i32 = 0x78;
 /// The rating-dot sheet's cell the socket's empty ring is (its third).
@@ -986,6 +952,261 @@ pub const PLAIN_CARD_ATTRIBUTES: u32 = 0x830020;
 /// `0x800000`.
 pub const TRADE_WINDOW_ATTRIBUTES: u32 = 0x830022;
 
+/// The card form's border at unit 4 (the constructor's 12).
+pub const CARD_BORDER: i32 = 0xc;
+/// The icon area's height in units: a stats card's, and a plain card's at
+/// most (the item GUI's icon size, 40 units: 160 at unit 4).
+pub const CARD_ICON_UNITS: i32 = 0x28;
+/// The description box's left edge in the card's client at unit 4.
+const CARD_TEXT_LEFT: i32 = 4;
+/// A plain card's description longer than this many bytes widens the card
+/// to 100 units.
+const LONG_TEXT: usize = 200;
+
+/// The item GUI's record classes the card uses.
+pub const DOTS_CLASS: u16 = 0xac01;
+pub const SLIDER_CLASS: u16 = 0xac02;
+pub const COIN_CLASS: u16 = 0xac03;
+pub const SOCKETS_CLASS: u16 = 0xac04;
+/// The label style the card's row templates store: the caption ends a unit
+/// left of the record's x (0x1000) on its baseline row (0x300).
+const ROW_LABEL_STYLE: u32 = 0x1300;
+
+fn row_label(x: i32, y: i32, text: &str) -> Control {
+    let mut c = Control::new(5, x, y, 0, 0);
+    c.style = ROW_LABEL_STYLE;
+    c.text = text.as_bytes().to_vec();
+    c
+}
+
+fn item_record(class: u16, x: i32, w: i32, h: i32, value: f32) -> Control {
+    let mut c = Control::new(class, x, -0x8000, w, h);
+    c.style = 0;
+    c.value = value;
+    c
+}
+
+/// The rating dots beside a row label, at the templates' x (0x98).
+fn dots(value: f32) -> Control {
+    item_record(DOTS_CLASS, 0x98, 0, 24, value)
+}
+
+/// The card's records as its builders append them from their templates:
+/// for a weapon the Weight slider and the Impact and Balance dots, then one
+/// label and dots pair per striking row, the Flip weapon button, then the
+/// rows every stats card may add (Sockets, Rank, Points, Price); for apparel
+/// the Coverage dots and its protection rows; for a shield the Weight
+/// slider, the Impact dots and Encumbrance. The first of the added rows
+/// takes an absolute row (43, or 48 after a weapon's swatch with more than
+/// two striking rows, 38 on a shield), later ones follow by anchor. Also
+/// the height the added rows give the card (the builders' 0x14 and 0x18).
+pub fn card_records(built: &BuiltCard) -> (Vec<Control>, i32) {
+    let mut records = Vec::new();
+    let mut extra = 0;
+    let Some(content) = built.content.as_ref() else {
+        return (records, extra);
+    };
+    let rows = &content.rows;
+    let value = |i: usize| rows.get(i).map_or(0.0, |r| r.value);
+    let mut row = 0x2b;
+    let mut sockets = content.sockets;
+    match built.page {
+        CardPage::Weapon => {
+            records.push(row_label(0x9c, 3, "Weight"));
+            records.push(item_record(SLIDER_CLASS, 0x98, 72, 24, value(0)));
+            records.push(row_label(0x9c, -0x7ff7, "Impact"));
+            records.push(dots(value(1)));
+            records.push(row_label(0x9c, -0x7ff6, "Balance"));
+            records.push(dots(value(2)));
+            for r in rows.iter().skip(3) {
+                records.push(row_label(0x9c, -0x7ff7, r.label));
+                records.push(dots(r.value));
+            }
+            if content.material {
+                let mut flip = Control::new(3, 0x90, -0x7ff9, 0, 0);
+                flip.style = 0x80c0_0080;
+                flip.group = 1;
+                flip.text = b"Flip weapon".to_vec();
+                records.push(flip);
+                if rows.len().saturating_sub(3) > 2 {
+                    extra += 0x14;
+                    row = 0x30;
+                }
+            }
+        }
+        CardPage::Apparel => {
+            records.push(row_label(0x9c, 3, "Coverage"));
+            records.push(dots(value(0)));
+            for r in rows.iter().skip(1) {
+                let y = match r.control {
+                    0x102 | 0xd03 => -0x7ff8,
+                    0x107 => 0x24,
+                    _ => -0x7ff7,
+                };
+                records.push(row_label(0x9c, y, r.label));
+                records.push(dots(r.value));
+            }
+        }
+        CardPage::Shield => {
+            sockets = false;
+            row = 0x26;
+            records.push(row_label(0x9c, 3, "Weight"));
+            records.push(item_record(SLIDER_CLASS, 0x98, 72, 24, value(0)));
+            records.push(row_label(0x9c, -0x7ff7, "Impact"));
+            records.push(dots(value(1)));
+            if rows.len() > 2 {
+                records.push(row_label(0x9c, 0x24, "Encumbrance"));
+                records.push(dots(value(2)));
+                row = -0x7ff7;
+            }
+        }
+        _ => return (records, extra),
+    }
+    if sockets {
+        records.push(row_label(0x78, row, "Sockets"));
+        records.push(item_record(SOCKETS_CLASS, 0x78, 0x50, 28, 0.0));
+        extra += 0x18;
+        row = -0x7ff7;
+    }
+    if let Some(rank) = content.rank {
+        records.push(row_label(0x78, row, "Rank"));
+        let mut name = Control::new(5, 0x7c, -0x8000, 0, 0);
+        name.text = rank.as_bytes().to_vec();
+        records.push(name);
+        extra += 0x14;
+        row = -0x7ff6;
+    }
+    if let Some(points) = content.points {
+        records.push(row_label(0x78, row, "Points"));
+        records.push(item_record(DOTS_CLASS, 0x78, 0, 24, points));
+        extra += 0x14;
+        row = -0x7ff7;
+    }
+    if let Some(amount) = content.value {
+        records.push(row_label(
+            0x78,
+            if row < 0 { -0x7ff7 } else { row },
+            "Price",
+        ));
+        records.push(item_record(COIN_CLASS, 0x78, 128, 24, amount as f32));
+        extra += 0x18;
+    }
+    (records, extra)
+}
+
+/// The card laid out at a unit, form-local: its size, border, records,
+/// description box and icon area height.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardLayout {
+    pub size: (i32, i32),
+    pub border: i32,
+    pub controls: Vec<Control>,
+    pub text_box: Option<GuiRect>,
+    pub icon_height: i32,
+}
+
+/// The card's layout as its builder and show leave it: the records laid
+/// out at unit 4 in the 268 × 260 card's client (border 12), the
+/// description box (a child at 4, 0xb4 below the added rows' height,
+/// 0xa0 high, as wide as the client less 4 each side), all rescaled to the
+/// unit; then the icon area (40 units for a stats card, the icon's height
+/// up to that for a plain one, whose description box then starts five units under
+/// it), a plain card with a description over 200 bytes widened to 100
+/// units, the box's height `text_height(width) + unit` (its lines' pitch
+/// times their count), and the card's height two units and two borders
+/// over the box's bottom (or, without a box, the icon area and a unit for
+/// a plain card, `(extra / 4 + 44)` units for a stats card).
+pub fn card_layout(
+    built: &BuiltCard,
+    unit: i32,
+    plain_icon_height: i32,
+    text_height: &dyn Fn(i32) -> i32,
+) -> CardLayout {
+    let stats = built.content.is_some();
+    let (mut records, extra) = card_records(built);
+    let client = (CARD_WIDTH - 2 * CARD_BORDER, CARD_HEIGHT - 2 * CARD_BORDER);
+    gui_controls::layout_records(
+        &mut records,
+        gui_controls::LayoutClient {
+            inner_right: client.0,
+            border: CARD_BORDER,
+            bottom: client.1,
+        },
+        4,
+    );
+    let has_text = !built.description.is_empty();
+    let children = if has_text {
+        vec![(
+            GuiRect::new(
+                CARD_TEXT_LEFT,
+                extra + CARD_TEXT_TOP,
+                client.0 - 2 * CARD_TEXT_LEFT,
+                CARD_TEXT_HEIGHT,
+            ),
+            0,
+        )]
+    } else {
+        Vec::new()
+    };
+    let layout = crate::gui_screens::ScreenLayout::rescaled(
+        unit,
+        crate::gui_screens::ScreenDesign {
+            size: (CARD_WIDTH, CARD_HEIGHT),
+            place: (0, 0),
+            border: CARD_BORDER,
+            style: gui_paint::CARD_WORDS.style,
+            children,
+            records,
+        },
+    );
+    let border = layout.border;
+    let mut width = layout.size.0;
+    let area = CARD_ICON_UNITS * unit;
+    let icon_height = if stats {
+        area
+    } else {
+        plain_icon_height.min(area)
+    };
+    let mut text_box = layout.children.first().copied();
+    let body = match text_box.as_mut() {
+        Some(tb) => {
+            let mut top = tb.top - border;
+            if !stats {
+                top = unit * 5 + icon_height;
+            }
+            let mut w = tb.width();
+            if !stats && built.description.len() > LONG_TEXT {
+                width = unit * 100;
+                w = width - unit * 8;
+            }
+            let h = text_height(w) + unit;
+            *tb = GuiRect::new(tb.left, border + top, w, h);
+            top + h
+        }
+        None if stats => ((extra >> 2) + 0x2c) * unit,
+        None => icon_height + unit,
+    };
+    CardLayout {
+        size: (width, unit * 2 + border * 2 + body),
+        border,
+        controls: layout.controls,
+        text_box,
+        icon_height,
+    }
+}
+
+/// The title's ink from the card's tint word: its three colour bytes in
+/// memory order (red first) and its alpha byte scaled by the fade, rounded.
+pub fn title_ink(colour: u32, fade: f32) -> [u8; 4] {
+    let [r, g, b, a] = colour.to_le_bytes();
+    [
+        r,
+        g,
+        b,
+        (f32::from(a) * fade).round_ties_even().clamp(0.0, 255.0) as u8,
+    ]
+}
+
 /// Draws the open card into the GUI's queue, after the screens and the
 /// hub's windows: the card is an upper-layer form, drawn over the normal
 /// layer's windows whichever was raised last. [Exarust stand-in: a plain
@@ -1034,9 +1255,22 @@ pub fn draw_card(
             None => warn!("item card: the socket sheets did not load"),
         }
     }
+    if !view.dots_tried
+        && view
+            .shown
+            .as_ref()
+            .is_some_and(|c| c.built.content.is_some())
+    {
+        view.dots_tried = true;
+        view.dots = game.as_deref().and_then(crate::doll_view::load_dot_sheet);
+        if view.dots.is_none() {
+            warn!("item card: the rating-dot sheet did not load");
+        }
+    }
     let CardView {
         shown,
         sockets: socket_sheet,
+        dots: dot_sheet,
         ..
     } = view.into_inner();
     let Some(card) = shown else {
@@ -1049,102 +1283,96 @@ pub fn draw_card(
     }
     let empty = GuiTextures::default();
     let textures = textures.as_deref().unwrap_or(&empty);
-    let (font, font_texture) =
-        crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
+    let fonts = exa_ui::gui_font::gui_level(level);
+    let (font, font_texture) = crate::gui_screens::screen_font(fonts.main, textures);
     let Some(font_texture) = font_texture else {
         return;
     };
+    let (small, small_texture) = crate::gui_screens::screen_font(fonts.small, textures);
     // The card's fade step hands its squared fade to the skin as both
     // scales, so the frame and the text draw with the palette at that fade.
     let palette = exa_ui::line_skin::shown_palette(step.alpha);
-    let width = (CARD_WIDTH * unit / 4).max(CARD_WIDTH);
     let stats = card.built.content.is_some();
-    let desc = wrap(&font, &card.built.description, width - unit * 3);
-    let line_height = font.line_height.max(1);
-    let text_top = (CARD_TEXT_TOP * unit / 4).max(CARD_TEXT_TOP);
-    let plain_text_top = (CARD_TEXT_TOP * unit / 4).max(CARD_TEXT_TOP) + unit * 13;
-    // The socket row adds its height to the page, so the description
-    // starts that much lower.
-    let socket_rows = card
-        .built
-        .content
-        .as_ref()
-        .is_some_and(|content| content.sockets && card.sockets.is_some());
-    let desc_top = if stats {
-        text_top + i32::from(socket_rows) * socket_row_height(unit)
-    } else {
-        plain_text_top
+    // The description box: a read-only text box in the small font, its
+    // border 0 (its client is the box), laid out at the box's width.
+    let text_box = |width: i32| {
+        let client = exa_ui::form::ClientRect {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: CARD_TEXT_HEIGHT * unit / 4,
+        };
+        let mut text_box = exa_ui::text_box::TextBox::new(unit, fonts.main, fonts.small, client);
+        text_box.read_only = true;
+        text_box.small_font = true;
+        text_box.set_text(card.built.description.as_bytes(), None);
+        text_box
     };
-    let height =
-        (desc_top + desc.len() as i32 * line_height + unit * 2).max(CARD_HEIGHT * unit / 4);
-    let rect = GuiRect::new(card.at.0, card.at.1, width, height);
+    let plain_icon = 2 * icons.icon_half().1;
+    let layout = card_layout(&card.built, unit, plain_icon, &|width| {
+        let text_box = text_box(width);
+        text_box.pitch * text_box.lines
+    });
+    // The show places the laid-out card over the pointer it was asked at.
+    card.size = layout.size;
+    card.at = popup_place(card.pointer, layout.size, screens.task.screen.0, unit);
+    let rect = GuiRect::new(card.at.0, card.at.1, layout.size.0, layout.size.1);
+    let border = layout.border;
+    let client = GuiRect::new(
+        rect.left + border,
+        rect.top + border,
+        rect.width() - 2 * border,
+        rect.height() - 2 * border,
+    );
     // The game skin's form draw with the words the show commits to a
     // top-level form: the card constructor's style (0x3080: the panel
     // frame) gains the corner frame, its attributes the title and shadow
-    // bits (the card sets no title string, so no title text). A card with
-    // neither a stats page nor a description takes the builder's plain
-    // word, which keeps the title strip off.
+    // bits. The title is the item's name, centred on the top edge, in the
+    // builder's tint when it set one (the form's title-ink slot), else the
+    // skin's title ink. A card with neither a stats page nor a description
+    // takes the builder's plain word, which keeps the title strip off.
     let words = if stats || !card.built.description.is_empty() {
         gui_paint::CARD_WORDS
     } else {
         gui_paint::FormWords {
             attributes: PLAIN_CARD_ATTRIBUTES,
-            ..gui_paint::CARD_WORDS
+            style: gui_paint::CARD_WORDS.style & !0x80,
         }
     };
-    let (mut form, _) = gui_paint::paint_top_form(rect, unit, &palette, step.alpha, words, None);
+    let committed = gui_paint::commit_words(words.style, words.attributes, true);
+    let mut at = gui_paint::LineFormAt::top(rect);
+    at.title_ink = card
+        .built
+        .title_colour
+        .map(|colour| title_ink(colour, step.alpha));
+    let mut form = gui_paint::paint_line_form(
+        at,
+        unit,
+        &palette,
+        step.alpha,
+        committed,
+        Some((card.name.as_str(), &font, Some(font_texture))).filter(|t| !t.0.is_empty()),
+    );
     let mut painted = gui_paint::Painted {
-        client: rect,
+        client,
         ..Default::default()
     };
     painted.layers.extend(form.under());
 
-    // The name is the form's title. The stats card writes it in the strip
-    // left of the icon, the plain card above its centred icon.
-    let name_lines = wrap(
-        &font,
-        &card.name,
-        if stats {
-            width - unit * 4
-        } else {
-            width - unit * 2
-        },
-    );
-    let (name_x, name_y) = if stats {
-        (rect.left + unit, rect.top + unit)
-    } else {
-        (rect.left + unit, rect.top + unit * 2)
-    };
-    for (line, text) in name_lines.iter().enumerate() {
-        let x = if stats {
-            name_x
-        } else {
-            let text_width = font.text_width(text.as_bytes());
-            rect.left + (width - text_width) / 2
-        };
-        painted.push(text_layer(
-            &font,
-            font_texture,
-            text,
-            x,
-            name_y + line as i32 * line_height,
-            palette.text[6],
-        ));
-    }
-
-    // The icon: the panel manager's rendered slot at the card's icon place.
+    // The icon: the card's own draw puts the panel manager's rendered slot
+    // in the client, centred over the icon area on a plain card, 13 units
+    // in (less half the area) on a stats card.
     let icon_size = 2 * (icons.icon_half().0 - unit).max(1);
-    // The popup's two icon places; the icon's own height is its side here.
     let mut icon_at = exa_ui::popups::desc_icon_place_sized(
-        width,
-        (CARD_HEIGHT * unit / 4).max(CARD_HEIGHT),
-        icon_size,
+        client.width(),
+        layout.icon_height,
+        icons.icon_half().0,
         unit,
         stats,
         icon_size,
     );
-    icon_at.0 += rect.left;
-    icon_at.1 += rect.top;
+    icon_at.0 += client.left;
+    icon_at.1 += client.top;
     if let Some(handle) = card.icon.checked_sub(1)
         && icons
             .cache
@@ -1176,123 +1404,157 @@ pub fn draw_card(
         }
     }
 
-    let mut y = if stats {
-        name_y + name_lines.len() as i32 * line_height + unit
-    } else {
-        rect.top + unit * 7
+    // The records, through their classes' draws.
+    let text = crate::settings_form::Text {
+        font: &font,
+        size: Some(font_texture),
     };
-    let left = rect.left + unit;
-    // The values end two units left of the icon, measured from the rows'
-    // left edge.
-    let value_right = icon_at.0 - left - unit * 2;
-    if let Some(content) = &card.built.content {
-        for row in &content.rows {
-            painted.push(text_layer(
-                &font,
-                font_texture,
-                row.label,
-                left,
-                y,
-                palette.text[6],
-            ));
-            let text = value_text(row.value);
-            let text_width = font.text_width(text.as_bytes());
-            painted.push(text_layer(
-                &font,
-                font_texture,
-                &text,
-                left + value_right.max(unit * 8) - text_width,
-                y,
-                palette.text[6],
-            ));
-            y += unit * 5;
-        }
-        // The socket row, after the striking rows. The rows' `y` are text
-        // baselines, so the control starts a unit under the last row's
-        // baseline (five units up) [Exarust layout].
-        if let (true, Some(sockets)) = (socket_rows, card.sockets.as_ref()) {
-            let height = socket_row_height(unit);
-            if let Some(layer) = socket_sheet.as_ref().and_then(|sheet| {
-                socket_row_layer(
-                    sheet,
-                    sockets,
-                    (left, y - unit * 4, height),
-                    unit,
-                    palette.text[7],
-                    step.alpha,
-                )
-            }) {
-                painted.push(layer);
+    for c in &layout.controls {
+        let (x, y) = (rect.left + c.x, rect.top + c.y);
+        match c.class {
+            DOTS_CLASS => {
+                if let Some(layer) = dot_sheet.as_ref().and_then(|sheet| {
+                    crate::doll_view::rating_dots_layer(
+                        sheet,
+                        c.value,
+                        (x, y, c.h),
+                        unit,
+                        palette.text[7],
+                    )
+                }) {
+                    painted.push(layer);
+                }
             }
-            y += height;
+            SLIDER_CLASS => {
+                paint_slider(
+                    &mut painted,
+                    (x, y, c.w, c.h),
+                    c.value,
+                    &palette,
+                    dot_sheet.as_ref(),
+                );
+            }
+            COIN_CLASS => {
+                let amount = c.value as u32;
+                for (_, coin_x, n) in
+                    exa_items::item_gui::coin_layout(amount, x as f32, unit as f32, |n| {
+                        font.text_width(n.to_string().as_bytes()) as f32
+                    })
+                {
+                    // The denomination's icon takes the four units before
+                    // the number; the coin icons are not drawn. [The
+                    // number's baseline is a guess: the row labels' middle
+                    // row (style 0x300).]
+                    let number = n.to_string();
+                    let w = font.text_width(number.as_bytes()) + unit;
+                    let place = GuiRect::new(coin_x as i32 + 4 * unit, y, w, c.h);
+                    for layer in gui_paint::paint_label(
+                        place,
+                        0x300,
+                        unit,
+                        &palette,
+                        &font,
+                        Some(font_texture),
+                        &number,
+                    )
+                    .layers
+                    {
+                        painted.push(layer);
+                    }
+                }
+            }
+            SOCKETS_CLASS => {
+                if let (Some(sockets), Some(sheet)) = (card.sockets.as_ref(), socket_sheet.as_ref())
+                    && let Some(layer) = socket_row_layer(
+                        sheet,
+                        sockets,
+                        (x, y, c.h),
+                        unit,
+                        palette.text[7],
+                        step.alpha,
+                    )
+                {
+                    painted.push(layer);
+                }
+            }
+            _ => crate::settings_form::paint_control(
+                c,
+                (rect.left, rect.top),
+                unit,
+                &palette,
+                &text,
+                None,
+                &mut painted,
+            ),
         }
-        if let Some(rank) = content.rank {
-            painted.push(text_layer(
-                &font,
-                font_texture,
-                rank,
-                left,
-                y,
-                palette.text[6],
-            ));
-            y += unit * 5;
-        }
-        if let Some(points) = content.points {
-            painted.push(text_layer(
-                &font,
-                font_texture,
-                &format!("{points:.1}"),
-                left,
-                y,
-                palette.text[6],
-            ));
-            y += unit * 5;
-        }
-    }
-    let value = card
-        .built
-        .content
-        .as_ref()
-        .and_then(|content| content.value)
-        .or_else(|| {
-            (card.built.page == exa_items::card::CardPage::Plain).then_some(card.built.value)
-        });
-    if let Some(value) = value {
-        painted.push(text_layer(
-            &font,
-            font_texture,
-            "Value",
-            left,
-            y,
-            palette.text[6],
-        ));
-        let text = value.to_string();
-        let text_width = font.text_width(text.as_bytes());
-        painted.push(text_layer(
-            &font,
-            font_texture,
-            &text,
-            left + value_right.max(unit * 8) - text_width,
-            y,
-            palette.text[6],
-        ));
     }
 
-    // The description box: the card's content width less its border and the
-    // four-pixel margins, the first line where its top is.
-    for (line, text) in desc.iter().enumerate() {
-        painted.push(text_layer(
-            &font,
-            font_texture,
-            text,
-            rect.left + unit,
-            rect.top + desc_top + line as i32 * line_height,
-            palette.text[6],
-        ));
+    // The description box's text, in the small font.
+    if let (Some(place), Some(small_texture)) = (layout.text_box, small_texture) {
+        let tb = text_box(place.width());
+        let inks = exa_ui::text_layout::TextInks {
+            text: palette.text[6],
+            tag_alpha: 255,
+            selection: palette.highlight[2],
+            slant: small.slant,
+        };
+        let draw = tb.draw(&inks, &|_| None);
+        if !draw.glyphs.is_empty() {
+            let mut glyphs = draw.glyphs;
+            for glyph in &mut glyphs {
+                glyph.x += rect.left + place.left;
+                glyph.y += rect.top + place.top;
+            }
+            painted.push(GuiLayer::new(
+                exa_ui::gui_draw::glyph_batch(&small, &glyphs, small_texture, step.alpha),
+                LayerTexture::Named(small.texture),
+            ));
+        }
     }
 
     painted.layers.extend(form.over());
     painted.submit(&mut frames);
+}
+
+/// The value slider's draw: its line in the skin's title ink at the
+/// record's middle row, stopping 0.195 of the large-icon cell either side
+/// of the knob, then the knob centred on the value's share of the width
+/// ([`exa_items::item_gui::slider`]) in the skin's ninth label ink. [The
+/// knob's icon is not identified: the rating sheet's whole dot stands in.]
+fn paint_slider(
+    painted: &mut gui_paint::Painted,
+    place: (i32, i32, i32, i32),
+    share: f32,
+    palette: &exa_ui::skin::SkinPalette,
+    dots: Option<&crate::doll_view::DotSheet>,
+) {
+    let (x, y, w, h) = place;
+    let mid = (((h as u32) >> 1) as i32) + y;
+    let drawn = exa_items::item_gui::slider(x, w, share);
+    let mut batch = exa_ui::skin::SkinBatch::new();
+    batch.select(1, 0, false);
+    batch.set_ink(palette.text[6]);
+    for (a, b) in [drawn.left, drawn.right].into_iter().flatten() {
+        batch.begin();
+        batch.vertex(a as f32, mid as f32);
+        batch.vertex(a as f32, (mid + 1) as f32);
+        batch.vertex(b as f32, (mid + 1) as f32);
+        batch.vertex(b as f32, mid as f32);
+        batch.end_quads();
+    }
+    painted.push(GuiLayer::new(batch, LayerTexture::None));
+    if let Some(sheet) = dots {
+        let half = exa_items::item_gui::DOT >> 1;
+        let quads = sheet
+            .atlas
+            .draw(sheet.whole, drawn.knob as f32, (mid - half) as f32);
+        if !quads.is_empty() {
+            painted.push(GuiLayer::new(
+                exa_ui::gui_draw::icon_batch(&quads, palette.text[8]),
+                LayerTexture::Owned(sheet.texture.clone()),
+            ));
+        }
+    }
 }
 
 /// Whether an item entry is under a physical point, for the right-release
@@ -1509,6 +1771,8 @@ mod tests {
             },
             icon: 0,
             at: (100, 100),
+            size: card_size(4),
+            pointer: (100, 100),
             fade,
             form_flags: 0,
             world: false,
@@ -1552,19 +1816,120 @@ mod tests {
         assert_eq!(exa_ui::popups::DESC_DIGIT, 0xc);
     }
 
-    #[test]
-    fn the_wrap_breaks_on_words() {
-        let font = exa_ui::gui_font::FONTBASE_24;
-        let lines = wrap(&font, "one two three four", 40);
-        assert!(lines.len() > 1);
-        assert_eq!(lines.concat().replace(' ', ""), "onetwothreefour");
-        assert_eq!(wrap(&font, "a\nb", 100), vec!["a", "b"]);
+    fn weapon_card(description: &str) -> BuiltCard {
+        use exa_items::card::CardRow;
+        let row = |control, label, value| CardRow {
+            control,
+            label,
+            value,
+        };
+        BuiltCard {
+            page: CardPage::Weapon,
+            value: 120,
+            title_colour: None,
+            content: Some(CardContent {
+                rows: vec![
+                    row(0x101, "Weight", 0.34),
+                    row(0x102, "Impact", 3.25),
+                    row(0x103, "Balance", 7.0),
+                    row(0xd03, "Slash", 2.0),
+                    row(0xd04, "Pierce", 1.5),
+                ],
+                material: false,
+                sockets: false,
+                rank: None,
+                points: None,
+                value: Some(120),
+                extra_height: 0x18,
+            }),
+            description: description.to_string(),
+        }
     }
 
     #[test]
-    fn the_value_prints_two_decimals() {
-        assert_eq!(value_text(2.5), "2.50");
-        assert_eq!(value_text(0.0), "0.00");
+    fn a_weapon_card_takes_its_templates_records() {
+        let (records, extra) = card_records(&weapon_card(""));
+        let labels: Vec<String> = records
+            .iter()
+            .filter(|c| c.class == 5)
+            .map(|c| String::from_utf8_lossy(&c.text).into_owned())
+            .collect();
+        assert_eq!(
+            labels,
+            ["Weight", "Impact", "Balance", "Slash", "Pierce", "Price"]
+        );
+        let classes: Vec<u16> = records.iter().map(|c| c.class).collect();
+        assert_eq!(
+            classes,
+            [
+                5,
+                SLIDER_CLASS,
+                5,
+                DOTS_CLASS,
+                5,
+                DOTS_CLASS,
+                5,
+                DOTS_CLASS,
+                5,
+                DOTS_CLASS,
+                5,
+                COIN_CLASS
+            ]
+        );
+        // The value row is the first added row: absolute row 43.
+        assert_eq!(records[10].y, 0x2b);
+        assert_eq!(extra, 0x18);
+    }
+
+    #[test]
+    fn the_weapon_card_lays_its_rows_out_right_of_the_icon() {
+        let layout = card_layout(&weapon_card(""), 4, 120, &|_| 0);
+        let c = &layout.controls;
+        // Labels end a unit left of x 156 (their style 0x1000), the slider
+        // and the dots start at 152 on the same row; all inside the
+        // card's 12-pixel border.
+        assert_eq!((c[0].x, c[0].y), (156 + 12, 10 + 12));
+        assert_eq!((c[1].x, c[1].y, c[1].w), (152 + 12, 8 + 12, 72));
+        // Impact six rows under Weight, Balance five under Impact.
+        assert_eq!(c[2].y, 34 + 12);
+        assert_eq!(c[4].y, 54 + 12);
+        // Price at row 43, the coin control under it at x 120.
+        assert_eq!(c[10].y, 170 + 12);
+        assert_eq!(c[11].x, 0x78 + 12);
+        // No description: (extra / 4 + 44) units, two units and two
+        // borders over it.
+        assert_eq!(layout.size, (268, 8 + 24 + (6 + 44) * 4));
+        assert_eq!(layout.text_box, None);
+    }
+
+    #[test]
+    fn a_plain_card_puts_its_text_under_the_icon() {
+        let card = BuiltCard {
+            page: CardPage::Plain,
+            value: 0,
+            title_colour: None,
+            content: None,
+            description: "A simple torch.".to_string(),
+        };
+        let layout = card_layout(&card, 4, 120, &|_| 20);
+        // The box starts five units under the icon area, a unit taller
+        // than its lines.
+        assert_eq!(layout.text_box, Some(GuiRect::new(16, 12 + 140, 236, 24)));
+        assert_eq!(layout.size, (268, 8 + 24 + 140 + 24));
+        // A long text widens the plain card to 100 units.
+        let long = BuiltCard {
+            description: "x".repeat(201),
+            ..card
+        };
+        let layout = card_layout(&long, 4, 120, &|_| 20);
+        assert_eq!(layout.size.0, 400);
+        assert_eq!(layout.text_box.unwrap().width(), 400 - 32);
+    }
+
+    #[test]
+    fn the_title_tint_reads_red_first_and_fades_its_alpha() {
+        assert_eq!(title_ink(0x80d4_dae1, 1.0), [0xe1, 0xda, 0xd4, 0x80]);
+        assert_eq!(title_ink(0xc060_d4ff, 0.5), [0xff, 0xd4, 0x60, 0x60]);
     }
 
     #[test]
