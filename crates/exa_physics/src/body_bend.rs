@@ -14,7 +14,8 @@
 //! height over the anchor (plus the lift term) with, while the recovery
 //! step runs, the horizontal distance to the target (anchored) or the
 //! anchor, and otherwise the clip's own horizontal hip-to-ankle offset,
-//! plus the step lift, clamped to a quarter of the leg through the whole
+//! plus the step lift (which the original's feet routine reads from a
+//! field nothing writes: none, [`step_lift`]), clamped to a quarter of the leg through the whole
 //! leg; the knee and the hip are the law of cosines of that triangle, and
 //! the corrections are the clip's angles less the target's, eased at
 //! 0.2 rad a tick while the step runs and 0.02 otherwise (the feet routine
@@ -95,11 +96,8 @@ const TURN_DECAY: f32 = 0.1;
 /// lengths) has no turn, and a cosine below it is a right angle.
 const TURN_TINY: f32 = 1.1920929e-7;
 const RIGHT_ANGLE: f32 = 1.5707964;
-/// The step lift. s is 0.4 of the horizontal distance, and no more than
-/// 30 cm. An unanchored lift keeps 0.8 of itself; an anchored one that
-/// is not stepping keeps 0.9.
-const LIFT_HORIZONTAL: f32 = 0.4;
-const LIFT_CAP: f32 = 30.0;
+/// An unanchored lift keeps 0.8 of itself; an anchored one that is not
+/// stepping keeps 0.9.
 const LIFT_FREE: f32 = 0.8;
 const LIFT_HELD: f32 = 0.9;
 const STANCE_BASE: f32 = 1.5;
@@ -268,26 +266,37 @@ pub(super) fn bend_target(contact: Vec3, anchor: Vec3, anchored: bool, drop: f32
     }
 }
 
-/// The step lift (cm), negative while an anchored stepping foot rises.
-/// `horizontal` and `distance` are centimetres to the anchor, `crouch` is
-/// 0 to 1 and `stance` is the race's stance factor (a human's 0.5).
-pub(super) fn step_lift(horizontal: f32, distance: f32, crouch: f32, stance: f32) -> f32 {
-    // Under a centimetre of horizontal travel the scale is the squared
-    // distance itself; beyond, 0.4 of it, at most 30 cm.
-    let s = if horizontal * horizontal <= 1.0 {
-        horizontal * horizontal
+/// The step lift (cm), negative while an anchored stepping foot rises,
+/// as the feet routine computes it from the lift scale `scale` (cm), the
+/// squared distance to the anchor `d2` (cm², all three axes), `crouch` (0
+/// to 1) and the race's stance factor `stance` (a human's 0.5): within
+/// 3·scale it is −(1 − crouch)·((2 − r)·r·3 − 2)·scale·(1.5 − stance), r
+/// the share d2/(3·scale)² (a share under the float epsilon takes d2 itself
+/// in place of the term); beyond, half the scale.
+pub(super) fn step_lift(scale: f32, d2: f32, crouch: f32, stance: f32) -> f32 {
+    let span = scale * 3.0;
+    let f = if d2 <= span * span {
+        if d2 > LIFT_TINY {
+            let r = d2 / (span * span);
+            ((2.0 - r) * r * 3.0 - 2.0) * scale
+        } else {
+            d2
+        }
     } else {
-        (LIFT_HORIZONTAL * horizontal).min(LIFT_CAP)
+        scale * 0.5
     };
-    let f = if s > 0.0 && distance <= 3.0 * s {
-        let span = 3.0 * s;
-        let r = (distance * distance) / (span * span);
-        ((2.0 - r) * r * 3.0 - 2.0) * s
-    } else {
-        0.5 * s
-    };
-    -(1.0 - crouch) * f * (STANCE_BASE - stance)
+    (1.0 - crouch) * -(f * (STANCE_BASE - stance))
 }
+
+/// The lift scale (cm) the feet routine reads for a leg. The balance
+/// routine computes 0.4 of the chosen foot's horizontal distance to its
+/// anchor (its square under a centimetre, at most 30 cm), but it stores it
+/// on the character, while the feet routine reads the field of the lower
+/// leg's own part, which no routine writes and the class's creation leaves
+/// at zero: the original's stepping foot has no step lift.
+const LEG_LIFT_SCALE: f32 = 0.0;
+/// The feet routine's float epsilon for the squared distance.
+const LIFT_TINY: f32 = f32::from_bits(0x33ff_ffd7);
 
 /// The lift carried to the next tick (m): a fresh step lift while the
 /// foot is anchored and stepping, otherwise 0.8 of it (free) or 0.9
@@ -570,10 +579,10 @@ fn standing_leg(parts: &[Part], leg: &mut Leg, tick: &IkTick) {
     // The original's foot height for the pitch: the contact less the sole
     // and the foot's floor.
     leg.pitch_height = (contact.y - tick.sole - leg.floor) * CM;
-    let to_anchor = leg.anchor - contact;
+    let to_anchor = cm(leg.anchor - contact);
     let fresh = step_lift(
-        cm(to_anchor.with_y(0.0)).length(),
-        cm(to_anchor).length(),
+        LEG_LIFT_SCALE,
+        to_anchor.length_squared(),
         tick.crouch,
         tick.stance,
     );
