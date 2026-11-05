@@ -96,6 +96,11 @@ pub struct Scene {
     /// for the readers that need more of a record than [`Item`] keeps (the
     /// description card's facts).
     pub local_records: Vec<(u32, Vec<u8>)>,
+    /// The same records as the object database's tier store (table flags
+    /// included), which the live database's local tier becomes at the
+    /// level's load. `None` without a local database or when its `0xDBDB`
+    /// records do not read as a tier.
+    pub local_database: Option<crate::objdb::Store>,
     /// The level's own string table (sub-chunk `0xDBCD` of its local
     /// database), which the level's items name their text by. A table that
     /// does not decode is reported in [`Scene::level_errors`].
@@ -980,6 +985,7 @@ fn read_local_database(b: &[u8], version: u16, placed: bool) -> Result<LocalData
                     .iter()
                     .map(|r| (r.id, objects.payload(r).to_vec()))
                     .collect();
+                db.store = crate::objdb::Store::parse(body).ok();
             }
             LOCAL_STRINGS => match Library::parse(body) {
                 Ok(library) => db.strings = Some(library),
@@ -1000,6 +1006,8 @@ pub struct LocalDatabase {
     pub items: Vec<Item>,
     /// The records as stored, `(id, payload)` in table order.
     pub records: Vec<(u32, Vec<u8>)>,
+    /// The records as the object database's tier store reads them.
+    pub store: Option<crate::objdb::Store>,
     pub strings: Option<Library>,
     /// Why a stored string table did not decode; the original's loader
     /// reports it and leaves the table out, and the rest of the database
@@ -1145,6 +1153,7 @@ impl Scene {
         let mut characters = None;
         let mut local_items = Vec::new();
         let mut local_records = Vec::new();
+        let mut local_database = None;
         let mut local_strings = None;
         let mut local_string_error = None;
         let mut placed_objects = Vec::new();
@@ -1172,6 +1181,7 @@ impl Scene {
                     Ok(db) => {
                         local_items = db.items;
                         local_records = db.records;
+                        local_database = db.store;
                         local_strings = db.strings;
                         local_string_error = db.string_error;
                         placed_objects = db.placed_objects;
@@ -1208,6 +1218,7 @@ impl Scene {
             characters,
             local_items,
             local_records,
+            local_database,
             local_strings,
             local_string_error,
             placed_objects,
@@ -1236,13 +1247,16 @@ impl Scene {
             if tag == LOCAL_DATABASE {
                 let LocalDatabase {
                     items,
-                    records: _,
+                    records,
+                    store,
                     strings,
                     string_error,
                     placed_objects: _,
                 } = read_local_database(chunk.b, version, false)?;
                 if !items.is_empty() {
                     db.items = items;
+                    db.records = records;
+                    db.store = store;
                 }
                 if strings.is_some() || string_error.is_some() {
                     (db.strings, db.string_error) = (strings, string_error);

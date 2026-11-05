@@ -1090,6 +1090,7 @@ mod shipped;
 mod store;
 mod tiers;
 mod upgrade;
+mod world_sync;
 
 pub use editor::{LookRoll, look_roll};
 pub use migrate::{material_set, variant_scales};
@@ -1103,6 +1104,7 @@ pub use record::{
 };
 pub use store::{Store, TableEntry};
 pub use tiers::{ObjectDb, StoredCondition, Tier, UseEffect};
+pub use world_sync::HandPromotion;
 
 /// The object database's magic (`objdb.rdb` and a level's local database).
 pub const MAGIC: u32 = 0xDBAC_0D09;
