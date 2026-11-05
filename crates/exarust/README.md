@@ -21,7 +21,7 @@ flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--pad-press`,
 `--click`, `--level-change`, `--cursor`, `--searcher`, `--searcher-shots`, `--still-opponent`, `--opponent-race`, `--arena-match`, `--arena-level`,
 `--arena-tier`, `--arena-weapons`, `--debug-wound`, `--debug-nav`,
-`--bevy-sun-cascades`,
+`--bevy-sun-cascades`, `--floor-torch` (with an optional frame),
 `--weapon-blood`, `--debug-spray`, `--perks`) and keys are in
 [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md).
 A Spirit Form cast asks the viewer for its spirit body

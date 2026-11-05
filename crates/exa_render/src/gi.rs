@@ -1045,6 +1045,8 @@ struct GiParams {
     /// x = the number of registered shapes drawn this frame.
     shape_count: UVec4,
     shapes: [GiShapeUniform; MAX_SHAPES],
+    /// [`SRGB8_STEPS`], four to an entry (the last padded past 1).
+    srgb_steps: [Vec4; 64],
 }
 
 /// Lumens per unit of the original's light intensity (see `exa_world`).
@@ -2571,7 +2573,8 @@ fn give_materials_gi(
         return;
     }
     let slots = GiSlots::new(&textures, &neighbours.blocks);
-    let debug = std::env::var_os("EXA_GI_DEBUG").is_some();
+    let debug =
+        GiDebugView::from_env().map_or(0, |view| view.flags(flags::DEBUG_GI, flags::DEBUG_SPLIT));
     for id in ids {
         let Some(mut m) = materials.get_mut(id) else {
             continue;
@@ -2581,8 +2584,137 @@ fn give_materials_gi(
         }
         m.set_gi_slots(&slots);
         m.params.flags |= flags::GI;
-        if debug {
-            m.params.flags |= flags::DEBUG_GI;
+        m.params.flags |= debug;
+    }
+}
+
+/// The 8-bit sRGB encode of every write into the light volume, as the
+/// hardware the original's GI was checked on does it (an NVIDIA RTX 3090,
+/// driver 615.78, the machine the retail captures come from): entry `c` is
+/// the linear value from which a write stores code `c + 1` rather than `c`.
+/// Measured by rendering a sweep of 4096 values per code into a
+/// `GL_SRGB8_ALPHA8` target with `GL_FRAMEBUFFER_SRGB` on (the original's
+/// light format and state; `GL_DITHER`, left at its default, changes
+/// nothing), each entry halfway between the last value kept at `c` and the
+/// first stepped to `c + 1`. The driver does not round to the nearest code:
+/// along the curve's linear foot it steps up at 0.40 to 0.45 of a code,
+/// higher up anywhere between 0.40 and 0.60. The volume's slow climb stalls
+/// where a step's gain no longer reaches the next entry, so these steps,
+/// not the nearest-code ones, set how far the faint channels of a light (a
+/// fire's blue) and the base ambient climb. `gi.wesl` carries the same
+/// table in its uniforms and looks a value up as [`encode_srgb8_from`] does.
+#[rustfmt::skip]
+pub const SRGB8_STEPS: [f32; 255] = [
+    1.22011035e-04, 4.272424e-04, 7.3239964e-04, 0.0010375569, 0.0013427142, 0.0016479455,
+    0.0019531028, 0.00225826, 0.0025634172, 0.0028686486, 0.0031737664, 0.0035399995,
+    0.003845214, 0.0042113476, 0.004577562, 0.0050048656, 0.0053710495, 0.0058593205,
+    0.0062865126, 0.006713808, 0.0072020353, 0.007751451, 0.008300648, 0.008850056,
+    0.0093993265, 0.010009696, 0.010620108, 0.0112303635, 0.011962782, 0.012695215,
+    0.013305604, 0.014037922, 0.014892546, 0.015624811, 0.016357379, 0.017211726,
+    0.018066373, 0.018920723, 0.019775175, 0.020751854, 0.021728503, 0.022704875,
+    0.02368161, 0.024658049, 0.02563463, 0.026855258, 0.02783178, 0.029052587,
+    0.030029109, 0.031249737, 0.032470446, 0.03369138, 0.03491189, 0.036132637,
+    0.037597474, 0.038818136, 0.040283024, 0.041503716, 0.04296848, 0.044433516,
+    0.045898385, 0.047363095, 0.0488281, 0.050537042, 0.052001923, 0.0537106,
+    0.055175416, 0.05712888, 0.058593575, 0.060546577, 0.06201154, 0.06396465,
+    0.06567344, 0.0673827, 0.06933574, 0.07128867, 0.073242, 0.0751949,
+    0.077148035, 0.07910116, 0.08105459, 0.083495826, 0.085448965, 0.08740202,
+    0.089843385, 0.09179633, 0.09423784, 0.09643544, 0.098632716, 0.10107395,
+    0.10351521, 0.10595699, 0.108398095, 0.110839725, 0.11328076, 0.115722515,
+    0.11816396, 0.1210935, 0.12353469, 0.1259762, 0.12890601, 0.13134733,
+    0.13427682, 0.13720702, 0.139648, 0.14257802, 0.14550745, 0.14843732,
+    0.15136656, 0.1542963, 0.15722622, 0.16064382, 0.1635736, 0.16699146,
+    0.16992146, 0.1728513, 0.1762691, 0.17968749, 0.18261714, 0.18603475,
+    0.18945304, 0.19287097, 0.19628839, 0.1997068, 0.20312443, 0.2070311,
+    0.21044916, 0.21386707, 0.21777256, 0.22167939, 0.22509737, 0.22851527,
+    0.23242158, 0.23632802, 0.24023363, 0.24414025, 0.248046, 0.25195286,
+    0.25585896, 0.260253, 0.26464838, 0.26855463, 0.27246052, 0.27636626,
+    0.2812495, 0.28515595, 0.28955024, 0.29394433, 0.2983394, 0.30273354,
+    0.3076171, 0.31152302, 0.31640518, 0.32128882, 0.32519418, 0.33007774,
+    0.33496, 0.33984348, 0.34472612, 0.34863207, 0.3535154, 0.35839766,
+    0.36328042, 0.3691401, 0.37402284, 0.37890595, 0.38378865, 0.38867134,
+    0.39453015, 0.39941305, 0.40429616, 0.41015613, 0.4150384, 0.42089766,
+    0.42578116, 0.43164015, 0.43652314, 0.44238248, 0.44824094, 0.45312393,
+    0.45898327, 0.46484333, 0.47070184, 0.4765622, 0.4824208, 0.48828104,
+    0.4941393, 0.4999991, 0.50561386, 0.5114743, 0.5183105, 0.5241696,
+    0.53002805, 0.5368648, 0.5427232, 0.5485832, 0.55541927, 0.56127787,
+    0.5681147, 0.5739736, 0.5808096, 0.5876464, 0.5935045, 0.60034066,
+    0.6071769, 0.6140125, 0.6208481, 0.62670743, 0.6345202, 0.6403804,
+    0.64819205, 0.6550289, 0.6618648, 0.66870075, 0.6755361, 0.6833485,
+    0.69018465, 0.69701993, 0.7048338, 0.7126447, 0.7194812, 0.7263177,
+    0.7341301, 0.7419418, 0.7497557, 0.75659174, 0.76440394, 0.7712385,
+    0.7790518, 0.7868637, 0.79467726, 0.80248994, 0.81030095, 0.8181135,
+    0.8269035, 0.8347149, 0.8435053, 0.8513165, 0.8591297, 0.86694247,
+    0.8747541, 0.8845195, 0.8923336, 0.90014464, 0.9089345, 0.91772443,
+    0.9255351, 0.93432605, 0.94311506, 0.95092577, 0.96069247, 0.9685044,
+    0.97827035, 0.98608315, 0.9958476,
+];
+
+/// [`SRGB8_STEPS`] as the step's uniform rows, four to a row, the last
+/// entry padded past 1 (no write reaches it).
+fn srgb_step_rows() -> [Vec4; 64] {
+    let mut rows = [Vec4::splat(2.0); 64];
+    for (i, &step) in SRGB8_STEPS.iter().enumerate() {
+        rows[i / 4][i % 4] = step;
+    }
+    rows
+}
+
+/// The code a write of linear `x` stores in the light volume
+/// ([`SRGB8_STEPS`]): the number of steps at or below it, so NaN and
+/// negatives store 0 and anything from the last step up 255.
+pub fn encode_srgb8(x: f32) -> u8 {
+    SRGB8_STEPS.partition_point(|&step| x >= step) as u8
+}
+
+/// [`encode_srgb8`] as `gi.wesl` works it out with one table read: the
+/// exact encode's code floored names the interval, and the step inside it
+/// decides. Every step lies 0.4 of a code or more from either code's own
+/// value, so the exact encode's rounding errors there cannot move it.
+pub fn encode_srgb8_from(x: f32, steps: &[f32; 255]) -> u8 {
+    let l = if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) };
+    let s = if l <= 0.003_130_8 {
+        l * 12.92
+    } else {
+        1.055 * l.powf(1.0 / 2.4) - 0.055
+    };
+    let c = ((s * 255.0) as u32).min(254);
+    (c + u32::from(x >= steps[c as usize])) as u8
+}
+
+/// The `EXA_GI_DEBUG` views: the raw GI sample (any value but the two
+/// below), the direct lights alone (`direct`: no GI ambient or reflection)
+/// or the GI's share alone (`ambient`: no direct light). The two split views
+/// add up to the full frame in linear light (before the post pass), so a
+/// capture of each says how much of a patch's colour the volume brings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GiDebugView {
+    Raw,
+    Direct,
+    Ambient,
+}
+
+impl GiDebugView {
+    /// The view `EXA_GI_DEBUG` asks for, if any.
+    pub fn from_env() -> Option<Self> {
+        std::env::var("EXA_GI_DEBUG").ok().map(|v| Self::parse(&v))
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "direct" => Self::Direct,
+            "ambient" => Self::Ambient,
+            _ => Self::Raw,
+        }
+    }
+
+    /// The material flags for the view, given a program's raw-GI and split
+    /// bits.
+    pub fn flags(self, raw: u32, split: u32) -> u32 {
+        match self {
+            Self::Raw => raw,
+            Self::Direct => split,
+            Self::Ambient => raw | split,
         }
     }
 }
@@ -3076,6 +3208,7 @@ impl BlockContext<'_> {
             voxel_lights: voxel_entries,
             shape_count: UVec4::new(lights.shapes.len().min(MAX_SHAPES) as u32, 0, 0, 0),
             shapes: shape_entries,
+            srgb_steps: srgb_step_rows(),
         };
         // One buffer per block, rewritten every frame (the parameters are
         // about 42 KiB).
@@ -3339,6 +3472,99 @@ mod tests {
     }
 
     use super::*;
+
+    /// The linear value of an sRGB code, exactly.
+    fn decode_srgb8(code: u8) -> f32 {
+        let s = f64::from(code) / 255.0;
+        (if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }) as f32
+    }
+
+    #[test]
+    fn the_volume_encode_steps_between_codes_and_matches_the_shader() {
+        // Every step lies inside its code's interval and the table climbs.
+        for (c, &step) in SRGB8_STEPS.iter().enumerate() {
+            let (lo, hi) = (decode_srgb8(c as u8), decode_srgb8(c as u8 + 1));
+            let frac = (step - lo) / (hi - lo);
+            assert!((0.39..0.61).contains(&frac), "code {c}: {frac}");
+        }
+        // The foot of the curve steps up 0.40 of a code early.
+        let frac0 = SRGB8_STEPS[0] / decode_srgb8(1);
+        assert!((frac0 - 0.40).abs() < 0.01, "{frac0}");
+        // A decoded code stores itself again (the margin copy's round trip).
+        for c in 0..=255u8 {
+            assert_eq!(encode_srgb8(decode_srgb8(c)), c);
+        }
+        assert_eq!(encode_srgb8(f32::NAN), 0);
+        assert_eq!(encode_srgb8(-1.0), 0);
+        assert_eq!(encode_srgb8(2.0), 255);
+        // The shader's one-read lookup agrees with the table everywhere.
+        let mut x = 0.0f32;
+        while x < 1.01 {
+            for v in [x, x.next_up(), x.next_down()] {
+                assert_eq!(encode_srgb8_from(v, &SRGB8_STEPS), encode_srgb8(v), "{v}");
+            }
+            x += 1.7e-6;
+        }
+        for &step in &SRGB8_STEPS {
+            for v in [step, step.next_up(), step.next_down()] {
+                assert_eq!(encode_srgb8_from(v, &SRGB8_STEPS), encode_srgb8(v), "{v}");
+            }
+        }
+        assert_eq!(encode_srgb8_from(f32::NAN, &SRGB8_STEPS), 0);
+        let rows = srgb_step_rows();
+        assert_eq!(rows[0].x, SRGB8_STEPS[0]);
+        assert_eq!(rows[63].z, SRGB8_STEPS[254]);
+        assert_eq!(rows[63].w, 2.0);
+    }
+
+    /// A lone open voxel's steady value under a faint per-step gain: each
+    /// step keeps 0.999 of what it holds and gains `inj`, stored through
+    /// `encode`.
+    fn stalled(inj: f32, encode: impl Fn(f32) -> u8) -> f32 {
+        let mut code = 0u8;
+        for _ in 0..20_000 {
+            let next = encode(decode_srgb8(code) * 0.999 + inj);
+            if next == code {
+                break;
+            }
+            code = next;
+        }
+        decode_srgb8(code)
+    }
+
+    #[test]
+    fn the_driver_steps_let_a_faint_channel_climb_further() {
+        let nearest = |x: f32| {
+            let s = if x <= 0.003_130_8 {
+                x * 12.92
+            } else {
+                1.055 * x.powf(1.0 / 2.4) - 0.055
+            };
+            (s.clamp(0.0, 1.0) * 255.0).round() as u8
+        };
+        // A torch's injection, red and blue (lin(1, 0.68, 0.43) · 3.58 ·
+        // 0.15 · 0.01 at full strength, here a tenth of it): the blue
+        // climbs further against the red through the driver's steps.
+        let (red, blue) = (5.4e-4, 0.84e-4);
+        let ratio = |enc: &dyn Fn(f32) -> u8| stalled(red, enc) / stalled(blue, enc).max(1e-9);
+        let driver = ratio(&encode_srgb8);
+        let rounded = ratio(&nearest);
+        assert!(driver < rounded, "driver {driver}, nearest {rounded}");
+    }
+
+    #[test]
+    fn the_gi_debug_views_split_the_frame() {
+        assert_eq!(GiDebugView::parse("1"), GiDebugView::Raw);
+        assert_eq!(GiDebugView::parse("direct"), GiDebugView::Direct);
+        assert_eq!(GiDebugView::parse("ambient"), GiDebugView::Ambient);
+        assert_eq!(GiDebugView::Raw.flags(4, 128), 4);
+        assert_eq!(GiDebugView::Direct.flags(4, 128), 128);
+        assert_eq!(GiDebugView::Ambient.flags(4, 128), 132);
+    }
 
     const BLOCK: UVec3 = UVec3::new(256, 256, 64);
 

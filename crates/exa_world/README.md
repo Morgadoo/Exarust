@@ -83,7 +83,8 @@ and the grid's rooms; portal clipping is next (see
   quads, `TexPos` (half the split less the block index shifted down by the
   level difference with a five-bit shift count; the live draw passes the
   block's own level 3),
-  the wet-floor gloss term (wired into `terrain.wesl`
+  `EXA_GI_DEBUG`'s raw and split views in `terrain.wesl` (the
+  `exa_render::gi::GiDebugView` flags), the wet-floor gloss term (wired into `terrain.wesl`
   through the palette's wetness) and the selection's look point, cut-offs,
   light-distance sort, set stealing and one-block-a-frame rule;
   `terrain::live` is the live driver: a tile is spawned hidden and the frame

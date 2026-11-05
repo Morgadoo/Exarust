@@ -329,6 +329,9 @@ pub mod terrain_flags {
     /// The level has an open sky: the GI takes the original's outdoor
     /// shading ([`exa_render::gi::GiOutdoor`]).
     pub const OUTDOOR: u32 = 64;
+    /// Debug view: the direct lights only, or with [`DEBUG_GI`] the GI's
+    /// share only (`EXA_GI_DEBUG=direct|ambient`).
+    pub const DEBUG_SPLIT: u32 = 128;
 }
 
 impl exa_render::supersample::SplitTapsFlag for TerrainMaterial {
@@ -519,9 +522,9 @@ fn give_terrain_gi(
         };
         m.set_gi_slots(&slots);
         m.params.flags |= terrain_flags::GI;
-        if std::env::var_os("EXA_GI_DEBUG").is_some() {
-            m.params.flags |= terrain_flags::DEBUG_GI;
-        }
+        m.params.flags |= exa_render::gi::GiDebugView::from_env().map_or(0, |view| {
+            view.flags(terrain_flags::DEBUG_GI, terrain_flags::DEBUG_SPLIT)
+        });
     }
 }
 

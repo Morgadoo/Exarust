@@ -38,11 +38,27 @@ impl Plugin for TorchPlugin {
     }
 }
 
-/// `--floor-torch x,y,z`: a lit torch lying on the floor there (metres), as
-/// the original's story start has the player's torch beside the body
-/// (Exarust's debug option, for comparisons with the original).
+/// `--floor-torch x,y,z[,rx,ry,rz]`: a lit torch lying on the floor there
+/// (metres), as the original's story start has the player's torch beside
+/// the body (Exarust's debug option, for comparisons with the original).
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
-pub struct FloorTorch(pub Option<Vec3>);
+pub struct FloorTorch(pub Option<Transform>);
+
+/// The [`FloorTorch`]'s pose from the option's values: the item's origin
+/// (metres) and, with six values, its frame as X, Y, Z angles (degrees);
+/// with three it lies on its side, the handle along the floor.
+pub fn floor_torch_transform(values: &[f32]) -> Transform {
+    let at = Transform::from_xyz(values[0], values[1], values[2]);
+    match values {
+        [_, _, _, x, y, z] => at.with_rotation(Quat::from_euler(
+            EulerRot::XYZ,
+            x.to_radians(),
+            y.to_radians(),
+            z.to_radians(),
+        )),
+        _ => at.with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 * 0.9)),
+    }
+}
 
 /// The story start's torch (`Step::StoryLight`): the game's torch laid in
 /// the world at the start's pose, in metres with its frame, burning as a
@@ -86,12 +102,8 @@ fn lay_floor_torch(
     }
     // On its side, the handle along the floor.
     let mut laid = Vec::new();
-    if let Some(at) = floor.0.take() {
-        laid.push((
-            Transform::from_translation(at)
-                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 * 0.9)),
-            "FloorTorch",
-        ));
+    if let Some(pose) = floor.0.take() {
+        laid.push((pose, "FloorTorch"));
     }
     if let Some(pose) = story.0.take() {
         laid.push((pose, "StoryTorch"));

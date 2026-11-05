@@ -96,6 +96,9 @@ const NO_SPECULAR: u32 = 536870912u;
 // The level has an open sky: the GI takes the original's outdoor shading
 // (`Env.Outdoor`, `exa_render::gi::GiOutdoor`).
 const OUTDOOR: u32 = 1073741824u;
+// Debug view: the direct lights only, or with DEBUG_GI the GI's share only
+// (`EXA_GI_DEBUG=direct|ambient`).
+const DEBUG_SPLIT: u32 = 2147483648u;
 const BLOOD_TINT = vec3(0.6, 0.03, 0.0);
 const HAIR_BLOOD_TINT = vec3(0.45, 0.03, 0.02);
 const SKIN_ALPHA_FLOOR: f32 = 0.02;
@@ -628,7 +631,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let o = vec3(world_from_local[0].w, world_from_local[1].w, world_from_local[2].w);
         let slot = gi_slot(material.gi_grid, material.gi_cells, o);
         let g = gi_block_sample(slot, p, n, disc);
-        if has(DEBUG_GI) {
+        if has(DEBUG_GI) && !has(DEBUG_SPLIT) {
             out.color = vec4(g.rgb * 10.0, 1.0);
             return out;
         }
@@ -657,6 +660,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
         reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * ambient_w * gv;
         gi_light = ambient;
+    }
+    // The debug split (`EXA_GI_DEBUG=direct|ambient`).
+    if has(DEBUG_SPLIT) {
+        if has(DEBUG_GI) {
+            diffuse = vec3(0.0);
+            scatter = vec3(0.0);
+            specular = vec3(0.0);
+        } else {
+            ambient = vec3(0.0);
+            reflected = vec3(0.0);
+        }
     }
     // The hair program: the ambient × (1.5 − 0.75·v·n) × MatDif, the map's
     // colour only under blood, the reflection about the normal bent across

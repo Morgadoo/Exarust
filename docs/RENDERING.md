@@ -1724,6 +1724,30 @@ the window for seconds); the loading screen waits for the first block, and a
 rebuilt block warms behind the one on screen and is swapped in only when its
 warm-up is complete. The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
 
+**The 8-bit store.** The original renders each step into a
+`GL_SRGB8_ALPHA8` texture with `GL_FRAMEBUFFER_SRGB` on, so the hardware
+encodes the shader's linear output into codes, and a step whose gain no
+longer moves a voxel to the next code is lost: the volume does not reach
+its 1/(1 − k) steady state but stalls where the gain runs out. Where it
+stalls depends on the encoder's steps, and the reference hardware (NVIDIA
+RTX 3090, driver 615.78, the retail captures' machine) does not round to
+the nearest code: rendering a sweep of values into that format (4096 per
+code, `GL_DITHER` at its default, which changes nothing) shows it stepping
+to code c + 1 at 0.40 of a code along the curve's linear foot (0.402 for
+code 0, up to 0.45 by code 10) and anywhere between 0.40 and 0.60 higher
+up, deterministically. Exarust stores every write into the volume (the
+step, the dark voxels, the margin copy) through those measured steps
+(`gi::SRGB8_STEPS`, `encode_srgb8`; `SRGB8_STEPS` in `gi.wesl`).
+With nearest-code rounding the faint channels of a fire's light (its blue
+is 0.156 of its red) and the base ambient (about 4·10⁻⁵ a step) stalled
+early, so the bounce light was redder and the far corners darker than the
+original's: matched to retail captures with the frame split into its
+direct and GI shares (`EXA_GI_DEBUG=direct|ambient`), the GI needed ×
+(1.04, 1.13, 1.35) per channel in the menu scene and the blue × 1.5 in
+exanima01's start room; with the driver's steps the menu's factors are
+(0.96, 1.00, 1.06), and exanima01's dim periphery (retail's neutral light,
+1.7 × Exarust's before) matches retail to a level.
+
 Only slices from a group's lowest sector floor up to the second-highest are
 updated. The manager marks the level cells to draw each frame in two
 passes over the same window: cells 1 to size − 2 within six of the focus
@@ -2020,10 +2044,10 @@ menu.
   (`terrain.wesl`) share the curves (`shading.wesl`, mirrored and tested
   in `exa_render::gi_ambient`).
 - Levels (arenao3 at noon, read back with `EXA_GI_PROBE`): the volume's
-  8-bit sRGB storage stops a channel's climb once a step's gain is under
-  half a code, so open air settles near (0.03, 0.04, 0.06) a voxel above
-  the sand and (0.07, 0.11, 0.19) a few metres up, not the 1/(1 − k)
-  steady state; the open sky cube's up face is about 0.2 at mip 7 (0.3 at
+  8-bit sRGB storage stops a channel's climb once a step's gain no longer
+  reaches the encoder's next step (see the 8-bit store above), so open air
+  settles near (0.03, 0.04, 0.06) a voxel above the sand and (0.09, 0.12,
+  0.17) a few metres up, not the 1/(1 − k) steady state; the open sky cube's up face is about 0.2 at mip 7 (0.3 at
   mip 5), the sides 0.07 to 0.12. An upward surface in shade takes about
   0.3 of GI ambient, not the 10 an earlier estimate gave. Before the
   sky-floor and base-ambient fixes the sky light reached no voxel and
@@ -2473,9 +2497,13 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   sRGB against retail's (24.2, 17.0, 12.2), and the pool 70.9 against
   70.6. Retail's distant surfaces change from frame to frame: the top wall
   reads 9.0, 6.3 and 2.9 in captures 2 s apart, and Exarust's reads 5.8.
-  Not explained yet: in the dim periphery, retail's neutral light is about
-  1.7 times Exarust's. Exarust lights it only with the fill's direct term,
-  and its GI adds nothing there.
+  In the dim periphery retail's neutral light was about 1.7 times
+  Exarust's, which lit it only with the fill's direct term: the base
+  ambient never climbed past the volume's first code. With the volume
+  stored through the reference driver's sRGB steps (Voxel GI, the 8-bit
+  store) the base ambient fills the open voxels as the original's does,
+  and the periphery reads (8.4, 6.5, 5.3) against retail's (8.6, 6.8,
+  5.7).
 
 ### Sun shadow fit
 
