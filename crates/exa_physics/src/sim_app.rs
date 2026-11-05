@@ -56,6 +56,41 @@ pub const STEP_MS: u64 = (1000.0 / STEP_HZ) as u64;
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SimStep;
 
+/// Work the fixed step does once at the start of each frame that runs ticks
+/// (the bodies' frame start). In one world it runs before the frame's fixed
+/// loop; behind the bridge it moves with the fixed step and runs at the
+/// first step after a frame began, before that step's commands.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SimFrameStart;
+
+/// Runs [`SimFrameStart`] in the frame's world, unless the bridge runs it
+/// in the simulation's (from the first step on; it must not run here
+/// first, or it could not move).
+fn run_frame_start(world: &mut World) {
+    if world.contains_resource::<crate::sim_bridge::FrameBridge>() {
+        return;
+    }
+    let _ = world.try_run_schedule(SimFrameStart);
+}
+
+/// Marks an app whose frame runs [`SimFrameStart`].
+#[derive(Resource)]
+struct FrameStartRunner;
+
+/// Adds [`SimFrameStart`] and its runner before the frame's fixed loop,
+/// once (every plugin with frame-start work calls it).
+pub fn add_frame_start(app: &mut App) {
+    if app.world().contains_resource::<FrameStartRunner>() {
+        return;
+    }
+    app.insert_resource(FrameStartRunner)
+        .init_schedule(SimFrameStart)
+        .add_systems(
+            RunFixedMainLoop,
+            run_frame_start.in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop),
+        );
+}
+
 /// The frame's schedule that steps the simulation in lockstep, run before
 /// `FixedFirst` in every pass of `FixedMain`.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
@@ -326,9 +361,12 @@ fn step_world(
     snapshots: &SnapshotBuffer<SimSnapshot>,
 ) -> Stepped {
     let bridged = request.bridge.is_some();
-    let (mut coverage, mut apply_us) = (None, 0);
+    let (mut coverage, mut apply_us, mut frame_began) = (None, 0, false);
     if let Some(bridge_in) = request.bridge {
-        (coverage, apply_us) = sim_apply(world, bridge_in);
+        (coverage, apply_us, frame_began) = sim_apply(world, bridge_in);
+    }
+    if frame_began {
+        let _ = world.try_run_schedule(SimFrameStart);
     }
     for command in request.commands {
         command(world);
@@ -487,6 +525,7 @@ impl Plugin for SimShellPlugin {
             .init_resource::<LockstepCheck>()
             .init_schedule(SimLockstep)
             .add_systems(SimLockstep, step_lockstep);
+        add_frame_start(app);
         app.world_mut()
             .resource_mut::<FixedMainScheduleOrder>()
             .insert_before(FixedFirst, SimLockstep);
