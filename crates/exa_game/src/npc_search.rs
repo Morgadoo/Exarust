@@ -563,24 +563,25 @@ pub fn load_search_items(game: Option<Res<Game>>, mut items: ResMut<SearchItems>
     info!("search: {} items it can weigh", items.loot.len());
 }
 
-/// Reads the loaded level's own records into the search's items, tagged
-/// local, whenever a level loads.
+/// Reads the loaded level's own records from the live database's local tier
+/// into the search's items, tagged local, whenever a level loads.
 pub fn load_level_search_items(
-    records: Option<Res<exa_world::LevelLocalRecords>>,
+    live: Option<Res<exa_assets::live_objects::LiveObjects>>,
     local: Option<Res<exa_world::LevelLocalItems>>,
     mut items: ResMut<SearchItems>,
 ) {
-    let (Some(records), Some(local)) = (records, local) else {
+    let (Some(live), Some(local)) = (live, local) else {
         return;
     };
-    if !records.is_changed() && !local.is_changed() {
+    if !local.is_changed() {
         return;
     }
     let tag = |id: u32| (id & exa_formats::objdb::ID_MASK) | exa_formats::objdb::LOCAL;
-    items.level_loot = records
-        .records
-        .iter()
-        .filter_map(|(id, payload)| Some((tag(*id), Loot::of_payload(payload)?)))
+    items.level_loot = live
+        .db()
+        .store(exa_formats::objdb::Tier::Local)
+        .records()
+        .filter_map(|r| Some((tag(r.id), Loot::of_payload(r.payload())?)))
         .collect();
     items.level_sizes = local
         .0
