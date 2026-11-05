@@ -96,6 +96,11 @@ pub struct ModelNode {
     /// voxel to the sample's height and leaves the column's lowest slice
     /// alone (the original's second point path).
     pub gi_centred: bool,
+    /// The node is floor (its second flag word's
+    /// [`exa_formats::rfc::Node::FLOOR`], the node's own word, an instance's
+    /// too): the original's Ground Query, the point ray under a foot's toe,
+    /// meets only the meshes of such nodes.
+    pub floor: bool,
     /// Whether the mesh is thin for the GI (its first surface's material,
     /// [`exa_formats::material::Material::is_thin_for_gi`]): its points
     /// fill the occupancy at a quarter of the usual weight.
@@ -811,6 +816,7 @@ impl ModelLoader<'_> {
                 half_extents: Vec3::from(node.bounds_half_extents),
                 gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, floor_set[i])),
                 gi_centred: node.flags2 & 0x10 != 0,
+                floor: node.flags2 & exa_formats::rfc::Node::FLOOR != 0,
                 gi_thin: mesh
                     .and_then(|mesh| mesh.groups.first())
                     .is_some_and(|g| self.thin_for_gi(&entry, &scene, &g.material)),
@@ -3856,6 +3862,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Arc::new(Vec::new()),
             gi_centred: false,
+            floor: false,
             gi_thin: false,
             rigid: None,
             tracks: Vec::new(),

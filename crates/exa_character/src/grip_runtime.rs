@@ -1,10 +1,13 @@
 //! The grip's runtime: the mode its current clip asks for, the flip
 //! animation, and the record rebuild a finished flip needs.
 //!
-//! The original's body tick derives the grip mode from the motion it plays
-//! (a knocked-down body mode 0, Idle or Walk mode 2, Stab 3, and 1 for the
-//! other clips) and runs the table entry's callback, which switches the two-hander's
-//! second hand, arm and stab links or slides the polearm's main link. A
+//! The original's body tick derives the grip mode from a motion when it
+//! starts (a knocked-down body mode 0, Idle or Walk mode 2, Stab 3, and 1
+//! for the other clips), and its locomotion routine sets it on every tick
+//! it runs (1 running or in combat, else 2); a changed mode runs the table
+//! entry's callback, which switches the two-hander's second hand, arm and
+//! stab links or slides the polearm's main link
+//! ([`exa_physics::grip::tick_mode`]). A
 //! flip command starts the body's flip byte. Each tick the flip's progress
 //! moves toward its other end unless an attack is away from the middle,
 //! then the flip link's point turns, and the weapon record is rebuilt when
@@ -19,7 +22,7 @@ use exa_anim::{Animator, Motions};
 use exa_combat::{Blade, Condition};
 use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
 use exa_physics::body::Ragdoll;
-use exa_physics::grip::{GripKind, HeldGrip, HeldKind, mode_from_clip};
+use exa_physics::grip::{GripKind, HeldGrip, HeldKind, tick_mode};
 use exa_physics::grip_solve::GripSolveSet;
 
 /// The weapon data a flip rebuilds its record from.
@@ -350,7 +353,12 @@ pub fn animate_grips(
         Option<&HeldAbility>,
     )>,
     bodies: Query<(Entity, &Ragdoll)>,
-    owners: Query<(&Animator, &Condition, Option<&crate::held::BurningGrip>)>,
+    owners: Query<(
+        &Animator,
+        &Condition,
+        Option<&crate::held::BurningGrip>,
+        Option<&exa_physics::body::locomotion::Locomotor>,
+    )>,
     motions: Option<Res<Motions>>,
 ) {
     let holders = exa_physics::body::first_by_key(
@@ -364,7 +372,7 @@ pub fn animate_grips(
         let Some(&(owner, holder_body)) = holders.get(&grip.holder_key) else {
             continue;
         };
-        let Ok((anim, condition, burning_grip)) = owners.get(owner) else {
+        let Ok((anim, condition, burning_grip, locomotor)) = owners.get(owner) else {
             continue;
         };
         let clip = motions
@@ -376,8 +384,27 @@ pub fn animate_grips(
         let Some(links) = grip.links.as_mut() else {
             continue;
         };
-        let mode = mode_from_clip(clip, clip, condition.has(Condition::DOWN.0));
+        // The mode a motion start derives, or the one the locomotion
+        // routine wrote on this tick.
+        let locomotion = locomotor.filter(|l| l.locomoted).map(|l| l.grip_mode);
+        let mode = tick_mode(
+            links.mode,
+            links.motion,
+            clip,
+            condition.has(Condition::DOWN.0),
+            locomotion,
+        );
+        links.motion = clip;
         if kind != GripKind::Other && links.mode != mode {
+            debug!(
+                "grip mode: {item:?} ({kind:?}) {} -> {mode} (clip {clip:#x}, {})",
+                links.mode,
+                if locomotion == Some(mode) {
+                    "the locomotion's"
+                } else {
+                    "a motion start's"
+                }
+            );
             // The two-hander's callback reads the item's ability type and
             // its holder's lit-blade byte.
             let burning = ability.is_some_and(|a| a.0 == BURNING_ABILITY);
@@ -424,7 +451,11 @@ impl Plugin for GripRuntimePlugin {
                 FixedUpdate,
                 (
                     flip_requests,
-                    animate_grips,
+                    // The modes the character tick wrote (its motion starts
+                    // and locomotion) apply before the bodies step.
+                    animate_grips
+                        .after(exa_physics::body::CharacterTicks)
+                        .before(exa_physics::body::BodySystems),
                     swap_on_switch,
                     refresh_holds,
                     resolve_pending_grips,

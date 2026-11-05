@@ -1011,7 +1011,8 @@ ticks.
   without) and flags 0x30. The toe's floor is the Ground Query: a point
   ray from 30 cm over the ground, 60 cm down, against floor-flagged
   meshes and bodies only (`Level::floor_below`; Exarust's level colliders
-  carry no floor bit yet, so it misses in the game), the
+  carry it from the node's second flag word's `0x800000`, or a tile grid
+  cell's floor), the
   higher of its hit and the ground (10 cm less while the foot touches)
   plus the leg's offset, never over the lower leg's origin
   (`feet::sole_floor`); a miss leaves the ground plus the offset. A hit
@@ -1549,8 +1550,9 @@ and down. h is the heading.
   sign × its square × 2 (0 without support), the run lean the twist lowers
   by the crouch.
 - **Grip mode.** Running it sets the general mode (1), otherwise the
-  walk's (2; 1 for an in-combat behaviour). Its readers are the held
-  items' grips, which are not bodies in Exarust.
+  walk's (2; 1 for an in-combat behaviour). A held item's grip takes it
+  on every tick the routine runs; a motion start in between sets the
+  clip's mode (`exa_physics::grip::tick_mode`).
 - **Start.** While another clip plays it clears the held items' motion
   flag (0x10000) and calls a registered start callback with the argument 4
   (Exarust keeps the notice, sends nothing: no callback is registered);

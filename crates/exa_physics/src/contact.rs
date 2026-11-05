@@ -60,11 +60,11 @@ pub trait Level {
 
     /// Whether `piece` takes part in the original's Ground Query. The
     /// original meets only meshes and bodies whose node carries the floor
-    /// bit (0x800000 in its second flag word: 85 library pieces and 2
-    /// objects ship with it), and skips a disabled body. Exarust's level
-    /// colliders do not carry that bit yet, so by default no piece is
-    /// floor and the query misses, as it does in the original over every
-    /// unflagged mesh.
+    /// bit (0x800000 in its second flag word: 875 mesh nodes ship with it,
+    /// and a tile grid's merged cell floors gain it), and skips a disabled
+    /// body. None by default; the running game's level answers from the
+    /// colliders built from a [`crate::FloorMesh`]
+    /// ([`crate::StaticColliders::is_floor`]).
     fn floor_piece(&self, _piece: u32) -> bool {
         false
     }

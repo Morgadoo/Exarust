@@ -553,10 +553,19 @@ muscles follow, and
 the foot's height over its floor, which the foot pitch levels. Each foot's sole floor is the
 original's Ground Query (`contact::Level::floor_below`, a point ray from
 30 cm over the foot's ground 60 cm down against floor-flagged pieces): the
-hit, or the ground plus the leg's offset where it misses, never over the
-knee (`feet::sole_floor`); a moving foot's ground rises to a higher hit.
-Exarust's level colliders do not carry the floor bit yet
-(`Level::floor_piece` is false), so in the game the query misses.
+hit when the low floor (the ground, 10 cm less while touching, plus the
+leg's offset) is under it, else the low floor, or the ground plus the
+offset where it misses, never over the knee (`feet::sole_floor`); a moving
+foot's ground rises to a higher hit. The floor pieces are the colliders
+built from a `FloorMesh` (a floor node's mesh: its second flag word's
+`0x800000`, or a tile grid cell's floor parts, which the original merges
+into a `+Floor` node with that bit), static or a rigid body's stand-in;
+the build records them (`StaticColliders::is_floor`) and the body
+detection's level answers `Level::floor_piece` from them. The level logs
+how many it built ("static colliders built: … of them floor"). The
+original ignores a hit on a mesh's triangle 0; Exarust does not.
+`Physics::static_floor_below` is the original's floor cast (the force
+barricade's probe): static floor pieces only, straight down.
 The sole turn (`feet::turn_sole`) projects the toe's gap onto the side axis
 the leg keeps (`Leg::sole_side`): the foot's animated side axis, taken each
 iteration, except while the body moves and the foot touches unlifted, when

@@ -371,8 +371,11 @@ tested rules of their own.
   places is still a static model. The physics grip stage builds the links once both
   bodies exist and pulls the item to the hand; the item never meets its
   holder's body. The grip runtime (`grip_runtime`) reads the holder's clip
-  every tick (after the AI's behaviour, `exa_physics::body::TickBehaviour`,
-  as after the player's input, so a switch either asks is taken that tick), applies the grip table entry's mode (a
+  and its locomotion every tick (after the character ticks, before the
+  bodies step), takes the mode a motion start derives from the clip or the
+  one the locomotion routine wrote (1 running or in combat, else 2; the
+  locomotion's wins over a behaviour's start, the walk it starts wins over
+  it: `exa_physics::grip::tick_mode`), applies the grip table entry's mode (a
   burning blade, `HeldAbility` 3, held by a body with `BurningGrip` rests in
   both hands), steps an active flip
   (started by a `FlipWeaponRequest` for the character's entity, refused

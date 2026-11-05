@@ -1492,6 +1492,11 @@ pub fn spawn_model_nodes_at(
                 if node.is_skin {
                     commands.entity(part).insert(exa_assets::RaceSkinPart);
                 }
+                // A floor node's mesh: the only geometry the original's
+                // Ground Query (the ray under a foot's toe) meets.
+                if node.floor {
+                    commands.entity(part).insert(exa_physics::FloorMesh);
+                }
                 if node.cloth {
                     commands.entity(part).insert(cloth::ClothNode);
                     if let Some(source) = &node.cloth_mesh {
@@ -3236,6 +3241,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
             gi_centred: false,
+            floor: false,
             gi_thin: false,
             rigid: None,
             tracks: Vec::new(),
