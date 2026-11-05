@@ -326,9 +326,11 @@ pub struct Bearing {
     /// It walks backwards this tick: the early gait plant takes a foot
     /// moving back at most 0.2 cm a tick.
     pub backpedal: bool,
-    /// It is stepping: an anchored stepping foot's leg limit eases to 0.2
-    /// instead of following the leg mode, and its standing lift lead is
-    /// 10 cm.
+    /// The body's step episode runs (any kind: balance, footwork, queued,
+    /// knockback): an anchored stepping foot's leg limit eases to 0.2
+    /// instead of following the leg mode, and the standing lift lead is
+    /// 10 cm. The movement stage copies last tick's; the balance routine
+    /// refreshes it once this tick's step is known.
     pub stepping: bool,
     /// It is dormant (a statue or golem lying until it sees a target): its
     /// standing lift lead is 20 cm rather than 15.

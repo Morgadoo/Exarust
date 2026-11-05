@@ -1059,24 +1059,33 @@ level shows; not in the arena hub).
   dimensions, and is then moved onto the grid's nearest walkable point
   across the ground. The deep crouch's 0.7 stride is not the goal's: the
   goal routine lays its own stride.
-- **Under way.** A step is under way while it has not landed, or its
-  target is still more than 20·scale cm from the chest across the ground.
+- **Under way.** A step is under way while the body steps (any kind of
+  step episode) and either the episode is not a balance step (one the
+  balance routine started from rest) or its target is still more than
+  20·scale cm from the feet centre across the ground.
   Within 300 ms of its start, a word not yet a tap **queues** the raw word
   when it differs from the step's own word (the pad's analog word queues
   even when the same), and a tap **re-lays** the step at the long stride
   once. From 300 ms on any held raw word queues. A queued step stores the
   raw word and its full step vector (the side at full weight, scaled by
   `reach·√scale/|dir|`).
-- **Landing.** Exarust's interim feet move the character toward the target
-  at the walking speed and land the step within 20·scale cm of it (or
-  after a second, Exarust's own, so a wall does not hold it). A landing
-  with a queue takes it by the body's queue rule
+- **The body walks it.** The step is the body's own step episode, as the
+  original's behaviour writes its body's step fields: a start sets the
+  body stepping (no balance step, no landing yet, its clock now), the goal
+  is the body's step target and a tapped stride its long kind. The body's
+  stance then moves to the target (within 1.1 step lengths of its frame),
+  its feet step there one at a time by the stance score, its chest pins
+  lead toward it, and the character follows its frame; nothing moves the
+  character at a speed of its own. The body ends the episode by its own
+  rules. A landing with a queue takes it by the body's queue rule
   (`exa_physics::body::queued_step`): the target becomes the chest plus
-  the queued vector, clamped by the line walk; the next tick the word
-  takes the queued word back, its tap and clocks restart. The queue
-  clears once the word has been zero for over 200 ms. A step already
-  started finishes after the keys are let go, so a held key walks on as a
-  chain of steps.
+  the queued vector and the queue its countdown; the next behaviour tick
+  clamps that target by the line walk from the chest and the grid's snap
+  (the original's taker clamps it in the same pass; Exarust's body has no
+  grid), and the word takes the queued word back, its tap and clocks
+  restart. The queue clears once the word has been zero for over 200 ms.
+  A step already started finishes after the keys are let go, so a held
+  key walks on as a chain of steps.
 - **The mode word.** Each combat tick the behaviour's ladder sets its mode:
   down or dazed (energy under 0.85; a NaN reads as enough) is idle;
   switching held items or casting is idle; the right button walks to the
@@ -1084,9 +1093,8 @@ level shows; not in the arena hub).
   attack mode. The right button's walk only runs in the walk mode, so a
   dazed player no longer walks to the cursor.
 
-Exarust's footwork plays "Combat Walk" while a step is under way and gives
-back the clip it replaced (the guard stays the guard) once it lands.
-A walk or run under way when Tab turns combat mode on
+The stance clip plays while the feet step (the original never starts the
+combat walk clip). A walk or run under way when Tab turns combat mode on
 stops softly, as the original's combat branch stops it, and ends in the
 stance once the body stands. While its condition
 word is helpless (down, getting up, collapsing, dead) the player is not
@@ -1329,7 +1337,7 @@ the clip ends, and a balanced fighter (balance 0.8 or more, muscle tone
 0.85 or more) standing in another looping clip switches to it. The
 original's body tick leaves three clips alone: **Cmbt - Idle**, the walk
 and the run each have their own branch, which skips the switch (Exarust
-also leaves its interim backpedal and combat walk alone).
+also leaves its interim backpedal alone).
 
 | who | stance |
 |---|---|
@@ -1436,8 +1444,8 @@ also leaves its interim backpedal and combat walk alone).
   ([formats/OTHER.md](formats/OTHER.md), Regeneration).
 
 Not yet, with the change that brings each:
-- the walk's end in the stance (Exarust's interim footwork and gaits
-  start their clips with no blend; the original's walk start is in);
+- the walk's end in the stance (Exarust's gaits start their clips with
+  no blend; the original's walk start is in);
 - the Defence stance and Rebalance a fighter takes from its balance
   (below 0.8) or its tone (below 0.85), C11;
 - parries, whose clips are stances while they last, and readiness while

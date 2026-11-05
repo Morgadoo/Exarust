@@ -4,14 +4,17 @@
 //! step at the tapped (long) stride, or queues the next step on the body
 //! while one is under way. The body takes a queued step when its step
 //! lands (`exa_physics::body::queued_step`), and the word then takes the
-//! queued word back. Rules: `docs/PLAYER.md` (Combat footwork).
+//! queued word back. The step is the body's own (`exa_physics::body`'s
+//! footwork step): the body walks it on its feet. Rules: `docs/PLAYER.md`
+//! (Combat footwork).
 //!
 //! - **The gate.** No step is laid while the condition has any of
 //!   [`NO_STEP`] (walking, down, the shocked word's bits, the kick), the
 //!   energy is under 0.7, a swing is under way, or the word is zero.
-//! - **Under way.** A step counts as under way while it is started and
-//!   either has not landed or its target is still more than 20·scale cm
-//!   from the chest across the ground (a NaN distance is not under way).
+//! - **Under way.** A step counts as under way while the body steps and
+//!   either the episode is not a balance step or its target is still more
+//!   than 20·scale cm from the feet centre across the ground (a NaN
+//!   distance is not under way).
 //! - **Young steps.** Within 300 ms of the step's start, a word that is not
 //!   yet a tap queues the raw word when it differs from the step's own
 //!   word (the analog word queues even when it is the same); a tapped word
@@ -22,6 +25,8 @@
 //!   chest.
 
 use bevy::prelude::*;
+
+use exa_physics::body::FootworkStep;
 
 use crate::steering::{MOVE_ANALOG, MoveWord, key_goal_direction, key_step};
 
@@ -34,25 +39,24 @@ pub(crate) const NO_STEP: u32 = 0x82C1;
 pub(crate) const STEP_ENERGY: f32 = 0.7;
 /// A step this young (ms) re-lays or queues by the tap rules.
 pub(crate) const YOUNG_STEP_MS: u64 = 300;
-/// A step's target this far from the chest (cm, times the body's scale)
-/// keeps it under way after it landed.
+/// A balance step's target this far from the feet centre (cm, times the
+/// body's scale) keeps it under way.
 pub(crate) const UNDER_WAY_CM: f32 = 20.0;
-/// Exarust's own: the interim footwork has no feet to land a step, so a
-/// step lands when its target is within [`UNDER_WAY_CM`]·scale of the chest
-/// across the ground, or once it has run this long (ms), so a step a wall
-/// stops does not stand forever.
-pub(crate) const STEP_GIVE_UP_MS: u64 = 1000;
-
-/// The body's footwork step, as the dispatcher reads and writes it.
+/// The body's step, as the dispatcher reads and writes it: the original's
+/// behaviour reads and writes these fields on its body directly, so the
+/// caller reads them from the body before the dispatcher
+/// ([`StepRecord::read_body`]) and writes them back after it
+/// ([`StepRecord::to_body`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct StepRecord {
-    /// A step was started.
+    /// A step episode runs (any kind).
     pub(crate) active: bool,
-    /// Its feet landed.
-    pub(crate) landed: bool,
+    /// The episode is a balance step: under way only while its target is
+    /// far from the feet.
+    pub(crate) balance_step: bool,
     /// When it started (ms of the game clock).
     pub(crate) started_ms: u64,
-    /// It was laid at the tapped (long) stride.
+    /// It is of the long kind: laid at the tapped stride (or a knockback).
     pub(crate) long: bool,
     /// The queue: positive while a step waits, −2 or −1 once the body took
     /// it (before or after its first landing), 0 for none.
@@ -61,26 +65,51 @@ pub(crate) struct StepRecord {
     pub(crate) queued: Vec3,
     /// Where the step goes (m).
     pub(crate) target: Vec3,
-    /// Exarust's own: when the current leg (the step, or the queued step
-    /// that followed it) began, for [`STEP_GIVE_UP_MS`].
-    pub(crate) leg_ms: u64,
 }
 
 impl StepRecord {
-    /// Whether the step is under way: started, and either not landed or
-    /// its target more than 20·`scale` cm from `chest` across the ground,
-    /// as the original compares the squares (single precision, strictly
-    /// over; a NaN is not under way).
-    pub(crate) fn under_way(&self, chest: Vec3, scale: f32) -> bool {
+    /// Takes the body's step `body` as it is at `now_ms` (its start the
+    /// body's age of the episode before now).
+    pub(crate) fn read_body(&mut self, body: &FootworkStep, now_ms: u64) {
+        let age = body.age_ms.max(0.0) as u64;
+        *self = Self {
+            active: body.stepping,
+            balance_step: body.balance_step,
+            started_ms: now_ms.saturating_sub(age),
+            long: body.long,
+            queue: body.queue,
+            queued: body.queued,
+            target: body.target,
+        };
+    }
+
+    /// The fields the body takes back.
+    pub(crate) fn to_body(self) -> FootworkStep {
+        FootworkStep {
+            stepping: self.active,
+            balance_step: self.balance_step,
+            long: self.long,
+            target: self.target,
+            queue: self.queue,
+            queued: self.queued,
+            ..FootworkStep::default()
+        }
+    }
+
+    /// Whether the step is under way: started, and either not a balance
+    /// step or its target more than 20·`scale` cm from the feet centre
+    /// `feet` across the ground, as the original compares the squares
+    /// (single precision, strictly over; a NaN is not under way).
+    pub(crate) fn under_way(&self, feet: Vec3, scale: f32) -> bool {
         if !self.active {
             return false;
         }
-        if !self.landed {
+        if !self.balance_step {
             return true;
         }
         // Across the ground: the height is zeroed before the squares are
         // summed, so the sum is the x and z squares in that order.
-        let d = (self.target - chest) * 100.0;
+        let d = (self.target - feet) * 100.0;
         let squared = d.x * d.x + d.z * d.z;
         let limit = UNDER_WAY_CM * scale;
         limit * limit < squared
@@ -103,12 +132,11 @@ impl StepRecord {
         self.queued = key_step(facing, word, analog, reach_cm, scale_root) / 100.0;
     }
 
-    /// Starts the step: started now and not landed.
+    /// Starts the step: an episode that is no balance step, started now.
     pub(crate) fn start(&mut self, now_ms: u64) {
         self.active = true;
-        self.landed = false;
+        self.balance_step = false;
         self.started_ms = now_ms;
-        self.leg_ms = now_ms;
     }
 }
 

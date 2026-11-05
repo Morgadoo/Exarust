@@ -68,6 +68,20 @@ fn the_frame_follows_by_the_originals_rules() {
     };
     assert_eq!(at(&moving, 1.0, Some(1.0)), (Follow::Pelvis, false));
     assert_eq!(at(&moving, 1.0, None), (Follow::Pelvis, false));
+    // A step episode sets it onto the pelvis too, steady or not; a down
+    // body keeps its 5 cm.
+    let stepping = Bearing {
+        stepping: true,
+        ..standing
+    };
+    assert_eq!(at(&stepping, 1.0, Some(1.0)), (Follow::Pelvis, false));
+    assert_eq!(at(&stepping, 1.0, None), (Follow::Pelvis, false));
+    let down = Bearing {
+        off_balance: true,
+        stepping: true,
+        ..standing
+    };
+    assert_eq!(at(&down, 0.29, None), (Follow::Within(5.0), false));
     assert_eq!(at(&standing, 1.0, None), (Follow::Within(0.0), false));
     assert_eq!(at(&standing, 1.0, Some(0.9)), (Follow::Within(5.0), true));
     assert_eq!(at(&standing, 1.0, Some(0.95)), (Follow::Within(5.0), true));

@@ -481,6 +481,9 @@ pub(crate) struct Steering {
     pub(crate) ticks: u8,
     /// The last line walk on the grid (the navigation overlay draws it).
     pub(crate) line: Option<LineAsked>,
+    /// The body's step episode runs (any kind), as the behaviour tick
+    /// reads it: a walk casts its look-ahead only while no step runs.
+    pub(crate) body_stepping: bool,
 }
 
 impl Steering {
@@ -619,7 +622,6 @@ impl Steering {
     ) {
         use flags::*;
         req.slow_turn = true;
-        req.stepping = None;
         if condition.has(NO_STEERING) {
             return;
         }
@@ -696,7 +698,7 @@ impl Steering {
         };
         req.moving = true;
         let mut keeps_brake = false;
-        if req.stepping.is_none() {
+        if !self.body_stepping {
             let backwards = req.flags & (BACK | TURN_ABOUT) != 0;
             let reach = look_ahead_reach(body.speed, backwards, false);
             let asked = ask(
@@ -772,7 +774,7 @@ impl Steering {
         req.moving = true;
         req.free_walk = true;
         self.requested = true;
-        if req.stepping.is_none() {
+        if !self.body_stepping {
             let reach = look_ahead_reach(body.speed, false, true);
             let asked = ask(
                 line,
@@ -836,6 +838,27 @@ impl Steering {
         } else {
             (asked.end, false)
         }
+    }
+}
+
+impl Steering {
+    /// A queued step's target once the body took it, as the original's
+    /// queued-step taker clamps it: the line walk from the chest itself
+    /// (its height included) to the target, then the grid's snap with no
+    /// distance test. Exarust's body has no grid, so the behaviour clamps
+    /// the target it took on its next tick (the original clamps it in the
+    /// same balance pass).
+    pub(crate) fn queued_target(
+        &mut self,
+        chest: Vec3,
+        target: Vec3,
+        line: LineWalk,
+        nearest: &dyn Fn(Vec3) -> Vec3,
+    ) -> Vec3 {
+        let asked = ask(line, Asked::Step, chest, target);
+        self.line = Some(asked);
+        let snapped = nearest(asked.end);
+        Vec3::new(snapped.x, asked.end.y, snapped.z)
     }
 }
 

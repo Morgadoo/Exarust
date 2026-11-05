@@ -62,8 +62,8 @@ fn sprint_gaits(gaits: CapsuleGaits, feral: f32) -> CapsuleGaits {
 /// starts or resumes its walk and sets its clock's step), or standing, the
 /// fall of its run blend; the cooldown's count; then its capsule's velocity
 /// for the next step, its yaw on its body, and what the body tick's muscles
-/// read of it (moving — or stepping in Exarust's interim footwork —, the
-/// run blend, the leg mode, the turn left).
+/// read of it (moving, its body's step, the run blend, the leg mode, the
+/// turn left).
 #[allow(clippy::type_complexity)]
 pub(crate) fn decide_movement(
     ticked: Res<TickedCharacter>,
@@ -272,12 +272,10 @@ pub(crate) fn decide_movement(
     } else {
         *gaits
     };
-    // The interim footwork's step moves the capsule even on a body that
-    // walks by its carry: the step does not locomote, so the carry has no
-    // push of its own, and the body is carried with the capsule's motion
-    // (as a duellist's step moves its capsule).
+    // A body that walks by its carry (and steps by its feet) gives its
+    // controller no velocity: the character follows the body's frame.
     if let Some((c, _)) = controller.as_mut() {
-        c.desired_velocity = if held || (carry_walk && req.stepping.is_none()) {
+        c.desired_velocity = if held || carry_walk {
             Vec3::ZERO
         } else {
             locomotion::capsule_velocity(&req, &body, &gaits, c.desired_velocity, standing)
@@ -288,7 +286,7 @@ pub(crate) fn decide_movement(
     // lag go to the physics, which adds them to the carry.
     let facing = forward(body.yaw) * if req.has(flags::BACK) { -1.0 } else { 1.0 };
     if let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut()) {
-        d.bearing.moving = body.moving() || req.stepping.is_some();
+        d.bearing.moving = body.moving();
         d.bearing.run = body.run;
         // This tick's speed: the carry reads it for the moving blend.
         d.bearing.speed = body.speed;
@@ -298,7 +296,7 @@ pub(crate) fn decide_movement(
         d.bearing.push_gain = body.gait.push;
         d.bearing.facing = facing;
         d.bearing.backpedal = req.has(flags::BACK);
-        d.bearing.stepping = req.stepping.is_some();
+        d.bearing.stepping = d.stepping();
         d.bearing.jump = body.jump;
         d.bearing.jump_progress = body.jump_progress;
     }
@@ -605,10 +603,9 @@ mod tests {
     }
 
     /// The capsule moves at its character's own walk (the duellist's 1.2
-    /// m/s) and takes the interim footwork's velocity while it steps (the
-    /// body does not locomote then).
+    /// m/s).
     #[test]
-    fn the_capsule_takes_its_gaits_and_the_footwork() {
+    fn the_capsule_takes_its_gaits() {
         let (mut app, root, model) = setup();
         app.world_mut().entity_mut(model).insert(CapsuleGaits {
             walk: 1.2,
@@ -622,18 +619,14 @@ mod tests {
         }
         app.update();
         assert!((velocity(&app, root) - Vec3::Z * 1.2).length() < 1e-5);
-        request(&mut app, model).stepping = Some(Vec3::X * 1.4);
-        app.update();
-        assert_eq!(velocity(&app, root), Vec3::X * 1.4);
-        let body = app.world().get::<Locomotor>(model).unwrap();
-        assert_eq!(body.stop, Stop::Stepping);
     }
 
-    /// A muscled body walks by its carry, so its capsule takes no walk of
-    /// its own; the interim footwork's step still moves it at the step's
-    /// 1.4 m/s, and it stops with the step.
+    /// A muscled body walks by its carry and steps by its feet, so its
+    /// capsule takes no velocity of its own; while its body steps the
+    /// decision refuses the move (the gate reads the body's step) and the
+    /// muscles read the step.
     #[test]
-    fn a_muscled_body_still_takes_the_footwork_step() {
+    fn a_muscled_body_steps_by_its_feet() {
         let (mut app, root, model) = setup();
         app.world_mut()
             .entity_mut(model)
@@ -646,16 +639,19 @@ mod tests {
         app.update();
         assert_eq!(velocity(&app, root), Vec3::ZERO);
         {
-            let mut req = request(&mut app, model);
-            req.moving = false;
-            req.free_walk = false;
-            req.stepping = Some(Vec3::X * 1.4);
+            let mut body = app.world_mut().get_mut::<Ragdoll>(model).unwrap();
+            let step = exa_physics::body::FootworkStep {
+                target: Vec3::X,
+                ..Default::default()
+            };
+            body.write_footwork(&step, true);
         }
         app.update();
-        assert_eq!(velocity(&app, root), Vec3::X * 1.4);
-        request(&mut app, model).stepping = None;
-        app.update();
         assert_eq!(velocity(&app, root), Vec3::ZERO);
+        let body = app.world().get::<Locomotor>(model).unwrap();
+        assert_eq!(body.stop, Stop::Stepping);
+        let ragdoll = app.world().get::<Ragdoll>(model).unwrap();
+        assert!(ragdoll.drive.as_ref().unwrap().bearing.stepping);
     }
 
     /// The sprint latch tightens the run cap: at encumbrance 0.5 a run

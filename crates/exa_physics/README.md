@@ -553,9 +553,21 @@ over unless it has reached, the search starts from the original's
 just-under-maximum sentinel so a NaN distance never wins, the first leg
 stands in when none is free, and the standing position moves so that
 foot's spot is where the foot is. A queued footwork step is taken by the original's rule at the
-next landing (`steps::take_queued`, `Ragdoll::queue_step`); nothing queues
-one yet, since Exarust's interim combat footwork is a capsule velocity,
-not the original's step vector. A clip that replaces Walk or Run asks for
+next landing while the queue word waits (`steps::take_queued`,
+`Ragdoll::queue_step`): the queue becomes its countdown, the step kind and
+balance flag clear. The player's combat footwork reads and writes the
+body's step (`Ragdoll::footwork_step`, `write_footwork`, `FootworkStep`):
+its start, target, long kind and queue; the body walks it on its feet and
+the character follows the frame. The episode's balance-step flag is set
+when the balance routine starts a step from rest and cleared by every
+other start, the step's end and any tick without a step; the movement
+gates, the muscles', the lift's and the frame's stepping read the body's own
+episode (the frame's origin goes onto the pelvis every tick of a step, as the
+original's anchor routine sets it while its stepping byte is set), and the
+long kind clears on any tick without a step and at the step's end.
+The placement on the ground also restarts the chest history (both ticks'
+chest at the placed chest, velocities zero), clears every foot state and
+puts the feet centre at the anchors' mean. A clip that replaces Walk or Run asks for
 the trailing foot (`Animator::take_left_locomotion`,
 `Locomotor::plant_request`): the character tick plants it after that
 tick's sample and keeps the request for 500 ms (the movement decision's

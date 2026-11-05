@@ -1248,11 +1248,13 @@ fn a_walking_footstep_follows_the_speed_and_the_draw() {
 /// A queued footwork step is taken at a landing through the rule the
 /// balance runs: its target is the chest plus the queued vector and the AI
 /// is told when that points along the facing. With no chest offset the
-/// cosine is 0, so the step is taken at once; an empty queue takes none.
+/// cosine is 0, so the step is taken at once; a queue that is not waiting
+/// (0, or a taken countdown) takes none.
 #[test]
 fn a_queued_step_is_taken_at_a_landing() {
     use super::super::steps::take_queued;
     let ahead = take_queued(
+        1,
         Vec3::new(0.0, 0.0, 0.5),
         Vec3::ZERO,
         Vec3::ZERO,
@@ -1263,10 +1265,14 @@ fn a_queued_step_is_taken_at_a_landing() {
     .unwrap();
     assert!(ahead.tell_ai);
     assert_eq!(ahead.countdown, -1);
-    assert!(take_queued(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::Z, 1.0, 1).is_none());
+    let z = Vec3::new(0.0, 0.0, 0.5);
+    for queue in [0, -1, -2] {
+        assert!(take_queued(queue, z, Vec3::ZERO, Vec3::ZERO, Vec3::Z, 1.0, 1).is_none());
+    }
     // A step behind the facing tells no one; before the first landing the
     // countdown is −2.
     let behind = take_queued(
+        1,
         Vec3::new(0.0, 0.0, -0.5),
         Vec3::ZERO,
         Vec3::ZERO,

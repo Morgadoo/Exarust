@@ -46,9 +46,6 @@ use crate::player_behaviour;
 pub(crate) use crate::steering::CURSOR_RUN_FROM;
 use crate::steering::{Keys, LineAsked, LineWalk, Steering, key_segment};
 
-/// Exarust's interim combat footwork moves the capsule at the walking
-/// speed (m/s) until the original's steps replace it.
-const FOOTWORK_SPEED: f32 = 1.4;
 /// The behaviour tick (the fixed step), per second.
 #[cfg(test)]
 const TICK_HZ: f32 = exa_physics::STEP_HZ as f32;
@@ -126,13 +123,12 @@ pub struct PlayerBody {
     /// The combat footwork's movement word: a tap moves for up to 200 ms
     /// after the press, and a word held over 200 ms is flagged a tap.
     move_word: crate::steering::MoveWord,
-    /// The combat footwork's step, as its dispatcher lays it.
+    /// The combat footwork's view of its body's step, read from the body
+    /// before the dispatcher and written back after it.
     step: crate::footwork::StepRecord,
     /// The behaviour's combat mode word and the button branch it took last.
     mode: player_behaviour::CombatMode,
     mode_button: player_behaviour::ModeButton,
-    /// The clip the combat footwork's walk replaced, which it gives back.
-    walk_from: Option<String>,
     /// When its last attack last ticked (s, on the fixed clock).
     last_attack: Option<f32>,
     /// The opponent the behaviour's auto-target picked this tick: what the
@@ -166,7 +162,6 @@ impl PlayerBody {
             step: crate::footwork::StepRecord::default(),
             mode: player_behaviour::CombatMode::Idle,
             mode_button: player_behaviour::ModeButton::None,
-            walk_from: None,
             last_attack: None,
             target: None,
             crouch: 0.0,
@@ -891,7 +886,7 @@ pub(crate) fn steer_player(
         Option<&Condition>,
         Has<Fallen>,
         Option<&Fighter>,
-        Option<&Ragdoll>,
+        Option<&mut Ragdoll>,
         Has<Attacking>,
     )>,
     targets: Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
@@ -925,12 +920,13 @@ pub(crate) fn steer_player(
                 condition,
                 fallen,
                 fighter,
-                ragdoll,
+                mut body_mut,
                 swinging,
             )) = bodies.get_mut(child)
             else {
                 continue;
             };
+            let ragdoll = body_mut.as_deref();
             let state = condition.copied().unwrap_or_default();
             // Where its feet are in the simulation, as its next step starts
             // from.
@@ -994,7 +990,6 @@ pub(crate) fn steer_player(
             // helpless: down, getting up, collapsing, dead.
             if fallen || state.helpless() {
                 req.moving = false;
-                req.stepping = None;
                 continue;
             }
             let line = |from: Vec3, to: Vec3| line_walk(nav.as_deref(), &physics, from, to);
@@ -1004,6 +999,7 @@ pub(crate) fn steer_player(
                 .filter(|_| idle.as_ref().is_none_or(|i| i.follows_cursor))
                 .map(|c| c - standing);
             let mut steering = pb.steering;
+            steering.body_stepping = ragdoll.is_some_and(Ragdoll::stepping);
             Steering::latch(&mut req, &input);
             if pb.combat {
                 steering.aim(&mut req, to_cursor, state.off_feet());
@@ -1058,8 +1054,15 @@ pub(crate) fn steer_player(
                 let energy = ragdoll
                     .and_then(|r| r.drive.as_ref())
                     .map_or(MAX_ENERGY, |d| d.energy);
+                // The behaviour reads its body's step fields as they are.
+                let body_step = ragdoll.and_then(Ragdoll::footwork_step);
+                if let Some(fw) = &body_step {
+                    pb.step.read_body(fw, now);
+                }
+                let feet_centre = body_step.map_or(chest, |fw| fw.feet_centre);
                 let footing = Footwork {
                     chest,
+                    feet_centre,
                     ground: standing.y,
                     reach_cm,
                     extension,
@@ -1115,17 +1118,14 @@ pub(crate) fn steer_player(
                     // keeps ticking its word under the walk, whose walking
                     // condition then lays no step).
                     pb.move_word = crate::steering::MoveWord::default();
-                    pb.step = crate::footwork::StepRecord::default();
-                    pb.walk_from = None;
                     if anim.looping {
                         let gait = gait_of(body, &req, &anim.action);
                         explore_clip(&mut anim, gait);
                     }
                 } else {
-                    combat_steps(
+                    let started = combat_steps(
                         &input,
                         pad_stick,
-                        &mut req,
                         &mut steering,
                         &mut pb,
                         &mut anim,
@@ -1134,15 +1134,19 @@ pub(crate) fn steer_player(
                         &footing,
                         now,
                     );
+                    // And writes them back: the body walks the step.
+                    if body_step.is_some()
+                        && let Some(r) = body_mut.as_deref_mut()
+                    {
+                        r.write_footwork(&pb.step.to_body(), started);
+                    }
                 }
                 pb.steering = steering;
                 continue;
             }
-            pb.walk_from = None;
             // The movement word is the combat footwork's: exploration reads
             // the keys as they are.
             pb.move_word = crate::steering::MoveWord::default();
-            pb.step = crate::footwork::StepRecord::default();
             let segment = motions
                 .as_deref()
                 .filter(|_| GAITS.contains(&anim.action.as_str()))
@@ -1217,9 +1221,8 @@ fn gait_of(body: &Locomotor, req: &Locomotion, playing: &str) -> Option<&'static
 }
 
 /// The exploration steering's part in the clip, as the original's: moving,
-/// the gait starts from any looping clip; standing, a gait (or the interim
-/// combat walk left over from combat mode) ends in Idle, the exploration
-/// stance. A walk or a run blends into it over 20 frames. The steering
+/// the gait starts from any looping clip; standing, a gait ends in Idle,
+/// the exploration stance. A walk or a run blends into it over 20 frames. The steering
 /// starts no other clip: the stance does, through the helper that sets it
 /// ([`stance::set_stance`]) and the body tick's posture switch, which never
 /// leaves Cmbt - Idle. So a player that turns combat mode off in the combat
@@ -1230,7 +1233,7 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
     }
     match gait {
         Some(gait) if anim.action != gait => anim.play_loop(gait),
-        None if GAITS.contains(&anim.action.as_str()) || anim.action == COMBAT_WALK => {
+        None if GAITS.contains(&anim.action.as_str()) => {
             end_gait(anim, Stance::Idle.action());
         }
         _ => {}
@@ -1246,6 +1249,8 @@ const STEP_LENGTH: f32 = 0.8;
 struct Footwork<'a> {
     /// The chest point a step is measured from (m).
     chest: Vec3,
+    /// The feet centre (m) a balance step's target is measured from.
+    feet_centre: Vec3,
     /// The ground height the line walk starts from (m).
     ground: f32,
     /// The stored step reach (cm): 80·√scale shortened by feral level and
@@ -1268,33 +1273,31 @@ struct Footwork<'a> {
     nearest: &'a dyn Fn(Vec3) -> Vec3,
 }
 
-/// Combat footwork, the original's step machine on Exarust's interim feet:
-/// W, S, A and D (opposing keys cancel) form the movement word along the
-/// cursor direction, whose persistence keeps a tap for 200 ms and flags a
-/// word held over 200 ms (with the crouch under 0.1) a tap. The dispatcher
+/// Combat footwork, the original's step machine on the body's feet: W, S,
+/// A and D (opposing keys cancel) form the movement word along the cursor
+/// direction, whose persistence keeps a tap for 200 ms and flags a word
+/// held over 200 ms (with the crouch under 0.1) a tap. The dispatcher
 /// ([`crate::footwork::dispatch`]) then starts a step toward the movement
 /// goal, re-lays a young step at the long stride, or queues the next step
 /// while one is under way; a step already started finishes after the keys
 /// are let go. The goal is the chest plus the word's direction (a side key
 /// at 0.8 of the facing, summed W, A, D, S) scaled by
 /// `(stride·extension·√scale)/|dir|` cm, the stride the reach or, tapped,
-/// `(1.5 − 0.3·encumbrance)` of it in double; the line walk from the
-/// chest's x/z at the ground clamps it, and it is taken only when over
-/// 400 cm² from the chest, then snapped onto the grid. Exarust's feet move
-/// the capsule toward the step's target at the walking speed (the
-/// request's stepping velocity) and land it within 20·scale cm (or after
-/// [`crate::footwork::STEP_GIVE_UP_MS`]); a landing takes a queued step
-/// through the body's queue rule (`exa_physics::body::queued_step`). The
-/// clip is "Combat Walk" while a step is under way, giving back the clip it
-/// replaced (the stance's, if that clip was a stance). A walk, run or
-/// backpedal of the exploration steering still playing when combat mode
-/// turned on ends in the stance once the body stands (`moving` false), a
-/// walk or a run over 20 frames.
+/// `(1.5 − 0.3·encumbrance)` of it in double (the step's long kind); the
+/// line walk from the chest's x/z at the ground clamps it, and it is taken
+/// only when over 400 cm² from the chest, then snapped onto the grid.
+/// `pb.step` is the body's step as the caller read it, and the caller
+/// writes it back; the body then walks it (its stance moves to the target,
+/// its feet step there, its chest pins lead toward it, the character
+/// follows its frame), ends it and takes a queued step at a landing
+/// through its queue rule. The stance clip plays throughout. A walk, run
+/// or backpedal of the exploration steering still playing when combat
+/// mode turned on ends in the stance once the body stands (`moving`
+/// false), a walk or a run over 20 frames. Returns whether a step started.
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
     input: &Keys,
     stick: Vec3,
-    req: &mut Locomotion,
     steering: &mut Steering,
     pb: &mut PlayerBody,
     anim: &mut Animator,
@@ -1302,8 +1305,12 @@ fn combat_steps(
     moving: bool,
     footing: &Footwork,
     now: u64,
-) {
+) -> bool {
     let facing = forward(pb.aim);
+    if pb.step.queue < 0 {
+        pb.step.target =
+            steering.queued_target(footing.chest, pb.step.target, footing.line, footing.nearest);
+    }
     pb.move_word.take_queue(now, &mut pb.step.queue);
     // The pad's stick vector, once its squared length is over 0.01, is the
     // analog word in place of the keys; the vector it was read with is
@@ -1314,8 +1321,9 @@ fn combat_steps(
     if pb.move_word.queue_expired {
         pb.step.queue = 0;
     }
-    let under_way = pb.step.under_way(footing.chest, footing.scale);
+    let under_way = pb.step.under_way(footing.feet_centre, footing.scale);
     let raw = pb.move_word.raw;
+    let mut started = false;
     match footwork::dispatch(&pb.move_word, raw, now, &pb.step, under_way, footing.gate) {
         footwork::StepAsk::Nothing => {}
         footwork::StepAsk::Queue(word) => {
@@ -1326,44 +1334,17 @@ fn combat_steps(
         footwork::StepAsk::Start(word) => {
             if lay_goal(pb, footing, facing, analog, word, steering) {
                 pb.step.start(now);
+                started = true;
             }
         }
         footwork::StepAsk::Relay(word) => {
             lay_goal(pb, footing, facing, analog, word, steering);
         }
     }
-    // The body's tick follows the behaviour's: the step lands (and takes a
-    // queued step) after the dispatcher, so the word takes a taken queue
-    // back on the next tick, as the original's order has it.
-    land_step(pb, footing, facing, now, steering);
-    let walking = pb.step.active && !pb.step.landed;
-    req.stepping = walking
-        .then(|| {
-            (pb.step.target - footing.chest)
-                .with_y(0.0)
-                .normalize_or_zero()
-        })
-        .filter(|d| *d != Vec3::ZERO)
-        .map(|d| d * FOOTWORK_SPEED);
-    if !anim.looping {
-        return;
-    }
-    if req.stepping.is_some() {
-        if anim.action != COMBAT_WALK {
-            pb.walk_from = Some(anim.action.clone());
-            anim.play_loop(COMBAT_WALK);
-        }
-    } else if anim.action == COMBAT_WALK {
-        let back = pb
-            .walk_from
-            .take()
-            .filter(|clip| !GAITS.contains(&clip.as_str()))
-            .unwrap_or_else(|| stance.action().into());
-        anim.play_loop(&back);
-    } else if GAITS.contains(&anim.action.as_str()) && !moving {
-        pb.walk_from = None;
+    if anim.looping && GAITS.contains(&anim.action.as_str()) && !moving {
         end_gait(anim, stance.action());
     }
+    started
 }
 
 /// Lays the movement goal for `word`, as the original's goal routine: the
@@ -1371,8 +1352,8 @@ fn combat_steps(
 /// marks the step long; the target is the chest plus the direction scaled
 /// by `(stride·extension·√scale)/|dir|` cm, clamped by the line walk and,
 /// once over 400 cm² from the chest, snapped onto the grid. Returns
-/// whether it was taken. Not modelled: a lone forward word with a target
-/// lets the target's approach rule bend the goal.
+/// whether it was taken; the target is the body's step target either way,
+/// as the original's routine writes it in place.
 fn lay_goal(
     pb: &mut PlayerBody,
     footing: &Footwork,
@@ -1414,56 +1395,6 @@ fn lay_goal(
     taken
 }
 
-/// Exarust's landing of the interim footwork's step: within 20·scale cm of
-/// its target across the ground, or once it has run
-/// [`footwork::STEP_GIVE_UP_MS`]. A landing with a queued step takes it by
-/// the body's queue rule: the target becomes the chest plus the queued
-/// vector, clamped by the line walk, the queue its countdown, and the step
-/// goes on.
-fn land_step(
-    pb: &mut PlayerBody,
-    footing: &Footwork,
-    facing: Vec3,
-    now: u64,
-    steering: &mut Steering,
-) {
-    let step = &mut pb.step;
-    if !step.active || step.landed {
-        return;
-    }
-    let d = (step.target - footing.chest).with_y(0.0) * 100.0;
-    let near = d.length() <= footwork::UNDER_WAY_CM * footing.scale;
-    if !near && now < step.leg_ms + footwork::STEP_GIVE_UP_MS {
-        return;
-    }
-    step.landed = true;
-    step.long = false;
-    if step.queue > 0
-        && let Some(next) = exa_physics::body::queued_step(
-            footing.chest,
-            step.target,
-            step.queued,
-            facing,
-            footing.scale,
-            1,
-        )
-    {
-        let (target, _) = steering.step_target(
-            footing.chest,
-            footing.ground,
-            next.target,
-            footing.line,
-            footing.nearest,
-        );
-        step.target = target;
-        step.queue = next.countdown;
-        step.landed = false;
-        // The original's step clock is not restarted by a queued step;
-        // only Exarust's give-up clock is.
-        step.leg_ms = now;
-    }
-}
-
 /// A walk or a run (the actions that set the walking condition) returns to
 /// `action` over 20 frames with the fast ease, as the body tick does when
 /// it leaves that condition. A backpedal ends at once.
@@ -1477,8 +1408,6 @@ fn end_gait(anim: &mut Animator, action: &str) {
 
 /// Frames a walk or a run blends into the stance it ends in.
 const WALK_END_BLEND: u32 = 20;
-/// Exarust's interim combat footwork clip.
-const COMBAT_WALK: &str = "Combat Walk";
 /// The exploration steering's looping gaits, which only it ends.
 const GAITS: [&str; 3] = ["Walk", "Run", "Backpedal"];
 
@@ -2608,9 +2537,9 @@ mod tests {
         assert!((behind.abs() - std::f32::consts::PI).abs() < 1e-6);
     }
 
-    /// A footing on open ground for the footwork tests: the chest at
-    /// `chest`, a human's 80 cm reach, scale 1, a gate that lets steps
-    /// through.
+    /// A footing on open ground for the footwork tests: the chest (and the
+    /// feet centre) at `chest`, a human's 80 cm reach, scale 1, a gate that
+    /// lets steps through.
     fn footing<'a>(
         chest: Vec3,
         line: LineWalk<'a>,
@@ -2618,6 +2547,7 @@ mod tests {
     ) -> Footwork<'a> {
         Footwork {
             chest,
+            feet_centre: chest,
             ground: 0.0,
             reach_cm: STEP_LENGTH * 100.0,
             extension: 1.0,
@@ -2644,47 +2574,36 @@ mod tests {
         at
     }
 
-    /// One footwork tick at `now` with `footing`.
-    #[allow(clippy::too_many_arguments)]
+    /// One footwork tick at `now` with `footing`, the body standing:
+    /// whether a step started.
     fn step_with(
         input: &Keys,
-        req: &mut Locomotion,
         pb: &mut PlayerBody,
         anim: &mut Animator,
-        stance: Stance,
-        moving: bool,
         footing: &Footwork,
         now: u64,
-    ) {
+    ) -> bool {
         let mut steering = pb.steering;
-        combat_steps(
+        let started = combat_steps(
             input,
             Vec3::ZERO,
-            req,
             &mut steering,
             pb,
             anim,
-            stance,
-            moving,
+            Stance::Defence,
+            false,
             footing,
             now,
         );
         pb.steering = steering;
+        started
     }
 
     /// The footwork, one behaviour tick at `now`, on open ground with the
     /// chest at the origin.
-    fn steps(
-        input: &Keys,
-        req: &mut Locomotion,
-        pb: &mut PlayerBody,
-        anim: &mut Animator,
-        stance: Stance,
-        moving: bool,
-        now: u64,
-    ) {
+    fn steps(input: &Keys, pb: &mut PlayerBody, anim: &mut Animator, now: u64) -> bool {
         let f = footing(Vec3::ZERO, &open, &stay);
-        step_with(input, req, pb, anim, stance, moving, &f, now);
+        step_with(input, pb, anim, &f, now)
     }
 
     const W: Keys = Keys {
@@ -2696,58 +2615,56 @@ mod tests {
         mouse: false,
     };
 
+    fn guard() -> Animator {
+        Animator::new("Default", "Defence stance")
+    }
+
     /// A footwork step whose target the grid's line walk clamps within
-    /// 20 cm is not taken: no walk, no clip; 21 cm away it is, and the
-    /// step's target is recorded for the overlay.
+    /// 20 cm is not taken; 21 cm away it is, and the step's target is
+    /// recorded for the overlay. The stance clip plays throughout.
     #[test]
     fn footwork_stops_where_its_step_target_is_clamped() {
-        let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
-        let mut anim = Animator::new("Default", "Defence stance");
-        let mut walk = |near: f32, now: u64, req: &mut Locomotion, anim: &mut Animator| {
+        let mut anim = guard();
+        let mut walk = |near: f32, now: u64, anim: &mut Animator| {
             let wall = move |from: Vec3, to: Vec3| (from + (to - from).normalize() * near, true);
             let f = footing(Vec3::ZERO, &wall, &stay);
-            step_with(&W, req, &mut pb, anim, Stance::Defence, false, &f, now);
-            pb.steering.line
+            let started = step_with(&W, &mut pb, anim, &f, now);
+            (started, pb.steering.line, pb.step)
         };
-        let asked = walk(0.2, 1000, &mut req, &mut anim).unwrap();
-        assert_eq!(req.stepping, None);
-        assert_eq!(anim.action, "Defence stance");
+        let (started, asked, step) = walk(0.2, 1000, &mut anim);
+        assert!(!started && !step.active);
+        assert!(
+            (step.target - Vec3::Z * 0.2).length() < 1e-6,
+            "the target is written"
+        );
+        let asked = asked.unwrap();
         assert!(asked.blocked && (asked.to - Vec3::Z * 0.8).length() < 1e-6);
-        walk(0.21, 1012, &mut req, &mut anim);
-        assert!(req.stepping.is_some_and(|v| v.z > 0.0));
-        assert_eq!(anim.action, "Combat Walk");
+        let (started, _, step) = walk(0.21, 1012, &mut anim);
+        assert!(started && step.active && !step.balance_step && step.started_ms == 1012);
+        assert_eq!(anim.action, "Defence stance");
     }
 
     /// A word held over 200 ms becomes a tap, and a step younger than
     /// 300 ms is then re-laid at (1.5 − 0.3·encumbrance) of the reach,
     /// narrowed once from double: 120 cm from 80 cm, 97.2 cm from a reach
-    /// of 72 cm at encumbrance 0.5. A crouch of 0.1 (above the double 0.1)
-    /// is no tap; the float just under it is.
+    /// of 72 cm at encumbrance 0.5; the step becomes the long kind. A crouch
+    /// of 0.1 (above the double 0.1) is no tap; the float just under it is.
     #[test]
     fn a_tapped_word_relays_a_young_step_long() {
         let long = |reach: f32, encumbrance: f32, crouch: f32| {
-            let mut req = Locomotion::default();
             let mut pb = PlayerBody::new(0.0).crouching(crouch);
             pb.set_combat(true);
-            let mut anim = Animator::new("Default", "Defence stance");
+            let mut anim = guard();
             let mut f = footing(Vec3::ZERO, &open, &stay);
             f.reach_cm = reach;
             f.encumbrance = encumbrance;
             for now in [1000, 1200, 1201] {
-                step_with(
-                    &W,
-                    &mut req,
-                    &mut pb,
-                    &mut anim,
-                    Stance::Defence,
-                    false,
-                    &f,
-                    now,
-                );
+                step_with(&W, &mut pb, &mut anim, &f, now);
                 if now == 1000 {
                     assert_eq!(pb.step.target.z, reach / 100.0);
+                    assert!(!pb.step.long);
                 }
             }
             pb.step.target.z
@@ -2759,167 +2676,46 @@ mod tests {
         assert_eq!(long(80.0, 0.0, under).to_bits(), 0x3f99_999a);
     }
 
-    /// A step 300 ms old queues the held raw word on the body (its full
-    /// step vector), and a landing takes it: the target becomes the chest
-    /// plus the queued vector and the queue its countdown (−1); the next
-    /// tick the word takes the queued word back and the queue clears.
+    /// A step 300 ms old queues the held raw word (its full step vector)
+    /// for the body. Once the body took it (the queue its countdown) the
+    /// next tick clamps the taken target by the line walk from the chest
+    /// and the grid's snap, the word takes the queued word back and the
+    /// queue clears; the old step then queues the held word again.
     #[test]
-    fn an_old_step_queues_the_next_and_a_landing_takes_it() {
-        let mut req = Locomotion::default();
+    fn an_old_step_queues_the_next_and_takes_it_back() {
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
-        let mut anim = Animator::new("Default", "Defence stance");
-        steps(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            1000,
-        );
-        steps(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            1299,
-        );
+        let mut anim = guard();
+        assert!(steps(&W, &mut pb, &mut anim, 1000));
+        steps(&W, &mut pb, &mut anim, 1299);
         assert_eq!(pb.step.queue, 0);
-        steps(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            1300,
-        );
+        steps(&W, &mut pb, &mut anim, 1300);
         assert_eq!(pb.step.queue, 1);
         assert_eq!(pb.move_word.queued_word, crate::steering::MOVE_FORWARD);
         assert!((pb.step.queued - Vec3::Z * 0.8).length() < 1e-6);
-        // The chest reaches the long target: the step lands and the queued
-        // step goes on from there.
-        let at = pb.step.target;
-        let f = footing(at, &open, &stay);
-        step_with(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            &f,
-            1400,
-        );
-        assert_eq!(pb.step.queue, -1);
-        assert!(!pb.step.landed);
-        assert!((pb.step.target - (at + Vec3::Z * 0.8)).length() < 1e-6);
         assert!(pb.move_word.tap);
-        // The next tick the word takes the queued word back: the tap
-        // clears, and the old step queues the held word again.
-        step_with(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            &f,
-            1412,
+        // The body took it at a landing (its rule: the chest plus the
+        // vector, the countdown −1).
+        pb.step.queue = -1;
+        pb.step.target = Vec3::new(0.0, 0.3, 1.6);
+        pb.step.started_ms = 1390;
+        let snap = |at: Vec3| at + Vec3::X * 0.05;
+        let wall = |_: Vec3, to: Vec3| (to * 0.5, true);
+        let f = footing(Vec3::Z * 0.8, &wall, &snap);
+        step_with(&W, &mut pb, &mut anim, &f, 1400);
+        assert!(
+            (pb.step.target - Vec3::new(0.05, 0.15, 0.8)).length() < 1e-6,
+            "{}",
+            pb.step.target
         );
         assert!(!pb.move_word.tap);
         assert_eq!(pb.move_word.held, crate::steering::MOVE_FORWARD);
+        assert_eq!(
+            pb.step.queue, 0,
+            "a young step does not queue the same word"
+        );
+        step_with(&W, &mut pb, &mut anim, &f, 1700);
         assert_eq!(pb.step.queue, 1);
-    }
-
-    /// Let go, a started step finishes: it walks on until it lands
-    /// (within 20 cm of its target: 30 cm short it walks on, 15 cm short
-    /// it lands; or after a second), and the clip then
-    /// goes back to the stance.
-    #[test]
-    fn a_released_step_walks_until_it_lands() {
-        let mut req = Locomotion::default();
-        let mut pb = PlayerBody::new(0.0);
-        pb.set_combat(true);
-        let mut anim = Animator::new("Default", "Defence stance");
-        steps(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            1000,
-        );
-        steps(
-            &Keys::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            1012,
-        );
-        assert!(req.stepping.is_some());
-        let near = footing(Vec3::Z * 0.5, &open, &stay);
-        step_with(
-            &Keys::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            &near,
-            1500,
-        );
-        assert!(req.stepping.is_some(), "30 cm short");
-        let near = footing(Vec3::Z * 0.65, &open, &stay);
-        step_with(
-            &Keys::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            &near,
-            1512,
-        );
-        assert_eq!(req.stepping, None);
-        assert_eq!(anim.action, "Defence stance");
-        // A step that never arrives gives up after a second.
-        let mut pb = PlayerBody::new(0.0);
-        steps(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            1000,
-        );
-        steps(
-            &Keys::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            1999,
-        );
-        assert!(req.stepping.is_some());
-        steps(
-            &Keys::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            2000,
-        );
-        assert_eq!(req.stepping, None);
     }
 
     /// No step is laid while walking (condition 1), under 0.7 energy (or a
@@ -2948,22 +2744,12 @@ mod tests {
                 swinging: true,
             },
         ] {
-            let mut req = Locomotion::default();
             let mut pb = PlayerBody::new(0.0);
-            let mut anim = Animator::new("Default", "Defence stance");
+            let mut anim = guard();
             let mut f = footing(Vec3::ZERO, &open, &stay);
             f.gate = gate;
-            step_with(
-                &W,
-                &mut req,
-                &mut pb,
-                &mut anim,
-                Stance::Defence,
-                false,
-                &f,
-                1000,
-            );
-            assert_eq!(req.stepping, None, "{gate:?}");
+            assert!(!step_with(&W, &mut pb, &mut anim, &f, 1000), "{gate:?}");
+            assert!(!pb.step.active, "{gate:?}");
         }
     }
 
@@ -2971,35 +2757,16 @@ mod tests {
     /// the ground, keeping its height; an untaken one is not.
     #[test]
     fn a_taken_goal_snaps_onto_the_grid() {
-        let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
-        let mut anim = Animator::new("Default", "Defence stance");
+        let mut anim = guard();
         let shift = |at: Vec3| at + Vec3::new(0.1, -5.0, 0.0);
         let f = footing(Vec3::ZERO, &open, &shift);
-        step_with(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            &f,
-            1000,
-        );
+        step_with(&W, &mut pb, &mut anim, &f, 1000);
         assert!((pb.step.target - Vec3::new(0.1, 0.0, 0.8)).length() < 1e-6);
         let mut pb = PlayerBody::new(0.0);
         let short = |_: Vec3, _: Vec3| (Vec3::Z * 0.1, true);
         let f = footing(Vec3::ZERO, &short, &shift);
-        step_with(
-            &W,
-            &mut req,
-            &mut pb,
-            &mut anim,
-            Stance::Defence,
-            false,
-            &f,
-            1000,
-        );
+        step_with(&W, &mut pb, &mut anim, &f, 1000);
         assert_eq!(pb.step.target, Vec3::Z * 0.1);
     }
 
@@ -3023,24 +2790,15 @@ mod tests {
     #[test]
     fn a_diagonal_step_weighs_the_side_by_0_8() {
         let aim = |w: bool, a: bool, d: bool| {
-            let mut req = Locomotion::default();
             let mut pb = PlayerBody::new(0.0);
-            let mut anim = Animator::new("Default", "Defence stance");
+            let mut anim = guard();
             let keys = Keys {
                 w,
                 a,
                 d,
                 ..Keys::default()
             };
-            steps(
-                &keys,
-                &mut req,
-                &mut pb,
-                &mut anim,
-                Stance::Defence,
-                false,
-                1000,
-            );
+            steps(&keys, &mut pb, &mut anim, 1000);
             pb.steering.line.unwrap().to
         };
         let diagonal = aim(true, true, false);
@@ -3049,98 +2807,72 @@ mod tests {
         assert!((side - Vec3::new(-STEP_LENGTH, 0.0, 0.0)).length() < 1e-6);
     }
 
-    /// A clamp 15 cm ahead and 15 cm up is 450 cm² and starts a step (which
-    /// lands at once: it is within 20 cm across the ground). The same 15 cm
-    /// on the level is 225 cm² and starts none.
+    /// A clamp 15 cm ahead and 15 cm up is 450 cm² and starts a step. The
+    /// same 15 cm on the level is 225 cm² and starts none.
     #[test]
     fn footwork_takes_a_raised_clamp_inside_20_cm() {
         for (end, taken) in [
             (Vec3::new(0.0, 0.15, 0.15), true),
             (Vec3::new(0.0, 0.0, 0.15), false),
         ] {
-            let mut req = Locomotion::default();
             let mut pb = PlayerBody::new(0.0);
-            let mut anim = Animator::new("Default", "Defence stance");
+            let mut anim = guard();
             let line = move |_: Vec3, _: Vec3| (end, true);
             let f = footing(Vec3::ZERO, &line, &stay);
-            step_with(
-                &W,
-                &mut req,
-                &mut pb,
-                &mut anim,
-                Stance::Defence,
-                false,
-                &f,
-                1000,
-            );
+            step_with(&W, &mut pb, &mut anim, &f, 1000);
             assert_eq!(pb.step.active, taken, "{end}");
         }
     }
 
-    /// The footwork plays the combat walk while a step is under way and
-    /// gives back the clip it replaced: the guard stays the guard.
+    /// A balance step whose target is within 20 cm of the feet is not under
+    /// way: the held word starts a footwork step over it.
     #[test]
-    fn the_combat_walk_gives_back_the_clip_it_replaced() {
-        let mut req = Locomotion::default();
+    fn a_settled_balance_step_gives_way_to_the_footwork() {
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
-        let mut anim = Animator::new("Default", "Defence stance");
-        let stance = Stance::CombatIdle;
-        let a = Keys {
-            a: true,
-            ..Keys::default()
+        let mut anim = guard();
+        pb.step = crate::footwork::StepRecord {
+            active: true,
+            balance_step: true,
+            started_ms: 900,
+            target: Vec3::X * 0.1,
+            ..Default::default()
         };
-        steps(&a, &mut req, &mut pb, &mut anim, stance, false, 1000);
-        assert_eq!(anim.action, "Combat Walk");
+        assert!(steps(&W, &mut pb, &mut anim, 1000));
+        assert!(!pb.step.balance_step);
+        pb.step.balance_step = true;
+        pb.step.target = Vec3::X * 0.3;
         assert!(
-            req.stepping.is_some_and(|v| v.x > 0.0),
-            "{:?}",
-            req.stepping
+            !steps(&W, &mut pb, &mut anim, 1012),
+            "30 cm off is under way"
         );
-        steps(
-            &Keys::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-            2000,
-        );
-        assert_eq!(anim.action, "Defence stance");
-        assert_eq!(req.stepping, None);
     }
 
     /// Tab pressed while walking: the exploration walk (or run, or
-    /// backpedal) ends in the stance once the body stands, also after the
-    /// footwork's walk took over from it, instead of walking on the spot.
+    /// backpedal) ends in the stance once the body stands, instead of
+    /// walking on the spot.
     #[test]
     fn an_exploration_walk_ends_in_the_stance() {
-        let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
-        let stance = Stance::Defence;
+        let f = footing(Vec3::ZERO, &open, &stay);
         for gait in ["Walk", "Run", "Backpedal"] {
             let mut anim = Animator::new("Default", gait);
             // Still moving (stopping softly) it walks on.
-            steps(
+            let mut steering = pb.steering;
+            combat_steps(
                 &Keys::default(),
-                &mut req,
+                Vec3::ZERO,
+                &mut steering,
                 &mut pb,
                 &mut anim,
-                stance,
+                Stance::Defence,
                 true,
+                &f,
                 0,
             );
             assert_eq!(anim.action, gait);
-            steps(
-                &Keys::default(),
-                &mut req,
-                &mut pb,
-                &mut anim,
-                stance,
-                false,
-                0,
-            );
+            steps(&Keys::default(), &mut pb, &mut anim, 0);
             assert_eq!(anim.action, "Defence stance", "{gait}");
             let (blend, ease) = if gait == "Backpedal" {
                 (0.0, Ease::Linear)
@@ -3149,30 +2881,6 @@ mod tests {
             };
             assert_eq!((anim.blend, anim.ease), (blend, ease), "{gait}");
         }
-        let mut anim = Animator::new("Default", "Walk");
-        steps(
-            &Keys {
-                w: true,
-                ..Keys::default()
-            },
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-            0,
-        );
-        assert_eq!(anim.action, "Combat Walk");
-        steps(
-            &Keys::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-            1000,
-        );
-        assert_eq!(anim.action, "Defence stance");
     }
 
     /// When the body leaves the walking condition the original starts the
@@ -3405,12 +3113,11 @@ mod tests {
         }
     }
 
-    /// Standing in exploration, a gait and the interim combat walk end in
-    /// Idle; any other looping clip is the stance's to change, and a clip
+    /// Standing in exploration, a gait ends in Idle; any other looping clip is the stance's to change, and a clip
     /// played once is left to end; moving starts the gait from any loop.
     #[test]
     fn the_exploration_steering_only_ends_walks() {
-        for gait in ["Walk", "Run", "Backpedal", "Combat Walk"] {
+        for gait in ["Walk", "Run", "Backpedal"] {
             let mut anim = Animator::new("Torch", gait);
             explore_clip(&mut anim, None);
             assert_eq!(anim.action, "Idle", "{gait}");

@@ -1136,6 +1136,44 @@ fn the_ground_placement_puts_the_pose_at_the_snapped_height() {
     );
 }
 
+/// The placement on the ground restarts the balance's history: the chest
+/// point is taken on the placed parts as both this tick's and last
+/// tick's, its velocities are zero (so the next tick's chest step reads
+/// no jump), every foot state is cleared and the feet centre is the mean
+/// of the placed anchors.
+#[test]
+fn the_ground_placement_restarts_the_chest_and_the_feet() {
+    let mut body = biped();
+    let posed: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+    body.aim(Affine3A::IDENTITY, posed.clone());
+    {
+        let drive = body.drive.as_mut().unwrap();
+        drive.balance.record_chest(Vec3::new(3.0, 1.0, 0.0));
+        drive.balance.record_chest(Vec3::new(4.0, 1.0, 0.0));
+        drive.balance.record_chest(Vec3::new(5.0, 1.0, 0.0));
+        assert!(drive.balance.fast_velocity().x > 0.0);
+    }
+    for leg in &mut body.legs {
+        leg.state = FootState(FootState::TOUCHING | FootState::ANCHORED);
+    }
+    body.place_on_ground(&floor()[..], Affine3A::IDENTITY, &posed, 0)
+        .expect("ground under the feet");
+    let chest = body.chest_point().unwrap();
+    let b = body.drive.as_ref().unwrap().balance();
+    assert_eq!(b.chest(), Some(chest));
+    assert_eq!(
+        (b.fast_velocity(), b.slow_velocity()),
+        (Vec3::ZERO, Vec3::ZERO)
+    );
+    let mean = (body.legs[0].anchor + body.legs[1].anchor) * 0.5;
+    assert!((b.feet_centre() - mean).length() < 1e-6);
+    assert!(body.legs.iter().all(|l| l.state == FootState(0)));
+    // The next chest step reads no velocity from the placement's jump.
+    let mut next = b.clone();
+    next.record_chest(chest);
+    assert_eq!(next.fast_velocity(), Vec3::ZERO);
+}
+
 /// The leg order: the biped's first thigh hangs at −9 cm (its right), so
 /// its legs keep their order; mirrored, the first thigh at +9 cm swaps
 /// them. A single leg never swaps.

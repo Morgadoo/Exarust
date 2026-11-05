@@ -152,8 +152,18 @@ pub(super) struct Steps {
     /// the later one. NaN until written.
     pub still_at: f32,
     pub still_plus: f32,
-    /// A queued footwork step's vector (m), zero when none waits, and the
-    /// landings seen when it was queued.
+    /// The episode is a balance step: set when the balance routine starts
+    /// a step from rest, cleared by every other start (a footwork step, a
+    /// queued step, a knockback), by the step's end and on every tick the
+    /// body is not stepping. The player's footwork reads it: a balance
+    /// step is under way only while its target is far from the feet.
+    pub balance_step: bool,
+    /// The step queue: 1 while a queued footwork step waits, −2 or −1 once
+    /// the body took it (before or after the episode's first landing), 0
+    /// for none. The player's behaviour clears a taken queue.
+    pub queue: i32,
+    /// A queued footwork step's vector (m), and the landings seen when it
+    /// was queued.
     pub queued: Vec3,
     pub queued_landings: u32,
     /// The landings the feet last reported, so a new landing is recognised.
@@ -188,6 +198,8 @@ impl Default for Steps {
             knockback: false,
             still_at: f32::NAN,
             still_plus: f32::NAN,
+            balance_step: false,
+            queue: 0,
             queued: Vec3::ZERO,
             queued_landings: 0,
             landings_seen: 0,
@@ -206,6 +218,8 @@ pub(super) fn begin_knockback(steps: &mut Steps, target: Vec3) {
     steps.knockback = true;
     steps.stepping = true;
     steps.out_of_balance = false;
+    steps.balance_step = false;
+    steps.queue = 0;
     steps.target = target;
     if !steps.placed {
         steps.standing = target;
@@ -420,6 +434,7 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
         if clear > TARGET_CLEAR * t.scale {
             if !steps.stepping {
                 steps.stepping = true;
+                steps.balance_step = true;
                 steps.started = steps.clock;
                 steps.near = 0;
                 steps.landed_from = t.landings;
@@ -566,6 +581,7 @@ pub(super) struct FootView {
 /// and 1 after it (the original's countdown). Returns whether the AI is to
 /// be told the step points its way.
 pub(super) fn take_queued(
+    queue: i32,
     queued: Vec3,
     chest: Vec3,
     target: Vec3,
@@ -573,7 +589,7 @@ pub(super) fn take_queued(
     scale: f32,
     landings: i32,
 ) -> Option<super::feet::QueuedStep> {
-    if queued == Vec3::ZERO {
+    if queue <= 0 {
         return None;
     }
     super::feet::queued_step(chest, target, queued, facing, scale, landings)

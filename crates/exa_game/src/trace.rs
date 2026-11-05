@@ -105,6 +105,17 @@ const LOCOMOTION: [&str; 12] = [
     "goal_x",
     "goal_z",
 ];
+/// Then the body's step (empty for a body without muscles): whether its
+/// episode runs, whether it is a balance step and of the long kind (1 or
+/// 0), its target across the ground (cm) and its queue word.
+const STEP: [&str; 6] = [
+    "step",
+    "step_balance",
+    "step_long",
+    "step_x",
+    "step_z",
+    "step_queue",
+];
 /// A part target's columns: its place (cm) and its rotation.
 const TARGET: [&str; 7] = ["x", "y", "z", "qx", "qy", "qz", "qw"];
 
@@ -185,6 +196,7 @@ pub fn header() -> String {
     columns.extend(SWING.iter().map(|s| s.to_string()));
     columns.extend(PARRY.iter().map(|s| s.to_string()));
     columns.extend(LOCOMOTION.iter().map(|s| s.to_string()));
+    columns.extend(STEP.iter().map(|s| s.to_string()));
     columns.join(",")
 }
 
@@ -277,6 +289,7 @@ fn trace_bodies(
             None => text.push_str(",,"),
         }
         text.push_str(&locomotion_columns(locomotion));
+        text.push_str(&step_columns(body.footwork_step()));
         text.push('\n');
     }
     let ticks = trace.ticks + 1;
@@ -314,6 +327,23 @@ fn locomotion_columns(locomotion: Option<(&Locomotion, &Locomotor)>) -> String {
         l.stop.name(),
         req.goal.x * CM,
         req.goal.z * CM,
+    )
+}
+
+/// The step columns of a row, each led by its comma: empty for a body
+/// without muscles.
+fn step_columns(step: Option<exa_physics::body::FootworkStep>) -> String {
+    let Some(s) = step else {
+        return ",".repeat(STEP.len());
+    };
+    format!(
+        ",{},{},{},{},{},{}",
+        u8::from(s.stepping),
+        u8::from(s.balance_step),
+        u8::from(s.long),
+        s.target.x * CM,
+        s.target.z * CM,
+        s.queue,
     )
 }
 
@@ -499,8 +529,9 @@ mod tests {
                 + SWING.len()
                 + PARRY.len()
                 + LOCOMOTION.len()
+                + STEP.len()
         );
-        assert_eq!(columns.last(), Some(&LOCOMOTION[11]));
+        assert_eq!(columns.last(), Some(&STEP[5]));
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
         let at = |name: &str| columns.iter().position(|c| *c == name).unwrap();
