@@ -13,7 +13,11 @@
 //! level. They live in a pool of cube textures shared by every light; a
 //! light that needs a slot takes a free one or one whose light needs none
 //! this frame. Characters cast here too, skinned by their joints in the
-//! caster shader. Rules: `docs/RENDERING.md` (Cached cube shadows).
+//! caster shader. In a tile-grid level each face also takes the black lid
+//! of the room holding the light ([`CubeLid`]), drawn after the casters
+//! with its front faces culled, as the original's room manager adds it to
+//! every face it renders for an omni light. Rules: `docs/RENDERING.md`
+//! (Cached cube shadows).
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -64,6 +68,7 @@ impl Plugin for CubeShadowsPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "cube_shadow.wesl");
         app.init_resource::<PointShadows>()
+            .init_resource::<CubeLids>()
             .init_resource::<CubeStats>()
             .init_resource::<Pool>()
             .init_resource::<CubeJobs>()
@@ -117,6 +122,8 @@ const ALL_FACES: u8 = 0x3F;
 pub struct CubeStats {
     pub faces: usize,
     pub draws: usize,
+    /// Rooms' lids drawn into faces since start-up.
+    pub lid_draws: u64,
 }
 
 /// Whether point lights cast shadows at all (`--no-shadows` turns it off).
@@ -128,6 +135,25 @@ impl Default for PointShadows {
         Self(true)
     }
 }
+
+/// Whether the rooms' lids go into the cube faces (`--no-cube-lids` turns
+/// it off, to compare).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct CubeLids(pub bool);
+
+impl Default for CubeLids {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// The black lid (the merged ceiling strips, world space) of the room that
+/// holds a light, which the room manager draws into each face rendered for
+/// it: its back faces (front faces culled) at the light's plain depth scale
+/// (distance / R, no caster bias), after the casters. Set by the world's
+/// room view; a change must put the light's faces out of date.
+#[derive(Component, Clone, Debug, Default, PartialEq)]
+pub struct CubeLid(pub Option<Handle<Mesh>>);
 
 /// A light's cached cube: its pool slot and the faces to render.
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -283,6 +309,8 @@ struct CasterDraw {
     skinned: bool,
     /// The texture whose alpha cuts the shadow ([`shadow_cut_texture`]).
     cut: Option<AssetId<Image>>,
+    /// A room's lid: front faces culled instead of back faces.
+    lid: bool,
 }
 
 /// One draw as the caster shader reads it.
@@ -522,6 +550,16 @@ fn skin_joints(
     Some(offset as u32)
 }
 
+/// A light whose faces [`build_jobs`] lists.
+type CubeLight = (
+    Entity,
+    &'static GlobalTransform,
+    &'static CubeSlot,
+    &'static CubeCasters,
+    &'static mut CubeShadow,
+    Option<&'static CubeLid>,
+);
+
 /// Lists the casters of every face both needed and dirty, for the render
 /// world, and marks those faces done. A face draws the casters whose sphere
 /// touches it (or whose faces are not known yet); a skinned caster's joints
@@ -529,13 +567,8 @@ fn skin_joints(
 #[allow(clippy::too_many_arguments)]
 fn build_jobs(
     mut jobs: ResMut<CubeJobs>,
-    mut lights: Query<(
-        Entity,
-        &GlobalTransform,
-        &CubeSlot,
-        &CubeCasters,
-        &mut CubeShadow,
-    )>,
+    mut lights: Query<CubeLight>,
+    lids_on: Res<CubeLids>,
     casters: CasterData,
     joints: Query<&GlobalTransform>,
     bindposes: Res<Assets<SkinnedMeshInverseBindposes>>,
@@ -549,7 +582,11 @@ fn build_jobs(
     posed.clear();
     let projection =
         bevy::math::proj::perspective_infinite_reverse(std::f32::consts::FRAC_PI_2, 1.0, NEAR);
-    for (entity, transform, slot, list, mut cube) in &mut lights {
+    for (entity, transform, slot, list, mut cube, lid) in &mut lights {
+        let lid = lid
+            .and_then(|l| l.0.as_ref())
+            .filter(|_| lids_on.0)
+            .map(Handle::id);
         let Some(s) = cube.slot else { continue };
         let faces = cube.needed & cube.dirty;
         if faces == 0 {
@@ -601,7 +638,12 @@ fn build_jobs(
                         .is_some_and(|m| m.cuts_shadow() || m.params.flags & flags::TWO_SIDED != 0),
                     skinned: joint_offset.is_some(),
                     cut,
+                    lid: false,
                 });
+            }
+            if let Some(mesh) = lid {
+                jobs.draws
+                    .push(lid_draw(mesh, clip_from_world, position, slot.radius));
             }
             let end = jobs.draws.len() as u32;
             jobs.faces.push(FaceJob {
@@ -615,7 +657,27 @@ fn build_jobs(
     *stats = CubeStats {
         faces: jobs.faces.len(),
         draws: jobs.draws.len(),
+        lid_draws: stats.lid_draws + jobs.draws.iter().filter(|d| d.lid).count() as u64,
     };
+}
+
+/// The draw of a room's lid into a face: in world space already, written at
+/// distance / R (the room manager hands the face's program the light's
+/// plain reciprocal radius, no caster scale), culling front faces.
+fn lid_draw(mesh: AssetId<Mesh>, clip_from_world: Mat4, light: Vec3, radius: f32) -> CasterDraw {
+    CasterDraw {
+        mesh,
+        gpu: GpuDraw {
+            world_from_local: Mat4::IDENTITY.to_cols_array(),
+            clip_from_world: clip_from_world.to_cols_array(),
+            light: light.extend(1.0 / radius).to_array(),
+            joints: [0; 4],
+        },
+        two_sided: false,
+        skinned: false,
+        cut: None,
+        lid: true,
+    }
 }
 
 // ---- Render world ---------------------------------------------------------
@@ -632,6 +694,8 @@ struct CubePipelineKey {
     alpha_cut: bool,
     two_sided: bool,
     skinned: bool,
+    /// Front faces culled (a room's lid).
+    lid: bool,
 }
 
 impl CubePipeline {
@@ -685,9 +749,15 @@ impl SpecializedMeshPipeline for CubePipeline {
                 ..default()
             }),
             // Front faces cast, as the original culls back faces; two-sided
-            // materials cast both.
+            // materials cast both; a room's lid casts its back faces.
             primitive: PrimitiveState {
-                cull_mode: (!key.two_sided).then_some(Face::Back),
+                cull_mode: if key.two_sided {
+                    None
+                } else if key.lid {
+                    Some(Face::Front)
+                } else {
+                    Some(Face::Back)
+                },
                 ..default()
             },
             depth_stencil: Some(DepthStencilState {
@@ -861,6 +931,7 @@ fn prepare_draws(
                 alpha_cut: d.cut.is_some(),
                 two_sided: d.two_sided,
                 skinned: d.skinned,
+                lid: d.lid,
             };
             let Ok(layout) = mesh
                 .layout
@@ -1173,6 +1244,7 @@ mod tests {
             alpha_cut: false,
             two_sided: false,
             skinned: true,
+            lid: false,
         };
         let ids: Vec<_> = CubePipeline::vertex_attributes(key)
             .iter()
@@ -1207,6 +1279,7 @@ mod tests {
             alpha_cut: false,
             two_sided: false,
             skinned: false,
+            lid: false,
         };
         let first = cached_pipeline(&mut cache, (layout.clone(), plain), || {
             calls += 1;
@@ -1226,6 +1299,7 @@ mod tests {
             alpha_cut: true,
             two_sided: false,
             skinned: false,
+            lid: false,
         };
         let failed = cached_pipeline(&mut cache, (layout, cut), || {
             calls += 1;
@@ -1233,5 +1307,17 @@ mod tests {
         });
         assert_eq!(failed, None);
         assert_eq!(calls, 2);
+    }
+
+    /// A room's lid goes into a face in world space at the light's plain
+    /// reciprocal radius, culled the other way round.
+    #[test]
+    fn a_lid_draw_is_world_space_at_the_plain_radius() {
+        let clip = Mat4::from_scale(Vec3::splat(2.0));
+        let d = lid_draw(AssetId::default(), clip, Vec3::new(1.0, 2.0, 3.0), 4.0);
+        assert!(d.lid && !d.two_sided && !d.skinned && d.cut.is_none());
+        assert_eq!(d.gpu.world_from_local, Mat4::IDENTITY.to_cols_array());
+        assert_eq!(d.gpu.clip_from_world, clip.to_cols_array());
+        assert_eq!(d.gpu.light, [1.0, 2.0, 3.0, 0.25]);
     }
 }

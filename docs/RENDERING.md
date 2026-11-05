@@ -2486,7 +2486,23 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
     exactly, cross terms included;
   - the 64 cubes form a pool. A light that needs a slot takes a free one,
     or one whose light needs no face this frame (that light's faces go out
-    of date).
+    of date);
+  - in a tile-grid level every face also takes the black lid of the room
+    holding the light (the merged `+R…` ceiling strips, found by the
+    world-point room query on the light's position), drawn after the
+    casters with **front faces culled** and written at distance / R with no
+    caster scale, as the room manager's omni-shadow hook adds it to each
+    face the original renders for a point light (every point light is the
+    omni kind; only the sun is not). A light under the lid sees its
+    underside, so nothing above the lid is lit by it; a light above it sees
+    only culled faces. A light that moves into another room, or that gets
+    its lid when the shells arrive, renders its faces again.
+    `--no-cube-lids` leaves the lids out to compare; the frame profiler
+    counts the lids drawn. In the shipped levels the lights hang below the
+    wall tops, so the lid changes almost nothing on screen (two grid shots
+    of exanima06, lids on and off, differ by no more than the torches' flicker;
+    a test torch put above the lid shows the cull: drawn the other way round,
+    the lid darkens the room below it).
 
   Bevy's own point-light shadow maps stay off. They re-rendered all six
   faces of every light with a character linked, every frame: in exanima01's
@@ -3271,16 +3287,20 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   colour writes off, so what lies under them keeps the black clear colour.
   Exarust draws them as opaque, unlit pure black: the same image over a
   black clear, without depending on draw order. They cast no shadows,
-  receive no light, fill no GI and have no collision. [missing] The original
-  also draws a light's own room's lid into that light's omni shadow faces,
-  so a ceiling blocks the light; Exarust's lids cast nothing, so point-light
-  shadows do not include ceilings. The manager's ray queries against the active rooms' occluders or lids are
-  modelled (`grid::ray_blocks`, `grid::segment_blocks`): the active rooms in
-  order, a room with no shell answering no at once, and each shell through
-  the engine's one-sided mesh ray test (front faces only, determinant at
-  least the f32 epsilon, barycentrics checked before the division,
-  0 < t < limit). Their callers, picking under the cursor and a segment
-  test, are not ported.
+  receive no light, fill no GI and have no collision in the main view;
+  each light's own room's lid goes into its cube shadow faces instead (see
+  [Cached cube shadows](#lights), front faces culled), so a ceiling blocks
+  the light. The manager's ray queries against the active rooms' occluders
+  or lids (`grid::ray_blocks`, `LevelRooms::shell_ray`, kept with the
+  level's rooms): the active rooms in order, a room with no shell answering
+  no at once, and each shell through the engine's one-sided mesh ray test
+  (front faces only, determinant at least the f32 epsilon, barycentrics
+  checked before the division, 0 < t < limit). Callers: the hand's reach
+  test (the cursor ray up to the picked point, occluders: a point seen
+  across a wall's hollow is out of reach; doors are exempt) and the kinesis
+  power's clear line from the head to its aim (occluders, then lids, before
+  the level). Not ported: the dragged item's placement and the kinesis
+  pick, which ask the occluders along the cursor ray too.
 - **What each state draws.** Hidden: nothing of the room (its meshes are
   hidden; its lights, GI emitters, shadow links and colliders stay).
   Adjacent: the room with its occluder and its lid, so from above it is a
