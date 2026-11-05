@@ -490,13 +490,14 @@ pub fn level_lighting_scene(
             );
             if input.log {
                 info!(
-                    "scene preset: {level} outdoor draw from seed {used:#010x} (night allowed {night_allowed}): time of day {:.4}, daylight {:.3}, rain target {:.3}, cloudiness {:.3}, fog distance {:.3}, wind {:.3}, view amount {:.4}",
+                    "scene preset: {level} outdoor draw from seed {used:#010x} (night allowed {night_allowed}): time of day {:.4}, daylight {:.3}, rain target {:.3}, cloudiness {:.3}, fog distance {:.3}, wind {:.3}, sun softness source {:.3}, view post amount {:.4} (stored, never read)",
                     drawn.time_of_day,
                     env.daylight,
                     drawn.rain,
                     drawn.cloudiness,
                     drawn.fog_distance,
                     drawn.wind,
+                    env.sun_softness_source(),
                     drawn.view_sun
                 );
             }
@@ -504,8 +505,16 @@ pub fn level_lighting_scene(
                 env.set_sun_position(env.azimuth, time);
                 if input.log {
                     info!(
-                        "EXA_TIME_OF_DAY: {level} placed at {time:.4} (daylight {:.3})",
-                        env.daylight
+                        "EXA_TIME_OF_DAY: {level} placed at {time:.4} (daylight {:.3}, {} towards {:?}, light colour {:?}, sun softness source {:.3})",
+                        env.daylight,
+                        if env.daylight as f64 >= 0.44 {
+                            "sun"
+                        } else {
+                            "moon"
+                        },
+                        env.sun_towards,
+                        env.sky_sun_colour,
+                        env.sun_softness_source()
                     );
                 }
             }
@@ -718,10 +727,12 @@ fn live_environment(
     mut ambient: ResMut<GlobalAmbientLight>,
     mut sky_light: Option<ResMut<exa_render::gi::GiSkyLight>>,
     mut lights: Query<(&mut DirectionalLight, &mut Transform), With<SunLight>>,
+    shadow_region: Option<ResMut<crate::sun_shadow::SunShadowRegion>>,
 ) {
     let Some(mut runtime) = runtime else {
         return;
     };
+
     // The camera that sees the world: active and drawing the default layer
     // (the inventory figure's camera draws its own layers).
     let world = cameras.iter().find(|(camera, _, layers)| {
@@ -756,15 +767,24 @@ fn live_environment(
     *events = env.tick(now, weather, &mut draws);
     *tick_now = now;
     let frame = env.apply_frame(forward);
+    // The sun placement writes its dimmer into the sun light's softness
+    // source, which the sun map's update reads each frame.
+    if let Some(mut region) = shadow_region {
+        let c = env.sun_softness_source();
+        if region.c.to_bits() != c.to_bits() {
+            region.c = c;
+        }
+    }
     if 0.0 < env.time_speed && *frames >= *time_log_at {
         *time_log_at = frames.saturating_add(TIME_LOG_FRAMES);
         info!(
-            "time of day {:.4} (frame {frames}, {now} ms): daylight {:.3}, sun towards {:?}, sun light {:?} x {:.2}, ambient {:?}, fog {:?}",
+            "time of day {:.4} (frame {frames}, {now} ms): daylight {:.3}, sun towards {:?}, sun light {:?} x {:.2} (softness source {:.3}), ambient {:?}, fog {:?}",
             env.time_of_day,
             env.daylight,
             env.sun_towards,
             env.sun_light_colour,
             frame.sun_intensity,
+            env.sun_softness_source(),
             frame.ambient,
             frame.fog.map(|f| (f.colour, f.far))
         );
@@ -1220,6 +1240,60 @@ mod tests {
         // The flicker lit the fog, and the strike ended when it was due.
         assert!(brightest > 0.1, "{brightest}");
         assert!(now > end && now <= end + 16);
+    }
+
+    /// The sun placement's dimmer is the sun light's softness source: a
+    /// clear moonlit night near the threshold softens a little, clouds
+    /// more, an indoor level not at all. The live frame hands it to the
+    /// sun map's region.
+    #[test]
+    fn the_sun_placement_sets_the_shadow_softness_source() {
+        let input = |seed| PresetInput {
+            seed,
+            engine_seed: seed,
+            now: 0,
+            log: false,
+        };
+        let mut scene = level_lighting_scene("arenao3", None, 0, None, Some(input(15)));
+        // Seed 15 is a clear noon (cloudiness 1.258): nothing dims.
+        assert_eq!(scene.env.sun_softness_source(), 0.0);
+        // At 0.86 the moon is up, daylight 0.351: 0.089 under the 0.44
+        // threshold, so 1 − 0.89 brightens the light's softness.
+        scene.env.set_sun_position(scene.env.azimuth, 0.86);
+        let c = scene.env.sun_softness_source();
+        let offset = ((scene.env.daylight as f64 - 0.44).abs()) as f32;
+        assert!((c - (1.0 - offset * 10.0)).abs() < 1e-6, "{c}");
+        assert!(c > 0.0 && c < 0.2, "{c}");
+        // A cloudier sky adds twice its capped excess.
+        scene.env.cloudiness = 2.0;
+        scene.env.set_sun_position(scene.env.azimuth, 0.86);
+        let cloudy = scene.env.sun_softness_source();
+        assert!((cloudy - (c + 0.4)).abs() < 1e-5, "{cloudy} vs {c}");
+        // An indoor level has no sky, so no source.
+        let indoor = level_lighting_scene("exanima01", None, 3, None, Some(input(1)));
+        assert_eq!(indoor.env.sun_softness_source(), 0.0);
+
+        // The live frame writes it into the sun map's region.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(ClearColor::default())
+            .insert_resource(GlobalAmbientLight::default())
+            .insert_resource(SceneEnvRuntime::new(scene.env.clone(), 1))
+            .insert_resource(crate::sun_shadow::SunShadowRegion::new(
+                exa_render::sun_fit::SceneBox::from_bounds(Vec3::splat(-100.0), Vec3::splat(100.0)),
+                exa_render::sun_fit::VerticalRange::of_level(
+                    &exa_render::sun_fit::SceneBox::from_bounds(
+                        Vec3::splat(-100.0),
+                        Vec3::splat(100.0),
+                    ),
+                    None,
+                ),
+                true,
+            ))
+            .add_systems(Update, live_environment);
+        app.update();
+        let region = app.world().resource::<crate::sun_shadow::SunShadowRegion>();
+        assert_eq!(region.c.to_bits(), cloudy.to_bits());
     }
 
     #[test]

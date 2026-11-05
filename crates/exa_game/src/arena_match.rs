@@ -64,8 +64,9 @@ pub struct ArenaMap {
     pub name: &'static str,
     /// Where the player's side stands, in centimetres.
     pub spawn: [f32; 3],
-    /// An indoor arena's amount for the view's post-process (copied to the
-    /// post processor; what it drives there is not traced). Outdoor 0.
+    /// An indoor arena's amount for the view's post-process: the view
+    /// copies it into its post processor, which never reads it, so it
+    /// changes nothing on screen. Outdoor 0.
     pub view_amount: f32,
     /// An outdoor arena lets the environment draw take its one-in-six
     /// night branch (time of day from 0.76 to 1). The map load hands the

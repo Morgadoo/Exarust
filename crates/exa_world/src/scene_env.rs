@@ -1118,11 +1118,16 @@ pub struct OutdoorPreset {
     pub wind: f32,
     /// The rain target; zero when it does not rain.
     pub rain: f32,
-    /// The value the preset writes into the view's sky/sun field (the
-    /// field's identity is inferred) [guess]. Zero on a day; on a night it
-    /// is `0.5·(cloudiness − 2) + (the previous time of day − 0.7)`, in the
-    /// original's mixed precision, and zero when the caller passes the view
-    /// flag clear.
+    /// The value the preset writes into the view's post-processor amount
+    /// (the field the indoor arenas set to 0.3 and 0.6). Zero on a day; on a
+    /// night it is `0.5·(cloudiness − 2) + (the previous time of day − 0.7)`,
+    /// in the original's mixed precision, and zero when the caller passes
+    /// the view flag clear. The view creates its post processor when the
+    /// amount is above 0.01 or its own post flag is set (the view's
+    /// constructor sets it, so the post processor always exists) and copies
+    /// the amount into it, where nothing reads it: no pass or uniform of the
+    /// post processor takes it, so it changes nothing on screen. Exarust
+    /// keeps it for the log only.
     pub view_sun: f32,
 }
 
@@ -1181,7 +1186,11 @@ pub struct SceneEnvironment {
     pub sun_towards: [f32; 3],
     /// The sky map's resolution, which the constructor picks.
     pub sky_map_resolution: u32,
-    /// The sun light's dimmer, 0 with a clear sky.
+    /// The value a sun placement writes into the `_Sunlight` light's
+    /// softness source (the `c` the sun map's update turns into the filter
+    /// softness and the caster bias): twice the capped cloud excess, plus
+    /// `1 − 10·|daylight − 0.44|` within 0.1 of the threshold, so clouds and
+    /// a body near the horizon soften the shadows. 0 without a sky.
     pub sun_dim: f32,
     /// The camera's far plane.
     pub far_plane: f32,
@@ -1381,6 +1390,16 @@ impl SceneEnvironment {
     /// (`exa_formats::save_chunk::load_reset`).
     pub fn reset_for_load(&mut self) {
         self.sun_height = 0.0;
+    }
+
+    /// The sun light's softness source as the last sun placement left it:
+    /// [`Self::sun_dim`] under a sky, 0 without one or without a sun light.
+    pub fn sun_softness_source(&self) -> f32 {
+        if self.sky && self.sun_light {
+            self.sun_dim
+        } else {
+            0.0
+        }
     }
 
     /// The indoor/underground preset: the sun light off, no sky, fog at
