@@ -1057,8 +1057,8 @@ fn the_placement_snaps_the_legs_onto_the_ground_it_finds() {
     assert_eq!(empty.snap_placement(NONE, Affine3A::IDENTITY), None);
 }
 
-/// The snap's character ground is where the placement puts the feet: a 15 cm
-/// platform puts them at 15 cm, not at the pelvis's frame height.
+/// The snap's character ground is the mean of the feet's: a 15 cm
+/// platform puts it at 15 cm, not at the pelvis's frame height.
 #[test]
 fn the_placement_frame_height_maps_to_the_feet() {
     let platform = square(Vec2::ZERO, 0.15, 10.0);
@@ -1069,6 +1069,82 @@ fn the_placement_frame_height_maps_to_the_feet() {
         .unwrap();
     let feet = body.placement_feet();
     assert!((feet - 0.15).abs() < 1e-4, "feet {feet}");
+}
+
+/// The spawn's pelvis target: the stand height of the posed contacts (the
+/// clip root over the lowest contact less the sole) plus twice the scale
+/// plus 5 cm, as the pose-only sampler sets it for a character whose
+/// condition word is still 0; the Unconscious 1 clip leaves the stand out.
+#[test]
+fn the_spawn_target_is_the_stand_height_plus_seven_centimetres() {
+    let body = biped();
+    let posed: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+    let contact = posed[body.legs[0].shin]
+        .transform_point3(body.legs[0].point)
+        .y
+        * CM;
+    let stand = 103.0 - (contact - body.sole * CM);
+    let target = body.placement_target(&posed, 0, false).unwrap();
+    assert!((target - (stand + 7.0)).abs() < 1e-3, "{target} {stand}");
+    let out = body.placement_target(&posed, 0, true).unwrap();
+    assert!((out - 7.0).abs() < 1e-4, "{out}");
+    assert_eq!(body.placement_target(&posed, 99, false), None);
+}
+
+/// The placement on the ground: the snap's height becomes the frame's,
+/// the pelvis lands there with every part at its posed offset and at rest,
+/// each foot's anchor is its posed contact on the frame less the clip
+/// root (unrotated) at the ground plus the sole. On a 15 cm platform the
+/// pelvis stands 15 cm higher than on the floor.
+#[test]
+fn the_ground_placement_puts_the_pose_at_the_snapped_height() {
+    let place = |level: &[[Vec3; 3]]| {
+        let mut body = biped();
+        let posed: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+        body.aim(Affine3A::IDENTITY, posed.clone());
+        // The body has moved since its pose: the placement puts it back.
+        for p in &mut body.parts {
+            for q in &mut p.positions {
+                *q += Vec3::new(0.0, -0.2, 0.0);
+            }
+        }
+        let height = body
+            .place_on_ground(level, Affine3A::IDENTITY, &posed, 0)
+            .expect("ground under the feet");
+        (body, posed, height)
+    };
+    let (body, posed, height) = place(&floor()[..]);
+    let pelvis = body.parts[0].transform().translation;
+    assert!((pelvis.y * CM - height).abs() < 1e-3, "{pelvis:?} {height}");
+    let lowered = posed[3].translation - posed[0].translation;
+    let got = body.parts[3].transform().translation - pelvis;
+    assert!((got - lowered).length() < 1e-4, "{got:?} {lowered:?}");
+    for p in &body.parts {
+        assert_eq!(p.positions, p.previous);
+    }
+    let root = Vec3::from(posed[0].translation);
+    for leg in &body.legs {
+        let contact = posed[leg.shin].transform_point3(leg.point);
+        let mut want = Affine3A::from_translation(Vec3::new(0.0, height / CM, 0.0))
+            .transform_point3(contact)
+            - root;
+        want.y = body.sole;
+        assert!(
+            (leg.anchor - want).length() < 1e-4,
+            "{:?} {want:?}",
+            leg.anchor
+        );
+    }
+    let (_, _, raised) = place(&square(Vec2::ZERO, 0.15, 10.0)[..]);
+    assert!((raised - height - 15.0).abs() < 1e-2, "{raised} {height}");
+    // No ground: the body is left where it is.
+    let mut empty = biped();
+    let posed: Vec<Affine3A> = empty.parts.iter().map(|p| p.transform()).collect();
+    empty.aim(Affine3A::IDENTITY, posed.clone());
+    assert_eq!(
+        empty.place_on_ground(NONE, Affine3A::IDENTITY, &posed, 0),
+        None
+    );
 }
 
 /// The leg order: the biped's first thigh hangs at −9 cm (its right), so

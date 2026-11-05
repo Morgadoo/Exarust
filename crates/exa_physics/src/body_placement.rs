@@ -21,14 +21,21 @@
 //! After the parts both take the feet's centre as the mean of their
 //! anchors ([`mean_point`]). Lengths are cm, as the original's.
 //!
-//! Exarust's spawn places the parts with [`super::Ragdoll::place_at`] at
-//! the character frame times the clip pose (the pelvis at the frame's
-//! height plus the clip root's), and does not run the leg snap; these are
-//! tested against the original's instructions but not called.
+//! Exarust's spawn lowers the first clip's pose onto a frame at the feet
+//! plus the pose-only sampler's pelvis target less 8 cm
+//! ([`placed_parts`], [`SPAWN_PELVIS_DROP`],
+//! [`super::Ragdoll::placement_target`]); the player's third behaviour
+//! tick runs the placement on the ground
+//! ([`super::Ragdoll::place_on_ground`]: [`placed_parts`] and
+//! [`ground_foot_anchor`] after the leg snap). The matrix placement's foot
+//! anchors and pins and [`mean_point`] are tested but not called.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
+/// The spawn's placement at a matrix puts the pelvis this far under the
+/// placement's height plus the pose-only sampler's pelvis target (cm).
+pub const SPAWN_PELVIS_DROP: f32 = 8.0;
 /// A matrix placement's foot anchors sit this far under the sole (cm).
 pub const MATRIX_ANCHOR_DROP: f32 = 8.0;
 /// A matrix placement's pins sit this far under their posed height (cm).

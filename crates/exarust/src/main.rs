@@ -57,8 +57,8 @@
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
-//!          --original-spawn           living bodies spawn in the original's order (key pick, pelvis on the frame,
-//!                                     leg snap); their pelvis height is logged for 120 ticks at debug level
+//!          --spawn-watch <ticks>      log each living body's pelvis height over its feet and its ground for this many
+//!                                     fixed ticks after it spawns (default 120; exa_game::limp at debug level)
 //!          --flat-floor               play mode: the player spawns with the state word's flat-floor bit 0x1000, as
 //!                                     the original's lying (mode 2) spawn and its character viewers set it: the
 //!                                     feet stand on a floor at 0 without probing and the thighs splay 5°
@@ -343,9 +343,8 @@ pub struct Options {
     pub opponent_shield: Option<String>,
     /// A shield on the player's off arm (an object model, or `any`).
     pub shield: Option<String>,
-    /// Spawn living bodies in the original's order (key pick, pelvis on the
-    /// frame, leg snap) instead of the default clip-pose spawn.
-    pub original_spawn: bool,
+    /// Fixed ticks each spawn's pelvis height is logged for (default 120).
+    pub spawn_watch: Option<u32>,
     /// Play mode: the player spawns with the flat-floor bit (the original's
     /// lying spawn's state word).
     pub flat_floor: bool,
@@ -873,7 +872,7 @@ fn main() -> AppExit {
                     })
                     .unwrap_or_default();
             }
-            "--original-spawn" => options.original_spawn = true,
+            "--spawn-watch" => options.spawn_watch = args.next().and_then(|v| v.parse().ok()),
             "--flat-floor" => options.flat_floor = true,
             "--still-opponent" => {
                 options.opponent = true;
@@ -1470,8 +1469,8 @@ fn main() -> AppExit {
     if let Some(trace) = trace {
         app.insert_resource(trace);
     }
-    if options.original_spawn {
-        app.insert_resource(exa_game::limp::OriginalSpawn);
+    if let Some(ticks) = options.spawn_watch {
+        app.insert_resource(exa_game::limp::SpawnWatchTicks(ticks));
     }
     if !options.debug_wounds.is_empty() {
         app.insert_resource(exa_character::blood::DebugWounds(

@@ -545,8 +545,8 @@ fn the_look_ahead_is_recorded_for_the_overlay() {
 }
 
 /// The spawn snap: nothing on the first two behaviour ticks, on the third
-/// the move across the ground to the nearest walkable point, never again;
-/// none when the third finds the character down.
+/// the nearest walkable point to the frame's origin, never again; none
+/// when the third finds the character down.
 #[test]
 fn the_spawn_snaps_on_the_third_tick() {
     let nearest = |p: Vec3| p + Vec3::new(0.3, 0.5, -0.15);
@@ -554,8 +554,8 @@ fn the_spawn_snaps_on_the_third_tick() {
     let at = Vec3::new(2.0, 1.0, 3.0);
     assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
     assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
-    let by = s.snap(Condition::NORMAL, at, &nearest).unwrap();
-    assert!((by - Vec3::new(0.3, 0.0, -0.15)).length() < 1e-6, "{by}");
+    let to = s.snap(Condition::NORMAL, at, &nearest).unwrap();
+    assert!((to - Vec3::new(2.3, 1.5, 2.85)).length() < 1e-6, "{to}");
     assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
     let mut s = Steering::default();
     s.snap(Condition::NORMAL, at, &nearest);
