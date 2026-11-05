@@ -612,10 +612,7 @@ fn the_legs_strength_follows_the_gait_and_support() {
     assert!((body.parts[thigh].factor - 0.25).abs() < 1e-6);
     assert_eq!(body.links[limit].strength, kept);
     // Standing with no ground under its feet.
-    body.set_bearing(Bearing {
-        carried: false,
-        ..Bearing::default()
-    });
+    body.set_bearing(Bearing::default());
     for _ in 0..200 {
         body.measure_balance(NONE);
         body.aim(Affine3A::IDENTITY, pose.clone());

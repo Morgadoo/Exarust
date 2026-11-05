@@ -100,6 +100,9 @@ const PROBE_DEPTH: f32 = 2000.0;
 const LOWEST_ABOVE: f32 = 100.0;
 /// The ground a query that meets nothing gives (cm).
 const NO_GROUND: f32 = -10000.0;
+/// The character's ground counts while it lies at most this far (m) under
+/// the pelvis ([`Ragdoll::character_ground`]; Exarust's guard).
+const GROUND_UNDER_PELVIS: f32 = 3.0;
 /// The sentinel a nearest-foot search starts from: the float just under the
 /// maximum, which the original stores once and shares with its trailing-foot
 /// search, so a NaN distance never wins.
@@ -851,8 +854,6 @@ impl Ragdoll {
         // Down: lying, or getting up (a collapsing body, unsupported as it
         // is, still probes its feet standing).
         let down = (!drive.supported && !bearing.collapsing) || bearing.getting_up;
-        // Only a standing body rides its controller.
-        let carried = bearing.carried && drive.supported;
         let forward = drive.root.map_or(Vec3::Z, |r| {
             Vec3::from(r.matrix3.z_axis)
                 .with_y(0.0)
@@ -1405,10 +1406,9 @@ impl Ragdoll {
             b.airborne += 1;
         }
         b.grounded = grounded > 0;
-        // A standing body with no foot on the ground has no balance, unless
-        // its character controller carries it (Exarust's own, until the
-        // body stands on its feet).
-        if !bearing.moving && !b.has_support && !carried {
+        // A standing body with no foot on the ground has no balance (the
+        // original's: no capsule holds it up).
+        if !bearing.moving && !b.has_support {
             b.value = 0.0;
         }
         drive.support = if b.grounded { b.value } else { 0.0 };
@@ -1601,10 +1601,28 @@ impl Ragdoll {
         Some(height)
     }
 
+    /// The character's ground (m) as the body last measured it: with
+    /// support the lowest foot's (the feet's blend while walking), without
+    /// it the ground under the pelvis (the original's ground, which the
+    /// character's place stands on: Exarust's model root is at the feet).
+    /// None without balance measures, and when it lies more than
+    /// [`GROUND_UNDER_PELVIS`] under the pelvis or above it (Exarust's guard:
+    /// a fall's far ground, or a ground not measured yet).
+    pub fn character_ground(&self) -> Option<f32> {
+        if !self.measures_balance() {
+            return None;
+        }
+        let drive = self.drive.as_ref()?;
+        let pelvis = self.parts.iter().find(|p| p.parent.is_none())?;
+        let under = drive.balance.under;
+        let below = pelvis.transform().translation.y - under;
+        (under.is_finite() && (0.0..=GROUND_UNDER_PELVIS).contains(&below)).then_some(under)
+    }
+
     /// The character ground the last placement snap averaged under the two
     /// feet (m). The ground placement ([`Ragdoll::place_on_ground`]) keeps
-    /// the controller where it stands: Exarust's model root is at the
-    /// feet, which the capsule holds on the floor, so only the parts take
+    /// the character where it stands: Exarust's model root is at the
+    /// feet, which stand on the character's ground, so only the parts take
     /// the snap's frame height.
     pub fn placement_feet(&self) -> f32 {
         self.drive.as_ref().map_or(0.0, |d| d.balance.under)

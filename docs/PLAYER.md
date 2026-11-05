@@ -102,7 +102,7 @@ decides from it each tick (below). Outside combat:
   block cells as walls do). Blocked, the walk is no longer free: it walks
   toward the clamped goal and brakes within its stop distance; within
   100 cm of it the run and the sprint latch are cut too. Without a grid a
-  ray from hip height stands in, its goal clamped a capsule radius and a
+  ray from hip height stands in, its goal clamped 28 cm and a
   30 cm grid cell short of what it meets (Exarust's own; edges lower than
   the hip are missed).
 - **The clips.** The body tick's locomotion starts the walk in the tick
@@ -146,13 +146,14 @@ decides from it each tick (below). Outside combat:
 - **Speeds.** A body with muscles walks by its carry: the drive (thrust,
   phase push, braking, the 0.4·tone drag) is added to the carry with S²,
   the push column and the feet's lag, so walking settles near 1.6 m/s
-  where thrust balances the drag, retention and foot friction. Its capsule
-  only follows its frame (a tenth of the way a step, at most 2 cm), as the
-  original has no capsule. A body without muscles is carried by its
-  capsule at Exarust's speeds: walking 1.4 m/s, a full run 3.6 m/s,
+  where thrust balances the drag, retention and foot friction. Its
+  character goes where its frame is, at the ground its feet measured, with
+  nothing swept: the original has no capsule, and walls stop the body's
+  own parts. A body without muscles is carried by its character at
+  Exarust's speeds: walking 1.4 m/s, a full run 3.6 m/s,
   backpedalling 1.22 m/s; braking it keeps the original's brake drive and
-  limb retention. NPCs (the duellist) still write their capsule's velocity
-  directly through their path driver when they have no muscles.
+  limb retention. NPCs (the duellist) still write their character's
+  velocity directly through their path driver when they have no muscles.
 - Moving firms the body up: its stance factor rises 0.01 per tick from the
   race's 0.5 to 0.7 walking and 1 running (it keeps what it reached until
   the character stops), so its link muscles pull with tone × 0.7 or × 1
@@ -1060,7 +1061,7 @@ level shows; not in the arena hub).
   once. From 300 ms on any held raw word queues. A queued step stores the
   raw word and its full step vector (the side at full weight, scaled by
   `reach·√scale/|dir|`).
-- **Landing.** Exarust's interim feet move the capsule toward the target
+- **Landing.** Exarust's interim feet move the character toward the target
   at the walking speed and land the step within 20·scale cm of it (or
   after a second, Exarust's own, so a wall does not hold it). A landing
   with a queue takes it by the body's queue rule
@@ -1979,9 +1980,8 @@ backward; lying still under 0.3 it gets up once its feet give support or
 1.2 s after they lost it, with Get up from its front or Get Up 2 from its
 back, turned the way it rises; unsteady on its feet (0.6–0.8) it takes the
 Defence stance or Rebalance ([formats/RSQ.md](formats/RSQ.md), Falls and
-get-ups). A standing player whose capsule perches on a stone its feet hang
-beside keeps its balance and drops onto its feet (Exarust's own, while the
-capsule leads the body).
+get-ups). A standing player with no foot on the ground loses its balance,
+as the original's does (no capsule perches it).
 
 `--press key@frame,...` presses keys at frames after the load
 (`key@a-b` holds one from frame a to b, and `LMB`, `RMB`, `MMB` and `Ctrl`

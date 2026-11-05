@@ -1,5 +1,5 @@
 //! Physics: a fixed-step rapier world, static colliders built from level
-//! geometry, and kinematic character bodies.
+//! geometry, and the characters' places, which follow their bodies.
 //!
 //! This is the collision foundation. The articulated, motor-driven character
 //! body of the original (`docs/PLAN.md`, Phase 3) builds on it.
@@ -43,8 +43,6 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
-use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
-use rapier3d::parry::bounding_volume::BoundingVolume;
 use rapier3d::prelude::*;
 
 /// Simulation rate of the fixed step: the original's 83 Hz (12 ms) time-
@@ -53,7 +51,7 @@ pub const STEP_HZ: f64 = 83.0;
 /// Steps a slow frame may catch up on; the original drops the rest of its
 /// backlog (game time slows instead of spiralling).
 pub const MAX_STEPS_BEHIND: f64 = 4.0;
-// The capsule world's gravity is the body solver's: the original's default
+// The rapier world's gravity is the body solver's: the original's default
 // environment, −980.665 cm/s².
 use body::GRAVITY;
 
@@ -65,7 +63,6 @@ impl Plugin for PhysicsPlugin {
         world.gravity = Vec3::new(0.0, GRAVITY, 0.0);
         world.integration_parameters.dt = (1.0 / STEP_HZ) as f32;
         app.insert_resource(Physics(world))
-            .init_resource::<PendingKinematics>()
             .init_resource::<StaticBuild>()
             .init_resource::<ColliderNodes>()
             .init_resource::<StaticColliders>()
@@ -75,11 +72,12 @@ impl Plugin for PhysicsPlugin {
                 PostUpdate,
                 build_static_colliders.after(TransformSystems::Propagate),
             )
-            // Each tick moves the character controllers first, before the
-            // pre-step; the bodies' character ticks then read where they are.
+            // Each tick puts the characters where their bodies' frames
+            // went, before the pre-step; the bodies' character ticks then
+            // read where they are.
             .add_systems(
                 FixedUpdate,
-                (register_characters, move_characters, step_world)
+                (move_characters, step_world)
                     .chain()
                     .in_set(CharacterControllers)
                     .after(body::TickBehaviour)
@@ -89,16 +87,15 @@ impl Plugin for PhysicsPlugin {
                 RunFixedMainLoop,
                 show_characters.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
             )
-            .add_systems(Update, release_characters)
             .add_plugins((body::BodyPlugin, prop::PropPlugin));
         grip_solve::plugin(app);
     }
 }
 
-/// The character controllers' move at the start of each fixed step: the
-/// capsules are registered, swept by the velocities the AI and the last
-/// character ticks asked, and the rapier world steps. Before
-/// [`body::BodyPreStep`].
+/// The characters' move at the start of each fixed step: each goes where
+/// its body's frame was placed and onto the ground under its feet (no
+/// capsule, no sweep: the original's character position is its frame),
+/// and the rapier world steps. Before [`body::BodyPreStep`].
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CharacterControllers;
 
@@ -122,24 +119,21 @@ impl Default for Physics {
 impl Physics {
     /// Empties the world: every body, collider and joint goes, and the
     /// gravity and fixed step the plugin set are re-applied. A level change
-    /// uses it to free the level's colliders and the characters' capsules in
-    /// one go; entities that keep a controlled character have their
-    /// [`CharacterHandles`] removed first so [`register_characters`] makes it
-    /// a new capsule.
+    /// uses it to free the level's colliders and the props' bodies in one
+    /// go (characters keep nothing in this world).
     pub fn clear(&mut self) {
         self.0 = PhysicsWorld::new();
         self.0.gravity = Vec3::new(0.0, GRAVITY, 0.0);
         self.0.integration_parameters.dt = (1.0 / STEP_HZ) as f32;
     }
 
-    /// How many rigid bodies the world holds (the fixed step's capsules and
-    /// the props' bodies).
+    /// How many rigid bodies the world holds (the props' bodies).
     pub fn body_count(&self) -> usize {
         self.0.bodies.len()
     }
 
-    /// How many colliders the world holds (level geometry, capsules and
-    /// prop stand-ins).
+    /// How many colliders the world holds (level geometry and prop
+    /// stand-ins).
     pub fn collider_count(&self) -> usize {
         self.0.colliders.len()
     }
@@ -463,34 +457,40 @@ const BUILD_TRIANGLES: usize = 60_000;
 /// Builds in flight at once; more wait, so the pool stays free for others.
 const BUILDS_IN_FLIGHT: usize = 4;
 
-/// The share of the way to its follow point ([`CharacterBody::follow`]) a
-/// character's feet go in a fixed step, at most [`FOLLOW_MOST`]: a body's
-/// frame moves in steps (5 and 10 cm dead-bands, a get-up's re-anchoring
-/// by up to a metre), and the character, the player's position, glides
-/// after it.
-pub const FOLLOW_SHARE: f32 = 0.1;
-/// The farthest (m) a character's feet follow in a fixed step: 2 cm, about
-/// a brisk walk (1.66 m/s).
-pub const FOLLOW_MOST: f32 = 0.02;
-/// A follow point closer than this (m) across the ground is not followed.
-const FOLLOW_MIN: f32 = 0.001;
+/// How far (m) above its feet a character without muscles asks for the
+/// ground under it, and how far under its feet it reaches.
+const GROUND_ABOVE: f32 = 0.35;
+const GROUND_BELOW: f32 = 0.3;
 
-/// A kinematic capsule moved by the character controller.
-#[derive(Component, Debug, Clone)]
+/// A character's place in the world: where its feet stand, the origin of
+/// its entity. The original has no capsule and no kinematic controller: a
+/// living body walks by its carry and its parts meet the level and the
+/// other bodies, and the character's position is its frame, which follows
+/// the pelvis (`body_frame.rs`). Each fixed step puts the character where
+/// its body's frame was last placed ([`CharacterBody::follow`]), across the
+/// ground at once, at the height of the ground its body measured under its
+/// feet ([`CharacterBody::ground`]); nothing is swept. A character without
+/// muscles (no body tick sets its follow) walks by its desired velocity
+/// and stands on the level under it (Exarust's own: the original has no
+/// such character that walks).
+#[derive(Component, Debug, Clone, Default)]
 pub struct CharacterBody {
-    pub radius: f32,
-    /// Distance between the capsule's sphere centres.
-    pub half_height: f32,
-    /// Desired horizontal velocity (m/s), set by input or AI.
+    /// Desired horizontal velocity (m/s) of a character without muscles,
+    /// set by input or AI; the interim footwork's step on any character.
     pub desired_velocity: Vec3,
+    /// Vertical velocity (m/s) of a character without muscles that has no
+    /// ground under it.
     pub vertical_velocity: f32,
+    /// It stands on ground: its body measured the ground under its feet,
+    /// or (without muscles) the level is under it.
     pub grounded: bool,
-    /// A place across the ground the next fixed step draws the feet toward,
-    /// [`FOLLOW_SHARE`] of the way (at most [`FOLLOW_MOST`]), through the
-    /// controller, before the character's own walk: its
-    /// body's frame, which a living character follows (Exarust's own: the
-    /// original has no capsule). Taken by the step.
+    /// Where the body's frame puts the character's feet across the ground,
+    /// set by its character tick; the next fixed step moves it there.
     pub follow: Option<Vec3>,
+    /// The height (m) of the ground the body's feet stand on, set by its
+    /// character tick with the follow; the next fixed step stands the
+    /// character on it.
+    pub ground: Option<f32>,
     /// How far the last step's follow moved the feet (m): the body, which
     /// is carried with its character, has made that move already.
     followed: Vec3,
@@ -502,22 +502,6 @@ pub struct CharacterBody {
     /// the simulated position, so that what is carried on the character
     /// (its body) reads where it really is.
     shown: Vec3,
-}
-
-impl Default for CharacterBody {
-    fn default() -> Self {
-        Self {
-            radius: 0.28,
-            half_height: 0.62,
-            desired_velocity: Vec3::ZERO,
-            vertical_velocity: 0.0,
-            grounded: false,
-            follow: None,
-            followed: Vec3::ZERO,
-            steps: None,
-            shown: Vec3::ZERO,
-        }
-    }
 }
 
 impl CharacterBody {
@@ -558,46 +542,55 @@ impl CharacterBody {
     fn drawn(&self, alpha: f32) -> Option<Vec3> {
         self.steps.map(|(now, before)| before.lerp(now, alpha))
     }
-}
 
-/// The character's own body and capsule in the physics world, so other
-/// characters collide with it.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct CharacterHandles {
-    pub body: RigidBodyHandle,
-    pub collider: ColliderHandle,
-}
-
-fn register_characters(
-    mut commands: Commands,
-    mut physics: ResMut<Physics>,
-    new: Query<(Entity, &CharacterBody, &Transform), Without<CharacterHandles>>,
-) {
-    for (e, body, t) in &new {
-        let centre = t.translation + Vec3::Y * (body.half_height + body.radius);
-        let rb = RigidBodyBuilder::kinematic_position_based()
-            .translation(centre)
-            .build();
-        let handle = physics.0.insert_body(rb);
-        let collider = ColliderBuilder::capsule_y(body.half_height, body.radius).build();
-        let collider = physics.0.insert_collider(collider, Some(handle));
-        commands.entity(e).insert(CharacterHandles {
-            body: handle,
-            collider,
-        });
-    }
-}
-
-/// Removes the capsules of characters that stopped being controlled (a
-/// body gone limp keeps no capsule).
-fn release_characters(
-    mut commands: Commands,
-    mut physics: ResMut<Physics>,
-    released: Query<(Entity, &CharacterHandles), Without<CharacterBody>>,
-) {
-    for (e, handles) in &released {
-        physics.0.remove_body_with_colliders(handles.body, true);
-        commands.entity(e).remove::<CharacterHandles>();
+    /// One fixed step of `dt` seconds from `start`: across the ground to
+    /// the follow point, or by the desired velocity, then onto the ground
+    /// the body measured. A character without a measured ground asks
+    /// `level` for the ground under it (from [`GROUND_ABOVE`] over its feet
+    /// to [`GROUND_BELOW`] under them) and falls when there is none.
+    /// Returns where its feet end.
+    pub fn step(&mut self, start: Vec3, dt: f32, level: impl Fn(Vec3, f32) -> Option<f32>) -> Vec3 {
+        let mut at = start;
+        self.followed = Vec3::ZERO;
+        let living = self.follow.is_some();
+        if let Some(f) = self.follow.take() {
+            let gap = (f - start).with_y(0.0);
+            if gap.is_finite() {
+                at += gap;
+                self.followed = gap;
+            }
+        }
+        // The interim footwork's step (any character), or the walk of a
+        // character without muscles.
+        at += self.desired_velocity.with_y(0.0) * dt;
+        match self.ground.take().filter(|g| g.is_finite()) {
+            Some(g) => {
+                at.y = g;
+                self.grounded = true;
+                self.vertical_velocity = 0.0;
+            }
+            // A body that measured no ground keeps its height: its own
+            // parts fall, the character is not carried up or down.
+            None if living => {}
+            None => {
+                let fall = (self.vertical_velocity + GRAVITY * dt).max(-50.0);
+                let reach = GROUND_BELOW + (-fall * dt).max(0.0);
+                match level(at + Vec3::Y * GROUND_ABOVE, GROUND_ABOVE + reach) {
+                    Some(d) => {
+                        at.y += GROUND_ABOVE - d;
+                        self.grounded = true;
+                        self.vertical_velocity = 0.0;
+                    }
+                    None => {
+                        at.y += fall * dt;
+                        self.grounded = false;
+                        self.vertical_velocity = fall;
+                    }
+                }
+            }
+        }
+        self.stepped(start, at);
+        at
     }
 }
 
@@ -857,168 +850,20 @@ fn trimesh_collider(mesh: &Mesh, global: &GlobalTransform) -> Option<Collider> {
     MeshCopy::of(mesh, global)?.collider()
 }
 
-/// Kinematic targets computed this step, applied before the world steps.
-#[derive(Resource, Default)]
-pub struct PendingKinematics(pub Vec<(RigidBodyHandle, Vec3)>);
-
+/// Moves every character to its body's frame (or by its desired velocity
+/// without muscles) and onto its ground, at the start of the fixed step.
 fn move_characters(
     time: Res<Time>,
     physics: Res<Physics>,
-    mut bodies: Query<(
-        &mut CharacterBody,
-        &mut Transform,
-        Option<&CharacterHandles>,
-    )>,
-    mut moves: Local<Vec<(RigidBodyHandle, Vec3)>>,
-    mut physics_mut: ResMut<PendingKinematics>,
-    mut stats: Local<Option<SweepStats>>,
+    mut bodies: Query<(&mut CharacterBody, &mut Transform)>,
 ) {
-    if stats.is_none() && std::env::var_os("EXA_SWEEP_STATS").is_some() {
-        *stats = Some(SweepStats::default());
-    }
     let dt = time.delta_secs();
-    let controller = KinematicCharacterController {
-        up: Vec3::Y,
-        offset: CharacterLength::Absolute(0.02),
-        slide: true,
-        autostep: Some(CharacterAutostep {
-            max_height: CharacterLength::Absolute(0.35),
-            min_width: CharacterLength::Absolute(0.2),
-            include_dynamic_bodies: false,
-        }),
-        max_slope_climb_angle: 50f32.to_radians(),
-        min_slope_slide_angle: 40f32.to_radians(),
-        snap_to_ground: Some(CharacterLength::Absolute(0.3)),
-        ..Default::default()
-    };
-    moves.clear();
-    for (mut body, mut transform, handles) in &mut bodies {
+    for (mut body, mut transform) in &mut bodies {
         let start = body.simulated(&transform);
-        body.followed = Vec3::ZERO;
-        let gap = body
-            .follow
-            .take()
-            .map_or(Vec3::ZERO, |f| (f - start).with_y(0.0));
-        let following = gap.length() > FOLLOW_MIN;
-        // A character standing still on the ground, with nothing to follow,
-        // stays where it is: no sweep needed.
-        if body.grounded && body.desired_velocity == Vec3::ZERO && !following {
-            body.stepped(start, start);
-            transform.translation = start;
-            continue;
-        }
-        let filter = match handles {
-            Some(h) => QueryFilter::default().exclude_rigid_body(h.body),
-            None => QueryFilter::default(),
-        }
-        .predicate(&solid);
-        let queries = physics.0.query_pipeline_with_filter(filter);
-        let shape = Capsule::new_y(body.half_height, body.radius);
-        // The entity's origin is at the feet; the capsule is centred above.
-        let centre_offset = body.half_height + body.radius;
-        if let Some(stats) = stats.as_mut() {
-            stats.count(&queries, &shape, start + Vec3::Y * centre_offset);
-            stats.why[0] += u32::from(!body.grounded);
-            stats.why[1] += u32::from(body.desired_velocity != Vec3::ZERO);
-            stats.why[2] += u32::from(following);
-        }
-        let mut at = start;
-        // First the follow, across the ground, through the controller: it
-        // is stopped by walls and steps up as a walk is.
-        if following {
-            let pose = Pose::from_translation(at + Vec3::Y * centre_offset);
-            let step = (gap * FOLLOW_SHARE).clamp_length_max(FOLLOW_MOST);
-            let moved = controller.move_shape(dt, &queries, &shape, &pose, step, |_| {});
-            at += moved.translation;
-            body.followed = moved.translation;
-            body.grounded = moved.grounded;
-        }
-        let end = if body.grounded && body.desired_velocity == Vec3::ZERO {
-            at
-        } else {
-            let pose = Pose::from_translation(at + Vec3::Y * centre_offset);
-            body.vertical_velocity = if body.grounded {
-                GRAVITY * dt
-            } else {
-                (body.vertical_velocity + GRAVITY * dt).max(-50.0)
-            };
-            let desired = body.desired_velocity * dt + Vec3::Y * body.vertical_velocity * dt;
-            let moved = controller.move_shape(dt, &queries, &shape, &pose, desired, |_| {});
-            body.grounded = moved.grounded;
-            at + moved.translation
-        };
-        body.stepped(start, end);
+        let end = body.step(start, dt, |from, max| {
+            physics.fixed_hit(from, Vec3::NEG_Y, max)
+        });
         transform.translation = end;
-        if body.grounded {
-            body.vertical_velocity = 0.0;
-        }
-        if let Some(h) = handles {
-            moves.push((h.body, end + Vec3::Y * centre_offset));
-        }
-    }
-    physics_mut.0.clone_from(&moves);
-    if let Some(stats) = stats.as_mut() {
-        stats.tick();
-    }
-}
-
-/// What the character sweeps meet (`EXA_SWEEP_STATS`, a debug aid): per
-/// swept character and tick, the colliders whose box reaches the capsule's
-/// and the triangles of those meshes the capsule's box reaches, logged
-/// every 83 ticks with the colliders that bring the most triangles.
-#[derive(Default)]
-struct SweepStats {
-    ticks: u32,
-    swept: u32,
-    colliders: u64,
-    triangles: u64,
-    heaviest: Vec<(usize, u32, u128, u32, Vec3, Vec3)>,
-    why: [u32; 3],
-}
-
-impl SweepStats {
-    fn count(&mut self, queries: &QueryPipeline, shape: &Capsule, centre: Vec3) {
-        let aabb = shape
-            .compute_aabb(&Pose::from_translation(centre))
-            .loosened(0.1);
-        self.swept += 1;
-        for (handle, collider) in queries.intersect_aabb_conservative(aabb) {
-            self.colliders += 1;
-            if let Some(mesh) = collider.shape().as_trimesh() {
-                let local = aabb.transform_by(&collider.position().inverse());
-                let n = mesh.bvh().intersect_aabb(&local).count();
-                self.triangles += n as u64;
-                let whole = collider.compute_aabb();
-                self.heaviest.push((
-                    n,
-                    handle.into_raw_parts().0,
-                    collider.user_data,
-                    mesh.num_triangles() as u32,
-                    whole.mins,
-                    whole.maxs,
-                ));
-            }
-        }
-    }
-
-    fn tick(&mut self) {
-        self.ticks += 1;
-        if self.ticks < 83 {
-            return;
-        }
-        self.heaviest.sort_by_key(|h| std::cmp::Reverse(h.0));
-        self.heaviest.dedup_by_key(|h| h.1);
-        info!(
-            "sweep stats: {:.1} characters swept a tick (airborne {}, walking {}, following {}), {:.1} colliders and {:.0} triangles each; heaviest (in box, handle, user data, mesh triangles, box) {:?}",
-            self.swept as f32 / self.ticks as f32,
-            self.why[0],
-            self.why[1],
-            self.why[2],
-            self.colliders as f32 / self.swept.max(1) as f32,
-            self.triangles as f32 / self.swept.max(1) as f32,
-            &self.heaviest[..self.heaviest.len().min(4)],
-        );
-        *self = Self::default();
     }
 }
 
@@ -1037,12 +882,7 @@ fn show_characters(
     }
 }
 
-fn step_world(mut physics: ResMut<Physics>, mut pending: ResMut<PendingKinematics>) {
-    for (handle, centre) in pending.0.drain(..) {
-        if let Some(rb) = physics.0.bodies.get_mut(handle) {
-            rb.set_next_kinematic_translation(centre);
-        }
-    }
+fn step_world(mut physics: ResMut<Physics>) {
     physics.0.step();
 }
 
@@ -1198,26 +1038,26 @@ mod tests {
         );
     }
 
-    /// A standing character drawn toward a follow point goes a tenth of the
-    /// way each step, but no more than 2 cm, through the controller, and
-    /// says how far it went (its body has made that move already); its
-    /// body's frame sets the point again each tick. Half a metre away it
-    /// goes 2 cm a step until it is 20 cm away, then a tenth of the rest. A
-    /// point within a millimetre is not followed, and a point is followed
-    /// only in the step after it was set.
+    /// A character goes to its follow point across the ground at once and
+    /// stands on the ground its body measured, through a wall the capsule
+    /// would have met (the body's own parts meet the level, not the
+    /// character's place), and says how far it followed (its body has made
+    /// that move already). A follow without a ground keeps the height; a
+    /// step without a follow follows nothing.
     #[test]
-    fn a_character_glides_after_its_follow_point() {
+    fn a_character_stands_where_its_frame_puts_it() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_secs_f64(1.0 / STEP_HZ),
             ))
-            .init_resource::<PendingKinematics>()
             .add_systems(Update, move_characters);
-        let mesh = Plane3d::default().mesh().size(40.0, 40.0).build();
         let mut world = PhysicsWorld::new();
+        // A wall across the way.
         world.insert_collider(
-            trimesh_collider(&mesh, &GlobalTransform::default()).unwrap(),
+            ColliderBuilder::cuboid(0.05, 2.0, 5.0)
+                .translation(Vec3::new(5.15, 1.0, -3.0))
+                .build(),
             None,
         );
         world.step();
@@ -1226,59 +1066,71 @@ mod tests {
             .world_mut()
             .spawn((
                 Transform::from_xyz(5.0, 0.02, -3.0),
-                CharacterBody {
-                    grounded: true,
-                    ..default()
-                },
+                CharacterBody::default(),
             ))
             .id();
-        // Away from the floor's diagonal, whose edge the controller's step
-        // would catch.
         let goal = Vec3::new(5.3, 5.0, -3.4);
-        let mut gap = 0.5;
-        for step in 0..40 {
-            app.world_mut()
-                .get_mut::<CharacterBody>(character)
-                .unwrap()
-                .follow = Some(goal);
-            app.update();
-            let world = app.world();
-            let body = world.get::<CharacterBody>(character).unwrap();
-            let at = world.get::<Transform>(character).unwrap().translation;
-            let left = (goal - at).xz().length();
-            let went = (gap * FOLLOW_SHARE).min(FOLLOW_MOST);
-            assert!(
-                (left - (gap - went)).abs() < 2e-4,
-                "step {step}: {left} m left of {gap}"
-            );
-            assert!((body.followed().xz().length() - went).abs() < 2e-4);
-            if step < 15 {
-                assert!((went - 0.02).abs() < 1e-6, "step {step}: {went}");
-            }
-            assert!(body.follow.is_none());
-            gap = left;
+        {
+            let mut c = app.world_mut().get_mut::<CharacterBody>(character).unwrap();
+            c.follow = Some(goal);
+            c.ground = Some(0.18);
         }
-        // Unset, nothing is followed; within a millimetre, nothing either.
         app.update();
-        assert_eq!(
-            app.world()
-                .get::<CharacterBody>(character)
-                .unwrap()
-                .followed(),
-            Vec3::ZERO
-        );
-        let at = app.world().get::<Transform>(character).unwrap().translation;
+        let world = app.world();
+        let body = world.get::<CharacterBody>(character).unwrap();
+        let at = world.get::<Transform>(character).unwrap().translation;
+        assert!((at - Vec3::new(5.3, 0.18, -3.4)).length() < 1e-5, "{at}");
+        assert!((body.followed() - Vec3::new(0.3, 0.0, -0.4)).length() < 1e-5);
+        assert!(body.grounded && body.follow.is_none() && body.ground.is_none());
+        // A follow without a ground keeps the height.
         app.world_mut()
             .get_mut::<CharacterBody>(character)
             .unwrap()
-            .follow = Some(at + Vec3::X * 0.0009);
+            .follow = Some(Vec3::new(5.4, 3.0, -3.4));
+        app.update();
+        let at = app.world().get::<Transform>(character).unwrap().translation;
+        assert!((at - Vec3::new(5.4, 0.18, -3.4)).length() < 1e-5, "{at}");
+        // Unset, nothing is followed: across the ground it stays.
         app.update();
         let world = app.world();
-        assert_eq!(world.get::<Transform>(character).unwrap().translation, at);
         assert_eq!(
             world.get::<CharacterBody>(character).unwrap().followed(),
             Vec3::ZERO
         );
+        let now = world.get::<Transform>(character).unwrap().translation;
+        assert!((now - at).xz().length() < 1e-6);
+    }
+
+    /// A character without muscles walks by its desired velocity, stands
+    /// on the level under its feet (stepping up onto a ledge within reach)
+    /// and falls where there is none.
+    #[test]
+    fn a_character_without_muscles_stands_on_the_level() {
+        let floor = |y: f32, x: f32| {
+            ColliderBuilder::cuboid(1.0, 0.1, 1.0)
+                .translation(Vec3::new(x, y - 0.1, 0.0))
+                .build()
+        };
+        let mut world = PhysicsWorld::new();
+        world.insert_collider(floor(0.0, 0.0), None);
+        world.insert_collider(floor(0.2, 2.0), None);
+        world.step();
+        let physics = Physics(world);
+        let level = |from: Vec3, max: f32| physics.fixed_hit(from, Vec3::NEG_Y, max);
+        let mut c = CharacterBody {
+            desired_velocity: Vec3::X,
+            ..default()
+        };
+        let dt = 0.5;
+        let at = c.step(Vec3::new(0.0, 0.05, 0.0), dt, level);
+        assert!((at - Vec3::new(0.5, 0.0, 0.0)).length() < 1e-4, "{at}");
+        assert!(c.grounded);
+        // Onto the 20 cm ledge.
+        let at = c.step(Vec3::new(1.2, 0.0, 0.0), dt, level);
+        assert!((at - Vec3::new(1.7, 0.2, 0.0)).length() < 1e-4, "{at}");
+        // Off its far edge: nothing under it, it falls.
+        let at = c.step(Vec3::new(2.9, 0.2, 0.0), dt, level);
+        assert!(!c.grounded && at.y < 0.2 && c.vertical_velocity < 0.0);
     }
 
     /// The meshes under a node a rigid body moves are built as its

@@ -42,7 +42,7 @@ pub trait Level {
     }
 
     /// Whether `piece` is the stand-in of a rigid body's meshes, moved with
-    /// it: the character capsules meet it, bodies skip it (they meet the
+    /// it: the rays and sweeps meet it, bodies skip it (they meet the
     /// rigid body through their pairs). None by default.
     fn movable(&self, _piece: u32) -> bool {
         false
