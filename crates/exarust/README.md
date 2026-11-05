@@ -23,7 +23,10 @@ flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--arena-tier`, `--arena-weapons`, `--debug-wound`, `--debug-nav`,
 `--bevy-sun-cascades`, `--floor-torch` (with an optional frame),
 `--weapon-blood`, `--debug-spray`, `--perks`) and keys are in
-[`docs/DEBUGGING.md`](../../docs/DEBUGGING.md).
+[`docs/DEBUGGING.md`](../../docs/DEBUGGING.md). `--versus` sets the versus
+lobby's flag, which Exanima 0.9.5 never sets, so the arena page shows VERSUS;
+a `--press` letter or digit is also typed (a scripted run can name a
+character in the creator once its name field is clicked).
 A Spirit Form cast asks the viewer for its spirit body
 (`exa_game::mind::runtime::SpiritBodyAsked`): `spawn_spirit_bodies` builds a
 record of race byte 14 through the placed-character path and marks the

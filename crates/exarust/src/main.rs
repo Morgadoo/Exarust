@@ -113,6 +113,8 @@
 //!          --static-mechanisms        debug: levers and push surfaces stay static level geometry, as before they became bodies
 //!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
+//!          --versus                   debug: set the versus lobby's flag (never set in Exanima 0.9.5), so the
+//!                                     arena page shows VERSUS; its creator's READY finds no lobby form
 //!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
 //!          --open-creator <mode>      once loaded, open the character creator: story (the background picker),
 //!                                     story-all (the picker with every background unlocked), story:N
@@ -416,6 +418,9 @@ pub struct Options {
     pub sliding_doors: bool,
     /// Open one empty form through the GUI draw path.
     pub debug_gui_form: bool,
+    /// Debug: set the versus lobby's flag, which Exanima 0.9.5 never sets,
+    /// so the arena page shows VERSUS.
+    pub versus: bool,
     /// Open the menu and the Settings form on this page (0 Settings, 1
     /// Controls) once loaded.
     pub open_settings: Option<u8>,
@@ -999,6 +1004,7 @@ fn main() -> AppExit {
             "--static-mechanisms" => options.static_mechanisms = true,
             "--sliding-doors" => options.sliding_doors = true,
             "--debug-gui-form" => options.debug_gui_form = true,
+            "--versus" => options.versus = true,
             "--open-settings" => {
                 let page = args.next().unwrap_or_default();
                 options.open_settings = match page.as_str() {
@@ -1746,6 +1752,11 @@ fn main() -> AppExit {
         .insert_resource(exa_game::settings_form::OpenSettingsOnLoad {
             page: options.open_settings,
             done: false,
+        })
+        .insert_resource({
+            let mut flow = exa_game::flow::Flow::default();
+            flow.versus = options.versus;
+            flow
         })
         .insert_resource(exa_game::creator_screen::OpenCreatorOnLoad {
             word: options.open_creator.clone(),

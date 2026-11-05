@@ -2911,6 +2911,56 @@ fn fell_player(
     }
 }
 
+/// The text a scripted press of `key` types: the lower-case letter or the
+/// digit, as an unshifted key types it.
+fn typed_text(key: KeyCode) -> Option<&'static str> {
+    const LETTERS: [(KeyCode, &str); 26] = [
+        (KeyCode::KeyA, "a"),
+        (KeyCode::KeyB, "b"),
+        (KeyCode::KeyC, "c"),
+        (KeyCode::KeyD, "d"),
+        (KeyCode::KeyE, "e"),
+        (KeyCode::KeyF, "f"),
+        (KeyCode::KeyG, "g"),
+        (KeyCode::KeyH, "h"),
+        (KeyCode::KeyI, "i"),
+        (KeyCode::KeyJ, "j"),
+        (KeyCode::KeyK, "k"),
+        (KeyCode::KeyL, "l"),
+        (KeyCode::KeyM, "m"),
+        (KeyCode::KeyN, "n"),
+        (KeyCode::KeyO, "o"),
+        (KeyCode::KeyP, "p"),
+        (KeyCode::KeyQ, "q"),
+        (KeyCode::KeyR, "r"),
+        (KeyCode::KeyS, "s"),
+        (KeyCode::KeyT, "t"),
+        (KeyCode::KeyU, "u"),
+        (KeyCode::KeyV, "v"),
+        (KeyCode::KeyW, "w"),
+        (KeyCode::KeyX, "x"),
+        (KeyCode::KeyY, "y"),
+        (KeyCode::KeyZ, "z"),
+    ];
+    const DIGITS: [(KeyCode, &str); 10] = [
+        (KeyCode::Digit0, "0"),
+        (KeyCode::Digit1, "1"),
+        (KeyCode::Digit2, "2"),
+        (KeyCode::Digit3, "3"),
+        (KeyCode::Digit4, "4"),
+        (KeyCode::Digit5, "5"),
+        (KeyCode::Digit6, "6"),
+        (KeyCode::Digit7, "7"),
+        (KeyCode::Digit8, "8"),
+        (KeyCode::Digit9, "9"),
+    ];
+    LETTERS
+        .iter()
+        .chain(DIGITS.iter())
+        .find(|(code, _)| *code == key)
+        .map(|(_, text)| *text)
+}
+
 /// `--press` and `--click`: presses each scripted key or mouse button (and
 /// clicks the left mouse button) at its frame, counted from the end of the
 /// load, holds it over its frames, and lets it go at the range's end (the
@@ -2923,6 +2973,7 @@ fn press_keys(
     mut buttons: ResMut<ButtonInput<MouseButton>>,
     mut pointer: Option<ResMut<exa_ui::ScriptedPointer>>,
     mut wheel: MessageWriter<bevy::input::mouse::MouseWheel>,
+    mut typed: MessageWriter<bevy::input::keyboard::KeyboardInput>,
     window: Query<Entity, With<bevy::window::PrimaryWindow>>,
     mut frames: Local<u32>,
 ) {
@@ -2955,6 +3006,21 @@ fn press_keys(
     for (press, over) in &options.press {
         if frame == over.start {
             info!("pressing {press:?}");
+            // A letter or digit is also typed (the creator's name field
+            // reads the typed text, not the held keys).
+            if let crate::Press::Key(key) = *press
+                && let Some(text) = typed_text(key)
+                && let Ok(window) = window.single()
+            {
+                typed.write(bevy::input::keyboard::KeyboardInput {
+                    key_code: key,
+                    logical_key: bevy::input::keyboard::Key::Character(text.into()),
+                    state: bevy::input::ButtonState::Pressed,
+                    text: Some(text.into()),
+                    repeat: false,
+                    window,
+                });
+            }
         }
         let held = over.contains(&frame);
         let let_go = frame == over.end;

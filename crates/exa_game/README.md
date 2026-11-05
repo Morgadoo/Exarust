@@ -1790,10 +1790,23 @@ selected row runs `menu_text` through `exa_ui::skin::SkinMode::MenuText`.
 its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
 mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
 the story respawn or exit, and the returns to the title behind the
-transition. A scripted mode the `EndHandlers` table holds hands the clicked
-row to its registered handler (`ScriptedEnd`) and leaves the menu to the
-script, as the original's registered table does; nothing registers one until
-the script crate runs. The title's BEGIN opens the story's background picker and
+transition. A scripted mode registered in the flow's `ScriptModes` table hands
+the clicked row to its handler (`ScriptedEnd`) and leaves the menu to the
+script, as the original's table does.
+
+The table is the original's game-mode table: registered words, each with its
+enter, begin, leave, creator-cancel and end-menu hooks (`ScriptHook`, the
+end-menu slot is `ScriptedEnd`); every lookup takes the first entry with the
+word. Exanima 0.9.5 never fills it (its count is only read, nothing holds its
+address), so every scripted-mode branch is dead in the retail game; Exarust
+keeps the lookups in place (mode switch, session begin and leave, the
+creator's cancel, the end menu) and registers nothing either. The versus
+lobby (`0x1010`) is gated the same way: the arena page shows VERSUS only with
+the versus flag, which 0.9.5 never sets (`--versus` sets it); VERSUS switches
+the mode word and opens the creator, whose READY with no lobby form does
+nothing. The creator's cancel and the class select's cancel go back to the
+title behind the transition; only the creator's runs a registered mode's
+cancel hook. The title's BEGIN opens the story's background picker and
 the creator (`creator_screen`), as do the practice rows, NEW CAREER and
 VERSUS; the saves' character screen (CONTINUE) and the manual are not
 wired; SETTINGS opens the Settings form (`settings_form`).
@@ -1926,8 +1939,10 @@ routines that were read from the original.
   (`write_created_record`): it is kept as `CreatedCharacter`, the old
   player is dropped and the story or practice starts through the flow,
   the level's player taking the record's physique, skin, hair and name.
-  BACK goes back a page or to the title. `--open-creator <mode>` opens it
-  once loaded. The arena career, versus lobby and recruit commits, the
+  BACK goes back a page or, from the first page, cancels to the title
+  behind the transition (`Flow::cancel_creator`); versus READY with no
+  lobby form leaves the creator up. `--open-creator <mode>` opens it
+  once loaded. The arena career and recruit commits, the
   power tree, voice previews and the kit lists are not wired.
 - `creator_view` is the creator's preview: an off-screen camera at the
   preview's eye over `sgccflr01.rfc` with its own lights and the figure
