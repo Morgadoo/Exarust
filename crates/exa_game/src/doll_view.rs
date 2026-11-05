@@ -589,7 +589,7 @@ fn sync_doll(
 }
 
 /// Reads the dot sheet and keeps its whole and half dots.
-fn load_dot_sheet(game: &Game) -> Option<DotSheet> {
+pub(crate) fn load_dot_sheet(game: &Game) -> Option<DotSheet> {
     let sheet = &exa_items::item_gui::SPRITE_SHEETS[0];
     let name = sheet.name.strip_suffix(".rfi").unwrap_or(sheet.name);
     let bytes = game.0.texture(name)?;

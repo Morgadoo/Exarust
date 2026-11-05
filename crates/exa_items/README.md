@@ -66,8 +66,13 @@ The description card is live (`exa_game::item_card`): a right click on a
 panel entry runs the panel's own mouse decision (the use class delays the
 card by 200 ms or builds it at once), the card is the original's 268 by 260
 form scaled with the unit, holds the panel manager's icon until it closes,
-prints the page's rows, material/socket gates, rank/points gates and value,
-and fades on the popup's squared curve; leaving the card starts the fade.
+draws the item's name as its title in the builder's tint, lays its rows out
+from the builders' template records (captions, rating dots, the weight
+slider, Flip weapon, Sockets, Rank, Points, Price; `card_records`,
+`card_layout`), draws the description in the small font in its text box,
+takes the opener's height and place, and fades on the popup's squared
+curve; leaving the card starts the fade. The rows' labels are the
+templates' (a weapon's Weight, Impact, Balance; apparel's Coverage).
 A kit's wear write reaches a card's sentence (`ItemCatalogue::write_wear`), and a kit's own copy takes its template's card under its own id (`copy_card`).
 
 The catalogue now keeps each record's card facts (display name and

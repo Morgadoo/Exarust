@@ -262,13 +262,13 @@ pub const DOLL_BORDER: i32 = 2;
 /// A screen form's design at unit 4: its size, place and border (its
 /// client inset), its child forms (client-local rectangles, each with its
 /// border) and its records (laid out in the client).
-struct ScreenDesign {
-    size: (i32, i32),
-    place: (i32, i32),
-    border: i32,
-    style: u32,
-    children: Vec<(GuiRect, i32)>,
-    records: Vec<Control>,
+pub(crate) struct ScreenDesign {
+    pub(crate) size: (i32, i32),
+    pub(crate) place: (i32, i32),
+    pub(crate) border: i32,
+    pub(crate) style: u32,
+    pub(crate) children: Vec<(GuiRect, i32)>,
+    pub(crate) records: Vec<Control>,
 }
 
 /// A screen form's geometry at a GUI unit, form-local: its design rescaled
@@ -294,7 +294,7 @@ pub struct ScreenLayout {
 }
 
 impl ScreenLayout {
-    fn rescaled(unit: i32, design: ScreenDesign) -> Self {
+    pub(crate) fn rescaled(unit: i32, design: ScreenDesign) -> Self {
         use exa_ui::gui_rescale::{FormPlace, RecordPlace, rescale_form};
         let inset = |w: i32, h: i32, b: i32| ClientRect {
             left: b,

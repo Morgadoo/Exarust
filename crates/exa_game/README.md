@@ -1395,8 +1395,14 @@ corners where they leave the client's edges). The journal, the loot window
 held), the item card and the hub's windows (the record forms, the board and
 the trade window with its character view and four item panels held) draw
 the same way (`gui_paint::paint_top_form`, `paint_held_form`) with their
-constructors' words (`gui_paint::FormWords`); Manage Company's tables and
-the board's panes keep the default background. `--open-loot FRAME` opens
+constructors' words (`gui_paint::FormWords`), as do Manage Company's and
+the board's tables (`TABLE_WORDS`), the board's picture pane and reward
+panel, Settings and its pages (the Controls page with its scroll bar), the
+manual (`MANUAL_WORDS`, its list and scrolled page), the continue screen,
+its delete box and the creator (`creator_screen::CREATION_WORDS`,
+`creation_child`, `preview_words`) and the arsenal (`ARSENAL_WORDS`, its
+column frame, columns and embedded inventory); the board's item slots and
+the loadout form's panels keep the default background. `--open-loot FRAME` opens
 the nearest dead body's loot window for unattended checks. The
 control records are laid out by the two-pass layout (the inventory's
 Encumbrance label and its Primary and Secondary page buttons in one radio

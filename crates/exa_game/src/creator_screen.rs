@@ -2724,8 +2724,10 @@ mod tests {
         // Four cards of four corners each.
         assert_eq!(strip.batch.vertices.len(), 16);
         // The hovered card's name and description are drawn when the font
-        // is loaded; without it only the backdrop, form and cards draw.
-        assert!(painted.layers.len() >= 3);
+        // is loaded; without it only the backdrop and the cards draw (the
+        // picker's form words give the line skin's form draw nothing to
+        // draw: no frame style, no backdrop bit).
+        assert!(painted.layers.len() >= 2);
         assert_eq!(
             CreatorEntry::parse("story-all"),
             Some(CreatorEntry::story(0))

@@ -1729,10 +1729,21 @@ title string, and 0x800000 keeps the title strip off), the trade window
 (`gui_paint::FormWords`, `paint_top_form`, `paint_held_form`).
 
 **The game skin's form draw** (`exa_ui::line_skin::draw_line_form`,
-painted by `gui_paint::paint_line_form`; the inventory, the journal, the
-loot window, the container popup, the item card and the hub's windows use
-it; Manage Company's tables and the board's panes, whose classes' words are
-not traced, keep the default background). The line
+painted by `gui_paint::paint_line_form`; every game form uses it: the
+inventory, the journal, the loot window, the container popup, the item
+card, the hub's windows with Manage Company's and the board's tables (table
+views: style 0x88, attributes base | 0xc10) and the board's picture pane
+(style 0x82) and reward panel (0x80), Settings (0xb810, base | 0x1000; its
+Settings page a base form with no style, so it draws nothing; its Controls
+page 0x88, base | 0x280, with the scroll bar), the manual (0xb800, base |
+0x1000; its topic list an item view less style bit 8, its page a text box
+with style 0xc0000 and the scroll bar), the continue screen and the creator
+(the creation form, attributes 0x800020 and no style, draws nothing of its
+own; its preview, panes and lists are held), the delete box (0xb800, base |
+0x1000, border 0) and the arsenal (a base form; its column frame style
+0x10, its columns item panels, the embedded inventory 0x3010 titled with no
+close mark). The board's prize and reward slots and the loadout form's
+panels still keep the default background). The line
 skin puts its own method in the skin's form-draw slot. It draws the
 shadow (attribute 0x40: the rounded program's ring eight units out, black
 at the form group's fourth shade's alpha), the backdrop (attribute 0x20000
@@ -1749,7 +1760,7 @@ atlas in the idle control ink (255, 250, 230 at 104):
   ((width − title − 5 units) / 2) with a cap at each side; under a title
   (without attribute 0x800000) the progress strip two to four units down,
   split at the gap.
-- **Panel frame** (style 0x80, not wide, no scroll bar). A free panel's
+- **Panel frame** (style 0x80, not wide). A free panel's
   runs two units in: the strip on top (without a title), bars down the
   sides and along the bottom eight units short of the corners, two joint
   pieces per corner (the top pair only when neither the panel nor its
@@ -1761,9 +1772,46 @@ atlas in the idle control ink (255, 250, 230 at 104):
   units outside. In the inventory the view's bottom corners and the pack's
   top corners curl.
 
+- **Scroll bar** (attribute 0x200 on a panel, `line_skin::LineFormScroll`):
+  after the top bar, an arrow two units square one unit past
+  `client right + round(0.15 units)`, two units under the client's top
+  (three with the top-right corner flush) and the same over its bottom, and
+  the thumb four units square from a unit above the place the line skin's
+  scroll refresh stores; the top-right corner flush draws the bar's own
+  cap six units wide (no joint pair), else the bar's curled piece; the
+  right bar moves in beside the bar (`w − far − 2 units` to `w − far`); a
+  right edge not flush with the owner's client gets the rail
+  `w + round(0.2 units)` ± a unit with its two caps (unless the form's
+  option word has bit 0x200); the bottom-right corner likewise. The arrows
+  and the thumb take the orange hover ink under the pointer (not ported).
+
 Each atlas quad takes the eight texture coordinates of its sample record
-(`exa_ui::skin::LINE_SAMPLE_RECORDS`, the skin's own table). The panel
-frame's scroll-bar branch and the wide frame are not ported.
+(`exa_ui::skin::LINE_SAMPLE_RECORDS`, the skin's own table). The wide
+frame is not ported.
+
+**The item card** (`exa_game::item_card`). Its name is the form's title,
+centred on the top edge, in the builder's tint when the rank gate is off
+(the tint word's bytes red first, its alpha by the fade; the low end rust,
+the middle pale grey, the high end gold), else the title ink. Its rows are
+the builders' template records: a stats card's caption (style 0x1300: the
+text ends a unit left of x 156) and its value at x 152 (the weapon's Weight
+slider, 72 wide, then rating dots: Impact, Balance, one per striking row;
+apparel's Coverage then its protection rows; a shield's Weight slider,
+Impact, Encumbrance), then Flip weapon (a weapon with a swatch), Sockets,
+Rank, Points and Price at x 120 from an absolute row (43; 48 after a swatch
+with more than two striking rows; 38 on a shield), each adding 0x14 or
+0x18 to the card. They are laid out at unit 4 in the 244 × 236 client and
+rescaled with the card. The description is a read-only text box in the
+small font at (4, 0xb4 + extra) in the client, 236 wide, as high as its
+lines and a unit; a plain card's box starts five units under its icon area
+(the icon's height up to 160; a stats card's area is 160) and a plain card
+with more than 200 bytes of text is 100 units wide. The card is two units
+and two borders taller than the box's bottom (without a box: the icon area
+and a unit, or `(extra / 4 + 44)` units for a stats card) and is placed
+over the pointer it was asked at. The icon sits in the client, centred over
+the icon area on a plain card, at `13 units − 80` on a stats card. The
+slider's knob icon is not identified (the rating sheet's whole dot stands
+in) and the coin icons are not drawn.
 
 The inventory's 8-unit spacing and the journal's 2 frame the client; the
 control records are laid out by the two-pass layout: the inventory's

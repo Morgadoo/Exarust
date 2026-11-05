@@ -501,7 +501,9 @@ pub const CARD_CONTROL_STRIDE: i32 = 0x68;
 pub const CARD_SOCKET_HEIGHT: i32 = 0x18;
 pub const CARD_SMALL_HEIGHT: i32 = 0x14;
 /// The title's tint endpoints, low then middle then high, as the original's
-/// palette words (the low byte is blue in their byte order).
+/// palette words (the low byte is red: the ink setter copies the bytes in
+/// memory order, so the low end is a rust brown, the middle a pale grey and
+/// the high end gold; the top byte is the alpha).
 pub const TITLE_COLOURS: [u32; 3] = [0x806a_85be, 0x80d4_dae1, 0xc060_d4ff];
 
 /// One row of a stats card.
@@ -615,22 +617,22 @@ pub fn weapon_content(
     value_shown: bool,
 ) -> CardContent {
     let handling = weapon_handling(flags, weight, balance, grip);
-    // Guess: the three stat rows come from the page's control template,
-    // whose ids the pseudo-code never names. 0x101–0x103 continue the
-    // apparel page's weight id (0x101), and the labels are Exarust's.
+    // The three stat rows are the weapon template's: the Weight slider
+    // (control 0x108), the Impact dots (0x102) and the Balance dots
+    // (0x109), labelled as the template's strings.
     let mut rows = vec![
         CardRow {
-            control: 0x101,
+            control: 0x108,
             label: "Weight",
             value: handling.weight,
         },
         CardRow {
             control: 0x102,
-            label: "Handling",
+            label: "Impact",
             value: handling.handling,
         },
         CardRow {
-            control: 0x103,
+            control: 0x109,
             label: "Balance",
             value: handling.balance,
         },
@@ -698,9 +700,10 @@ pub fn apparel_content(
     gates: CardGates,
     value_shown: bool,
 ) -> CardContent {
+    // The template's first row reads "Coverage" (its dots, control 0x101).
     let mut rows = vec![CardRow {
         control: 0x101,
-        label: "Weight",
+        label: "Coverage",
         value: (f64::from(weight) * 0.05) as f32,
     }];
     let amount = |row: &mut Vec<CardRow>, byte: u8, label: &'static str, control: u32| {
@@ -2217,7 +2220,7 @@ mod tests {
         let labels: Vec<_> = card.rows.iter().map(|r| r.label).collect();
         assert_eq!(
             labels,
-            ["Weight", "Handling", "Balance", "Slash", "Pierce", "Thrust"]
+            ["Weight", "Impact", "Balance", "Slash", "Pierce", "Thrust"]
         );
         assert_eq!(card.rows[0].value, 1.0);
         assert!((card.rows[1].value - 3.846_154).abs() < 1e-5);
@@ -2278,9 +2281,9 @@ mod tests {
         };
         let card = apparel_content(20, 5, 6, 0, 100, 5, false, 0x25, 3, gates, true);
         let labels: Vec<_> = card.rows.iter().map(|r| r.label).collect();
-        // Weight always, then impact, slash, crush, pierce and encumbrance
-        // when their amount is above 0.25.
-        assert_eq!(labels, ["Weight", "Slash", "Pierce"]);
+        // Coverage always, then impact, slash, crush, pierce and
+        // encumbrance when their amount is above 0.25.
+        assert_eq!(labels, ["Coverage", "Slash", "Pierce"]);
         assert_eq!(card.rows[0].value, 1.0);
         assert_eq!((card.rows[1].control, card.rows[1].value), (0xd03, 0.3));
         assert_eq!((card.rows[2].control, card.rows[2].value), (0xd05, 5.0));

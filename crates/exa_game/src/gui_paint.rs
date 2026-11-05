@@ -396,6 +396,9 @@ pub struct LineFormAt {
     pub owner_attributes: u32,
     /// The scroll bar's place, for a form with the scroll bar attribute.
     pub scroll: Option<exa_ui::line_skin::LineFormScroll>,
+    /// The title's ink when the form's title-ink slot is set (the item
+    /// card's tint); else the skin's title ink.
+    pub title_ink: Option<[u8; 4]>,
 }
 
 impl LineFormAt {
@@ -407,6 +410,7 @@ impl LineFormAt {
             owner_client: (0, 0),
             owner_attributes: 0,
             scroll: None,
+            title_ink: None,
         }
     }
 
@@ -419,6 +423,7 @@ impl LineFormAt {
             owner_client: (client.width(), client.height()),
             owner_attributes,
             scroll: None,
+            title_ink: None,
         }
     }
 }
@@ -496,7 +501,12 @@ pub fn paint_line_form(
                 rect.top + font.ascent,
                 rect.width(),
             );
-            let batch = text_batch(font, &quads, palette.text[6], texture);
+            let batch = text_batch(
+                font,
+                &quads,
+                at.title_ink.unwrap_or(palette.text[6]),
+                texture,
+            );
             Some(GuiLayer::new(batch, LayerTexture::Named(font.texture)))
         });
     let frame = (!form.frame.is_empty()).then(|| {
