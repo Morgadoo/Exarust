@@ -24,8 +24,10 @@ use bevy::math::Vec3A;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_physics::body::{DoorBody, Ragdoll, SlideBody};
+use exa_render::cube_shadows::{CubeLid, CubeShadow};
 use exa_render::shell::ShellMaterial;
 
+use crate::grid::{ShellStrips, ray_blocks};
 use crate::rooms::{DoorBodies, DoorLink, Fade, RoomState, RoomTracker, Rooms, link_open};
 
 pub struct RoomViewPlugin;
@@ -52,6 +54,12 @@ impl Plugin for RoomViewPlugin {
                     .chain()
                     .after(TransformSystems::Propagate)
                     .before(VisibilitySystems::VisibilityPropagate),
+            )
+            .add_systems(
+                PostUpdate,
+                give_lights_lids
+                    .after(TransformSystems::Propagate)
+                    .before(exa_render::lights::LightsSystems::Cubes),
             );
     }
 }
@@ -63,6 +71,9 @@ pub struct LevelRooms {
     pub tracker: RoomTracker,
     /// The door body bound to each door link (entity bits of the leaf).
     pub doors: DoorBodies,
+    /// Each room's occluder and lid triangles (world, metres), once the
+    /// grid has built them.
+    pub shells: Arc<Vec<ShellStrips>>,
 }
 
 impl LevelRooms {
@@ -72,7 +83,25 @@ impl LevelRooms {
             rooms,
             tracker,
             doors: DoorBodies::new(),
+            shells: Arc::default(),
         }
+    }
+
+    /// The room manager's shell ray query on the rooms active now (the
+    /// tracker's [`RoomTracker::is_active`]): whether a ray from `origin`
+    /// along `dir` (world, metres) meets the occluder (`lid` false) or the
+    /// lid (`lid` true) of one of them before `max_t` lengths of `dir`
+    /// ([`ray_blocks`]). Before the shells exist nothing blocks.
+    pub fn shell_ray(&self, origin: Vec3, dir: Vec3, max_t: f32, lid: bool) -> bool {
+        !self.shells.is_empty()
+            && ray_blocks(
+                &self.shells,
+                |room| self.tracker.is_active(room),
+                origin,
+                dir,
+                max_t,
+                lid,
+            )
     }
 }
 
@@ -389,6 +418,75 @@ fn inherit_rooms(
     }
 }
 
+/// Each light's cube takes the lid of the room holding it, as the original's
+/// room manager draws, into every face rendered for an omni light, the
+/// ceiling shell of the room at the light's position (the world-point query,
+/// [`Rooms::room_at`]); a light outside every room, or in a room without a
+/// lid, takes none. A light whose lid changes (it moved to another room, or
+/// the shells arrived) has its faces put out of date.
+fn give_lights_lids(
+    mut commands: Commands,
+    level: Option<Res<LevelRooms>>,
+    shells: Query<(&RoomShell, &Mesh3d)>,
+    added: Query<(), Added<RoomShell>>,
+    mut lights: Query<(
+        Entity,
+        Ref<GlobalTransform>,
+        Option<&CubeLid>,
+        &mut CubeShadow,
+    )>,
+    mut lids: Local<Vec<Option<Handle<Mesh>>>>,
+) {
+    let Some(level) = level else {
+        if !lids.is_empty() {
+            lids.clear();
+            for (entity, _, lid, mut cube) in &mut lights {
+                if lid.is_some_and(|l| l.0.is_some()) {
+                    commands.entity(entity).insert(CubeLid(None));
+                    cube.invalidate();
+                }
+            }
+        }
+        return;
+    };
+    let fresh = !added.is_empty() || level.is_added();
+    if fresh {
+        *lids = vec![None; level.rooms.len()];
+        for (shell, mesh) in &shells {
+            if shell.kind == ShellKind::Lid
+                && let Some(slot) = lids.get_mut(shell.room as usize)
+            {
+                *slot = Some(mesh.0.clone());
+            }
+        }
+    }
+    let (mut lidded, mut changed) = (0, 0);
+    for (entity, at, lid, mut cube) in &mut lights {
+        if !(fresh || at.is_changed() || lid.is_none()) {
+            continue;
+        }
+        let p = at.translation();
+        let want = level
+            .rooms
+            .room_at(Vec2::new(p.x, p.z))
+            .and_then(|room| lids.get(room as usize).cloned().flatten());
+        if lid.map(|l| &l.0) != Some(&want) {
+            changed += 1;
+            lidded += usize::from(want.is_some());
+            if lid.is_some_and(|l| l.0 != want) || want.is_some() {
+                cube.invalidate();
+            }
+            commands.entity(entity).insert(CubeLid(want));
+        }
+    }
+    if changed > 0 {
+        info!(
+            "cube lids: {changed} lights took a new lid, {lidded} of them a room's ({} rooms lidded)",
+            lids.iter().flatten().count()
+        );
+    }
+}
+
 /// Shells get their material: one opaque black for occluders and lids, one
 /// of its own for each overlay (its alpha changes as it fades).
 fn give_shell_materials(
@@ -539,4 +637,102 @@ fn track_rooms(
         });
     }
     *drawn = shown;
+}
+
+#[cfg(test)]
+mod tests {
+    use exa_formats::level::LevelGrid;
+
+    use super::*;
+    use crate::grid::Strip;
+    use crate::rooms::CELL_OPEN;
+
+    /// Two rooms of two cells each along X with a door between: cells 1–2
+    /// (x −12…0 m) and 3–4 (x 0…12 m), row 1 (z 0…6 m).
+    fn two_rooms() -> Rooms {
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        for (x, sides) in [
+            (1, [7, 7, 7, 0]),
+            (2, [7, 0, 7, 0xB]),
+            (3, [7, 0xB, 7, 0]),
+            (4, [7, 0, 7, 7]),
+        ] {
+            grid.edges[6 + x] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        }
+        Rooms::flood(&grid)
+    }
+
+    /// A lid triangle at 4 m over x −12…0, z 0…12, facing up.
+    fn lid() -> Strip {
+        Strip {
+            positions: vec![[-12.0, 4.0, 0.0], [-12.0, 4.0, 12.0], [0.0, 4.0, 0.0]],
+            indices: vec![0, 1, 2],
+        }
+    }
+
+    /// The shell query asks only the rooms active now, and the lid or the
+    /// occluder as asked; an active room without that shell ends it.
+    #[test]
+    fn the_shell_ray_asks_the_active_rooms() {
+        let rooms = Arc::new(two_rooms());
+        let west = rooms.room_at(Vec2::new(-9.0, 3.0)).unwrap();
+        let mut level = LevelRooms::new(rooms.clone());
+        let mut shells = vec![ShellStrips::default(); rooms.len()];
+        shells[west as usize].lid = lid();
+        shells[west as usize].occluder = lid();
+        level.shells = Arc::new(shells);
+        let (from, down) = (Vec3::new(-9.0, 10.0, 3.0), Vec3::NEG_Y);
+        // Not active yet: nothing blocks.
+        assert!(!level.shell_ray(from, down, 10.0, true));
+        level.tracker.update(&rooms, Vec2::new(-9.0, 3.0), 0);
+        level.tracker.update(&rooms, Vec2::new(-9.0, 3.0), 2000);
+        assert!(level.tracker.is_active(west));
+        assert!(level.shell_ray(from, down, 10.0, true));
+        assert!(level.shell_ray(from, down, 10.0, false));
+        // Short of the lid, or from below (its back), the ray passes.
+        assert!(!level.shell_ray(from, down, 5.0, true));
+        assert!(!level.shell_ray(Vec3::new(-9.0, 1.0, 3.0), Vec3::Y, 10.0, true));
+    }
+
+    /// A light takes the lid of the room at its position, and none outside
+    /// a lidded room.
+    #[test]
+    fn a_light_takes_its_rooms_lid() {
+        let rooms = Arc::new(two_rooms());
+        let west = rooms.room_at(Vec2::new(-9.0, 3.0)).unwrap();
+        let mut world = World::new();
+        let mut meshes = Assets::<Mesh>::default();
+        let mesh = meshes.add(lid().mesh().unwrap());
+        world.insert_resource(LevelRooms::new(rooms));
+        world.spawn((
+            RoomShell {
+                room: west,
+                kind: ShellKind::Lid,
+            },
+            Mesh3d(mesh.clone()),
+        ));
+        let light = world
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(-9.0, 2.0, 3.0)),
+                CubeShadow::default(),
+            ))
+            .id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(give_lights_lids);
+        schedule.run(&mut world);
+        assert_eq!(world.get::<CubeLid>(light), Some(&CubeLid(Some(mesh))));
+        *world.get_mut::<GlobalTransform>(light).unwrap() =
+            GlobalTransform::from_translation(Vec3::new(3.0, 2.0, 3.0));
+        schedule.run(&mut world);
+        assert_eq!(world.get::<CubeLid>(light), Some(&CubeLid(None)));
+    }
 }

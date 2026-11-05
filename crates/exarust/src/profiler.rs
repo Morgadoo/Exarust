@@ -493,13 +493,14 @@ fn report(
     ));
     lines.push(format!("render thread {:.2} ms", avg(&|f| f.render)));
     lines.push(format!(
-        "bodies {} awake of {}, characters {} ({} controllers sweeping); cube faces {} ({} draws)",
+        "bodies {} awake of {}, characters {} ({} controllers sweeping); cube faces {} ({} draws; {} room lids drawn so far)",
         counts.awake,
         counts.bodies,
         counts.characters,
         counts.sweeping,
         counts.cube.faces,
-        counts.cube.draws
+        counts.cube.draws,
+        counts.cube.lid_draws
     ));
     lines.push(format!(
         "links: lights moved {}, casters moved {}, casters near {}",
