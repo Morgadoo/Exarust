@@ -39,10 +39,14 @@
 //!   copies as the list still holds, losing its first worn copy
 //!   ([`exa_character::record::CharacterData::loadout_remove_item`]).
 //!
-//! Exarust takes the drags as presses: a press on an arsenal entry is its
-//! drag onto the preview, a press on a kit-list entry its drag onto the
-//! arsenal box [deviation: the containers' drag and drop is not ported].
-//! The two views lay their entries out by the item panel's grid pass
+//! The drags are the item panel's own ([`crate::item_container`]): a left
+//! press on an entry of either view marks it dragged with the grab at half
+//! the icon, and the left release ends it: an arsenal entry released over
+//! the preview is equipped, a kit-list entry released over the arsenal box
+//! is returned, a release in the entry's own view only moves it there
+//! ([`Container::drop_entry`]), and a release anywhere else cancels and
+//! the entry stays. The dragged icon follows the pointer. The two views
+//! lay their entries out by the item panel's grid pass
 //! ([`crate::item_container::grid_layout`]) [guess: the stored list
 //! positions and the box sort are not read].
 //!
@@ -446,6 +450,18 @@ pub struct KitState {
     pub revision: u64,
     /// What the panels were built from.
     pub snapshot: KitSnapshot,
+    /// The drag in flight.
+    pub drag: Option<KitDrag>,
+}
+
+/// A drag out of one of the kit's views.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KitDrag {
+    /// From the arsenal box (else the kit list).
+    pub from_stock: bool,
+    pub index: usize,
+    pub icon: usize,
+    pub grab: Cell,
 }
 
 /// What the views are built from: rebuilt when any of it changes.
@@ -672,6 +688,7 @@ pub fn sync_kit(
         stock: stock_panel,
         revision: panels.revision,
         snapshot,
+        drag: None,
     });
 }
 
@@ -687,9 +704,46 @@ fn entry_at(panel: &Container, rect: [i32; 4], at: (i32, i32)) -> Option<usize> 
     })
 }
 
-/// A left press on the kit's views: on an arsenal entry it is that entry's
-/// drag onto the preview, on a kit-list entry its drag onto the arsenal
-/// box.
+/// Whether a screen point is inside a view's rect.
+fn inside(rect: [i32; 4], at: (i32, i32)) -> bool {
+    at.0 >= rect[0] && at.1 >= rect[1] && at.0 < rect[0] + rect[2] && at.1 < rect[1] + rect[3]
+}
+
+/// What a kit drag's release does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KitRelease {
+    /// An arsenal entry over the preview: equip it.
+    Equip(usize),
+    /// A kit-list entry over the arsenal box: return it.
+    Return(usize),
+    /// Over the entry's own view: move it there.
+    Reposition,
+    /// Anywhere else: the entry stays.
+    Cancel,
+}
+
+/// The release of `drag` at screen point `at` over the kit's `rects`.
+pub fn kit_release(drag: KitDrag, rects: KitRects, at: (i32, i32)) -> KitRelease {
+    let own = if drag.from_stock {
+        rects.stock
+    } else {
+        rects.kit
+    };
+    if inside(own, at) {
+        KitRelease::Reposition
+    } else if drag.from_stock && inside(rects.preview, at) {
+        KitRelease::Equip(drag.index)
+    } else if !drag.from_stock && inside(rects.stock, at) {
+        KitRelease::Return(drag.index)
+    } else {
+        KitRelease::Cancel
+    }
+}
+
+/// The kit's views take the left button as their item panels do: a press
+/// on an entry starts its drag, and the release equips (an arsenal entry
+/// over the preview), returns (a kit-list entry over the arsenal box),
+/// moves it in its own view or cancels ([`kit_release`]).
 #[allow(clippy::too_many_arguments)]
 pub fn kit_input(
     mouse: Res<ButtonInput<MouseButton>>,
@@ -703,15 +757,24 @@ pub fn kit_input(
     game: Option<Res<exa_assets::Game>>,
     mut items: ResMut<crate::doll_view::DollItems>,
     mut panels: ResMut<KitPanels>,
+    icons: Option<Res<crate::item_panel_draw::PanelIcons>>,
 ) {
-    if !mouse.just_pressed(MouseButton::Left) {
+    let pressed = mouse.just_pressed(MouseButton::Left);
+    let released = mouse.just_released(MouseButton::Left);
+    if !pressed && !released {
         return;
     }
     let top = windows.forms.top().map(|f| f.window);
     if top != Some(crate::hub_forms::FormWindow::Loadout) {
+        if let Some(open) = panels.open.as_mut()
+            && open.drag.take().is_some()
+        {
+            crate::item_container::clear_drags(&mut open.list.entries);
+            crate::item_container::clear_drags(&mut open.stock.entries);
+        }
         return;
     }
-    let (Some(open), Some(mut stores)) = (panels.open.as_ref(), stores) else {
+    let (Some(open), Some(mut stores)) = (panels.open.as_mut(), stores) else {
         return;
     };
     let Some(rects) = open.rects else {
@@ -729,11 +792,82 @@ pub fn kit_input(
     }) else {
         return;
     };
-    let stock_hit = entry_at(&open.stock, rects.stock, at);
-    let list_hit = entry_at(&open.list, rects.kit, at);
-    if stock_hit.is_none() && list_hit.is_none() {
+    if pressed && open.drag.is_none() {
+        let hit = entry_at(&open.stock, rects.stock, at)
+            .map(|i| (true, i))
+            .or_else(|| entry_at(&open.list, rects.kit, at).map(|i| (false, i)));
+        if let Some((from_stock, index)) = hit {
+            let view = if from_stock {
+                &mut open.stock
+            } else {
+                &mut open.list
+            };
+            let grab = crate::item_container::drag_grab(view.icon_size);
+            let entry = &mut view.entries[index];
+            entry.drag |= 1;
+            open.drag = Some(KitDrag {
+                from_stock,
+                index,
+                icon: entry.icon,
+                grab,
+            });
+            info!(
+                "loadout kit: drag of {} from the {} at {at:?}",
+                entry.id,
+                if from_stock {
+                    "arsenal box"
+                } else {
+                    "kit list"
+                }
+            );
+        }
+    }
+    if !released {
         return;
     }
+    let Some(drag) = open.drag.take() else {
+        return;
+    };
+    let release = kit_release(drag, rects, at);
+    info!("loadout kit: the drag ends at {at:?}: {release:?}");
+    let (stock_hit, list_hit) = match release {
+        KitRelease::Equip(index) => (Some(index), None),
+        KitRelease::Return(index) => (None, Some(index)),
+        KitRelease::Reposition => {
+            let (view, rect) = if drag.from_stock {
+                (&mut open.stock, rects.stock)
+            } else {
+                (&mut open.list, rects.kit)
+            };
+            let half = icons
+                .as_deref()
+                .and_then(|icons| icons.half(drag.icon))
+                .unwrap_or((0, 0));
+            let id = view.entries.get(drag.index).map_or(0, |e| e.id);
+            let flags = view.entries.get(drag.index).map_or(0, |e| e.flags);
+            view.drop_entry(
+                crate::item_container::DropDrag {
+                    same_panel: true,
+                    linked: false,
+                    id,
+                    icon: drag.icon,
+                    flags,
+                    bulk: 0,
+                },
+                drag.grab,
+                Cell::new(at.0 - rect[0], at.1 - rect[1]),
+                half,
+            );
+            return;
+        }
+        KitRelease::Cancel => {
+            crate::item_container::clear_drags(&mut open.list.entries);
+            crate::item_container::clear_drags(&mut open.stock.entries);
+            return;
+        }
+    };
+    crate::item_container::clear_drags(&mut open.list.entries);
+    crate::item_container::clear_drags(&mut open.stock.entries);
     let (row, tab) = (open.row, open.tab);
     let shown = (open.shelf as usize, open.box_index as usize);
     items.ensure(game.as_deref());
@@ -818,6 +952,7 @@ pub(crate) fn paint_kit(
     panels: &KitPanels,
     icons: Option<&mut crate::item_panel_draw::PanelIcons>,
     look: &crate::hub_windows::Look<'_>,
+    pointer: Option<(i32, i32)>,
 ) {
     let Some(open) = panels.open.as_ref() else {
         return;
@@ -836,6 +971,14 @@ pub(crate) fn paint_kit(
                 layer.clip = Some(r);
                 painted.push(layer);
             }
+        }
+        if let (Some(drag), Some(pointer)) = (open.drag, pointer) {
+            let view = if drag.from_stock {
+                &open.stock
+            } else {
+                &open.list
+            };
+            crate::hub_windows::paint_dragged(painted, icons, view, drag.icon, drag.grab, pointer);
         }
     }
 }
@@ -951,6 +1094,36 @@ mod tests {
             first: 0x28,
             second: 4,
         }
+    }
+
+    #[test]
+    fn a_kit_drag_equips_on_the_preview_and_returns_on_the_box() {
+        let rects = kit_rects((0, 0), 1024, 768, 4, false);
+        let drag = |from_stock| KitDrag {
+            from_stock,
+            index: 2,
+            icon: 1,
+            grab: Cell::new(80, 80),
+        };
+        let middle = |r: [i32; 4]| (r[0] + r[2] / 2, r[1] + r[3] / 2);
+        assert_eq!(
+            kit_release(drag(true), rects, middle(rects.preview)),
+            KitRelease::Equip(2)
+        );
+        assert_eq!(
+            kit_release(drag(false), rects, middle(rects.stock)),
+            KitRelease::Return(2)
+        );
+        assert_eq!(
+            kit_release(drag(true), rects, middle(rects.stock)),
+            KitRelease::Reposition
+        );
+        // A kit item over the preview, or anything over the records: kept.
+        assert_eq!(
+            kit_release(drag(false), rects, middle(rects.preview)),
+            KitRelease::Cancel
+        );
+        assert_eq!(kit_release(drag(true), rects, (10, 10)), KitRelease::Cancel);
     }
 
     #[test]

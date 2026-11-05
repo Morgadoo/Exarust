@@ -7,8 +7,8 @@
 //! frames, tables and stock through [`crate::gui_paint`] and
 //! [`exa_ui::gui_draw`], as the in-game screens do. The board's paint list is
 //! the board's own ([`Board::paint`]); the manage window's roster rows are
-//! [`ManageRefresh::roster`]; the trade window's panels and bottom row are
-//! [`ShopWindow`]'s.
+//! [`ManageRefresh::roster`]; the trade window's item panels are
+//! [`crate::shop_panels`]'s and its bottom row [`ShopWindow`]'s.
 //!
 //! The play-mode hub has no loaded session yet, so [`ArenaCareer`] begins as
 //! a new career would (343 copper, day 0) until a session host replaces it.
@@ -23,8 +23,8 @@
 //! board's paint list draws its child views in the form's client.
 //!
 //! What is not drawn: the board's pictures, prize items and reward slots
-//! (drawn as panels), the trade window's item icons and character preview,
-//! and the trade window's own close control. Escape and a right-button release
+//! (drawn as panels), the trade window's character preview, and the trade
+//! window's own close control. Escape and a right-button release
 //! close the top window.
 
 use std::collections::HashMap;
@@ -46,8 +46,10 @@ use crate::arena::Roster;
 use crate::arena_board;
 use crate::career::{Company, Member, Profession};
 use crate::gui_paint::{self, Frame};
+use crate::item_container::ListChild;
 use crate::manage::{ManageDay, ManageRecord, ManageRefresh, manage_refresh};
 use crate::report::ReportFighter;
+use crate::shop_panels::{ShopDrag, ShopDrop, ShopPanel, ShopPanels};
 use crate::shop_window::ShopWindow;
 
 /// The board's form title.
@@ -59,9 +61,6 @@ pub const SHOP_SIZE: (i32, i32) = (
     crate::shop_window::WINDOW_SIZE.0,
     crate::shop_window::WINDOW_SIZE.1,
 );
-/// The row height the roster and stock rows use. The original's row pitch is
-/// not in the packs, so this is a guess from the table heights.
-pub const ROW_HEIGHT: i32 = 26;
 /// The centred placement word the hub's forms use. The constructors' own
 /// placement words are not traced, so centring is a guess.
 pub const CENTRE: u32 = 0x8000 | 0x800;
@@ -560,19 +559,77 @@ pub enum HubWindowKind {
     Shop,
 }
 
-/// The shop window and the stock it lists.
+/// The shop window and its four item panels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShopModel {
     pub window: ShopWindow,
     pub merchant: bool,
-    /// The stock's ids and names, in shelf order.
-    pub stock: Vec<(u32, String)>,
-    /// Each row's price word, parallel to [`Self::stock`]. Zero means the
-    /// catalogue has no value for that item, so a click leaves the row.
-    pub prices: Vec<u16>,
-    /// The player's goods shown in the pack, and each one's price word.
-    pub goods: Vec<(u32, String)>,
-    pub good_prices: Vec<u16>,
+    /// The pack, the two baskets and the stock, as item panels
+    /// ([`crate::shop_panels`]).
+    pub panels: ShopPanels,
+    /// Each item's value word, which a basket's change callback sums. An
+    /// item with none counts nothing.
+    pub prices: HashMap<u32, u16>,
+}
+
+impl ShopModel {
+    /// A basket's change callback: the value word of each item it holds,
+    /// summed again (the sell basket's quartered) and the bottom row
+    /// redone. The other panels have none.
+    pub fn basket_changed(&mut self, panel: ShopPanel) {
+        let ids = self.panels.ids(panel);
+        let words: Vec<u16> = ids
+            .iter()
+            .map(|id| self.prices.get(id).copied().unwrap_or(0))
+            .collect();
+        match panel {
+            ShopPanel::Buy => {
+                self.window.buy = words;
+                self.window.buy_items = ids;
+                self.window.buy_changed();
+            }
+            ShopPanel::Sell => {
+                self.window.sell = words;
+                self.window.sell_items = ids;
+                self.window.sell_changed();
+            }
+            ShopPanel::Pack | ShopPanel::Stock => {}
+        }
+    }
+}
+
+/// The trade window's pack as the layout loads it: each of the company's
+/// `goods` with the first unused entry of the player's `carried` list of
+/// that id (its flags and stored place), or none.
+pub fn pack_list(goods: &[u32], carried: &[exa_items::possession::Carried]) -> Vec<ListChild> {
+    let mut used = vec![false; carried.len()];
+    goods
+        .iter()
+        .map(|&id| {
+            let found = carried
+                .iter()
+                .enumerate()
+                .position(|(i, c)| !used[i] && c.id == id);
+            match found {
+                Some(i) => {
+                    used[i] = true;
+                    let c = &carried[i];
+                    ListChild {
+                        id,
+                        flags: c.flags,
+                        x: c.x,
+                        y: c.y,
+                    }
+                }
+                None => ListChild {
+                    id,
+                    flags: 0,
+                    x: 0,
+                    y: 0,
+                },
+            }
+        })
+        .collect()
 }
 
 /// A hub window's form: its rectangle and the controls the window manager
@@ -655,6 +712,9 @@ pub struct HubWindows {
     /// The last right press was an item panel's card request (or the
     /// card's own): its release does not close the window.
     pub card_press: bool,
+    /// Icon handles a closed window's item panels held, for the icon
+    /// manager to release.
+    pub released_icons: Vec<usize>,
 }
 
 /// The flags the trade window's stock panel loads its items with: the
@@ -681,37 +741,80 @@ impl HubWindows {
         })
     }
 
+    /// A form-local point of the trade window in its client, where the
+    /// panels' places are.
+    fn shop_client(point: (i32, i32)) -> (i32, i32) {
+        let border = crate::shop_window::BORDER;
+        (point.0 - border, point.1 - border)
+    }
+
     /// The item under a form-local point of the open trade window and the
-    /// flags its panel holds it with: a stock row (the shop's flag) or a
-    /// row of the player's pack (none). The baskets' items are not drawn as
-    /// rows and are not found.
+    /// flags its panel holds it with: an entry of the stock or the buy
+    /// basket (the shop's flag) or of the pack or the sell basket.
     pub fn shop_item_at(&self, point: (i32, i32)) -> Option<(u32, u32)> {
         let shop = self.shop.as_ref()?;
-        let row_at = |panel: [i32; 4]| {
-            let rect = GuiRect::new(panel[0], panel[1], panel[2], panel[3]);
-            if !rect.contains(point.0, point.1) {
-                return None;
+        shop.panels.item_at(Self::shop_client(point))
+    }
+
+    /// The form-local centre of entry `index` of a trade window panel.
+    pub fn shop_entry_centre(&self, panel: ShopPanel, index: usize) -> Option<(i32, i32)> {
+        let shop = self.shop.as_ref()?;
+        let container = shop.panels.get(panel);
+        let entry = container.entries.get(index)?;
+        let [x, y, _, _] = panel.client();
+        let border = crate::shop_window::BORDER;
+        let half = container.icon_size / 2;
+        Some((
+            border + x + entry.cell.x + half,
+            border + y + entry.cell.y + half,
+        ))
+    }
+
+    /// The form-local middle of a trade window panel.
+    pub fn shop_panel_middle(panel: ShopPanel) -> (i32, i32) {
+        let [x, y, w, h] = panel.client();
+        let border = crate::shop_window::BORDER;
+        (border + x + w / 2, border + y + h / 2)
+    }
+
+    /// A left press at a form-local point of the trade window: over an
+    /// item it starts the item's drag. `bulk` is the item's bulk byte.
+    pub fn shop_press(
+        &mut self,
+        point: (i32, i32),
+        bulk: impl FnOnce(u32) -> i32,
+    ) -> Option<ShopDrag> {
+        let shop = self.shop.as_mut()?;
+        shop.panels.press(Self::shop_client(point), bulk)
+    }
+
+    /// Starts the drag of entry `index` of a trade window panel, as a press
+    /// on it does (the scripted purchase's).
+    pub fn shop_press_entry(&mut self, panel: ShopPanel, index: usize) -> Option<ShopDrag> {
+        self.shop.as_mut()?.panels.press_entry(panel, index, |_| 0)
+    }
+
+    /// The left release at a form-local point of the trade window ends the
+    /// drag; a move into or out of a basket runs its change callback.
+    pub fn shop_release(
+        &mut self,
+        point: (i32, i32),
+        half: (i32, i32),
+        model_found: bool,
+    ) -> Option<ShopDrop> {
+        let shop = self.shop.as_mut()?;
+        shop.panels.drag?;
+        let dropped = shop
+            .panels
+            .release(Self::shop_client(point), half, model_found);
+        if let ShopDrop::Moved { from, to, .. } = dropped {
+            for panel in [from, to] {
+                if panel.is_basket() {
+                    shop.basket_changed(panel);
+                }
             }
-            let row = (point.1 - rect.top - 4).div_euclid(ROW_HEIGHT);
-            (row >= 0 && rect.top + 4 + ROW_HEIGHT * (row + 1) <= rect.bottom)
-                .then_some(row as usize)
-        };
-        let panels = shop.window.panels();
-        if let Some(row) = row_at(panels[4]) {
-            return shop
-                .stock
-                .get(row)
-                .map(|(id, _)| (*id, SHOP_ITEM_FLAGS))
-                .filter(|(id, _)| *id != 0);
         }
-        if let Some(row) = row_at(panels[1]) {
-            return shop
-                .goods
-                .get(row)
-                .map(|(id, _)| (*id, 0))
-                .filter(|(id, _)| *id != 0);
-        }
-        None
+        Some(dropped)
     }
 
     /// The shop's trade button from a form-local click: the button is inside
@@ -722,73 +825,37 @@ impl HubWindows {
         };
         // The bottom row's own record places are not traced; the guessed
         // rect is where the page's bottom-left "Trade" button draws.
-        let trade = shop
+        let trade = GuiRect::new(0, SHOP_SIZE.1 - 32, 120, 28);
+        if !trade.contains(point.0, point.1) {
+            return false;
+        }
+        let bought: Vec<u32> = shop
             .window
-            .panels()
-            .last()
-            .map(|_| GuiRect::new(0, SHOP_SIZE.1 - 32, 120, 28));
-        if trade.is_some_and(|rect| rect.contains(point.0, point.1)) {
-            let bought: Vec<u32> = shop
-                .window
-                .buy_items
-                .iter()
-                .copied()
-                .filter(|id| *id != 0)
-                .collect();
-            let sold: Vec<u32> = shop
-                .window
-                .sell_items
-                .iter()
-                .copied()
-                .filter(|id| *id != 0)
-                .collect();
-            let done = shop.window.confirm(&mut career.company);
-            if done {
-                shop.window.money = career.company.copper;
-                career.goods.extend(bought);
-                for id in sold {
-                    if let Some(at) = career.goods.iter().position(|held| *held == id) {
-                        career.goods.remove(at);
-                    }
-                }
-                career.goods_changed = true;
-            }
-            return done;
-        }
-        let pack = shop.window.panels()[1];
-        let pack_rect = GuiRect::new(pack[0], pack[1], pack[2], pack[3]);
-        if pack_rect.contains(point.0, point.1) {
-            let row = (point.1 - pack_rect.top - 4) / ROW_HEIGHT;
-            if row >= 0 {
-                let row = row as usize;
-                let price = shop.good_prices.get(row).copied().unwrap_or(0);
-                let id = shop.goods.get(row).map(|good| good.0).unwrap_or(0);
-                if price != 0 && shop.window.offer_item(id, price).is_some() {
-                    shop.goods.remove(row);
-                    shop.good_prices.remove(row);
-                    info!("shop: item {id:#x} joins the sell basket at price {price}");
-                    return true;
+            .buy_items
+            .iter()
+            .copied()
+            .filter(|id| *id != 0)
+            .collect();
+        let sold: Vec<u32> = shop
+            .window
+            .sell_items
+            .iter()
+            .copied()
+            .filter(|id| *id != 0)
+            .collect();
+        let done = shop.window.confirm(&mut career.company);
+        if done {
+            shop.window.money = career.company.copper;
+            shop.panels.settle();
+            career.goods.extend(bought);
+            for id in sold {
+                if let Some(at) = career.goods.iter().position(|held| *held == id) {
+                    career.goods.remove(at);
                 }
             }
+            career.goods_changed = true;
         }
-        // A click on a priced stock row takes it into the buy basket. The
-        // row's place matches the shelf the window bound.
-        let panel = shop.window.panels()[4];
-        let stock_rect = GuiRect::new(panel[0], panel[1], panel[2], panel[3]);
-        if stock_rect.contains(point.0, point.1) {
-            let row = (point.1 - stock_rect.top - 4) / ROW_HEIGHT;
-            if row >= 0 {
-                let row = row as usize;
-                let price = shop.prices.get(row).copied().unwrap_or(0);
-                if price != 0 && shop.window.take_stock_row(row, price).is_some() {
-                    let (id, _) = shop.stock.remove(row);
-                    shop.prices.remove(row);
-                    info!("shop: item {id:#x} joins the buy basket at price {price}");
-                    return true;
-                }
-            }
-        }
-        false
+        done
     }
 
     /// Opens the board on a career.
@@ -842,8 +909,19 @@ impl HubWindows {
         );
     }
 
-    /// Opens the trade window: the shop's shelf, or the merchant's own.
-    pub fn open_shop(&mut self, merchant: bool, career: &ArenaCareer, names: &HubItemNames) {
+    /// Opens the trade window: the shop's shelf, or the merchant's own. The
+    /// layout loads the pack from `pack` (the player's list,
+    /// [`pack_list`]) and the stock from the shelf with the shop's flag,
+    /// laid out by the grid pass seeded with the day counter plus one, as
+    /// the hub's opener passes it. `slot` gives an item's icon slot and
+    /// half extents.
+    pub fn open_shop(
+        &mut self,
+        merchant: bool,
+        career: &ArenaCareer,
+        pack: &[ListChild],
+        mut slot: impl FnMut(u32, u32) -> (usize, (i32, i32)),
+    ) {
         self.close();
         let stock = if merchant {
             &career.merchant_stock
@@ -855,19 +933,16 @@ impl HubWindows {
         // registry, so the list number is left unset [guess: the original's
         // number comes from the arena's own list table].
         window.bind_stock(stock, None);
+        let unit = if self.unit > 0 { self.unit } else { 4 };
+        let mut panels = ShopPanels::new(unit);
+        panels.load_pack(pack, &mut slot);
+        panels.load_stock(stock, career.company.day.wrapping_add(1), &mut slot);
         let shop = ShopModel {
             window,
             merchant,
-            stock: stock.iter().map(|&id| (id, names.name_of(id))).collect(),
-            // Filled from the catalogue after the window opens. A zero
-            // leaves the row on the shelf.
-            prices: vec![0; stock.len()],
-            goods: career
-                .goods
-                .iter()
-                .map(|&id| (id, names.name_of(id)))
-                .collect(),
-            good_prices: vec![0; career.goods.len()],
+            panels,
+            // Filled from the catalogue after the window opens.
+            prices: HashMap::new(),
         };
         self.shop = Some(shop);
         self.kind = HubWindowKind::Shop;
@@ -878,14 +953,17 @@ impl HubWindows {
         );
     }
 
-    /// Fill each stock row's price word. `price_of` reads the catalogue
-    /// (the item, or the copy's source record). Zero leaves the row.
-    pub fn price_shop_rows(&mut self, price_of: impl Fn(u32) -> u16) {
+    /// Fill each item's value word. `price_of` reads the catalogue (the
+    /// item, or the copy's source record).
+    pub fn price_shop_items(&mut self, price_of: impl Fn(u32) -> u16) {
         let Some(shop) = self.shop.as_mut() else {
             return;
         };
-        shop.prices = shop.stock.iter().map(|(id, _)| price_of(*id)).collect();
-        shop.good_prices = shop.goods.iter().map(|(id, _)| price_of(*id)).collect();
+        for panel in crate::shop_panels::SHOP_PANELS {
+            for id in shop.panels.ids(panel) {
+                shop.prices.insert(id, price_of(id));
+            }
+        }
     }
 
     /// Closes the open window, running its own close bookkeeping.
@@ -924,7 +1002,9 @@ impl HubWindows {
         self.board = None;
         self.board_form = None;
         self.manage = None;
-        self.shop = None;
+        if let Some(shop) = self.shop.take() {
+            self.released_icons.extend(shop.panels.icons());
+        }
         self.forms.clear();
     }
 
@@ -1374,47 +1454,70 @@ fn paint_gauge(
     }
 }
 
-/// The trade window's panels, stock rows and bottom row.
-fn paint_shop(shop: &ShopModel, bounds: GuiRect, look: &Look) -> gui_paint::Painted {
+/// The trade window's frame, its item panels with their icons (and the
+/// dragged icon at the pointer) and its bottom row.
+fn paint_shop(
+    shop: &ShopModel,
+    bounds: GuiRect,
+    look: &Look,
+    icons: Option<&mut crate::item_panel_draw::PanelIcons>,
+    pointer: Option<(i32, i32)>,
+) -> gui_paint::Painted {
     let mut painted = gui_paint::Painted {
         client: client(bounds),
         ..Default::default()
     };
     paint_window(&mut painted, bounds, crate::shop_window::TRADE_TITLE, look);
-    for panel in shop.window.panels() {
-        paint_panel(
-            &mut painted,
-            at4(bounds, (panel[0], panel[1], panel[2], panel[3])),
-            look,
-        );
+    // The children's places are in the page's client, inside its border.
+    let border = crate::shop_window::BORDER;
+    let inner = GuiRect::new(
+        bounds.left + border,
+        bounds.top + border,
+        bounds.width() - 2 * border,
+        bounds.height() - 2 * border,
+    );
+    let character = crate::shop_window::CHARACTER_VIEW;
+    paint_panel(
+        &mut painted,
+        at4(
+            inner,
+            (character[0], character[1], character[2], character[3]),
+        ),
+        look,
+    );
+    for panel in crate::shop_panels::SHOP_PANELS {
+        let [x, y, w, h] = panel.rect();
+        paint_panel(&mut painted, at4(inner, (x, y, w, h)), look);
     }
-    let stock = shop.window.panels()[4];
-    let stock_rect = at4(bounds, (stock[0], stock[1], stock[2], stock[3]));
-    for (row, (_, name)) in shop.stock.iter().enumerate() {
-        let y = stock_rect.top + 4 + ROW_HEIGHT * row as i32;
-        if y + ROW_HEIGHT > stock_rect.bottom {
-            break;
+    if let Some(icons) = icons {
+        for panel in crate::shop_panels::SHOP_PANELS {
+            let [x, y, w, h] = panel.client();
+            let r = [inner.left + x, inner.top + y, w, h];
+            let container = shop.panels.get(panel);
+            trace!(
+                "hub shop paint: {panel:?} at {r:?}: {:?}",
+                container
+                    .entries
+                    .iter()
+                    .map(|e| (e.id, e.icon, e.cell, e.drag, icons.rendered(e.icon)))
+                    .collect::<Vec<_>>()
+            );
+            if let Some(mut layer) = icons.layer(container) {
+                gui_paint::offset_batch(&mut layer.batch, r[0], r[1]);
+                layer.clip = Some(r);
+                painted.push(layer);
+            }
         }
-        paint_text(
-            &mut painted,
-            GuiRect::new(stock_rect.left + 4, y, stock_rect.width() - 8, ROW_HEIGHT),
-            name,
-            look,
-        );
-    }
-    let pack = shop.window.panels()[1];
-    let pack_rect = at4(bounds, (pack[0], pack[1], pack[2], pack[3]));
-    for (row, (_, name)) in shop.goods.iter().enumerate() {
-        let y = pack_rect.top + 4 + ROW_HEIGHT * row as i32;
-        if y + ROW_HEIGHT > pack_rect.bottom {
-            break;
+        if let (Some(drag), Some(pointer)) = (shop.panels.drag, pointer) {
+            paint_dragged(
+                &mut painted,
+                icons,
+                shop.panels.get(drag.source),
+                drag.icon,
+                drag.grab,
+                pointer,
+            );
         }
-        paint_text(
-            &mut painted,
-            GuiRect::new(pack_rect.left + 4, y, pack_rect.width() - 8, ROW_HEIGHT),
-            name,
-            look,
-        );
     }
     let bottom = [
         (30, 0, format!("{}", shop.window.totals.1)),
@@ -1436,6 +1539,40 @@ fn paint_shop(shop: &ShopModel, bounds: GuiRect, look: &Look) -> gui_paint::Pain
         );
     }
     painted
+}
+
+/// The dragged item's icon at the pointer less its grab, as the item
+/// panel's drag draws it: the entry `icon` of `source` (marked dragged, so
+/// its panel skips it) drawn shown at the pointer.
+pub(crate) fn paint_dragged(
+    painted: &mut gui_paint::Painted,
+    icons: &mut crate::item_panel_draw::PanelIcons,
+    source: &crate::item_container::Container,
+    icon: usize,
+    grab: crate::item_container::Cell,
+    pointer: (i32, i32),
+) {
+    let Some(entry) = source
+        .entries
+        .iter()
+        .find(|e| e.icon == icon && e.drag & 1 != 0)
+    else {
+        return;
+    };
+    let shown = crate::item_container::Container {
+        entries: vec![crate::item_container::Entry {
+            cell: crate::item_container::Cell::new(pointer.0 - grab.x, pointer.1 - grab.y),
+            drag: 0,
+            ..*entry
+        }],
+        green_mask: source.green_mask,
+        yellow_mask: source.yellow_mask,
+        icon_size: source.icon_size,
+        ..crate::item_container::Container::default()
+    };
+    if let Some(layer) = icons.layer(&shown) {
+        painted.push(layer);
+    }
 }
 
 /// Keeps the hub task's screen on the window's physical size, as the
@@ -1478,6 +1615,14 @@ pub fn add_hub_draw(app: &mut App) {
     );
 }
 
+/// The hub draw's optional resources: the loadout kit's views, the item
+/// icons and the scripted pointer.
+type HubDrawExtras<'w> = (
+    Option<Res<'w, crate::loadout_kit::KitPanels>>,
+    Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
+    Option<Res<'w, exa_ui::ScriptedPointer>>,
+);
+
 /// Draws the open hub window into the GUI's queue. The in-game screens'
 /// draw clears the queue each frame; without it (a host that has no game
 /// screens) the hub clears it itself.
@@ -1490,10 +1635,7 @@ pub fn draw_hub_windows(
     time: Option<Res<Time>>,
     game_screens: Option<Res<crate::gui_screens::GameScreens>>,
     mut fade: Local<HubFade>,
-    (kit, mut icons): (
-        Option<Res<crate::loadout_kit::KitPanels>>,
-        Option<ResMut<crate::item_panel_draw::PanelIcons>>,
-    ),
+    (kit, mut icons, scripted): HubDrawExtras,
 ) {
     let Some(windows) = windows else {
         return;
@@ -1517,6 +1659,14 @@ pub fn draw_hub_windows(
         .map(|window| exa_ui::scale::gui_scale(window.physical_height(), 0) as i32)
         .unwrap_or(4);
     let now = time.map_or(0, |time| time.elapsed().as_millis() as u32);
+    let pointer = screen.single().ok().and_then(|window| {
+        let at = match scripted.as_deref() {
+            Some(scripted) => scripted.position(window),
+            None => window.cursor_position(),
+        }?;
+        let at = (at * window.scale_factor()).as_ivec2();
+        Some((at.x, at.y))
+    });
     let alpha = windows
         .form
         .map_or(1.0, |form| fade.alpha(form, windows.kind, now));
@@ -1536,7 +1686,7 @@ pub fn draw_hub_windows(
         HubWindowKind::Shop => windows
             .shop
             .as_ref()
-            .map(|shop| paint_shop(shop, bounds, &look)),
+            .map(|shop| paint_shop(shop, bounds, &look, icons.as_deref_mut(), pointer)),
         HubWindowKind::None => None,
     };
     let Some(mut painted) = painted else {
@@ -1561,7 +1711,7 @@ pub fn draw_hub_windows(
         if open.window == crate::hub_forms::FormWindow::Loadout
             && let Some(kit) = kit.as_deref()
         {
-            crate::loadout_kit::paint_kit(&mut painted, kit, icons.as_deref_mut(), &shown);
+            crate::loadout_kit::paint_kit(&mut painted, kit, icons.as_deref_mut(), &shown, pointer);
         }
     }
     debug!(
@@ -1770,24 +1920,59 @@ mod tests {
         assert!(!windows.is_open());
     }
 
+    /// Icon slots for tests: one per item, numbered from 1.
+    fn slots() -> impl FnMut(u32, u32) -> (usize, (i32, i32)) {
+        let mut next = 0;
+        move |_, _| {
+            next += 1;
+            (next, (80, 80))
+        }
+    }
+
+    fn open(windows: &mut HubWindows, merchant: bool, career: &ArenaCareer) {
+        let pack = pack_list(&career.goods, &[]);
+        windows.open_shop(merchant, career, &pack, slots());
+    }
+
     #[test]
     fn the_shop_lists_its_shelf_and_the_merchant_his_own() {
         let mut career = career();
         career.company.stock = vec![5, 6];
         career.merchant_stock = vec![9];
-        let mut names = HubItemNames::default();
-        names.0.insert(5, "Sword".into());
-        names.0.insert(9, "Potion".into());
         let mut windows = HubWindows::default();
-        windows.open_shop(false, &career, &names);
+        open(&mut windows, false, &career);
         let shop = windows.shop.as_ref().unwrap();
-        assert_eq!(shop.stock, [(5, "Sword".into()), (6, "6".into())]);
+        assert_eq!(shop.panels.ids(ShopPanel::Stock), [5, 6]);
         assert!(!shop.merchant);
         windows.close_window();
-        windows.open_shop(true, &career, &names);
+        // The closed window's icons go back to the icon manager.
+        assert_eq!(windows.released_icons, [1, 2]);
+        open(&mut windows, true, &career);
         let shop = windows.shop.as_ref().unwrap();
-        assert_eq!(shop.stock, [(9, "Potion".into())]);
+        assert_eq!(shop.panels.ids(ShopPanel::Stock), [9]);
         assert!(shop.merchant);
+    }
+
+    #[test]
+    fn the_pack_takes_the_carried_places() {
+        let carried = [
+            exa_items::possession::Carried {
+                id: 4,
+                flags: 0x100,
+                x: 32,
+                y: 48,
+            },
+            exa_items::possession::Carried {
+                id: 4,
+                flags: 0,
+                x: 64,
+                y: 16,
+            },
+        ];
+        let list = pack_list(&[4, 4, 5], &carried);
+        assert_eq!((list[0].flags, list[0].x), (0x100, 32));
+        assert_eq!((list[1].flags, list[1].x), (0, 64));
+        assert_eq!((list[2].id, list[2].x), (5, 0));
     }
 
     #[test]
@@ -1890,113 +2075,109 @@ mod tests {
         assert_eq!((carried[1].x, carried[1].y), (0, 0));
     }
 
+    /// Drags entry `index` of `from` into `to` through the window's own
+    /// press and release.
+    fn drag(windows: &mut HubWindows, from: ShopPanel, index: usize, to: ShopPanel) -> ShopDrop {
+        let at = windows.shop_entry_centre(from, index).unwrap();
+        assert!(windows.shop_press(at, |_| 0).is_some());
+        windows
+            .shop_release(HubWindows::shop_panel_middle(to), (80, 80), true)
+            .unwrap()
+    }
+
     #[test]
     fn a_sale_leaves_the_goods_and_a_purchase_joins_them() {
         let mut career = career();
         career.company.stock = vec![7];
         career.goods = vec![9];
-        let names = HubItemNames::default();
         let mut windows = HubWindows::default();
-        windows.open_shop(false, &career, &names);
-        windows.price_shop_rows(|id| match id {
+        open(&mut windows, false, &career);
+        windows.price_shop_items(|id| match id {
             7 => 5,
             9 => 12,
             _ => 0,
         });
-        let pack = windows.shop.as_ref().unwrap().window.panels()[1];
-        assert!(windows.shop_click((pack[0] + 4, pack[1] + 6), &mut career));
+        drag(&mut windows, ShopPanel::Pack, 0, ShopPanel::Sell);
         assert_eq!(windows.shop.as_ref().unwrap().window.sell_items, [9]);
         let point = (10, SHOP_SIZE.1 - 20);
         assert!(windows.shop_click(point, &mut career));
         assert_eq!(career.goods, Vec::<u32>::new());
         assert!(career.company.stock.contains(&9));
-        windows.open_shop(false, &career, &names);
-        windows.price_shop_rows(|id| if id == 7 { 5 } else { 0 });
-        let panel = windows.shop.as_ref().unwrap().window.panels()[4];
-        assert!(windows.shop_click((panel[0] + 4, panel[1] + 6), &mut career));
+        // The sold item is on the shop's side now.
+        let shop = windows.shop.as_ref().unwrap();
+        assert!(shop.panels.ids(ShopPanel::Stock).contains(&9));
+        open(&mut windows, false, &career);
+        windows.price_shop_items(|id| if id == 7 { 5 } else { 0 });
+        drag(&mut windows, ShopPanel::Stock, 0, ShopPanel::Buy);
         assert!(windows.shop_click(point, &mut career));
         assert_eq!(career.goods, [7]);
         assert!(!career.company.stock.contains(&7));
+        let shop = windows.shop.as_ref().unwrap();
+        assert_eq!(shop.panels.ids(ShopPanel::Pack), [7]);
+        assert_eq!(shop.panels.pack.entries[0].flags, 0);
     }
 
-    /// A stock row's item is held with the shop's flag, a pack row's with
-    /// none; the panels' frames and the space past the last row hold none.
+    /// The stock's and the buy basket's items are held with the shop's
+    /// flag, the pack's and the sell basket's with none; a point between
+    /// the icons or on an empty basket holds none.
     #[test]
     fn the_trade_window_finds_the_item_a_card_is_asked_for() {
         let mut career = career();
         career.company.stock = vec![7, 8];
         career.goods = vec![9];
-        let names = HubItemNames::default();
         let mut windows = HubWindows::default();
-        windows.open_shop(false, &career, &names);
-        let model = windows.shop.as_ref().unwrap();
-        let stock = model.window.panels()[4];
-        let pack = model.window.panels()[1];
-        assert_eq!(
-            windows.shop_item_at((stock[0] + 6, stock[1] + 6)),
-            Some((7, SHOP_ITEM_FLAGS))
-        );
-        assert_eq!(
-            windows.shop_item_at((stock[0] + 6, stock[1] + 6 + ROW_HEIGHT)),
-            Some((8, SHOP_ITEM_FLAGS))
-        );
-        assert_eq!(
-            windows.shop_item_at((stock[0] + 6, stock[1] + 6 + 2 * ROW_HEIGHT)),
-            None
-        );
-        assert_eq!(
-            windows.shop_item_at((pack[0] + 6, pack[1] + 6)),
-            Some((9, 0))
-        );
-        assert_eq!(windows.shop_item_at((stock[0] + 6, stock[1] + 1)), None);
-        let sell = model.window.panels()[2];
-        assert_eq!(windows.shop_item_at((sell[0] + 6, sell[1] + 6)), None);
+        open(&mut windows, false, &career);
+        let at = |w: &HubWindows, panel, i| w.shop_entry_centre(panel, i).unwrap();
+        let stock0 = at(&windows, ShopPanel::Stock, 0);
+        assert_eq!(windows.shop_item_at(stock0), Some((7, SHOP_ITEM_FLAGS)));
+        let stock1 = at(&windows, ShopPanel::Stock, 1);
+        assert_eq!(windows.shop_item_at(stock1), Some((8, SHOP_ITEM_FLAGS)));
+        let pack0 = at(&windows, ShopPanel::Pack, 0);
+        assert_eq!(windows.shop_item_at(pack0), Some((9, 0)));
+        let sell = HubWindows::shop_panel_middle(ShopPanel::Sell);
+        assert_eq!(windows.shop_item_at(sell), None);
+        // The baskets' items give cards too.
+        drag(&mut windows, ShopPanel::Stock, 1, ShopPanel::Buy);
+        let buy0 = at(&windows, ShopPanel::Buy, 0);
+        assert_eq!(windows.shop_item_at(buy0), Some((8, SHOP_ITEM_FLAGS)));
+        drag(&mut windows, ShopPanel::Pack, 0, ShopPanel::Sell);
+        let sell0 = at(&windows, ShopPanel::Sell, 0);
+        assert_eq!(windows.shop_item_at(sell0), Some((9, 0)));
     }
 
     #[test]
-    fn the_catalogue_prices_a_stock_row() {
-        let mut career = career();
-        career.company.stock = vec![7];
-        let names = HubItemNames::default();
-        let mut windows = HubWindows::default();
-        windows.open_shop(false, &career, &names);
-        windows.price_shop_rows(|id| if id == 7 { 24 } else { 0 });
-        let panel = windows.shop.as_ref().unwrap().window.panels()[4];
-        let point = (panel[0] + 4, panel[1] + 6);
-        assert!(windows.shop_click(point, &mut career));
-        assert_eq!(windows.shop.as_ref().unwrap().window.buy, [24]);
-        assert!(windows.shop.as_ref().unwrap().stock.is_empty());
-    }
-
-    #[test]
-    fn a_priced_stock_row_joins_the_buy_basket() {
+    fn a_basket_sums_its_items_value_words() {
         let mut career = career();
         career.company.stock = vec![7, 9];
-        let names = HubItemNames::default();
         let mut windows = HubWindows::default();
-        windows.open_shop(false, &career, &names);
-        windows.shop.as_mut().unwrap().prices = vec![5, 12];
-        let panel = windows.shop.as_ref().unwrap().window.panels()[4];
-        let point = (panel[0] + 4, panel[1] + 4 + 2);
-        assert!(windows.shop_click(point, &mut career));
+        open(&mut windows, false, &career);
+        windows.price_shop_items(|id| if id == 7 { 5 } else { 12 });
+        assert!(matches!(
+            drag(&mut windows, ShopPanel::Stock, 0, ShopPanel::Buy),
+            ShopDrop::Moved { id: 7, .. }
+        ));
         let shop = windows.shop.as_ref().unwrap();
-        assert_eq!(shop.stock.iter().map(|row| row.0).collect::<Vec<_>>(), [9]);
-        assert_eq!(shop.prices, [12]);
+        assert_eq!(shop.panels.ids(ShopPanel::Stock), [9]);
         assert_eq!(shop.window.buy_items, [7]);
         assert_eq!(shop.window.buy, [5]);
-        // A row with no price stays on the shelf.
-        windows.shop.as_mut().unwrap().prices[0] = 0;
-        assert!(!windows.shop_click(point, &mut career));
-        assert_eq!(windows.shop.as_ref().unwrap().window.buy_items, [7]);
+        // Dragged back, the basket is empty again.
+        drag(&mut windows, ShopPanel::Buy, 0, ShopPanel::Stock);
+        let shop = windows.shop.as_ref().unwrap();
+        assert!(shop.window.buy_items.is_empty());
+        assert_eq!(shop.window.totals.0, 0);
+        // The sell basket refuses a shop item.
+        assert_eq!(
+            drag(&mut windows, ShopPanel::Stock, 0, ShopPanel::Sell),
+            ShopDrop::Cancelled
+        );
     }
 
     #[test]
     fn the_shop_trade_button_settles_through_the_company() {
         let mut career = career();
         career.company.stock = vec![7];
-        let names = HubItemNames::default();
         let mut windows = HubWindows::default();
-        windows.open_shop(false, &career, &names);
+        open(&mut windows, false, &career);
         windows.shop.as_mut().unwrap().window.add_buy(3);
         let point = (10, SHOP_SIZE.1 - 20);
         assert!(windows.shop_click(point, &mut career));

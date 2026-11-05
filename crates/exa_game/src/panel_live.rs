@@ -203,7 +203,7 @@ pub(crate) fn entry_at(container: &Container, local: Cell) -> Option<usize> {
 
 /// The item's bulk: the catalogue's model byte, 0 for an id the catalogue
 /// does not hold (a level-local item's record is not promoted yet).
-fn bulk_of(id: u32, catalogue: Option<&ItemCatalogue>) -> i32 {
+pub(crate) fn bulk_of(id: u32, catalogue: Option<&ItemCatalogue>) -> i32 {
     catalogue
         .and_then(|catalogue| catalogue.bulk(id))
         .map_or(0, i32::from)
@@ -212,7 +212,7 @@ fn bulk_of(id: u32, catalogue: Option<&ItemCatalogue>) -> i32 {
 /// Whether the destination can tell it has a model record. A tagged id is
 /// the level's own item and is accepted; an untagged id must be in the
 /// game's catalogue.
-fn model_found(id: u32, catalogue: Option<&ItemCatalogue>) -> bool {
+pub(crate) fn model_found(id: u32, catalogue: Option<&ItemCatalogue>) -> bool {
     id & 0xC000_0000 != 0
         || catalogue
             .is_none_or(|catalogue| catalogue.kind(id).is_some() || catalogue.bulk(id).is_some())

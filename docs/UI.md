@@ -735,9 +735,21 @@ colliders remember the scene node they were built under
 original reads from the clicked node; which field it is is not traced, and
 the node's world x stands in for it.
 
+The trade window's pack, sell basket, buy basket and stock are item panels
+(the inventory's free-form panel) in the page's client, inside its border
+of 8: each item is an icon, with no rows or names. The pack and sell basket
+take only the player's items and the buy basket and stock only the shop's
+(the `0x80000000` flag's mask and value); the stock is laid out by the
+seeded grid pass (the day counter plus one), the pack at the player's
+stored places. A left press drags an icon, the release drops it on a panel
+that accepts it, moves it within its own, or leaves it; each basket re-sums
+its items' value words. The loadout form's kit list and arsenal box drag the
+same way (released over the preview an arsenal item is taken, over the
+arsenal box a kit item is returned).
+
 Not drawn: the board's pictures, prize items and reward slots, the trade
-window's item icons and character preview, and the board's and trade
-window's own close controls.
+window's character preview, and the board's and trade window's own close
+controls.
 
 ## The running arena match
 

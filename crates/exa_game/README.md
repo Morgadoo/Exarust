@@ -1050,14 +1050,21 @@ factory weapon with the instance bit is graded at level 1 and refreshed
 pass); a dropped copy leaves its tier. A copy's shelf price is its own
 value word, and each copy is logged with its condition (`hub shop: copy
 …`). `--open-hub-window shop` opens the shop as the hub's click does, and
-`--shop-buy ROW` buys a stock row through the window's clicks and opens the
-copy's card. Not drawn: the
-board's pictures, prize items and reward slots as images, the manage report
-lines and controls, and the trade window's item icons and character
-preview; a stock row taken into the buy basket and the basket's items
-settling across the shelf are Exarust's list model in `ShopWindow`
-(`take_stock_row`, `offer_item`, `confirm` through `Company::settle`), not
-yet called by the live hub, whose baskets stay coin-only. The board's own close, day-end
+`--shop-buy ROW` drags stock entry `ROW` into the buy basket, confirms the
+trade and opens the copy's card. The trade window's pack, sell basket, buy
+basket and stock are the original's item panels (`shop_panels`): each item
+an icon in the page's client (inside the constructor's border of 8), no
+rows or names, the pack loaded from the player's list with its places, the
+stock with the shop's flag laid out by the seeded grid pass (the day
+counter plus one), and each panel taking only its side's items (the
+`0x80000000` mask and value). A left press on an icon drags it (the icon
+follows the pointer), the release drops it on a panel that accepts it,
+moves it within its own panel, or leaves it; each basket's change sums its
+items' value words. The shop's new copies are registered with the item
+catalogue as the stock is made, so their icons render at once. Not drawn:
+the board's pictures, prize items and reward slots as images, the manage
+report lines and controls, and the trade window's character preview (and
+its drop). The board's own close, day-end
 and forfeit buttons are on its form host and report their actions; the hub
 closes it through the window manager.
 The hub's shopkeeper and specialist placements are `arena_spawn`'s plans;
@@ -1190,12 +1197,15 @@ roster page the form draws the shown person's kit list (the hub stash for
 the manager, the employee's kit list otherwise, the equipped mark on what
 the shown rank wears or holds), the arsenal box the shelf and box buttons
 chose (the lend bit on what a fighter took) and, between them, the
-creator's view (`creator_view`) showing the person in the rank's kit. A
-press on an arsenal entry takes it onto the preview through the form's
+creator's view (`creator_view`) showing the person in the rank's kit. Both
+views drag as the item panel does: a left press picks an entry up, its icon
+follows the pointer, and the release decides (`loadout_kit::kit_release`):
+on its own view it only moves, elsewhere it stays. An arsenal entry
+released over the preview is taken onto it through the form's
 gate (the filter, the rank, twice the rank's point limit, a weapon's cost
 less what it displaces): the entry is lent, the item joins the kit list
-and the rank's loadout holds or wears it. A press on a kit-list entry
-gives it back: the shown box's lent entry, else the arsenal's lend query,
+and the rank's loadout holds or wears it. A kit-list entry released over
+the arsenal box goes back: the shown box's lent entry, else the arsenal's lend query,
 else the shown box or its own shelf with no flags; every loadout then
 keeps at most as many hand copies as the list still holds. The points
 line reads the rank's cost. The arena save writes the manager's record
@@ -1251,8 +1261,9 @@ facts through the card's own page, value, tint, row and description rules
 (the description first rewritten into the generated quality and condition
 sentence from the executable's phrase tables, the apparel title taking its
 variant word),
-the hub's trade window asks for the same card on a right press over a
-stock row (flags `0x80000000`, the whole value) or a pack row (a quarter),
+the hub's trade window asks for the same card on a right press over an
+item of the stock or the buy basket (flags `0x80000000`, the whole value)
+or of the pack or the sell basket (a quarter),
 and the right release after it does not close the window; the card draws
 after the hub windows, as the original's upper-layer card form stays over
 the normal-layer trade window;
@@ -1732,11 +1743,13 @@ close releases the preview and the trade-mode bytes. The opener's layout
 binds the stock list (the shop's or the merchant's) to the stock panel and
 takes the list's own number when one is supplied, writes the preview
 camera's turn factor 0.05 and view word 0x1000, and re-runs when an item is
-picked in the preview. A basket row now carries its catalogue item beside
-its price word: a taken stock row leaves the bound list and joins the buy
-basket with its price, an offered carried item joins the sell basket, and
-the confirmation moves the bought items off the company's shelf and the
-sold ones onto it through the transaction settle.
+picked in the preview. A basket line carries its catalogue item beside
+its price word, rebuilt from the basket panel's items on each change
+(`hub_windows::ShopModel::basket_changed`), and the confirmation moves the
+bought items off the company's shelf and the sold ones onto it through the
+transaction settle; the panels then hand the bought items to the pack and
+the sold ones to the stock [guess: the Trade button's callback is not
+read].
 
 `nav_camera` has the stepped camera's per-tick wall probe: from 50 cm under
 the followed point along the camera's yaw, alternately a 30 cm probe at the

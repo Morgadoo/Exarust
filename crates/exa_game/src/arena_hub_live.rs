@@ -191,8 +191,10 @@ impl Plugin for ArenaHubPlugin {
                     scripted_shop,
                     hub_restock,
                     hub_session_fall,
+                    shop_drag,
                     shop_item_cards,
                     close_hub_windows,
+                    release_shop_icons,
                 )
                     .chain()
                     .in_set(HubWindowSystems),
@@ -706,12 +708,13 @@ fn confirming(windows: &HubWindows) -> bool {
 #[derive(bevy::ecs::system::SystemParam)]
 struct HubShop<'w, 's> {
     game: Option<Res<'w, exa_assets::Game>>,
-    catalogue: Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
+    catalogue: Option<ResMut<'w, exa_items::catalogue::ItemCatalogue>>,
     live: ResMut<'w, crate::shop_stock::LiveShopStock>,
     objects: ResMut<'w, exa_assets::live_objects::LiveObjects>,
     palette: ResMut<'w, crate::shop_stock::ItemPalette>,
     factories: ResMut<'w, crate::shop_stock::ShopFactories>,
     names: ResMut<'w, crate::hub_windows::HubItemNames>,
+    icons: Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
     players: Query<
         'w,
         's,
@@ -795,6 +798,23 @@ impl HubShop<'_, '_> {
             );
             self.log_copies(stock);
         }
+        // The copies the stock update made are in the live database now;
+        // the catalogue takes their tiers at once, so the panels' icons can
+        // render them (the per-frame registration would come a frame late).
+        if let Some(catalogue) = self.catalogue.as_deref_mut()
+            && !catalogue.is_empty()
+        {
+            let mut tiers = Vec::new();
+            for &id in stock.iter() {
+                let tier = exa_formats::objdb::Tier::of(id);
+                if id & exa_formats::objdb::TAG_MASK != 0 && !tiers.contains(&tier) {
+                    tiers.push(tier);
+                }
+            }
+            for tier in tiers {
+                crate::gui_screens::register_tier(&self.objects, catalogue, tier);
+            }
+        }
         if let Some(catalogue) = self.catalogue.as_deref() {
             self.live.fill_names(catalogue, &mut self.names);
         }
@@ -803,11 +823,40 @@ impl HubShop<'_, '_> {
         {
             career.seed_goods(possessions.carried.iter().map(|carried| carried.id));
         }
-        windows.open_shop(merchant, career, &self.names);
-        if let Some(catalogue) = self.catalogue.as_deref() {
+        let carried = self
+            .players
+            .iter()
+            .next()
+            .map(|possessions| possessions.carried.clone())
+            .unwrap_or_default();
+        let pack = crate::hub_windows::pack_list(&career.goods, &carried);
+        let catalogue = self.catalogue.as_deref();
+        let mut icons = self.icons.as_deref_mut();
+        let unit = if windows.unit > 0 { windows.unit } else { 4 };
+        let icon = exa_items::icon_cache::icon_size(unit);
+        windows.open_shop(merchant, career, &pack, |id, flags| {
+            match icons.as_deref_mut() {
+                Some(icons) => icons.reserve(id, flags, catalogue),
+                None => (0, (icon / 2, icon / 2)),
+            }
+        });
+        if let Some(catalogue) = catalogue {
             let live = &self.live;
             let objects = &self.objects;
-            windows.price_shop_rows(|id| shop_line_price(catalogue, live, objects, id));
+            windows.price_shop_items(|id| shop_line_price(catalogue, live, objects, id));
+        }
+        if let Some(shop) = windows.shop.as_ref() {
+            for panel in crate::shop_panels::SHOP_PANELS {
+                let centres: Vec<(u32, (i32, i32))> = (0..shop.panels.get(panel).entries.len())
+                    .filter_map(|i| {
+                        let id = shop.panels.get(panel).entries[i].id;
+                        let local = windows.shop_entry_centre(panel, i)?;
+                        let bounds = windows.bounds()?;
+                        Some((id, (bounds.left + local.0, bounds.top + local.1)))
+                    })
+                    .collect();
+                bevy::log::info!("hub shop: {panel:?} entry centres (id, screen) {centres:?}");
+            }
         }
     }
 
@@ -961,21 +1010,24 @@ fn scripted_shop(
     }
     match buy.stage {
         1 => {
+            // The stock entry is dragged into the buy basket through the
+            // window's own press and release, then the trade confirmed.
             let row = buy.row.unwrap_or(0);
-            let Some(model) = windows.shop.as_ref() else {
-                buy.stage = 0;
-                return;
-            };
-            let panel = model.window.panels()[4];
-            let id = model.stock.get(row).map_or(0, |s| s.0);
-            let point = (
-                panel[0] + 6,
-                panel[1] + 4 + crate::hub_windows::ROW_HEIGHT * row as i32 + 2,
-            );
-            let took = windows.shop_click(point, &mut career);
+            use crate::shop_panels::ShopPanel;
+            let id = windows
+                .shop
+                .as_ref()
+                .and_then(|shop| shop.panels.stock.entries.get(row))
+                .map_or(0, |entry| entry.id);
+            let pressed = windows.shop_press_entry(ShopPanel::Stock, row).is_some();
+            let to = HubWindows::shop_panel_middle(ShopPanel::Buy);
+            let dropped = windows.shop_release(to, (0, 0), true);
+            let took = matches!(dropped, Some(crate::shop_panels::ShopDrop::Moved { .. }));
             let trade = (10, crate::hub_windows::SHOP_SIZE.1 - 20);
             let done = took && windows.shop_click(trade, &mut career);
-            info!("shop buy script: row {row} item {id:#x} taken {took}, trade {done}");
+            info!(
+                "shop buy script: stock entry {row} item {id:#x} pressed {pressed}, dropped {dropped:?}, trade {done}"
+            );
             buy.bought = if done { id } else { 0 };
             buy.stage = if done { 2 } else { 0 };
             buy.wait = SHOP_SCRIPT_WAIT;
@@ -1253,6 +1305,93 @@ fn hub_session_fall(
     flow.phase = Phase::Ended;
     flow.hook = Hook::None;
     info!("arena hub: the manager fell; the session ends (wipe {wipe})");
+}
+
+/// The pointer in physical pixels: the scripted one, else the mouse's.
+fn hub_pointer(window: &Window, scripted: Option<&exa_ui::ScriptedPointer>) -> Option<(i32, i32)> {
+    let at = match scripted {
+        Some(scripted) => scripted.position(window),
+        None => window.cursor_position(),
+    }?;
+    let at = (at * window.scale_factor()).as_ivec2();
+    Some((at.x, at.y))
+}
+
+/// The trade window's drag, as its item panels take the mouse: a left
+/// press on an item starts the item's drag, and the left release ends it
+/// on the panel under the pointer (the panel's accept test, its drop and
+/// the source's drag end), or cancels it anywhere else
+/// ([`crate::shop_panels`]). A move into or out of a basket redoes its
+/// total.
+#[allow(clippy::too_many_arguments)]
+fn shop_drag(
+    buttons: Res<ButtonInput<MouseButton>>,
+    screen: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    scripted: Option<Res<exa_ui::ScriptedPointer>>,
+    mut windows: ResMut<HubWindows>,
+    icons: Option<Res<crate::item_panel_draw::PanelIcons>>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+) {
+    let pressed = buttons.just_pressed(MouseButton::Left);
+    let released = buttons.just_released(MouseButton::Left);
+    if !(pressed || released) || !windows.is_kind(HubWindowKind::Shop) {
+        return;
+    }
+    let Some(pointer) = screen
+        .single()
+        .ok()
+        .and_then(|window| hub_pointer(window, scripted.as_deref()))
+    else {
+        return;
+    };
+    let Some(bounds) = windows.bounds() else {
+        return;
+    };
+    let local = (pointer.0 - bounds.left, pointer.1 - bounds.top);
+    let catalogue = catalogue.as_deref();
+    if pressed
+        && !windows.forms.contains(pointer.0, pointer.1)
+        && let Some(drag) =
+            windows.shop_press(local, |id| crate::panel_live::bulk_of(id, catalogue))
+    {
+        info!(
+            "hub shop: drag of {:#x} (flags {:#x}) from the {:?} at {pointer:?}",
+            drag.id, drag.flags, drag.source
+        );
+    }
+    if released {
+        let Some(drag) = windows.shop.as_ref().and_then(|shop| shop.panels.drag) else {
+            return;
+        };
+        let half = icons
+            .as_deref()
+            .and_then(|icons| icons.half(drag.icon))
+            .unwrap_or((0, 0));
+        let found = crate::panel_live::model_found(drag.id, catalogue);
+        let dropped = windows.shop_release(local, half, found);
+        let totals = windows.shop.as_ref().map(|shop| shop.window.shown_balance);
+        info!(
+            "hub shop: the drag of {:#x} ends at {pointer:?}: {dropped:?}; bottom row {totals:?}",
+            drag.id
+        );
+    }
+}
+
+/// Gives the icon manager back the icons a closed trade window's panels
+/// held.
+fn release_shop_icons(
+    mut windows: ResMut<HubWindows>,
+    icons: Option<ResMut<crate::item_panel_draw::PanelIcons>>,
+) {
+    if windows.released_icons.is_empty() {
+        return;
+    }
+    let handles = std::mem::take(&mut windows.released_icons);
+    if let Some(mut icons) = icons {
+        for handle in handles {
+            icons.release(handle);
+        }
+    }
 }
 
 /// A right press over an item of the trade window asks for its card, as
@@ -1762,13 +1901,9 @@ mod tests {
                 .world()
                 .resource::<crate::hub_windows::ArenaCareer>()
                 .clone();
-            let names = app
-                .world()
-                .resource::<crate::hub_windows::HubItemNames>()
-                .clone();
             app.world_mut()
                 .resource_mut::<HubWindows>()
-                .open_shop(false, &career, &names);
+                .open_shop(false, &career, &[], |_, _| (0, (80, 80)));
         }
         let bounds = app.world().resource::<HubWindows>().bounds().unwrap();
         let shop = app

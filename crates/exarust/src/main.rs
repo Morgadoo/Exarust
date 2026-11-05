@@ -149,6 +149,11 @@
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --click-at x,y@frame;...   move the scripted pointer to the window point (logical pixels) and click the
 //!                                     left mouse button there at frames after loading
+//!          --drag-at x,y>x,y@frame[-end];...
+//!                                     debug: press the left mouse button at the first window point (logical
+//!                                     pixels) at the frame, move the scripted pointer to the second by the end
+//!                                     frame (30 frames later by default) and let go on the frame after (an
+//!                                     item panel's drag)
 //!          --toggle-door FRAME        debug: toggle the bound hinged door nearest the player (a shut one is driven
 //!                                     open) that many frames after the level's rooms exist, logging its angle
 //!          --object-click F[d][l][#id],...  debug: click the placed container nearest the player at frames
@@ -544,6 +549,9 @@ pub struct Options {
     /// `--click-at x,y@frame;...`: the scripted pointer moves there and
     /// the left mouse button clicks, at frames after the load.
     pub clicks_at: Vec<([f32; 2], u32)>,
+    /// `--drag-at x,y>x,y@frame;...`: a left drag from the first point to
+    /// the second, pressed at the frame (a debug tool).
+    pub drags_at: Vec<Drag>,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
     /// `--opponent-feral <f>`: the debug duellist's feral level.
@@ -741,6 +749,34 @@ fn parse_clicks_at(list: &str) -> Option<Vec<([f32; 2], u32)>> {
                 [x.trim().parse().ok()?, y.trim().parse().ok()?],
                 frame.trim().parse().ok()?,
             ))
+        })
+        .collect()
+}
+
+/// A scripted drag: from, to (window points), the press's frame and the
+/// frame the pointer reaches `to` (the button lets go on the next).
+pub type Drag = ([f32; 2], [f32; 2], u32, u32);
+
+/// Reads `--drag-at`'s `x,y>x,y@frame` (or `@from-to`) entries, separated
+/// by `;`; a single frame moves for 30 frames.
+fn parse_drags_at(list: &str) -> Option<Vec<Drag>> {
+    let point = |p: &str| -> Option<[f32; 2]> {
+        let (x, y) = p.split_once(',')?;
+        Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+    };
+    list.split(';')
+        .filter(|s| !s.trim().is_empty())
+        .map(|entry| {
+            let (path, frame) = entry.trim().split_once('@')?;
+            let (from, to) = path.split_once('>')?;
+            let (start, end) = match frame.split_once('-') {
+                Some((a, b)) => (a.trim().parse().ok()?, b.trim().parse().ok()?),
+                None => {
+                    let at: u32 = frame.trim().parse().ok()?;
+                    (at, at.checked_add(30)?)
+                }
+            };
+            (end > start).then_some((point(from)?, point(to)?, start, end))
         })
         .collect()
 }
@@ -1125,6 +1161,16 @@ fn main() -> AppExit {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+            }
+            "--drag-at" => {
+                let list = args.next().unwrap_or_default();
+                match parse_drags_at(&list) {
+                    Some(d) => options.drags_at = d,
+                    None => {
+                        eprintln!("--drag-at: cannot read {list:?} (x,y>x,y@frame;...)");
+                        return AppExit::from_code(2);
+                    }
+                }
             }
             "--click-at" => {
                 let list = args.next().unwrap_or_default();
@@ -1858,6 +1904,15 @@ mod tests {
             Some(vec![([10.0, 20.0], 30), ([1.5, 2.0], 4)])
         );
         assert_eq!(parse_clicks_at("10,20"), None);
+        assert_eq!(
+            parse_drags_at("10,20>30,40@50"),
+            Some(vec![([10.0, 20.0], [30.0, 40.0], 50, 80)])
+        );
+        assert_eq!(
+            parse_drags_at("1,2>3,4@5-9"),
+            Some(vec![([1.0, 2.0], [3.0, 4.0], 5, 9)])
+        );
+        assert_eq!(parse_drags_at("10,20@50"), None);
         assert_eq!(
             parse_employee_kit("Brom:5,7"),
             Some(("Brom".to_string(), vec![5, 7]))

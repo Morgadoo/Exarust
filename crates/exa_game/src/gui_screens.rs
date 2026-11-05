@@ -1530,22 +1530,32 @@ fn register_level_items(
         }
     };
     for tier in tiers {
-        let store = live.db().store(tier);
-        let items: Vec<exa_formats::objdb::Item> =
-            store.records().filter_map(|r| r.item().ok()).collect();
-        let records: Vec<(u32, Vec<u8>)> = store
-            .records()
-            .map(|r| (r.id, r.payload().to_vec()))
-            .collect();
-        catalogue.set_tier_items(tier.tag(), &items);
-        catalogue.set_tier_cards(tier.tag(), &records, Some(live.db().library(tier)));
-        debug!(
-            "item catalogue: {} {:?} records from the live database",
-            records.len(),
-            tier
-        );
+        register_tier(&live, &mut catalogue, tier);
     }
     *seen = Some(live.revision());
+}
+
+/// Hands one tier of the live database to the item catalogue: its items'
+/// models and bulk and its records' cards, under their tagged ids.
+pub(crate) fn register_tier(
+    live: &exa_assets::live_objects::LiveObjects,
+    catalogue: &mut exa_items::catalogue::ItemCatalogue,
+    tier: exa_formats::objdb::Tier,
+) {
+    let store = live.db().store(tier);
+    let items: Vec<exa_formats::objdb::Item> =
+        store.records().filter_map(|r| r.item().ok()).collect();
+    let records: Vec<(u32, Vec<u8>)> = store
+        .records()
+        .map(|r| (r.id, r.payload().to_vec()))
+        .collect();
+    catalogue.set_tier_items(tier.tag(), &items);
+    catalogue.set_tier_cards(tier.tag(), &records, Some(live.db().library(tier)));
+    debug!(
+        "item catalogue: {} {:?} records from the live database",
+        records.len(),
+        tier
+    );
 }
 
 /// Writes the records the closed popups saved back into their objects'
