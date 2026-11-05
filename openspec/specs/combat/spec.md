@@ -1111,3 +1111,10 @@ A step of the knockback kind SHALL reach (1.5 − 0.3·encumbrance) times the st
 #### Scenario: Encumbered
 - **WHEN** the step length is 80 cm with full extension, at encumbrance 0, then 1, then extension 0.5 at encumbrance 0.5
 - **THEN** the knockback step reaches 120, 96, then 54 cm
+
+### Requirement: Striker hook on a landed blow
+The system SHALL call the striker's hook on a landed blow with the contact and a strength: in a clash's and a block's branch after the struck behaviour's notice, with the impact at the hit; on flesh at the end of the damage routine, after the damage call, its sounds and the player's feedback, with the yellow damage before its 0.75. A turned blow on flesh SHALL NOT call it.
+
+#### Scenario: A blow on a shield
+- **WHEN** a striker's weapon meets a held shield
+- **THEN** its hook is called with the impact at the hit

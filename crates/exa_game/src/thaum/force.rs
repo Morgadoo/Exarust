@@ -247,6 +247,8 @@ pub const PLACE_SOUND: &str = "thmfrc_ss";
 pub const BUBBLE_BREAK: &str = "thmfrc_brf";
 pub const TORRENT_SOUND: &str = "thmfrc_trntdr";
 pub const KINESIS_SOUND: &str = "thmfrc_knsst";
+/// The hum buffer a kinesis pick names on the held body's shell.
+pub const KINESIS_HUM: &str = "thmfrc_knsdr";
 pub const THROW_SOUND: &str = "thmfrc_throw";
 
 /// What a Force cast makes, with the cost it was priced at.

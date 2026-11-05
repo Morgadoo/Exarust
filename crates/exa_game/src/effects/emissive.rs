@@ -46,10 +46,12 @@
 //!
 //! The blast's, the torrent's, the teleporter bubble's, the Barrier's, the
 //! force Bubble's and the barricade's lights are registered as GI shapes
-//! while their effects live (`crate::thaum::effect_light`); the cuboid and
-//! tendril lights have builders there too (`cuboid_shape`,
-//! `tendril_shape`), and the strikes light (`strikes_shape`), with no live
-//! effect that registers them yet. The multi-point and gradient-line
+//! while their effects live (`crate::thaum::effect_light`), and so are the
+//! cuboid light of a held body's shell (`held_box_shape`) and a strikes
+//! aura's line (`strikes_aura_shape`); the tendril light has its builder
+//! there too (`tendril_shape`). The cuboid's colour is the force shell's
+//! light as its render step writes it, with no manager scale. The
+//! multi-point and gradient-line
 //! attenuations are per squared volume unit (the GI block's width is 1), as
 //! the original uploads them.
 //!
@@ -203,12 +205,10 @@ pub fn bubble_light(phase: Phase, share: f32, radius: f32, gain: f32) -> BubbleL
     }
 }
 
-/// The cuboid's extent and colour: `max(scale − 20, 10)` on each axis.
+/// The cuboid's extent and colour: `max(scale − 20, 10)` on each axis (the
+/// engine's MAXSS: 10 for a NaN scale).
 pub fn cuboid_light(scale: Vec3, colour: Vec3) -> FacedLight {
-    let extent = |s: f32| {
-        let e = s - 20.0;
-        if e <= 10.0 { 10.0 } else { e }
-    };
+    let extent = |s: f32| exa_physics::engine_math::max(s - 20.0, 10.0);
     FacedLight {
         extent: Vec3::new(extent(scale.x), extent(scale.y), extent(scale.z)),
         colour,
@@ -492,6 +492,8 @@ mod tests {
     fn the_cuboid_extent_keeps_ten_centimetres() {
         let g = cuboid_light(Vec3::new(25.0, 50.0, 31.0), Vec3::ONE);
         assert_eq!(g.extent, Vec3::new(10.0, 30.0, 11.0));
+        let g = cuboid_light(Vec3::new(f32::NAN, 50.0, 31.0), Vec3::ONE);
+        assert_eq!(g.extent.x, 10.0);
     }
 
     #[test]

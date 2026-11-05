@@ -401,6 +401,7 @@ impl Plugin for CastPlugin {
             .add_message::<super::hold_live::HoldEnd>()
             .add_message::<exa_combat::impact::LimbImpact>()
             .add_message::<exa_combat::impact::ShellHit>()
+            .add_message::<exa_combat::StrikeHooked>()
             .init_resource::<super::kinesis_live::KinesisPickHook>()
             .init_resource::<super::kinesis_live::KinesisCursor>()
             .init_resource::<super::kinesis_live::KinesisKeys>()
@@ -410,7 +411,13 @@ impl Plugin for CastPlugin {
             .init_resource::<super::debug_cast::DebugCasts>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
             .add_message::<exa_script::Narrate>()
-            .add_systems(Update, super::effect_draw::ripple_shell_hits)
+            .add_systems(
+                Update,
+                (
+                    super::effect_draw::ripple_shell_hits,
+                    super::effect_draw::ripple_strikes,
+                ),
+            )
             .add_systems(Update, super::power::teach_on_death)
             .add_systems(
                 Update,

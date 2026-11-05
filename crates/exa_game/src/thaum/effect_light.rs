@@ -1,7 +1,8 @@
 //! The GI light shapes the running effects register: the force blast's and
 //! the force torrent's multi-point lights, the teleporter bubble's pulsing
-//! shell, the force Barrier's dome and the force Bubble's shell, injected
-//! into the voxel GI as [`exa_render::gi::GiShape`]s.
+//! shell, the force Barrier's dome and the force Bubble's shell, a held
+//! body's box light and a strikes aura's line light ([`shell_lights`]),
+//! injected into the voxel GI as [`exa_render::gi::GiShape`]s.
 //!
 //! As the original does it:
 //!
@@ -27,7 +28,15 @@
 //!
 //! Evidence: the blast's, torrent's and teleporter bubble's creators,
 //! destroy slots and frames, the manager's list append and swap removal,
-//! and the three emissives' bounds and draws, read from `Exanima.exe`.
+//! and the three emissives' bounds and draws; the kinesis pick and the
+//! throw's grab (each makes its shell's cuboid emissive), the strikes aura
+//! builder (its line, gradient and emissive), the force shell's render step
+//! (the emissives' colour) and the cuboid and strikes emissives' program
+//! setups, bounds and draws, read from `Exanima.exe`. [inf: the strikes
+//! line's colour takes one less the node's fade, which no strikes code
+//! writes, so 0. A weapon of several nodes keeps the single node's line and
+//! gradient here; the original takes its last node's box and 0.5 weights.
+//! A dead body's held shell (skinned) has no box light yet.]
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -36,6 +45,9 @@ use exa_render::gi::{GiShape, GiShapeProgram, ShapeVolume};
 use super::barrier_live::LiveBarrier;
 use super::blast_live::LiveBlast;
 use super::bubble_live::LiveBubble;
+use super::cast::LiveShellAura;
+use super::effect_draw::{RigidFit, part_frame};
+use super::hold_live::{HeldBoxLight, RigidAuraOf, StrikesAura};
 use super::torrent_live::LiveTorrent;
 use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{Blast, THROWN};
@@ -44,6 +56,8 @@ use crate::effects::emissive::{self, FALLOFF_CM, MultiPointLight};
 use crate::effects::force_dome::{BARRIER_DRAW_SCALE, Barrier, Bubble as ForceBubble};
 use crate::effects::torrent::Torrent;
 use crate::thaum::barricade::Barricade;
+use crate::thaum::{ForceShell, ShellFrame};
+use exa_physics::body::Ragdoll;
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -220,25 +234,37 @@ pub fn force_bubble_shape(bubble: &ForceBubble, gain: f32) -> (GiShape, ShapeVol
     (shape, volume_of(centre, half))
 }
 
-/// A cuboid emissive's box shape: the `gi_cuboid` program, `max(scale −
-/// 20, 10)` half extents, the light's own colour times the manager's scale
-/// and the node's frame, in the node's world box plus 80 cm.
-pub fn cuboid_shape(
-    at_cm: Vec3,
-    axes: [Vec3; 3],
-    scale_cm: Vec3,
-    colour: Vec3,
-) -> (GiShape, ShapeVolume) {
-    let light = emissive::cuboid_light(scale_cm, colour * GI_LIGHT_SCALE);
-    let (centre, half) = emissive::world_box(at_cm, axes, scale_cm, emissive::CUBOID_FALLOFF_CM);
+/// A held body's box light (`gi_cuboid`) this frame: its shell node's box
+/// (the fitted box of the body's meshes, `fit`, in the frame of the body's
+/// first part, cm) with the extent `max(half − 20, 10)` on each axis, the
+/// shell's light colour as its render step wrote it (no manager scale),
+/// `bMat` the inverse of the node's frame less the box's centre in it, in
+/// the node's world box plus 80 cm.
+pub fn held_box_shape(frame: &ShellFrame, fit: RigidFit, colour: Vec3) -> (GiShape, ShapeVolume) {
+    let centre = fit.centre * CM;
+    let half = fit.half * CM;
+    let world_centre = node_point(frame, centre);
+    let light = emissive::cuboid_light(half, colour);
+    let (box_centre, box_half) =
+        emissive::world_box(world_centre, frame.rows, half, emissive::CUBOID_FALLOFF_CM);
+    let node = Affine3A::from_mat3_translation(
+        Mat3::from_cols(frame.rows[0], frame.rows[1], frame.rows[2]),
+        frame.translation,
+    );
     let shape = GiShape {
         program: GiShapeProgram::Cuboid,
         colour: light.colour,
-        matrix: Mat4::from_translation(-at_cm),
+        matrix: Mat4::from_translation(-centre) * Mat4::from(node.inverse()),
         half: light.extent,
         ..default()
     };
-    (shape, volume_of(centre, half))
+    (shape, volume_of(box_centre, box_half))
+}
+
+/// A point in a node's frame (cm) carried into the world: its translation
+/// plus each axis times the point's coordinate.
+fn node_point(frame: &ShellFrame, p: Vec3) -> Vec3 {
+    frame.translation + frame.rows[0] * p.x + frame.rows[1] * p.y + frame.rows[2] * p.z
 }
 
 /// A tendril image's multi-point light: one point a strand anchor with its
@@ -308,8 +334,7 @@ pub(crate) fn force_bubble_lights(
 
 /// The strikes' light shape: the `gi_gradline` segment and point light of
 /// [`emissive::strikes_light`], in the weapon node's box (its centre, axes
-/// and half extents) plus 60 cm. The live strikes aura does not carry the
-/// two points yet, so nothing calls this.
+/// and half extents) plus 60 cm.
 pub fn strikes_shape(
     light: &emissive::StrikesLight,
     centre: Vec3,
@@ -327,6 +352,103 @@ pub fn strikes_shape(
         ..default()
     };
     (shape, volume_of(box_centre, half))
+}
+
+/// A strikes aura's line light this frame: the segment of
+/// [`crate::thaum::strikes_line`] along the weapon node's y axis carried
+/// into the world, its gradient, the shell's light colour times one less
+/// the node's fade, and, while the aura has a ripple, a point light at its
+/// first ripple (carried by the weapon's frame) ten times its shown amount;
+/// in the shell node's box plus 60 cm.
+pub fn strikes_aura_shape(
+    shell: &ForceShell,
+    frame: &ShellFrame,
+    fit: RigidFit,
+    record: Option<[f32; 3]>,
+    fade: f32,
+) -> (GiShape, ShapeVolume) {
+    let centre = fit.centre * CM;
+    let half = fit.half * CM;
+    let line = crate::thaum::strikes_line(record, centre.y, half.y);
+    let ends = line.ends.map(|y| node_point(frame, Vec3::new(0.0, y, 0.0)));
+    let point = shell
+        .ripples
+        .first()
+        .map(|ripple| (node_point(frame, Vec3::from(ripple.at)), ripple.shown));
+    let light = emissive::strikes_light(
+        ends,
+        Vec3::from(line.gradient),
+        Vec3::from(shell.light),
+        fade,
+        point,
+    );
+    strikes_shape(&light, node_point(frame, centre), frame.rows, half)
+}
+
+/// The held bodies' box lights and the strikes auras' line lights, from
+/// their shells' render steps every frame. A shell's light is registered
+/// once its box is fitted and leaves with the shell: when the shell leaves
+/// the scene, or when its render step drops its light.
+#[allow(clippy::type_complexity)]
+pub(crate) fn shell_lights(
+    mut commands: Commands,
+    auras: Query<
+        (
+            Entity,
+            &LiveShellAura,
+            &RigidAuraOf,
+            Option<&RigidFit>,
+            Option<&StrikesAura>,
+            Option<&EffectLight>,
+        ),
+        Or<(With<HeldBoxLight>, With<StrikesAura>)>,
+    >,
+    bodies: Query<&Ragdoll>,
+    globals: Query<&GlobalTransform>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+) {
+    for (entity, aura, of, fit, strikes, light) in &auras {
+        if !aura.0.lit {
+            if let Some(light) = light {
+                commands.entity(light.0).despawn();
+                commands.entity(entity).remove::<EffectLight>();
+                debug!("shell light freed for {entity:?}");
+            }
+            continue;
+        }
+        let Some(&fit) = fit else {
+            continue;
+        };
+        let world = match bodies.get(of.0).ok().and_then(|b| b.parts.first()) {
+            Some(part) => part.transform(),
+            None => match globals.get(of.0) {
+                Ok(g) => g.affine(),
+                Err(_) => continue,
+            },
+        };
+        let frame = part_frame(world);
+        let (placed, name) = match strikes {
+            // The node's fade: no strikes code writes it.
+            Some(strikes) => (
+                strikes_aura_shape(&aura.0, &frame, fit, strikes.record, 0.0),
+                "strikes line light",
+            ),
+            None => (
+                held_box_shape(&frame, fit, Vec3::from(aura.0.light)),
+                "held box light",
+            ),
+        };
+        debug!(
+            "{name} {entity:?}: state {}, shown {:.3}: colour {:?}, point light {:?}, box {:?} ± {:?} m",
+            aura.0.state,
+            aura.0.shown,
+            placed.0.colour,
+            placed.0.point_light,
+            placed.1.position,
+            placed.1.half
+        );
+        place_light(&mut commands, entity, light, &mut shapes, placed, name);
+    }
 }
 
 /// The barricade's light shape this frame: the `gi_cuboid_fn` box in the
@@ -826,20 +948,40 @@ mod tests {
     #[test]
     fn the_cuboid_and_tendril_lights_take_their_boxes() {
         let at = Vec3::new(100.0, 50.0, 0.0);
-        // A cuboid: max(scale − 20, 10) per axis, its own colour and the
+        // A held body's box: max(half − 20, 10) per axis, the shell's own
+        // colour, `bMat` taking the box's centre to the origin, and the
         // node's box plus 80 cm.
-        let (shape, volume) = cuboid_shape(
-            at,
-            [Vec3::X, Vec3::Y, Vec3::Z],
-            Vec3::new(25.0, 50.0, 31.0),
-            Vec3::X,
-        );
+        let frame = ShellFrame {
+            rows: [Vec3::X, Vec3::Y, Vec3::Z],
+            translation: at,
+        };
+        let fit = RigidFit {
+            centre: Vec3::new(0.0, 0.1, 0.0),
+            half: Vec3::new(0.25, 0.5, 0.31),
+        };
+        let (shape, volume) = held_box_shape(&frame, fit, Vec3::X);
         assert_eq!(shape.program, GiShapeProgram::Cuboid);
         assert_eq!(shape.half, Vec3::new(10.0, 30.0, 11.0));
-        assert_eq!(shape.colour, Vec3::X * GI_LIGHT_SCALE);
+        assert_eq!(shape.colour, Vec3::X);
+        let centre = at + Vec3::new(0.0, 10.0, 0.0);
+        assert!(shape.matrix.transform_point3(centre).length() < 1e-4);
+        assert_eq!(volume.position, centre / CM);
         assert_eq!(
             volume.half,
             Vec3::new(25.0 + 10.0 + 80.0, 50.0 + 10.0 + 80.0, 31.0 + 10.0 + 80.0) / CM
+        );
+        // A turned node turns its box: the node's x axis is the world's y.
+        let turned = ShellFrame {
+            rows: [Vec3::Y, -Vec3::X, Vec3::Z],
+            translation: at,
+        };
+        let (shape, _) = held_box_shape(&turned, fit, Vec3::X);
+        let local = shape
+            .matrix
+            .transform_point3(at + Vec3::new(0.0, 25.0, 0.0));
+        assert!(
+            (local - Vec3::new(25.0, -10.0, 0.0)).length() < 1e-4,
+            "{local}"
         );
         // A tendril's points make one multipoint light each, attenuation
         // 16000, in their box plus 120 cm moved by the node.
@@ -998,6 +1140,39 @@ mod tests {
         assert_eq!(shape.colour, Vec3::new(0.74, 0.24, 0.0) * 0.75);
         assert_eq!(volume.position, Vec3::new(0.0, 0.4, 0.0));
         assert_eq!(volume.half, Vec3::new(0.75, 1.1, 0.75));
+    }
+
+    /// A strikes aura's line runs along its weapon's y axis, carried into
+    /// the world; its first ripple is the point light, ten times its shown
+    /// amount; the colour is the shell's light.
+    #[test]
+    fn a_strikes_aura_lights_its_weapon_line() {
+        let frame = ShellFrame {
+            rows: [Vec3::Y, -Vec3::X, Vec3::Z],
+            translation: Vec3::new(100.0, 0.0, 0.0),
+        };
+        let fit = RigidFit {
+            centre: Vec3::new(0.0, 0.5, 0.0),
+            half: Vec3::new(0.05, 0.5, 0.05),
+        };
+        let mut shell = ForceShell::strikes(0, [0.0; 2]);
+        shell.light = [0.014, 0.008, 0.1];
+        let record = Some([0.5, 0.9, 100.0]);
+        let (shape, volume) = strikes_aura_shape(&shell, &frame, fit, record, 0.0);
+        let line = crate::thaum::strikes_line(record, 50.0, 50.0);
+        assert_eq!(shape.program, GiShapeProgram::GradLine);
+        // Node y is world −x.
+        assert_eq!(shape.line[0], Vec3::new(100.0 - line.ends[0], 0.0, 0.0));
+        assert_eq!(shape.line[1], Vec3::new(100.0 - line.ends[1], 0.0, 0.0));
+        assert_eq!(shape.grad, Vec3::from(line.gradient));
+        assert_eq!(shape.colour, Vec3::new(0.014, 0.008, 0.1));
+        assert_eq!(shape.point_light, Vec4::ZERO);
+        assert_eq!(volume.position, Vec3::new(50.0, 0.0, 0.0) / CM);
+        let mut unit = || 0.5;
+        shell.hit([0.0, 30.0, 0.0], 1.0, 0, &mut unit);
+        shell.ripples[0].shown = 0.25;
+        let (shape, _) = strikes_aura_shape(&shell, &frame, fit, record, 0.0);
+        assert_eq!(shape.point_light, Vec4::new(70.0, 0.0, 0.0, 2.5));
     }
 
     /// A standing barricade's `gi_cuboid_fn`: the node's half size as the

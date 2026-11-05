@@ -37,8 +37,9 @@
 //! shell (`super::hold_live`) and plays `thmfrc_knsst` at it (volume 0.3,
 //! pitch `0.8 + 0.4·roll` in double). The kinesis's end gives both back,
 //! unless it handed the body to a throw, which takes them over.
-//! [inf: the pick's shell also names `thmfrc_knsdr` as its sound; the
-//! shell's hum is not played.]
+//! The pick's shell names `thmfrc_knsdr` as its hum, which plays while the
+//! shell lives (`super::shell_hum`), and carries its box light
+//! (`super::effect_light::shell_lights`).
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -53,7 +54,7 @@ use exa_ui::ScriptedPointer;
 use super::cast::{ActiveClass, PowerCaster};
 use super::force::KINESIS_SOUND;
 use super::hold_live::{body_radius, grab_body};
-use super::live::EffectRoll;
+use super::live::{EffectDraws, EffectRoll};
 use super::power::force::{
     Kinesis, KinesisTarget, cursor_aim, kinesis_spin, kinesis_turn, kinesis_velocity, settle_aim,
 };
@@ -132,6 +133,7 @@ pub(super) fn take_kinesis_picks(
     physics: Option<Res<Physics>>,
     stand_ins: Option<Res<StandIns>>,
     mut roll: ResMut<EffectRoll>,
+    mut draws: Option<ResMut<EffectDraws>>,
     mut audio: ThrowAudio,
     mut pick_set: Local<Option<u32>>,
 ) {
@@ -166,6 +168,9 @@ pub(super) fn take_kinesis_picks(
         kinesis.depth = pick_depth(extents);
         kinesis.aim = (centre * CM).to_array();
         let radius = body_radius(pick.body, &body, physics.as_deref(), stand_ins.as_deref());
+        // The shell names its hum; joining the scene, it draws its voice's
+        // start from the effect stream.
+        let hum = draws.as_mut().map_or(0.0, |d| d.0.unit());
         let shell = grab_body(
             &mut commands,
             pick.body,
@@ -174,6 +179,7 @@ pub(super) fn take_kinesis_picks(
             radius,
             now,
             &mut roll,
+            Some(hum),
         );
         kinesis.shell = Some(shell.to_bits());
         kinesis.material = Some(pick.body.to_bits());

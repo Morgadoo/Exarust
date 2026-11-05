@@ -139,6 +139,8 @@ impl Plugin for ThaumEffectsPlugin {
                                 super::dome_sound::sound_domes,
                             )
                                 .chain(),
+                            super::shell_hum::sound_shell_hums
+                                .after(super::effect_draw::draw_rigid_auras),
                             crate::effects::dome_draw::drop_dome_draws,
                             super::vanish_live::draw_vanishes,
                             super::vanish_live::drop_vanish_copies,
@@ -150,6 +152,7 @@ impl Plugin for ThaumEffectsPlugin {
                             super::effect_light::barrier_lights,
                             super::effect_light::force_bubble_lights,
                             super::effect_light::barricade_lights,
+                            super::effect_light::shell_lights,
                             super::effect_light::drop_orphan_lights,
                         )
                             .chain(),

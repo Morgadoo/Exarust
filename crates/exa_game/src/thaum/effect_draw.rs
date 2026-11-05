@@ -620,6 +620,89 @@ pub(crate) fn ripple_shell_hits(
     }
 }
 
+/// Force Strikes' hook on its caster's landed blows ([`exa_combat::StrikeHooked`]):
+/// the aura on the caster's primary weapon (the item in its primary
+/// striker's slot) ripples at the contact, in the weapon's frame (cm), at
+/// half the hook's strength, and sounds `thmfrc_shi` at the contact when
+/// the aura's 400 ms gate is open (its gain 1.5 and base pitch 0.8). A
+/// caster whose primary weapon carries no aura, or that runs no Strikes,
+/// is left alone.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn ripple_strikes(
+    mut hooks: MessageReader<exa_combat::StrikeHooked>,
+    casters: Query<(
+        &super::cast::PowerCaster,
+        Option<&exa_combat::attack::Attacker>,
+    )>,
+    blades: Query<(Entity, &exa_combat::Blade), With<exa_physics::grip::HeldGrip>>,
+    mut auras: Query<&mut LiveShellAura, With<super::hold_live::StrikesAura>>,
+    bodies: Query<&Ragdoll>,
+    globals: Query<&GlobalTransform>,
+    ticks: Option<Res<BodyTicks>>,
+    mut roll: Option<ResMut<EffectRoll>>,
+    mut audio: ShellHitAudio,
+    mut set: Local<Option<u32>>,
+) {
+    let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
+    for hook in hooks.read() {
+        let Ok((caster, attacker)) = casters.get(hook.attacker) else {
+            continue;
+        };
+        let Some(power) = caster.active.iter().find_map(|entry| match &entry.class {
+            super::cast::ActiveClass::Strikes(power) if power.state != super::power::ENDING => {
+                Some(power)
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+        let Some(slot) = attacker.and_then(|a| a.primary) else {
+            continue;
+        };
+        let Some(primary) = blades
+            .iter()
+            .find(|(_, blade)| blade.wielder == hook.attacker && blade.slot == slot)
+            .map(|(entity, _)| entity)
+        else {
+            continue;
+        };
+        let Some(shell) = power
+            .auras
+            .iter()
+            .find(|aura| aura.item == primary.to_bits())
+            .and_then(|aura| aura.shell)
+            .and_then(Entity::try_from_bits)
+        else {
+            continue;
+        };
+        let Ok(mut aura) = auras.get_mut(shell) else {
+            continue;
+        };
+        let world = match bodies.get(primary).ok().and_then(|b| b.parts.first()) {
+            Some(part) => part.transform(),
+            None => match globals.get(primary) {
+                Ok(g) => g.affine(),
+                Err(_) => continue,
+            },
+        };
+        let local = part_frame(world).local(hook.point * CM);
+        let mut unit = || roll.as_mut().map(|r| r.0.unit()).unwrap_or(0.0);
+        let sound = aura
+            .0
+            .hit(local.to_array(), hook.strength * 0.5, now, &mut unit);
+        info!(
+            "force strikes: {:?}'s blow ripples the aura {shell:?} on {primary:?} at {local:?} cm \
+             (strength {:.3}, {} ripples)",
+            hook.attacker,
+            hook.strength,
+            aura.0.ripples.len()
+        );
+        if let Some((pitch, volume)) = sound {
+            audio.play(&mut set, hook.point, volume, pitch);
+        }
+    }
+}
+
 /// Removes the copies of an aura that has left the scene.
 pub(crate) fn drop_shell_copies(
     mut commands: Commands,
