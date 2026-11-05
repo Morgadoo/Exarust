@@ -315,11 +315,15 @@ The system SHALL, with `--profiler` or `--perf-log`, measure each frame's main-t
 - **THEN** the plan has two points at cost 20 and the player's footprint is back afterwards, and half a metre of movement does not plan again
 
 ### Requirement: Light comparison options
-The viewer SHALL offer, as debug options: `--debug-lights M`, which logs once, two seconds into play, every point light within M metres of the player with its colour, intensity, range, GI multiplier and shaping, plus the GI base ambient and the scene ambient; `--no-torch`, which starts play without the carried torch; and `--floor-torch x,y,z`, which lays a lit torch on its side at that point once the player stands in the level.
+The viewer SHALL offer, as debug options: `--debug-lights M`, which logs once, two seconds into play, every point light within M metres of the player with its colour, intensity, range, GI multiplier and shaping, plus the GI base ambient and the scene ambient; `--no-torch`, which starts play without the carried torch; and `--floor-torch x,y,z[,rx,ry,rz]`, which lays a lit torch at that point once the player stands in the level, on its side or, with six values, in the frame those X, Y, Z angles (degrees) give.
 
 #### Scenario: The start room's lights
 - **WHEN** exanima01 is played with `--debug-lights 15 --no-torch`
 - **THEN** the log lists the pool light (shaping (0, 16), intensity 60) and the fill light (intensity 0.1, GI multiplier 0) over the spawn, and no torch fire
+
+#### Scenario: A torch laid as retail's
+- **WHEN** exanima01 is played with `--no-torch --floor-torch 80.45,0.2,40.88,99,0,0`
+- **THEN** the torch lies along the world's Z with its flame end on the floor
 
 ### Requirement: Offscreen game
 `--offscreen <file>` SHALL run the game without an OS window: every camera that would draw to the primary window SHALL draw into one image of the `--size` given (1280 × 720 by default), interface included, and each frame SHALL be written to the file. Without the flag the game SHALL open its window as before.

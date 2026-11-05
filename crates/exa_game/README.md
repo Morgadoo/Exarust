@@ -701,7 +701,8 @@ blow's low-health check on the player's body (`exa_combat::Weakened`;
 held torch (`torch`, which fills its hand and holds it by the grip
 table's one-handed or off-hand grip for the holder's size and race; its
 tests pin the "Torch" clips' arm on the body model; `--floor-torch` lays
-one on the floor for retail comparisons; a story start without a carried
+one on the floor for retail comparisons (optionally in a given frame,
+`floor_torch_transform`); a story start without a carried
 torch lays the start's torch, item 0x1f, at its pose: `StoryTorch`), the
 tip banner and the manual in play (`help_live`: `Step::Tip` shows the
 prelude's line, the menu's MANUAL rows open `manualkm.fds` over the

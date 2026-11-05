@@ -161,6 +161,11 @@ pub mod flags {
     /// The level has an open sky: inside the GI volume the surface takes
     /// the original's outdoor GI shading ([`crate::gi::GiOutdoor`]).
     pub const OUTDOOR: u32 = 1073741824;
+    /// Debug view (`EXA_GI_DEBUG=direct` or `=ambient`): the frame split in
+    /// its two lights. Alone, the surface leaves its GI ambient and
+    /// reflection out (the direct lights only); with [`DEBUG_GI`] it leaves
+    /// the direct lights out (the GI's share only).
+    pub const DEBUG_SPLIT: u32 = 2147483648;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex

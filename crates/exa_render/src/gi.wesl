@@ -96,6 +96,8 @@ struct GiParams {
     // x = the number of registered shapes.
     shape_count: vec4<u32>,
     shapes: array<GiShape, 16>,
+    // The driver's sRGB steps, four to a row (`encode_srgb8`).
+    srgb_steps: array<vec4<f32>, 64>,
 }
 
 const SECTORS: u32 = 8u;
@@ -118,9 +120,31 @@ const FLIP_Z: vec3<f32> = vec3(1.0, 1.0, -1.0);
 // The shape programs' texture (`Tex0`); the manager's shapes share one.
 @group(0) @binding(8) var shape_texture: texture_2d<f32>;
 
+// The 8-bit sRGB encode of the light volume's writes, as the hardware the
+// original's GI was checked on (an NVIDIA RTX 3090, driver 615.78) does it:
+// `params.srgb_steps` holds, for each code c, the linear value from which a
+// write stores c + 1 rather than c, measured by rendering every value into a
+// GL_SRGB8_ALPHA8 target with GL_FRAMEBUFFER_SRGB on
+// (`exa_render::gi::SRGB8_STEPS`). The driver does not round to the nearest
+// code: at the bottom of the curve it steps up 0.40 of a code early, higher
+// up anywhere between 0.40 and 0.60, which sets where the volume's slow climb
+// stalls (rules: docs/RENDERING.md, Voxel GI). The exact encode's code,
+// floored, names the interval and its step decides (`encode_srgb8_from`).
+fn encode_srgb8(x: f32) -> f32 {
+    var l = clamp(x, 0.0, 1.0);
+    if !(x >= 0.0) {
+        l = 0.0;
+    }
+    let s = select(1.055 * pow(l, 1.0 / 2.4) - 0.055, l * 12.92, l <= 0.0031308);
+    let c = min(u32(s * 255.0), 254u);
+    let step = params.srgb_steps[c / 4u][c % 4u];
+    return f32(c + select(0u, 1u, x >= step)) / 255.0;
+}
+
+// A colour as the volume stores it: each channel's code over 255, which the
+// unorm store keeps exactly.
 fn to_srgb(c: vec3<f32>) -> vec3<f32> {
-    let l = clamp(c, vec3(0.0), vec3(1.0));
-    return select(1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055, l * 12.92, l <= vec3(0.0031308));
+    return vec3(encode_srgb8(c.x), encode_srgb8(c.y), encode_srgb8(c.z));
 }
 
 fn openness(occ: f32) -> f32 {
@@ -430,9 +454,13 @@ fn margin_blit(@builtin(global_invocation_id) id: vec3<u32>) {
     let uv = (vec2<f32>(dest.xy) + 0.5) / vec2<f32>(blit.dims.xy) + blit.offset.xy;
     let r = (f32(id.z) + 0.5) / f32(blit.dims.z);
     let src = textureSampleLevel(blit_source, blit_sampler, vec3(uv, r), 0.0);
-    // The neighbour is sampled through its sRGB view; the target stores
-    // sRGB-encoded bytes, as the propagation does.
-    textureStore(blit_target, vec3<i32>(dest), vec4(to_srgb(src.rgb), src.a));
+    // The neighbour is sampled through its sRGB view at a texel's centre, so
+    // each channel is a code's own value, which any encode of the original's
+    // (the driver's steps lie 0.4 of a code or more from it) stores as that
+    // code again.
+    let l = clamp(src.rgb, vec3(0.0), vec3(1.0));
+    let enc = select(1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055, l * 12.92, l <= vec3(0.0031308));
+    textureStore(blit_target, vec3<i32>(dest), vec4(enc, src.a));
 }
 
 @compute @workgroup_size(4, 4, 4)

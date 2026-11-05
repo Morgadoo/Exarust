@@ -67,6 +67,9 @@ const WET_FLOOR: u32 = 16u;
 const COMPOSITE: u32 = 32u;
 // The level has an open sky: the GI takes the original's outdoor shading.
 const OUTDOOR: u32 = 64u;
+// Debug view: the direct lights only, or with DEBUG_GI the GI's share only
+// (`EXA_GI_DEBUG=direct|ambient`).
+const DEBUG_SPLIT: u32 = 128u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
 // Every layer texture is read through one repeating sampler.
@@ -503,7 +506,7 @@ fn fragment(
         let c = vec3(world_from_local[0].w, world_from_local[1].w, world_from_local[2].w);
         let slot = gi_slot(splat.gi_grid, splat.gi_cells, terrain_block_centre(c, in.world_position.xyz));
         let g = gi_block_sample(slot, wp, n, disc);
-        if has(DEBUG_GI) {
+        if has(DEBUG_GI) && !has(DEBUG_SPLIT) {
             var dbg: FragmentOutput;
             dbg.color = vec4(g.rgb * 10.0, 1.0);
             return dbg;
@@ -536,7 +539,19 @@ fn fragment(
         reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * ambient_w * gv;
     }
     var out: FragmentOutput;
-    let specular = lit.specular + reflected * schlick(s.f0, s.ndv);
-    out.color = vec4((lit.diffuse + ambient) * colour + specular * specular_mask, 1.0);
+    var direct_diffuse = lit.diffuse;
+    var direct_specular = lit.specular;
+    // The debug split (`EXA_GI_DEBUG=direct|ambient`).
+    if has(DEBUG_SPLIT) {
+        if has(DEBUG_GI) {
+            direct_diffuse = vec3(0.0);
+            direct_specular = vec3(0.0);
+        } else {
+            ambient = vec3(0.0);
+            reflected = vec3(0.0);
+        }
+    }
+    let specular = direct_specular + reflected * schlick(s.f0, s.ndv);
+    out.color = vec4((direct_diffuse + ambient) * colour + specular * specular_mask, 1.0);
     return out;
 }
