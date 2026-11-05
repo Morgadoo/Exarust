@@ -115,6 +115,55 @@ impl PlacedItem {
     }
 }
 
+/// On a placed object's model root: its index in the level section's list
+/// of placed objects, which a save's level export writes it back under.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedIndex(pub u32);
+
+/// The level section the current level was read from: the archive's
+/// `<locale>.rfc` or a save's own section, and which of its placed objects
+/// the load spawned. A save exports the level from it (the original walks
+/// its live scene; Exarust's scene model has no converter back, so the
+/// export starts from the section it loaded and writes the live state over
+/// it).
+#[derive(Resource, Debug, Clone)]
+pub struct LevelSource {
+    /// The level's entry name (`exanima01.rfc`).
+    pub entry: String,
+    /// The section's bytes as the load read them.
+    pub bytes: std::sync::Arc<[u8]>,
+    /// The section came from a save package, not the archive.
+    pub from_save: bool,
+    /// The indices of the placed objects the load spawned an entity for.
+    pub spawned: Vec<u32>,
+}
+
+impl LevelSource {
+    /// The locale the save names the section by: the entry without `.rfc`.
+    pub fn locale(&self) -> &str {
+        self.entry.strip_suffix(".rfc").unwrap_or(&self.entry)
+    }
+}
+
+/// A save's own section for the level a load is about to read, as the save
+/// unit's load passes it to the importer: the next load of that level reads
+/// these bytes instead of the archive's and the resource is used up.
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct SavedLevelSection {
+    /// The locale the section is named by (`exanima01`).
+    pub locale: String,
+    pub bytes: std::sync::Arc<[u8]>,
+}
+
+impl SavedLevelSection {
+    /// Whether this section is the one a load of `entry` (with or without
+    /// `.rfc`) reads.
+    pub fn is_for(&self, entry: &str) -> bool {
+        let stem = entry.strip_suffix(".rfc").unwrap_or(entry);
+        stem.eq_ignore_ascii_case(&self.locale)
+    }
+}
+
 /// The placement an item record gets when it is spawned into the scene by a
 /// GUI drag rather than loaded from a level: its record id as both the
 /// record and the scene id, the drag's condition word in the flags, and an
@@ -946,6 +995,9 @@ struct PlacedObjectBuilder<'a, 'w, 's, 'l> {
     darkness: f32,
     /// What the last entry's spawn came to.
     spawned: Option<PlacedSpawn>,
+    /// The last entry's index in the level's list, when it spawned an
+    /// entity.
+    index: Option<u32>,
 }
 
 impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_, '_, '_> {
@@ -961,11 +1013,19 @@ impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_,
             self.mechanism_bodies,
             self.darkness,
         );
+        self.index = None;
         let entity = match self.spawned {
             // The database builder found no model: the original's missing
             // count.
             Some(PlacedSpawn::Missing) => return None,
-            Some(PlacedSpawn::Placed { entity, .. }) => entity,
+            Some(PlacedSpawn::Placed { entity, .. }) => {
+                // The save's level export finds the object by its place in
+                // the list.
+                let index = u32::try_from(index).unwrap_or(u32::MAX);
+                self.commands.entity(entity).insert(PlacedIndex(index));
+                self.index = Some(index);
+                entity
+            }
             // Exarust spawns nothing for a record without a model (triggers,
             // markers) or of another slot; the original builds a node for
             // any record it finds. Guess: a record of another slot counts
@@ -1766,6 +1826,12 @@ pub struct LevelLoad {
     /// while the level's models spawn; the lighting stage places the sun
     /// with the same seed.
     daylight: f32,
+    /// The section's bytes and whether a save gave them, for
+    /// [`LevelSource`].
+    bytes: std::sync::Arc<[u8]>,
+    from_save: bool,
+    /// The placed objects spawned so far, by index.
+    spawned: Vec<u32>,
 }
 
 impl LevelLoad {
@@ -1776,12 +1842,29 @@ impl LevelLoad {
         loader: &mut ModelLoader<'_>,
         name: &str,
     ) -> Option<Self> {
+        Self::begin_from(commands, loader, name, None)
+    }
+
+    /// [`Self::begin`] reading a save's own section for the level when one
+    /// is given, as the save unit's load imports the package's section named
+    /// by the locale instead of the archive's `<locale>.rfc`.
+    pub fn begin_from(
+        commands: &mut Commands,
+        loader: &mut ModelLoader<'_>,
+        name: &str,
+        saved: Option<std::sync::Arc<[u8]>>,
+    ) -> Option<Self> {
         let entry = if name.ends_with(".rfc") {
             name.to_string()
         } else {
             format!("{name}.rfc")
         };
-        let bytes = loader.game.pack(PackKind::Resource)?.get(&entry)?;
+        let from_save = saved.is_some();
+        let source: std::sync::Arc<[u8]> = match saved {
+            Some(bytes) => bytes,
+            None => std::sync::Arc::from(loader.game.pack(PackKind::Resource)?.get(&entry)?),
+        };
+        let bytes = &source[..];
         let scene = match Scene::parse(bytes) {
             Ok(s) => s,
             Err(e) => {
@@ -1811,7 +1894,9 @@ impl LevelLoad {
         commands.insert_resource(LevelLocalItems(scene.local_items.clone()));
         // The live object database's local tier becomes the level's own
         // database, as the level reader's local-database chunk replaces it
-        // (the base tier is read first when nothing has asked for it yet).
+        // (the base tier is read first when nothing has asked for it yet),
+        // and the importer's hook migrates the whole tier from its
+        // templates, for a save's section and the archive's file alike.
         let records = scene.local_database.clone();
         let strings = scene.local_strings.clone();
         let level = entry.clone();
@@ -1884,6 +1969,9 @@ impl LevelLoad {
             player_focus: None,
             engine_seed,
             daylight,
+            bytes: source,
+            from_save,
+            spawned: Vec::new(),
         })
     }
 
@@ -2096,8 +2184,12 @@ impl LevelLoad {
                         mechanism_bodies: self.mechanism_bodies,
                         darkness: self.daylight,
                         spawned: None,
+                        index: None,
                     };
                     stream.step(&mut builder);
+                    if let Some(index) = builder.index {
+                        self.spawned.push(index);
+                    }
                     match builder.spawned {
                         Some(PlacedSpawn::Placed { lights, bodies, .. }) => {
                             self.placed_objects += 1;
@@ -2122,6 +2214,7 @@ impl LevelLoad {
                         mechanism_bodies: self.mechanism_bodies,
                         darkness: self.daylight,
                         spawned: None,
+                        index: None,
                     };
                     // Every entry is done, so the wait builds nothing more:
                     // it reports the missing objects and clears the list.
@@ -2284,6 +2377,22 @@ impl LevelLoad {
             depth,
             base: nav::source::grid_base(env.grid_top),
         });
+        // The section the level came from, for a save's export of it.
+        commands.insert_resource(LevelSource {
+            entry: self.entry.clone(),
+            bytes: self.bytes.clone(),
+            from_save: self.from_save,
+            spawned: std::mem::take(&mut self.spawned),
+        });
+        if self.from_save {
+            info!(
+                "level {}: read from the save's own section ({} placed objects, {} spawned, local tier {} records)",
+                self.entry,
+                self.scene.placed_objects.len(),
+                self.placed_objects,
+                self.scene.local_database.as_ref().map_or(0, |db| db.len())
+            );
+        }
         self.stage = Stage::Done;
         LoadProgress::Finished(
             self.root,

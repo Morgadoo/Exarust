@@ -8,8 +8,9 @@
 //! story's level is the locale, the arena's locale is `arenahub`, and the
 //! arena's copper and day are the header's money and day.
 //!
-//! The original's own character placement, discovery, world databases and
-//! level sections are not written yet: Exarust has no world to export.
+//! The running game's saves add the player's placement, the world
+//! databases and the level section around this payload
+//! ([`crate::save_live`], [`crate::level_save`]).
 //! A short, mistyped or otherwise malformed file is an error. The Exarust
 //! chunk's own payload is version 2 (version 1 had no discovery,
 //! experience-worth, memory or transition fields).
@@ -1137,11 +1138,13 @@ mod tests {
         let record = record.to_bytes().unwrap();
         let mut db = Vec::new();
         db.extend_from_slice(&0xDBAC_CD00u32.to_le_bytes());
-        db.extend_from_slice(&16u32.to_le_bytes());
+        db.extend_from_slice(&32u32.to_le_bytes());
         db.extend_from_slice(&5u32.to_le_bytes());
         db.extend_from_slice(&0u32.to_le_bytes());
         db.extend_from_slice(&0u32.to_le_bytes());
         db.extend_from_slice(&(record.len() as u32).to_le_bytes());
+        // The slot after the last entry, which the loader does not count.
+        db.extend_from_slice(&[0; 16]);
         db.extend_from_slice(&record);
 
         let mut data = PlayerData::story(save_package::name("exanima01"));

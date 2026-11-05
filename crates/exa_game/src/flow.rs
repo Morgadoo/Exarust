@@ -1383,6 +1383,13 @@ pub enum Step {
     /// preparation, then equip with no scene nodes. It runs once the player
     /// stands, which is when the record exists.
     DressPlayerKit,
+    /// The next practice fight's preparation before the arena goes: the
+    /// player's own items are copied into the kit's temporary database
+    /// ([`crate::save_kit::KitScratch`]).
+    PreparePlayerKit,
+    /// Its equip once the arena is in again: the temporary database's items
+    /// are copied into the new level's local tier.
+    EquipPlayerKit,
     /// Stand the practice partner named by the ten-byte `opponentNN` buffer.
     SpawnPracticePartner {
         name: [u8; 10],
@@ -2616,6 +2623,10 @@ impl Flow {
         };
         let mut steps = self.close_end_menu();
         steps.extend([
+            // The kit's preparation runs before the arena goes, as the
+            // original's next fight prepares the player's items into the
+            // temporary database and then clears the live local tier.
+            Step::PreparePlayerKit,
             // The original clears the scene and imports the arena's stored
             // level section again, through the same practice scene filter
             // the first fight's load used (the save unit's combatant
@@ -2631,10 +2642,11 @@ impl Flow {
                 teardown: true,
             },
             Step::PracticeFilter,
-            // The next fight prepares and equips the player's kit, with no
-            // scene nodes, before it places the player. The behaviour reset
-            // then drops the stored target, before the partner exists.
-            Step::DressPlayerKit,
+            // The next fight equips the player's prepared kit, with no
+            // scene nodes, into the new arena's local tier before it places
+            // the player. The behaviour reset then drops the stored target,
+            // before the partner exists.
+            Step::EquipPlayerKit,
             Step::ForgetTarget,
             Step::SpawnPracticePartner { name: step.name },
             Step::MenuHelp(false),
@@ -3430,6 +3442,7 @@ impl Plugin for FlowPlugin {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .init_resource::<AfterLoad>()
+            .init_resource::<crate::save_kit::KitScratch>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()
@@ -4277,6 +4290,64 @@ fn apply_steps(
             Step::DropSave => {
                 out.saves.write(crate::save_live::SaveStep::Drop);
             }
+            Step::PreparePlayerKit => {
+                for mut player in &mut players {
+                    let Some(character) = player.character.as_deref_mut() else {
+                        continue;
+                    };
+                    let own = match player.kit.as_deref() {
+                        Some(kit) => Some(&kit.0),
+                        None => story.objects.as_deref().map(|live| live.db()),
+                    };
+                    let (prepared, temp) =
+                        crate::save_kit::prepare_into(&mut character.record, own);
+                    info!(
+                        "practice kit: {} worn and {} carried own items prepared ({} reused a hand), {} records in the temporary database",
+                        prepared.worn_resolved,
+                        prepared.carried_resolved,
+                        prepared.carried_reused,
+                        temp.local.len()
+                    );
+                    if let Some(scratch) = story.scratch.as_mut() {
+                        scratch.db = Some(temp);
+                    }
+                }
+            }
+            Step::EquipPlayerKit => {
+                let temp = story
+                    .scratch
+                    .as_mut()
+                    .and_then(|scratch| scratch.db.take())
+                    .unwrap_or_default();
+                for mut player in &mut players {
+                    if let Some(character) = player.character.as_deref_mut() {
+                        let own = match player.kit.as_deref_mut() {
+                            Some(kit) => Some(&mut kit.0),
+                            None => story.objects.as_deref_mut().map(|live| live.db_mut()),
+                        };
+                        let equipped = crate::save_kit::equip_from(
+                            &mut character.record,
+                            &mut [],
+                            None,
+                            &temp,
+                            own,
+                        );
+                        info!(
+                            "practice kit: equipped into the new local tier: hands {:x?}, {} worn, {} carried ({} reused a hand)",
+                            equipped.hands,
+                            equipped.worn_instantiated,
+                            equipped.carried_instantiated,
+                            equipped.carried_reused
+                        );
+                    }
+                    if let (Some(character), Some(possessions)) = (
+                        player.character.as_deref(),
+                        player.possessions.as_deref_mut(),
+                    ) {
+                        crate::save_kit::mirror_kit(&character.record, possessions);
+                    }
+                }
+            }
             Step::DressPlayerKit => {
                 for mut player in &mut players {
                     // The player's own database when the body carries one,
@@ -4456,6 +4527,8 @@ struct StoryParts<'w> {
     /// the practice kit passes copy through when the player carries no
     /// database of its own.
     objects: Option<ResMut<'w, exa_assets::live_objects::LiveObjects>>,
+    /// The kit's temporary database across the next practice fight's load.
+    scratch: Option<ResMut<'w, crate::save_kit::KitScratch>>,
     /// The death fade a session's leave, the story's exit and its respawn
     /// reset, and the game time it gives back.
     fade: Option<ResMut<'w, exa_ui::DeathFade>>,
@@ -5026,7 +5099,8 @@ mod tests {
             })
             .expect("the arena reloads");
         assert_eq!(steps[load + 1], Step::PracticeFilter);
-        assert_eq!(steps[load + 2], Step::DressPlayerKit);
+        assert_eq!(steps[load + 2], Step::EquipPlayerKit);
+        assert_eq!(steps[load - 1], Step::PreparePlayerKit);
         // The stored target is dropped before the partner exists.
         assert_eq!(steps[load + 3], Step::ForgetTarget);
         assert_eq!(

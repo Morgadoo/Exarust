@@ -75,11 +75,16 @@ pub fn fill_containers(containers: &mut [Container], source: &dyn TableSource, s
 
 /// Runs the fill once per loaded level, once the load is finished and the
 /// level's records are in the catalogue: the placed containers, in the level database's record
-/// order, are filled and written back into their sections.
+/// order, are filled and written back into their sections and into their
+/// records in the live local tier. A level read from a save's own section
+/// is not filled: the original's import of a saved section runs only the
+/// tier migration, and the containers keep what the save stored.
 pub(crate) fn fill_level_containers(
     level: Option<Res<exa_world::LevelLocalItems>>,
     catalogue: Option<Res<ItemCatalogue>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    source: Option<Res<exa_world::LevelSource>>,
+    mut live: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
     mut objects: Query<(&exa_world::PlacedItem, &mut exa_world::ObjectSections)>,
     mut done: Local<bool>,
 ) {
@@ -95,6 +100,10 @@ pub(crate) fn fill_level_containers(
         return;
     }
     *done = true;
+    if source.as_ref().is_some_and(|source| source.from_save) {
+        info!("containers: the level came from the save; its containers are not filled");
+        return;
+    }
     let order = |tagged: u32| {
         (tagged & LOCAL != 0)
             .then(|| {
@@ -121,6 +130,13 @@ pub(crate) fn fill_level_containers(
             if item.tagged_id == *id {
                 sections.container = Some(filled.clone());
             }
+        }
+        // The fill writes the level's own record, which a save then
+        // carries in its level section.
+        if id & exa_formats::objdb::TAG_MASK == LOCAL
+            && let Some(live) = live.as_mut()
+        {
+            live.set_container_children(*id, &filled.children);
         }
     }
     info!(

@@ -303,17 +303,48 @@ pub fn dress_kit(
     record: &mut CharacterRecord,
     attached_nodes: &mut [u32],
     hand_node: Option<&mut u32>,
-    mut own: Option<&mut ObjectDb>,
+    own: Option<&mut ObjectDb>,
 ) -> (KitPreparation, KitEquip) {
-    let mut temp = ObjectDb::default();
-    let prepared = {
-        let own = own.as_deref();
-        prepare_kit(record, |id| resolve_prepared(id, own, &mut temp))
-    };
-    let equipped = equip_kit(record, attached_nodes, hand_node, |id| {
-        instantiate_prepared(id, &temp, own.as_deref_mut())
-    });
+    let (prepared, temp) = prepare_into(record, own.as_deref());
+    let equipped = equip_from(record, attached_nodes, hand_node, &temp, own);
     (prepared, equipped)
+}
+
+/// The preparation pass alone: the own items copied into a new temporary
+/// database, which is returned for the equip pass ([`equip_from`]).
+pub fn prepare_into(
+    record: &mut CharacterRecord,
+    own: Option<&ObjectDb>,
+) -> (KitPreparation, ObjectDb) {
+    let mut temp = ObjectDb::default();
+    let prepared = prepare_kit(record, |id| resolve_prepared(id, own, &mut temp));
+    (prepared, temp)
+}
+
+/// The equip pass alone, out of the temporary database a preparation
+/// filled, into `own`.
+pub fn equip_from(
+    record: &mut CharacterRecord,
+    attached_nodes: &mut [u32],
+    hand_node: Option<&mut u32>,
+    temp: &ObjectDb,
+    mut own: Option<&mut ObjectDb>,
+) -> KitEquip {
+    equip_kit(record, attached_nodes, hand_node, |id| {
+        instantiate_prepared(id, temp, own.as_deref_mut())
+    })
+}
+
+/// The temporary database a level change carries the player's kit
+/// through: the next practice fight prepares the player's own items into
+/// it before the level goes (the original's preparation, then its clear of
+/// the live local tier), and the equip after the arena's import copies them
+/// into the new level's local tier. While it holds a database the level
+/// change's world sync does not promote the player's items: this carry
+/// replaces it.
+#[derive(Resource, Debug, Default)]
+pub struct KitScratch {
+    pub db: Option<ObjectDb>,
 }
 
 /// Copies the dressed record's item ids onto the possessions that mirror it.

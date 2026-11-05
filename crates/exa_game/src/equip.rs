@@ -362,7 +362,7 @@ mod tests {
         let second = section(0x8000, &shield_body);
         let mut file = Vec::new();
         file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
-        file.extend_from_slice(&32u32.to_le_bytes());
+        file.extend_from_slice(&48u32.to_le_bytes());
         for (id, offset, len) in [
             (10u32, 0u32, first.len() as u32),
             (20u32, first.len() as u32, second.len() as u32),
@@ -372,6 +372,8 @@ mod tests {
             file.extend_from_slice(&offset.to_le_bytes());
             file.extend_from_slice(&len.to_le_bytes());
         }
+        // The slot after the last entry, which the loader does not count.
+        file.extend_from_slice(&[0; 16]);
         file.extend_from_slice(&first);
         file.extend_from_slice(&second);
         let db = exa_formats::rdb::Database::parse(&file).unwrap();

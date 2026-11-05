@@ -1011,11 +1011,13 @@ mod tests {
         payload.extend(section_bytes(CONTAINER, &[]));
         let mut file = Vec::new();
         file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
-        file.extend_from_slice(&16u32.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
         file.extend_from_slice(&7u32.to_le_bytes());
         file.extend_from_slice(&0u32.to_le_bytes());
         file.extend_from_slice(&0u32.to_le_bytes());
         file.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        // The slot after the last entry, which the loader does not count.
+        file.extend_from_slice(&[0; 16]);
         file.extend_from_slice(&payload);
         let db = Database::parse(&file).unwrap();
         let cat = ItemCatalogue::of_database_with_strings(&db, Some(&library));
@@ -1040,7 +1042,7 @@ mod tests {
     fn database_bytes(records: &[(u32, Vec<u8>)]) -> Vec<u8> {
         let mut file = Vec::new();
         file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
-        file.extend_from_slice(&(records.len() as u32 * 16).to_le_bytes());
+        file.extend_from_slice(&((records.len() as u32 + 1) * 16).to_le_bytes());
         let mut offset = 0u32;
         for (id, payload) in records {
             file.extend_from_slice(&id.to_le_bytes());
@@ -1049,6 +1051,8 @@ mod tests {
             file.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             offset += payload.len() as u32;
         }
+        // The slot after the last entry.
+        file.extend_from_slice(&[0; 16]);
         for (_, payload) in records {
             file.extend_from_slice(payload);
         }

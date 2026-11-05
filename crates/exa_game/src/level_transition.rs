@@ -163,7 +163,19 @@ pub fn exported_level_section(
 ) -> exa_formats::Result<Vec<u8>> {
     let scene = exa_formats::rfc::Scene::parse(level_bytes)?;
     let raw = exa_formats::rfc_level::LevelRaw::scan(level_bytes)?;
-    let export = exa_formats::rfc_level::level_scene(&scene, &raw)?;
+    export_level_scene(&scene, &raw, story, settings)
+}
+
+/// [`exported_level_section`] over a section already read (and possibly
+/// changed: the save's level export writes the live placed objects and the
+/// live local tier over the loaded ones, [`crate::level_save`]).
+pub fn export_level_scene(
+    scene: &exa_formats::rfc::Scene,
+    raw: &exa_formats::rfc_level::LevelRaw,
+    story: bool,
+    settings: SettingsState,
+) -> exa_formats::Result<Vec<u8>> {
+    let export = exa_formats::rfc_level::level_scene(scene, raw)?;
     let settings =
         (story && settings_chunk_written(settings.old, settings.saved)).then_some(SettingsChunk {
             tag: save_tag_bytes(settings.old, settings.tag),

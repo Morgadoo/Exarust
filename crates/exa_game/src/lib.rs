@@ -77,6 +77,7 @@ pub mod item_icon_render;
 pub mod item_panel_draw;
 pub mod joint_trace;
 pub mod level_change;
+pub mod level_save;
 pub mod level_transition;
 pub mod light_probe;
 pub mod limp;

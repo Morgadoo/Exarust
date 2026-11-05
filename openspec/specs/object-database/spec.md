@@ -278,6 +278,13 @@ A level load SHALL make the live database's local tier the level's `0xDBDB` reco
 - **WHEN** `exanima01` is loaded (local ids 1 to 10 taken, 11 free) and a marked template is instantiated
 - **THEN** the copy's id is `0x8000000B`
 
+### Requirement: Local tier migration on load
+A level load SHALL migrate every record of the new local tier from its template, whether the level came from the archive or a save's section.
+
+#### Scenario: Every record visited
+- **WHEN** `exanima01` is loaded from the archive
+- **THEN** the migration visits all 490 records of its local tier
+
 ### Requirement: World tier import and export
 The world tier SHALL export as its records' writer and its own library's writer, and only when it holds a record. An import SHALL replace the world tier and its library with a save's and migrate every record from its template; a save without the section SHALL clear them.
 
@@ -305,3 +312,10 @@ Writing a container's children into a record SHALL resize its container section 
 #### Scenario: Two children
 - **WHEN** a local chest of width 4 is given two children
 - **THEN** it reads back width 4 with those two children
+
+### Requirement: Database table count
+An `.rdb` database SHALL hold `table_len / 16 − 1` records: the table slot after the last entry SHALL not be read as a record. Every `.rdb` of `Resource.rpk` and every level's own database SHALL read so.
+
+#### Scenario: A stale last slot
+- **WHEN** a table of two slots holds one record and a slot that would read as a second record inside the data
+- **THEN** the database holds one record

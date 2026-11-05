@@ -218,6 +218,27 @@ when its database's record count is above zero. Exarust:
 `slots::export_world_databases` (a `WorldExport`, whose `save_world` builds
 the `SaveWorld` for `Slots::save_full`).
 
+**The level section.** The section named by the scene's locale (sixteen
+bytes) is the exporter's write of the game's whole scene with the save
+switches: its local-database chunk holds the **live** local tier (the
+tier's writer, slot after the last entry included, then its string library),
+written when the walk found a placed object and the tier holds a record,
+and its placed objects as the scene holds them. The arena's save runs its
+promotion pass first (mode 8): the id remap table on, the manager's record,
+the stash, the arsenal's five shelves of five boxes, each employee's record
+and list, then the scene's entity ids rewritten through the table, the
+table off. Exarust (`exa_game::level_save`) has no converter from its scene
+back to the exporter's, so it exports the section the level was read from
+(`exa_world::LevelSource`) with the live local tier and the live placed
+objects written over it: a spawned object keeps its place with its live id,
+condition and placement, one that is gone leaves the list with what it
+held (the later container numbers close up), one never spawned stays, a
+drop is added at the end; the props, doors, scene characters and the
+settings chunk's live words are the loaded section's. A load imports the
+save's section instead of the archive's file
+(`exa_world::SavedLevelSection`, `LevelLoad::begin_from`) and migrates the
+whole local tier, as every import does.
+
 **Permadeath.** The player is dead when the health, widened to double, is
 below the double `0.01` (so the single-precision `0.01`, which is
 `0.0099999998`, is dead; a NaN health is not). Death **deletes the slot's
@@ -699,8 +720,9 @@ the transition's ordered flow over those pieces.
 writer lays it out, and a retail save read and written back is unchanged.
 Exarust's `#playerdata` carries the mode's header, the journal, the
 story's always-written discovery and global-experience chunks (an old
-save's chunks are kept and reordered, never lost) and its own chunk. It
-has no world database to export yet; a save written without a player has
+save's chunks are kept and reordered, never lost) and its own chunk. The
+running game's saves also write `#worldobjdb` and the current level's
+section (above); a save written without a player has
 no character placement: the original's reader would take its first chunk
 (the empty discovery chunk) as the character, fail the record lookup, and
 leave the slot out of its list (without deleting it). The running game's

@@ -7,7 +7,8 @@ Status: **framing** (`exa_formats::rdb`).
 ```
 u32 magic       races 0xDBCB0D00, charroles 0xDBCB0D03, locales 0xDBAE0D01, objdb 0xDBAC0D09
 u32 table_len   multiple of 16
-records[table_len/16]: u32 id, u32 flags, u32 offset (from end of table), u32 size
+records[table_len/16 - 1]: u32 id, u32 flags, u32 offset (from end of table), u32 size
+u8 slot[16]     the slot after the last entry, not a record
 payloads
 ```
 
@@ -17,8 +18,14 @@ ids 1 Exanima, 2 Exanima01 … 13 Exanima67, 17 Arak_Ar),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
 (string library, magic `0xAFBF0C02`). Each table ends with one slot more
 than it has records, which the original's writer saves as it holds it (see
-[Object database](#object-database)); this reader skips entries pointing
-outside the file. `objdb` item records, race records, role records and the locale
+[Object database](#object-database)), and every loader of the format counts
+`table_len/16 − 1` records (REA: the object database's and the character
+database's loaders and the string library's; in every shipped `.rdb` and level
+database the last slot is stale: an empty entry in `races.rdb`, out-of-range
+offsets in `charroles.rdb`, `locales.rdb` and `objdb.rdb`, an entry the
+bounds let through in `exanima01`'s own database, whose last slot read as a
+record of id `25624963` before the reader stopped at the count). The reader
+also skips entries pointing outside the file. `objdb` item records, race records, role records and the locale
 names are decoded; other payloads are not.
 
 **Races** (`exa_formats::races`): 18 records of 624 bytes, then an empty
@@ -575,8 +582,13 @@ level transition, and the arena save and round loaders).
   empty), then runs the older-layout converters. The level reader's
   local-database chunk loads its `0xDBDB` records into the local tier and its
   `0xDBCD` library into the local tier's library, replacing the previous
-  level's. A level read from a save's own level section then migrates the
-  whole local tier from its templates; one read from the archive does not.
+  level's. The importer's hook then migrates the whole local tier from its
+  templates (it runs before the placed objects, or at the chunk's end): the
+  save unit sets the hook to the tier migration for a level read from a
+  save's own section (and for the full load's import whichever copy it
+  reads), and for one read from the archive to the archive pass, whose first
+  step is the same migration and which then fills the level's containers
+  from their random tables. A level from a save's section is not filled.
   A kit's or a use's copy made in the local tier therefore takes the first id
   the level's own records leave free (`exanima01`: ids 1–10 are the level's,
   so the first copy is `0x8000000B`).
@@ -603,11 +615,21 @@ level transition, and the arena save and round loaders).
   and worn list, then each pack entry on its own), then the stash, the
   arsenal's boxes, and every employee's record and list; the scene's entity
   ids are rewritten through the table and the table is switched off.
-- **Arena rounds and starts**: these loads do not promote. The player's
-  local items (hands, worn list, pack; ids tagged exactly `0x80000000`) are
-  copied into a scratch database before the level goes and copied back into
-  the new level's local tier after it loads, with the record's ids
-  rewritten and the hand pairs' repeats in the pack following.
+- **Practice and arena fight loads**: the next practice fight and the arena
+  fight loaders do not promote. The fighter's local items (hands, worn list,
+  pack; ids tagged exactly `0x80000000`) are copied into the kit's
+  temporary database before the level goes (the live local tier and its
+  library are then cleared) and copied into the new level's local tier
+  after it loads, with the record's ids rewritten and the pack's repeats of
+  a hand following the hand. The preparation's table of hand replacements
+  stores the **first** pair's new ids for the second pair too (the
+  instructions read the second pair's new id from the first pair's slot),
+  so a pack entry naming a stowed hand's old id takes an out hand's new id.
+  Exarust: `save_kit::prepare_into` before the next practice fight's load
+  and `save_kit::equip_from` after it (`Step::PreparePlayerKit`,
+  `Step::EquipPlayerKit`), the level change's promotion skipped while the
+  kit's temporary database is held. The arena's hub-to-fight change runs
+  the arena save (and with it the arena promotion) first.
 
 
 ### The condition word of random-table rows

@@ -2142,11 +2142,13 @@ mod tests {
         let record = record.to_bytes().unwrap();
         let mut db = Vec::new();
         db.extend_from_slice(&0xDBAC_CD00u32.to_le_bytes());
-        db.extend_from_slice(&16u32.to_le_bytes());
+        db.extend_from_slice(&32u32.to_le_bytes());
         db.extend_from_slice(&5u32.to_le_bytes());
         db.extend_from_slice(&0u32.to_le_bytes());
         db.extend_from_slice(&0u32.to_le_bytes());
         db.extend_from_slice(&(record.len() as u32).to_le_bytes());
+        // The slot after the last entry, which the loader does not count.
+        db.extend_from_slice(&[0; 16]);
         db.extend_from_slice(&record);
         let path = slots.file(number, SlotKind::Save);
         let mut package = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
