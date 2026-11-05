@@ -1515,6 +1515,10 @@ Round 58 firelight: both lighting leads were measurement artefacts (the fire's d
 
 Round 58 formsrest: the remaining forms take the original's line-skin draw, and the item card is laid out from its builders' template records (the plain card matches retail at 1600×1080).
 
+Round 59 forminput (S9): windows move, close, scroll and show hover inks as the original's form base does; hub tables have no scroll bar in the original.
+
+Round 59 suncaster (S8, shadows): the sun caster pass, its softness filter and polygon offset follow the original.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
