@@ -25,6 +25,7 @@ pub mod body_inventory;
 pub mod body_overlay;
 pub mod career;
 pub mod char_view;
+pub mod character_use;
 pub mod character_voice;
 pub mod commands;
 pub mod container_fill;
@@ -181,6 +182,7 @@ impl Plugin for GamePlugin {
             npc_search::NpcSearchPlugin,
             role_scripts::RoleScriptsPlugin,
             zone_scripts::ZoneScriptsPlugin,
+            character_use::CharacterUsePlugin,
         ))
         .init_resource::<prelude::Tips>()
         .add_systems(Update, prelude::sync_tips_setting)

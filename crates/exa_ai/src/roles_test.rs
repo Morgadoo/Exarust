@@ -556,22 +556,11 @@ fn the_condition_wrapper_uses_the_finder() {
     );
 }
 
-/// StartDialogue copies the calling context and the topic it was asked for;
 /// ChangeRole is the original's missing-function error. The unit registers
-/// them in this order.
+/// StartDialogue and ChangeRole in this order.
 #[test]
-fn the_roles_scripts_are_registered_and_start_dialogue_copies_its_context() {
+fn the_roles_scripts_are_registered_and_change_role_is_missing() {
     assert_eq!(SCRIPT_FUNCTIONS, ["StartDialogue", "ChangeRole"]);
-    let context = DialogueStart {
-        owner: 3,
-        partner: 4,
-        role: 21,
-        partner_role: 7,
-    };
-    let topic = Name::from_bytes(b"rumours");
-    let request = start_dialogue(context, topic);
-    assert_eq!(request.start, context);
-    assert_eq!(request.topic, topic);
     let error = change_role().unwrap_err();
     assert_eq!(error.to_string(), "Function \"ChangeRole\" does not exist.");
 }

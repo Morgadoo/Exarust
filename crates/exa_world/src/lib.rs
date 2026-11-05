@@ -198,6 +198,9 @@ pub fn dropped_object(id: u32, condition: u32) -> exa_formats::rfc::PlacedObject
 pub struct ObjectSections {
     pub placement: u32,
     pub usable: Option<exa_formats::objdb::Operative>,
+    /// The use script of a scripted device's usable section
+    /// ([`exa_formats::objdb::Item::use_script`]).
+    pub use_script: Option<Vec<u8>>,
     pub container: Option<exa_formats::containers::Container>,
 }
 
@@ -208,6 +211,7 @@ impl ObjectSections {
         (item.operative.is_some() || item.container.is_some()).then(|| Self {
             placement: object.flags,
             usable: item.operative,
+            use_script: item.use_script.clone(),
             container: item.container.clone(),
         })
     }
@@ -3574,6 +3578,7 @@ mod tests {
             torch: false,
             volume: None,
             volume_script: None,
+            use_script: None,
             rank_word: 0,
             body_rank: 0,
             loadout_rank: 0,

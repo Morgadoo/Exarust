@@ -27,8 +27,13 @@ keeps `Panel::by_pad`), `PickReply`,
 `LeaveDialogue` in; `ScriptEffect` (game events, inventory, checkpoint
 saves with whether the first actor slot is the player, witness roles,
 `StartDialogue`, script errors) out. Systems outside the plugin that run
-scripts (corpse, encounter and zone scripts) build the same scene with
-`Conversations::with_scene`; `Engine::run_zone_script` runs a script zone's
+scripts (corpse, encounter, zone, interaction-condition and used devices'
+scripts) build the same scene with `Conversations::with_scene`;
+`Engine::run_encounter_script` writes the roles unit's encounter context
+(`EncounterContext`: owner, partner, role, partner role), and
+`StartDialogue`, whatever script calls it, starts the named node between
+that pair (nothing before the first encounter); `Engine::use_script` runs a
+used device's script with the player as its one actor and no role; `Engine::run_zone_script` runs a script zone's
 routine with the entering character as its one actor and the local
 `ZoneID`.
 

@@ -863,7 +863,13 @@ UseCursor}`). `use_cursor` runs it live: the item panels' double click and
 its class (`panel_use_class`) call the use hook; a world object with usable
 class 1, double-clicked unmarked, lifts the cursor with its record id and
 kind and stays in the scene (`object_click`); a scripted device's use
-(class 2, kind 3: the PedestalHand of `exanima67`) pulses the object's glow
+(class 2, kind 3: the PedestalHand of `exanima67`) first runs its use
+script (`ObjectSections::use_script`) with the player as its one actor and
+the device as the operative (`Engine::use_script`; a `WitnessRole` from it
+becomes a `script_cast::WitnessGrant` at the device's place, which grants
+the role within 18 m of the device to the characters the sight test sees
+from there; a `WitnessRole` from a script without an operative grants
+nothing), then pulses the object's glow
 for 1.2 s up and 1.2 s down and plays its section's sound at 0.3
 (`glow_pulse`: every part of the object's mesh, a child mesh's first part
 and the child voxel lights' intensity follow the level, which ends at 0;
@@ -1386,6 +1392,13 @@ until the inventory reopens (Exarust dresses a body once). No drag leaves the
 player's pack while the player's body swaps its weapon sets (a swap
 requested or its hand plan pending), the inventory's drag permission.
 Taking a worn item off a corpse does not re-dress its mesh.
+`character_use` takes the hand's Ctrl/double-click on a living character
+(`CharacterUse`): refused while it collapses or the player possesses
+another body, else its roles' interaction condition toward the player runs
+(none fails, empty passes, else `result` above 0 with the character and the
+player as actors 0 and 1), and a failed one still passes for a Loyalty or
+Command Dead marker the player cast; a pass would open the character's
+inventory window, which has no Exarust view (logged).
 `object_click` takes the hand's clicks on anything but a character
 (`ObjectClick`). The single click (outside combat mode) on a placed object
 clears its first-touch bit, runs a device's use (`player_controls::device_use`,
@@ -1494,8 +1507,11 @@ left out) and the placement bit of a loose item without object sections.
 `role_scripts` runs the encounter scripts an AI's target pass reports: the
 observer's roles' encounter entries for anyone, for the partner in its
 locale, or for one of the partner's roles, with the observer as actor 0 and
-the partner as actor 1 through `exa_script` (`Conversations::with_scene`),
-and the effects go out as `ScriptEffect`; the meeting time is renewed on
+the partner as actor 1 through `exa_script` (`Engine::run_encounter_script`,
+which leaves the roles unit's encounter context every later
+`StartDialogue` starts its conversation from), and the effects go out as
+`ScriptEffect` (`--encounter-script TEXT` runs one more encounter script,
+a debug tool); the meeting time is renewed on
 the AI's relation and the cast's record (`LastEnc`) before they run. The
 greeting the same pass reports runs right after (`run_greetings`): the
 brain's contacts are synced into the cast and the dialogue engine looks for

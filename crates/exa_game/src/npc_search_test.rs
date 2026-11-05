@@ -258,6 +258,7 @@ fn a_follower_searches_a_chest_and_a_loose_item() {
             exa_world::ObjectSections {
                 placement: 0,
                 usable: None,
+                use_script: None,
                 container: Some(exa_formats::containers::Container {
                     width: 4,
                     height: 4,

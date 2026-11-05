@@ -47,10 +47,9 @@
 //! the player with a 40 m radius (its square, 16 000 000 cm²); the end puts
 //! the centre back at the origin with 200 m (400 000 000 cm²).
 //!
-//! Not wired in Exarust: the item cursor and inventory windows the click
-//! and use outcomes open, and the scene script registry behind a corpse's
-//! scripts and a living character's talk condition. Those outcomes are
-//! modelled and tested; `exa_ai::roles` owns the script lookup itself.
+//! A living character's interaction runs its roles' interaction condition
+//! in [`crate::character_use`]; `exa_ai::roles` owns the script lookup
+//! itself.
 //!
 //! Evidence: the controls' click, interaction, use, reach, request, gate,
 //! permission and start/end routines, read in the instructions
@@ -820,34 +819,23 @@ pub fn use_sound_name(usable: &exa_formats::objdb::Operative) -> Option<String> 
 /// What the Ctrl/double-click interaction does on a character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CharacterInteraction {
+    /// The player's own body: its inventory window.
     Inventory,
+    /// A dead body (the dead mode `0xA00`): its loot window.
     Loot,
-    /// The roles' talk condition passed.
-    Talk,
-    /// A dialogue role links the character to the player.
-    Dialogue,
+    /// A living character: its roles' interaction condition decides
+    /// ([`crate::character_use`]).
+    Condition,
     Nothing,
 }
 
 /// The character interaction: the player's inventory, a corpse's loot, or a
-/// living character's talk condition and dialogue role.
-pub fn interact_character(
-    target: ClickTarget,
-    condition_passes: bool,
-    role_links_player: bool,
-) -> CharacterInteraction {
+/// living character's interaction condition.
+pub fn interact_character(target: ClickTarget) -> CharacterInteraction {
     match target {
         ClickTarget::Player => CharacterInteraction::Inventory,
         ClickTarget::DeadCharacter => CharacterInteraction::Loot,
-        ClickTarget::LivingCharacter => {
-            if condition_passes {
-                CharacterInteraction::Talk
-            } else if role_links_player {
-                CharacterInteraction::Dialogue
-            } else {
-                CharacterInteraction::Nothing
-            }
-        }
+        ClickTarget::LivingCharacter => CharacterInteraction::Condition,
         _ => CharacterInteraction::Nothing,
     }
 }
@@ -2292,24 +2280,16 @@ mod tests {
         assert_eq!(interact_object(lone, 0), (n, false));
         assert_eq!(interact_object(ClickTarget::Player, 0), (n, false));
         assert_eq!(
-            interact_character(ClickTarget::Player, false, false),
+            interact_character(ClickTarget::Player),
             CharacterInteraction::Inventory
         );
         assert_eq!(
-            interact_character(ClickTarget::DeadCharacter, false, false),
+            interact_character(ClickTarget::DeadCharacter),
             CharacterInteraction::Loot
         );
         assert_eq!(
-            interact_character(ClickTarget::LivingCharacter, true, false),
-            CharacterInteraction::Talk
-        );
-        assert_eq!(
-            interact_character(ClickTarget::LivingCharacter, false, true),
-            CharacterInteraction::Dialogue
-        );
-        assert_eq!(
-            interact_character(ClickTarget::LivingCharacter, false, false),
-            CharacterInteraction::Nothing
+            interact_character(ClickTarget::LivingCharacter),
+            CharacterInteraction::Condition
         );
     }
 
@@ -2331,6 +2311,7 @@ mod tests {
                 atlas: [0; 16],
                 destinations: [0; exa_formats::objdb::DESTINATIONS],
             }),
+            use_script: None,
             container: container.then(|| exa_formats::containers::Container {
                 width: 50,
                 height: 30,
@@ -3065,6 +3046,7 @@ mod tests {
             torch: false,
             volume: None,
             volume_script: None,
+            use_script: None,
             rank_word: 0,
             body_rank: 0,
             loadout_rank: 0,

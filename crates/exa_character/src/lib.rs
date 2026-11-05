@@ -2061,6 +2061,7 @@ mod tests {
             torch: false,
             volume: None,
             volume_script: None,
+            use_script: None,
             rank_word: 0,
             body_rank: 0,
             loadout_rank: 0,

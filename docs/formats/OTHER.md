@@ -328,7 +328,7 @@ routines read the header's words straight from payload `0x18` (flags) and
 | `0x200` | random table (see [Containers and random tables](#containers-and-random-tables); its rows' condition word below) |
 | `0x4000` | weapon (flags `0`, seeds `4`/`8`, quality/damage/dirt `0xC`–`0xE`, materials `0x10`, stored choices `0x50`, stats `0x30`–`0x42`) |
 | `0x8000` | shield (weight/block/bulk at body 4/5/6) |
-| `0x10000` | operative object (class `0`, kind `1`, flags `2`, value `4`, time `6`, target `8`, second/code `12`) |
+| `0x10000` | operative object (class `0`, kind `1`, flags `2`, value `4`, time `6`, target `8`, second/code `12`; a use sound or teleporter atlas name[16] at `0x10`, teleporter destinations from `0x20`). A scripted device (class 2, kind 3) keeps its use script after these words: its length at `0x38` (none under 1, compared signed), its text from `0x3C` (`Operative::script`, `Item::use_script`); the use runs it with the player as its one actor and the object as its owner, the place `WitnessRole(Operative, …)` measures from. One ships: `objdb.rdb`'s PedestalHand (`0x587`, sound `DeviceA01`), `WitnessRole(Operative, $E1D1);`. Established from the object use's script run and the section's text accessor (REA) and a grep of the installed databases |
 | `0x20000` | container: count at `0x14`, 12-byte child entries from `0x18` (the child's id, then two words), so a body is `0x18 + 12n` bytes (all 1283 shipped containers) |
 | `0x40000` | door/link: flags at `0`, linked object at `4` (see [Door and operative sections](#door-and-operative-sections)) |
 | `0x100` | the torch's extra section; 16 zero bytes in the one shipped record, meaning not established |

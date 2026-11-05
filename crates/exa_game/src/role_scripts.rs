@@ -10,6 +10,14 @@
 //! `exa_script`'s engine, carrying the scripts' effects out as
 //! [`exa_script::ScriptEffect`] messages.
 //!
+//! **StartDialogue.** Before each script the encounter writes the roles
+//! unit's static context: the observer, the partner, the running role and,
+//! for an entry matched on one of the partner's roles, that role (the last
+//! match stays otherwise). The original's `StartDialogue` reads that
+//! context, whichever script calls it, and asks the dialogue engine for the
+//! named node between the pair when the owner's arousal is at most 10 and it
+//! is in no conversation ([`exa_script::dialogue::EncounterContext`]).
+//!
 //! The encounter report is consumed here, so a contact reported once runs
 //! its scripts once even though the brains tick every body tick.  A character
 //! without a record id is skipped, as the original needs a character record
@@ -51,10 +59,20 @@ impl Plugin for RoleScriptsPlugin {
     }
 }
 
+/// A debug tool (`exarust --encounter-script TEXT`): a script run as one
+/// more encounter script of every encounter, after the roles' own, with the
+/// observer's roles unit context (no role). It lets a run show what an
+/// encounter's `StartDialogue` or other builtin does where the shipped
+/// encounter scripts do not call it.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ExtraEncounterScript(pub Vec<u8>);
+
 /// Runs the encounter scripts the last target passes reported.
+#[allow(clippy::too_many_arguments)]
 pub fn run_encounter_scripts(
     scripts: Option<Res<exa_script::Scripts>>,
     conversations: Option<ResMut<exa_script::Conversations>>,
+    extra: Option<Res<ExtraEncounterScript>>,
     time: Option<Res<Time<Virtual>>>,
     mut observers: Query<(&mut Npc, &Roles, &mut Relations, Option<&CharacterId>)>,
     partners: Query<(&Roles, Option<&CharacterId>)>,
@@ -92,7 +110,16 @@ pub fn run_encounter_scripts(
         met.push((observer, partner.id));
         for script in roles::encounter(&scripts.roles, roles, &mut relations, &partner, now, locale)
         {
-            work.push((observer, partner.id, script.role, script.script.to_vec()));
+            work.push((
+                observer,
+                partner.id,
+                script.role,
+                script.partner_role,
+                script.script.to_vec(),
+            ));
+        }
+        if let Some(extra) = extra.as_deref().filter(|e| !e.0.is_empty()) {
+            work.push((observer, partner.id, 0, None, extra.0.clone()));
         }
     }
     for (observer, partner) in met {
@@ -104,8 +131,32 @@ pub fn run_encounter_scripts(
         return;
     }
     let ((), out) = conversations.with_scene(&scripts, now, |engine, scene| {
-        for (observer, partner, role, text) in work {
-            engine.run_script(scene, vec![Some(observer), Some(partner)], role, &text);
+        for (observer, partner, role, partner_role, text) in work {
+            // The partner role is written only by an entry matched on one
+            // of the partner's roles; otherwise the last one stays.
+            let kept = engine.encounter.map_or(0, |c| c.partner_role);
+            let context = exa_script::dialogue::EncounterContext {
+                owner: observer,
+                partner,
+                role,
+                partner_role: partner_role.unwrap_or(kept),
+            };
+            let started = engine.active.len();
+            engine.run_encounter_script(scene, context, &text);
+            info!(
+                "encounter script of role {role} ({observer} meets {partner}): {:?}",
+                String::from_utf8_lossy(&text)
+            );
+            if engine.active.len() > started {
+                let line = engine
+                    .bubbles
+                    .list
+                    .last()
+                    .map(|b| String::from_utf8_lossy(&b.text).into_owned());
+                info!(
+                    "encounter script of role {role}: StartDialogue started a conversation between {observer} and {partner}, first line {line:?}"
+                );
+            }
         }
     });
     for effect in out {

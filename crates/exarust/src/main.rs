@@ -156,6 +156,9 @@
 //!                                     placed object with this hexadecimal id instead, e.g. 200#587)
 //!          --game-event CODE@FRAME,... debug: raise the story scripts' GameEvent CODE at frames after loading
 //!                                     (memory fragment 0xc00001, raise dead 0xda0115, awakenings 0xc10ec1-3)
+//!          --encounter-script TEXT    debug: run TEXT as one more encounter script of every encounter (after the
+//!                                     roles' own, observer as Actor[0], partner as Actor[1]), e.g.
+//!                                     "StartDialogue(Greeting);"
 //!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
 //!          --double-click ID@FRAME    debug: put the item into the pack and run its entry's double click at that
 //!                                     frame (a kind-5 deck opens the divination reading)
@@ -461,6 +464,8 @@ pub struct Options {
     /// `--game-event CODE@FRAME,...`: script `GameEvent` codes raised at
     /// frames after the load.
     pub game_events: Option<exa_game::game_event_live::GameEventScript>,
+    /// `--encounter-script TEXT`: run as one more encounter script.
+    pub encounter_script: Vec<u8>,
     /// `--gui-drop ID@FRAME`: the item dropped out of the pack.
     pub gui_drop: exa_game::gui_drop::GuiDropScript,
     /// `--item-card ID@FRAME`: the item's card opened at the pointer.
@@ -1176,6 +1181,9 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--encounter-script" => {
+                options.encounter_script = args.next().unwrap_or_default().into_bytes();
+            }
             "--game-event" => {
                 let list = args.next().unwrap_or_default();
                 match exa_game::game_event_live::GameEventScript::parse(&list) {
@@ -1677,6 +1685,9 @@ fn main() -> AppExit {
     )
     .insert_resource(exa_game::object_click::ObjectClickScript(
         options.object_clicks.clone(),
+    ))
+    .insert_resource(exa_game::role_scripts::ExtraEncounterScript(
+        options.encounter_script.clone(),
     ))
     .insert_resource(exa_world::room_view::DoorToggle {
         at_frame: options.toggle_door,

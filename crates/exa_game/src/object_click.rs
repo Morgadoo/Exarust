@@ -6,7 +6,9 @@
 //! placed objects:
 //!
 //! - The single click (outside combat mode) on an object node clears the
-//!   placement's first-touch bit, runs a device's use, and then shows the
+//!   placement's first-touch bit, runs a device's use (a scripted device,
+//!   class 2 kind 3, runs its use script with the player as its one actor
+//!   and itself as the operative, then pulses and sounds), and then shows the
 //!   object's item card at once, asks for the delayed card, or has the
 //!   narrator say the device's description
 //!   ([`player_controls::click`]). A point on plain level geometry is
@@ -216,6 +218,10 @@ pub struct ClickOutputs<'w> {
     levels: MessageWriter<'w, ReadNamedLevel>,
     /// A scripted device's use pulses the object's glow.
     pulses: MessageWriter<'w, crate::glow_pulse::PulseGlow>,
+    /// What a used device's script asked for.
+    effects: MessageWriter<'w, exa_script::ScriptEffect>,
+    /// A used device's `WitnessRole`, placed at the device.
+    witness: MessageWriter<'w, crate::script_cast::WitnessGrant>,
 }
 
 /// The dialogue side a narration goes through.
@@ -259,6 +265,29 @@ impl Narrator<'_> {
         };
         engine.narrate_text(&mut scene, text.as_bytes(), delay_ms);
     }
+
+    /// A used device's script, as the object use runs it: the player is
+    /// the one actor slot, no role runs, and the device is the operative.
+    /// Returns the effects it asked for, in order (none without the
+    /// dialogue side loaded).
+    fn run_use_script(&mut self, script: &[u8], now: u32) -> Vec<exa_script::dialogue::Effect> {
+        let (Some(scripts), Some(conversations)) =
+            (self.scripts.as_deref(), self.conversations.as_deref_mut())
+        else {
+            info!("object click: use script not run (no dialogue loaded)");
+            return Vec::new();
+        };
+        let player = conversations.player;
+        let (result, effects) = conversations.with_scene(scripts, now, |engine, scene| {
+            engine.use_script(scene, player, script)
+        });
+        info!(
+            "object click: use script {:?} ran for the player {player:?}: result {result}, {} effect(s)",
+            String::from_utf8_lossy(script),
+            effects.len()
+        );
+        effects
+    }
 }
 
 /// A device's use as the click runs it: the shared clock's rules, the
@@ -271,18 +300,44 @@ fn use_device(devices: &mut DeviceClock, kind: u8, id: u32, now: u64) -> bool {
     })
 }
 
-/// What a scripted device's use (kind 3) does beside its script, once the
-/// use said yes: the object's glow pulses (fade 1200, hold 0) and the sound
-/// its usable section names (at most 15 characters) plays at the object at
-/// 0.3. The script run itself is not wired here.
+/// A scripted device's use (kind 3), once the use said yes: its script
+/// runs first (the player the one actor, the device the operative), then
+/// the object's glow pulses (fade 1200, hold 0) and the sound its usable
+/// section names (at most 15 characters) plays at the object at 0.3. The
+/// script's effects go out as [`exa_script::ScriptEffect`]s, but a
+/// `WitnessRole` is placed at the device: the original grants the role
+/// within 18 m of the operative's own position.
+#[allow(clippy::too_many_arguments)]
 fn scripted_device_use(
     out: &mut ClickOutputs,
+    narrator: &mut Narrator,
     entity: Entity,
+    id: u32,
     usable: &exa_formats::objdb::Operative,
+    script: Option<&[u8]>,
     position: Vec3,
+    now: u32,
 ) {
     if usable.kind != player_controls::DEVICE_SLOW_LINE {
         return;
+    }
+    if let Some(script) = script {
+        for effect in narrator.run_use_script(script, now) {
+            match effect {
+                exa_script::dialogue::Effect::WitnessRole(role) => {
+                    info!(
+                        "object click: {id:#x}'s WitnessRole({role:#x}) from the operative at {position:?}"
+                    );
+                    out.witness.write(crate::script_cast::WitnessGrant {
+                        role,
+                        origin: position,
+                    });
+                }
+                effect => {
+                    out.effects.write(exa_script::ScriptEffect(effect));
+                }
+            }
+        }
     }
     let (fade, hold) = exa_script::objects::USE_PULSE;
     out.pulses.write(crate::glow_pulse::PulseGlow {
@@ -346,7 +401,17 @@ pub fn run_object_clicks(
                     let used = usable.class == USABLE_DEVICE
                         && use_device(&mut out.devices, usable.kind, id, now);
                     if used {
-                        scripted_device_use(&mut out, entity, &usable, position);
+                        let script = sections.as_deref().and_then(|s| s.use_script.clone());
+                        scripted_device_use(
+                            &mut out,
+                            &mut narrator,
+                            entity,
+                            id,
+                            &usable,
+                            script.as_deref(),
+                            position,
+                            now as u32,
+                        );
                     }
                     if used && !description.is_empty() {
                         let delay = if usable.kind == player_controls::DEVICE_SLOW_LINE {
@@ -390,7 +455,17 @@ pub fn run_object_clicks(
                         Some(usable) if usable.class == USABLE_DEVICE => {
                             let used = use_device(&mut out.devices, usable.kind, id, now);
                             if used {
-                                scripted_device_use(&mut out, entity, &usable, position);
+                                let script = sections.as_deref().and_then(|s| s.use_script.clone());
+                                scripted_device_use(
+                                    &mut out,
+                                    &mut narrator,
+                                    entity,
+                                    id,
+                                    &usable,
+                                    script.as_deref(),
+                                    position,
+                                    now as u32,
+                                );
                             }
                             used
                         }
@@ -657,6 +732,7 @@ mod tests {
                 atlas,
                 destinations: [0; exa_formats::objdb::DESTINATIONS],
             }),
+            use_script: None,
             container: container.then(|| exa_formats::containers::Container {
                 width: 50,
                 height: 30,
@@ -676,6 +752,8 @@ mod tests {
             .add_message::<ReadNamedLevel>()
             .add_message::<exa_audio::PointSounded>()
             .add_message::<crate::glow_pulse::PulseGlow>()
+            .add_message::<exa_script::ScriptEffect>()
+            .add_message::<crate::script_cast::WitnessGrant>()
             .init_resource::<PendingUses>()
             .init_resource::<DeviceClock>()
             .init_resource::<crate::player_controls::UseCursor>()
@@ -1005,5 +1083,43 @@ mod tests {
         assert_eq!(sounds.len(), 1);
         assert_eq!(sounds[0].name, "Gulp");
         assert_eq!((sounds[0].volume, sounds[0].flags), (0.3, 0x400));
+    }
+
+    /// A scripted device's use runs its use script with the player as its
+    /// one actor: a `WitnessRole(Operative, …)` is granted from the device's
+    /// own place, the script's other effects go out as they are.
+    #[test]
+    fn a_scripted_device_runs_its_use_script_as_the_operative() {
+        let mut app = app();
+        let mut time = Time::<Virtual>::default();
+        time.advance_by(std::time::Duration::from_millis(3000));
+        app.insert_resource(time);
+        app.insert_resource(exa_script::Scripts::default());
+        app.insert_resource(exa_script::Conversations {
+            player: Some(7),
+            ..Default::default()
+        });
+        let mut s = sections(Some((USABLE_DEVICE, 3)), false, 0);
+        s.use_script = Some(b"WitnessRole(Operative, $E1D1);\r\nGameEvent(A1);".to_vec());
+        let at = Vec3::new(160.5, 0.58, -6.0);
+        let device = placed(&mut app, 0x587, Some(s), at);
+        app.world_mut().write_message(ObjectClick {
+            hit: Hit::SceneNode { node: device },
+            at,
+            pointer: IVec2::ZERO,
+            double: false,
+        });
+        app.update();
+        let grants = drain::<crate::script_cast::WitnessGrant>(&mut app);
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].role, 0xE1D1);
+        assert!((grants[0].origin - at).length() < 1e-4);
+        let effects = drain::<exa_script::ScriptEffect>(&mut app);
+        assert_eq!(
+            effects,
+            [exa_script::ScriptEffect(
+                exa_script::dialogue::Effect::GameEvent(0xA1)
+            )]
+        );
     }
 }
