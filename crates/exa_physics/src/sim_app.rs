@@ -104,6 +104,12 @@ fn run_frame_start(world: &mut World, mut last: Local<Option<u32>>) {
 #[derive(Resource, Default)]
 pub struct FixedCommands {
     queued: Mutex<Vec<SimCommand>>,
+    /// Behind the bridge: the frame's writes to snapshot data
+    /// ([`FixedCommands::write`]), run on the simulation's copies before the
+    /// frame's other changes are applied there.
+    writes: Mutex<Vec<SimCommand>>,
+    /// The bridge is on (the frame's copies of snapshot data are snapshots).
+    bridged: bool,
 }
 
 impl FixedCommands {
@@ -125,6 +131,96 @@ impl FixedCommands {
                 warn!("fixed command: {e}");
             }
         });
+    }
+
+    /// A frame write to simulation data the frame reads as a snapshot.
+    /// In one world `local` is the live value and is simply written. Behind
+    /// the bridge the frame's copy is written without a change mark (the
+    /// next copy out replaces it; same-frame readers see the write at once)
+    /// and the same write is queued for the simulation's copy, where it runs
+    /// at the start of the next step before the frame's other changes are
+    /// applied. The original writes such data straight from its main
+    /// thread; Exarust lands it at the next step, a step's difference at
+    /// most. Returns what `write` returned on the frame's copy.
+    pub fn write<T, R>(
+        &mut self,
+        entity: Entity,
+        local: &mut Mut<T>,
+        write: impl Fn(&mut T) -> R + Send + Sync + 'static,
+    ) -> R
+    where
+        T: Component<Mutability = bevy::ecs::component::Mutable>,
+    {
+        if !self.bridged {
+            return write(local);
+        }
+        let result = write(local.bypass_change_detection());
+        queue(&mut self.writes).push(Box::new(move |world: &mut World| {
+            if let Some(mut value) = world.get_mut::<T>(entity) {
+                write(&mut value);
+            }
+        }));
+        result
+    }
+
+    /// [`FixedCommands::write`] for two components of one entity written
+    /// together (a mechanism and its body).
+    pub fn write_pair<A, B, R>(
+        &mut self,
+        entity: Entity,
+        a: &mut Mut<A>,
+        b: &mut Mut<B>,
+        write: impl Fn(&mut A, &mut B) -> R + Send + Sync + 'static,
+    ) -> R
+    where
+        A: Component<Mutability = bevy::ecs::component::Mutable>,
+        B: Component<Mutability = bevy::ecs::component::Mutable>,
+    {
+        if !self.bridged {
+            return write(a, b);
+        }
+        let result = write(a.bypass_change_detection(), b.bypass_change_detection());
+        queue(&mut self.writes).push(Box::new(move |world: &mut World| {
+            let mut query = world.query::<(&mut A, &mut B)>();
+            if let Ok((mut a, mut b)) = query.get_mut(world, entity) {
+                write(&mut a, &mut b);
+            }
+        }));
+        result
+    }
+
+    /// [`FixedCommands::write`] for one component of several entities
+    /// written together (a door leaf and its partner).
+    pub fn write_many<T, R, const N: usize>(
+        &mut self,
+        entities: [Entity; N],
+        locals: &mut [Mut<T>; N],
+        write: impl Fn([&mut T; N]) -> R + Send + Sync + 'static,
+    ) -> R
+    where
+        T: Component<Mutability = bevy::ecs::component::Mutable>,
+    {
+        if !self.bridged {
+            return write(locals.each_mut().map(|m| &mut **m));
+        }
+        let result = write(locals.each_mut().map(|m| m.bypass_change_detection()));
+        queue(&mut self.writes).push(Box::new(move |world: &mut World| {
+            let mut query = world.query::<&mut T>();
+            if let Ok(mut values) = query.get_many_mut(world, entities) {
+                write(values.each_mut().map(|m| &mut **m));
+            }
+        }));
+        result
+    }
+
+    /// Marks the frame's copies of snapshot data as snapshots (the bridge).
+    pub fn set_bridged(&mut self, bridged: bool) {
+        self.bridged = bridged;
+    }
+
+    /// The queued snapshot writes, for the step's packet.
+    pub fn take_writes(&mut self) -> Vec<SimCommand> {
+        std::mem::take(queue(&mut self.writes))
     }
 
     pub fn len(&mut self) -> usize {
@@ -155,9 +251,14 @@ fn run_fixed_commands(world: &mut World) {
 struct FixedCommandsRunner;
 
 /// Adds [`FixedCommands`] and the step that runs them, once (every plugin
-/// that posts calls it).
+/// that posts calls it). An app without the fixed main schedule (a test's
+/// bare app) gets the queue alone: its writes apply directly there.
 pub fn add_fixed_commands(app: &mut App) {
     if app.world().contains_resource::<FixedCommandsRunner>() {
+        return;
+    }
+    if !app.world().contains_resource::<FixedMainScheduleOrder>() {
+        app.init_resource::<FixedCommands>();
         return;
     }
     use crate::sim_bridge::SimBridgeAppExt;

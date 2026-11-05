@@ -1394,6 +1394,18 @@ controls page's `InputMode` drives its controller flag. There is no Steam
 library, no binding panel and no floating
 gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 
+## The hand and the simulation thread
+
+The hand (`hand`) runs in the frame, as the original's hand runs on its
+main thread per GUI cursor event. Its writes to bodies and mechanisms (the
+press's grab or hold, the hold's pull, turn and let-go, the lift's placing
+and release, the cloth grab), the GUI drop's lift, the use cursor's door
+unlock, the flow's knock-out, revive, wake and pose steps and the alarm
+return's resets go through `exa_physics::sim_app::FixedCommands::write`:
+the frame's copy takes them at once and the simulation's at the start of
+the next step. `RUST_LOG=exa_game::hand=debug` logs the hand's state, each
+press's pick and outcome, the lifted part and the dragged grab point.
+
 ## Debug commands
 
 `commands` is the original's named debug-command registry: units register

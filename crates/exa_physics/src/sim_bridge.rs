@@ -187,6 +187,9 @@ pub struct CopyComponent<T: Component + Clone> {
     refs: fn(&T) -> Option<Entity>,
     /// Sent from the frame only (the simulation owns it once it arrives).
     inbound: bool,
+    /// A snapshot: sent from the simulation; from the frame only when the
+    /// frame inserts it (the frame's writes go as posted commands).
+    snapshot: bool,
     _t: PhantomData<fn() -> T>,
 }
 
@@ -194,6 +197,11 @@ struct CopyComponentHalf<T: Component + Clone> {
     assign: fn(&mut EntityWorldMut, T),
     refs: fn(&T) -> Option<Entity>,
     inbound: bool,
+    snapshot: bool,
+    /// The frame changed a snapshot without inserting it (a write not
+    /// posted): warned once.
+    warned: bool,
+    added: Option<ValueQuery<Ref<'static, T>>>,
     id: Option<ComponentId>,
     query: Option<ValueQuery<Ref<'static, T>>>,
     /// The values changed since a tick, filtered in the storage's change
@@ -231,6 +239,9 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
             assign: self.assign,
             refs: self.refs,
             inbound: self.inbound,
+            snapshot: self.snapshot,
+            warned: false,
+            added: None,
             id: None,
             query: None,
             changed: None,
@@ -262,6 +273,52 @@ fn apply_removals<T: Component>(world: &mut World, removed: &[Entity]) {
     }
 }
 
+impl<T: Component + Clone> CopyComponentHalf<T> {
+    /// The frame's side of a snapshot: the values the frame inserted since
+    /// the last copy out, and its removals; a value it only changed is not
+    /// sent (warned once: a write that should have been posted).
+    fn gather_inserted(&mut self, world: &mut World) -> Gathered {
+        let now = world.change_tick();
+        let since = self.since;
+        let Some(query) = self.added.as_mut() else {
+            return Gathered::empty();
+        };
+        let mut changed_only = None;
+        let values: Vec<(Entity, T, bool)> = query
+            .iter(world)
+            .filter_map(|(e, r)| {
+                if r.added().is_newer_than(since, now) {
+                    Some((e, T::clone(&r), true))
+                } else {
+                    if r.last_changed().is_newer_than(since, now) {
+                        changed_only.get_or_insert(e);
+                    }
+                    None
+                }
+            })
+            .collect();
+        if let Some(e) = changed_only
+            && !self.warned
+        {
+            self.warned = true;
+            warn!(
+                "simulation bridge: the frame changed {} of {e} without posting it (not sent)",
+                type_name::<T>()
+            );
+        }
+        let seen = self.removals.take();
+        let removed = live_removals::<T>(world, &seen);
+        let touched = values.iter().map(|(e, ..)| *e).collect();
+        let n = values.len() + removed.len();
+        Gathered {
+            packet: Box::new(ComponentPacket { removed, values }),
+            touched,
+            removed: seen,
+            values: n,
+        }
+    }
+}
+
 impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
     fn name(&self) -> &'static str {
         type_name::<T>()
@@ -271,6 +328,7 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         let id = component_id::<T>(world, &mut self.id);
         self.query = Some(world.query_filtered());
         self.changed = Some(world.query_filtered());
+        self.added = Some(world.query_filtered());
         id
     }
 
@@ -286,6 +344,9 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         if self.inbound && ctx.sim {
             self.removals.take();
             return Gathered::empty();
+        }
+        if self.snapshot && !ctx.sim && !all {
+            return self.gather_inserted(world);
         }
         let now = world.change_tick();
         let since = self.since;
@@ -951,6 +1012,13 @@ pub trait SimBridgeAppExt {
     fn bridge_copy_in<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
         &mut self,
     ) -> &mut Self;
+    /// A component the simulation owns, which the frame reads as a
+    /// snapshot: copied out when the simulation changes it, copied in only
+    /// when the frame inserts it; the frame's writes go as posted commands
+    /// (`crate::sim_app::FixedCommands::write`).
+    fn bridge_snapshot<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self;
     /// A component lent to the simulation for each step.
     fn bridge_lend<T: Component<Mutability = Mutable> + Default + std::fmt::Debug>(
         &mut self,
@@ -999,6 +1067,7 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: false,
+                snapshot: false,
                 _t: PhantomData,
             },
             Some(crate::sim_digest::component::<T>),
@@ -1014,6 +1083,23 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: true,
+                snapshot: false,
+                _t: PhantomData,
+            },
+            Some(crate::sim_digest::component::<T>),
+        )
+    }
+
+    fn bridge_snapshot<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
+            self,
+            CopyComponent::<T> {
+                assign: assign_mutable::<T>,
+                refs: |_| None,
+                inbound: false,
+                snapshot: true,
                 _t: PhantomData,
             },
             Some(crate::sim_digest::component::<T>),
@@ -1027,6 +1113,7 @@ impl SimBridgeAppExt for App {
                 assign: assign_by_insert::<T>,
                 refs: |r| Some(r.get()),
                 inbound: false,
+                snapshot: false,
                 _t: PhantomData,
             },
             Some(crate::sim_digest::component::<T>),
@@ -1204,6 +1291,8 @@ pub struct SidePacket {
     despawned: Vec<Entity>,
     /// Ids the frame reserves for the simulation (frame → sim only).
     reserved: Vec<Entity>,
+    /// The frame's writes to snapshot data, run first (frame → sim only).
+    writes: Vec<crate::sim_app::SimCommand>,
     update_messages: bool,
     pub values: usize,
 }
@@ -1308,6 +1397,7 @@ impl BridgeSide {
             touched,
             despawned,
             reserved: Vec::new(),
+            writes: Vec::new(),
             update_messages: false,
             values,
         }
@@ -1485,6 +1575,9 @@ impl Plugin for SimBridgePlugin {
             .add_systems(First, count_frame)
             .add_systems(Last, drain_frame_removals);
         bridge_bevy_types(app);
+        app.world_mut()
+            .get_resource_or_init::<crate::sim_app::FixedCommands>()
+            .set_bridged(true);
     }
 }
 
@@ -1563,8 +1656,15 @@ pub fn frame_gather(world: &mut World) -> Option<BridgeIn> {
         } else {
             None
         };
+        // The frame's writes to snapshot data, before the queue itself is
+        // lent across with the other data.
+        let writes = world
+            .get_resource_mut::<crate::sim_app::FixedCommands>()
+            .map(|mut f| f.take_writes())
+            .unwrap_or_default();
         let side = bridge.side.as_mut()?;
         let mut packet = side.gather(world);
+        packet.writes = writes;
         packet.update_messages = bridge.frames != bridge.last_frames;
         bridge.last_frames = bridge.frames;
         if setup.is_some() || bridge.pool_left < POOL_LOW {
@@ -1637,8 +1737,14 @@ pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCovera
         }
         coverage = Some(c);
     }
-    let BridgeIn { packet, .. } = bridge_in;
+    let BridgeIn { mut packet, .. } = bridge_in;
     let frame_began = packet.update_messages;
+    // The frame's writes to snapshot data land on the simulation's own
+    // values first; one to a value the frame inserted since is a no-op, the
+    // inserted value (written already) arriving next.
+    for write in std::mem::take(&mut packet.writes) {
+        write(world);
+    }
     world.resource_scope(|world, mut bridge: Mut<SimBridge>| {
         let reserved = packet.reserved.clone();
         if !reserved.is_empty() {

@@ -229,6 +229,24 @@ A grid quadrant running with fixed frames SHALL ignore the host's forwarded inpu
 - **WHEN** the arena duel runs twice in one world and twice behind the bridge in one grid, with fixed frames
 - **THEN** over their first 100 traced ticks the joint angles differ by no more than a hundredth of a degree on average
 
+### Requirement: Alarm zones in the simulation
+The golem alarm's zone check SHALL run in the simulation's once-a-frame work after the rise and its restore, alike with and without the bridge.
+
+#### Scenario: The player crosses an alarm zone
+- **WHEN** the player, without the zone's pass, moves into an alarm zone
+- **THEN** the alarm rings at the same tick with and without the bridge
+
+### Requirement: Bodies as snapshots
+Behind the bridge the frame SHALL read bodies and the mechanisms on them as snapshots of the simulation, and its writes to them SHALL reach the simulation as posted writes at the start of the next step, before the step runs, alike with and without the bridge.
+
+#### Scenario: A scripted corpse drag
+- **WHEN** the player drags a corpse with a scripted press and pointer move, with fixed frames and the load held, once in one world and once behind the bridge
+- **THEN** the dragged grab point is the same every frame and the corpse's joint angles do not differ
+
+#### Scenario: A frame write that is not posted
+- **WHEN** a frame system changes a body behind the bridge without posting the change
+- **THEN** the change does not reach the simulation, the next copy out replaces it, and the bridge warns once
+
 ### Requirement: No fixed step behind the loading screen
 While the loading screen shows, the fixed step SHALL not run and the time the frames bring SHALL not be kept for it, so the first tick after a load comes with the first frame after it, however many frames the load took.
 

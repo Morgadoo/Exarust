@@ -311,6 +311,7 @@ pub struct HotkeyPlugin;
 
 impl Plugin for HotkeyPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_fixed_commands(app);
         app.add_message::<ScreenRequest>()
             .add_message::<BarCommand>()
             .add_message::<FlipWeaponRequest>()
@@ -332,6 +333,13 @@ impl Plugin for HotkeyPlugin {
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HotkeySet;
 
+/// Releases the hand's grab on `body` (run at the start of a fixed step).
+fn release_grab(In(body): In<Entity>, mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>) {
+    if let Ok(mut ragdoll) = bodies.get_mut(body) {
+        ragdoll.release_grab();
+    }
+}
+
 /// The frame's hotkeys for the player.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn press_hotkeys(
@@ -351,7 +359,7 @@ fn press_hotkeys(
         Option<&HeldMark>,
     )>,
     casters: Query<&PowerCaster>,
-    mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
     mut screens: MessageWriter<ScreenRequest>,
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
@@ -407,9 +415,10 @@ fn press_hotkeys(
                     if pb.combat
                         && let Some(hand) = hand.as_deref_mut()
                         && let Some(body) = enter_combat(hand, &mut req)
-                        && let Ok(mut ragdoll) = bodies.get_mut(body)
                     {
-                        ragdoll.release_grab();
+                        // The grab goes at the start of the next fixed step
+                        // (a write to the held body).
+                        fixed.run(release_grab, body);
                     }
                 }
                 Hotkey::SwapSets => {
@@ -777,6 +786,7 @@ mod tests {
                 .add_message::<exa_script::Talk>()
                 .add_message::<exa_script::PickReply>()
                 .add_message::<exa_script::LeaveDialogue>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
                 .add_systems(Update, press_hotkeys);
             let player = app.world_mut().spawn((PlayerBody::new(0.0), word)).id();
             app.world_mut()
@@ -805,6 +815,7 @@ mod tests {
                 .add_message::<exa_script::Talk>()
                 .add_message::<exa_script::PickReply>()
                 .add_message::<exa_script::LeaveDialogue>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
                 .add_systems(Update, press_hotkeys);
             app.world_mut().spawn((PlayerBody::new(0.0), word));
             app.world_mut()

@@ -94,6 +94,7 @@ use exa_items::catalogue::ItemCatalogue;
 use exa_items::possession::Possessions;
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::Locomotion;
+use exa_physics::sim_app::FixedCommands;
 use exa_world::AlarmVolume;
 use exa_world::room_view::LevelRooms;
 
@@ -125,19 +126,37 @@ pub struct AlarmCheckPoint(pub Vec3);
 
 pub struct GolemAlarmPlugin;
 
+/// The data the alarm-zone check touches in the simulation's frame start,
+/// for the simulation's bridge (`exa_physics::sim_bridge`).
+fn bridge_alarm_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<AlarmVolumes>()
+        .bridge_lend_resource::<GolemAlarm>()
+        .bridge_copy::<AlarmCheckPoint>();
+}
+
 impl Plugin for GolemAlarmPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<AlarmVolumes>()
             .init_resource::<GolemAlarm>()
+            // The zone check is the original's AI manager frame's, after its
+            // rise (a hook the simulation thread's step calls): it runs in
+            // the simulation's frame start, after the rise and its restore.
+            .add_systems(
+                exa_physics::sim_app::SimFrameStart,
+                check_alarm_zones
+                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Early)
+                    .after(crate::rise::restore_revived),
+            )
             .add_systems(
                 Update,
-                (
-                    check_alarm_zones.after(crate::rise::restore_revived),
-                    return_from_alarm
-                        .after(crate::flow::FlowSystems::Transition)
-                        .before(crate::flow::FlowSystems::ApplySteps),
-                ),
+                return_from_alarm
+                    .after(crate::flow::FlowSystems::Transition)
+                    .before(crate::flow::FlowSystems::ApplySteps),
             );
+        exa_physics::sim_app::add_frame_start(app);
+        bridge_alarm_types(app);
     }
 }
 
@@ -497,14 +516,17 @@ pub fn reset_move(from: Vec3, from_angle: f32, to: Vec3, angle: f32) -> Affine3A
 /// [`golem::POSE_TICKS`] ticks. A standing body is carried with its root
 /// by its next aim ([`Ragdoll::carried`]: its parts, feet, targets and
 /// frame); any other (a fallen or limp body) is placed at once. Returns
-/// the root's new place (m).
+/// the root's new place (m). The body's move is a write to simulation
+/// data, posted for the next step
+/// ([`exa_physics::sim_app::FixedCommands::write`]).
 fn reset_character(
     reset: Reset,
     model: &GlobalTransform,
     transform: &mut Transform,
     parent: Option<&ChildOf>,
     roots: &mut ReturnRoots,
-    body: Option<&mut Ragdoll>,
+    fixed: &mut FixedCommands,
+    body: Option<(Entity, &mut Mut<Ragdoll>)>,
 ) -> Vec3 {
     let from_angle = exa_physics::body::locomotion::heading_of(model.rotation() * Vec3::Z);
     let root = parent.and_then(|p| roots.get_mut(p.parent()).ok());
@@ -523,15 +545,35 @@ fn reset_character(
         }
     };
     transform.rotation = parent_turn.inverse() * Quat::from_rotation_y(reset.angle);
-    if let Some(body) = body {
-        if !body.carried() {
-            let moved = reset_move(from, from_angle, to, reset.angle);
-            let worlds: Vec<Affine3A> = body.parts.iter().map(|p| moved * p.transform()).collect();
-            body.place_at(&worlds);
-        }
-        body.wake_to(golem::POSE_TICKS as i32);
+    if let Some((entity, body)) = body {
+        let moved = reset_move(from, from_angle, to, reset.angle);
+        fixed.write(entity, body, move |body| {
+            if !body.carried() {
+                let worlds: Vec<Affine3A> =
+                    body.parts.iter().map(|p| moved * p.transform()).collect();
+                body.place_at(&worlds);
+            }
+            body.wake_to(golem::POSE_TICKS as i32);
+        });
     }
     to
+}
+
+/// Sets a body's drive tone and stance, posted for the next step as
+/// [`reset_character`]'s move is.
+fn set_tones(
+    fixed: &mut FixedCommands,
+    entity: Entity,
+    body: &mut Mut<Ragdoll>,
+    tone: f32,
+    stance: f32,
+) {
+    fixed.write(entity, body, move |body| {
+        if let Some(drive) = body.drive.as_mut() {
+            drive.tone = tone;
+            drive.set_stance(stance);
+        }
+    });
 }
 
 /// Turns a locomotion request to face `angle`.
@@ -559,6 +601,7 @@ pub fn return_from_alarm(
     mut players: ReturnPlayers,
     mut guardians: ReturnGuardians,
     mut roots: ReturnRoots,
+    mut fixed: ResMut<FixedCommands>,
 ) {
     let Some(at) = queued
         .steps
@@ -599,6 +642,7 @@ pub fn return_from_alarm(
         send_guardian_home(
             &mut guardians,
             &mut roots,
+            &mut fixed,
             Entity::from_bits(body.character),
             stand.as_deref(),
         )
@@ -633,11 +677,17 @@ pub fn return_from_alarm(
             &mut transform,
             parent,
             &mut roots,
-            body.as_deref_mut(),
+            &mut fixed,
+            body.as_mut().map(|b| (entity, b)),
         );
-        if let Some(drive) = body.as_deref_mut().and_then(|b| b.drive.as_mut()) {
-            drive.tone = returned.tones[0];
-            drive.set_stance(returned.tones[1]);
+        if let Some(body) = body.as_mut() {
+            set_tones(
+                &mut fixed,
+                entity,
+                body,
+                returned.tones[0],
+                returned.tones[1],
+            );
         }
         if let Some(mut condition) = condition {
             condition.0 = returned.condition;
@@ -671,6 +721,7 @@ pub fn return_from_alarm(
 fn send_guardian_home(
     guardians: &mut ReturnGuardians,
     roots: &mut ReturnRoots,
+    fixed: &mut FixedCommands,
     entity: Entity,
     stand: Option<&str>,
 ) -> bool {
@@ -712,9 +763,8 @@ fn send_guardian_home(
     };
     npc.guard_home = Some(gone.home);
     let mut body = body;
-    if let Some(drive) = body.as_deref_mut().and_then(|b| b.drive.as_mut()) {
-        drive.tone = gone.tones[0];
-        drive.set_stance(gone.tones[1]);
+    if let Some(body) = body.as_mut() {
+        set_tones(fixed, entity, body, gone.tones[0], gone.tones[1]);
     }
     if let (Some(mut anim), Some(stand)) = (animator, stand) {
         anim.play_loop(stand);
@@ -729,7 +779,8 @@ fn send_guardian_home(
         &mut transform,
         parent,
         roots,
-        body.as_deref_mut(),
+        fixed,
+        body.as_mut().map(|b| (entity, b)),
     );
     face(locomotion, reset.angle);
     {
@@ -750,8 +801,8 @@ fn send_guardian_home(
         if let Some(mut flags) = flags {
             flags.0 |= golem::SLEEP_SCALES_LATCH;
         }
-        if let Some(body) = body.as_deref_mut() {
-            crate::golem_body::apply_sleep_scales(body);
+        if let Some(body) = body.as_mut() {
+            fixed.write(entity, body, crate::golem_body::apply_sleep_scales);
         }
     }
     info!(
@@ -1074,7 +1125,8 @@ mod tests {
     /// revive queued.
     fn return_app() -> App {
         let mut app = App::new();
-        app.insert_resource(AlarmVolumes(vec![gate()]))
+        app.init_resource::<FixedCommands>()
+            .insert_resource(AlarmVolumes(vec![gate()]))
             .insert_resource(GolemAlarm {
                 armed: AlarmZone {
                     armed: true,

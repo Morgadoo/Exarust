@@ -95,13 +95,34 @@ bridge the queue is lent to the simulation for the step). The change lands
 where the copy used to land it, and a simulation running apart from the
 frame can take it in order. Posted so far: the viewer's fells and mechanism
 poke, the door toggle, going limp, finished limb trees, the hand's door and
-lever releases. Coupled writers move into the simulation instead, with their
+lever releases, the grab a hotkey's entry into combat lets go of. Coupled writers move into the simulation instead, with their
 same-frame readers: the rise and its restore run in `SimFrameStart` (the
 original's AI manager frame runs them on its simulation thread, as a hook
-its step calls), and so do the hit chain (wounds, blade tracking, hit
+its step calls), then the golem alarm's zone check (the manager frame's,
+after its rise), and so do the hit chain (wounds, blade tracking, hit
 detection, the reaction and the bites: the original's damage routine takes
 a pending hit in its dynamics' post-step) with the brains' reaction to
-blows and the debug pauses that read it. `SimFrameStart` runs its systems
+blows and the debug pauses that read it.
+
+The hand stays in the frame, as the original's hand runs on its main thread
+per input event (the GUI's cursor handlers) and writes the bodies directly.
+Bodies (`Ragdoll`) and the mechanisms on them (`DoorBody`, `LeverBody`,
+`PlateBody`) are snapshots behind the bridge (`bridge_snapshot`): copied out
+when the simulation changes them, copied in only when the frame inserts
+them. A frame system that writes one calls `FixedCommands::write` (or
+`write_pair`, `write_many`): the frame's copy takes the write at once without
+a change mark, so the frame's later readers see it, and the same write is
+queued for the simulation's copy, where it runs at the start of the next
+step before the frame's other changes. In one world it is a plain write.
+The hand's press, hold and reach, the GUI drop's lift, the use cursor's
+unlock, the flow's knock-out, revive and drive steps and the alarm return
+write that way; a frame write to a snapshot that is not posted is not sent
+and is warned of once. The original appends a grab link to the body's link
+array from its main thread with no lock and no deferral, and its simulation
+thread takes it at its next step; Exarust lands it at the next step too: a
+step's difference at most, no rule change. Cloths stay copied in only (a
+cloth snapshot would copy every awake cloth out each step); the hand's cloth
+grab and release are posted the same way. `SimFrameStart` runs its systems
 one at a time, in its sets' order (`SimFrameStartSystems`: what the frame
 ran in `Update`, then in `PostUpdate`, then the bodies' frame start), from
 `FrameStartStep`, a step of the fixed order (after the lockstep, before the
