@@ -5666,6 +5666,49 @@ mod tests {
         assert!(gap(&moved) < before);
     }
 
+    /// The key lookup gives, for each key, the first body in order with it,
+    /// as a `find` per key does, duplicates and missing keys included.
+    #[test]
+    fn the_key_lookup_takes_the_first_body_with_each_key() {
+        let keyed = |index: u32| {
+            let mut body = two_parts(0.0);
+            body.parts[0].entity = Entity::from_raw_u32(index).unwrap();
+            body
+        };
+        let bodies = [keyed(1), keyed(2), keyed(1), keyed(3)];
+        let key = |index: u32| Entity::from_raw_u32(index).unwrap();
+        let keys = [key(1), key(3), key(9), key(1)];
+        let found = first_by_key(keys, bodies.iter().enumerate());
+        for k in keys {
+            let by_find = bodies
+                .iter()
+                .position(|b| b.parts.first().is_some_and(|p| p.entity == k));
+            assert_eq!(found.get(&k).copied(), by_find, "{k:?}");
+        }
+        assert_eq!(found.len(), 2);
+        let none = first_by_key([], bodies.iter().map(|b| ((), b)));
+        assert!(none.is_empty());
+    }
+
+    /// A part's cell alone is its pose's cell, bit for bit.
+    #[test]
+    fn a_parts_cell_is_its_poses_cell() {
+        let mut body = two_parts(0.0);
+        for (i, at) in [Vec3::new(5.99, 0.3, -6.01), Vec3::new(-3.0, 1.0, 12.0)]
+            .into_iter()
+            .enumerate()
+        {
+            for x in &mut body.parts[i].positions {
+                *x += at;
+            }
+        }
+        for p in &body.parts {
+            for origin in [(0, 0), (40, -3)] {
+                assert_eq!(p.cell(origin), p.pose(origin).cell);
+            }
+        }
+    }
+
     /// A link added at run time is solved: pulled apart beyond its slack, one
     /// iteration brings its two points closer.
     #[test]

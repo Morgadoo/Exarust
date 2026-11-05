@@ -483,3 +483,5 @@ words). Nothing builds that node yet.
   view's body every second. A world teardown (`LevelChangeRequest` with
   `teardown`) drops the jets (`BloodSprays::reset`); droplets in flight fly
   on. See [`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood sprays).
+
+The grip runtime's systems (`refresh_holds`, `animate_grips`, `release_collapsed`) find holders through `exa_physics::body::first_by_key`; the weapon refresh buckets held items by holder once a tick.

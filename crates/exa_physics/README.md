@@ -1267,3 +1267,5 @@ children back for immediate registration; a shared scene reuses the first
 sector for every node of the batch, keeps its scene word and node, and
 queues the children as pending) and the sector's
 pending-batch append.
+
+Fixed-tick cost: `body::first_by_key` finds the holders of held items by key (the first part's entity) in one walk that ends once every key is found, with the answer a `find` per item gives; the pair stage tests a sleeping part's cell (`Part::cell`, the pose's cell) before building its pose. `EXA_SWEEP_STATS=1` logs, every 83 ticks, how many characters the controller swept and the colliders and triangles within their capsules' boxes (the sewer's player follow meets about 4000 triangles a tick); `EXA_FIXED_EXECUTOR=single` runs the fixed step's systems one at a time.

@@ -136,8 +136,9 @@ pub(super) fn configure(app: &mut App) {
             .chain(),
     )
     .edit_schedule(FixedUpdate, |schedule| {
-        // Experiment (physperf): `EXA_FIXED_EXECUTOR=single` runs the fixed
-        // step's systems one at a time.
+        // A debug aid for measuring the executor's dispatch cost:
+        // `EXA_FIXED_EXECUTOR=single` runs the fixed step's systems one at a
+        // time, in the schedule's order.
         if std::env::var("EXA_FIXED_EXECUTOR").is_ok_and(|v| v == "single") {
             schedule.set_executor(SingleThreadedExecutor::new());
         }

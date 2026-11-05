@@ -777,16 +777,13 @@ fn set_camera_viewports(
     }
 }
 
-/// Launches a child for `q` with the host's offscreen arguments.
-fn launch(config: &GridConfig, q: &mut Quadrant, size: UVec2) -> std::io::Result<Running> {
-    let _ = std::fs::remove_file(&q.frame_path);
-    let log = File::create(&q.log_path)?;
-    // Debug aids for comparing builds side by side under the same load: a
-    // scene's leading `exe=<path>` runs that build of the game, and its
-    // leading `env:<KEY>=<value>` words set the child's environment.
+/// A scene's leading debug words and the rest: `exe=<path>` runs that
+/// build of the game, and `env:<KEY>=<value>` sets the child's environment
+/// (for comparing builds or settings side by side under the same load).
+fn launch_words(words: &[String]) -> (Option<PathBuf>, Vec<(&str, &str)>, &[String]) {
     let mut exe = None;
     let mut envs = Vec::new();
-    let mut args = &q.args[..];
+    let mut args = words;
     while let Some((first, rest)) = args.split_first() {
         if let Some(path) = first.strip_prefix("exe=") {
             exe = Some(PathBuf::from(path));
@@ -799,6 +796,14 @@ fn launch(config: &GridConfig, q: &mut Quadrant, size: UVec2) -> std::io::Result
         }
         args = rest;
     }
+    (exe, envs, args)
+}
+
+/// Launches a child for `q` with the host's offscreen arguments.
+fn launch(config: &GridConfig, q: &mut Quadrant, size: UVec2) -> std::io::Result<Running> {
+    let _ = std::fs::remove_file(&q.frame_path);
+    let log = File::create(&q.log_path)?;
+    let (exe, envs, args) = launch_words(&q.args);
     let exe = match exe {
         Some(exe) => exe,
         None => std::env::current_exe()?,
@@ -1439,6 +1444,18 @@ fn stop_children_on_exit(mut exits: MessageReader<AppExit>, mut host: ResMut<Gri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scenes_leading_debug_words_pick_the_build_and_environment() {
+        let words = scene_args("exe=/tmp/old env:A=1 env:B=x=y play arena env:C=2");
+        let (exe, envs, args) = launch_words(&words);
+        assert_eq!(exe, Some(PathBuf::from("/tmp/old")));
+        assert_eq!(envs, [("A", "1"), ("B", "x=y")]);
+        assert_eq!(args, ["play", "arena", "env:C=2"]);
+        let plain = scene_args("arena");
+        let (exe, envs, args) = launch_words(&plain);
+        assert_eq!((exe, envs.len(), args), (None, 0, &plain[..]));
+    }
 
     #[test]
     fn scenes_become_child_arguments() {
