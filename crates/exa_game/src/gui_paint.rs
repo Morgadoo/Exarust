@@ -394,6 +394,8 @@ pub struct LineFormAt {
     pub in_owner: (i32, i32),
     pub owner_client: (i32, i32),
     pub owner_attributes: u32,
+    /// The scroll bar's place, for a form with the scroll bar attribute.
+    pub scroll: Option<exa_ui::line_skin::LineFormScroll>,
 }
 
 impl LineFormAt {
@@ -404,6 +406,7 @@ impl LineFormAt {
             in_owner: (rect.left, rect.top),
             owner_client: (0, 0),
             owner_attributes: 0,
+            scroll: None,
         }
     }
 
@@ -415,6 +418,7 @@ impl LineFormAt {
             in_owner: (rect.left - client.left, rect.top - client.top),
             owner_client: (client.width(), client.height()),
             owner_attributes,
+            scroll: None,
         }
     }
 }
@@ -450,6 +454,7 @@ pub fn paint_line_form(
             owner_client: at.owner_client,
             title_width: title.map_or(0, |(text, font, _)| font.text_width(text.as_bytes())),
             hover_mark: 0,
+            scroll: at.scroll,
         },
     );
     let shadow = form.shadow.then(|| {
@@ -569,6 +574,109 @@ pub const TRADE_WORDS: FormWords = FormWords {
     attributes: FORM_ATTRIBUTES | 0x80_0000,
 };
 
+/// A table view's words: its constructor sets style bits 0x88 (the panel
+/// frame among them) and attribute bits 0xc10 over the base form's.
+pub const TABLE_WORDS: FormWords = FormWords {
+    style: 0x88,
+    attributes: FORM_ATTRIBUTES | 0xc10,
+};
+/// An item view's words: its constructor sets style bits 0x88 and
+/// attribute bits 0x490 over the base form's.
+pub const ITEM_VIEW_WORDS: FormWords = FormWords {
+    style: 0x88,
+    attributes: FORM_ATTRIBUTES | 0x490,
+};
+/// A text box's words: its constructor sets style bits 0x8c and attribute
+/// bits 0x410 over the base form's.
+pub const TEXT_BOX_WORDS: FormWords = FormWords {
+    style: 0x8c,
+    attributes: FORM_ATTRIBUTES | 0x410,
+};
+/// The manual's words: the base form's with the upper layer (0x1000) and
+/// the centring and centred-title style bits (0xb800).
+pub const MANUAL_WORDS: FormWords = FormWords {
+    style: 0xb800,
+    attributes: FORM_ATTRIBUTES | 0x1000,
+};
+/// The manual's topic list: an item view whose style loses bit 8.
+pub const MANUAL_LIST_WORDS: FormWords = FormWords {
+    style: ITEM_VIEW_WORDS.style & !8,
+    attributes: ITEM_VIEW_WORDS.attributes,
+};
+/// The manual's page: a text box with style bits 0xc0000 and the scroll bar
+/// attributes (0x280).
+pub const MANUAL_PAGE_WORDS: FormWords = FormWords {
+    style: TEXT_BOX_WORDS.style | 0xc_0000,
+    attributes: TEXT_BOX_WORDS.attributes | 0x280,
+};
+
+/// Paints a held child with a vertical scroll bar: the panel frame's
+/// scroll-bar branch with the thumb where the line skin's scroll refresh
+/// puts it for `fraction`, the client being the base form's inside its
+/// border (2) less the scroll inset.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_held_scrolling(
+    rect: GuiRect,
+    client: GuiRect,
+    owner_attributes: u32,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    words: FormWords,
+    fraction: f32,
+) -> LineFormLayers {
+    let committed = commit_words(words.style, words.attributes, false);
+    let mut at = LineFormAt::child(rect, client, owner_attributes);
+    let inner = exa_ui::form::client_rect(
+        rect.width(),
+        rect.height(),
+        BORDER,
+        0,
+        words.attributes,
+        0,
+        exa_ui::settings::SCROLL_INSET,
+        0,
+        15,
+        BORDER,
+    );
+    let rail = exa_ui::line_skin::refresh_line_scroll(
+        exa_ui::line_skin::LineScrollPlace {
+            style: committed.state,
+            x: at.in_owner.0,
+            y: at.in_owner.1,
+            w: rect.width(),
+            h: rect.height(),
+            client_top: inner.top,
+            client_bottom: inner.bottom,
+            owner_left: 0,
+            owner_top: 0,
+            owner_right: at.owner_client.0,
+            owner_bottom: at.owner_client.1,
+            fraction,
+        },
+        unit,
+    );
+    at.scroll = Some(exa_ui::line_skin::LineFormScroll {
+        client_top: inner.top,
+        client_right: inner.right,
+        client_bottom: inner.bottom,
+        thumb: rail.thumb,
+        options: 0,
+    });
+    paint_line_form(at, unit, palette, fade, committed, None)
+}
+
+/// A plain child form's words: the base constructor's, with the style
+/// bits its owner's constructor ORs in (`0x80` the panel frame; the match
+/// board's picture pane takes `0x82`). With style 0 a held child draws
+/// nothing of its own.
+pub const fn pane_words(style: u32) -> FormWords {
+    FormWords {
+        style,
+        attributes: FORM_ATTRIBUTES,
+    }
+}
+
 /// Paints a top-level form (its owner is the task) through the line skin's
 /// form draw with the words its show commits: the shadow, the backdrop and
 /// the corner frame when the constructor's word has bit 0x10000, and the
@@ -610,6 +718,42 @@ pub fn paint_held_form(
         None,
     )
 }
+
+/// [`paint_held_form`]'s layers in one list (a held child has no
+/// backdrop, so they are its frame), for a child whose frame is drawn
+/// with its owner's other children.
+#[allow(clippy::too_many_arguments)]
+pub fn held_layers(
+    rect: GuiRect,
+    client: GuiRect,
+    owner_attributes: u32,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    words: FormWords,
+) -> Vec<GuiLayer> {
+    let mut form = paint_held_form(rect, client, owner_attributes, unit, palette, fade, words);
+    form.under().chain(form.over()).collect()
+}
+
+/// The arsenal's words: the base form's, with no style bits of its own.
+pub const ARSENAL_WORDS: FormWords = FormWords {
+    style: 0,
+    attributes: FORM_ATTRIBUTES,
+};
+/// The arsenal's column frame: a base form with the corner-frame style bit
+/// (0x10).
+pub const COLUMN_FRAME_WORDS: FormWords = FormWords {
+    style: 0x10,
+    attributes: FORM_ATTRIBUTES,
+};
+/// The inventory embedded in the arsenal: the inventory's centred-title
+/// style with the corner-frame bit (0x10), titled (attribute 1) with no
+/// close mark (attribute 2 cleared).
+pub const EMBEDDED_INVENTORY_WORDS: FormWords = FormWords {
+    style: SCREEN_STYLE | 0x10,
+    attributes: (FORM_ATTRIBUTES & !2) | 1,
+};
 
 /// Where a control's caption starts: the skin's own placement from the
 /// control's style (its x from bits 0x7000, its baseline from bits 0x700).

@@ -1282,20 +1282,55 @@ fn paint_board(
     };
     let mut form = form.clone();
     sync_board_form(board, &mut form);
-    let frame = crate::hub_forms::paint_form(&mut painted, &form, look);
+    let (frame, words) = crate::hub_forms::paint_form(&mut painted, &form, look);
     let (ox, oy) = form.origin();
     let origin = GuiRect::new(ox, oy, r.w, r.h);
+    let inset = ox - r.x;
+    let form_client = GuiRect::new(ox, oy, r.w - 2 * inset, r.h - 2 * inset);
+    // The child views' frames, drawn after their contents as the form draw
+    // draws a child's frame after its client.
+    let mut child_frames = Vec::new();
+    let mut held =
+        |rect: GuiRect, child: gui_paint::FormWords, painted: &mut gui_paint::Painted| {
+            let mut layers = gui_paint::paint_held_form(
+                rect,
+                form_client,
+                words.attributes,
+                look.unit,
+                &look.palette,
+                look.fade,
+                child,
+            );
+            painted.layers.extend(layers.under());
+            child_frames.extend(layers.over());
+        };
     for item in board.paint() {
         if template_drawn(&item) {
             continue;
         }
         match item {
+            // The picture pane and the reward panel are base forms the
+            // constructor gives style 0x82 and 0x80.
+            BoardPaint::Frame {
+                widget: Widget::Picture,
+                rect,
+            } => held(at(origin, rect), gui_paint::pane_words(0x82), &mut painted),
+            BoardPaint::Frame {
+                widget: Widget::RewardPanel,
+                rect,
+            } => held(at(origin, rect), gui_paint::pane_words(0x80), &mut painted),
+            // The season picture is a picture record: its class draws only
+            // its image, no frame.
+            BoardPaint::Frame {
+                widget: Widget::SeasonPicture,
+                ..
+            } => {}
             BoardPaint::Frame { rect, .. } => {
                 paint_panel(&mut painted, at(origin, rect), look);
             }
             BoardPaint::Tab { .. } => {}
             BoardPaint::Table { rect, .. } => {
-                paint_panel(&mut painted, at(origin, rect), look);
+                held(at(origin, rect), gui_paint::TABLE_WORDS, &mut painted);
             }
             BoardPaint::Column { pen, title, .. } => {
                 paint_pen_text(&mut painted, at_pen(origin, pen), title, None, look);
@@ -1353,6 +1388,7 @@ fn paint_board(
             }
         }
     }
+    painted.layers.extend(child_frames);
     painted.layers.extend(frame);
     painted
 }
@@ -1381,7 +1417,7 @@ fn paint_manage(
         client: client(bounds),
         ..Default::default()
     };
-    let frame = crate::hub_forms::paint_form(&mut painted, form, look);
+    let (frame, words) = crate::hub_forms::paint_form(&mut painted, form, look);
     let pane = |i: usize| {
         form.child(i)
             .map(|c| GuiRect::new(c.x, c.y, c.w, c.h))
@@ -1389,8 +1425,25 @@ fn paint_manage(
     };
     let roster = pane(0);
     let report_table = pane(1);
-    paint_panel(&mut painted, roster, look);
-    paint_panel(&mut painted, report_table, look);
+    // Both tables are table views held by the form: no backdrop, the panel
+    // frame on their edges, drawn after their rows.
+    let (ox, oy) = form.origin();
+    let inset = ox - r.x;
+    let form_client = GuiRect::new(ox, oy, r.w - 2 * inset, r.h - 2 * inset);
+    let mut child_frames = Vec::new();
+    for table in [roster, report_table] {
+        let mut layers = gui_paint::paint_held_form(
+            table,
+            form_client,
+            words.attributes,
+            look.unit,
+            &look.palette,
+            look.fade,
+            gui_paint::TABLE_WORDS,
+        );
+        painted.layers.extend(layers.under());
+        child_frames.extend(layers.over());
+    }
     // Both tables are table views at the form's unit: their client is
     // inside the base form's border, titles are a unit in and five units
     // down, rows six units tall under the six-unit header, and the
@@ -1449,6 +1502,7 @@ fn paint_manage(
         }
         paint_pen_text(&mut painted, pen, &line.text, None, look);
     }
+    painted.layers.extend(child_frames);
     painted.layers.extend(frame);
     painted
 }
@@ -1772,7 +1826,7 @@ pub fn draw_hub_windows(
             ));
         }
         let frame = (open.window != crate::hub_forms::FormWindow::Manage)
-            .then(|| crate::hub_forms::paint_form(&mut painted, &open.form, &shown));
+            .then(|| crate::hub_forms::paint_form(&mut painted, &open.form, &shown).0);
         if open.window == crate::hub_forms::FormWindow::Loadout
             && let Some(kit) = kit.as_deref()
         {
