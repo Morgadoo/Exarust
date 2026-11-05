@@ -137,6 +137,138 @@ fn count(
     };
 }
 
+/// The image, mesh and material assets added or changed since the last
+/// report: each one is uploaded again by the render world, so a steady
+/// stream of them after a level has loaded is a re-upload loop.
+#[derive(Resource, Default)]
+struct AssetChurn {
+    images_added: u32,
+    images_modified: u32,
+    /// Bytes of the images added or changed (their data as stored).
+    image_bytes: u64,
+    meshes_added: u32,
+    meshes_modified: u32,
+    materials_added: u32,
+    materials_modified: u32,
+    /// How often each image changed, for naming the busiest.
+    per_image: std::collections::HashMap<AssetId<Image>, u32>,
+}
+
+impl AssetChurn {
+    /// The report's line, the busiest image's size and count among it.
+    fn line(&self, images: Option<&Assets<Image>>) -> String {
+        let busiest = self
+            .per_image
+            .iter()
+            .max_by_key(|(_, n)| **n)
+            .filter(|(_, n)| **n > 1)
+            .map(|(id, n)| {
+                let size = images
+                    .and_then(|i| i.get(*id))
+                    .map(|i| {
+                        let s = i.texture_descriptor.size;
+                        format!(
+                            "{}x{}x{} {:?}",
+                            s.width, s.height, s.depth_or_array_layers, i.texture_descriptor.format
+                        )
+                    })
+                    .unwrap_or_else(|| "gone".into());
+                format!("; busiest image {id:?} ({size}) x{n}")
+            })
+            .unwrap_or_default();
+        format!(
+            "assets: images +{} ~{} ({:.1} MB), meshes +{} ~{}, materials +{} ~{}{busiest}",
+            self.images_added,
+            self.images_modified,
+            self.image_bytes as f64 / (1 << 20) as f64,
+            self.meshes_added,
+            self.meshes_modified,
+            self.materials_added,
+            self.materials_modified,
+        )
+    }
+}
+
+/// Bytes the staging probe writes.
+const STAGING_PROBE_BYTES: usize = 8 << 20;
+/// Passes the staging probe times, the fastest kept.
+const STAGING_PROBE_PASSES: usize = 4;
+
+/// Times a CPU write into a freshly mapped upload buffer, the memory every
+/// texture and buffer upload is copied through: a slow one (an upload heap
+/// the driver serves badly) stalls the render thread's asset preparation.
+fn staging_write_line(device: &bevy::render::renderer::RenderDevice) -> String {
+    use bevy::render::render_resource::{BufferDescriptor, BufferUsages};
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label: Some("exa_staging_probe"),
+        size: STAGING_PROBE_BYTES as u64,
+        usage: BufferUsages::MAP_WRITE | BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+    });
+    let source = vec![0x5a_u8; STAGING_PROBE_BYTES];
+    let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() else {
+        buffer.destroy();
+        return "staging write: the probe buffer did not map".into();
+    };
+    // The fastest of a few passes: the memory's speed rather than this
+    // thread's share of a busy CPU.
+    let ms = (0..STAGING_PROBE_PASSES)
+        .map(|_| {
+            let started = Instant::now();
+            view.copy_from_slice(&source);
+            started.elapsed().as_secs_f64() * 1000.0
+        })
+        .fold(f64::INFINITY, f64::min);
+    drop(view);
+    buffer.unmap();
+    buffer.destroy();
+    format!(
+        "staging write: {} MB in {ms:.2} ms ({:.0} MB/s)",
+        STAGING_PROBE_BYTES >> 20,
+        (STAGING_PROBE_BYTES >> 20) as f64 / (ms / 1000.0).max(1e-9)
+    )
+}
+
+fn count_churn(
+    mut churn: ResMut<AssetChurn>,
+    mut image_events: MessageReader<AssetEvent<Image>>,
+    mut mesh_events: MessageReader<AssetEvent<Mesh>>,
+    mut material_events: MessageReader<AssetEvent<exa_render::material::ExaMaterial>>,
+    images: Option<Res<Assets<Image>>>,
+) {
+    for event in image_events.read() {
+        let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = event else {
+            continue;
+        };
+        if matches!(event, AssetEvent::Added { .. }) {
+            churn.images_added += 1;
+        } else {
+            churn.images_modified += 1;
+            *churn.per_image.entry(*id).or_default() += 1;
+        }
+        let bytes = images
+            .as_ref()
+            .and_then(|i| i.get(*id))
+            .and_then(|i| i.data.as_ref())
+            .map_or(0, Vec::len);
+        churn.image_bytes += bytes as u64;
+    }
+    for event in mesh_events.read() {
+        match event {
+            AssetEvent::Added { .. } => churn.meshes_added += 1,
+            AssetEvent::Modified { .. } => churn.meshes_modified += 1,
+            _ => {}
+        }
+    }
+    for event in material_events.read() {
+        match event {
+            AssetEvent::Added { .. } => churn.materials_added += 1,
+            AssetEvent::Modified { .. } => churn.materials_modified += 1,
+            _ => {}
+        }
+    }
+}
+
 /// Whether the overlay is shown.
 #[derive(Resource, Debug, Default)]
 pub struct ProfilerOverlay {
@@ -172,6 +304,7 @@ impl Plugin for ProfilerPlugin {
             .init_resource::<Probes>()
             .init_resource::<exa_ai::BrainTickClock>()
             .init_resource::<Counts>()
+            .init_resource::<AssetChurn>()
             .init_resource::<FrameHistory>();
         // A probe schedule before First and after each timed schedule.
         {
@@ -200,7 +333,7 @@ impl Plugin for ProfilerPlugin {
                 Update,
                 (toggle_overlay, show_overlay, update_overlay).chain(),
             )
-            .add_systems(Last, (count, log_report).chain());
+            .add_systems(Last, (count, count_churn, log_report).chain());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -391,6 +524,9 @@ fn log_report(
     store: Option<Res<DiagnosticsStore>>,
     history: Res<FrameHistory>,
     counts: Res<Counts>,
+    mut churn: ResMut<AssetChurn>,
+    images: Option<Res<Assets<Image>>>,
+    device: Option<Res<bevy::render::renderer::RenderDevice>>,
     mut last: Local<Option<f32>>,
     mut since_frames: Local<usize>,
 ) {
@@ -399,6 +535,7 @@ fn log_report(
     };
     if loading.is_some() {
         *last = None;
+        *churn = AssetChurn::default();
         return;
     }
     let now = time.elapsed_secs();
@@ -413,6 +550,11 @@ fn log_report(
     let frames = &history.frames[history.frames.len() - n..];
     for line in report(frames, store.as_deref(), &counts) {
         info!("perf: {line}");
+    }
+    info!("perf: {}", churn.line(images.as_deref()));
+    *churn = AssetChurn::default();
+    if let Some(device) = device {
+        info!("perf: {}", staging_write_line(&device));
     }
     // Every diagnostic Bevy keeps, for finding a pass by name.
     if std::env::var_os("EXA_PERF_ALL").is_some()
@@ -589,6 +731,34 @@ mod tests {
                 .any(|l| l.contains("schedules") && l.contains("16.00"))
         );
         assert!(lines.iter().any(|l| l == "render thread 7.50 ms"));
+    }
+
+    #[test]
+    fn the_churn_line_counts_uploads_and_names_the_busiest_image() {
+        let mut images = Assets::<Image>::default();
+        let busy = images.add(Image::default());
+        let mut churn = AssetChurn {
+            images_added: 2,
+            images_modified: 3,
+            image_bytes: 3 << 20,
+            meshes_added: 4,
+            meshes_modified: 5,
+            materials_added: 6,
+            materials_modified: 7,
+            ..default()
+        };
+        churn.per_image.insert(busy.id(), 3);
+        let line = churn.line(Some(&images));
+        assert!(
+            line.starts_with(
+                "assets: images +2 ~3 (3.0 MB), meshes +4 ~5, materials +6 ~7; busiest image"
+            ),
+            "{line}"
+        );
+        assert!(line.ends_with("(1x1x1 Rgba8UnormSrgb) x3"), "{line}");
+        // One change of each is no loop worth naming.
+        churn.per_image.insert(busy.id(), 1);
+        assert!(!churn.line(Some(&images)).contains("busiest"));
     }
 
     #[test]

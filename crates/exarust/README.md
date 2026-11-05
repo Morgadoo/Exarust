@@ -17,7 +17,16 @@ clicked. `exarust grid-swap <n> <scene>` replaces one quadrant's game and
 `exarust grid-shot <file>` saves the composed window. A scene's leading
 `exe=<path>` runs that build in its quadrant and `env:<KEY>=<value>` sets
 its environment, to compare two builds or settings under the same load
-([`docs/PLAYER.md`](../../docs/PLAYER.md), Unattended runs). It grows into
+([`docs/PLAYER.md`](../../docs/PLAYER.md), Unattended runs). The host
+plays no sound: it leaves Bevy's audio plugin out, so a stalled host frame
+cannot break an output stream into a log-filling error loop.
+`--perf-log` (`src/profiler.rs`) adds to each report the assets added or
+changed since the last one (`assets:`, a steady stream after the load is a
+re-upload loop) and the speed of a write into a fresh upload buffer
+(`staging write:`). The workspace patches gpu-allocator
+([`patches/gpu-allocator/EXARUST.md`](../../patches/gpu-allocator/EXARUST.md))
+so those buffers stay out of a small BAR window: several games sharing the
+GPU no longer leave one of them writing its uploads at 0.5 GB/s. It grows into
 the full game as `exa_game` gains modes (see `docs/PLAN.md`). The debug
 flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--fixed-frames`, `--sim-speed`, `--pause-at-tick`, `--pause-on-stretch`,

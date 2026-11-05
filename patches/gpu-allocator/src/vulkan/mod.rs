@@ -814,8 +814,11 @@ impl Allocator {
             }
             MemoryLocation::Unknown => vk::MemoryPropertyFlags::empty(),
         };
-        let mut memory_type_index_opt =
-            self.find_memorytype_index(&desc.requirements, mem_loc_preferred_bits);
+        let mut memory_type_index_opt = if desc.location == MemoryLocation::CpuToGpu {
+            self.upload_memorytype_index(&desc.requirements)
+        } else {
+            self.find_memorytype_index(&desc.requirements, mem_loc_preferred_bits)
+        };
 
         if memory_type_index_opt.is_none() {
             let mem_loc_required_bits = match desc.location {
@@ -928,6 +931,46 @@ impl Allocator {
                 }
             }
         }
+    }
+
+    /// Exarust patch: the memory type of an upload (`CpuToGpu`) allocation.
+    ///
+    /// Upstream prefers host-visible device-local memory for uploads. With a
+    /// resizable BAR that heap is the whole of video memory and the choice is
+    /// sound; without it the heap is the classic 256 MiB BAR window, which
+    /// every process on the GPU shares. Which process gets a block of it
+    /// depends on who allocated first, and staging buffers placed there are
+    /// written over PCIe at a fraction of system memory's speed (measured
+    /// 0.6-3 GB/s against 8-9 GB/s on an RTX 3090 at PCIe 3.0 x8), so that
+    /// process's texture and buffer uploads stall its render thread. A small
+    /// window is left to others and the upload takes plain host-visible
+    /// memory; a large one is still preferred.
+    fn upload_memorytype_index(&self, memory_req: &vk::MemoryRequirements) -> Option<u32> {
+        /// The smallest device-local host-visible heap taken for uploads.
+        const LARGE_BAR_HEAP: u64 = 1 << 30;
+        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let bar = self.find_memorytype_index(memory_req, host | vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let large = bar.is_some_and(|index| {
+            self.memory_types
+                .iter()
+                .find(|t| t.memory_type_index == index as usize)
+                .and_then(|t| self.memory_heaps.get(t.heap_index))
+                .is_some_and(|heap| heap.size >= LARGE_BAR_HEAP)
+        });
+        if large {
+            return bar;
+        }
+        self.memory_types
+            .iter()
+            .find(|t| {
+                (1 << t.memory_type_index) & memory_req.memory_type_bits != 0
+                    && t.memory_properties.contains(host)
+                    && !t
+                        .memory_properties
+                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .map(|t| t.memory_type_index as u32)
+            .or(bar)
     }
 
     fn find_memorytype_index(
