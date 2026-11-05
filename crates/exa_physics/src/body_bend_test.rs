@@ -64,11 +64,18 @@ fn the_thigh_turns_three_quarters_and_then_decays() {
     assert!(close(left, 0.4712389), "decayed to {left}");
 }
 
-/// A human step of 40 cm, crouch 0, stance 0.5, lifts −11.5185 cm. A free
-/// foot's 10 cm lift is 8 cm the next tick.
+/// The feet routine's lift rule at a scale of 16 cm (0.4 of a 40 cm step)
+/// and 40 cm to the anchor, crouch 0, stance 0.5: −11.5185 cm; beyond
+/// 3·scale half the scale, −8 cm. At the scale the original's feet routine
+/// actually reads (the lower leg's own field, never written: 0) there is
+/// no lift, near or far. A free foot's 10 cm lift is 8 cm the next tick.
 #[test]
 fn the_step_lifts_and_a_free_foot_keeps_eight_tenths() {
-    assert!(close(step_lift(40.0, 40.0, 0.0, 0.5), -11.518518));
+    assert!(close(step_lift(16.0, 1600.0, 0.0, 0.5), -11.518518));
+    assert!(close(step_lift(16.0, 2500.0, 0.0, 0.5), -8.0));
+    for d2 in [0.0, 1600.0, 1.0e6] {
+        assert_eq!(step_lift(LEG_LIFT_SCALE, d2, 0.0, 0.5), 0.0, "{d2}");
+    }
     assert!(close(next_lift(10.0, false, false, 0.0), 8.0));
 }
 

@@ -400,9 +400,11 @@ cannot be cut into short pieces runs on the async compute pool:
   surface map on the pool), the level's own model, props, placed objects,
   then the lights. A model's mesh groups are built on every core;
 - play mode builds the level's collision next (`exa_physics`'s
-  `StaticBuild`): 4 ms a frame copies meshes, the triangle-mesh colliders
-  are built on the pool, before the player and the level's characters are
-  spawned on it;
+  `StaticBuild`): up to 120 000 triangles a frame are copied, the
+  triangle-mesh colliders are built on the pool and join the world in the
+  order they were handed out, before the player and the level's characters
+  are spawned on it; no fixed step runs while the loading screen shows, so
+  a scripted run's ticks start with the first frame after the load;
 - their apparel models are fitted to the body and their apparel painted on
   the pool; their materials and the painter's textures load one at a time
   within 8 ms of dressing a frame, the painted textures become GPU textures

@@ -665,7 +665,8 @@ fn the_stance_score_keeps_the_originals_edges() {
 /// Three seconds of footwork steps backwards, as a held S key lays them: a
 /// new step 50 cm behind the chest whenever none runs. The body walks them
 /// on its feet (its pelvis pin led by its own rule, its frame on its
-/// pelvis while it steps) and never loses its balance or its support.
+/// pelvis while it steps, no step lift on its feet) and never loses its
+/// balance or its support.
 #[test]
 fn footwork_walks_backwards_without_a_fall() {
     use super::super::FootworkStep;
@@ -688,6 +689,9 @@ fn footwork_walks_backwards_without_a_fall() {
             steps_taken += 1;
         }
         stand(&mut body, &pose, &floor);
+        // No stepping foot is lifted: the original's feet routine reads a
+        // lift scale nothing writes.
+        assert!(body.legs.iter().all(|l| l.lift == 0.0), "a foot was lifted");
         let b = body.drive.as_ref().unwrap().balance();
         low_balance = low_balance.min(b.value);
         assert!(b.has_support(), "support lost after {steps_taken} steps");

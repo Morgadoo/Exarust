@@ -181,9 +181,18 @@ impl Plugin for SimControlPlugin {
             )
             .add_systems(FixedUpdate, refill_undying.after(BodySystems))
             .add_systems(Update, sim_keys)
+            // The fixed loop neither takes the frame's time nor runs while
+            // the loading screen shows.
+            .configure_sets(
+                RunFixedMainLoop,
+                RunFixedMainLoopSystems::FixedMainLoop
+                    .run_if(|loading: Option<Res<exa_ui::LoadingStatus>>| loading.is_none()),
+            )
             .add_systems(
                 RunFixedMainLoop,
-                step_once.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
+                (hold_fixed_while_loading, step_once)
+                    .chain()
+                    .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
             )
             .add_systems(
                 FixedUpdate,
@@ -268,6 +277,25 @@ fn sim_keys(
             time.set_relative_speed(speed);
             info!("simulation at ×{speed}");
         }
+    }
+}
+
+/// While the loading screen shows, the fixed step does not run: the fixed
+/// loop is held (its set's condition) and any time it had left is dropped,
+/// so the
+/// first tick comes with the first frame after the load whatever the load
+/// took. The original's level load holds its pause counter over the whole
+/// load, and its main loop skips the frame time while that counter is set,
+/// so no simulation step runs until the level, its collision (whole: its
+/// queries work on the raw meshes, the kd-tree only speeds them up) and its
+/// characters are in. The frames' own clock keeps running for what draws.
+fn hold_fixed_while_loading(
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut fixed: ResMut<Time<Fixed>>,
+) {
+    if loading.is_some() {
+        let left = fixed.overstep();
+        fixed.discard_overstep(left);
     }
 }
 
@@ -689,6 +717,31 @@ mod tests {
         }
         assert_eq!(ticks(&app), collapsed + 83);
         assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    /// No fixed step runs while the loading screen shows, however many
+    /// frames the load takes; the first tick comes with the first frame
+    /// after it, so two loads of different lengths tick alike.
+    #[test]
+    fn no_tick_runs_behind_the_loading_screen() {
+        let first_ticks = |loading_frames: usize| {
+            let mut app = app(SimControl::default());
+            app.insert_resource(exa_ui::LoadingStatus::default());
+            for _ in 0..loading_frames {
+                app.update();
+            }
+            assert_eq!(ticks(&app), 0, "{loading_frames} loading frames");
+            app.world_mut().remove_resource::<exa_ui::LoadingStatus>();
+            (0..20)
+                .map(|_| {
+                    app.update();
+                    ticks(&app)
+                })
+                .collect::<Vec<_>>()
+        };
+        let short = first_ticks(3);
+        assert_eq!(short, first_ticks(47));
+        assert!(*short.last().unwrap() > 0);
     }
 
     /// The starting speed waits for the loading screen to go.

@@ -471,7 +471,9 @@ impl StaticColliders {
 }
 
 /// The static colliders being built. A level's meshes are copied a batch at
-/// a time, within [`STATIC_BUILD_BUDGET`] per frame, and built into
+/// a time, at most [`STATIC_BUILD_TRIANGLES`] triangles' worth a frame (a
+/// work budget, not a clock: the frames a build takes do not depend on the
+/// machine's speed), and built into
 /// triangle-mesh colliders on the async compute pool: one large mesh (a
 /// terrain tile) takes tens of milliseconds to build, a level's thousands
 /// of meshes seconds, and the window must keep answering meanwhile.
@@ -518,8 +520,9 @@ impl StaticBuild {
     }
 }
 
-/// Time one frame may spend handing meshes to collider builds.
-pub const STATIC_BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
+/// Triangles one frame may copy into new collider builds (a batch already
+/// begun is finished, so one large mesh still goes whole).
+pub const STATIC_BUILD_TRIANGLES: usize = 120_000;
 /// Triangles a collider build takes at most, unless one mesh has more.
 const BUILD_TRIANGLES: usize = 60_000;
 /// Builds in flight at once; more wait, so the pool stays free for others.
@@ -699,12 +702,19 @@ fn build_static_colliders(
             tasks: Vec::new(),
         });
     }
-    let started = std::time::Instant::now();
     let build = &mut *build;
-    // Finished builds join the world.
+    // Finished builds join the world in the order they were handed out (a
+    // build that finishes before an earlier one waits for it), so the
+    // colliders' handles and the static grid's order do not depend on which
+    // thread finished first: two runs of one scene build the same world.
     for root in &mut build.roots {
+        let mut waiting = false;
         root.tasks.retain_mut(|(count, task)| {
+            if waiting {
+                return true;
+            }
             let Some(colliders) = block_on(poll_once(task)) else {
+                waiting = true;
                 return true;
             };
             for (mut collider, owner, node, pick_only, mask, mesh, floor) in colliders {
@@ -744,10 +754,11 @@ fn build_static_colliders(
     // New builds, a batch of copied meshes each.
     let pool = AsyncComputeTaskPool::get();
     let mut in_flight: usize = build.roots.iter().map(|r| r.tasks.len()).sum();
+    let mut copied = 0;
     for root in &mut build.roots {
         while root.handed < root.parts.len()
             && in_flight < BUILDS_IN_FLIGHT
-            && started.elapsed() < STATIC_BUILD_BUDGET
+            && copied < STATIC_BUILD_TRIANGLES
         {
             let mut batch = Vec::new();
             let mut triangles = 0;
@@ -770,6 +781,7 @@ fn build_static_colliders(
                     batch.push(copy);
                 }
             }
+            copied += triangles;
             let count = root.handed - first;
             let task = pool.spawn(async move {
                 batch

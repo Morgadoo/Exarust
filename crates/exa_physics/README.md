@@ -172,8 +172,10 @@ than its slots, grown by 128 when full), the two-ring `BackgroundBuilder`
 flag, the built meshes the frame hook drains, skipping deleted meshes),
 the seven-slot query table the install copies onto a mesh and every
 instance, and a sign-magnitude three-bit decode.
-Static colliders are built by `StaticBuild` on the async compute pool; the
-original's builder thread is modelled but not spawned.
+Static colliders are built by `StaticBuild` on the async compute pool, up to
+120 000 triangles handed out a frame (a work budget, not a clock), and join
+the world in the order they were handed out, so two runs build the same
+world; the original's builder thread is modelled but not spawned.
 
 The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
 module that follows the original's instructions (sums in its order, the

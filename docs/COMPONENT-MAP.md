@@ -18,7 +18,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Data, assets & I/O | 440 | 91 | 26 | 81% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 80% | 1% |  |
 | World, levels & terrain | 454 | 174 | 31 | 76% | 0% |  |
-| Physics, bodies & cloth | 363 | 242 | 13 | 86% | 0% |  |
+| Physics, bodies & cloth | 363 | 242 | 13 | 87% | 0% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 79% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 81% | 0% | TArsenalContFrame |
@@ -65,7 +65,7 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
-| TMotileDynamics | Physics, bodies & cloth | 121 | 85% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
+| TMotileDynamics | Physics, bodies & cloth | 121 | 86% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
 | XA_Arena | Game modes, arena & session | 71 | 89% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 95% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 81% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |

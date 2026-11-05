@@ -917,6 +917,10 @@ Round 71 simthread4d: hits are taken in the simulation, as in the original.
 
 Round 72 motilepart: floors are found by the original's floor flag; grip modes follow motion starts and the locomotion.
 
+Round 73 backfall: the held-S falls came from a step lift the original never applies.
+
+Round 74 determinism: the simulation starts after the load, as in the original, and scripted runs repeat tick for tick.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
