@@ -879,6 +879,8 @@ Round 51 liveobjdb (S2): the live object database replaces the use cursor's priv
 
 Round 52 levelsave (G5): the level's own state is saved and read back from the save; the bogus last record of every database is gone.
 
+Round 55 charinv: only the Golem Boss and Golem Srv carry interaction conditions; companions open their inventory through markers or the Ally Equipment topic.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1678,6 +1680,8 @@ Round 50 npcsearch (P7): the backlog's kneel clip does not exist in the original
 
 Round 50 spawnsnap (C13): the default spawn follows the original's placement; the old 4.5 cm drop was the debug flag's double snap.
 
+Round 55 wraith: Spirit Form's legless wraith hovers and walks, as the original's balance and feet routines allow.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
@@ -2474,4 +2478,6 @@ Round 44 sweep-render (reviewed): mostly tested models with no caller; the lane'
 Round 44 weather (E1, cl/weather): rain and thunder are live, GPU-checked on arenao3 with night storm, day storm and dry seeds.
 
 Round 49 gibright: the reported outdoor overbright did not reproduce on main; the read-back probe (EXA_GI_PROBE) found the opposite fault, sky light reaching no voxel, and fixed it.
+
+Round 55 arenaweather (S4): no career state reaches the arena's weather draw and the shipped game never drives the time of day; the day was drawn twice per load and now once.
 
