@@ -730,10 +730,14 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
 }
 
 impl Ragdoll {
-    /// Whether the body's balance is measured: a living body with two legs.
+    /// Whether the body's balance and feet routines run: a living body
+    /// with two legs, or one whose race hovers (the wraith, legless: its
+    /// feet routine probes once under the pelvis and gives full support).
     /// Any other keeps support 1 while it stands, 0 once fallen.
     pub(super) fn measures_balance(&self) -> bool {
-        self.drive.is_some() && self.legs.len() >= 2
+        self.drive
+            .as_ref()
+            .is_some_and(|d| self.legs.len() >= 2 || d.race.hovers)
     }
 
     /// The legs the balance reads.
@@ -867,263 +871,275 @@ impl Ragdoll {
         let b = &mut drive.balance;
         b.follow_chest(chest);
 
-        // The lean, against the support point.
-        let centre = contacts.iter().copied().sum::<Vec3>() / contacts.len() as f32;
-        b.feet_centre = centre;
-        let mut m = chest;
-        // The landing's momentum fades by the double 0.05 a tick.
-        if f64::from(b.landing) > LANDING_FADE {
+        // The balance routine proper. With fewer than two legs the
+        // original's routine only puts the feet centre at the pelvis and
+        // returns: no lean, no score, no counter, no recovery step and no
+        // footwork, so the balance keeps its value (1 from the reset).
+        'balance: {
+            if legs.len() < 2 {
+                b.feet_centre = pelvis;
+                break 'balance;
+            }
+
+            // The lean, against the support point.
+            let centre = contacts.iter().copied().sum::<Vec3>() / contacts.len() as f32;
+            b.feet_centre = centre;
+            let mut m = chest;
+            // The landing's momentum fades by the double 0.05 a tick.
+            if f64::from(b.landing) > LANDING_FADE {
+                if !bearing.moving {
+                    m += b.slow * b.landing;
+                }
+                b.landing = (f64::from(b.landing) - LANDING_FADE) as f32;
+            }
+            if bearing.moving && b.has_support {
+                m += b.fast * MOVING_LEAD;
+            }
+            m -= forward * (CROUCH_BACK / CM * bearing.crouch);
+            let mut p = support_point(m, contacts[0], contacts[1]);
             if !bearing.moving {
-                m += b.slow * b.landing;
+                p = p.lerp(centre, TOWARD_CENTRE);
             }
-            b.landing = (f64::from(b.landing) - LANDING_FADE) as f32;
-        }
-        if bearing.moving && b.has_support {
-            m += b.fast * MOVING_LEAD;
-        }
-        m -= forward * (CROUCH_BACK / CM * bearing.crouch);
-        let mut p = support_point(m, contacts[0], contacts[1]);
-        if !bearing.moving {
-            p = p.lerp(centre, TOWARD_CENTRE);
-        }
-        b.support_point = p;
-        let o = m - p;
-        b.offset = o.length();
-        if b.offset > 0.0 {
-            b.lean = o / b.offset;
-        }
-        let h_cm = cm(o.with_y(0.0)).length();
-        let was_stepping = drive.steps.stepping;
-        if bearing.getting_up {
-            b.get_up();
-        } else {
-            let mut q = score(b.lean.y, bearing.moving, bonus);
-            let v = cm(b.slow.y).abs();
-            if v > VERTICAL_FROM {
-                q = vertical_cut(q, v, b.grounded);
-                b.counter = COUNTER_FULL;
+            b.support_point = p;
+            let o = m - p;
+            b.offset = o.length();
+            if b.offset > 0.0 {
+                b.lean = o / b.offset;
             }
-            // Standing still is not moving and not already stepping.
-            b.settle(
-                q,
-                cm(b.slow).length_squared(),
-                !bearing.moving && !was_stepping,
-            );
-            // The imbalance accumulator, once the chest has left the step
-            // trigger: the support pins' power E⁴S scales the radius. A
-            // shock stagger and a body under 0.2 (a double compare a NaN
-            // passes) do not accumulate.
-            let fallen = f64::from(b.value) < 0.2;
-            if !fallen && b.has_support && !bearing.shock_stagger {
-                let factor = drive.energy.powi(4) * drive.support;
-                let r = steps::radius(
-                    drive.energy,
-                    drive.steps.radius_base,
+            let h_cm = cm(o.with_y(0.0)).length();
+            let was_stepping = drive.steps.stepping;
+            if bearing.getting_up {
+                b.get_up();
+            } else {
+                let mut q = score(b.lean.y, bearing.moving, bonus);
+                let v = cm(b.slow.y).abs();
+                if v > VERTICAL_FROM {
+                    q = vertical_cut(q, v, b.grounded);
+                    b.counter = COUNTER_FULL;
+                }
+                // Standing still is not moving and not already stepping.
+                b.settle(
+                    q,
+                    cm(b.slow).length_squared(),
+                    !bearing.moving && !was_stepping,
+                );
+                // The imbalance accumulator, once the chest has left the step
+                // trigger: the support pins' power E⁴S scales the radius. A
+                // shock stagger and a body under 0.2 (a double compare a NaN
+                // passes) do not accumulate.
+                let fallen = f64::from(b.value) < 0.2;
+                if !fallen && b.has_support && !bearing.shock_stagger {
+                    let factor = drive.energy.powi(4) * drive.support;
+                    let r = steps::radius(
+                        drive.energy,
+                        drive.steps.radius_base,
+                        scale,
+                        drive.steps.stepping,
+                        bonus,
+                    );
+                    if (r * 1.5 * factor) * (r * 1.5 * factor) < h_cm * h_cm {
+                        b.add_imbalance(h_cm, r, factor, scale);
+                    }
+                }
+            }
+
+            // The jolt: the chest's fast velocity less its slow one, less the
+            // decaying term. Above its threshold the step ends and, once per
+            // episode, the standing position moves to the feet's centre plus
+            // 100 × the jolt.
+            {
+                let steps_state = &mut drive.steps;
+                if let Some(jolt) = steps::jolt(
+                    b.fast,
+                    b.slow,
+                    steps_state,
+                    bearing.walking,
+                    bearing.moving,
+                    bearing.off_feet,
+                    !b.has_support,
                     scale,
-                    drive.steps.stepping,
-                    bonus,
-                );
-                if (r * 1.5 * factor) * (r * 1.5 * factor) < h_cm * h_cm {
-                    b.add_imbalance(h_cm, r, factor, scale);
+                    b.feet_centre,
+                ) {
+                    steps_state.stepping = false;
+                    if let Some(standing) = jolt.standing {
+                        steps_state.standing = standing;
+                        steps_state.placed = true;
+                        steps_state.still_at =
+                            steps_state.clock as f32 * steps::MS_PER_TICK - 500.0;
+                    }
                 }
             }
-        }
 
-        // The jolt: the chest's fast velocity less its slow one, less the
-        // decaying term. Above its threshold the step ends and, once per
-        // episode, the standing position moves to the feet's centre plus
-        // 100 × the jolt.
-        {
-            let steps_state = &mut drive.steps;
-            if let Some(jolt) = steps::jolt(
-                b.fast,
-                b.slow,
-                steps_state,
-                bearing.walking,
-                bearing.moving,
-                bearing.off_feet,
-                !b.has_support,
-                scale,
-                b.feet_centre,
-            ) {
-                steps_state.stepping = false;
-                if let Some(standing) = jolt.standing {
-                    steps_state.standing = standing;
-                    steps_state.placed = true;
-                    steps_state.still_at = steps_state.clock as f32 * steps::MS_PER_TICK - 500.0;
-                }
-            }
-        }
-
-        // The recovery step, from this tick's balance and last tick's
-        // support, before the feet are moved.
-        let fast = b.fast;
-        let frame = drive.anchor.unwrap_or(centre);
-        let trigger = steps::Trigger {
-            balance: b.value,
-            supported: b.has_support,
-            getting_up: bearing.getting_up,
-            locomoting: bearing.moving || bearing.walking,
-            down: bearing.off_feet || !b.has_support,
-            h_cm,
-            chest,
-            fast,
-            energy: drive.energy,
-            support: drive.support,
-            scale,
-            bonus,
-            reach: drive.stats.foot_reach(),
-            extension: b.extension,
-            encumbrance: drive.stats.encumbrance,
-            frame,
-            landings: b.landings,
-            shock_stagger: bearing.shock_stagger,
-        };
-        let posed_spots = spots.clone();
-        let plan = steps::consider(&mut drive.steps, &trigger);
-        let origin = match plan {
-            Plan::Stepping(origin) => Some(origin),
-            Plan::Ended => {
-                end_step(
-                    &mut drive.steps,
-                    legs,
-                    &posed_spots,
-                    &contacts,
-                    frame,
-                    chest,
-                    fast,
-                );
-                None
-            }
-            Plan::Idle => None,
-        };
-        if let Some(origin) = origin {
-            for spot in spots.iter_mut().flatten() {
-                let local = *spot - frame;
-                *spot = Vec3::new(origin.x + local.x, spot.y, origin.z + local.z);
-            }
-        }
-        let pin_mean = (posed && !chest_pins.is_empty()).then(|| {
-            let n = chest_pins.len() as f32;
-            chest_pins
-                .iter()
-                .map(|(i, w)| drive.targets[*i].transform_point3(parts[*i].rest_point(w)))
-                .sum::<Vec3>()
-                / n
-        });
-        let stance_origin = origin.unwrap_or(frame);
-        let side = drive
-            .frame
-            .map_or(Vec3::X, |f| Vec3::from(f.matrix3.x_axis).with_y(0.0));
-        let mut work = steps::Work {
-            now_ms: drive.steps.clock as f32 * steps::MS_PER_TICK,
-            scale,
-            crouch: bearing.crouch,
-            reference: steps::score_reference(
+            // The recovery step, from this tick's balance and last tick's
+            // support, before the feet are moved.
+            let fast = b.fast;
+            let frame = drive.anchor.unwrap_or(centre);
+            let trigger = steps::Trigger {
+                balance: b.value,
+                supported: b.has_support,
+                getting_up: bearing.getting_up,
+                locomoting: bearing.moving || bearing.walking,
+                down: bearing.off_feet || !b.has_support,
+                h_cm,
                 chest,
-                pin_mean,
-                drive.steps.stepping,
                 fast,
-                forward,
-                bearing.crouch,
-            ),
-            root: frame,
-            origin: stance_origin,
-            side,
-            step_cm: steps::foot_step_length(drive.stats.foot_reach(), bearing.crouch),
-            episode: drive.steps.stepping,
-            episode_ms: if drive.steps.stepping {
-                steps::elapsed_ms(&drive.steps)
-            } else {
-                0.0
-            },
-            chest_to_target_cm: cm((chest - drive.steps.target).with_y(0.0)).length(),
-            size: drive.stats.size.max(1.0),
-            still_at: drive.steps.still_at,
-            still_plus: drive.steps.still_plus,
-            attacking: bearing.attacking,
-            loudness: drive.steps.loudness,
-            cues: Vec::new(),
-        };
-        // The feet's states, from last tick's support.
-        let met: Vec<bool> = legs
-            .iter()
-            .map(|l| !parts[l.foot.unwrap_or(l.shin)].contacts.is_empty())
-            .collect();
-        let moves: Vec<Vec3> = legs
-            .iter()
-            .map(|l| parts[l.shin].slip(&l.contact))
-            .collect();
-        let foot_ended = feet::plant(
-            legs,
-            &contacts,
-            &spots,
-            &moves,
-            &bearing,
-            trigger.supported,
-            &met,
-            &mut work,
-        );
-        // A footwork landing stamps the stand-still clocks the next
-        // score reads, as the trailing-foot plant does.
-        drive.steps.still_at = work.still_at;
-        drive.steps.still_plus = work.still_plus;
-        drive.steps.loudness = work.loudness;
-        drive.foot_cues.append(&mut work.cues);
-        if drive.steps.stepping {
-            let dist = cm((chest - drive.steps.target).with_y(0.0)).length();
-            let toward = cm(fast.with_y(0.0))
-                .dot((drive.steps.target - chest).with_y(0.0).normalize_or_zero());
-            let any = legs.iter().any(|l| l.state.has(FootState::ANCHORED));
-            drive.steps.near = steps::note_near(drive.steps.near, dist, scale);
-            let landed = b.landings.saturating_sub(drive.steps.landed_from);
-            if foot_ended
-                || steps::episode_over(
-                    steps::elapsed_ms(&drive.steps),
-                    any,
-                    dist,
-                    toward,
-                    drive.steps.near,
-                    landed,
-                    scale,
-                )
-            {
-                end_step(
-                    &mut drive.steps,
-                    legs,
-                    &posed_spots,
-                    &contacts,
-                    frame,
-                    chest,
-                    fast,
-                );
+                energy: drive.energy,
+                support: drive.support,
+                scale,
+                bonus,
+                reach: drive.stats.foot_reach(),
+                extension: b.extension,
+                encumbrance: drive.stats.encumbrance,
+                frame,
+                landings: b.landings,
+                shock_stagger: bearing.shock_stagger,
+            };
+            let posed_spots = spots.clone();
+            let plan = steps::consider(&mut drive.steps, &trigger);
+            let origin = match plan {
+                Plan::Stepping(origin) => Some(origin),
+                Plan::Ended => {
+                    end_step(
+                        &mut drive.steps,
+                        legs,
+                        &posed_spots,
+                        &contacts,
+                        frame,
+                        chest,
+                        fast,
+                    );
+                    None
+                }
+                Plan::Idle => None,
+            };
+            if let Some(origin) = origin {
+                for spot in spots.iter_mut().flatten() {
+                    let local = *spot - frame;
+                    *spot = Vec3::new(origin.x + local.x, spot.y, origin.z + local.z);
+                }
             }
-        }
+            let pin_mean = (posed && !chest_pins.is_empty()).then(|| {
+                let n = chest_pins.len() as f32;
+                chest_pins
+                    .iter()
+                    .map(|(i, w)| drive.targets[*i].transform_point3(parts[*i].rest_point(w)))
+                    .sum::<Vec3>()
+                    / n
+            });
+            let stance_origin = origin.unwrap_or(frame);
+            let side = drive
+                .frame
+                .map_or(Vec3::X, |f| Vec3::from(f.matrix3.x_axis).with_y(0.0));
+            let mut work = steps::Work {
+                now_ms: drive.steps.clock as f32 * steps::MS_PER_TICK,
+                scale,
+                crouch: bearing.crouch,
+                reference: steps::score_reference(
+                    chest,
+                    pin_mean,
+                    drive.steps.stepping,
+                    fast,
+                    forward,
+                    bearing.crouch,
+                ),
+                root: frame,
+                origin: stance_origin,
+                side,
+                step_cm: steps::foot_step_length(drive.stats.foot_reach(), bearing.crouch),
+                episode: drive.steps.stepping,
+                episode_ms: if drive.steps.stepping {
+                    steps::elapsed_ms(&drive.steps)
+                } else {
+                    0.0
+                },
+                chest_to_target_cm: cm((chest - drive.steps.target).with_y(0.0)).length(),
+                size: drive.stats.size.max(1.0),
+                still_at: drive.steps.still_at,
+                still_plus: drive.steps.still_plus,
+                attacking: bearing.attacking,
+                loudness: drive.steps.loudness,
+                cues: Vec::new(),
+            };
+            // The feet's states, from last tick's support.
+            let met: Vec<bool> = legs
+                .iter()
+                .map(|l| !parts[l.foot.unwrap_or(l.shin)].contacts.is_empty())
+                .collect();
+            let moves: Vec<Vec3> = legs
+                .iter()
+                .map(|l| parts[l.shin].slip(&l.contact))
+                .collect();
+            let foot_ended = feet::plant(
+                legs,
+                &contacts,
+                &spots,
+                &moves,
+                &bearing,
+                trigger.supported,
+                &met,
+                &mut work,
+            );
+            // A footwork landing stamps the stand-still clocks the next
+            // score reads, as the trailing-foot plant does.
+            drive.steps.still_at = work.still_at;
+            drive.steps.still_plus = work.still_plus;
+            drive.steps.loudness = work.loudness;
+            drive.foot_cues.append(&mut work.cues);
+            if drive.steps.stepping {
+                let dist = cm((chest - drive.steps.target).with_y(0.0)).length();
+                let toward = cm(fast.with_y(0.0))
+                    .dot((drive.steps.target - chest).with_y(0.0).normalize_or_zero());
+                let any = legs.iter().any(|l| l.state.has(FootState::ANCHORED));
+                drive.steps.near = steps::note_near(drive.steps.near, dist, scale);
+                let landed = b.landings.saturating_sub(drive.steps.landed_from);
+                if foot_ended
+                    || steps::episode_over(
+                        steps::elapsed_ms(&drive.steps),
+                        any,
+                        dist,
+                        toward,
+                        drive.steps.near,
+                        landed,
+                        scale,
+                    )
+                {
+                    end_step(
+                        &mut drive.steps,
+                        legs,
+                        &posed_spots,
+                        &contacts,
+                        frame,
+                        chest,
+                        fast,
+                    );
+                }
+            }
 
-        // A queued footwork step, taken at the landing after the episode
-        // that was running when it was requested (the original's balance
-        // routine calls its queued-step taker there). The AI is told when
-        // the step points along the facing.
-        let landed = b.landings != drive.steps.landings_seen;
-        drive.steps.landings_seen = b.landings;
-        drive.steps.told_ai = false;
-        if landed && drive.steps.queued != Vec3::ZERO {
-            // The queued step is taken through the body's own rule, so its
-            // target and its notice to the AI are one place.
-            let queued = drive.steps.queued;
-            drive.steps.queued = Vec3::ZERO;
-            let landings = if b.landings < 1 { 0 } else { 1 };
-            if let Some(step) =
-                steps::take_queued(queued, chest, drive.steps.target, forward, scale, landings)
-            {
-                drive.steps.target = step.target;
-                drive.steps.stepping = true;
-                drive.steps.started = drive.steps.clock;
-                drive.steps.near = 0;
-                drive.steps.landed_from = b.landings;
-                drive.steps.told_ai = step.tell_ai;
-            } else {
-                drive.steps.queued = queued;
+            // A queued footwork step, taken at the landing after the episode
+            // that was running when it was requested (the original's balance
+            // routine calls its queued-step taker there). The AI is told when
+            // the step points along the facing.
+            let landed = b.landings != drive.steps.landings_seen;
+            drive.steps.landings_seen = b.landings;
+            drive.steps.told_ai = false;
+            if landed && drive.steps.queued != Vec3::ZERO {
+                // The queued step is taken through the body's own rule, so its
+                // target and its notice to the AI are one place.
+                let queued = drive.steps.queued;
+                drive.steps.queued = Vec3::ZERO;
+                let landings = if b.landings < 1 { 0 } else { 1 };
+                if let Some(step) =
+                    steps::take_queued(queued, chest, drive.steps.target, forward, scale, landings)
+                {
+                    drive.steps.target = step.target;
+                    drive.steps.stepping = true;
+                    drive.steps.started = drive.steps.clock;
+                    drive.steps.near = 0;
+                    drive.steps.landed_from = b.landings;
+                    drive.steps.told_ai = step.tell_ai;
+                } else {
+                    drive.steps.queued = queued;
+                }
             }
         }
 
@@ -1215,6 +1231,9 @@ impl Ragdoll {
                 drive.support = 1.0;
                 return;
             }
+            // Walking feet need two legs; a legless body only gets here
+            // hovering or on a flat floor.
+            feet::FeetMode::Walking if legs.len() < 2 => return,
             feet::FeetMode::Walking => {}
         }
 

@@ -1042,7 +1042,10 @@ pub fn adopt_spirit(world: &mut World, body: Entity, spirit: Entity) {
     }
     entity.remove::<(Duellist, Npc, DuelPowers)>();
     let yaw = entity.get::<Locomotor>().map_or(0.0, |l| l.yaw);
-    let mut player = PlayerBody::new(yaw).with_snap_ticks(SPIRIT_SNAP_TICKS);
+    // The spirit's race (the wraith) hovers: its combat mode stays off.
+    let mut player = PlayerBody::new(yaw)
+        .with_snap_ticks(SPIRIT_SNAP_TICKS)
+        .hovering();
     if let Some(aim) = aim {
         player.aim = aim;
     }
@@ -1219,12 +1222,17 @@ fn log_mind_bodies(
         let pelvis = ragdoll
             .and_then(|r| r.parts.first())
             .map(|p| p.transform().translation);
+        // The lift's target pelvis height and the character's ground (m):
+        // a hovering spirit aims at its clip height over the probe's ground.
+        let drive = ragdoll.and_then(|r| r.drive.as_ref());
         info!(
-            "mind: tick {now}: the player's body {player:?} at {:.2?} (pelvis {:.2?}, {} parts, moving {:?}), the held body {held:?} at {:.2?}",
+            "mind: tick {now}: the player's body {player:?} at {:.2?} (pelvis {:.2?}, {} parts, moving {:?}, lift target {:.3?}, ground {:.3?}), the held body {held:?} at {:.2?}",
             at.translation(),
             pelvis,
             ragdoll.map_or(0, |r| r.parts.len()),
             locomotion.map(|l| l.moving),
+            drive.and_then(|d| d.lift_target()),
+            drive.map(|d| d.character_ground()),
             places.get(held).map(GlobalTransform::translation).ok()
         );
     }
@@ -1700,6 +1708,13 @@ mod tests {
             world.get::<PlayerBody>(spirit).unwrap().snap_ticks(),
             SPIRIT_SNAP_TICKS
         );
+        // The wraith hovers: combat mode cannot be turned on.
+        {
+            let mut player = world.get_mut::<PlayerBody>(spirit).unwrap();
+            assert!(!player.toggle_combat());
+            assert!(!player.set_combat(true));
+            assert!(!player.combat);
+        }
         assert_eq!(
             status_of(&world, spirit) & SPIRIT_BODY_STATUS,
             SPIRIT_BODY_STATUS

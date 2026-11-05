@@ -5417,7 +5417,7 @@ mod tests {
         assert_eq!(recover_energy(1.0, 1.0, true, 0.0), 1.0);
     }
 
-    fn two_parts(slack: f32) -> Ragdoll {
+    pub(super) fn two_parts(slack: f32) -> Ragdoll {
         let e = Entity::PLACEHOLDER;
         let at = |y: f32| Affine3A::from_translation(Vec3::new(0.0, y, 0.0));
         Ragdoll::new(&[

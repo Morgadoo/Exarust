@@ -3091,7 +3091,10 @@ fn spawn_placed_characters(
             // The character init's presets over the race record (the golems'
             // arm relaxation and link smoothing).
             commands.entity(model).insert(exa_physics::body::Physical {
-                race: character_muscles(&body, &stats),
+                race: exa_physics::body::RaceMuscles {
+                    hovers: race.is_some_and(|r| r.flags & exa_formats::races::HOVERS != 0),
+                    ..character_muscles(&body, &stats)
+                },
                 stats: body_stats(&stats),
                 ..default()
             });
