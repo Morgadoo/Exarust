@@ -132,8 +132,9 @@ pub struct BoundaryMap {
     pub types: BTreeMap<String, Users>,
     /// Exclusive and unbounded-access systems, by side.
     pub whole_world: BTreeMap<Side, BTreeSet<String>>,
-    /// Every type the simulation's side touches, filters too.
-    pub sim_types: BTreeSet<String>,
+    /// Every type the simulation's side touches, filters too, with the
+    /// systems that touch it.
+    pub sim_types: BTreeMap<String, BTreeSet<String>>,
     /// The types registered with the simulation's bridge
     /// (`exa_physics::sim_bridge`), and the ones they cover.
     pub bridged: BTreeSet<String>,
@@ -185,13 +186,19 @@ impl BoundaryMap {
                         // the bridge must carry it.
                         ComponentAccessKind::Archetypal(id) => {
                             if side == Side::Sim {
-                                map.sim_types.insert(name_of(id));
+                                map.sim_types
+                                    .entry(name_of(id))
+                                    .or_default()
+                                    .insert(name.clone());
                             }
                             continue;
                         }
                     };
                     if side == Side::Sim {
-                        map.sim_types.insert(name_of(id));
+                        map.sim_types
+                            .entry(name_of(id))
+                            .or_default()
+                            .insert(name.clone());
                     }
                     map.types
                         .entry(name_of(id))
@@ -212,7 +219,7 @@ impl BoundaryMap {
     /// The simulation's types the bridge does not carry yet.
     pub fn unbridged(&self) -> Vec<&String> {
         self.sim_types
-            .iter()
+            .keys()
             .filter(|t| !self.bridged.contains(*t))
             .collect()
     }
@@ -264,6 +271,9 @@ impl BoundaryMap {
         );
         for name in &unbridged {
             let _ = writeln!(out, "- `{name}`");
+            for system in &self.sim_types[*name] {
+                let _ = writeln!(out, "  - {system}");
+            }
         }
         let list = |out: &mut String, what: &str, set: &BTreeSet<String>| {
             if !set.is_empty() {
