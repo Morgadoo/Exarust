@@ -1075,6 +1075,7 @@ pub struct HandSystems;
 
 impl Plugin for HandPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<Hand>()
             .init_resource::<ItemCursor>()
             .init_resource::<crate::gui_drop::GuiDrop>()
@@ -1152,6 +1153,7 @@ type PressMechanisms<'w, 's> = (
     Query<'w, 's, &'static mut LeverBody>,
     Option<Res<'w, player_controls::UseCursor>>,
     Option<ResMut<'w, Messages<MechanismSounded>>>,
+    ResMut<'w, exa_physics::sim_app::FixedCommands>,
 );
 
 /// What a body's nodes say of the placed object they belong to: its id,
@@ -1402,8 +1404,11 @@ fn lift(
 fn lift_gui_drops(
     mut commands: Commands,
     buttons: Res<ButtonInput<MouseButton>>,
-    mut hand: ResMut<Hand>,
-    mut items: ResMut<ItemCursor>,
+    (mut hand, mut items, mut fixed): (
+        ResMut<Hand>,
+        ResMut<ItemCursor>,
+        ResMut<exa_physics::sim_app::FixedCommands>,
+    ),
     mut drop: ResMut<crate::gui_drop::GuiDrop>,
     mut dropped: Query<(Entity, &mut Ragdoll, &crate::gui_drop::GuiDropLift), Without<PlayerBody>>,
     mut player_bodies: Query<&mut PlayerBody>,
@@ -1421,7 +1426,10 @@ fn lift_gui_drops(
             .map(|p| Vec3::from(p.transform().translation))
             .unwrap_or_default();
         let held = lifting
-            .then(|| lift(&mut ragdoll, body, 0, at, (lift_of.item, lift_of.item)))
+            .then(|| {
+                let ids = (lift_of.item, lift_of.item);
+                fixed.write(body, &mut ragdoll, move |r| lift(r, body, 0, at, ids))
+            })
             .flatten();
         match held {
             Some(held) => {
@@ -1461,7 +1469,7 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
-    (over_gui, objects, mut doors, mut levers, use_cursor, mut mechanism_sounds): PressMechanisms,
+    (over_gui, objects, mut doors, mut levers, use_cursor, mut mechanism_sounds, mut fixed): PressMechanisms,
 ) {
     // The press that ended the use cursor was taken by the cursor's
     // callback (its answer's bit 0); the world does not see it.
@@ -1569,6 +1577,11 @@ fn press_hand(
     let Ok((mut pb, ..)) = player_bodies.get_mut(child) else {
         return;
     };
+    debug!(
+        "hand: press on {named:?} at {:.1?} cm: {:?}",
+        picked.map(|p| p.at * 100.0),
+        press(state, named)
+    );
     match press(state, named) {
         Press::Ignored => {}
         Press::Mechanism(pick) => {
@@ -1591,7 +1604,12 @@ fn press_hand(
                 let origin = glue.origin(&ragdoll);
                 match mechanism_press(Pick::Hinge, origin, at, state, || 0.5) {
                     MechanismPress::Door(grip) => {
-                        glue.take_hold(&mut ragdoll, grip.point);
+                        // The hold's link lands in the simulation at the
+                        // next step (`FixedCommands::write`).
+                        let point = grip.point;
+                        fixed.write_pair(body, &mut glue, &mut ragdoll, move |g, r| {
+                            g.take_hold(r, point);
+                        });
                         info!(
                             "hand: door pulled at ({:.2}, {:.2}, {:.2})",
                             grip.point.x, grip.point.y, grip.point.z
@@ -1629,7 +1647,9 @@ fn press_hand(
                 let offset = across.dot(glue.origin());
                 let point = ray_plane(ray.origin, *ray.direction, across, offset)
                     .unwrap_or_else(|| glue.arm_point(&ragdoll));
-                let grabbed = glue.take_hold(&mut ragdoll, point);
+                let grabbed = fixed.write_pair(body, &mut glue, &mut ragdoll, move |g, r| {
+                    g.take_hold(r, point)
+                });
                 info!("hand: lever taken by the wheel, {grabbed:.3} rad from the arm");
                 hand.holding = Holding::Wheel { body, grabbed };
                 return;
@@ -1672,7 +1692,9 @@ fn press_hand(
             // The lift keeps the object's id and its template, which a
             // placement marker's name is compared with.
             let held_ids = object_ids(body, &objects);
-            let Some(held) = lift(&mut ragdoll, body, part, at, held_ids) else {
+            let Some(held) = fixed.write(body, &mut ragdoll, move |r| {
+                lift(r, body, part, at, held_ids)
+            }) else {
                 return;
             };
             pb.hold_object(true);
@@ -1693,8 +1715,11 @@ fn press_hand(
             if holds {
                 pb.hold_object(true);
             }
+            let at = p.at;
             if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body)
-                && ragdoll.grab(part, p.at, strength, last_pass)
+                && fixed.write(body, &mut ragdoll, move |r| {
+                    r.grab(part, at, strength, last_pass)
+                })
             {
                 info!(
                     "hand: drag {} part {part} at ({:.2}, {:.2}, {:.2}), strength {strength}",
@@ -1723,12 +1748,13 @@ fn hold_hand(
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    (mut hand, mut items, mut doors, mut levers, mut plates): (
+    (mut hand, mut items, mut doors, mut levers, mut plates, mut fixed): (
         ResMut<Hand>,
         ResMut<ItemCursor>,
         Query<&mut DoorBody>,
         Query<&mut LeverBody>,
         Query<&mut PlateBody>,
+        ResMut<exa_physics::sim_app::FixedCommands>,
     ),
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
@@ -1742,13 +1768,24 @@ fn hold_hand(
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
     ),
-    (mut clicks, mut objects, rooms, mut character_uses): (
+    (mut clicks, mut objects, rooms, mut character_uses, mut seen): (
         MessageWriter<WorldClick>,
         MessageWriter<ObjectClick>,
         Option<Res<exa_world::room_view::LevelRooms>>,
         Option<ResMut<Messages<crate::character_use::CharacterUse>>>,
+        Local<Option<(Holding, bool)>>,
     ),
 ) {
+    // What the hand holds, as each frame finds it (`RUST_LOG=exa_game::hand=debug`).
+    let now_held = (hand.holding, items.held.is_some());
+    if *seen != Some(now_held) {
+        debug!(
+            "hand: holding {:?} (item cursor {})",
+            now_held.0,
+            if now_held.1 { "full" } else { "empty" }
+        );
+        *seen = Some(now_held);
+    }
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
     // A release before the drag started is a click: outside combat mode
@@ -1807,7 +1844,7 @@ fn hold_hand(
                 && glue.clickable()
                 && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body)
             {
-                glue.push(&mut ragdoll, true);
+                fixed.write_pair(body, &mut glue, &mut ragdoll, |g, r| g.push(r, true));
                 info!("hand: push surface {:#x} pushed", glue.id);
             }
             // A click on anything but a character goes to the placed
@@ -1917,14 +1954,14 @@ fn hold_hand(
                 return;
             };
             if released {
-                glue.let_go(&mut ragdoll);
+                fixed.write_pair(body, &mut glue, &mut ragdoll, |g, r| g.let_go(r));
                 hand.holding = Holding::Nothing;
                 return;
             }
             // Out of reach the lever is let go (and woken) but the drag
             // stays; in reach each frame sets the hand angle.
             if hand.out_of_reach {
-                glue.let_go(&mut ragdoll);
+                fixed.write_pair(body, &mut glue, &mut ragdoll, |g, r| g.let_go(r));
                 return;
             }
             let Some(ray) = cursor_ray(&scripted, &windows, &cameras) else {
@@ -1941,7 +1978,9 @@ fn hold_hand(
             let second = ray_plane(origin, dir, forward, forward.dot(at));
             if let (Some(first), Some(second)) = (first, second) {
                 let grip = first_wheel_grip(view, across);
-                glue.turn_to(&mut ragdoll, first, second, grip, grabbed);
+                fixed.write_pair(body, &mut glue, &mut ragdoll, move |g, r| {
+                    g.turn_to(r, first, second, grip, grabbed)
+                });
             }
         }
         Holding::Door { body, grip } => {
@@ -1952,7 +1991,7 @@ fn hold_hand(
                 return;
             };
             if released {
-                glue.let_go(&mut ragdoll);
+                fixed.write_pair(body, &mut glue, &mut ragdoll, |g, r| g.let_go(r));
                 hand.holding = Holding::Nothing;
                 return;
             }
@@ -1969,13 +2008,10 @@ fn hold_hand(
             });
             let cursor = cursor_ray(&scripted, &windows, &cameras)
                 .and_then(|ray| plane_pick(ray.origin, *ray.direction, grip.origin.y));
-            match cursor {
-                Some(point) => {
-                    let frame = door_drag_frame(grip, point, Vec3::X, far);
-                    glue.pull_to(&mut ragdoll, frame.anchor);
-                }
-                None => glue.pull_to(&mut ragdoll, None),
-            }
+            let anchor = cursor.and_then(|point| door_drag_frame(grip, point, Vec3::X, far).anchor);
+            fixed.write_pair(body, &mut glue, &mut ragdoll, move |g, r| {
+                g.pull_to(r, anchor)
+            });
         }
         Holding::Cloth {
             cloth,
@@ -1988,7 +2024,7 @@ fn hold_hand(
                 return;
             };
             if released {
-                instance.cloth.release_grab();
+                fixed.write(cloth, &mut instance, |i| i.cloth.release_grab());
                 hand.holding = Holding::Nothing;
             } else if let Some(ray) = cursor_ray(&scripted, &windows, &cameras) {
                 // The picked point on the cloth, else the cursor's ray on the
@@ -2019,7 +2055,7 @@ fn hold_hand(
                         to_local(plane),
                         CLOTH_GRAB_CM,
                     );
-                    instance.cloth.grab(vertex, target);
+                    fixed.write(cloth, &mut instance, move |i| i.cloth.grab(vertex, target));
                 }
             }
         }
@@ -2032,7 +2068,7 @@ fn hold_hand(
                     pb.hold_object(false);
                 }
                 // The lift's own out-of-reach answer cancels it.
-                end_lift(&mut items, &mut bodies, hand.out_of_reach);
+                end_lift(&mut items, &mut bodies, &mut fixed, hand.out_of_reach);
             } else {
                 // The movement inputs turn the item (the lift keeps the
                 // movement request): the pad's raw move stick, or the move
@@ -2068,13 +2104,25 @@ fn hold_hand(
                 };
                 let (body, part, box_centre, box_half, held_target) =
                     (held.body, held.part, held.centre, held.half, held.target);
+                // The held part as the frame sees it (`RUST_LOG=exa_game::hand=debug`):
+                // behind the bridge, the simulation's last step.
+                if let Ok((_, ragdoll, ..)) = bodies.get(body)
+                    && let Some(p) = ragdoll.parts.get(part)
+                {
+                    debug!(
+                        "hand: lifted part at {:.1?} cm, target {:.1?} cm",
+                        Vec3::from(p.transform().translation) * 100.0,
+                        held_target * 100.0
+                    );
+                }
                 if turned && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
                     let centre = ragdoll
                         .parts
                         .get(part)
                         .map(|p| Vec3::from(p.transform().translation))
                         .unwrap_or(Vec3::ZERO);
-                    ragdoll.turn_about(centre, item_cursor::turn_delta(right, delta));
+                    let turn = item_cursor::turn_delta(right, delta);
+                    fixed.write(body, &mut ragdoll, move |r| r.turn_about(centre, turn));
                 }
                 // The cursor's ray places the item against the level, the
                 // held item itself left out of the pick (as the original
@@ -2287,8 +2335,10 @@ fn hold_hand(
                                                 ),
                                             );
                                         }
-                                        ragdoll.pull_grab_to(point);
-                                        ragdoll.wake_to(DRAG_WAKE);
+                                        fixed.write(body, &mut ragdoll, move |r| {
+                                            r.pull_grab_to(point);
+                                            r.wake_to(DRAG_WAKE);
+                                        });
                                     }
                                     // A marker's frame is copied into the
                                     // held node whole.
@@ -2302,8 +2352,10 @@ fn hold_hand(
                                             part,
                                             frame,
                                         );
-                                        ragdoll.place_at(&worlds);
-                                        ragdoll.hold_grab_still();
+                                        fixed.write(body, &mut ragdoll, move |r| {
+                                            r.place_at(&worlds);
+                                            r.hold_grab_still();
+                                        });
                                     }
                                 }
                             }
@@ -2331,10 +2383,16 @@ fn hold_hand(
                                             part,
                                             last,
                                         );
-                                        ragdoll.place_at(&worlds);
-                                        ragdoll.hold_grab_still();
+                                        fixed.write(body, &mut ragdoll, move |r| {
+                                            r.place_at(&worlds);
+                                            r.hold_grab_still();
+                                        });
                                     }
-                                    None => ragdoll.pull_grab_to(held_target),
+                                    None => {
+                                        fixed.write(body, &mut ragdoll, move |r| {
+                                            r.pull_grab_to(held_target)
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -2358,23 +2416,29 @@ fn hold_hand(
                 hand.holding = Holding::Nothing;
                 return;
             };
+            debug!(
+                "hand: dragged grab point {:.1?} cm",
+                ragdoll.grab_point().map(|p| p * 100.0)
+            );
             let lives = character && condition.is_some_and(|c| !c.is_dead());
             let far = match (ragdoll.grab_point(), hip) {
                 (Some(point), Some(hip)) => lets_go(point, hip),
                 _ => false,
             };
             if released || lives || far {
-                ragdoll.release_grab();
+                fixed.write(body, &mut ragdoll, |r| r.release_grab());
                 hand.holding = Holding::Nothing;
                 return;
             }
             if hand.out_of_reach {
-                ragdoll.hold_grab_still();
+                fixed.write(body, &mut ragdoll, |r| r.hold_grab_still());
             } else if let (Some(ray), Some(hip)) = (ray, hip)
                 && let Some(anchor) = drag_anchor(ray.origin, *ray.direction, height, hip)
             {
-                ragdoll.pull_grab_to(anchor);
-                ragdoll.wake_to(DRAG_WAKE);
+                fixed.write(body, &mut ragdoll, move |r| {
+                    r.pull_grab_to(anchor);
+                    r.wake_to(DRAG_WAKE);
+                });
             }
         }
     }
@@ -2390,6 +2454,7 @@ fn hold_hand(
 fn end_lift(
     items: &mut ItemCursor,
     bodies: &mut Query<OtherBodies, Without<PlayerBody>>,
+    fixed: &mut exa_physics::sim_app::FixedCommands,
     cancelled: bool,
 ) {
     // The last fitting placement is where the item already rests: a frame
@@ -2410,15 +2475,22 @@ fn end_lift(
         return;
     };
     items.released_cm.push(held.shown.position * 100.0);
-    ragdoll.release_grab();
-    match outcome {
-        Release::Drop | Release::LastFit | Release::OnMarker => ragdoll.wake(),
-        Release::Lock => ragdoll.freeze(true),
-        Release::PutBack => {
-            ragdoll.place_at(&held.saved);
-            ragdoll.wake();
+    info!(
+        "hand: the lift ends ({outcome:?}) at {:.1?} cm",
+        held.shown.position * 100.0
+    );
+    let saved = held.saved.clone();
+    fixed.write(held.body, &mut ragdoll, move |ragdoll| {
+        ragdoll.release_grab();
+        match outcome {
+            Release::Drop | Release::LastFit | Release::OnMarker => ragdoll.wake(),
+            Release::Lock => ragdoll.freeze(true),
+            Release::PutBack => {
+                ragdoll.place_at(&saved);
+                ragdoll.wake();
+            }
         }
-    }
+    });
 }
 
 /// The lift's navigation region: with no room grid the test does not apply.
@@ -2490,7 +2562,11 @@ fn reach_hand(
     sources: PickSources,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    (mut hand, mut items): (ResMut<Hand>, ResMut<ItemCursor>),
+    (mut hand, mut items, mut fixed): (
+        ResMut<Hand>,
+        ResMut<ItemCursor>,
+        ResMut<exa_physics::sim_app::FixedCommands>,
+    ),
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
@@ -2512,12 +2588,12 @@ fn reach_hand(
         if let Holding::Drag { body, .. } = hand.holding
             && let Ok((_, mut r, ..)) = bodies.get_mut(body)
         {
-            r.release_grab();
+            fixed.write(body, &mut r, |r| r.release_grab());
         }
         // The forced release runs the lift's handler with the point out of
         // reach, so the lift ends as a cancelled one.
         if hand.holding == Holding::Lift {
-            end_lift(&mut items, &mut bodies, true);
+            end_lift(&mut items, &mut bodies, &mut fixed, true);
         }
         hand.holding = Holding::Nothing;
         hand.out_of_reach = true;
@@ -3258,6 +3334,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
             .init_resource::<Time<Real>>()
             .init_resource::<Bindings>()
             .init_resource::<ScriptedPointer>()
