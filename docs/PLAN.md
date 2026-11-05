@@ -895,6 +895,8 @@ Round 63 charmove: the original never sweeps a character; retiring the capsule f
 
 Round 63 simthread (stage 1 of 7): the original's driver ported and the fixed step's shared state mapped; the tick moves off the frame once the simulation has its own sub-app world.
 
+Round 64 simthread3 (stage 3, increment 1): the simulation world runs the fixed step behind a copy bridge, opt-in until every type is registered. Also (gridstall): wgpu's upload buffers no longer use the 3090's shared 256 MiB BAR window without a resizable BAR (patched gpu-allocator), which ended the second grid game's 0.5–1.6 s render stalls; the grid host plays no audio, ending the multi-GB ALSA log spam.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -2276,6 +2278,8 @@ Round 60 scriptmodes (S11): 0.9.5 has no scripted modes and no versus lobby; onl
 Round 62 chargen: the creator's edits take the original's three rebuild paths.
 
 Round 63 creatorfix: the black creator was the surviving player falling through the torn-down world into the death fade, not a regression; offscreen debug shots save from grid quadrants.
+
+Round 64 thaumtree: the power tree opens from the creator, and its texts, which were never visible in the running game, now draw.
 
 ### Phase 8 — Polish and release
 

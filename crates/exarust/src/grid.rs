@@ -257,15 +257,26 @@ pub fn run(args: &[String]) -> AppExit {
         unfocused_mode: bevy::winit::UpdateMode::Continuous,
     })
     .insert_resource(ClearColor(Color::BLACK))
-    .add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "Exarust grid".into(),
-            name: Some("exarust".into()),
-            resolution: config.size.into(),
-            ..default()
-        }),
-        ..default()
-    }))
+    .add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Exarust grid".into(),
+                    name: Some("exarust".into()),
+                    resolution: config.size.into(),
+                    ..default()
+                }),
+                ..default()
+            })
+            // The host plays no sound, the children do. An output stream
+            // of its own broke when a frame stalled, and cpal then reported
+            // `alsa::poll()` POLLERR in a tight loop: millions of log lines.
+            .disable::<bevy::audio::AudioPlugin>()
+            .set(bevy::log::LogPlugin {
+                filter: format!("{},rodio::stream=off", bevy::log::DEFAULT_FILTER),
+                ..default()
+            }),
+    )
     .insert_resource(GridHost {
         config,
         quads: Vec::new(),

@@ -420,3 +420,10 @@ A teardown with no level after it SHALL take the surviving player's body out of 
 #### Scenario: A level after the teardown
 - **WHEN** a plain teardown is followed by a level load
 - **THEN** the player's body stays out of the scene while the loading screen shows, and comes back once it has gone
+
+### Requirement: Story start power writes
+The story start's power writes SHALL put the power word into the record's power word and the value into the potential kept beside the power slots, never the word into the potential.
+
+#### Scenario: The unknown background
+- **WHEN** a new story starts for the unknown background on a record that knows powers
+- **THEN** the record's power word is 0x510000 and its potential 4.0

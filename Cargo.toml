@@ -19,6 +19,8 @@ members = [
     "crates/exa_tool",
     "crates/exarust",
 ]
+# Patched dependencies (see [patch.crates-io]) are not members.
+exclude = ["patches/gpu-allocator"]
 
 [workspace.package]
 edition = "2024"
@@ -117,3 +119,8 @@ strip = "none"
 lto = true
 codegen-units = 1
 strip = "symbols"
+
+# gpu-allocator with uploads kept out of a small (non-resizable) BAR window:
+# see patches/gpu-allocator/EXARUST.md.
+[patch.crates-io]
+gpu-allocator = { path = "patches/gpu-allocator" }
