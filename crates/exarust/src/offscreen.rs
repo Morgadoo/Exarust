@@ -261,7 +261,14 @@ impl ForwardedInput {
 pub struct OffscreenPlugin {
     pub path: PathBuf,
     pub size: UVec2,
+    /// Drop the host's forwarded input (an unattended `--fixed-frames` run:
+    /// the host's mouse would otherwise steer the player wherever it rests).
+    pub ignore_input: bool,
 }
+
+/// The host's forwarded input is dropped (only its closing is kept).
+#[derive(Resource)]
+struct IgnoreHostInput;
 
 /// The image every camera that would draw to the primary window draws
 /// into.
@@ -317,6 +324,9 @@ impl Plugin for OffscreenPlugin {
             let _ = send.send(None);
         });
         let size = self.size;
+        if self.ignore_input {
+            app.insert_resource(IgnoreHostInput);
+        }
         app.insert_resource(FrameFile {
             file,
             seq: 0,
@@ -497,6 +507,7 @@ fn inject_input(
     mut motion: MessageWriter<MouseMotion>,
     mut wheel: MessageWriter<MouseWheel>,
     mut exit: MessageWriter<AppExit>,
+    ignore: Option<Res<IgnoreHostInput>>,
 ) {
     let Ok((window_entity, mut window)) = windows.single_mut() else {
         return;
@@ -515,6 +526,9 @@ fn inject_input(
             exit.write(AppExit::Success);
             return;
         };
+        if ignore.is_some() {
+            continue;
+        }
         match input {
             ForwardedInput::Key {
                 code,

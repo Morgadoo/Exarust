@@ -54,7 +54,9 @@ tick and the brain chain run in the simulation's world, every type they
 touch copied across each step (2.3 ms a step in exanima01);
 `--no-sim-bridge` keeps them in the frame's world. `--sim-digest <file>`
 hashes every bridged type after each fixed step, to compare the two tick by
-tick; `--hold-loading` holds game time while the loading screen shows.
+tick; `--hold-loading` holds game time while the loading screen shows. Under
+`--fixed-frames` a grid quadrant drops the host's forwarded input, so a
+scripted run repeats whatever the host's mouse does.
 `--sim-boundary <file>` (`src/sim_boundary.rs`) writes, once the level has loaded and the fixed step
 has run 200 ticks, every component and resource type the fixed step's
 schedules share with the frame's, by direction, with each side's readers and
