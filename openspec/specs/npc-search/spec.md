@@ -27,11 +27,11 @@ Looking with attention on the goal SHALL end when the sweep sees it or the time 
 - **THEN** the look restarts until 13000 ms, the chest is let go, and the other path goes 100 cm under the chest with stop 50 cm, radius 100 cm, mode 7
 
 ### Requirement: Arriving
-Arriving (vertical distance halved) SHALL loot a container, a loose item not searched, or a dead character's worn items, settle, and kneel 1000 ms plus a draw of 1000. Three short walks SHALL let the object go. Its own pack open SHALL pause the search, idle.
+Arriving (vertical distance halved) SHALL loot a container, a loose item not searched, or a dead character's worn items, settle (the idle motion, no clip of its own), and wait 1000 ms plus a draw of 1000. Three short walks SHALL let the object go. Its own pack open SHALL pause the search, idle.
 
 #### Scenario: Short walks
 - **WHEN** a searcher arrives at a chest, and another ends three walks 550 cm short with its pack open once
-- **THEN** the first kneels until 2031 ms, and the second pauses while the pack is open, paths again twice and then lets the chest go
+- **THEN** the first settles until 2031 ms, and the second pauses while the pack is open, paths again twice and then lets the chest go
 
 ### Requirement: Looting
 Looting SHALL weigh one item each 1000 ms plus a draw of 500 and step back after taking one. A dead character's worn items SHALL come first, then its pack, skipping entries flagged `0x100` and ending at an empty one. When the source is exhausted the object SHALL be remembered (tagged `0x20000000` after a pack), a container tidied, a loose item taken last, and the object let go.
@@ -94,7 +94,15 @@ Re-arming SHALL take the best weapon in the main hand and stow the next best, on
 - **THEN** the 4 is wielded and the 2.4 stowed, and the 3 and the half-good piece are left
 
 ### Requirement: Takes carried out
-A take SHALL despawn a loose item, remove a container's first matching entry, release an item from the corpse's grip (the second hand slot and its carried entry) or else remove it from the worn list, or remove a carried entry and clear the fourth hand slot when it holds the same item. Wearing SHALL put the item on and out of the carried list before taking it from its source.
+A take SHALL despawn a loose item, remove a container's first matching entry, release an item from the corpse's grip (the second hand slot and its carried entry) or else remove it from the worn list, or remove a carried entry and clear the fourth hand slot when it holds the same item. Wearing SHALL run the equip conflict pass, then put the item on and out of the carried list before taking it from its source. Wielding SHALL fill the main hand and mark the item's carried entry held, clearing the old main item's mark; stowing SHALL fill the first stowed slot; both SHALL leave the item in the carried list.
+
+#### Scenario: Wearing over what it overlaps
+- **WHEN** a piece is worn over the underwear and a piece it overlaps, beside one it does not, and another piece is worn over a piece with a model byte over 50
+- **THEN** the overlapped piece moves to the carried list, the underwear is dropped, the other stays on; the second wear changes nothing and takes nothing from its source
+
+#### Scenario: Wielding keeps the item listed
+- **WHEN** a carried item is wielded, then another
+- **THEN** the first is marked held while it is in the hand and loses the mark when the second takes its place
 
 #### Scenario: Each source
 - **WHEN** a container, a corpse wearing one item and gripping a carried one, and a loose item are taken from
@@ -133,11 +141,25 @@ A level brain whose roles choose the follow SHALL follow the player. Inside the 
 - **THEN** the follower plans a route to the player and walks it
 
 ### Requirement: Searching the dead in the running game
-The search's candidates in the running game SHALL be the level's dead bodies. Each SHALL be listed in its 600 cm room cell, with its worn items, its carried list and its hands. A take SHALL remove the item from the body's possessions and add it to the searcher's.
+The search's candidates in the running game SHALL include the level's dead bodies. Each SHALL be listed in its 600 cm room cell, with its worn items, its carried list and its hands. A take SHALL remove the item from the body's possessions and add it to the searcher's.
 
 #### Scenario: A follower takes a dead body's sword
 - **WHEN** a follower stands 1.5 m from the player, with a dead body 3 m away that wears a sword better than the one the follower carries
-- **THEN** the follower gathers the body, looks it over, walks to it, kneels and takes the sword: the body's worn list no longer holds it and the follower carries it
+- **THEN** the follower gathers the body, looks it over, walks to it, settles and takes the sword: the body's worn list no longer holds it and the follower carries it
+
+### Requirement: Searching the level's objects in the running game
+The search's candidates in the running game SHALL include every placed object with a model, listed in the 600 cm room cell of its first node's box centre with that box's half-extents and its tagged database id; one straight under the level SHALL be searchable, and a placement word with bit 0x8000 SHALL mark it fixed. Its record SHALL be weighed from the game's object database or, tagged local, the level's own. A container's contents SHALL be read from its sections each tick and a changed container SHALL be written back, keeping the entries that stayed; a loose item taken SHALL leave the world with its colliders. The containers open in the player's popups SHALL count as open.
+
+#### Scenario: A chest and a loose blade
+- **WHEN** a follower stands 1.5 m from the player, with a placed chest holding a better sword 3 m away and a loose blade of another class 2 m away
+- **THEN** the follower takes both: the chest's section no longer holds the sword, the loose blade's object is gone, and the better weapon is in its hand, still listed and marked held
+
+### Requirement: Re-dressing after the search's takes
+A body whose worn list the search changed SHALL lose from its outfit the garments of the items that came off and gain those of the items that went on, which asks the dress for a refit. A dead body that lost a worn item SHALL first get the underwear rule. A body whose hands changed SHALL take its new hands and main-hand weapon model.
+
+#### Scenario: A robbed body
+- **WHEN** a dead human loses its tunic to a search and wears nothing that covers the groin
+- **THEN** its outfit loses the tunic's garment and its worn list holds the underwear
 
 ### Requirement: Phrase tables
 The comment templates SHALL be the original's: for one item "I found [a].", "There's [a] here.", "Found [a] here.", "Got [a] here.", "[a] here, if you want it." and the never-drawn "This [i] could be useful."; for a pair the same with "some [i]" ("Some [i] here, if you want them.", "These [i] could be useful."); for a further item "And [a].", "Found [a] too.", "Also found [a].", "There's [a] too.", and for a further pair the same with "some [i]".

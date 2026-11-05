@@ -119,8 +119,12 @@
 //!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre or the grid has changed
-//!          --searcher <id>            play mode: the level character with this record id (hex with 0x) takes the
-//!                                     Explorer role: it follows the player and searches the dead bodies near it
+//!          --searcher <id>            play mode: the level character with this record id (hex with 0x) gets the
+//!                                     role edits of Derrin's recruitment and the Explorer role: it follows the
+//!                                     player and searches the dead bodies, containers and loose items near it
+//!                                     (Derrin, the story companion, is 0x2b in a new story's exanima01)
+//!          --searcher-shots <dir>     play mode: save a screenshot into <dir> whenever a follower's search picks,
+//!                                     settles or takes something, and once its re-dress has had time to show
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
 //!          --profiler                 frame profiler: main/render thread and GPU times, overlay shown (F10 toggles)
 //!          --perf-log <seconds>       frame profiler on, its report logged every so often
@@ -398,10 +402,13 @@ pub struct Options {
     pub open_container: Option<u32>,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
     pub debug_path: Option<[f32; 3]>,
-    /// Play mode: the level character with this record id takes the
-    /// Explorer role and follows the player, searching the dead
-    /// (`--searcher`).
+    /// Play mode: the level character with this record id is recruited as
+    /// an Explorer and follows the player, searching the dead, containers
+    /// and loose items (`--searcher`).
     pub searcher: Option<u32>,
+    /// Play mode: save screenshots of the search's steps into this folder
+    /// (`--searcher-shots`).
+    pub searcher_shots: Option<std::path::PathBuf>,
     /// Once loaded, log every mesh over these floor points (x, z in metres).
     pub debug_column: Vec<[f32; 2]>,
     /// Log the frame profiler's report every this many seconds.
@@ -1312,6 +1319,9 @@ fn main() -> AppExit {
                 }
                 options.searcher = id;
             }
+            "--searcher-shots" => {
+                options.searcher_shots = args.next().map(std::path::PathBuf::from);
+            }
             "--corpse" => {
                 let v: Vec<f32> = args
                     .next()
@@ -1598,6 +1608,9 @@ fn main() -> AppExit {
         .insert_resource(exa_world::nav::NavRefreshMoved(options.nav_refresh_moved));
     if let Some(id) = options.searcher {
         app.insert_resource(exa_game::npc_search::DebugSearcher(id));
+    }
+    if let Some(dir) = options.searcher_shots.clone() {
+        app.insert_resource(exa_game::npc_search::SearchShots::into(dir));
     }
     app.insert_resource(match options.debug_path {
         Some(goal) => exa_game::path_probe::PathProbe::to(Vec3::from(goal)),

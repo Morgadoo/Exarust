@@ -1384,14 +1384,27 @@ the container nearest the player that many frames after the level load ends.
 in the running game: a level brain whose roles choose the follow follows the
 player (past its 400 cm band a route through the navigation grid on its own
 planning turn; inside the personal stop it stands) and, inside the band,
-runs its search once a body tick over the level's dead bodies (their 600 cm
-cells, their possessions as packs; reachable is the level's sight test, a
-path the grid's route), carrying out each take, wear or wield on both sides'
-`Possessions` and logging comments (no dialogue engine). The items' values
-come from the game's object database; level-local ids, containers and loose
-items are not searched, nothing is re-dressed and no kneel clip plays.
-`--searcher <record id>` gives a level character the Explorer role with its
-Activity variable set to the follow (its log lines start `search:`).
+runs its search once a body tick over the level's dead bodies and placed
+objects (their 600 cm cells; a body's possessions as its pack; an object at
+its first node's box centre, searchable when it lies straight under the
+level, a container's contents from its object sections; reachable is the
+level's sight test, a path the grid's route), carrying out each take, wear
+or wield on both sides' `Possessions` and logging comments (no dialogue
+engine). The items' values come from the game's object database and the
+level's own records (tagged local). `carry_out_search` then does what the
+deeds leave: a taken loose object leaves the world with its colliders, a
+changed container is written back into its sections, and a body whose worn
+list or hands changed is dressed again (garments off and on its `Outfit`,
+which the dress refits; a corpse gets the underwear rule first; new hands
+and `Wielded`). The original's search plays no kneel clip: it settles the
+body in its idle motion. `--searcher <record id>` gives a level character
+the role edits of Derrin's recruitment and the Explorer role with its
+Activity variable set to the follow (Derrin is `0x2b` in a new story's
+exanima01; its log lines start `search:`), and `--searcher-shots <dir>`
+saves a screenshot at each pick, settle, loot, take and re-dress. Not in:
+the original's per-room body and static-collider lists (every placed object
+with a model stands in for them; model-less volumes and placeholders are
+left out) and the placement bit of a loose item without object sections.
 `role_scripts` runs the encounter scripts an AI's target pass reports: the
 observer's roles' encounter entries for anyone, for the partner in its
 locale, or for one of the partner's roles, with the observer as actor 0 and

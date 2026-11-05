@@ -1,7 +1,8 @@
 //! The follow state and the search in the running game: a level brain whose
 //! roles choose the follow ([`exa_ai::activity::IdleState::Follow`]) follows
 //! the player, and while it stands within its band it runs its idle
-//! activity, the search ([`exa_ai::search`]), over the level's dead bodies.
+//! activity, the search ([`exa_ai::search`]), over the level's dead bodies,
+//! containers and loose items.
 //!
 //! - **The follow** is the original's follow state
 //!   ([`exa_ai::idle::follow_leader`]): the leader is the player; inside the
@@ -27,14 +28,32 @@
 //!   score reaches 1, else on the search's goal within 12 m (the goal
 //!   entity's reach); the alert look takes the tick while the panic is at
 //!   least 0.2 and the in-combat mark is kept.
+//! - **The level's objects** are the search's containers and loose items:
+//!   every placed object that lies in the world (a root of the level, as
+//!   the original's object must sit straight under a sector) and has a
+//!   model, at its first node's box centre with that box's half-extents,
+//!   its tagged database id, and its container contents from its object
+//!   sections. The gathering keeps those whose record has an apparel,
+//!   weapon, operative or container part. A container's take and drop are
+//!   written back into its sections; a loose item that is taken leaves the
+//!   world with its colliders. [Exarust stand-ins: the original walks the
+//!   room grid's body and static-collider lists, which Exarust does not
+//!   keep (S10), so every placed object with a model stands for one in
+//!   them and is listed after the cell's characters; a model-less volume
+//!   or placeholder is left out.]
+//! - **Re-dressing** follows every change the search makes to a worn list
+//!   or a main hand: the garments that came off leave the body's outfit and
+//!   the new ones are added, which asks the dress for a refit
+//!   ([`exa_character::refit`]); a dead body that lost a worn item first
+//!   gets the underwear rule, as the original's take from a corpse runs it
+//!   before its refit; a changed hand gives the body its new hands and
+//!   weapon model.
 //!
-//! The items' values come from the game's object database
-//! ([`search::Loot::of_payload`]). Not in: level containers and loose items
-//! (the running game spawns no searchable object instances), level-local
-//! item ids (they have no record in the game's database, so they are
-//! weighed as nothing), the kneel clip (the body stands), and re-dressing:
-//! a corpse keeps its built outfit and the searcher its built hands and
-//! apparel, as the loot window's moves do.
+//! The items' values come from the game's object database and the level's
+//! own records ([`search::Loot::of_payload`]; a level-local item is keyed
+//! by its tagged id). There is no kneel: the original's search never asks
+//! for the motion set's `Kneel` action; its settle stands the body in the
+//! idle motion, which the follower's idle clip is.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -59,6 +78,12 @@ use crate::player::{Player, PlayerBody};
 /// The role the debug searcher takes: Explorer, whose init script follows
 /// with its Activity variable and creates the search (idle activity 6).
 pub const EXPLORER: u32 = 31;
+/// The role edits of the shipped recruitment (Derrin's "Come With" topic
+/// scripts): the roles it removes (`RemoveRole($14)`, `RemoveRole($21)`,
+/// the latter Activity Wait) and the role it adds besides Explorer
+/// (`AddRole($13)`), before `Role($1F).Activity = 4`.
+pub const RECRUIT_REMOVES: [u32; 2] = [0x14, 0x21];
+pub const RECRUIT_ADDS: u32 = 0x13;
 /// The Activity variable the follow reads from: 4, the follow.
 pub const FOLLOW_ACTIVITY: u32 = 4;
 /// A dead body's half-extents (cm) for the arrival radius [Exarust stand-in:
@@ -79,16 +104,46 @@ const GIVE_UP_PER_CM: f32 = 20.0;
 const GIVE_UP_BASE_MS: u32 = 2000;
 
 /// The items the search can weigh, read once from the game's object
-/// database, and their display names for the comments.
+/// database, and the loaded level's own records (keyed by their tagged
+/// ids), with the size byte of each item that has a model.
 #[derive(Resource, Debug, Default)]
 pub struct SearchItems {
     pub loot: BTreeMap<u32, Loot>,
+    pub sizes: BTreeMap<u32, u8>,
+    /// The loaded level's records, tagged local.
+    pub level_loot: BTreeMap<u32, Loot>,
+    pub level_sizes: BTreeMap<u32, u8>,
+    /// Bumped whenever either set changes.
+    pub generation: u32,
     tried: bool,
 }
 
+impl SearchItems {
+    /// Every item the search can weigh.
+    pub fn all(&self) -> BTreeMap<u32, Loot> {
+        let mut all = self.loot.clone();
+        all.extend(self.level_loot.iter().map(|(k, v)| (*k, v.clone())));
+        all
+    }
+
+    /// Every size byte the search's drops read.
+    pub fn all_sizes(&self) -> BTreeMap<u32, u8> {
+        let mut all = self.sizes.clone();
+        all.extend(self.level_sizes.iter().map(|(k, v)| (*k, *v)));
+        all
+    }
+}
+
+/// The size byte an item's container entry is checked by: its model
+/// section's (the equip byte), for an item with a model.
+fn size_of(item: &exa_formats::objdb::Item) -> Option<u8> {
+    (!item.model.is_empty()).then_some(item.equip_lock)
+}
+
 /// The debug searcher (`--searcher <record id>`): the level character with
-/// this record id takes the Explorer role with its Activity variable set to
-/// the follow.
+/// this record id gets the shipped recruitment's role edits
+/// ([`RECRUIT_REMOVES`], [`RECRUIT_ADDS`]) and the Explorer role with its
+/// Activity variable set to the follow, as Derrin's recruitment gives them.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct DebugSearcher(pub u32);
 
@@ -100,8 +155,14 @@ struct Following {
     walk: IdleWalk,
     gaze: Gaze,
     searched: Vec<u32>,
-    /// The search state last logged.
+    /// The search state and the object last logged.
     logged: Option<search::State>,
+    logged_target: Option<usize>,
+    /// The follow step and the activity gate last logged.
+    logged_act: Option<(FollowAct, bool)>,
+    logged_act_ms: Option<u32>,
+    /// Whether its rest was logged.
+    rested: bool,
 }
 
 impl Default for Following {
@@ -132,6 +193,10 @@ impl Default for Following {
             },
             searched: Vec::new(),
             logged: None,
+            logged_target: None,
+            logged_act: None,
+            logged_act_ms: None,
+            rested: false,
         }
     }
 }
@@ -140,13 +205,202 @@ impl Default for Following {
 #[derive(Resource, Default)]
 pub struct SearchWorld {
     scene: Scene,
-    /// Each character's place in the scene's character and object lists
-    /// (the same index in both: one object per character).
+    /// Each character's place in the scene's character list (its object is
+    /// the place's [`search::Corpse::object`]).
     places: HashMap<Entity, usize>,
+    /// Each placed object's index in the scene's objects.
+    objects: HashMap<Entity, usize>,
     phrases: Phrases,
     following: HashMap<Entity, Following>,
     /// The connected flags of the room grid, built once for the level.
     flags: Vec<u32>,
+    /// The item set the scene's items were last copied from.
+    generation: Option<u32>,
+    /// What the tick's deeds left for [`carry_out_search`].
+    effects: Effects,
+    /// Screenshots asked for ([`SearchShots`]): frames to wait and a label.
+    shots: Vec<(u32, String)>,
+}
+
+/// Screenshots of the search's steps (`--searcher-shots <dir>`): one when a
+/// follower's search picks, settles or loots, when it takes something out
+/// of the world, and 90 frames after a re-dress, numbered in order.
+#[derive(Resource, Debug)]
+pub struct SearchShots {
+    dir: std::path::PathBuf,
+    taken: u32,
+    frame: u32,
+    due: Vec<(u32, String)>,
+}
+
+impl SearchShots {
+    pub fn into(dir: std::path::PathBuf) -> Self {
+        Self {
+            dir,
+            taken: 0,
+            frame: 0,
+            due: Vec::new(),
+        }
+    }
+}
+
+/// Takes the screenshots the search asked for, when they are due.
+pub fn take_search_shots(
+    mut commands: Commands,
+    shots: Option<ResMut<SearchShots>>,
+    mut world: ResMut<SearchWorld>,
+) {
+    let Some(mut shots) = shots else {
+        world.shots.clear();
+        return;
+    };
+    shots.frame = shots.frame.wrapping_add(1);
+    let frame = shots.frame;
+    for (wait, label) in world.shots.drain(..) {
+        shots.due.push((frame.wrapping_add(wait), label));
+    }
+    let due: Vec<String> = shots
+        .due
+        .iter()
+        .filter(|(at, _)| *at <= frame)
+        .map(|(_, label)| label.clone())
+        .collect();
+    shots.due.retain(|(at, _)| frame < *at);
+    for label in due {
+        if std::fs::create_dir_all(&shots.dir).is_err() {
+            warn!("search: cannot make {:?}", shots.dir);
+            return;
+        }
+        shots.taken += 1;
+        let path = shots.dir.join(format!("{:02}-{label}.png", shots.taken));
+        info!("search: screenshot {path:?}");
+        commands
+            .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+            .observe(bevy::render::view::screenshot::save_to_disk(path));
+    }
+}
+
+/// The world edits the search's deeds leave for the game: loose objects
+/// to take out of the world, containers whose contents changed, and bodies
+/// to dress again.
+#[derive(Debug, Default)]
+struct Effects {
+    taken: Vec<Entity>,
+    containers: Vec<(u32, search::Container)>,
+    redress: Vec<Redress>,
+}
+
+/// A body whose worn list or hands the search changed: what it wore and
+/// held before.
+#[derive(Debug, Clone)]
+struct Redress {
+    body: Entity,
+    worn: Vec<u32>,
+    out: [u32; 2],
+    dead: bool,
+}
+
+/// One placed object as the scene keeps it.
+#[derive(Debug, Clone)]
+pub struct SeenObject {
+    pub entity: Entity,
+    /// Its tagged database id.
+    pub id: u32,
+    /// Its box centre and half-extents (cm).
+    pub at: Vec3,
+    pub half: Vec3,
+    /// It lies in the world (straight under the level).
+    pub searchable: bool,
+    /// The placement word's bit the gathering skips.
+    pub fixed: bool,
+    pub container: Option<search::Container>,
+}
+
+/// The placement word bit an object the gathering skips carries.
+pub const FIXED_BIT: u32 = 0x8000;
+
+/// The level's placed objects as the search reads them.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LevelObjects<'w, 's> {
+    #[allow(clippy::type_complexity)]
+    placed: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static exa_world::PlacedItem,
+            Option<&'static exa_world::ObjectSections>,
+            &'static GlobalTransform,
+            Option<&'static Children>,
+            Option<&'static ChildOf>,
+        ),
+        (
+            Without<exa_world::db_objects::PlaceholderNode>,
+            Without<exa_world::db_objects::ContainerVolume>,
+        ),
+    >,
+    bounds: Query<'w, 's, (&'static exa_world::PartBounds, &'static GlobalTransform)>,
+    levels: Query<'w, 's, (), With<exa_world::LevelRoot>>,
+}
+
+impl LevelObjects<'_, '_> {
+    /// Every placed object with a model: its first node's box (the node's
+    /// own place without one).
+    fn seen(&self) -> Vec<SeenObject> {
+        self.placed
+            .iter()
+            .map(|(entity, placed, sections, gt, children, parent)| {
+                let node =
+                    children.and_then(|c| c.iter().find_map(|child| self.bounds.get(child).ok()));
+                let (at, half) = match node {
+                    Some((bounds, node_gt)) => (
+                        node_gt.transform_point(bounds.centre) * 100.0,
+                        bounds.half_extents * 100.0,
+                    ),
+                    None => (gt.translation() * 100.0, Vec3::ZERO),
+                };
+                SeenObject {
+                    entity,
+                    id: placed.tagged_id,
+                    at,
+                    half,
+                    searchable: parent.is_none_or(|p| self.levels.contains(p.parent())),
+                    fixed: sections.is_some_and(|s| s.placement & FIXED_BIT != 0),
+                    container: sections
+                        .and_then(|s| s.container.as_ref())
+                        .map(container_of),
+                }
+            })
+            .collect()
+    }
+}
+
+/// A container section's contents as the search reads them.
+pub fn container_of(c: &exa_formats::containers::Container) -> search::Container {
+    search::Container {
+        items: c.children.iter().map(|child| child.id).collect(),
+        max_item: c.max_item,
+    }
+}
+
+/// Writes contents the search changed back to a container section: the
+/// entries that stayed keep their flags and places (each matched once, in
+/// order), new ones come in with no flags at the panel's origin.
+pub fn sync_container(c: &mut exa_formats::containers::Container, model: &search::Container) {
+    let mut old = std::mem::take(&mut c.children);
+    c.children = model
+        .items
+        .iter()
+        .map(|&id| match old.iter().position(|child| child.id == id) {
+            Some(at) => old.remove(at),
+            None => exa_formats::containers::Child {
+                id,
+                flags: 0,
+                x: 0,
+                y: 0,
+            },
+        })
+        .collect();
 }
 
 /// A character's pack as the search reads it: its carried list (items and
@@ -242,14 +496,16 @@ pub fn connected_flags(
         .collect()
 }
 
-/// The search's room grid over the level's characters: each character
-/// (by its place in `places`, cm; `None` for one no longer in the world)
-/// listed in its 600 cm cell of a `size` grid centred on the origin, with
-/// the cells' connected `flags`.
+/// The search's room grid over the level's characters and objects: each
+/// character (by its place in `characters`, cm; `None` for one no longer
+/// in the world) and each object (its index and place, cm) listed in its
+/// 600 cm cell of a `size` grid centred on the origin, with the cells'
+/// connected `flags`.
 pub fn room_grid(
     size: exa_ai::rooms::RoomGridSize,
     flags: &[u32],
-    places: &[Option<Vec3>],
+    characters: &[Option<Vec3>],
+    objects: &[(usize, Vec3)],
 ) -> search::RoomGrid {
     let cells = (size.width.max(0) * size.height.max(0)) as usize;
     let mut grid = search::RoomGrid {
@@ -261,9 +517,14 @@ pub fn room_grid(
         objects: vec![Vec::new(); cells],
     };
     grid.flags.resize(cells, 0);
-    for (c, at) in places.iter().enumerate() {
+    for (c, at) in characters.iter().enumerate() {
         if let Some(cell) = at.and_then(|at| exa_ai::rooms::cell_index(at, size)) {
             grid.characters[cell as usize].push(c);
+        }
+    }
+    for &(o, at) in objects {
+        if let Some(cell) = exa_ai::rooms::cell_index(at, size) {
+            grid.objects[cell as usize].push(o);
         }
     }
     grid
@@ -294,11 +555,47 @@ pub fn load_search_items(game: Option<Res<Game>>, mut items: ResMut<SearchItems>
         .iter()
         .filter_map(|r| Some((r.id, Loot::of_payload(db.payload(r))?)))
         .collect();
+    items.sizes = exa_formats::objdb::items(&db)
+        .iter()
+        .filter_map(|item| Some((item.id, size_of(item)?)))
+        .collect();
+    items.generation = items.generation.wrapping_add(1);
     info!("search: {} items it can weigh", items.loot.len());
 }
 
-/// Gives the debug searcher the Explorer role, its Activity variable set to
-/// the follow, once.
+/// Reads the loaded level's own records into the search's items, tagged
+/// local, whenever a level loads.
+pub fn load_level_search_items(
+    records: Option<Res<exa_world::LevelLocalRecords>>,
+    local: Option<Res<exa_world::LevelLocalItems>>,
+    mut items: ResMut<SearchItems>,
+) {
+    let (Some(records), Some(local)) = (records, local) else {
+        return;
+    };
+    if !records.is_changed() && !local.is_changed() {
+        return;
+    }
+    let tag = |id: u32| (id & exa_formats::objdb::ID_MASK) | exa_formats::objdb::LOCAL;
+    items.level_loot = records
+        .records
+        .iter()
+        .filter_map(|(id, payload)| Some((tag(*id), Loot::of_payload(payload)?)))
+        .collect();
+    items.level_sizes = local
+        .0
+        .iter()
+        .filter_map(|item| Some((tag(item.id), size_of(item)?)))
+        .collect();
+    items.generation = items.generation.wrapping_add(1);
+    info!(
+        "search: {} level records it can weigh",
+        items.level_loot.len()
+    );
+}
+
+/// Gives the debug searcher the recruitment's role edits and the Explorer
+/// role, its Activity variable set to the follow, once.
 pub fn make_debug_searcher(
     searcher: Option<Res<DebugSearcher>>,
     db: Option<Res<RoleDatabase>>,
@@ -311,6 +608,10 @@ pub fn make_debug_searcher(
         if id.0 != searcher.0 || roles.has(EXPLORER) {
             continue;
         }
+        for role in RECRUIT_REMOVES {
+            roles.remove(&db.book, role);
+        }
+        roles.add(&db.book, RECRUIT_ADDS);
         roles.add(&db.book, EXPLORER);
         if let Some(held) = roles.0.iter_mut().find(|r| r.id == EXPLORER) {
             if held.values.is_empty() {
@@ -453,14 +754,17 @@ struct Seen {
     pack: Pack,
 }
 
-/// Refreshes the scene from the level's characters: a character keeps its
-/// place in the lists once it has one (the search holds objects by place),
-/// its object moves with it and its pack follows its possessions; one no
-/// longer in the world leaves the scene (its object is no longer present
-/// and it is no longer a character, so it is never gathered again).
+/// Refreshes the scene from the level's characters and placed objects: a
+/// character or object keeps its place in the lists once it has one (the
+/// search holds objects by place), its object moves with it and its pack
+/// follows its possessions; one no longer in the world leaves the scene
+/// (its object is no longer present and a character is no longer one, so
+/// it is never gathered again). The containers' contents are read again
+/// from their sections.
 fn refresh_scene(
     world: &mut SearchWorld,
     seen: Vec<Seen>,
+    placed: Vec<SeenObject>,
     size: exa_ai::rooms::RoomGridSize,
     level: Option<&exa_world::room_view::LevelRooms>,
     level_changed: bool,
@@ -472,52 +776,89 @@ fn refresh_scene(
             None => true,
         });
     }
-    for object in &mut world.scene.objects {
+    let scene = &mut world.scene;
+    for object in &mut scene.objects {
         object.kind &= !search::object::PRESENT;
     }
-    for corpse in &mut world.scene.corpses {
+    for corpse in &mut scene.corpses {
         corpse.character = false;
     }
     for s in seen {
-        let place = match world.places.get(&s.entity) {
-            Some(&place) => place,
-            None => {
-                let place = world.scene.corpses.len();
-                world.places.insert(s.entity, place);
-                world.scene.objects.push(search::SceneObject {
-                    id: s.pack_id,
-                    kind: search::object::PRESENT,
-                    searchable: false,
-                    fixed: false,
-                    at: s.at,
-                    half: CORPSE_HALF_CM,
-                    reserved: 0,
-                    corpse: Some(place),
-                });
-                world.scene.corpses.push(search::Corpse {
-                    character: true,
-                    dead: s.dead,
-                    pack_id: s.pack_id,
-                    pack: Pack::default(),
-                    object: place,
-                });
-                place
-            }
-        };
-        world.scene.objects[place].at = s.at;
-        world.scene.objects[place].kind |= search::object::PRESENT;
-        let corpse = &mut world.scene.corpses[place];
+        let place = *world.places.entry(s.entity).or_insert_with(|| {
+            let object = scene.objects.len();
+            let place = scene.corpses.len();
+            scene.objects.push(search::SceneObject {
+                id: s.pack_id,
+                kind: 0,
+                searchable: false,
+                fixed: false,
+                at: s.at,
+                half: CORPSE_HALF_CM,
+                reserved: 0,
+                corpse: Some(place),
+            });
+            scene.corpses.push(search::Corpse {
+                character: true,
+                dead: s.dead,
+                pack_id: s.pack_id,
+                pack: Pack::default(),
+                object,
+            });
+            place
+        });
+        let corpse = &mut scene.corpses[place];
         corpse.character = true;
         corpse.dead = s.dead;
         corpse.pack = s.pack;
+        let object = &mut scene.objects[corpse.object];
+        object.at = s.at;
+        object.kind |= search::object::PRESENT;
     }
-    let places: Vec<Option<Vec3>> = world
-        .scene
+    scene.containers.clear();
+    for p in placed {
+        let o = *world.objects.entry(p.entity).or_insert_with(|| {
+            scene.objects.push(search::SceneObject {
+                id: p.id,
+                kind: search::object::CONTAINER_KIND,
+                searchable: p.searchable,
+                fixed: p.fixed,
+                at: p.at,
+                half: p.half,
+                reserved: 0,
+                corpse: None,
+            });
+            scene.objects.len() - 1
+        });
+        let object = &mut scene.objects[o];
+        object.at = p.at;
+        object.half = p.half;
+        object.searchable = p.searchable;
+        object.fixed = p.fixed;
+        object.kind |= search::object::PRESENT;
+        if let Some(container) = p.container {
+            scene.containers.entry(p.id).or_insert(container);
+        }
+    }
+    let present = |o: &search::SceneObject| o.kind & search::object::PRESENT != 0;
+    let characters: Vec<Option<Vec3>> = scene
+        .corpses
+        .iter()
+        .map(|c| {
+            scene
+                .objects
+                .get(c.object)
+                .filter(|o| present(o))
+                .map(|o| o.at)
+        })
+        .collect();
+    let objects: Vec<(usize, Vec3)> = scene
         .objects
         .iter()
-        .map(|o| (o.kind & search::object::PRESENT != 0).then_some(o.at))
+        .enumerate()
+        .filter(|(_, o)| o.corpse.is_none() && present(o))
+        .map(|(i, o)| (i, o.at))
         .collect();
-    world.scene.grid = room_grid(size, &world.flags, &places);
+    scene.grid = room_grid(size, &world.flags, &characters, &objects);
 }
 
 /// The follow state and the search, for every level brain whose roles
@@ -554,6 +895,7 @@ pub fn follow_and_search(
     mut roots: Query<(&mut CharacterBody, &GlobalTransform), Without<Possessions>>,
     leader_root: Query<&GlobalTransform, (With<Player>, Without<Possessions>)>,
     leader_body: Query<(Entity, &GlobalTransform), With<PlayerBody>>,
+    objects: LevelObjects,
     mut clock: Local<(Option<u64>, exa_ai::route::PlanTurn, u32)>,
 ) {
     let any = followers
@@ -604,13 +946,23 @@ pub fn follow_and_search(
             })
             .collect();
         let level_changed = level_res.as_ref().is_some_and(|l| l.is_changed());
+        let placed = objects.seen();
+        let first = world.objects.is_empty() && !placed.is_empty();
         refresh_scene(
             &mut world,
             seen,
+            placed,
             size.as_deref().copied().unwrap_or_default(),
             level,
             level_changed,
         );
+        if first {
+            info!(
+                "search: {} level objects in the scene, {} of them containers",
+                world.objects.len(),
+                world.scene.containers.len()
+            );
+        }
         world.scene.open = screens
             .as_deref()
             .map(|screens| {
@@ -625,11 +977,14 @@ pub fn follow_and_search(
                                 id.map_or(entity.index().index(), |id| id.0) | search::CORPSE_TAG
                             })
                     })
+                    .chain(screens.popups.iter().map(|popup| popup.id))
                     .collect()
             })
             .unwrap_or_default();
-        if world.scene.items.len() != items.loot.len() {
-            world.scene.items = items.loot.clone();
+        if world.generation != Some(items.generation) {
+            world.generation = Some(items.generation);
+            world.scene.items = items.all();
+            world.scene.sizes = items.all_sizes();
         }
     }
     let leader_pack = leader_model
@@ -653,12 +1008,25 @@ pub fn follow_and_search(
         };
         let world = &mut *world;
         let state = world.following.entry(entity).or_default();
-        let active = presence.is_none_or(|p| p.moves())
+        let moves = presence.is_none_or(|p| p.moves());
+        let active = moves
             && condition.0 & exa_ai::combatant::CONDITION_OUT == 0
             && !duellist.engaged
             && !duellist.fighting()
             && npc.flight.is_none();
         if !active {
+            if stepped && !state.rested {
+                state.rested = true;
+                state.logged_act = None;
+                info!(
+                    "search: {} rests (moves {moves}, out {}, engaged {}, fighting {}, fleeing {})",
+                    name.map_or("character", |n| n.as_str()),
+                    condition.0 & exa_ai::combatant::CONDITION_OUT != 0,
+                    duellist.engaged,
+                    duellist.fighting(),
+                    npc.flight.is_some()
+                );
+            }
             if !state.walk.route.is_empty() || state.walk.velocity != Vec3::ZERO {
                 state.walk.route.clear();
                 state.walk.velocity = Vec3::ZERO;
@@ -673,6 +1041,7 @@ pub fn follow_and_search(
             }
             continue;
         }
+        state.rested = false;
         let feet = root_gt.translation();
         let feet_cm = feet * 100.0;
         let who = name.map_or("character", |n| n.as_str());
@@ -689,6 +1058,21 @@ pub fn follow_and_search(
                 .is_some_and(|l| exa_ai::rooms::in_sight(level, feet_cm, l.place));
             let act =
                 exa_ai::idle::follow_leader(&mut state.follower, leader.as_ref(), visible, true);
+            // At most one line every 2 s: a stalled pursuit toggles.
+            if state.logged_act != Some((act, visible))
+                && state
+                    .logged_act_ms
+                    .is_none_or(|at| at.wrapping_add(2000) <= now)
+            {
+                state.logged_act = Some((act, visible));
+                state.logged_act_ms = Some(now);
+                let away = leader
+                    .as_ref()
+                    .map_or(0.0, |l| l.place.distance(feet_cm) / 100.0);
+                info!(
+                    "search: {who} follows: {act:?}, the player {away:.1} m off (in sight {visible})"
+                );
+            }
             let mut router = nav
                 .as_deref()
                 .map(|grid| exa_ai::route::NavRouter { grid, size: 0 });
@@ -816,6 +1200,35 @@ pub fn follow_and_search(
                         if state.logged != Some(search.state) {
                             state.logged = Some(search.state);
                             info!("search: {who} {:?}", search.state);
+                            if matches!(
+                                search.state,
+                                search::State::Look | search::State::Settle | search::State::Loot
+                            ) {
+                                world
+                                    .shots
+                                    .push((0, format!("{:?}", search.state).to_lowercase()));
+                            }
+                        }
+                        if state.logged_target != search.target {
+                            state.logged_target = search.target;
+                            if let Some(o) = search.target.and_then(|t| world.scene.objects.get(t))
+                            {
+                                let what = if o.corpse.is_some() {
+                                    "the body"
+                                } else if world.scene.containers.contains_key(&o.id) {
+                                    "the container"
+                                } else {
+                                    "the loose item"
+                                };
+                                info!(
+                                    "search: {who} picks {what} {:#x} ({}) at ({:.0}, {:.0}, {:.0}) cm",
+                                    o.id,
+                                    names(o.id),
+                                    o.at.x,
+                                    o.at.y,
+                                    o.at.z
+                                );
+                            }
                         }
                         if search.state as u8 >= search::State::Look as u8
                             && state.gaze.look_until >= now
@@ -827,20 +1240,59 @@ pub fn follow_and_search(
                         }
                         let corpses_before: Vec<Pack> =
                             world.scene.corpses.iter().map(|c| c.pack.clone()).collect();
+                        let containers_before = if deeds.is_empty() {
+                            BTreeMap::new()
+                        } else {
+                            world.scene.containers.clone()
+                        };
+                        let present = |scene: &Scene, o: usize| {
+                            scene
+                                .objects
+                                .get(o)
+                                .is_some_and(|o| o.kind & search::object::PRESENT != 0)
+                        };
+                        let present_before: Vec<(Entity, usize)> = world
+                            .objects
+                            .iter()
+                            .filter(|(_, o)| !deeds.is_empty() && present(&world.scene, **o))
+                            .map(|(e, o)| (*e, *o))
+                            .collect();
                         for deed in &deeds {
                             let done = search::apply_deed(&mut world.scene, &mut pack, deed);
                             match deed {
                                 Deed::Comment { phrase } => {
                                     info!("search: {who} to the leader: {phrase}")
                                 }
-                                _ => info!(
-                                    "search: {who} {}: {deed:?}",
-                                    if done { "does" } else { "cannot" }
+                                Deed::Take { item, .. }
+                                | Deed::Carry { item }
+                                | Deed::Wear { item, .. }
+                                | Deed::Wield { item }
+                                | Deed::Stow { item }
+                                | Deed::Drop { item, .. } => info!(
+                                    "search: {who} {}: {deed:?} ({})",
+                                    if done { "does" } else { "cannot" },
+                                    names(*item)
                                 ),
                             }
                         }
                         if pack != before_pack {
                             sync_possessions(&mut possessions, &pack);
+                            world.effects.redress.push(Redress {
+                                body: entity,
+                                worn: before_pack.worn.clone(),
+                                out: [before_pack.hands[0], before_pack.hands[1]],
+                                dead: false,
+                            });
+                        }
+                        for (object, o) in present_before {
+                            if !present(&world.scene, o) {
+                                world.effects.taken.push(object);
+                            }
+                        }
+                        for (id, c) in &world.scene.containers {
+                            if !deeds.is_empty() && containers_before.get(id) != Some(c) {
+                                world.effects.containers.push((*id, c.clone()));
+                            }
                         }
                         let changed: Vec<(usize, Pack)> = world
                             .scene
@@ -860,6 +1312,13 @@ pub fn follow_and_search(
                                 && let Ok((_, mut possessions, ..)) = characters.get_mut(owner)
                             {
                                 sync_possessions(&mut possessions, &pack);
+                                let before = &corpses_before[place];
+                                world.effects.redress.push(Redress {
+                                    body: owner,
+                                    worn: before.worn.clone(),
+                                    out: [before.hands[0], before.hands[1]],
+                                    dead: true,
+                                });
                             }
                         }
                     } else {
@@ -904,6 +1363,218 @@ pub fn follow_and_search(
     }
 }
 
+/// What re-dressing reads of the bodies the search changed.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Wardrobe<'w, 's> {
+    #[allow(clippy::type_complexity)]
+    bodies: Query<
+        'w,
+        's,
+        (
+            &'static mut Possessions,
+            Option<&'static mut exa_character::Outfit>,
+            Option<&'static mut exa_character::held::Hands>,
+            Option<&'static exa_character::record::CharacterData>,
+            Has<crate::torch::CarriesTorch>,
+            Option<&'static Name>,
+        ),
+    >,
+    doll: Option<ResMut<'w, crate::doll_view::DollItems>>,
+    level: Option<Res<'w, exa_world::LevelLocalItems>>,
+    catalogue: Option<Res<'w, ItemCatalogue>>,
+    game: Option<Res<'w, Game>>,
+}
+
+/// The garments that came off a worn list (`before` → `after`, each id
+/// matched once) and those that went on.
+pub fn worn_changes(before: &[u32], after: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let mut added = after.to_vec();
+    let mut removed = Vec::new();
+    for &id in before {
+        match added.iter().position(|&a| a == id) {
+            Some(at) => {
+                added.remove(at);
+            }
+            None => removed.push(id),
+        }
+    }
+    (removed, added)
+}
+
+/// Carries out what the search's deeds left: a taken loose object leaves
+/// the world with its colliders, a changed container is written back into
+/// its sections, and a body whose worn list or hands changed is dressed
+/// again.
+#[allow(clippy::too_many_arguments)]
+pub fn carry_out_search(
+    mut commands: Commands,
+    mut world: ResMut<SearchWorld>,
+    mut sections: Query<(&exa_world::PlacedItem, &mut exa_world::ObjectSections)>,
+    children: Query<&Children>,
+    mut physics: Option<ResMut<exa_physics::Physics>>,
+    mut collider_nodes: Option<ResMut<exa_physics::ColliderNodes>>,
+    mut stand_ins: Option<ResMut<exa_physics::prop::StandIns>>,
+    mut wardrobe: Wardrobe,
+) {
+    let effects = std::mem::take(&mut world.effects);
+    for object in effects.taken {
+        let mut nodes = vec![object];
+        let mut k = 0;
+        while k < nodes.len() && nodes.len() < 4096 {
+            if let Ok(kids) = children.get(nodes[k]) {
+                nodes.extend(kids.iter());
+            }
+            k += 1;
+        }
+        if let Some(physics) = physics.as_deref_mut() {
+            if let Some(collider_nodes) = collider_nodes.as_deref_mut() {
+                for handle in collider_nodes.take_under(&nodes) {
+                    physics.0.remove_collider(handle);
+                }
+            }
+            if let Some(stand_ins) = stand_ins.as_deref_mut() {
+                for (handle, _) in stand_ins.0.remove(&object).unwrap_or_default() {
+                    physics.0.remove_collider(handle);
+                }
+            }
+        }
+        info!("search: the taken object leaves the world");
+        commands.entity(object).despawn();
+        world.shots.push((1, "taken".into()));
+    }
+    for (id, model) in effects.containers {
+        for (placed, mut s) in &mut sections {
+            if placed.tagged_id == id
+                && let Some(container) = s.container.as_mut()
+            {
+                sync_container(container, &model);
+                info!(
+                    "search: container {id:#x} now holds {:?}",
+                    container.children.iter().map(|c| c.id).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+    if effects.redress.is_empty() {
+        return;
+    }
+    let w = &mut wardrobe;
+    if let Some(doll) = w.doll.as_deref_mut() {
+        doll.ensure(w.game.as_deref());
+    }
+    for redress in effects.redress {
+        let Ok((mut p, outfit, hands, data, torch, name)) = w.bodies.get_mut(redress.body) else {
+            continue;
+        };
+        let level = w.level.as_deref();
+        let doll = w.doll.as_deref();
+        let record_of = |id: u32| -> Option<&exa_formats::objdb::Item> {
+            use exa_formats::objdb::{ID_MASK, LOCAL};
+            if id & LOCAL != 0 {
+                level?.0.iter().find(|i| i.id & ID_MASK == id & ID_MASK)
+            } else if id & !ID_MASK == 0 {
+                doll?.get(id)
+            } else {
+                None
+            }
+        };
+        let after: Vec<u32> = p.worn.iter().map(|w| w.id).collect();
+        let (removed, mut added) = worn_changes(&redress.worn, &after);
+        // The take from a corpse runs the underwear rule before its refit.
+        if redress.dead && !removed.is_empty() {
+            let mut record = exa_character::record::CharacterData::of_record(
+                exa_formats::characters::CharacterRecord {
+                    worn: p.worn.clone(),
+                    race: data.map_or(0, |d| d.record.race),
+                    ..Default::default()
+                },
+            );
+            if record.ensure_underwear(record_of)
+                && let Some(braies) = record.record.worn.last().copied()
+            {
+                p.worn.push(ItemRef::new(braies.id, braies.flags));
+                added.push(braies.id);
+            }
+        }
+        let who = name.map_or("character", |n| n.as_str());
+        if (!removed.is_empty() || !added.is_empty())
+            && let Some(mut outfit) = outfit
+        {
+            for id in &removed {
+                let Some(model) = record_of(*id).map(|i| i.worn_model.clone()) else {
+                    continue;
+                };
+                if let Some(at) = outfit
+                    .0
+                    .iter()
+                    .position(|g| g.model.eq_ignore_ascii_case(&model))
+                {
+                    outfit.0.remove(at);
+                }
+            }
+            for id in &added {
+                if let Some(garment) = record_of(*id).and_then(crate::doll_view::garment_of) {
+                    outfit.0.push(garment);
+                }
+            }
+            let named = |ids: &[u32]| {
+                ids.iter()
+                    .map(|&id| {
+                        let name = w
+                            .catalogue
+                            .as_deref()
+                            .and_then(|c| c.card_facts(id))
+                            .map_or_else(|| "?".to_string(), |f| f.name.clone());
+                        format!("{id:#x} {name}")
+                    })
+                    .collect::<Vec<_>>()
+            };
+            info!(
+                "search: {who} dressed again: off {:?}, on {:?}; outfit {:?}",
+                named(&removed),
+                named(&added),
+                outfit
+                    .0
+                    .iter()
+                    .map(|g| g.model.as_str())
+                    .collect::<Vec<_>>()
+            );
+            world.shots.push((90, "redressed".into()));
+        }
+        if [p.out[0].id, p.out[1].id] != redress.out {
+            let catalogue = w.catalogue.as_deref();
+            if let Some(mut hands) = hands {
+                let mut next = crate::equip::hands_of(&p, |id| catalogue.and_then(|c| c.kind(id)));
+                if torch {
+                    next = crate::equip::keep_torch(next, &hands);
+                }
+                hands.set_if_neq(next);
+            }
+            let main = p.out[0].id;
+            match catalogue.and_then(|c| c.model(main)).filter(|_| main != 0) {
+                Some(model) => {
+                    commands
+                        .entity(redress.body)
+                        .insert(exa_character::Wielded {
+                            model: model.model.clone(),
+                            weapon: model.weapon,
+                        });
+                }
+                None => {
+                    commands
+                        .entity(redress.body)
+                        .remove::<exa_character::Wielded>();
+                }
+            }
+            info!(
+                "search: {who} hands now {:#x}/{:#x}",
+                p.out[0].id, p.out[1].id
+            );
+            world.shots.push((90, "rearmed".into()));
+        }
+    }
+}
+
 /// The follow and the search in the running game.
 pub struct NpcSearchPlugin;
 
@@ -911,12 +1582,23 @@ impl Plugin for NpcSearchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SearchItems>()
             .init_resource::<SearchWorld>()
-            .add_systems(Update, (load_search_items, make_debug_searcher))
+            .add_systems(
+                Update,
+                (
+                    load_search_items,
+                    load_level_search_items,
+                    make_debug_searcher,
+                    take_search_shots,
+                ),
+            )
             // The follow and the search are idle states of the AI tick: they
-            // run in the brains' tick, every body tick, after the walks.
+            // run in the brains' tick, every body tick, after the walks; what
+            // their deeds leave is carried out right after.
             .add_systems(
                 exa_ai::BrainChain,
-                follow_and_search.after(exa_ai::brain::idle_walk),
+                (follow_and_search, carry_out_search)
+                    .chain()
+                    .after(exa_ai::brain::idle_walk),
             );
     }
 }
