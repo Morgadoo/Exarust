@@ -114,9 +114,20 @@ fn build_bodies(
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
     mut limb_meshes: Local<LimbMeshes>,
+    (loading, undressed): (
+        Option<Res<exa_ui::LoadingStatus>>,
+        Query<(), (With<exa_character::Outfit>, Without<exa_character::Dressed>)>,
+    ),
 ) {
     let Some(motions) = motions else { return };
     for (root, mut physical, mut limp, mut placed) in &mut requests {
+        // Behind the loading screen a body is built once it is dressed, as
+        // the original builds a character whole: dressing is spread over
+        // frames by a time budget, so a body built before its clothes in one
+        // run and after them in another would start the level differently.
+        if loading.is_some() && undressed.contains(root) {
+            continue;
+        }
         let race = physical.as_ref().map_or(RaceMuscles::HUMAN, |p| p.race);
         let stats = physical.as_ref().map_or(BodyStats::HUMAN, |p| p.stats);
         let corpse = placed.is_some();

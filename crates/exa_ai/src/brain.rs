@@ -2927,9 +2927,9 @@ mod tests {
         let mut follower = Npc::new([0.0; 4]);
         follower.applied = Some(applied(crate::activity::activities::FOLLOW));
         assert!(follower.death_hook());
-        let applied = follower.applied.as_ref().unwrap();
-        assert_eq!(applied.activity, 0);
-        assert!(applied.leaves_party);
+        let left = follower.applied.as_ref().unwrap();
+        assert_eq!(left.activity, 0);
+        assert!(left.leaves_party);
         assert!(!follower.death_hook());
         let mut roamer = Npc::new([0.0; 4]);
         roamer.applied = Some(applied(crate::activity::activities::ROAM));

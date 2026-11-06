@@ -2047,7 +2047,7 @@ struct PendingDressing {
 }
 
 /// Moves play mode's loading on to the lighting once every body is dressed.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn finish_dressing(
     mut commands: Commands,
     pending: Res<PendingDressing>,
@@ -2056,6 +2056,16 @@ fn finish_dressing(
     outfits: Query<(), With<exa_character::Outfit>>,
     undressed: Query<(), (With<exa_character::Outfit>, Without<exa_character::Dressed>)>,
     trees: Query<(), With<exa_game::limp::PendingLimbTrees>>,
+    unbuilt: Query<
+        (),
+        (
+            Without<exa_physics::body::Ragdoll>,
+            Or<(
+                With<exa_physics::body::Physical>,
+                With<exa_physics::body::PlacedCorpse>,
+            )>,
+        ),
+    >,
     options: Res<Options>,
 ) {
     let (total, left) = (outfits.iter().count(), undressed.iter().count());
@@ -2063,7 +2073,9 @@ fn finish_dressing(
     // them too, so the level's first tick does not depend on when a thread
     // finished one (a tree installed a tick later changes the limbs'
     // contacts from that tick on).
-    let building = trees.iter().count();
+    // A placed body or corpse still waiting for its physical body counts
+    // too: its build would otherwise land on a later frame, a varying tick.
+    let building = trees.iter().count() + unbuilt.iter().count();
     if (left > 0 || building > 0) && stage_waits(pending.since, &options) {
         if let Some(status) = status.as_mut() {
             let dressed = (total - left) as f32 / total.max(1) as f32;
@@ -2076,7 +2088,7 @@ fn finish_dressing(
     }
     if building > 0 {
         warn!(
-            "{building} bodies' limb trees still building after {STAGE_TIMEOUT:?}; starting anyway"
+            "{building} bodies or their limb trees still building after {STAGE_TIMEOUT:?}; starting anyway"
         );
     }
     commands.remove_resource::<PendingDressing>();
