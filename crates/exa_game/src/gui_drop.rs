@@ -533,6 +533,7 @@ mod tests {
             .init_resource::<ItemCursor>()
             .init_resource::<GuiDrop>()
             .insert_resource(exa_physics::Physics::default())
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
             .init_resource::<exa_physics::prop::StandIns>()
             .init_resource::<exa_physics::ColliderNodes>()
             .add_systems(Update, run_gui_drops);

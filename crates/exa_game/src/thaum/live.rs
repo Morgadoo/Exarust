@@ -205,7 +205,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_copy::<crate::thaum::wave_live::LiveWave>()
         .bridge_copy::<exa_physics::grip::GripRelease>()
         .bridge_copy::<exa_physics::prop::PropBody>()
-        .bridge_lend_resource::<exa_physics::prop::StandIns>();
+        .bridge_copy_in_resource::<exa_physics::prop::StandIns>();
 }
 
 /// The runtime's random stream the effects draw from.
@@ -1222,7 +1222,7 @@ fn spawn_debug_effects(
     mut commands: Commands,
     debug: Res<ThaumDebug>,
     players: Query<(Entity, &Ragdoll, &Locomotor), With<PlayerBody>>,
-    physics: Option<Res<Physics>>,
+    physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
     statics: Option<Res<exa_physics::StaticColliders>>,
     ticks: Option<Res<BodyTicks>>,
     mut draws: ResMut<FrameEffectDraws>,

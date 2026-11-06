@@ -37,6 +37,7 @@ impl Plugin for NavPlugin {
     fn build(&self, app: &mut App) {
         bridge_nav_types(app);
         exa_physics::sim_app::add_fixed_commands(app);
+        exa_physics::sim_app::add_frame_commands(app);
         app.init_resource::<NavState>()
             .init_resource::<InstalledPathfinder>()
             .init_resource::<NavOverlay>()
@@ -54,6 +55,7 @@ impl Plugin for NavPlugin {
                 (
                     watch_moving_meshes.run_if(|o: Res<NavRefreshMoved>| o.0),
                     refresh_grid,
+                    share_nav_view,
                 )
                     .chain(),
             )
@@ -76,7 +78,8 @@ fn bridge_nav_types(app: &mut App) {
         .bridge_copy::<crate::gi_volume::GiPoints>()
         .bridge_lend_resource::<crate::nav::view::NavMovers>()
         .bridge_move_resource::<crate::nav::view::NavRevision>()
-        .bridge_copy_resource::<NavRefreshMoved>();
+        .bridge_copy_resource::<NavRefreshMoved>()
+        .bridge_copy_in_resource::<NavOverlay>();
 }
 
 /// A level waiting for its grid, once its nodes have world transforms.
@@ -186,11 +189,54 @@ pub fn unload_level(
     installed: &mut InstalledPathfinder,
 ) {
     commands.remove_resource::<PendingNav>();
-    commands.remove_resource::<NavGrid>();
+    forget_grid(commands);
     commands.remove_resource::<NavMovers>();
     commands.remove_resource::<NavBuild>();
     *state = NavState::None;
     *installed = InstalledPathfinder::install_fallback();
+}
+
+/// Drops the level's grid: the frame's copy and the overlay's view now,
+/// the simulation's (which owns the grid) before anything else the frame
+/// sends it next.
+fn forget_grid(commands: &mut Commands) {
+    commands.remove_resource::<NavGrid>();
+    commands.remove_resource::<NavGridView>();
+    commands.queue(|world: &mut World| {
+        if let Some(mut fixed) = world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
+            fixed.post_first_bridged(|world| {
+                world.remove_resource::<NavGrid>();
+            });
+        }
+    });
+}
+
+/// The grid as the debug overlay draws it: the simulation owns the grid
+/// and sends the frame a copy only while the overlay is on.
+#[derive(Resource, Debug, Clone)]
+pub struct NavGridView(pub NavGrid);
+
+/// While the overlay is on, hands the frame a copy of the grid each time it
+/// changed (and once when the overlay turns on).
+fn share_nav_view(
+    grid: Option<Res<NavGrid>>,
+    overlay: Res<NavOverlay>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
+    mut sent: Local<bool>,
+) {
+    if !overlay.on {
+        *sent = false;
+        return;
+    }
+    let Some(grid) = grid else {
+        return;
+    };
+    if *sent && !grid.is_changed() {
+        return;
+    }
+    *sent = true;
+    let view = NavGridView(grid.clone());
+    frame.send(move |world| world.insert_resource(view));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -208,7 +254,7 @@ fn collect_source(
     let Some(pending) = pending else { return };
     let pending = *pending;
     commands.remove_resource::<PendingNav>();
-    commands.remove_resource::<NavGrid>();
+    forget_grid(&mut commands);
     commands.remove_resource::<NavMovers>();
     // A build for the previous level is dropped, which cancels it.
     commands.remove_resource::<NavBuild>();
@@ -448,15 +494,16 @@ pub fn floor_along(grid: &NavGrid, origin: Vec3, dir: Vec3, reach: f32) -> Optio
 }
 
 fn draw_overlay(
-    grid: Option<Res<NavGrid>>,
+    grid: Option<Res<NavGridView>>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     mut gizmos: Gizmos,
 ) {
     let (Some(grid), Some(camera)) = (grid, cameras.iter().next()) else {
         return;
     };
+    let grid = &grid.0;
     let Some(centre) = floor_along(
-        &grid,
+        grid,
         camera.translation(),
         camera.forward().as_vec3(),
         LOOK_REACH,

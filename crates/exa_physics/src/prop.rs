@@ -32,7 +32,9 @@ pub struct PropPlugin;
 
 impl Plugin for PropPlugin {
     fn build(&self, app: &mut App) {
+        crate::sim_app::add_frame_commands(app);
         app.init_resource::<StandIns>()
+            .init_resource::<crate::collision_share::CollisionChanges>()
             .add_systems(
                 PostUpdate,
                 register_props.after(TransformSystems::Propagate),
@@ -115,7 +117,7 @@ pub struct BodySounds {
 
 /// The stand-in colliders of each prop body (by its root node) and the
 /// part each follows.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct StandIns(pub HashMap<Entity, Vec<(ColliderHandle, usize)>>);
 
 impl StandIns {
@@ -171,6 +173,7 @@ fn register_props(
 /// each by its part's motion since registration.
 fn move_stand_ins(
     mut physics: ResMut<Physics>,
+    mut changes: ResMut<crate::collision_share::CollisionChanges>,
     stand_ins: Res<StandIns>,
     bodies: Query<(Entity, &Ragdoll, &PropBody), Changed<Ragdoll>>,
 ) {
@@ -184,8 +187,12 @@ fn move_stand_ins(
             };
             let (_, rotation, translation) =
                 (p.transform() * placed.inverse()).to_scale_rotation_translation();
-            if let Some(c) = physics.0.colliders.get_mut(handle) {
-                c.set_position(Pose::from_parts(translation, rotation));
+            let pose = Pose::from_parts(translation, rotation);
+            if let Some(c) = physics.0.colliders.get_mut(handle)
+                && *c.position() != pose
+            {
+                c.set_position(pose);
+                changes.moved(handle);
             }
         }
     }
@@ -197,15 +204,22 @@ fn move_stand_ins(
 fn remove_fallen_props(
     mut commands: Commands,
     mut physics: ResMut<Physics>,
-    mut stand_ins: ResMut<StandIns>,
+    (mut stand_ins, mut changes, mut frame): (
+        ResMut<StandIns>,
+        ResMut<crate::collision_share::CollisionChanges>,
+        ResMut<crate::sim_app::FrameCommands>,
+    ),
     bodies: Query<(Entity, &Ragdoll), (With<PropBody>, Changed<Ragdoll>)>,
 ) {
     for (root, body) in &bodies {
         if !body.fell_out() {
             continue;
         }
-        for (handle, _) in stand_ins.0.remove(&root).unwrap_or_default() {
-            physics.0.remove_collider(handle);
+        // The stand-in list is the frame's (its picks read it): the
+        // removal is made there too.
+        let gone = frame.write_resource(&mut stand_ins, move |s| s.0.remove(&root));
+        for (handle, _) in gone.unwrap_or_default() {
+            crate::collision_share::remove_collider(&mut physics, &mut changes, handle);
         }
         info!("a body fell out of the world: removed");
         commands.entity(root).despawn();
@@ -361,6 +375,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(Physics(PhysicsWorld::new()))
             .init_resource::<StandIns>()
+            .init_resource::<crate::collision_share::CollisionChanges>()
             .add_systems(Update, (register_props, move_stand_ins).chain());
         let node = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
         app.world_mut()

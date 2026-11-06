@@ -211,9 +211,23 @@ frame's too: the original runs it from the AI's target pass (encounters
 and greetings, simulation thread) and from the dialogue (main thread)
 with no lock; the step takes the pass's reports and the roles unit's
 relation query and hands the scripts to the frame, which runs them with
-the session cast after the step (`exa_game::role_scripts`). Still lent:
-the collision world and its stand-ins and collider nodes, and the
-navigation grid.
+the session cast after the step (`exa_game::role_scripts`). The collision world is the simulation's (`Physics`, moved);
+the frame's picks query a replica with the same handles
+(`collision_share::FramePhysics`): the frame's inserts, removals and
+clears apply to the replica at once and are posted to the simulation; the
+step's removals go to the frame after the step; after a step that moved or
+changed anything, the frame takes the moved colliders' poses and a copy of
+the step's broad-phase tree (`share_collision`, in `FixedLast`), so a pick
+sees the world as the last finished step left it. The original's main
+thread reads its simulation's scene with no lock; a pick against the last
+finished step is the race-free form of that read. The stand-in list and
+the collider-node map are the frame's, copied in, the step's takes
+replayed there. The navigation grid is the simulation's; the debug
+overlay draws a copy the step sends only while the overlay is on
+(`exa_world::nav::view::NavGridView`). Cost (`collision replica` log line,
+every 1000 steps; `EXA_SHARE_ALWAYS=1` shares every step for the worst
+case): exanima01 0.40 ms and exanima06 0.53 ms on a shared step, 0.05 and
+0 ms a step on average in a walk.
 
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own

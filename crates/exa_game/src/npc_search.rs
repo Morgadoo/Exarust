@@ -1548,15 +1548,18 @@ pub fn worn_changes(before: &[u32], after: &[u32]) -> (Vec<u32>, Vec<u32>) {
 /// the world with its colliders, a changed container is written back into
 /// its sections, and a body whose worn list or hands changed is dressed
 /// again.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn carry_out_search(
     mut commands: Commands,
     mut world: ResMut<SearchWorld>,
     mut sections: Query<(&exa_world::PlacedItem, &mut exa_world::ObjectSections)>,
     children: Query<&Children>,
     mut physics: Option<ResMut<exa_physics::Physics>>,
-    mut collider_nodes: Option<ResMut<exa_physics::ColliderNodes>>,
-    mut stand_ins: Option<ResMut<exa_physics::prop::StandIns>>,
+    (mut collider_nodes, mut stand_ins, mut changes): (
+        Option<ResMut<exa_physics::ColliderNodes>>,
+        Option<ResMut<exa_physics::prop::StandIns>>,
+        Option<ResMut<exa_physics::collision_share::CollisionChanges>>,
+    ),
     mut wardrobe: Wardrobe,
 ) {
     let effects = std::mem::take(&mut world.effects);
@@ -1570,14 +1573,32 @@ pub fn carry_out_search(
             k += 1;
         }
         if let Some(physics) = physics.as_deref_mut() {
-            if let Some(collider_nodes) = collider_nodes.as_deref_mut() {
-                for handle in collider_nodes.take_under(&nodes) {
-                    physics.0.remove_collider(handle);
-                }
+            // The node map and the stand-in list are the frame's (its picks
+            // read them): the takes are made there too; the colliders go
+            // from the step's world and the frame's replica.
+            let mut gone = Vec::new();
+            if let Some(collider_nodes) = collider_nodes.as_mut() {
+                let under = nodes.clone();
+                gone.extend(
+                    wardrobe
+                        .frame
+                        .write_resource(collider_nodes, move |c| c.take_under(&under)),
+                );
             }
-            if let Some(stand_ins) = stand_ins.as_deref_mut() {
-                for (handle, _) in stand_ins.0.remove(&object).unwrap_or_default() {
-                    physics.0.remove_collider(handle);
+            if let Some(stand_ins) = stand_ins.as_mut() {
+                let taken = wardrobe
+                    .frame
+                    .write_resource(stand_ins, move |s| s.0.remove(&object));
+                gone.extend(taken.unwrap_or_default().into_iter().map(|(h, _)| h));
+            }
+            for handle in gone {
+                match changes.as_deref_mut() {
+                    Some(changes) => {
+                        exa_physics::collision_share::remove_collider(physics, changes, handle)
+                    }
+                    None => {
+                        physics.0.remove_collider(handle);
+                    }
                 }
             }
         }
@@ -1797,7 +1818,7 @@ fn bridge_npc_search_types(app: &mut App) {
         .bridge_copy::<crate::torch::CarriesTorch>()
         .bridge_copy_in_resource::<exa_items::catalogue::ItemCatalogue>()
         .bridge_copy::<exa_items::possession::Possessions>()
-        .bridge_lend_resource::<exa_physics::ColliderNodes>()
+        .bridge_copy_in_resource::<exa_physics::ColliderNodes>()
         .bridge_copy_in_resource::<exa_world::LevelLocalItems>()
         .bridge_copy::<exa_world::ObjectSections>()
         .bridge_copy::<exa_world::PartBounds>()

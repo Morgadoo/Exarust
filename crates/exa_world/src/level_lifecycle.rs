@@ -115,7 +115,10 @@ fn apply_requests(
     mut commands: Commands,
     mut requests: MessageReader<LevelChangeRequest>,
     mut state: ResMut<LevelChangeState>,
-    mut physics: ResMut<exa_physics::Physics>,
+    (mut physics, mut fixed): (
+        ResMut<exa_physics::collision_share::FramePhysics>,
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    ),
     mut gi: ResMut<gi_volume::GiState>,
     mut nav_state: ResMut<nav::NavState>,
     mut installed: ResMut<nav::InstalledPathfinder>,
@@ -133,6 +136,7 @@ fn apply_requests(
             teardown(
                 &mut commands,
                 &mut physics,
+                fixed.as_deref_mut(),
                 &mut gi,
                 &mut nav_state,
                 &mut installed,
@@ -155,7 +159,8 @@ fn apply_requests(
 #[allow(clippy::too_many_arguments)]
 pub fn teardown(
     commands: &mut Commands,
-    physics: &mut exa_physics::Physics,
+    physics: &mut exa_physics::collision_share::FramePhysics,
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
     gi: &mut gi_volume::GiState,
     nav_state: &mut nav::NavState,
     installed: &mut nav::InstalledPathfinder,
@@ -165,8 +170,9 @@ pub fn teardown(
         commands.entity(entity).despawn();
     }
     // The level's geometry and bodies are all fixed or stand-in colliders;
-    // emptying the world frees them in one go.
-    physics.clear();
+    // emptying the world (the frame's replica now, the step's at the next
+    // step) frees them in one go.
+    exa_physics::collision_share::clear(physics, fixed);
     commands.insert_resource(exa_physics::StaticBuild::default());
     commands.insert_resource(exa_physics::ColliderNodes::default());
     commands.insert_resource(exa_physics::StaticColliders::default());
@@ -198,6 +204,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_plugins(LevelChangePlugin)
             .insert_resource(exa_physics::Physics::default())
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
             .insert_resource(gi_volume::GiState::Off)
             .insert_resource(nav::NavState::None)
             .insert_resource(nav::InstalledPathfinder::default());
@@ -233,6 +240,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_plugins(LevelChangePlugin)
             .insert_resource(exa_physics::Physics::default())
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
             .insert_resource(gi_volume::GiState::Off)
             .insert_resource(nav::NavState::None)
             .insert_resource(nav::InstalledPathfinder::default());
@@ -260,9 +268,12 @@ mod tests {
             .entity_mut(player)
             .remove::<crate::LevelRoot>();
         {
-            let mut physics = app.world_mut().resource_mut::<exa_physics::Physics>();
-            let body = physics.0.insert_body(RigidBodyBuilder::dynamic().build());
+            let mut physics = app
+                .world_mut()
+                .resource_mut::<exa_physics::collision_share::FramePhysics>();
+            let body = physics.0.0.insert_body(RigidBodyBuilder::dynamic().build());
             physics
+                .0
                 .0
                 .insert_collider(ColliderBuilder::ball(0.5).build(), Some(body));
             assert_eq!(physics.body_count(), 1);
@@ -293,7 +304,9 @@ mod tests {
                 .get::<exa_physics::CharacterBody>(player)
                 .is_some()
         );
-        let physics = app.world().resource::<exa_physics::Physics>();
+        let physics = app
+            .world()
+            .resource::<exa_physics::collision_share::FramePhysics>();
         assert_eq!(physics.body_count(), 0);
         assert_eq!(physics.collider_count(), 0);
         assert_eq!(
@@ -323,6 +336,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_plugins(LevelChangePlugin)
             .insert_resource(exa_physics::Physics::default())
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
             .insert_resource(gi_volume::GiState::Off)
             .insert_resource(nav::NavState::None)
             .insert_resource(nav::InstalledPathfinder::default());
@@ -362,9 +376,12 @@ mod tests {
             assert!(info.bodies.registered > 0 || info.props > 0, "{name}");
             // A stand-in for the colliders the post-update build would add.
             {
-                let mut physics = app.world_mut().resource_mut::<exa_physics::Physics>();
-                let body = physics.0.insert_body(RigidBodyBuilder::dynamic().build());
+                let mut physics = app
+                    .world_mut()
+                    .resource_mut::<exa_physics::collision_share::FramePhysics>();
+                let body = physics.0.0.insert_body(RigidBodyBuilder::dynamic().build());
                 physics
+                    .0
                     .0
                     .insert_collider(ColliderBuilder::ball(0.5).build(), Some(body));
             }
@@ -380,7 +397,9 @@ mod tests {
                 0,
                 "{name}: the teardown left entities behind"
             );
-            let physics = app.world().resource::<exa_physics::Physics>();
+            let physics = app
+                .world()
+                .resource::<exa_physics::collision_share::FramePhysics>();
             assert_eq!(physics.body_count(), 0, "{name}");
             assert_eq!(physics.collider_count(), 0, "{name}");
             assert_eq!(
