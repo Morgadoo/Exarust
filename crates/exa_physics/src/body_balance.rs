@@ -1135,8 +1135,8 @@ impl Ragdoll {
 
             // A queued footwork step, taken at the landing after the episode
             // that was running when it was requested (the original's balance
-            // routine calls its queued-step taker there). The AI is told when
-            // the step points along the facing.
+            // routine calls its queued-step taker there). A step along the
+            // look is bent at the body's target's circle, and the AI told.
             let landed = b.landings != drive.steps.landings_seen;
             drive.steps.landings_seen = b.landings;
             drive.steps.told_ai = false;
@@ -1148,9 +1148,10 @@ impl Ragdoll {
                 // at 0. The vector stays (only the queue word says it waits).
                 let s = &mut drive.steps;
                 let landings = if b.landings < 1 { 0 } else { 1 };
-                if let Some(step) =
-                    steps::take_queued(s.queue, s.queued, chest, s.target, forward, scale, landings)
-                {
+                let look = s.look.unwrap_or(forward);
+                if let Some(step) = steps::take_queued(
+                    s.queue, s.queued, chest, s.target, look, s.aim, scale, landings,
+                ) {
                     s.queue = step.countdown;
                     s.knockback = false;
                     s.target = step.target;

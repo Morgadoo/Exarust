@@ -1154,11 +1154,14 @@ pub(crate) fn steer_player(
                         &footing,
                         now,
                     );
-                    // And writes them back: the body walks the step.
+                    // And writes them back: the body walks the step. The
+                    // body's target is the behaviour's auto-target, which
+                    // its queued-step taker bends a step at.
                     if body_step.is_some()
                         && let Some(r) = body_mut.as_deref_mut()
                     {
                         r.write_footwork(&pb.step.to_body(), started);
+                        r.aim_steps(footing.target);
                     }
                 }
                 pb.steering = steering;

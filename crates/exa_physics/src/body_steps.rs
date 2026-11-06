@@ -164,8 +164,16 @@ pub(super) struct Steps {
     pub queued_landings: u32,
     /// The landings the feet last reported, so a new landing is recognised.
     pub landings_seen: u32,
-    /// The AI was told about the queued step this tick.
+    /// The AI was told about the queued step this tick (its vector pointed
+    /// along the look and was bent at the target's circle).
     pub told_ai: bool,
+    /// The body's target as its behaviour last set it: the target's chest
+    /// (m) and scale (the original's body target, which the queued-step
+    /// taker bends a step at). None without one.
+    pub aim: Option<(Vec3, f32)>,
+    /// The look direction (unit, across the ground) the movement stage last
+    /// set; None until it does (the body's forward then).
+    pub look: Option<Vec3>,
     /// The jolt's decaying term, its one-per-episode latch, the countdown
     /// that clears the latch
     /// and whether the behaviour was told this tick.
@@ -200,6 +208,8 @@ impl Default for Steps {
             queued_landings: 0,
             landings_seen: 0,
             told_ai: false,
+            aim: None,
+            look: None,
             jolt_decay: Vec3::ZERO,
             jolt_latch: false,
             jolt_quiet: 0,
@@ -567,22 +577,26 @@ pub(super) struct FootView {
 
 /// The queued footwork step's rule, run at the landing after the step
 /// ended: `chest` and `target` are the body's, `facing` its forward, and
-/// `step` takes the new target. `landings` is 0 before the first landing
+/// `step` takes the new target; `look` is the body's look direction and
+/// `aim` its target's chest (m) and scale, which bend a vector along the
+/// look ([`super::feet::queued_step`]). `landings` is 0 before the first landing
 /// and 1 after it (the original's countdown). Returns whether the AI is to
 /// be told the step points its way.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn take_queued(
     queue: i32,
     queued: Vec3,
     chest: Vec3,
     target: Vec3,
-    facing: Vec3,
+    look: Vec3,
+    aim: Option<(Vec3, f32)>,
     scale: f32,
     landings: i32,
 ) -> Option<super::feet::QueuedStep> {
     if queue <= 0 {
         return None;
     }
-    super::feet::queued_step(chest, target, queued, facing, scale, landings)
+    super::feet::queued_step(chest, target, queued, look, aim, scale, landings)
 }
 
 /// What one tick's jolt asks of the body.

@@ -1099,22 +1099,36 @@ fn a_queued_step_aims_from_the_chest() {
     let target = Vec3::new(10.0, 0.0, 0.0);
     // Straight at the target, far away: not taken.
     let side = Vec3::Z;
-    assert!(queued_step(chest, target, Vec3::X, side, 1.0, 0).is_none());
+    assert!(queued_step(chest, target, Vec3::X, side, None, 1.0, 0).is_none());
     // Behind the line: taken, the target the chest plus the queue.
-    let step = queued_step(chest, target, Vec3::NEG_X, side, 1.0, 0).unwrap();
+    let step = queued_step(chest, target, Vec3::NEG_X, side, None, 1.0, 0).unwrap();
     assert_eq!(step.target, Vec3::NEG_X);
     assert!(!step.tell_ai);
     assert_eq!(step.countdown, -2);
-    let step = queued_step(chest, target, Vec3::NEG_X, Vec3::NEG_X, 1.0, 1).unwrap();
+    // Along the look with no target: no bend, no notice.
+    let step = queued_step(chest, target, Vec3::NEG_X, Vec3::NEG_X, None, 1.0, 1).unwrap();
+    assert!(!step.tell_ai);
+    assert_eq!(step.target, Vec3::NEG_X);
+    // With a target far behind: told, and the bend leaves a step that does
+    // not enter its circle as it is.
+    let foe = Some((Vec3::new(-10.0, 0.0, 0.0), 1.0));
+    let step = queued_step(chest, target, Vec3::NEG_X, Vec3::NEG_X, foe, 1.0, 1).unwrap();
     assert!(step.tell_ai);
+    assert_eq!(step.target, Vec3::NEG_X);
     assert_eq!(step.countdown, -1);
     // Within 40 × scale cm even along the line: taken.
     let near = Vec3::new(0.39, 0.0, 0.0);
-    assert!(queued_step(chest, near, Vec3::X, side, 1.0, 0).is_some());
+    assert!(queued_step(chest, near, Vec3::X, side, None, 1.0, 0).is_some());
     let far = Vec3::new(0.41, 0.0, 0.0);
-    assert!(queued_step(chest, far, Vec3::X, side, 1.0, 0).is_none());
+    assert!(queued_step(chest, far, Vec3::X, side, None, 1.0, 0).is_none());
     // A target on the chest is unordered and takes the queue.
-    assert!(queued_step(chest, chest, Vec3::X, side, 1.0, 0).is_some());
+    assert!(queued_step(chest, chest, Vec3::X, side, None, 1.0, 0).is_some());
+    // A target 80 cm ahead of the chest along the look: the 70 cm queued
+    // step stops at its 60 cm circle (cut to 20 cm).
+    let foe = Some((Vec3::new(0.8, 0.0, 0.0), 1.0));
+    let step = queued_step(chest, chest, Vec3::new(0.7, 0.0, 0.0), Vec3::X, foe, 1.0, 1).unwrap();
+    assert!(step.tell_ai);
+    assert!((step.target - Vec3::new(0.2, 0.0, 0.0)).length() < 1e-5, "{}", step.target);
 }
 
 /// A lifted walking foot plants early before phase 0.2 when it moves
@@ -1261,6 +1275,7 @@ fn a_queued_step_is_taken_at_a_landing() {
         Vec3::ZERO,
         Vec3::ZERO,
         Vec3::Z,
+        Some((Vec3::new(0.0, 0.0, 5.0), 1.0)),
         1.0,
         1,
     )
@@ -1269,7 +1284,7 @@ fn a_queued_step_is_taken_at_a_landing() {
     assert_eq!(ahead.countdown, -1);
     let z = Vec3::new(0.0, 0.0, 0.5);
     for queue in [0, -1, -2] {
-        assert!(take_queued(queue, z, Vec3::ZERO, Vec3::ZERO, Vec3::Z, 1.0, 1).is_none());
+        assert!(take_queued(queue, z, Vec3::ZERO, Vec3::ZERO, Vec3::Z, None, 1.0, 1).is_none());
     }
     // A step behind the facing tells no one; before the first landing the
     // countdown is −2.
@@ -1279,6 +1294,7 @@ fn a_queued_step_is_taken_at_a_landing() {
         Vec3::ZERO,
         Vec3::ZERO,
         Vec3::Z,
+        Some((Vec3::new(0.0, 0.0, 5.0), 1.0)),
         1.0,
         0,
     )
