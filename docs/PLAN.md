@@ -1583,6 +1583,8 @@ Round 80 playerctl: arena fighters choose their foes through the brain's target 
 
 Round 82 playerctl: the guessed AI hold is removed and the narrator's offer ends on player input, as the behaviour tick does.
 
+Round 85 determinism: story levels repeat for every body from the first tick; the AI death hook releases followers.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
