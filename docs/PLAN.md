@@ -935,6 +935,8 @@ Round 84 simfree2: sounds, scripts, gizmos and effect draws get one owner per si
 
 Round 86 motiledyn2: the AI steps on its own feet in combat instead of sliding.
 
+Round 87 simfree3: the collision world and navigation grid get one owner each; frame picks use a per-step replica.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
