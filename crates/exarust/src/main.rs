@@ -152,7 +152,7 @@
 //!                                     touch the same data
 //!          --sim-inline               run the simulation's own world on the frame's thread instead of its thread
 //!          --sim-digest <file>        write a hash of every bridged type after each fixed step (one world vs bridge)
-//!          --hold-loading             hold game time while the loading screen shows (repeatable tick numbers)
+//!          --hold-loading             (kept for old scripts: game time always holds behind the loading screen)
 //!          --spectate                 enter the controls' spectate session after the load (double click a character to follow it)
 //!          --no-sim-bridge            keep the fixed step in the frame's world (default: the simulation's world, behind the copy bridge)
 //!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
@@ -1992,9 +1992,9 @@ fn main() -> AppExit {
     if options.spectate {
         app.insert_resource(exa_game::spectate::SpectateOnLoad);
     }
-    if options.hold_loading {
-        app.add_systems(PreUpdate, frame_loop::hold_while_loading);
-    }
+    // Game time holds behind the loading screen, as in the original; the
+    // old `--hold-loading` flag is kept and changes nothing.
+    app.add_systems(PreUpdate, frame_loop::hold_while_loading);
     app.insert_resource(options).add_plugins((
         frame_loop::FrameLoopPlugin,
         sim_boundary::SimBoundaryPlugin,

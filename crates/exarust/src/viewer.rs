@@ -420,6 +420,16 @@ const DRESSED_AT: f32 = 0.85;
 /// completes must not hold the loading screen forever.
 const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Whether a loading stage still waits. The original's load finishes every
+/// stage before the game starts; Exarust gives up after [`STAGE_TIMEOUT`]
+/// so a stalled stage cannot hang the game, except in a `--fixed-frames`
+/// run, which must start from the same state every time (a slow machine,
+/// or several games loading at once, otherwise starts with characters
+/// still undressed and their gear not yet held).
+fn stage_waits(since: std::time::Instant, options: &Options) -> bool {
+    options.fixed_frames || since.elapsed() < STAGE_TIMEOUT
+}
+
 /// A level being built a step per frame, behind the loading screen.
 #[derive(Resource)]
 struct PendingLevel {
@@ -1089,7 +1099,7 @@ fn finish_collision(
     (hold, created, saved, streamed, requests): SpawnSources,
 ) {
     if building.contains(pending.root) {
-        if pending.since.elapsed() < STAGE_TIMEOUT {
+        if stage_waits(pending.since, &options) {
             if let Some(status) = status.as_mut() {
                 status.fraction = BUILT_AT + (COLLIDED_AT - BUILT_AT) * progress.fraction();
             }
@@ -2037,6 +2047,7 @@ struct PendingDressing {
 }
 
 /// Moves play mode's loading on to the lighting once every body is dressed.
+#[allow(clippy::too_many_arguments)]
 fn finish_dressing(
     mut commands: Commands,
     pending: Res<PendingDressing>,
@@ -2044,9 +2055,16 @@ fn finish_dressing(
     mut status: Option<ResMut<exa_ui::LoadingStatus>>,
     outfits: Query<(), With<exa_character::Outfit>>,
     undressed: Query<(), (With<exa_character::Outfit>, Without<exa_character::Dressed>)>,
+    trees: Query<(), With<exa_game::limp::PendingLimbTrees>>,
+    options: Res<Options>,
 ) {
     let (total, left) = (outfits.iter().count(), undressed.iter().count());
-    if left > 0 && pending.since.elapsed() < STAGE_TIMEOUT {
+    // The bodies' limb trees are built on worker threads; the load waits for
+    // them too, so the level's first tick does not depend on when a thread
+    // finished one (a tree installed a tick later changes the limbs'
+    // contacts from that tick on).
+    let building = trees.iter().count();
+    if (left > 0 || building > 0) && stage_waits(pending.since, &options) {
         if let Some(status) = status.as_mut() {
             let dressed = (total - left) as f32 / total.max(1) as f32;
             status.fraction = COLLIDED_AT + (DRESSED_AT - COLLIDED_AT) * dressed;
@@ -2055,6 +2073,11 @@ fn finish_dressing(
     }
     if left > 0 {
         warn!("{left} characters still undressed after {STAGE_TIMEOUT:?}; starting anyway");
+    }
+    if building > 0 {
+        warn!(
+            "{building} bodies' limb trees still building after {STAGE_TIMEOUT:?}; starting anyway"
+        );
     }
     commands.remove_resource::<PendingDressing>();
     begin_lighting(&mut commands, &gi, DRESSED_AT);

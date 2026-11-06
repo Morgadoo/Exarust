@@ -1466,9 +1466,12 @@ type TriangleList = Arc<Vec<[Vec3; 3]>>;
 /// A limb tree being built.
 type TreeTask = bevy::tasks::Task<Option<Arc<exa_physics::mesh_tree::MeshTree>>>;
 
-/// A body's limb trees being built ([`build_bodies`]), by part.
+/// A body's limb trees being built ([`build_bodies`]), by part. The load
+/// waits for them (the play view's loading screen holds until none is
+/// left), so a level's first tick never depends on when a thread finished
+/// a tree.
 #[derive(Component)]
-pub(crate) struct PendingLimbTrees {
+pub struct PendingLimbTrees {
     tasks: Vec<(usize, TreeTask)>,
     started: std::time::Instant,
 }

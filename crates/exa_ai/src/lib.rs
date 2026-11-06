@@ -133,7 +133,12 @@ impl Plugin for AiPlugin {
             .add_systems(
                 BrainChain,
                 (
-                    (brain::apply_new_roles, brain::rate_the_player).chain(),
+                    (
+                        brain::death_hook,
+                        brain::apply_new_roles,
+                        brain::rate_the_player,
+                    )
+                        .chain(),
                     brain_clock_mark(0),
                     pass_turn::rotate_pass_turn,
                     brain::perceive_all,

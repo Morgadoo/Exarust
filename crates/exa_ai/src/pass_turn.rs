@@ -155,6 +155,16 @@ mod tests {
     /// first waited: the first tick names the first brain (an equal wait
     /// keeps the earlier one) and runs no pass.
     #[test]
+    fn the_turn_does_not_follow_the_claim_order() {
+        // The same three brains claiming in reverse take the same turns:
+        // an equal wait goes to the earlier spawned (the lower index).
+        let mut turn = PassTurn::default();
+        let brains = [30, 20, 10];
+        let ran: Vec<_> = (0..5).map(|_| tick(&mut turn, &brains)).collect();
+        assert_eq!(ran, [None, Some(10), Some(20), Some(30), Some(10)]);
+    }
+
+    #[test]
     fn three_brains_take_the_pass_in_turn() {
         let mut turn = PassTurn::default();
         let brains = [10, 20, 30];

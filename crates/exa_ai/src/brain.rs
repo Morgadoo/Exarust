@@ -255,7 +255,40 @@ pub struct FleePlace<'a> {
     pub exits: &'a [crate::flee::RoomExit],
 }
 
+/// The AI's death hook, which the original's body death routine calls
+/// through the behaviour (method slot 25) just before the condition
+/// becomes dead: a follower (activity 4) stops following, its activity word
+/// 0, and leaves the party. Exarust runs it on the tick the condition turns
+/// dead. The hook's other branch fades a golem body's glow material
+/// (record flag 0x1000, material `go`); Exarust draws no live skin
+/// material for it yet (`exa_game::item_effects::fade_material`).
+pub fn death_hook(mut brains: Query<(&Condition, &mut Npc), Changed<Condition>>) {
+    for (condition, mut npc) in &mut brains {
+        if *condition != Condition::DEAD {
+            continue;
+        }
+        if npc.death_hook() {
+            info!("a follower died: it stops following and leaves the party");
+        }
+    }
+}
+
 impl Npc {
+    /// The death hook's follower branch: a follower's activity word becomes
+    /// 0 and it leaves the party. Returns whether it was following.
+    pub fn death_hook(&mut self) -> bool {
+        let Some(applied) = self.applied.as_mut() else {
+            return false;
+        };
+        if applied.activity != crate::activity::activities::FOLLOW {
+            return false;
+        }
+        applied.activity = 0;
+        applied.leaves_party = true;
+        applied.follow_band_cm = None;
+        true
+    }
+
     /// Forgets a character that left the scene: its contact, its nearby
     /// entry and the pass's references to it. The original's scene tells
     /// every AI to forget a removed character.
@@ -2864,6 +2897,40 @@ mod tests {
         // The combatant's contact follows the brain's integrated hostility.
         let cb = w.get::<Combatant>(hostile).unwrap();
         assert!(cb.contact(player).unwrap().hostility > 0.0);
+    }
+
+    fn applied(activity: i32) -> crate::activity::Applied {
+        crate::activity::Applied {
+            activity,
+            idle_activity: 0,
+            state: crate::activity::IdleState::of(activity),
+            leaves_party: false,
+            follow_band_cm: None,
+            phase_word: 0,
+            create_idle: None,
+            drop_idle: false,
+            skipped: Vec::new(),
+        }
+    }
+
+    /// A follower that dies stops following (activity 0) and leaves the
+    /// party; another brain's activity stays.
+    #[test]
+    fn a_dying_follower_leaves_the_party() {
+        let mut follower = Npc::new([0.0; 4]);
+        follower.applied = Some(applied(crate::activity::activities::FOLLOW));
+        assert!(follower.death_hook());
+        let applied = follower.applied.as_ref().unwrap();
+        assert_eq!(applied.activity, 0);
+        assert!(applied.leaves_party);
+        assert!(!follower.death_hook());
+        let mut roamer = Npc::new([0.0; 4]);
+        roamer.applied = Some(applied(crate::activity::activities::ROAM));
+        assert!(!roamer.death_hook());
+        assert_eq!(
+            roamer.applied.as_ref().unwrap().activity,
+            crate::activity::activities::ROAM
+        );
     }
 
     /// With the target pass's turn, one brain a tick perceives and runs the

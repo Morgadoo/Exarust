@@ -229,16 +229,24 @@ pub fn launch_window_mode(fullscreen: bool) -> WindowMode {
     }
 }
 
-/// `--hold-loading`: game time stands still while the loading screen shows,
-/// so the fixed step's first tick after a load is the same from run to run
-/// (a load takes a varying number of frames).
+/// Game time stands still while the loading screen shows, as the
+/// original's load holds its game clock (it runs its own loop, and no body,
+/// clip or effect advances until the scene starts): a load takes a varying
+/// number of frames, and a clip a character's animator played during them
+/// left its spawn pose, and every later tick, different from run to run.
+/// Only a pause this hold made is released when the load ends, so a pause
+/// the game set itself (the death fade, a menu) stays.
 pub fn hold_while_loading(
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut time: ResMut<Time<Virtual>>,
+    mut held: Local<bool>,
 ) {
-    match (loading.is_some(), time.is_paused()) {
-        (true, false) => time.pause(),
-        (false, true) => time.unpause(),
-        _ => {}
+    if loading.is_some() {
+        if !time.is_paused() {
+            time.pause();
+            *held = true;
+        }
+    } else if std::mem::take(&mut *held) && time.is_paused() {
+        time.unpause();
     }
 }

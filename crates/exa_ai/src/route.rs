@@ -76,7 +76,18 @@ impl PlanTurn {
             .find(|(id, _)| *id == who)
             .map_or(0, |(_, at)| *at);
         let waited = clock.wrapping_sub(last);
-        if waited > self.longest_wait {
+        // An equal wait keeps the earlier brain. The original's brains
+        // claim in its character list's order, the order they joined the
+        // scene; Exarust's queries visit them in an order that depends on
+        // when each body's components arrived during the load, so "earlier"
+        // is the earlier spawned (the lower entity index), whatever order
+        // the claims come in. A level then runs alike from run to run.
+        let earlier = |a: u64, b: u64| (a & 0xFFFF_FFFF) < (b & 0xFFFF_FFFF);
+        if waited > self.longest_wait
+            || (waited == self.longest_wait
+                && waited > 0
+                && self.longest.is_some_and(|other| earlier(who, other)))
+        {
             self.longest = Some(who);
             self.longest_wait = waited;
         }
@@ -252,13 +263,18 @@ mod tests {
         assert!(!turn.turn(9, 2));
         assert_eq!(turn.longest, Some(9));
         assert_eq!(turn.longest_wait, 2);
-        // An equal wait does not take the place.
-        assert!(!turn.turn(5, 2));
+        // An equal wait takes the place only for an earlier spawned brain
+        // (a lower index), whatever the claims' order.
+        assert!(!turn.turn(11, 2));
         assert_eq!(turn.longest, Some(9));
+        assert!(!turn.turn(5, 2));
+        assert_eq!(turn.longest, Some(5));
+        assert!(!turn.turn(9, 2));
+        assert_eq!(turn.longest, Some(5));
         turn.current = Some(7);
         assert!(turn.turn(7, 3));
         assert_eq!(turn.last_plan(7), Some(3));
-        assert_eq!(turn.next_turn(), Some(9));
+        assert_eq!(turn.next_turn(), Some(5));
     }
 
     #[test]
