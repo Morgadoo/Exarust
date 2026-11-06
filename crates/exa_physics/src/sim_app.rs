@@ -283,16 +283,17 @@ impl FixedCommands {
 /// on the frame's copy without a change mark, and again on the
 /// simulation's at the start of the next step. In one world, or without a
 /// queue (a test's bare app), a plain write.
-pub fn write_resource<T, R>(
+pub fn write_resource<T, R, L>(
     fixed: Option<&mut FixedCommands>,
-    local: &mut ResMut<T>,
+    local: &mut L,
     write: impl Fn(&mut T) -> R + Send + Sync + 'static,
 ) -> R
 where
     T: Resource + Component<Mutability = bevy::ecs::component::Mutable>,
+    L: bevy::ecs::change_detection::DetectChangesMut<Inner = T> + std::ops::DerefMut<Target = T>,
 {
     let Some(fixed) = fixed.filter(|f| f.bridged) else {
-        return write(local);
+        return write(&mut **local);
     };
     let result = write(local.bypass_change_detection());
     queue(&mut fixed.writes).push(Box::new(move |world: &mut World| {
@@ -904,52 +905,129 @@ fn free_step(
     run_step(world, bridged, coverage, apply_us, snapshots)
 }
 
+/// The free-running simulation's clock (ms): the real clock since the
+/// shell started, less the held time, times the speed the frame asks for
+/// (`1` but for Exarust's debug speed keys; the original's loop reads the
+/// real clock unscaled).
+#[derive(Debug, Clone, Copy)]
+struct FreeClock {
+    ms: f64,
+    last: std::time::Instant,
+    speed: f32,
+    held_ms: f64,
+}
+
+impl FreeClock {
+    /// Moves the clock to `now`: on by the real time since the last
+    /// reading times the speed, or (held) not at all.
+    fn advance(&mut self, now: std::time::Instant, held: bool) {
+        let real = (now - self.last).as_secs_f64() * 1000.0;
+        self.last = now;
+        if held {
+            self.held_ms += real;
+        } else {
+            self.ms += real * f64::from(self.speed);
+        }
+    }
+}
+
 /// The free-running simulation thread: the original's loop. While the
-/// frame's packets say paused it sleeps 11 ms a pass and the paused time
-/// stays out of its clock; otherwise, once a step is due on its 12 ms
-/// real clock (more than four steps late drops the backlog), it drains the
-/// frame's packets, steps, and sends the step's packet stamped with its
-/// tick and time. Its first step comes a step after the first unpaused
-/// packet, as the original's simulation starts paused.
+/// frame's packets say held it sleeps 11 ms a pass and the held time stays
+/// out of its clock; otherwise, once a step is due on its 12 ms clock (more
+/// than four steps late drops the backlog), it drains the frame's packets,
+/// steps, and sends the step's packet stamped with its tick and time. Its
+/// first step comes a step after the first packet that lets it go, as the
+/// original's simulation starts paused. Exarust's debug keys: a speed
+/// scales its clock, and single steps asked for while held run at once,
+/// each moving the clock on by a step.
 fn run_free(
     mut sub_app: SubApp,
     inbox: Receiver<FreeRequest>,
-    outbox: Sender<FreeStepped>,
+    outbox: Sender<FreeReply>,
     epoch: std::time::Instant,
     snapshots: SnapshotBuffer<SimSnapshot>,
 ) {
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
     let mut pending: Vec<FreeRequest> = Vec::new();
-    let mut paused = true;
-    let mut paused_since: Option<Instant> = Some(epoch);
-    let mut paused_total = Duration::ZERO;
+    let mut held = true;
+    let mut singles = 0u32;
+    let mut acks = 0u32;
+    let mut clock = FreeClock {
+        ms: 0.0,
+        last: epoch,
+        speed: 1.0,
+        held_ms: 0.0,
+    };
     let mut driver: Option<StepDriver> = None;
     let mut dropped_ms = 0u64;
     let step_ms = STEP_MS as u32;
-    let take = |r: FreeRequest, pending: &mut Vec<FreeRequest>, paused: &mut bool| {
-        *paused = r.paused;
+    // A packet's hold, speed and single steps take effect when it arrives
+    // (the clock is read up to then with the old ones).
+    let take = |r: FreeRequest,
+                pending: &mut Vec<FreeRequest>,
+                held: &mut bool,
+                (singles, acks): (&mut u32, &mut u32),
+                clock: &mut FreeClock| {
+        clock.advance(Instant::now(), *held);
+        *held = r.paused;
+        *singles += r.steps;
+        *acks += u32::from(r.ack);
+        if r.speed > 0.0 && r.speed.is_finite() {
+            clock.speed = r.speed;
+        }
         pending.push(r);
     };
     loop {
         loop {
             match inbox.try_recv() {
-                Ok(r) => take(r, &mut pending, &mut paused),
+                Ok(r) => take(
+                    r,
+                    &mut pending,
+                    &mut held,
+                    (&mut singles, &mut acks),
+                    &mut clock,
+                ),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
             }
         }
-        let now = Instant::now();
-        let wait = if paused {
-            paused_since.get_or_insert(now);
+        // A hold the frame waits for: answered between steps, after every
+        // step taken before it was sent.
+        while acks > 0 {
+            acks -= 1;
+            if outbox.send(FreeReply::Held).is_err() {
+                return;
+            }
+        }
+        clock.advance(Instant::now(), held);
+        let single = held && singles > 0;
+        let wait = if held && !single {
             Duration::from_millis(u64::from(PAUSED_SLEEP_MS))
         } else {
-            if let Some(since) = paused_since.take() {
-                paused_total += now - since;
+            if single {
+                // A single step: the clock moves on by the step, so the
+                // step is due now and the next one a step later.
+                singles -= 1;
+                clock.ms = driver.map_or(clock.ms, |d| {
+                    clock.ms.max(f64::from(
+                        d.time_ms.wrapping_add(step_ms).wrapping_add(d.base_ms),
+                    ))
+                });
             }
-            let clock = ((now - epoch).saturating_sub(paused_total)).as_millis() as u32;
-            let d = driver.get_or_insert_with(|| StepDriver::new(step_ms, clock));
-            match d.poll(clock) {
+            let reading = clock.ms as u32;
+            let d = driver.get_or_insert_with(|| {
+                // A single step before any other is due at once.
+                StepDriver::new(
+                    step_ms,
+                    if single {
+                        reading.wrapping_sub(step_ms)
+                    } else {
+                        reading
+                    },
+                )
+            });
+            match d.poll(reading) {
                 Poll::Step {
                     dropped_ms: dropped,
                 } => {
@@ -964,29 +1042,43 @@ fn run_free(
                         tick: u64::from(d.ticks),
                         time_ms: d.time_ms,
                         base_ms: d.base_ms,
-                        paused_ms: paused_total.as_millis() as u64,
+                        clock_ms: clock.ms,
+                        wall_ms: (clock.last - epoch).as_secs_f64() * 1000.0,
+                        speed: if held { 0.0 } else { clock.speed },
                         step_ms,
                     };
                     if u64::from(d.ticks).is_multiple_of(LOG_EVERY) {
                         info!(
-                            "simulation free: {} steps, {dropped_ms} ms of backlog dropped, {} ms paused",
-                            d.ticks,
-                            paused_total.as_millis()
+                            "simulation free: {} steps, {dropped_ms} ms of backlog dropped, {:.0} ms paused",
+                            d.ticks, clock.held_ms
                         );
                     }
-                    if outbox.send(FreeStepped { stepped, stamp }).is_err() {
+                    if outbox
+                        .send(FreeReply::Stepped(Box::new(FreeStepped { stepped, stamp })))
+                        .is_err()
+                    {
                         return;
                     }
                     continue;
                 }
                 // The original waits a millisecond short of the step on a
-                // waitable timer; below a millisecond, a short sleep.
+                // waitable timer; below a millisecond, a short sleep. The
+                // wait is in clock time, the sleep in real time.
                 Poll::Wait { ms: 0 } => Duration::from_micros(200),
-                Poll::Wait { ms } => Duration::from_millis(u64::from(ms)),
+                Poll::Wait { ms } => {
+                    Duration::from_secs_f64(f64::from(ms) / 1000.0 / f64::from(clock.speed))
+                        .min(Duration::from_millis(100))
+                }
             }
         };
         match inbox.recv_timeout(wait) {
-            Ok(r) => take(r, &mut pending, &mut paused),
+            Ok(r) => take(
+                r,
+                &mut pending,
+                &mut held,
+                (&mut singles, &mut acks),
+                &mut clock,
+            ),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -1002,7 +1094,7 @@ enum Runner {
     },
     Free {
         requests: Sender<FreeRequest>,
-        replies: Receiver<FreeStepped>,
+        replies: Receiver<FreeReply>,
         thread: Option<JoinHandle<()>>,
     },
 }
@@ -1013,6 +1105,20 @@ struct FreeRequest {
     /// The frame holds the simulation (the loading screen, a menu, a pause):
     /// the original's pause counter, raised.
     paused: bool,
+    /// Exarust's debug speed (the frame's game-clock speed) and the single
+    /// steps asked for since the last packet (the step key while paused).
+    speed: f32,
+    steps: u32,
+    /// The frame waits for the simulation to answer that it is held.
+    ack: bool,
+}
+
+/// What the free-running simulation sends the frame.
+enum FreeReply {
+    Stepped(Box<FreeStepped>),
+    /// The answer to a hold the frame waits for: no step comes after it
+    /// until the frame lets go.
+    Held,
 }
 
 /// One free step's packet to the frame, stamped with its clock.
@@ -1023,7 +1129,7 @@ struct FreeStepped {
 
 /// The free-running simulation's clock after a step: what the frame reads
 /// to draw between the last two steps.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FreeStamp {
     /// The step's tick and time (ms of simulation time).
     pub tick: u64,
@@ -1031,22 +1137,25 @@ pub struct FreeStamp {
     /// The clock reading the simulation's time counts from (ms; moved on
     /// when a backlog was dropped).
     pub base_ms: u32,
-    /// The time spent paused, left out of the clock (ms).
-    pub paused_ms: u64,
+    /// The simulation's clock (ms, the held time left out) when the step
+    /// was stamped, the real time since the shell started then, and the
+    /// rate the clock runs at from there (0 while held).
+    pub clock_ms: f64,
+    pub wall_ms: f64,
+    pub speed: f32,
     /// The step (ms).
     pub step_ms: u32,
 }
 
 impl FreeStamp {
     /// The original's render fraction: 1 + (frame clock − published
-    /// time) / step, at most 2 and at least −2. `clock_ms` is the
-    /// milliseconds since the shell's start (the pause time not yet left
-    /// out). 1 draws the step before the last, 2 the last
-    /// ([`overstep_of`]).
-    pub fn fraction(&self, clock_ms: u64) -> f32 {
-        let now = clock_ms
-            .saturating_sub(self.paused_ms)
-            .wrapping_sub(u64::from(self.base_ms)) as u32;
+    /// time) / step, at most 2 and at least −2. `wall_ms` is the real
+    /// time since the shell's start; the simulation's clock is carried on
+    /// from the stamp at its rate. 1 draws the step before the last, 2 the
+    /// last ([`overstep_of`]).
+    pub fn fraction(&self, wall_ms: f64) -> f32 {
+        let clock = self.clock_ms + (wall_ms - self.wall_ms) * f64::from(self.speed);
+        let now = (clock as u64).wrapping_sub(u64::from(self.base_ms)) as u32;
         let step = f64::from(self.step_ms.max(1));
         let f = if now > self.time_ms {
             (f64::from(now - self.time_ms) / step + 1.0).min(2.0)
@@ -1148,9 +1257,10 @@ impl SimShell {
         }
     }
 
-    /// Milliseconds since the shell started (the free clock's reading).
-    pub fn clock_ms(&self) -> u64 {
-        self.epoch.elapsed().as_millis() as u64
+    /// Milliseconds since the shell started (the real clock the free
+    /// simulation's clock follows).
+    pub fn clock_ms(&self) -> f64 {
+        self.epoch.elapsed().as_secs_f64() * 1000.0
     }
 
     /// Free mode: sends the frame's packet without waiting.
@@ -1166,8 +1276,35 @@ impl SimShell {
     fn take_free(&self) -> Vec<FreeStepped> {
         let runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
         match &*runner {
-            Runner::Free { replies, .. } => replies.try_iter().collect(),
+            Runner::Free { replies, .. } => replies
+                .try_iter()
+                .filter_map(|r| match r {
+                    FreeReply::Stepped(s) => Some(*s),
+                    FreeReply::Held => None,
+                })
+                .collect(),
             _ => Vec::new(),
+        }
+    }
+
+    /// Free mode: the step packets that come before the simulation's
+    /// answer to a hold, in order (waiting for the answer, at most a few
+    /// seconds).
+    fn take_until_held(&self) -> Vec<FreeStepped> {
+        let runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
+        let Runner::Free { replies, .. } = &*runner else {
+            return Vec::new();
+        };
+        let mut arrived = Vec::new();
+        loop {
+            match replies.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(FreeReply::Stepped(s)) => arrived.push(*s),
+                Ok(FreeReply::Held) => return arrived,
+                Err(_) => {
+                    error!("simulation: no answer to the frame's hold");
+                    return arrived;
+                }
+            }
         }
     }
 
@@ -1272,13 +1409,29 @@ pub struct SimExchange;
 /// screens ask this frame; `raised` counts paired raises. A free-running
 /// simulation reads it from each of the frame's packets and sleeps while it
 /// is up; in lockstep the frame's own fixed loop holds instead.
-#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
 pub struct SimPause {
     held: bool,
     raised: u32,
+    /// Exarust's debug controls: the game clock's speed (0 for unset: 1)
+    /// and the single steps asked for while paused, not yet sent.
+    speed: f32,
+    steps: u32,
+    /// Held through a level's teardown and the load after it.
+    teardown: bool,
 }
 
 impl SimPause {
+    /// Whether a teardown's hold is up.
+    pub fn in_teardown(&self) -> bool {
+        self.teardown
+    }
+
+    /// Lets go of a teardown's hold (the next level is in).
+    pub fn release_teardown(&mut self) {
+        self.teardown = false;
+    }
+
     /// Sets this frame's hold from the screens that show.
     pub fn hold(&mut self, held: bool) {
         self.held = held;
@@ -1294,7 +1447,25 @@ impl SimPause {
     }
 
     pub fn paused(&self) -> bool {
-        self.held || self.raised > 0
+        self.held || self.raised > 0 || self.teardown
+    }
+
+    /// The debug speed the simulation's clock runs at.
+    pub fn set_speed(&mut self, speed: f32) {
+        self.speed = speed;
+    }
+
+    pub fn speed(&self) -> f32 {
+        if self.speed > 0.0 { self.speed } else { 1.0 }
+    }
+
+    /// One more single step while paused (the step key).
+    pub fn step(&mut self) {
+        self.steps += 1;
+    }
+
+    fn take_steps(&mut self) -> u32 {
+        std::mem::take(&mut self.steps)
     }
 }
 
@@ -1314,6 +1485,8 @@ pub struct FreeLink {
     pub gaps: u64,
     /// The hold the frame last told the simulation (it starts held).
     pub paused: bool,
+    /// Single steps sent whose packets have not arrived yet.
+    pub awaiting: u32,
 }
 
 /// The frame's overstep (in steps) for the original's render fraction.
@@ -1337,40 +1510,63 @@ pub fn overstep_of(fraction: f32) -> f32 {
 /// carries it ([`overstep_of`]), so every drawing that reads
 /// `overstep_fraction` draws the moment the original's frame draws.
 pub fn exchange_free(world: &mut World) {
-    let paused = world
-        .get_resource::<SimPause>()
-        .is_some_and(SimPause::paused);
+    let (paused, speed, steps) = world
+        .get_resource_mut::<SimPause>()
+        .map_or((false, 1.0, 0), |mut p| {
+            (p.paused(), p.speed(), p.take_steps())
+        });
     // Held, the frame keeps its changes and posts until it lets go (as the
     // lockstep frame does while no step runs), and tells the simulation
-    // once.
-    let was_paused = std::mem::replace(&mut world.resource_mut::<FreeLink>().paused, paused);
-    let sent_changes = !paused;
-    let request = if paused {
+    // once; a single step asked for while held exchanges as an unheld
+    // frame does until its packet arrived.
+    let (was_paused, awaiting) = {
+        let mut link = world.resource_mut::<FreeLink>();
+        link.awaiting += steps;
+        (std::mem::replace(&mut link.paused, paused), link.awaiting)
+    };
+    // Entering a hold, the frame waits for the simulation to answer it and
+    // applies the steps taken before it, so none arrives after the frame
+    // went on (a level's teardown, a load) to name what is gone.
+    let entering = paused && !was_paused;
+    let exchanging = !paused || awaiting > 0 || entering;
+    let request = if exchanging {
+        let bridge = frame_gather(world);
+        let commands = world.resource_mut::<SimInbox>().take();
+        Some(StepRequest { commands, bridge })
+    } else {
         (!was_paused).then(|| StepRequest {
             commands: Vec::new(),
             bridge: None,
         })
-    } else {
-        let bridge = frame_gather(world);
-        let commands = world.resource_mut::<SimInbox>().take();
-        Some(StepRequest { commands, bridge })
     };
     // Held, the step packets that still arrive wait too: applying one
     // would settle the frame's changes before they were gathered.
     let arrived = {
         let shell = world.resource::<SimShell>();
         if let Some(request) = request {
-            shell.send_free(FreeRequest { request, paused });
+            shell.send_free(FreeRequest {
+                request,
+                paused,
+                speed,
+                steps,
+                ack: entering,
+            });
         }
-        if paused {
-            Vec::new()
-        } else {
+        if entering {
+            shell.take_until_held()
+        } else if exchanging {
             shell.take_free()
+        } else {
+            Vec::new()
         }
     };
     let count = arrived.len();
-    if count == 0 && sent_changes {
+    if count == 0 && exchanging {
         crate::sim_bridge::frame_settle(world);
+    }
+    {
+        let mut link = world.resource_mut::<FreeLink>();
+        link.awaiting = link.awaiting.saturating_sub(count as u32);
     }
     for FreeStepped { stepped, stamp } in arrived {
         if let Some(out) = stepped.bridge {
@@ -1421,14 +1617,15 @@ pub fn exchange_free(world: &mut World) {
     let mut link = world.resource_mut::<FreeLink>();
     link.frames += 1;
     link.most_in_a_frame = link.most_in_a_frame.max(count);
-    // Paused, the original leaves its fraction where it was.
-    if paused {
+    // Paused, the original leaves its fraction where it was; a single
+    // step is drawn as it ended.
+    if paused && count == 0 {
         return;
     }
     let Some(stamp) = link.stamp else {
         return;
     };
-    let fraction = stamp.fraction(clock);
+    let fraction = if paused { 2.0 } else { stamp.fraction(clock) };
     link.fraction = fraction;
     if let Some(mut fixed) = world.get_resource_mut::<Time<Fixed>>() {
         let left = fixed.overstep();
@@ -1436,6 +1633,21 @@ pub fn exchange_free(world: &mut World) {
         let step = fixed.timestep();
         fixed.accumulate_overstep(step.mul_f32(overstep_of(fraction)));
     }
+}
+
+/// Holds a free-running simulation now and waits until it is held, its
+/// queued steps applied (the original's level change raises the pause
+/// counter before it drops the scene): run before a level's teardown. The
+/// hold lasts until the game lets go of it ([`SimPause::release_teardown`]).
+/// In lockstep nothing is in flight: no-op.
+pub fn hold_and_drain(world: &mut World) {
+    if !world.contains_resource::<FreeLink>() {
+        return;
+    }
+    if let Some(mut pause) = world.get_resource_mut::<SimPause>() {
+        pause.teardown = true;
+    }
+    exchange_free(world);
 }
 
 /// One simulation step for this pass of the fixed step: the inbox's
@@ -1642,7 +1854,32 @@ mod tests {
         assert_eq!(stamp.tick, link.steps);
         assert_eq!(stamp.time_ms as u64, stamp.tick * STEP_MS);
         // The paused time stays out of the clock.
-        assert!(stamp.paused_ms >= 100, "{stamp:?}");
+        assert!(stamp.wall_ms - stamp.clock_ms >= 100.0, "{stamp:?}");
+    }
+
+    #[test]
+    fn a_held_free_simulation_takes_single_steps_and_runs_at_its_speed() {
+        let mut app = app(SimMode::Free);
+        app.world_mut().resource_mut::<SimPause>().hold(true);
+        run_frames_for(&mut app, 60);
+        for _ in 0..3 {
+            app.world_mut().resource_mut::<SimPause>().step();
+            run_frames_for(&mut app, 30);
+        }
+        run_frames_for(&mut app, 60);
+        let link = app.world().resource::<FreeLink>();
+        assert_eq!(link.steps, 3, "three single steps while held");
+        assert_eq!(link.awaiting, 0);
+        // Released at a quarter speed: about a step every 48 ms.
+        let world = app.world_mut();
+        world.resource_mut::<SimPause>().set_speed(0.25);
+        world.resource_mut::<SimPause>().hold(false);
+        run_frames_for(&mut app, 480);
+        let steps = app.world().resource::<FreeLink>().steps - 3;
+        assert!(
+            (4..=12).contains(&steps),
+            "{steps} steps in 480 ms at x0.25"
+        );
     }
 
     #[test]
@@ -1685,16 +1922,24 @@ mod tests {
             tick: 10,
             time_ms: 120,
             base_ms: 1000,
-            paused_ms: 500,
+            clock_ms: 1120.0,
+            wall_ms: 1620.0,
+            speed: 1.0,
             step_ms: 12,
         };
-        // Clock 1620 less 500 paused, less the base 1000: at the step.
-        assert_eq!(stamp.fraction(1620), 1.0);
-        assert_eq!(stamp.fraction(1626), 1.5);
+        // Stamped at the step's time: the clock carried on from there.
+        assert_eq!(stamp.fraction(1620.0), 1.0);
+        assert_eq!(stamp.fraction(1626.0), 1.5);
         // At most two, at least minus two.
-        assert_eq!(stamp.fraction(1700), 2.0);
-        assert_eq!(stamp.fraction(1614), 0.5);
-        assert_eq!(stamp.fraction(1500), -2.0);
+        assert_eq!(stamp.fraction(1700.0), 2.0);
+        assert_eq!(stamp.fraction(1614.0), 0.5);
+        assert_eq!(stamp.fraction(1500.0), -2.0);
+        // At half speed the clock runs half as fast from the stamp.
+        let slow = FreeStamp {
+            speed: 0.5,
+            ..stamp
+        };
+        assert_eq!(slow.fraction(1632.0), 1.5);
     }
 
     #[test]

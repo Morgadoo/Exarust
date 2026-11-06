@@ -285,6 +285,10 @@ pub(crate) fn decide_movement(
     // The body walks by its carry: the drive, its push gain and the feet's
     // lag go to the physics, which adds them to the carry.
     let facing = forward(body.yaw) * if req.has(flags::BACK) { -1.0 } else { 1.0 };
+    // The look the queued-step taker reads.
+    if let Some(r) = ragdoll.as_mut() {
+        r.look_steps(forward(req.look));
+    }
     if let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut()) {
         d.bearing.moving = body.moving();
         d.bearing.run = body.run;

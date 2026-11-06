@@ -983,6 +983,7 @@ pub fn follow_and_search(
         Option<&exa_ai::presence::Presence>,
         Option<&mut Animator>,
         Option<&Name>,
+        Option<exa_ai::drive::Walking>,
     )>,
     mut characters: Query<(
         Entity,
@@ -1103,7 +1104,7 @@ pub fn follow_and_search(
             .and_then(|c| c.card_facts(id))
             .map_or_else(|| "thing".to_string(), |f| f.name.clone())
     };
-    for (entity, mut npc, duellist, condition, mut t, parent, presence, anim, name) in
+    for (entity, mut npc, duellist, condition, mut t, parent, presence, anim, name, mut walking) in
         &mut followers
     {
         if npc.state() != Some(IdleState::Follow) {
@@ -1122,6 +1123,16 @@ pub fn follow_and_search(
             && !duellist.fighting()
             && npc.flight.is_none();
         if !active {
+            // A body on its locomotion soft-stops.
+            if let Some((req, motor, driven, ragdoll)) = walking.as_mut()
+                && driven.0.driving
+                && npc.flight.is_none()
+            {
+                state.walk.route.clear();
+                let at =
+                    exa_ai::drive::DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
+                exa_ai::drive::soft_stop(req, &mut driven.0, &at);
+            }
             if stepped && !state.rested {
                 state.rested = true;
                 state.logged_act = None;
@@ -1433,6 +1444,29 @@ pub fn follow_and_search(
                     }
                 }
             }
+        }
+        // A body on its locomotion walks the route by the AI's driver at
+        // the follower's urgency, on its feet.
+        if let Some((req, motor, driven, ragdoll)) = walking.as_mut() {
+            let at = exa_ai::drive::DriveBody::of(feet, motor, ragdoll.as_deref());
+            match exa_ai::walker::follow_walk(&mut state.walk, feet_cm, now) {
+                Some(carrot) => {
+                    let cost = |p: Vec3| exa_ai::drive::grid_cost(nav.as_deref(), p);
+                    exa_ai::drive::drive(
+                        req,
+                        &mut driven.0,
+                        &at,
+                        carrot / 100.0,
+                        true,
+                        state.follower.urgency.clamp(0, 2),
+                        true,
+                        &cost,
+                    );
+                }
+                None if driven.0.driving => exa_ai::drive::soft_stop(req, &mut driven.0, &at),
+                None => {}
+            }
+            continue;
         }
         // The walk, every tick: steer along the followed route.
         let was_walking = state.walk.velocity != Vec3::ZERO;

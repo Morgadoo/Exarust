@@ -58,6 +58,9 @@ fn a_body_takes_its_pairs_impacts_in_order() {
     ];
     assert_eq!(struck_parts(&touches, me), [(1, 3.0), (0, 6.0)]);
     assert_eq!(struck_parts(&touches, other), [(0, 4.0), (2, 5.0)]);
+    let all = struck_by_body(&touches);
+    assert_eq!(all[&me], struck_parts(&touches, me));
+    assert_eq!(all[&other], struck_parts(&touches, other));
 }
 
 /// Two impacts on one part in a tick: the first sounds and sets the clock,

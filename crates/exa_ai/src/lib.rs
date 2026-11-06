@@ -39,6 +39,7 @@ pub mod chase;
 pub mod combat;
 pub mod combatant;
 pub mod contacts;
+pub mod drive;
 pub mod entity;
 pub mod estimate;
 pub mod fight;
@@ -122,6 +123,15 @@ impl Plugin for AiPlugin {
                 schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
             })
             .add_systems(FixedUpdate, run_brain_chain.in_set(BrainTick))
+            // A standing character faces as its AI turned it, once every
+            // brain pass of the tick has run.
+            .add_systems(
+                FixedUpdate,
+                drive::face_standing
+                    .in_set(exa_physics::body::TickBehaviour)
+                    .after(BrainTick)
+                    .before(exa_combat::condition::PostureTick),
+            )
             // A requested motion starts before the behaviour reads it, for
             // every body, not only one already in a fight.
             .add_systems(
@@ -134,6 +144,7 @@ impl Plugin for AiPlugin {
                 BrainChain,
                 (
                     (
+                        drive::add_locomotion,
                         brain::death_hook,
                         brain::apply_new_roles,
                         brain::rate_the_player,
@@ -170,6 +181,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_message::<exa_combat::AttackAskedHook>()
         .bridge_lend_resource::<crate::BrainTickClock>()
         .bridge_copy::<crate::Duellist>()
+        .bridge_copy::<crate::drive::Driven>()
         .bridge_move_resource::<crate::brain::BrainClock>()
         .bridge_copy::<crate::brain::CharacterId>()
         .bridge_copy::<crate::brain::MindWarded>()
@@ -366,8 +378,12 @@ pub struct Duellist {
     stab_aim: exa_combat::stab::StabAim,
     /// The body's step as this tick's combat state left it, and whether
     /// it started a step: written into the body by [`apply_feet_steps`].
-    feet_write: Option<(exa_physics::body::FootworkStep, bool)>,
+    feet_write: Option<FeetWrite>,
 }
+
+/// The body's step as the combat tick left it, whether it started a step,
+/// and the body's target (the foe's chest, m, and scale).
+type FeetWrite = (exa_physics::body::FootworkStep, bool, Option<(Vec3, f32)>);
 
 /// A step the duellist walks: where it goes (m) and when it started.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -761,8 +777,11 @@ fn feet_outcome(
 /// walk it.
 pub(crate) fn apply_feet_steps(mut fighters: Query<(&mut Duellist, &mut Ragdoll)>) {
     for (mut ai, mut body) in &mut fighters {
-        if let Some((step, start)) = ai.feet_write.take() {
+        if let Some((step, start, aim)) = ai.feet_write.take() {
             body.write_footwork(&step, start);
+            // Debug aid: `EXA_NO_STEP_AIM` gives the body no target.
+            let aim = aim.filter(|_| std::env::var_os("EXA_NO_STEP_AIM").is_none());
+            body.aim_steps(aim);
         }
     }
 }
@@ -1091,6 +1110,7 @@ fn duellist(
             Option<&exa_physics::body::locomotion::Locomotor>,
             Option<&mut exa_physics::body::locomotion::Locomotion>,
             Option<&mut exa_character::record::CharacterData>,
+            Option<&mut drive::Driven>,
         ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
@@ -1124,7 +1144,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence, attack_hook, locomotor, mut walk, mut record),
+        (mut powers, presence, attack_hook, locomotor, mut walk, mut record, mut driven),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -1405,25 +1425,14 @@ fn duellist(
         // interim step below.
         let mut feet_step = feet_step_of(ragdoll);
         if let Some(fw) = feet_step.as_mut() {
-            // A queued step the body took on its last landing was aimed
-            // at the chest plus the queued vector, bent at the target's
-            // circle when the vector points along the facing (the queued-step
-            // taker's approach clamp), then line-walked from the chest.
-            // Exarust's body has no target nor grid, so the AI does both on
-            // its next tick from the chest it has then.
+            // A queued step the body took on its last landing was aimed at
+            // the chest plus the queued vector (bent at the target's circle
+            // by the body's own taker), then line-walked from the chest.
+            // Exarust's body has no grid, so the AI walks the line on its
+            // next tick from the chest it has then.
             if fw.queue < 0 {
                 let chest = stance::chest_point(gt, ragdoll) * CM;
                 let mut to = fw.target * CM;
-                let foe = target_body
-                    .filter(|_| ai.focus.is_none() && !ai.dropped)
-                    .map(|(_, _, _, f, ..)| f.stats.scale);
-                if let Some(foe_scale) = foe
-                    && ragdoll.is_some_and(Ragdoll::step_told_ai)
-                {
-                    let mut offset = fw.queued * CM;
-                    combat::keep_off(chest, foe_chest, foe_scale, &mut offset);
-                    to = chest + offset;
-                }
                 ground::walk_line(nav.as_deref(), chest, &mut to);
                 fw.target = to / CM;
             }
@@ -2114,6 +2123,32 @@ fn duellist(
                     }
                 }
             }
+            // Debug aid: `EXA_DUEL_TRACE` logs what the combat tick read
+            // and chose.
+            if std::env::var_os("EXA_DUEL_TRACE").is_some() {
+                info!(
+                    "duel-trace {entity:?} t{} dist {:.0} can_step {} block {} run {} spd {:.2} \
+                     tone {:.2} sup {:.2} stepping {} state {} queue {} chosen {:?} step {:?} exit {:?} \
+                     mstep {} long {} cond {:#x}",
+                    me.now_ms,
+                    ai.bearing.1,
+                    me.can_step,
+                    me.blocking,
+                    me.running,
+                    me.forward_speed,
+                    me.tone,
+                    me.support,
+                    me.stepping,
+                    me.step_state,
+                    me.queue,
+                    out.chosen,
+                    out.step,
+                    out.exit,
+                    ai.mind.step,
+                    ai.mind.long_step,
+                    me.condition
+                );
+            }
             if out.marks.queue_taken
                 && let Some(fw) = feet_step.as_mut()
             {
@@ -2217,8 +2252,13 @@ fn duellist(
                 );
             }
         }
-        // The body takes back its step as the combat state left it.
-        ai.feet_write = feet_step.map(|fw| (fw, feet_started));
+        // The body takes back its step as the combat state left it, and
+        // its target (the foe's chest and scale), which its queued-step
+        // taker bends a step at.
+        let aim = target_body
+            .filter(|_| ai.focus.is_none() && !ai.dropped)
+            .map(|(_, _, _, f, ..)| (foe_chest / CM, f.stats.scale));
+        ai.feet_write = feet_step.map(|fw| (fw, feet_started, aim));
         // While a stab plays, the behaviour's stab aim turns toward the
         // foe's estimate each tick, from the anchor by the shoulder in the
         // character frame, kept near the body's heading.
@@ -2266,6 +2306,28 @@ fn duellist(
         }
         // While the combat tick ends at the chase, its route is walked
         // through the path's carrot.
+        // A body on its locomotion walks the chase by the AI's driver at
+        // the chase's urgency 1, on its feet, and soft-stops at its end.
+        if let (Some(req), Some(motor), Some(driven)) =
+            (walk.as_deref_mut(), locomotor, driven.as_deref_mut())
+        {
+            let at = drive::DriveBody::of(feet, motor, ragdoll);
+            if ai.chasing && !ai.route.is_empty() {
+                if let Some(goal) = crate::path::carrot(&ai.route, feet * CM).goal {
+                    let cost = |p: Vec3| drive::grid_cost(nav.as_deref(), p);
+                    drive::drive(req, &mut driven.0, &at, goal / CM, true, 1, false, &cost);
+                }
+                let last = ai.route[ai.route.len() - 1] / CM;
+                if Vec3::new(last.x - feet.x, 0.0, last.z - feet.z).length() < 0.5 {
+                    ai.route.clear();
+                    drive::soft_stop(req, &mut driven.0, &at);
+                }
+                continue;
+            }
+            if driven.0.driving {
+                drive::soft_stop(req, &mut driven.0, &at);
+            }
+        }
         if ai.chasing && !ai.route.is_empty() {
             let carrot = crate::path::carrot(&ai.route, feet * CM);
             if let Some(goal) = carrot.goal {

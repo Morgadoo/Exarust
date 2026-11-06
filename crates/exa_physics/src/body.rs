@@ -85,8 +85,8 @@ pub use feet::{
 };
 pub use feet::{
     FootState, Footstep, FullTone, GaitStep, NO_WATER_CM, QueuedStep, StepEnd, WET_SCENE_FROM,
-    WET_SCENE_WATER_CM, WalkedStep, WaterLevel, full_tone, gait_step, gait_wet_step, queued_step,
-    step_end, step_loudness, step_position, water_level,
+    WET_SCENE_WATER_CM, WalkedStep, WaterLevel, approach_bend, full_tone, gait_step, gait_wet_step,
+    queued_step, step_end, step_loudness, step_position, water_level,
 };
 #[path = "body_pins.rs"]
 mod pins;
@@ -2964,6 +2964,23 @@ impl Ragdoll {
             s.started = s.clock;
             s.near = 0;
             s.still_plus = 0.0;
+        }
+    }
+
+    /// Sets the body's target as its behaviour sees it: the target's chest
+    /// (m) and scale, or None. The queued-step taker bends a step along
+    /// the look at the target's circle.
+    pub fn aim_steps(&mut self, aim: Option<(Vec3, f32)>) {
+        if let Some(drive) = self.drive.as_mut() {
+            drive.steps.aim = aim;
+        }
+    }
+
+    /// Sets the look direction the queued-step taker reads (the movement
+    /// stage's, from the locomotion request's look).
+    pub fn look_steps(&mut self, look: Vec3) {
+        if let Some(drive) = self.drive.as_mut() {
+            drive.steps.look = Some(look);
         }
     }
 

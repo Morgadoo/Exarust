@@ -78,7 +78,7 @@ is turned directly). A roaming or patrolling brain walks its legs
 (`brain::idle_walk`): on its turn of the one-planner-a-tick turn it picks
 a wander goal a quarter of the way from a drawn door's near cell to the
 cell behind it, routes it through the navigation grid (followed past
-150 cm end to end), walks it with the walk clip through the NPC driver,
+150 cm end to end), walks it through the AI's locomotion driver (`drive`),
 settles its look and pauses 0.5–2.5 s, then (a roam) walks a forced route
 into the room it aimed at and pauses 1–5 s. A body the scene takes back
 mid-leg faces its route's goal. The original's reset when the level is
@@ -181,6 +181,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `pass_turn` | the target pass's turn: one brain a tick, the longest waiter of the last tick (strictly longer, on the wrapping step counter: the body ticks run so far plus this one), its rotation before the perception, the claim of each present brain and the forget of a removed one |
 | `route` | the one-planner-a-tick turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), the path's flat length, and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
+| `drive` | the AI's locomotion driver, as the original's: every walking state (the roam's and patrol's legs, the flight, the combat chase, the follower's walk) writes the body's locomotion request instead of moving the character: a stepping body is busy; the heading eases 0.1 toward the goal (a unit by the approximate reciprocal square root); an alignment of the pelvis with the goal not over `min(0.007·|d|, 0.7)` (double) only asks to move (moving past half of it), otherwise the goal goes 150 cm out, the body moves and runs at urgency ≥ 1 on ground the grid prices at most 0.5 with the alignment over 0.9 (the sprint latch at urgency 2); the look eases 0.1 toward the heading, the head's drift 0.02 toward 0 (double). The soft stop clears the run bit, sets the stopping bit and pulls a far goal to `8·speed + 20` cm. A fighter with muscles gets the request at its first brain tick (`add_locomotion`); a standing one faces as its AI turned it, and a walk clip its body no longer walks ends in its stance over 20 frames (`face_standing`). The idle states turn slowly (the 0.5 rate), the chase and the flight do not [the flight's is a guess]. Debug aids: `EXA_NPC_NO_LOCOMOTION` gives no fighter the request (routes slide as before), `EXA_NO_STEP_AIM` gives the duellist's body no target for the queued-step bend, `EXA_DUEL_TRACE` logs each combat tick's inputs and choice (`duel-trace`). Not ported: the driver's obstacle check and the out-of-scene slide (it needs the re-entry placement). |
 | `ground` | the pathfinder's answers the combat state asks in centimetres: a place's ground cost (the cost sample through the combatant's formula), the line walk's clamp and the obstacle test, each the abstract pathfinder's without a grid |
 | `golem` | the golem guardians: wake (the race word's statue bit and the statue byte cleared, `golem_act`, the glow material at full, the limbs' mass restored) and sleep (the statue bit, a twentieth of the mass, a fiftieth of each part's value), the zone check (the 3 cm step, the radius and box tests, the pass search through carried containers), the alarm trigger's arming, reset and wake callback (the contacts become the player at concern 10), the homeward callback (an awake guardian not dying), the alarm return (`alarm_return`), the `Alarm_` box that holds the armed point, the strict plane-distance radius query over the AI-bit characters of a room and the rooms behind its exits, the player's post 200 cm past the box at 10 cm up, and the pose reset |
 
@@ -274,7 +275,8 @@ perception pass puts the lightest back when the newcomer's sensed weight
 falls short of it. The classification asks the level's room graph with
 the contact as the threat (`rooms::level_room`, `rooms::room_exits`, the
 door links' cells as exit points), as the original's way-out query does,
-and `brain::flee_walk` runs a fleeing brain to that exit at the jog speed,
+and `brain::flee_walk` runs a fleeing brain to that exit (the driver at
+urgency 2; a body without muscles at the jog speed),
 putting the idle clip back when the flight ends. On a level with a
 navigation grid the way out is picked and routed on the brain's planning
 turn (`route::plan`, one planner a tick), again while no route is followed

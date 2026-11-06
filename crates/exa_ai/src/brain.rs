@@ -53,6 +53,7 @@ use crate::activity::{self, Applied, Before, IdleKind, IdleRegistry, IdleState};
 use crate::combat;
 use crate::combatant::{self, Attitude, Combatant, Contact, Observed, Observer};
 use crate::contacts::{self, ContactRecord, Integration, PassReport};
+use crate::drive::{DriveBody, Walking};
 use crate::idle::Routine;
 use crate::motion::{self, Gaze, Turning};
 use crate::personality::{self, Personality};
@@ -1936,6 +1937,7 @@ pub fn flee_walk(
         &ChildOf,
         Option<&crate::presence::Presence>,
         Option<&mut Animator>,
+        Option<Walking>,
     )>,
     targets: Query<&GlobalTransform>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
@@ -1958,7 +1960,9 @@ pub fn flee_walk(
         *frame = frame.wrapping_add(1);
         turn.next_turn();
     }
-    for (entity, mut npc, duellist, condition, gt, mut t, parent, presence, anim) in &mut npcs {
+    for (entity, mut npc, duellist, condition, gt, mut t, parent, presence, anim, mut walking) in
+        &mut npcs
+    {
         if !steer {
             if npc.flight.is_some()
                 && let Ok((mut body, _)) = roots.get_mut(parent.parent())
@@ -1976,6 +1980,17 @@ pub fn flee_walk(
         {
             let was_fleeing = npc.flight.take().is_some();
             npc.flight_walk.route.clear();
+            if was_fleeing
+                && let Some((req, motor, driven, ragdoll)) = walking.as_mut()
+                && let Ok((_, root_gt)) = roots.get(parent.parent())
+            {
+                // A body on its locomotion soft-stops.
+                if driven.0.driving {
+                    let at = DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
+                    crate::drive::soft_stop(req, &mut driven.0, &at);
+                }
+                continue;
+            }
             if was_fleeing {
                 if let Ok((mut body, _)) = roots.get_mut(parent.parent()) {
                     body.desired_velocity = Vec3::ZERO;
@@ -2078,6 +2093,24 @@ pub fn flee_walk(
                 } else {
                     crate::walker::follow_walk(&mut npc.flight_walk, feet_cm, now).unwrap_or(goal)
                 };
+                // A body on its locomotion flees by the AI's driver at
+                // urgency 2 (the flight's), on its feet. [Exarust: a flight
+                // with no route drives straight to its goal.]
+                if let Some((req, motor, driven, ragdoll)) = walking.as_mut() {
+                    let at = DriveBody::of(feet, motor, ragdoll.as_deref());
+                    let cost = |p: Vec3| crate::drive::grid_cost(nav.as_deref(), p);
+                    crate::drive::drive(
+                        req,
+                        &mut driven.0,
+                        &at,
+                        carrot / 100.0,
+                        true,
+                        2,
+                        false,
+                        &cost,
+                    );
+                    continue;
+                }
                 let path = [feet, carrot / 100.0];
                 let order =
                     crate::order::follow(&path, feet, motion::yaw_of(t.rotation * Vec3::Z), 1);
@@ -2092,6 +2125,12 @@ pub fn flee_walk(
             }
             None => {
                 npc.flight_walk.route.clear();
+                if let Some((req, motor, driven, ragdoll)) = walking.as_mut()
+                    && driven.0.driving
+                {
+                    let at = DriveBody::of(feet, motor, ragdoll.as_deref());
+                    crate::drive::soft_stop(req, &mut driven.0, &at);
+                }
                 if was_fleeing
                     && let Some(mut anim) = anim
                     && anim.action == "Run"
@@ -2130,6 +2169,7 @@ pub fn idle_walk(
         &ChildOf,
         Option<&crate::presence::Presence>,
         Option<&mut Animator>,
+        Option<Walking>,
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
     mut planning: Local<(crate::route::PlanTurn, u32)>,
@@ -2147,7 +2187,9 @@ pub fn idle_walk(
         *frame = frame.wrapping_add(1);
         turn.next_turn();
     }
-    for (entity, mut npc, duellist, condition, mut t, parent, presence, anim) in &mut npcs {
+    for (entity, mut npc, duellist, condition, mut t, parent, presence, anim, mut walking) in
+        &mut npcs
+    {
         let roaming = matches!(
             npc.routine.kind,
             crate::idle::Kind::Roam | crate::idle::Kind::Patrol
@@ -2162,7 +2204,16 @@ pub fn idle_walk(
             continue;
         };
         if !active {
-            // Combat, a flight or the scene takes the body: the leg ends.
+            // Combat, a flight or the scene takes the body: the leg ends
+            // (a body on its locomotion soft-stops).
+            if let Some((req, motor, driven, ragdoll)) = walking.as_mut()
+                && driven.0.driving
+                && npc.flight.is_none()
+            {
+                npc.walk.route.clear();
+                let at = DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
+                crate::drive::soft_stop(req, &mut driven.0, &at);
+            }
             if !npc.walk.route.is_empty() || npc.walk.velocity != Vec3::ZERO {
                 npc.walk.route.clear();
                 npc.walk.velocity = Vec3::ZERO;
@@ -2215,6 +2266,29 @@ pub fn idle_walk(
                 &mut roll,
             );
             npc.roll = roll;
+        }
+        // A body on its locomotion walks the route by the AI's driver: its
+        // body turns and walks it on its feet.
+        if let Some((req, motor, driven, ragdoll)) = walking.as_mut() {
+            let at = DriveBody::of(feet, motor, ragdoll.as_deref());
+            match crate::walker::follow_walk(&mut npc.walk, feet_cm, now) {
+                Some(carrot) => {
+                    let cost = |p: Vec3| crate::drive::grid_cost(nav.as_deref(), p);
+                    crate::drive::drive(
+                        req,
+                        &mut driven.0,
+                        &at,
+                        carrot / 100.0,
+                        true,
+                        0,
+                        true,
+                        &cost,
+                    );
+                }
+                None if driven.0.driving => crate::drive::soft_stop(req, &mut driven.0, &at),
+                None => {}
+            }
+            continue;
         }
         let was_walking = npc.walk.velocity != Vec3::ZERO;
         match crate::walker::follow_walk(&mut npc.walk, feet_cm, now) {
