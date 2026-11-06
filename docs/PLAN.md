@@ -951,6 +951,8 @@ Round 93 gripfix: grip placement confirmed against the original; arena duels rep
 
 Round 94 polearm: polearm and two-hander holders no longer topple.
 
+Round 95 reentry: walkers that leave the range keep walking and come back standing.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
