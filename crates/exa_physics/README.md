@@ -33,12 +33,13 @@ for it, and `LockstepCheck` counts the steps against the snapshots' ticks
 only its clock, so a body's every pose is the same bit for bit with or
 without the shell (`body_floor_test`).
 
-With `SimMode::Free` (`--sim-free`; lockstep stays the default) the
+With `SimMode::Free` (the game's default; `--sim-lockstep`, `--fixed-frames`,
+`--sim-inline` and `--no-sim-bridge` step in lockstep) the
 simulation runs on its own thread as the original's does
 (context/re/sim-thread-input.md): a 12 ms real-clock step from
 `step_driver` (more than four steps late drops the backlog), asleep 11 ms a
 pass while the frame's packets say it is held (`SimPause`: the loading
-screen, the menus, the splash, the creator, the end menu, a paused game
+screen, the menus, the splash, the creator, a paused game
 clock; the paused time stays out of its clock), the frame's packets
 drained before each step (its changes, its writes and posted calls, Bevy's
 messages updated at most once a step) and a packet stamped with the step's
@@ -58,7 +59,28 @@ against an older step: a drawn copy (`bridge_copy_drawn`: transforms, the
 drawn controller) keeps the simulation's newer value; any other keeps the
 frame's, as in lockstep; both are counted in the log every 1000 steps
 ("frame values after a newer simulation write"). A lent resource moves to
-the simulation for good in free mode; the lent types only the simulation
+the simulation for good in free mode; `--fixed-frames` keeps lockstep. The
+pause key holds a free simulation, the step key takes a single step while
+it is held and the speed keys scale its clock (`SimPause`; Exarust's debug
+controls, the original's loop reads the real clock unscaled). The moved
+schedules run on the `SingleThreadedExecutor` on the simulation's own
+thread, as the original's step runs on its thread: on the task pool the
+frame and the renderer share, a step waited for their work (exanima01
+29.5 ms a step on the pool, 18.7 ms on its own, in a busy grid; every
+body's every tick the same in lockstep). The body grid
+(`sector_lists::SectorBodies`) keeps the cells of bodies that did not
+change since its last rebuild instead of taking every sleeper's pose each
+step. `EXA_SIM_TIMING=1` logs each schedule's time a step.
+Entering a hold, the frame waits for the simulation's answer and applies
+the steps taken before it, so no step arrives after the frame went on;
+a level's teardown holds the simulation first (`hold_and_drain`, the
+original's level change raising the pause counter) until the next level
+is in, and the frame never despawns an entity of its own (a newer one at
+the index, a resource) for a value a step sent; a value a side sent before it had
+seen the other side's removal of that component does not put it back (a
+dead body's clip player, removed by the frame's go-limp, came back from
+steps in flight and stood the corpse up); and a frame value the frame only
+touched (still as the simulation last sent it) is not sent back; the lent types only the simulation
 touches are moved in every mode (`bridge_move_resource`), and the alarm's
 zones and state are copied in and a snapshot (the frame reads them).
 

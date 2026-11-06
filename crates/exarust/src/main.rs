@@ -151,8 +151,9 @@
 //!          --schedule-ambiguities     log the fixed step's (and the brains' chain's) pairs of unordered systems that
 //!                                     touch the same data
 //!          --sim-inline               run the simulation's own world on the frame's thread instead of its thread
-//!          --sim-free                 run the simulation free of the frame on its own 12 ms clock (83 Hz), as the
-//!                                     original's thread; the frame draws between its last two steps (default: lockstep)
+//!          --sim-lockstep             step the simulation in lockstep with the frame's fixed loop (default: free of the
+//!                                     frame on its own 12 ms clock, as the original's thread; `--fixed-frames`,
+//!                                     `--sim-inline` and `--no-sim-bridge` step in lockstep too)
 //!          --sim-digest <file>        write a hash of every bridged type after each fixed step (one world vs bridge)
 //!          --hold-loading             (kept for old scripts: game time always holds behind the loading screen)
 //!          --spectate                 enter the controls' spectate session after the load (double click a character to follow it)
@@ -483,8 +484,9 @@ pub struct Options {
     pub schedule_ambiguities: bool,
     /// Run the simulation's world on the frame's thread (`--sim-inline`).
     pub sim_inline: bool,
-    /// Run the simulation free of the frame on its own clock (`--sim-free`).
-    pub sim_free: bool,
+    /// Step the simulation in lockstep with the frame's fixed loop
+    /// (`--sim-lockstep`; free of the frame by default).
+    pub sim_lockstep: bool,
     /// Keep the fixed step's schedules in the frame's world instead of
     /// running them in the simulation's behind the lockstep copy bridge
     /// (`--no-sim-bridge`).
@@ -1118,7 +1120,9 @@ fn main() -> AppExit {
             "--profiler" => options.profiler = true,
             "--schedule-ambiguities" => options.schedule_ambiguities = true,
             "--sim-inline" => options.sim_inline = true,
-            "--sim-free" => options.sim_free = true,
+            // The default now; kept so older command lines still run.
+            "--sim-free" => options.sim_lockstep = false,
+            "--sim-lockstep" => options.sim_lockstep = true,
             // The default now; kept so older command lines still run.
             "--sim-bridge" => options.no_sim_bridge = false,
             "--no-sim-bridge" => options.no_sim_bridge = true,
@@ -1984,10 +1988,16 @@ fn main() -> AppExit {
             done: false,
         });
     }
-    // The simulation's own world, stepped in lockstep with the fixed step
-    // (it holds only its clock yet: `exa_physics::sim_app`).
+    // The simulation's own world (`exa_physics::sim_app`).
     app.add_plugins(exa_physics::sim_app::SimShellPlugin {
-        mode: if options.sim_free && !options.no_sim_bridge {
+        // Free of the frame, as the original's thread, unless asked for
+        // lockstep. Scripted runs stay in lockstep: `--fixed-frames`
+        // repeats tick for tick only when the frame drives the steps.
+        mode: if !options.sim_lockstep
+            && !options.sim_inline
+            && !options.no_sim_bridge
+            && !options.fixed_frames
+        {
             exa_physics::sim_app::SimMode::Free
         } else if options.sim_inline {
             exa_physics::sim_app::SimMode::Inline

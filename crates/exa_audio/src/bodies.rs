@@ -35,8 +35,25 @@ use exa_physics::prop::BodySounds;
 use crate::{AudioEnvironment, SoundBank, VoiceHandle, voice_flags};
 use bevy::audio::AudioSource;
 
-/// The impacts the pair stage dealt `body`'s parts this tick, in pair
-/// order: each touch's sphere side first, then its touched side.
+/// The impacts the pair stage dealt each body's parts this tick, by body,
+/// in pair order: each touch's sphere side first, then its touched side
+/// (the touches walked once, not once a body).
+pub(crate) fn struck_by_body(
+    touches: &[Touch],
+) -> bevy::ecs::entity::EntityHashMap<Vec<(usize, f32)>> {
+    let mut struck: bevy::ecs::entity::EntityHashMap<Vec<(usize, f32)>> = Default::default();
+    for touch in touches {
+        for (side, impact) in [touch.a, touch.b].into_iter().zip(touch.struck) {
+            if let Some(impact) = impact {
+                struck.entry(side.0).or_default().push((side.1, impact));
+            }
+        }
+    }
+    struck
+}
+
+/// [`struck_by_body`] for one body.
+#[cfg(test)]
 pub(crate) fn struck_parts(touches: &[Touch], body: Entity) -> Vec<(usize, f32)> {
     let mut struck = Vec::new();
     for touch in touches {
@@ -238,11 +255,13 @@ pub(crate) fn body_sounds(
             .entry(name.to_owned())
             .or_insert_with(|| SoundBank::set_size(&game, name))
     };
+    // The touches walked once, not once a body.
+    let mut struck = struck_by_body(touches);
     for (entity, mut body, names) in &mut bodies {
         if body.held_by.is_some() {
             continue;
         }
-        let mut impacts = struck_parts(touches, entity);
+        let mut impacts = struck.remove(&entity).unwrap_or_default();
         impacts.extend(body.level_impacts().iter().map(|i| (i.part, i.strength)));
         if !impacts.is_empty() {
             let sounded: Vec<bool> = names

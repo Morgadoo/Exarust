@@ -314,9 +314,12 @@ fn hold_fixed_while_loading(
 
 /// The screens that hold the simulation, as the original's raise its pause
 /// counter (context/re/sim-thread-input.md): the loading screen, the main
-/// menu, the splash, the character creator and the saves' screen, the end
-/// of a session's menu, and a paused game clock (the pause key, a level
-/// change, the death fade). A free-running simulation sleeps while any
+/// menu, the splash, the character creator and the saves' screen, and a
+/// paused game clock (the pause key, a level change, the death fade). The
+/// end of a session's menu does not: the original's raises at that menu's
+/// rows are the arena's next-fight and leave routines (a level change),
+/// and behind the menu the world goes on (the corpse falls, the winner
+/// walks). A free-running simulation sleeps while any
 /// shows ([`exa_physics::sim_app::SimPause`]); in lockstep the fixed loop's
 /// own hold and the paused clock do the same.
 #[allow(clippy::too_many_arguments)]
@@ -326,18 +329,34 @@ fn hold_the_simulation(
     virt: Res<Time<Virtual>>,
     menu: Option<Res<crate::menu_screen::MenuScreen>>,
     creator: Option<Res<crate::creator_screen::CreatorScreen>>,
-    end_menu: Option<Res<crate::end_menu_screen::EndMenuScreen>>,
     splash: Option<Res<crate::splash::SplashScreen>>,
     mut was: Local<Option<bool>>,
+    (change, mut settled): (
+        Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
+        Local<u32>,
+    ),
 ) {
     let Some(mut pause) = pause else {
         return;
     };
+    // A level's teardown holds the simulation until the next level is in:
+    // no change waiting for its load, no loading screen, the game clock
+    // running, for two frames in a row.
+    if pause.in_teardown() {
+        if change.is_none() && loading.is_none() && !virt.is_paused() {
+            *settled += 1;
+            if *settled >= 2 {
+                pause.release_teardown();
+                *settled = 0;
+            }
+        } else {
+            *settled = 0;
+        }
+    }
     let held = loading.is_some()
         || virt.is_paused()
         || menu.is_some_and(|m| m.open)
         || creator.is_some_and(|c| c.is_open())
-        || end_menu.is_some_and(|m| m.open)
         || splash.is_some_and(|s| s.0.is_some());
     if *was != Some(held) {
         *was = Some(held);
@@ -351,6 +370,8 @@ fn hold_the_simulation(
         );
     }
     pause.hold(held);
+    // The debug speed keys' clock speed, for a free-running simulation.
+    pause.set_speed(virt.relative_speed());
 }
 
 /// While paused, runs one tick a frame for each step asked for: the fixed
@@ -360,6 +381,10 @@ fn step_once(
     mut control: ResMut<SimStepping>,
     virt: Res<Time<Virtual>>,
     mut fixed: ResMut<Time<Fixed>>,
+    free: Option<(
+        Res<exa_physics::sim_app::FreeLink>,
+        ResMut<exa_physics::sim_app::SimPause>,
+    )>,
 ) {
     if control.steps == 0 {
         return;
@@ -369,6 +394,11 @@ fn step_once(
         return;
     }
     control.steps -= 1;
+    // A free-running simulation takes the step itself, held as it is.
+    if let Some((_, mut pause)) = free {
+        pause.step();
+        return;
+    }
     let step = fixed.timestep();
     fixed.accumulate_overstep(step);
 }
