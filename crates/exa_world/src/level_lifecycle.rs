@@ -129,6 +129,11 @@ fn apply_requests(
     // so nothing is despawned twice.
     let mut torn_down = false;
     for request in requests.read() {
+        if request.teardown && !torn_down {
+            // The simulation is held and its queued steps applied before
+            // anything of the level goes (a step in flight would name it).
+            commands.queue(exa_physics::sim_app::hold_and_drain);
+        }
         if request.teardown && torn_down {
             state.changes = state.changes.wrapping_add(1);
         } else if request.teardown {

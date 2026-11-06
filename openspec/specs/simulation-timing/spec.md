@@ -322,7 +322,7 @@ Data only the simulation's systems touch SHALL move to the simulation's world on
 - **THEN** the simulation drops its record before the frame's other changes of that packet and takes the new one, with no copy back to the frame
 
 ### Requirement: Free-running simulation
-With the free mode on, the simulation SHALL step on its own 12 ms real clock, dropping its backlog when more than four steps late, SHALL not step while the frame holds it (the loading screen, a menu, the splash, the character creator, the end menu, a paused game clock) and SHALL leave the held time out of its clock.
+With the free mode on, the simulation SHALL step on its own 12 ms real clock, dropping its backlog when more than four steps late, SHALL not step while the frame holds it (the loading screen, a menu, the splash, the character creator, a paused game clock; not the end of a session's menu, behind which the world goes on) and SHALL leave the held time out of its clock.
 
 #### Scenario: Held and released
 - **WHEN** the frame holds the simulation for a while and then releases it
@@ -348,3 +348,38 @@ With the free mode on, a value the frame writes only to draw it (transforms, the
 #### Scenario: The drawn controller
 - **WHEN** the frame draws a character's controller and the simulation has stepped it since
 - **THEN** the simulation keeps its own controller and position
+
+### Requirement: Debug controls of the free simulation
+With the free mode on, a held simulation SHALL take each single step the frame asks for, moving its clock on by a step, and a game-clock speed the frame sets SHALL scale the simulation's clock and the frame's render fraction alike; a scripted fixed-frame run SHALL keep lockstep.
+
+#### Scenario: Three single steps, then a quarter speed
+- **WHEN** the frame holds the simulation, asks for three single steps, then releases it at a quarter speed
+- **THEN** exactly three steps arrive while held, and afterwards steps come about every 48 ms
+
+### Requirement: The step on its own thread
+The fixed step's systems SHALL run one at a time on the simulation's own thread, not on the task pool the frame shares, and every body's every tick SHALL stay the same as when they ran on the pool.
+
+#### Scenario: A scripted walk
+- **WHEN** a scripted fixed-frame walk runs with the step on its own thread and on the pool
+- **THEN** every body's trace is the same row for row
+
+### Requirement: Free simulation by default
+The game SHALL run the simulation free of the frame unless lockstep is asked for, a fixed-frame scripted run is made, the simulation runs on the frame's thread, or the step stays in the frame's world; in lockstep every body's every tick SHALL stay the same as before.
+
+#### Scenario: A scripted duel
+- **WHEN** a fixed-frame scripted duel runs with the default options
+- **THEN** it steps in lockstep and every body's trace is the same as the earlier build's
+
+### Requirement: No step after a teardown
+With the free mode on, a level's teardown SHALL first hold the simulation and apply every step it took before the hold, and SHALL keep it held until the next level is in; no step value SHALL despawn or replace an entity or resource the frame made after the step began.
+
+#### Scenario: A teardown while the simulation steps
+- **WHEN** the simulation steps entities and the frame tears them down and spawns new ones at the same indices
+- **THEN** the new entities and resources survive, the old ones stay gone, and the steps go on without a gap after the release
+
+### Requirement: Removals survive values in flight
+With the free mode on, a component one side removes SHALL stay removed when the other side sends a value for it that it wrote before it had seen the removal.
+
+#### Scenario: A dead body's clip player
+- **WHEN** the frame removes a dying body's clip player while the simulation's steps in flight still carry it
+- **THEN** the clip player does not come back on either side, and the body lies as in lockstep

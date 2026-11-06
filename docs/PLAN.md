@@ -945,6 +945,8 @@ Round 90 pivot: the sword no longer floats off the hand in combat stance.
 
 Round 91 motiledyn2: NPCs walk their routes on their own feet instead of sliding.
 
+Round 92 simfree: the simulation runs free on its own thread by default, as the original's does.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
