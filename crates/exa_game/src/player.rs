@@ -978,7 +978,10 @@ pub(crate) fn steer_player(
                 // from the floor ([`crate::limp::GroundPlacement`]).
                 commands
                     .entity(child)
-                    .insert(crate::limp::GroundPlacement { floor: to.y });
+                    .insert(crate::limp::GroundPlacement {
+                        floor: to.y,
+                        own_turn: false,
+                    });
                 if by != Vec3::ZERO {
                     standing += by;
                     at.translation = standing;

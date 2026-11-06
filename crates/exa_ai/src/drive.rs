@@ -74,6 +74,12 @@ pub struct Driver {
     pub look: Vec3,
     /// The head's yaw drift (rad), eased toward 0.
     pub head_drift: f32,
+    /// The goal's direction across the ground (unit) the last drive
+    /// measured: the obstacle check walks along it.
+    pub dir: Vec3,
+    /// The character the obstacle check last stopped the walk for (its
+    /// entity bits): it is skipped until the brain plans again.
+    pub in_way: Option<u64>,
 }
 
 /// The driver's state on a character whose body walks by its locomotion
@@ -189,6 +195,7 @@ pub fn drive(
         let align = (d.z * p.z + d.y * p.y + d.x * p.x) / length;
         (length, dir, align)
     };
+    driver.dir = dir;
     driver.heading = unit(ease(driver.heading, dir, EASE));
     // The short gate is formed in double from the double 0.007.
     let gate = if length <= GATE_FROM_CM {
@@ -225,6 +232,37 @@ pub fn drive(
         (f64::from(-driver.head_drift) * HEAD_EASE + f64::from(driver.head_drift)) as f32;
     req.cursor = exa_physics::body::locomotion::wrap(yaw + driver.head_drift);
     true
+}
+
+/// The driver's obstacle check, after its drive: the first live nearby
+/// character (`bodies`, their entity bits and standing points in cm; a
+/// dead one skipped) whose point, moved 20 cm along the goal's direction,
+/// the walk from `from_cm` along that direction reaches within its 120 cm
+/// steer line ([`crate::motion::body_in_way`]), skipping the one it last
+/// stopped for. Such a character is remembered and the caller stops the
+/// walk: the soft stop, and the route is no longer followed.
+pub fn obstacle(driver: &mut Driver, from_cm: Vec3, bodies: &[(u64, Vec3, bool)]) -> bool {
+    let at: Vec<crate::motion::BodyAt> = bodies
+        .iter()
+        .enumerate()
+        .map(|(i, (_, p, dead))| crate::motion::BodyAt {
+            id: i,
+            position_cm: *p,
+            dead: *dead,
+        })
+        .collect();
+    let skip: Vec<usize> = bodies
+        .iter()
+        .position(|(id, ..)| Some(*id) == driver.in_way)
+        .into_iter()
+        .collect();
+    match crate::motion::body_in_way(from_cm, driver.dir, &at, &skip) {
+        Some(i) => {
+            driver.in_way = Some(bodies[i].0);
+            true
+        }
+        None => false,
+    }
 }
 
 /// The soft stop the driver ends a route with: the run bit off, the
@@ -403,6 +441,24 @@ mod tests {
         assert_eq!((req.goal, req.flags), (carrot, flags::MOVE));
         // (0,0,1) + 0.1·((0,0,−1) − (0,0,1)) = (0,0,0.8), a unit again.
         assert!((driver.heading - Vec3::Z).length() < 1e-3);
+    }
+
+    /// A character 1 m ahead on the walk stops it, once: the next check
+    /// skips it; one beside the line does not.
+    #[test]
+    fn a_character_ahead_stops_the_walk_once() {
+        let mut driver = Driver {
+            dir: Vec3::Z,
+            ..Driver::default()
+        };
+        let ahead = [(7u64, Vec3::new(0.0, 0.0, 100.0), false)];
+        assert!(obstacle(&mut driver, Vec3::ZERO, &ahead));
+        assert_eq!(driver.in_way, Some(7));
+        assert!(!obstacle(&mut driver, Vec3::ZERO, &ahead));
+        let beside = [(8u64, Vec3::new(100.0, 0.0, 50.0), false)];
+        assert!(!obstacle(&mut driver, Vec3::ZERO, &beside));
+        let dead = [(9u64, Vec3::new(0.0, 0.0, 100.0), true)];
+        assert!(!obstacle(&mut driver, Vec3::ZERO, &dead));
     }
 
     /// A stepping body is busy: nothing is written.

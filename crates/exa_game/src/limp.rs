@@ -67,6 +67,10 @@ impl Plugin for LimpPlugin {
             FixedPreUpdate,
             place_on_ground.after(crate::player::steer_player),
         )
+        .add_systems(
+            FixedUpdate,
+            place_entering.after(exa_ai::presence::check_presence),
+        )
         .add_systems(Update, (pace_swings, install_limb_trees))
         .add_plugins(CharacterTickPlugin);
     }
@@ -383,6 +387,47 @@ fn spawn_pose(
 #[derive(Component, Debug, Clone, Copy)]
 pub struct GroundPlacement {
     pub floor: f32,
+    /// The frame takes the model's own turn (its local rotation) rather
+    /// than its last drawn one: an AI body re-placed on entering the scene,
+    /// turned toward its route's goal this tick.
+    pub own_turn: bool,
+}
+
+/// The AI's re-placement of a body the scene takes back, as the original's
+/// attach routine runs it: the frame at the character's ground point (the
+/// out-of-scene slide's, when it followed a route), snapped onto the
+/// grid's nearest walkable point, facing its route's goal (the brain's
+/// [`exa_ai::brain::face_entering`]), then the placement on the ground
+/// ([`GroundPlacement`]). The body reset is the presence check's.
+#[allow(clippy::type_complexity)]
+pub(crate) fn place_entering(
+    mut commands: Commands,
+    mut entered: MessageReader<exa_ai::presence::Entered>,
+    nav: Option<Res<exa_world::nav::NavGrid>>,
+    models: Query<&ChildOf, With<Ragdoll>>,
+    mut roots: Query<&mut Transform, With<exa_physics::CharacterBody>>,
+) {
+    for exa_ai::presence::Entered(entity) in entered.read() {
+        let Ok(parent) = models.get(*entity) else {
+            continue;
+        };
+        let Ok(mut root) = roots.get_mut(parent.parent()) else {
+            continue;
+        };
+        let at = root.translation;
+        let to = nav
+            .as_deref()
+            .map_or(at, |g| exa_world::nav::nearest_walkable(g, at));
+        root.translation = Vec3::new(to.x, at.y, to.z);
+        info!(
+            "re-entry placement {entity:?}: from ({:.2}, {:.2}, {:.2}) to the walkable ({:.2}, {:.2}, {:.2})",
+            at.x, at.y, at.z, to.x, to.y, to.z
+        );
+        commands.entity(*entity).insert(GroundPlacement {
+            floor: to.y,
+            own_turn: true,
+        });
+    }
 }
 
 /// Whether a listed body may be ground for the ground placement of the
@@ -432,6 +477,11 @@ fn place_on_ground(
         };
         let mut floor = at.affine();
         floor.translation.y = placement.floor;
+        if placement.own_turn
+            && let Ok((t, _)) = nodes.get(root)
+        {
+            floor.matrix3 = bevy::math::Mat3A::from_quat(t.rotation);
+        }
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
         // The Height Query in its mesh mode, as a grid scene's is: the body
         // meshes listed in the nine sector cells around the frame (props,

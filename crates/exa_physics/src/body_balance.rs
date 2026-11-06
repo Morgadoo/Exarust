@@ -1758,6 +1758,16 @@ impl Ragdoll {
             let feet = super::placement::mean_point(&anchors, Vec3::splat(f32::NAN));
             drive.balance.placed(chest, feet);
         }
+        // The body starts afresh on the frame it was placed at: no carry
+        // from where its root was last aimed (a body the scene takes back
+        // was last aimed where it left), and the character frame's origin
+        // is taken anew from the placed pelvis; a sleeping body wakes.
+        if let Some(drive) = self.drive.as_mut() {
+            drive.root = None;
+            drive.anchor = None;
+            drive.frame = None;
+        }
+        self.wake();
         self.reset_link_lengths();
         Some(height)
     }
