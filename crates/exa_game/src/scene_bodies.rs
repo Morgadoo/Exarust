@@ -728,12 +728,10 @@ pub fn spawn_scene_body(
             commands.entity(model_entity).insert(duellist);
         }
         BodyBrain::Npc => {
-            // The brain's target pass picks its foe; until the plan's first
-            // action (the match's grace on the AI clock) it enters no fight.
-            let mut duellist = exa_ai::Duellist::new(context.player);
-            if plan.act_at_ms > context.now_ms {
-                duellist.hold_until_ms = Some(plan.act_at_ms.into());
-            }
+            // The brain's target pass picks its foe and enters the fight
+            // (the match's grace on the AI timers delays only the idle
+            // look's glances).
+            let duellist = exa_ai::Duellist::new(context.player);
             // Its relations hold what the role database rates each other
             // character by (a scene body without them rates everyone 0).
             commands.entity(model_entity).insert((

@@ -1529,16 +1529,14 @@ pub fn ai_tick(
         // mind's own rating no longer decides it. The entry sets the
         // brain's target to the character the pass picked (the original's
         // enter-combat then set-target): a pick other than the duellist's
-        // foe becomes its foe. A body whose AI clock has not reached the
-        // match's action grace enters nothing yet.
+        // foe becomes its foe. Nothing else gates the entry: the pass runs
+        // on the brain's turn while it is active, and the match spawners'
+        // grace on the AI timers delays only the idle look's glances.
         if let Some(duellist) = duellist.as_deref_mut()
             && passed
         {
-            let held = duellist
-                .hold_until_ms
-                .is_some_and(|until| u64::from(now) < until);
             if let Some(level) = npc.pass.enter {
-                if !duellist.engaged && !held {
+                if !duellist.engaged {
                     if npc.pass.target != target_id
                         && let Some(picked) = npc.pass.target.and_then(Entity::try_from_bits)
                     {
@@ -2866,56 +2864,6 @@ mod tests {
         // The combatant's contact follows the brain's integrated hostility.
         let cb = w.get::<Combatant>(hostile).unwrap();
         assert!(cb.contact(player).unwrap().hostility > 0.0);
-    }
-
-    /// A brain whose AI clock has not reached its hold enters no fight;
-    /// once past it, the pass's entry engages.
-    #[test]
-    fn a_held_brain_waits_for_its_clock() {
-        let mut app = App::new();
-        app.insert_resource(db()).add_systems(
-            Update,
-            (apply_new_roles, rate_the_player, perceive_all, ai_tick).chain(),
-        );
-        let player = app
-            .world_mut()
-            .spawn((
-                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
-                Fighter::default(),
-                RatedPlayer,
-                Roles::new_character(&db().book, 0),
-                CharacterId(PLAYER_ID),
-            ))
-            .id();
-        let mut duellist = crate::Duellist::new(player);
-        duellist.hold_until_ms = Some(u64::MAX);
-        let held = app
-            .world_mut()
-            .spawn((
-                held(&[8, 2]),
-                Relations::default(),
-                Npc::new([0.0; 4]),
-                Combatant::default(),
-                duellist,
-                Mind::new(0.0),
-                GlobalTransform::from_translation(Vec3::ZERO),
-                Fighter::default(),
-                Condition::NORMAL,
-                CharacterId(2),
-            ))
-            .id();
-        for _ in 0..700 {
-            app.update();
-        }
-        assert!(!app.world().get::<crate::Duellist>(held).unwrap().engaged);
-        app.world_mut()
-            .get_mut::<crate::Duellist>(held)
-            .unwrap()
-            .hold_until_ms = None;
-        for _ in 0..700 {
-            app.update();
-        }
-        assert!(app.world().get::<crate::Duellist>(held).unwrap().engaged);
     }
 
     /// With the target pass's turn, one brain a tick perceives and runs the
