@@ -37,6 +37,7 @@ impl Plugin for ScriptPlugin {
             .add_message::<NarrateText>()
             .add_message::<PickReply>()
             .add_message::<LeaveDialogue>()
+            .add_message::<EndNarration>()
             .add_message::<ScriptEffect>()
             .add_systems(
                 Update,
@@ -168,6 +169,12 @@ pub struct PickReply(pub usize);
 #[derive(Message, Debug, Clone, Copy, Default)]
 pub struct LeaveDialogue;
 
+/// The player acted while the narrator's reply panel offers choices: the
+/// next update ends every narrator conversation
+/// ([`dialogue::Engine::end_narration`]).
+#[derive(Message, Debug, Clone, Copy, Default)]
+pub struct EndNarration;
+
 /// What a script asked the game to do.
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
 pub struct ScriptEffect(pub Effect);
@@ -200,6 +207,7 @@ fn run_conversations(
     mut pad_talk: MessageReader<PadTalk>,
     mut pick: MessageReader<PickReply>,
     mut leave: MessageReader<LeaveDialogue>,
+    mut end_narration: MessageReader<EndNarration>,
     mut effects: MessageWriter<ScriptEffect>,
 ) {
     let now = time.elapsed().as_millis() as u32;
@@ -224,6 +232,9 @@ fn run_conversations(
             if let Some(who) = player {
                 engine.leave(scene, who);
             }
+        }
+        if end_narration.read().count() > 0 {
+            engine.end_narration();
         }
         engine.update(scene);
     });

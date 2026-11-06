@@ -1430,11 +1430,11 @@ When the day end reaches a tournament day, the unfit entrants SHALL be dropped f
 
 
 ### Requirement: Match fighters think for themselves
-Every generated match fighter (opponent, hire-list rival, the Beast, company entrant) SHALL carry a brain with relations and an AI clock held until the match's action grace, so its target pass picks its foe among the other sides with or without the player.
+Every generated match fighter (opponent, hire-list rival, the Beast, company entrant) SHALL carry a brain with relations, so its target pass picks its foe among the other sides with or without the player; the match's grace on the AI timers SHALL delay only the idle look.
 
 #### Scenario: A spectated duel is fought
 - **WHEN** a hired combatant alone is entered against one opponent
-- **THEN** each takes the other as its foe after the grace and they fight
+- **THEN** each takes the other as its foe and they fight
 
 ### Requirement: Fixed spectate camera
 A spectated match's start SHALL put the camera at the arena's spawn spot raised by 700, 1180 and 1100 cm, looking at the spot, until a double click picks a character to follow.

@@ -323,6 +323,50 @@ fn focus_talk_target(
 
 /// The pad's Talk: an open panel closes (the keyboard Talk's leave), and
 /// otherwise the focused character is talked to in the pad mode.
+/// The player behaviour's narrator check, every behaviour tick: while the
+/// narrator's reply panel offers choices, any of the player's inputs (the
+/// left or right button over the game view, a movement key — forward,
+/// left, back, right — or the movement stick past 0.1 squared) ends every
+/// narrator conversation on the next update (the original sets the
+/// dialogue unit's end flag, which its update reads).
+#[allow(clippy::too_many_arguments)]
+fn narration_input(
+    conversations: Option<Res<Conversations>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    bindings: Res<Bindings>,
+    over: Res<crate::panel_live::PointerOverGui>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    players: Query<(), With<PlayerBody>>,
+    mut end: MessageWriter<exa_script::EndNarration>,
+) {
+    let Some(conversations) = conversations else {
+        return;
+    };
+    let panel = &conversations.engine.panel;
+    if players.is_empty()
+        || !panel.open
+        || panel.partner != Some(Speaker::Narrator)
+        || panel.entries.is_empty()
+    {
+        return;
+    }
+    let mouse =
+        !over.0 && (buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right));
+    let moved = [Action::Forward, Action::Left, Action::Back, Action::Right]
+        .into_iter()
+        .any(|action| bindings.pressed(&keys, action));
+    let stick = pad_status.as_ref().is_some_and(|s| s.active())
+        && pad
+            .as_ref()
+            .is_some_and(|p| p.frame().move_raw.length_squared() > 0.1);
+    if mouse || moved || stick {
+        info!("dialogue: the player acted; the narrator's conversations end");
+        end.write(exa_script::EndNarration);
+    }
+}
+
 fn pad_talk(
     pad: Option<Res<crate::gamepad::PlayPad>>,
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
@@ -568,6 +612,7 @@ impl Plugin for DialogueLivePlugin {
                         .before(HotkeySet)
                         .after(crate::player::cursor_ground),
                     pad_talk.after(focus_talk_target),
+                    narration_input.after(crate::panel_live::track_pointer),
                     panel_input
                         .after(crate::panel_live::track_pointer)
                         .before(crate::hand::HandSystems),
@@ -580,6 +625,56 @@ impl Plugin for DialogueLivePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// While the narrator's panel offers a choice, a movement key ends the
+    /// narration; with no choice, or another speaker's panel, it does not.
+    #[test]
+    fn a_move_ends_the_narrators_offer() {
+        let mut app = App::new();
+        app.add_message::<exa_script::EndNarration>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Bindings>()
+            .init_resource::<crate::panel_live::PointerOverGui>()
+            .init_resource::<Conversations>()
+            .add_systems(Update, narration_input);
+        app.world_mut().spawn(PlayerBody::new(0.0));
+        let forward = app
+            .world()
+            .resource::<Bindings>()
+            .key_code(Action::Forward)
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(forward);
+        let count = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Messages<exa_script::EndNarration>>()
+                .drain()
+                .count()
+        };
+        app.update();
+        assert_eq!(count(&mut app), 0, "no panel");
+        {
+            let mut c = app.world_mut().resource_mut::<Conversations>();
+            c.engine.panel.open = true;
+            c.engine.panel.partner = Some(Speaker::Narrator);
+            c.engine.panel.entries.push(exa_script::dialogue::Choice {
+                text: b"Who?".to_vec(),
+                topic: 0,
+                branch: 0,
+            });
+        }
+        app.update();
+        assert_eq!(count(&mut app), 1, "the narrator's offer and a move");
+        app.world_mut()
+            .resource_mut::<Conversations>()
+            .engine
+            .panel
+            .partner = Some(Speaker::Character(5));
+        app.update();
+        assert_eq!(count(&mut app), 0, "another speaker's panel");
+    }
 
     /// The nearest chest on screen wins, wherever it is; a collapsing or
     /// dead character is skipped; a tie keeps the first; NaN never wins.
