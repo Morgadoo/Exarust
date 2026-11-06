@@ -26,7 +26,7 @@ mode 2).
   `Time<Fixed>`). The frame's fixed loop is off; `exchange_free` sends the frame's packet without waiting and applies
   every arrived step packet in order, once a frame (`SimExchange`).
 - Interpolation: the original's render fraction becomes the frame's `Time<Fixed>` overstep (0–2 steps), so every
-  drawing reading `overstep_fraction` draws between the last two steps or ahead of the last.
+  drawing reading `overstep_fraction` draws the original's moment: one step behind the clock (the original draws between its two older history entries at the fraction; Exarust's bodies keep two, drawn at fraction − 1).
 - Data both sides write: drawn copies (`bridge_copy_drawn`: transforms, the drawn controller) keep a newer
   simulation value; other values take the frame's write as in lockstep; both counted in the log.
 

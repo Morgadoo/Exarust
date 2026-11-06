@@ -49,9 +49,11 @@ packet without waiting and applies every step packet that arrived, in
 order, with its events; held, it keeps its changes and posts until it lets
 go. The original's render fraction, 1 + (frame clock − published time) /
 step clamped to [−2, 2], goes into the frame's `Time<Fixed>` as its
-overstep (0 to 2 steps), so every drawing that reads `overstep_fraction`
-draws between the last two steps, or ahead of the last along its step, as
-the original's frame does. Data both sides write meets a frame write made
+overstep: the original draws between the two older of its three history
+entries at that fraction, one step behind the clock; Exarust's bodies keep
+the last two, so the same moment is fraction − 1 between them (0 to 1,
+`overstep_of`), and every drawing that reads `overstep_fraction` draws it,
+as the lockstep frame draws one tick behind. Data both sides write meets a frame write made
 against an older step: a drawn copy (`bridge_copy_drawn`: transforms, the
 drawn controller) keeps the simulation's newer value; any other keeps the
 frame's, as in lockstep; both are counted in the log every 1000 steps

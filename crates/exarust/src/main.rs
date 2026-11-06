@@ -160,6 +160,7 @@
 //!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
 //!                                     schedules, by direction (the simulation thread's hand-off)
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
+//!          --draw-trace <file.csv>    the player's drawn pelvis, the camera and the render fraction each frame
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
@@ -286,6 +287,7 @@
 //! `.` step one tick, `[` / `]` slower / faster.
 
 mod column;
+mod draw_trace;
 mod frame_loop;
 mod grid;
 mod map_panel;
@@ -499,6 +501,8 @@ pub struct Options {
     pub spectate: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
+    /// Write where the frame drew the player each frame (`--draw-trace`).
+    pub draw_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
     pub pair_trace: Option<PathBuf>,
     /// Every frame advances game time by exactly 1/60 s, so that runs
@@ -1137,6 +1141,7 @@ fn main() -> AppExit {
                     .collect();
             }
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
+            "--draw-trace" => options.draw_trace = args.next().map(PathBuf::from),
             "--pair-trace" => options.pair_trace = args.next().map(PathBuf::from),
             "--fixed-frames" => options.fixed_frames = true,
             "--sim-speed" => {
@@ -1773,6 +1778,18 @@ fn main() -> AppExit {
     if let Some(trace) = joint_trace {
         app.insert_resource(trace);
     }
+    if let Some(path) = options.draw_trace.as_deref() {
+        match draw_trace::DrawTrace::create(path) {
+            Ok(trace) => {
+                app.insert_resource(trace);
+            }
+            Err(e) => {
+                eprintln!("cannot write the draw trace: {e}");
+                return AppExit::from_code(2);
+            }
+        }
+    }
+    app.add_plugins(draw_trace::DrawTracePlugin);
     if let Some(trace) = pair_trace {
         app.insert_resource(trace);
     }

@@ -1041,8 +1041,8 @@ impl FreeStamp {
     /// The original's render fraction: 1 + (frame clock − published
     /// time) / step, at most 2 and at least −2. `clock_ms` is the
     /// milliseconds since the shell's start (the pause time not yet left
-    /// out). 0 draws the step before the last, 1 the last; above 1 the
-    /// bodies are drawn ahead of it along their last step.
+    /// out). 1 draws the step before the last, 2 the last
+    /// ([`overstep_of`]).
     pub fn fraction(&self, clock_ms: u64) -> f32 {
         let now = clock_ms
             .saturating_sub(self.paused_ms)
@@ -1316,13 +1316,26 @@ pub struct FreeLink {
     pub paused: bool,
 }
 
+/// The frame's overstep (in steps) for the original's render fraction.
+/// The original keeps three history entries per object (the last step's,
+/// the one before, and the one before that) and draws between the two
+/// older ones at the fraction (1 the step before the last, 2 that pair
+/// carried on a step, which is about the last step): one step behind the
+/// clock, as Exarust's lockstep frame draws between the last two ticks by
+/// the time since the last. Exarust's bodies keep the last two entries, so
+/// the same moment is drawn at fraction − 1 between them; a fraction below
+/// 1 (a frame that ran ahead of the step's time) holds at the step before
+/// the last.
+pub fn overstep_of(fraction: f32) -> f32 {
+    (fraction - 1.0).clamp(0.0, 1.0)
+}
+
 /// Free mode, once a frame: sends the frame's packet (its changes, its
 /// posted calls, its hold) without waiting, applies every step packet that
 /// arrived, in order, with its events, and sets the render fraction. The
 /// fraction replaces the fixed loop's overstep: the frame's `Time<Fixed>`
-/// carries it (overstep = fraction × timestep, from 0 to 2), so every
-/// drawing that reads `overstep_fraction` draws between the last two steps
-/// as the original's frame does, or ahead of the last along its step.
+/// carries it ([`overstep_of`]), so every drawing that reads
+/// `overstep_fraction` draws the moment the original's frame draws.
 pub fn exchange_free(world: &mut World) {
     let paused = world
         .get_resource::<SimPause>()
@@ -1421,7 +1434,7 @@ pub fn exchange_free(world: &mut World) {
         let left = fixed.overstep();
         fixed.discard_overstep(left);
         let step = fixed.timestep();
-        fixed.accumulate_overstep(step.mul_f32(fraction.clamp(0.0, 2.0)));
+        fixed.accumulate_overstep(step.mul_f32(overstep_of(fraction)));
     }
 }
 
@@ -1655,6 +1668,15 @@ mod tests {
         }
         run_frames_for(&mut app, 100);
         assert_eq!(app.world().resource::<Heard>().0, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn the_overstep_draws_the_originals_moment() {
+        // Fraction 1: the step before the last; 2: the last.
+        assert_eq!(overstep_of(1.0), 0.0);
+        assert_eq!(overstep_of(1.5), 0.5);
+        assert_eq!(overstep_of(2.0), 1.0);
+        assert_eq!(overstep_of(-2.0), 0.0);
     }
 
     #[test]

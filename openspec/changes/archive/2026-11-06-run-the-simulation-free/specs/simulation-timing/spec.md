@@ -22,11 +22,11 @@ With the free mode on, the simulation SHALL take every packet the frame sent sin
 - **THEN** the simulation runs them in post order before its next steps, and their answers reach the frame in the same order
 
 ### Requirement: Drawing at the original's render fraction
-With the free mode on, the frame SHALL draw the simulated bodies at 1 + (frame clock − the last step's published time) / step, at most 2 and at least −2, between the last two steps (0 the one before, 1 the last, above 1 ahead of the last along its step), and SHALL keep the fraction while the simulation is held.
+With the free mode on, the frame SHALL draw the simulated bodies at 1 + (frame clock − the last step's published time) / step, at most 2 and at least −2, as the moment one step behind the clock: 1 the step before the last, 2 the last, a fraction below 1 held at the step before the last; and SHALL keep the fraction while the simulation is held.
 
 #### Scenario: A frame half a step after the last step
 - **WHEN** a frame is drawn 6 ms after the last published step's time
-- **THEN** the bodies are drawn at fraction 1.5
+- **THEN** the bodies are drawn at fraction 1.5, halfway between the last two steps
 
 ### Requirement: Drawn copies keep the simulation's newer value
 With the free mode on, a value the frame writes only to draw it (transforms, the drawn controller) SHALL not replace a value the simulation wrote in a step the frame had not seen when it wrote; other values both sides write SHALL take the frame's write, as in lockstep. In lockstep every step SHALL stay identical to the frame-driven step.
