@@ -941,6 +941,8 @@ Round 88 simloop: the simulation can run free on its own thread (--sim-free), as
 
 Round 89 gripfix: characters hold their weapons again (a round 85 regression).
 
+Round 90 pivot: the sword no longer floats off the hand in combat stance.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
