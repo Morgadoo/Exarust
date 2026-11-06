@@ -179,7 +179,7 @@ tournament's six forty-eight-byte roster rows. A load reads them back
 (`arena_save::read_tables`) and `Session::apply_arena_tables` puts them into
 the live company, staff, arsenal and stash; a save with none of the arena
 chunks leaves the session without tables. What Exarust has no live model
-for (the hireables, the tournament's field, prizes and events, the
+for (the tournament's field until one is drawn and its season weeks, the
 merchant's stock type, the day's specials and daily tallies, the company's
 second string and three words) keeps the chunk the save already held, and
 the merchant's specialisation is the writer's constant −1.
@@ -764,9 +764,18 @@ The controls' spectate session (`spectate`, the original's Spectate game
 mode): its start sets the spectate flag and frees the camera, the player is
 not steered while it runs, a double click makes the chase camera follow the
 picked character (anything else frees it, the camera keeping its last
-point), and its end clears both. The original's arena starts it when the
-round's entrant is a company employee; Exarust's arena always fields the
-player, so `--spectate` starts it after the load.
+point), and its end clears both. The arena starts it when no participant
+is the player's to control (only hired employees entered): the bench
+(`save_live`) keeps the manager's record as the next player spawn's and
+despawns the player, the camera stands at the original's fixed pose (the
+spawn spot raised by 700, 1180 and 1100 cm, looking at it) until a double
+click follows someone, every match fighter carries a brain (with
+relations, its combat entry held until the match's grace) whose target
+pass picks its foe, and the hub's arrival
+rebuilds the manager and ends the session. A match's company entries are
+the board's lineup (`ArenaMatchLaunch::entrants`): entry `i` is pool slot
+`entrants[i]`, the manager at slot 0. `--spectate` starts the session in
+any level, and `--hub-enter` begins the board's match with a given lineup.
 
 The player behaviour's own rules (`player_behaviour`) are the aim point's
 soft height lock toward the nearest of a target's bones (the reference
@@ -2130,16 +2139,26 @@ upkeep, HIRE runs the company's funds, room and duplicate checks
 candidate, and End Day renews the list. A candidate's level and the boards'
 rank rolls read the career's one run-time library generator
 (`ArenaCareer::random`, the Mersenne twister apart from the engine's LCG);
-the per-candidate counter spacing is a guess. The candidate's item outfit is
-not generated (the hub holds no item-fact table), so its price has no gear
-share [limitation]. The Arsenal window and the kit release a dismissal makes
-in the original are still not built. End Day rests the manager and gives him
+the per-candidate counter spacing is a guess. Once the hub's level is in,
+the hub reads the object database's facts (`arena_hub_live::hire_facts_of`:
+the outfit tables, each body item's apparel rank byte, each item's value
+word) and each candidate's outfit pass continues its sequence
+(`hub_windows::dress_candidate`): a combatant is dressed by level and its
+six loadouts are that kit, trimmed below its level; a specialist is dressed
+from its profile (0x14 for a physician, 4 otherwise) and holds nothing. The
+price adds four fifths of the outfit's value, the hire keeps the outfit and
+loadouts, and a specialist hired in the hub stands at its spot at once
+(`place_hired_specialists`). A dismissal releases the employee's kit to
+the arsenal (`hub_forms::apply_staff_changes`). End Day rests the manager and gives him
 the first trainer's lesson before the staff, books a tournament lost when the
 company entered a week a rival took, then, in the original's order, asks the
 live shop world to rotate the shop's shelf and the employed merchant's stock
 (`hub_restock`, on the next frame), renews the hire list, rolls a new week's
 board the day after a tournament day and rolls the day's six standard
-matches. The week's board (`ArenaCareer::regenerate_tournament_at`) clears
+matches; when the new day is a tournament day it drops the unfit entrants
+and clears each event entry naming fewer than its event's fighters per side
+or, for an armed event, whose first entrant's weapon is not in the event's
+row (`hub_forms::clear_unready_entries`). The week's board (`ArenaCareer::regenerate_tournament_at`) clears
 the event entries and draws six event rows, the weekly prize that avoids the
 last eight and the sixteen-company field, which becomes the career's rival
 field that the board's winners table and the match launch read. The arena
@@ -2147,7 +2166,10 @@ reset keeps the hire list and the week's events, as the original's does, and
 ends by rolling the day's matches. The arena save's company chunk carries
 all thirteen records (the two coin totals as coin words), the day chunk the
 day's spent and earned coin words and the tournament chunk the prize
-history; the week's event rows and the hire list are not yet saved.
+history, the week's prize and its six events (template id, index, weapon
+row, the word after it; the load rebuilds each from its template), and
+the hireables chunk the hire list, each candidate as its character export
+(`arena_tables::candidate_record` / `candidate_member`).
 
 The fall to death (`fall`) runs the player's death fade on the body ticks'
 game clock: it completes, and pauses the game, only after the tick that

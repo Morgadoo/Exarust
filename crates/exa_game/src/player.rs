@@ -2273,6 +2273,20 @@ pub(crate) fn chase_camera(
     });
     // Spectating, the camera looks at the body it follows, else where it
     // last looked (`crate::spectate`).
+    // The arena's spectated start puts the camera at its fixed pose (the
+    // spawn spot raised by the original's offset, looking at the spot)
+    // until a follow is picked.
+    if let Some((eye, at)) = spectate
+        .as_deref()
+        .filter(|s| s.active)
+        .and_then(|s| s.pose)
+    {
+        for (_, mut t, _) in &mut cameras {
+            t.translation = eye;
+            t.look_at(at, Vec3::Y);
+        }
+        return;
+    }
     let focus = match spectate.as_deref_mut().filter(|s| s.active) {
         Some(session) => {
             let fallback = player_focus.unwrap_or(Vec3::ZERO);

@@ -473,6 +473,9 @@ impl HubWindows {
                     career.renew_hire_pool();
                     if career.company.day % 7 == 1 {
                         career.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
+                    } else if career.company.day.is_multiple_of(7) {
+                        let cleared = clear_unready_entries(career);
+                        info!("hub manage: tournament day; entries cleared {cleared:?}");
                     }
                     career.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
                     info!(
@@ -600,9 +603,13 @@ impl HubWindows {
                     Ok(role) => {
                         info!("hub hire: a {role:?} joined the company");
                         if let Some(member) = career.company.roster.last() {
+                            // The record wears and holds the candidate's
+                            // outfit; the list (the kit) starts empty.
                             self.forms.joined.push(crate::staff::Employee {
                                 class: staff_class(role),
                                 name: crate::hub_windows::name16(&member.name),
+                                hands: member.outfit.hands,
+                                worn: member.outfit.items.iter().map(|&id| (id, 0)).collect(),
                                 ..crate::staff::Employee::default()
                             });
                         }
@@ -670,6 +677,56 @@ impl HubWindows {
     }
 }
 
+/// The day end's tournament-day pass, when the new day is a tournament
+/// day: the unfit entrants are dropped from the pending rows
+/// ([`crate::arena::drop_unfit`]), then each event entry that still names
+/// someone is cleared when it names fewer than the event's fighters per
+/// side, or, for an event that arms its fighters, when its first
+/// entrant's weapon is not in the event's weapon row. Returns the events
+/// cleared.
+pub fn clear_unready_entries(career: &mut ArenaCareer) -> Vec<usize> {
+    // An entrant's id is its participant id: 0 the manager, `i` roster
+    // member `i - 1`.
+    let healths: Vec<u16> = std::iter::once(career.player.health)
+        .chain(career.company.roster.iter().map(|member| member.health))
+        .collect();
+    crate::arena::drop_unfit(&mut career.entries, |id| {
+        healths.get(id as usize).copied().unwrap_or(0)
+    });
+    let board = career.board();
+    let mut cleared = Vec::new();
+    for (index, row) in career.entries.iter_mut().enumerate() {
+        let count = row.count as i32;
+        if count <= 0 {
+            continue;
+        }
+        let Some(event) = board.tournament_events.get(index) else {
+            continue;
+        };
+        let unready = if count < event.team_size {
+            true
+        } else if event.flags & exa_ui::match_board::FLAG_WEAPON != 0 {
+            let weapon = board
+                .entries
+                .get(index)
+                .and_then(|entry| entry.participants.first())
+                .map_or(0, |first| first.weapon);
+            let row = usize::try_from(event.weapon_row)
+                .ok()
+                .and_then(|row| row.checked_sub(1))
+                .and_then(|row| board.weapon_tiers.get(index)?.get(row));
+            !row.is_some_and(|row| row.accepts(weapon))
+        } else {
+            false
+        };
+        if unready {
+            row.count = 0;
+            cleared.push(index);
+        }
+    }
+    cleared
+}
+
 /// The staff class of a hired profession.
 pub fn staff_class(role: Profession) -> u8 {
     match role {
@@ -681,8 +738,9 @@ pub fn staff_class(role: Profession) -> u8 {
 }
 
 /// Runs the staff's share of the forms' joinings and leavings on the
-/// arena's stores: a hired employee joins the staff list (with no kit: the
-/// hire list carries no item facts), and a dismissed one leaves it, his kit
+/// arena's stores: a hired employee joins the staff list (his record wearing
+/// the candidate's outfit, his list empty, as the original's hire appends
+/// him), and a dismissed one leaves it, his kit
 /// going back to the arsenal ([`crate::staff::Staff::leave`]). A place the
 /// staff list does not hold (a hub career whose staff was never loaded) has
 /// nothing to release.
@@ -1128,6 +1186,37 @@ pub fn hub_form_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tournament day's pass clears an entry naming fewer than its
+    /// event's fighters per side and keeps a full one of an unarmed event.
+    #[test]
+    fn a_tournament_day_clears_the_short_entries() {
+        let mut career = ArenaCareer::default();
+        career.player.health = u16::MAX;
+        let board = career.board();
+        let short = board
+            .tournament_events
+            .iter()
+            .position(|event| event.team_size > 1);
+        let full = board.tournament_events.iter().position(|event| {
+            event.team_size == 1 && event.flags & exa_ui::match_board::FLAG_WEAPON == 0
+        });
+        for index in [short, full].into_iter().flatten() {
+            career.entries[index].count = 1;
+            career.entries[index].team_id = 1;
+            career.entries[index].entries[0].actor_id = 0;
+        }
+        let cleared = clear_unready_entries(&mut career);
+        if let Some(short) = short {
+            assert!(cleared.contains(&short));
+            assert_eq!(career.entries[short].count, 0);
+        }
+        if let Some(full) = full {
+            assert!(!cleared.contains(&full));
+            assert_eq!(career.entries[full].count, 1);
+        }
+        assert!(short.is_some() || full.is_some());
+    }
 
     fn opened() -> (HubWindows, ArenaCareer) {
         let mut windows = HubWindows::default();

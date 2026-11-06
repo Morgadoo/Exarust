@@ -1379,3 +1379,87 @@ An item dropped back to the arsenal SHALL ask the company arsenal's lend query o
 #### Scenario: The form's own lend
 - **WHEN** the form's list holds item 7 lent under 0x400 and the company arsenal also holds it lent
 - **THEN** the form's entry loses 0x400 and the company arsenal's entry keeps it
+
+### Requirement: Spectated match participants
+A match's participants SHALL be the board's lineup in entry order, each company entry standing for its pool slot (0 the manager, roster member `i` slot `i + 1`), whose name, health and participant id its body takes. The first participant the player may control SHALL be the player.
+
+#### Scenario: Entry order maps the roster
+- **WHEN** the lineup is [2, 0]
+- **THEN** company entry 0 is roster member 2 with id 2 and entry 1 is the manager with id 0
+
+### Requirement: Spectated match
+When no participant is one the player may control (only hired employees are entered), the match start SHALL leave the scene without a player body, start the controls' Spectate mode with the camera looking at the arena's spawn spot, and stand every entrant from the generator.
+
+#### Scenario: An employee fights alone
+- **WHEN** a career with one hired combatant begins a duel with the lineup [1] (`--hub-enter 1`)
+- **THEN** the manager is benched, the spectate session starts, the combatant and the opponent are stood and duel each other
+
+### Requirement: Return from a spectated match
+The return to the hub after a spectated match SHALL build the manager again from his record, with his possessions and health, and end the Spectate mode (Character mode again).
+
+#### Scenario: The manager stands again
+- **WHEN** a spectated match ends and the career returns to the hub
+- **THEN** the manager stands in the hub with his possessions and health, and the spectate session has ended
+
+### Requirement: Dressed candidates
+With the object database read, each hire-list candidate SHALL be dressed after its record from the same sequence: a combatant by its level with a twentieth of it as the height bias, its six loadouts copies of that kit with those of the ranks below its level trimmed to their rank; a physician from the profile 0x14, 0, 100, 10, 10 and a merchant or trainer from 4, 0, 100, 10, 10, holding nothing.
+
+#### Scenario: A combatant candidate is dressed
+- **WHEN** the hire list rolls a combatant candidate of level 10
+- **THEN** it wears the kit of its level with a height bias of a twentieth of it, and its six loadouts copy that kit, those of ranks below its level trimmed to their rank
+### Requirement: Candidate price and hire with the outfit
+A dressed candidate's listed price SHALL add four fifths of the outfit's value (each worn and held item's value word as a shop line), and the hire SHALL keep the outfit and loadouts.
+
+#### Scenario: The outfit is priced
+- **WHEN** a candidate wears items worth 100 and holds one worth 12 in value words
+- **THEN** its price is the listed price of its skills with those two words, and the hired member keeps the outfit
+
+### Requirement: Hired specialist placement
+A merchant or physician hired during a hub visit SHALL stand at its spot at once, as one employed at the hub's entry does, and only once per visit.
+
+#### Scenario: A physician is hired in the hub
+- **WHEN** the hub stands its shopkeeper and a physician joins the roster
+- **THEN** one body is asked for the physician
+
+### Requirement: Tournament day entries
+When the day end reaches a tournament day, the unfit entrants SHALL be dropped from the pending rows, then each event entry that names someone SHALL be cleared when it names fewer than the event's fighters per side, or, for an event that arms its fighters, when its first entrant's weapon is not in the event's weapon row.
+
+#### Scenario: A short entry
+- **WHEN** an event of two fighters a side names one entrant on the tournament day's end
+- **THEN** its entry is cleared, while a full entry of an unarmed event stays
+
+
+### Requirement: Match fighters think for themselves
+Every generated match fighter (opponent, hire-list rival, the Beast, company entrant) SHALL carry a brain with relations and an AI clock held until the match's action grace, so its target pass picks its foe among the other sides with or without the player.
+
+#### Scenario: A spectated duel is fought
+- **WHEN** a hired combatant alone is entered against one opponent
+- **THEN** each takes the other as its foe after the grace and they fight
+
+### Requirement: Fixed spectate camera
+A spectated match's start SHALL put the camera at the arena's spawn spot raised by 700, 1180 and 1100 cm, looking at the spot, until a double click picks a character to follow.
+
+#### Scenario: The start's pose
+- **WHEN** a spectated match starts at a spot (1, 2, 3) m
+- **THEN** the camera stands at (8, 13.8, 14) m looking at the spot
+
+### Requirement: Saved hire list
+An arena save SHALL write each hire-list candidate as an unused word and its character export (name, role word, skills, worn and held items, six loadouts), and a load SHALL rebuild the list from them.
+
+#### Scenario: Save and reload
+- **WHEN** a career is saved and its slot loaded
+- **THEN** the candidates' names, professions, skills, outfits and loadouts are those saved
+
+### Requirement: Saved week's events
+An arena save SHALL write the week's prize and, per event, its template id, index, weapon row and the word after it; a load SHALL copy each event's template and set its rank window to 5 and the index.
+
+#### Scenario: Save and reload the week
+- **WHEN** a career is saved and its slot loaded
+- **THEN** the week's prize and each event's template, index and weapon row are those saved
+
+### Requirement: Saved week winners
+An arena save SHALL write 1 for each season week the company took and keep a rival winner the save held for the others; a load SHALL count a week whose winner is 1 as won.
+
+#### Scenario: Two weeks won
+- **WHEN** a career that took weeks one and three is saved and loaded
+- **THEN** weeks one and three are won and the others are not

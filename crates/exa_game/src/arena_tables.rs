@@ -10,10 +10,15 @@
 //! [`apply`], and the [`Session`] helpers [`Session::capture_arena`] and
 //! [`Session::apply_arena_tables`]).
 //!
-//! What Exarust has no live model for keeps the chunk a save already holds,
-//! or the reader's default when there is none: the hireables, the
-//! tournament's prize and events (and its field until one is drawn), the
-//! day's specials, and the company's second name string and three words.
+//! The hire list is written from the career's candidates, each as its
+//! character export ([`candidate_record`], read back by
+//! [`candidate_member`]), and the week's prize and six events from the
+//! career's tournament board (each event its template id, index, weapon
+//! row and the word after it; the loader rebuilds the rest from the
+//! template). What Exarust has no live model for keeps the chunk a save
+//! already holds, or the reader's default when there is none: the
+//! tournament's field until one is drawn and a rival's week winner, the day's
+//! specials, and the company's second name string and three words.
 //! The day's spent and earned tallies, the lifetime coin records and the
 //! prize history are the career's; the coin values are stored as coin words. The
 //! merchant's stock type and specialisation are the career's
@@ -29,6 +34,8 @@ use exa_formats::arena_save::{
     self, ArenaTables, CompanyChunk, DayChunk, EmployeeRecord, EmployeesChunk, ItemEntry,
     MerchantChunk, TournamentChunk,
 };
+
+use exa_formats::characters::{CharacterRecord, ItemRef};
 
 use crate::arena::{Roster, RosterRow};
 use crate::arena_log::ArenaLog;
@@ -285,20 +292,160 @@ pub fn from_live(
         ids: career.merchant_stock.clone(),
     };
 
-    tables.hireables = previous.hireables;
+    // The hire list: each candidate's unused word and character export.
+    let candidates: Vec<arena_save::Hireable<CharacterRecord>> = career
+        .hire_pool
+        .iter()
+        .map(|member| arena_save::Hireable {
+            unused: 0,
+            character: candidate_record(member),
+        })
+        .collect();
+    bevy::log::info!(
+        "arena save: hire list {:?}; week's events {:?}",
+        career
+            .hire_pool
+            .iter()
+            .map(|m| (m.name.as_str(), m.profession, m.outfit.items.len()))
+            .collect::<Vec<_>>(),
+        career.tournament.as_ref().map(|board| (
+            board.prize_id,
+            board.rows.map(|row| (row.id, row.weapon_row))
+        ))
+    );
+    tables.hireables = arena_save::write_hireables(&candidates, |record, out| {
+        // A record the codec cannot write leaves a broken export; the
+        // candidate list's own records always write.
+        let _ = record.write(out);
+    });
     // The week's field is the career's once drawn, else the loaded one.
     let field = if career.rivals[0] != 0 {
         career.rivals.map(|company| company as u32)
     } else {
         previous.tournament.field
     };
+    let (prize, events) = match &career.tournament {
+        Some(board) => (board.prize_id, board.rows.map(event_entry)),
+        None => (previous.tournament.prize, previous.tournament.events),
+    };
     tables.tournament = TournamentChunk {
+        prize,
         rows: rows_from_roster(&career.entries),
         field,
+        events,
+        // The season's four week winners: 1 for a week the company took; a
+        // week it did not keeps the rival the save held (Exarust keeps only
+        // whether the company won).
+        weeks: std::array::from_fn(|week| {
+            if career.company.weeks[week] {
+                1
+            } else if previous.tournament.weeks[week] == 1 {
+                0
+            } else {
+                previous.tournament.weeks[week]
+            }
+        }),
         history: career.prize_history,
-        ..previous.tournament
     };
     tables
+}
+
+/// One week's event as the tournament chunk writes it: its template id,
+/// its event index (the record's rank ceiling), its weapon row and the
+/// word after it.
+pub fn event_entry(row: crate::arena::MatchInstance) -> arena_save::EventEntry {
+    arena_save::EventEntry {
+        template: row.id,
+        rank: row.max_rank as u32,
+        third: row.weapon_row,
+        fourth: row.xp,
+    }
+}
+
+/// The week's event `index` as the tournament chunk's loader rebuilds it:
+/// the template of that id copied whole (an id no tournament template has
+/// leaves `None`), its rank window and rank set to 5 and the event index,
+/// the saved weapon row and the word after it. The saved rank word is
+/// skipped.
+pub fn event_from_entry(
+    entry: arena_save::EventEntry,
+    index: usize,
+) -> Option<crate::arena::MatchInstance> {
+    let template = crate::arena::TOURNAMENTS
+        .iter()
+        .find(|template| template.id == entry.template)?;
+    let mut row = crate::arena::MatchInstance::from_template(template, 5);
+    row.min_rank = 5;
+    row.max_rank = index as i32;
+    row.slot = 5;
+    row.rank = index as i32;
+    row.weapon_row = entry.third;
+    row.xp = entry.fourth;
+    Some(row)
+}
+
+/// A hire-list candidate's character export: a record with its name, its
+/// profession's role word, its six skills' experience and techniques, what
+/// it wears and holds, and its six loadouts.
+pub fn candidate_record(member: &crate::career::Member) -> CharacterRecord {
+    let mut record = CharacterRecord::new();
+    record.name = member.name.clone();
+    record.set_profession(crate::hirelings::role_word(member.profession));
+    for (skill, (xp, techniques)) in record
+        .skills
+        .iter_mut()
+        .zip(member.skill_xp.iter().zip(&member.techniques))
+    {
+        skill.points = *xp;
+        skill.techniques = *techniques;
+    }
+    record.hands[0] = ItemRef::new(member.outfit.hands[0], 0);
+    record.hands[1] = ItemRef::new(member.outfit.hands[1], 0);
+    record.worn = member
+        .outfit
+        .items
+        .iter()
+        .map(|&id| ItemRef::new(id, 0))
+        .collect();
+    record.loadouts = member.loadouts.to_vec();
+    record
+}
+
+/// A loaded candidate from its character export: the profession from the
+/// role word's top nibble (an unknown one is a combatant), the skills,
+/// the outfit and the loadouts; its fee levels are the experience over
+/// 5000.
+pub fn candidate_member(record: &CharacterRecord) -> crate::career::Member {
+    use crate::career::Profession;
+    let profession = match record.profession() >> 28 {
+        3 => Profession::Trainer,
+        4 => Profession::Merchant,
+        5 => Profession::Physician,
+        _ => Profession::Combatant,
+    };
+    let skill_xp: [u16; 6] = std::array::from_fn(|i| record.skills.get(i).map_or(0, |s| s.points));
+    let techniques: [[u8; 6]; 6] =
+        std::array::from_fn(|i| record.skills.get(i).map_or([0; 6], |s| s.techniques));
+    let mut loadouts: [crate::loadout::CharacterLoadout; crate::loadout::RANKS] =
+        Default::default();
+    for (slot, loadout) in loadouts.iter_mut().zip(&record.loadouts) {
+        *slot = loadout.clone();
+    }
+    crate::career::Member {
+        name: record.name.clone(),
+        profession,
+        xp: 0,
+        skills: skill_xp.map(|xp| u32::from(xp) / u32::from(crate::career::SKILL_STEP)),
+        skill_xp,
+        techniques,
+        loadouts,
+        health: u16::MAX,
+        in_entry: false,
+        outfit: crate::hirelings::Loadout {
+            hands: [record.hands[0].id, record.hands[1].id],
+            items: record.worn.iter().map(|worn| worn.id).collect(),
+        },
+    }
 }
 
 /// Put a loaded save's arena tables into the live state: the arsenal, the
@@ -367,10 +514,60 @@ pub fn apply(
     career.merchant_kinds = tables.merchant.stock_type;
     career.merchant_rank = tables.merchant.specialisation as i32;
     career.entries = roster_from_rows(&tables.tournament.rows);
+    // The week's prize and its six events, each rebuilt from its template.
+    let events: Vec<crate::arena::MatchInstance> = tables
+        .tournament
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| event_from_entry(*entry, index))
+        .collect();
+    if let Ok(rows) = <[crate::arena::MatchInstance; 6]>::try_from(events) {
+        let companies = tables.tournament.field.map(|company| company as u8);
+        career.tournament = Some(crate::arena::TournamentBoard {
+            rows,
+            prize_id: tables.tournament.prize,
+            companies,
+        });
+    }
+    // The hire list's candidates from their character exports; a broken
+    // chunk keeps the list the career has.
+    match arena_save::parse_hireables(&tables.hireables, |bytes| {
+        let record = CharacterRecord::parse(0, bytes).ok()?;
+        let size = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
+        Some((record, size + 8))
+    }) {
+        Ok(candidates) if !tables.hireables.is_empty() => {
+            career.hire_pool = candidates
+                .iter()
+                .map(|entry| candidate_member(&entry.character))
+                .collect();
+        }
+        Ok(_) => {}
+        Err(error) => bevy::log::warn!("arena load: the hire list does not read ({error:?})"),
+    }
+    bevy::log::info!(
+        "arena load: hire list {:?}; week's events {:?}",
+        career
+            .hire_pool
+            .iter()
+            .map(|m| (m.name.as_str(), m.profession, m.outfit.items.len()))
+            .collect::<Vec<_>>(),
+        career.tournament.as_ref().map(|board| (
+            board.prize_id,
+            board.rows.map(|row| (row.id, row.weapon_row))
+        ))
+    );
     // A field whose first company is 0 stays empty, so the next tournament
     // asks for a new one.
     career.rivals = tables.tournament.field.map(|company| company as i32);
     career.prize_history = tables.tournament.history;
+    // A week the chunk names the company's (1) is won; Exarust's own
+    // session words may already hold it (an older Exarust save wrote the
+    // chunk's weeks as it found them), so a won week stays won.
+    for (won, winner) in career.company.weeks.iter_mut().zip(tables.tournament.weeks) {
+        *won |= winner == 1;
+    }
 }
 
 /// The hub stash's item ids from a save's tables.
@@ -564,7 +761,8 @@ mod tests {
             flags: 1,
         }];
         let kept = from_live(&career, &staff, &arsenal, &[], Some(&previous));
-        assert_eq!(kept.hireables, vec![1, 2, 3, 4]);
+        // The hire list is the career's own, not the save's.
+        assert_ne!(kept.hireables, vec![1, 2, 3, 4]);
         assert_eq!(kept.company.second, b"second");
         assert_eq!(kept.day.specials[0].template, 8);
         assert!(kept.stash.is_empty());
@@ -593,6 +791,61 @@ mod tests {
             &tables,
         );
         assert_eq!(back.rivals, career.rivals);
+    }
+
+    /// The hire list (each candidate's character export) and the week's
+    /// prize and events come back from a save's bytes.
+    #[test]
+    fn the_hire_list_and_the_weeks_events_round_trip() {
+        let mut career = career("Hires");
+        career.regenerate_tournament_at(0x1357_9bdf);
+        career.company.weeks = [true, false, true, false];
+        career.hire_pool[0].outfit = crate::hirelings::Loadout {
+            hands: [33, 0],
+            items: vec![501, 502],
+        };
+        career.hire_pool[0].loadouts[5].word = 0;
+        career.hire_pool[0].loadouts[5].worn = vec![ItemRef::new(501, 0), ItemRef::new(502, 0)];
+        let tables = from_live(&career, &Staff::default(), &Arsenal::default(), &[], None);
+        // The chunk payloads go through their bytes.
+        let mut wire = tables.clone();
+        wire.tournament =
+            arena_save::parse_tournament(&arena_save::write_tournament(&tables.tournament))
+                .unwrap();
+        let mut back = ArenaCareer::default();
+        back.hire_pool.clear();
+        back.company.weeks = [false; 4];
+        apply(
+            &mut back,
+            &mut Staff::default(),
+            &mut Arsenal::default(),
+            &mut Vec::new(),
+            &wire,
+        );
+        assert_eq!(back.hire_pool.len(), career.hire_pool.len());
+        for (loaded, saved) in back.hire_pool.iter().zip(&career.hire_pool) {
+            assert_eq!(loaded.name, saved.name);
+            assert_eq!(loaded.profession, saved.profession);
+            assert_eq!(loaded.skill_xp, saved.skill_xp);
+            assert_eq!(loaded.techniques, saved.techniques);
+            assert_eq!(loaded.skills, saved.skills);
+            assert_eq!(loaded.outfit, saved.outfit);
+            assert_eq!(loaded.loadouts, saved.loadouts);
+        }
+        let saved = career.tournament.as_ref().unwrap();
+        let loaded = back.tournament.as_ref().unwrap();
+        assert_eq!(back.company.weeks, career.company.weeks);
+        assert_eq!(loaded.prize_id, saved.prize_id);
+        for (l, s) in loaded.rows.iter().zip(&saved.rows) {
+            assert_eq!(
+                (l.id, l.max_rank, l.weapon_row),
+                (s.id, s.max_rank, s.weapon_row)
+            );
+            assert_eq!(
+                (l.teams, l.fighters, l.rounds),
+                (s.teams, s.fighters, s.rounds)
+            );
+        }
     }
 
     #[test]

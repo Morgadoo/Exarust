@@ -9,23 +9,49 @@ and the lane's artifacts keep the retail addresses.
 123 routines, about 49.9 KB (one is a `TPlayerControl` method). 78 have a
 role in the research notes (input layer, drag and lift handlers, item use,
 interaction, key and pad handlers, the controls' frame, the player light,
-the life cycle) and were mapped by earlier lanes. 45 small helpers (about
-10 KB) have no note and were not audited.
+the life cycle) and were mapped by earlier lanes. The other 45 (about
+10 KB) were audited in round 77:
+
+| group | routines | bytes | status |
+|---|---|---|---|
+| the lift onto the cursor (frame placement, turn with the 300 ms ramp, placement at a point, per-frame update, the least distance over linked parts, the 280/−1000 cm box test, the lifted-state test and restore, the flag pass) | 11 | 4,272 | live (`hand`, `item_cursor`) |
+| drag events (release into a container or the world, the GUI drop, the release event, the 0xFB01/0xFB02 hook, the nearby-object notify within 5 cm) | 5 | 1,296 | live (`hand`, `item_container`, `player_controls`) |
+| item use (clean, repair, key into a lock with its sound, the used item's marks and consumption, the use-anim list's pruning, a sound at a point, an object spawned by id) | 8 | 1,632 | live (`use_cursor`) |
+| cursor look and reference point (the player's; the spectating camera's branches are not run by Exarust's chase camera) | 3 | 1,088 | live (`player`) |
+| the controls' scene start (night-vision light, deferred callback), the hotkey slot due in 500 ms, key word to scan code | 3 | 304 | live (`player_light`, `hotkeys`, `bindings`) |
+| scene-graph and runtime glue (character list, node and frame refreshes, basis orthonormalisation, flag clears, mouse capture, state getters, six string finalisers) | 15 | 1,392 | glue (Bevy/ECS) |
+
+None of the 45 is reachable and missing.
 
 The spectate session (this lane):
 
 | routine | bytes | before | after | evidence |
 |---|---|---|---|---|
-| Spectate start hook | 368 | missing | live behind `--spectate` | sets the mode, turns the controls on, sets the spectate flag, clears the camera's follow, registers the double click's interaction routine |
-| Spectate end hook | 208 | missing | ported (session end), no caller in play | turns the controls off, clears the flag and the follow, drops the click |
-| Interaction (double click), spectate branch | part of 1,504 | missing | live behind `--spectate` | a picked character's body becomes the camera's follow object; anything else, or a miss, frees the camera |
+| Spectate start hook | 368 | missing | live (a match with no controllable participant; `--spectate` too) | sets the mode, turns the controls on, sets the spectate flag, clears the camera's follow, registers the double click's interaction routine |
+| Spectate end hook | 208 | missing | live (the hub's arrival, as the next mode starts) | turns the controls off, clears the flag and the follow, drops the click |
+| Interaction (double click), spectate branch | part of 1,504 | missing | live while spectating | a picked character's body becomes the camera's follow object; anything else, or a miss, frees the camera |
 | Controls' frame, spectate gate | (already ported) | live (gate never set) | live (the session sets it: the player is not steered) | the frame returns while spectating |
 
-Reachability: the mode's hooks are called only from the arena's round entry
-(the next round's entrant, the tournament round and two other entries): an
-entrant that is the player starts the Character mode, any other (a company
-employee) starts Spectate. Exarust's arena always fields the player, so play
-never enters the session; `--spectate` enters it to check it.
+Reachability: the start hook is called only from the arena's match start,
+the next round's entrant, the tournament spawn and the match tick. The
+match start clears the player record and tears the scene (and its player
+body) down; the loadout pass names the first participant whose record the
+player may control (the manager, or a recruit) the player. With one, the
+Character mode starts and the player body is built from that record; with
+none (only hired employees entered, which the board's default lineup does
+once a combatant is hired) no player body is built, the camera is put at
+the spawn spot raised by (700, 1180, 1100) cm looking at the spot, and
+Spectate starts. The end hook has no direct caller: it is the mode's end
+entry, run when the next mode (the hub's Character mode) starts.
+
+Exarust (round 77): the board's lineup travels on the launch; a match with
+no player entry benches the manager (his record, possessions and health
+kept for the next player spawn, the player despawned) and starts the
+session with the camera at the original's fixed pose (the spawn spot
+raised by 700, 1180, 1100 cm, looking at it); every match fighter's brain
+picks its foe through its target pass (round 80); the hub's arrival rebuilds the manager and ends the session.
+Recruits are not in Exarust's roster yet, so only the manager can be the
+player's entry.
 
 ## TPlayerBehaviour
 

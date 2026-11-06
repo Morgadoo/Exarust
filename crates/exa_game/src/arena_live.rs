@@ -79,6 +79,10 @@ pub struct ArenaScene {
     pub rivals: [i32; crate::career::RIVAL_FIELD],
     /// The roll a bracket's unwatched pairs draw from.
     pub roll: u32,
+    /// The participants in entry order, as company pool slots (0 is the
+    /// manager, roster member `i` is slot `i + 1`); empty for a match the
+    /// command line laid out, whose entry `i` is slot `i`.
+    pub entrants: Vec<usize>,
 }
 
 impl ArenaScene {
@@ -114,7 +118,43 @@ impl ArenaScene {
             weapon_variants: None,
             rivals: [0; crate::career::RIVAL_FIELD],
             roll: crate::arena_match::counter_now() as u32,
+            entrants: Vec::new(),
         }
+    }
+
+    /// The board's participants, as company pool slots.
+    #[must_use]
+    pub fn with_entrants(mut self, entrants: Vec<usize>) -> Self {
+        self.entrants = entrants;
+        self
+    }
+
+    /// The company pool slot of the layout's company entry `index`: the
+    /// participant list maps it (the original's participants are the
+    /// board's entrants mapped by id, in entry order).
+    #[must_use]
+    pub fn entrant_slot(&self, index: usize) -> usize {
+        self.entrants.get(index).copied().unwrap_or(index)
+    }
+
+    /// Company entry `index`'s member (name and health word) and the id its
+    /// body carries (its pool slot, the record's participant id): slot 0 is
+    /// the manager, slot `i` roster member `i - 1`.
+    #[must_use]
+    pub fn entrant<'a>(
+        &self,
+        career: Option<&'a crate::hub_windows::ArenaCareer>,
+        index: usize,
+    ) -> (Option<(&'a str, u16)>, u32) {
+        let slot = self.entrant_slot(index);
+        let member = career.and_then(|career| {
+            let member = match slot {
+                0 => Some(&career.player),
+                slot => career.company.roster.get(slot - 1),
+            };
+            member.map(|member| (member.name.as_str(), member.health))
+        });
+        (member, u32::try_from(slot).unwrap_or(0))
     }
 
     /// The week's tournament field the rival sides wear.
@@ -299,21 +339,15 @@ pub fn round_plans(
                 if scene.player_entry == Some(index) {
                     continue;
                 }
-                let member = career.and_then(|career| {
-                    career
-                        .company
-                        .roster
-                        .get(index.saturating_sub(1))
-                        .map(|member| (member.name.as_str(), member.health))
-                });
-                // The arena index is the participant id: 0 is the manager,
-                // the first roster member is 1, as the numbering pass
-                // writes it into each record's id word.
+                // The participant id is the entrant's pool slot: 0 is the
+                // manager, the first roster member is 1, as the numbering
+                // pass writes it into each record's id word.
+                let (member, id) = scene.entrant(career, index);
                 plans.push(company_plan(
                     member,
                     &slot.place,
                     MANAGER_ROLE,
-                    u32::try_from(index).unwrap_or(0),
+                    id,
                     now_ms,
                     act_grace_ms,
                 ));
@@ -627,9 +661,10 @@ fn draw_end_screen(
 }
 
 /// Stands the first round's bodies once the level is loaded and the player
-/// is there.
+/// is there; in a spectated match (no entrant is the player's) once the
+/// player is gone (`crate::save_live`'s bench).
 #[allow(clippy::too_many_arguments)]
-fn stand_first_round(
+pub(crate) fn stand_first_round(
     scene: Option<ResMut<ArenaScene>>,
     arena: Option<ResMut<ArenaMatch>>,
     career: Option<Res<crate::hub_windows::ArenaCareer>>,
@@ -643,7 +678,14 @@ fn stand_first_round(
     let Some(mut scene) = scene else {
         return;
     };
-    if scene.placed || loading.is_some() || !building.is_empty() || players.is_empty() {
+    // The player's own entry waits for the player's body; a spectated
+    // match waits until the bench has taken it away.
+    let player_ready = if scene.player_entry.is_some() {
+        !players.is_empty()
+    } else {
+        players.is_empty()
+    };
+    if scene.placed || loading.is_some() || !building.is_empty() || !player_ready {
         return;
     }
     if !levels
@@ -861,21 +903,8 @@ fn stand_next_round(
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
     if let NextRound::Reserve(index) = fight.company {
-        let member = career.and_then(|career| {
-            career
-                .company
-                .roster
-                .get(index.saturating_sub(1))
-                .map(|member| (member.name.as_str(), member.health))
-        });
-        let body = company_plan(
-            member,
-            &ours,
-            MANAGER_ROLE,
-            u32::try_from(index).unwrap_or(0),
-            now,
-            MATCH_ACT_GRACE_MS,
-        );
+        let (member, id) = scene.entrant(career, index);
+        let body = company_plan(member, &ours, MANAGER_ROLE, id, now, MATCH_ACT_GRACE_MS);
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
 }
@@ -955,21 +984,8 @@ fn stand_bracket_round(
             RaisedBody::Company {
                 role, act_at_ms, ..
             } => {
-                let member = career.and_then(|career| {
-                    career
-                        .company
-                        .roster
-                        .get(fighter.index.saturating_sub(1))
-                        .map(|member| (member.name.as_str(), member.health))
-                });
-                let body = company_plan(
-                    member,
-                    &place,
-                    role,
-                    u32::try_from(fighter.index).unwrap_or(0),
-                    0,
-                    act_at_ms,
-                );
+                let (member, id) = scene.entrant(career, fighter.index);
+                let body = company_plan(member, &place, role, id, 0, act_at_ms);
                 commands.write(SceneCommand::Spawn(Box::new(body)));
             }
             RaisedBody::Opponent {
@@ -1150,11 +1166,10 @@ fn settle_match(
     records.deaths = records.deaths.wrapping_add(arena.deaths);
     career.company.book_records(&records);
     if out.day.drop_unfit {
-        let healths: Vec<u16> = career
-            .company
-            .roster
-            .iter()
-            .map(|member| member.health)
+        // An entrant's id is its participant id: 0 the manager, `i`
+        // roster member `i - 1`.
+        let healths: Vec<u16> = std::iter::once(career.player.health)
+            .chain(career.company.roster.iter().map(|member| member.health))
             .collect();
         arena::drop_unfit(&mut career.entries, |id| {
             healths.get(id as usize).copied().unwrap_or(0)
@@ -1303,7 +1318,7 @@ mod tests {
         let plans = round_plans(&scene(), None, &slots, 1_000, 3_000);
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].team, 2);
-        assert!(matches!(plans[0].brain, BodyBrain::Duellist { .. }));
+        assert!(matches!(plans[0].brain, BodyBrain::Npc));
         assert_eq!(
             plans[0].at,
             Vec3::from_array(opponent_place(spawn).position) / 100.0
@@ -1319,6 +1334,28 @@ mod tests {
             plans[1].at,
             Vec3::from_array(our_place(spawn).position) / 100.0
         );
+    }
+
+    /// A company entry is the lineup's pool slot: its member and its id
+    /// come from the participant list, the manager from slot 0.
+    #[test]
+    fn a_company_entry_is_its_lineup_slot() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.player.name = "Boss".into();
+        career.player.health = 60_000;
+        for (name, health) in [("Ash", 40_000), ("Bram", 50_000)] {
+            career.company.roster.push(crate::career::Member {
+                name: name.into(),
+                health,
+                ..career.player.clone()
+            });
+        }
+        let scene = scene().with_entrants(vec![2, 0]);
+        assert_eq!(scene.entrant(Some(&career), 0), (Some(("Bram", 50_000)), 2));
+        assert_eq!(scene.entrant(Some(&career), 1), (Some(("Boss", 60_000)), 0));
+        // Past the list (a command-line match) the entry is its own slot.
+        assert_eq!(scene.entrant(Some(&career), 2), (Some(("Bram", 50_000)), 2));
+        assert_eq!(scene.entrant(None, 0), (None, 2));
     }
 
     #[test]
@@ -1498,6 +1535,7 @@ mod tests {
             loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
+            outfit: Default::default(),
         });
         app.insert_resource(career);
         let mut fighter = Fighter::default();

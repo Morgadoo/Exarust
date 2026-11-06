@@ -327,6 +327,9 @@ pub struct Duellist {
     pub reaction_ms: u32,
     /// When it engages, set when the fight starts with a reaction delay.
     pub engage_at_ms: Option<u64>,
+    /// A brain-driven fighter's AI clock: its target pass enters no combat
+    /// before this (the match's action grace on the body's AI timers).
+    pub hold_until_ms: Option<u64>,
     /// It has entered combat (taken its guard).
     in_combat: bool,
     /// The combat state's fields.
@@ -408,6 +411,7 @@ impl Duellist {
             holds_ground: false,
             reaction_ms: 0,
             engage_at_ms: None,
+            hold_until_ms: None,
             in_combat: false,
             mind: combat::CombatMind::default(),
             last_tick: None,

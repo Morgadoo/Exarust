@@ -40,7 +40,17 @@ pub struct SpectateSession {
     pub focus: Option<Vec3>,
     /// The last left press (window pixels, ms), for the double click.
     last_press: Option<((i32, i32), u64)>,
+    /// An arena match's entry started the session (no entrant was the
+    /// player's): the hub's arrival ends it.
+    pub arena: bool,
+    /// The fixed camera pose the arena's start puts the camera at: the eye
+    /// and the point it looks at (m). A follow replaces it.
+    pub pose: Option<(Vec3, Vec3)>,
 }
+
+/// Where the original's spectated match start puts the camera: the arena's
+/// spawn spot raised by this, centimetres, looking at the spot.
+pub const SPECTATE_CAMERA_OFFSET_CM: [f32; 3] = [700.0, 1180.0, 1100.0];
 
 impl SpectateSession {
     /// The session's start: the flag set, the camera following nothing.
@@ -50,11 +60,26 @@ impl SpectateSession {
         self.last_press = None;
     }
 
+    /// An arena match's start with no entrant of the player's: the
+    /// session starts with the camera looking at the spawn spot `spot`
+    /// (metres).
+    pub fn start_arena(&mut self, spot: Vec3) {
+        self.start();
+        self.arena = true;
+        self.focus = Some(spot);
+        self.pose = Some((
+            spot + Vec3::from_array(SPECTATE_CAMERA_OFFSET_CM) / 100.0,
+            spot,
+        ));
+    }
+
     /// The session's end: the flag cleared, the camera's follow cleared.
     pub fn end(&mut self) {
         self.active = false;
         self.follow = None;
         self.last_press = None;
+        self.arena = false;
+        self.pose = None;
     }
 
     /// Whether the controls are spectating.
@@ -136,7 +161,29 @@ fn spectate_clicks(
     if follow != session.follow {
         info!("spectate: the camera follows {follow:?}");
     }
+    if follow.is_some() {
+        session.pose = None;
+    }
     session.follow = follow;
+}
+
+/// The end of an arena match's session: the mode changes back to
+/// Character mode when the hub's arrival starts play again (the original's
+/// mode end hook runs as the next mode starts), which is when the manager
+/// stands in the hub again ([`crate::save_live::SavedPlayer`] has made him
+/// from his record and is dropped).
+fn end_arena_session(
+    mut commands: Commands,
+    mut session: ResMut<SpectateSession>,
+    scene: Option<Res<crate::arena_live::ArenaScene>>,
+    players: Query<(), With<crate::player::Player>>,
+) {
+    if !session.arena || scene.is_some() || players.is_empty() {
+        return;
+    }
+    session.end();
+    commands.remove_resource::<crate::save_live::SavedPlayer>();
+    info!("spectate: session ended; the manager is back in Character mode");
 }
 
 /// The chase camera's focus while spectating: the followed body's pelvis
@@ -166,6 +213,7 @@ impl Plugin for SpectatePlugin {
             (
                 start_on_load.run_if(resource_exists::<SpectateOnLoad>),
                 spectate_clicks.run_if(|s: Res<SpectateSession>| s.active),
+                end_arena_session.run_if(|s: Res<SpectateSession>| s.active),
             ),
         );
     }
@@ -189,6 +237,22 @@ mod tests {
         assert!(!s.active && s.follow.is_none());
         assert!(!SpectateSession::spectating(Some(&s)));
         assert!(!SpectateSession::spectating(None));
+    }
+
+    /// An arena match's session looks at the spawn spot and its end
+    /// clears the arena mark.
+    #[test]
+    fn an_arena_session_looks_at_the_spawn_spot() {
+        let mut s = SpectateSession::default();
+        s.start_arena(Vec3::new(1.0, 2.0, 3.0));
+        assert!(s.active && s.arena && s.follow.is_none());
+        assert_eq!(s.focus, Some(Vec3::new(1.0, 2.0, 3.0)));
+        // The camera stands 7, 11.8 and 11 m off the spot, looking at it.
+        let (eye, at) = s.pose.unwrap();
+        assert!(eye.abs_diff_eq(Vec3::new(8.0, 13.8, 14.0), 1e-5), "{eye}");
+        assert_eq!(at, Vec3::new(1.0, 2.0, 3.0));
+        s.end();
+        assert!(!s.active && !s.arena && s.pose.is_none());
     }
 
     /// A character (living or dead) is followed; a prop, the level, a

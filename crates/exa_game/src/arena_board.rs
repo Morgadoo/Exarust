@@ -120,6 +120,7 @@ mod tests {
             loadouts: Default::default(),
             health: 65_000,
             in_entry: false,
+            outfit: Default::default(),
         }
     }
 

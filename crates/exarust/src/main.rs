@@ -97,6 +97,9 @@
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
 //!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
 //!                                     stand-in for a loaded career's employee)
+//!          --hub-enter slot,...       play arenahub: once the manager stands, the board's match begins with this
+//!                                     lineup of company pool slots (0 the manager, 1 the first employee); without
+//!                                     0 the match is spectated (debug)
 //!          --hub-arsenal id,id,...    play arenahub: once the hub is entered, stow these items in the arsenal with no
 //!                                     flags (a debug stock for the loadout form's kit)
 //!          --hub-stash id,id,...      play arenahub: once the hub is entered, put these ids into the hub stash (debug tool)
@@ -608,6 +611,9 @@ pub struct Options {
     /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
     /// the company once the hub is entered (a debug tool).
     pub hub_employee_kit: Option<(String, Vec<u32>)>,
+    /// `--hub-enter slot,...`: the hub begins the board's match with this
+    /// lineup.
+    pub hub_enter: Vec<usize>,
     /// `--hub-arsenal id,...`: items stowed in the arsenal once the hub is
     /// entered (a debug tool).
     pub hub_arsenal: Vec<u32>,
@@ -1335,6 +1341,20 @@ fn main() -> AppExit {
                     Some(items) => options.hub_stash = items,
                     None => {
                         eprintln!("--hub-stash: cannot read {list:?} (id,id,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--hub-enter" => {
+                let value = args.next().unwrap_or_default();
+                match value
+                    .split(',')
+                    .map(|slot| slot.trim().parse::<usize>().ok())
+                    .collect::<Option<Vec<usize>>>()
+                {
+                    Some(slots) if !slots.is_empty() => options.hub_enter = slots,
+                    _ => {
+                        eprintln!("--hub-enter: cannot read {value:?} (slot,...)");
                         return AppExit::from_code(2);
                     }
                 }

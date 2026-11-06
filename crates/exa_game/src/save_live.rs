@@ -332,8 +332,75 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 sync_before_level_change
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+            )
+            .add_systems(
+                Update,
+                bench_the_manager.before(crate::arena_live::stand_first_round),
             );
     }
+}
+
+/// A spectated arena match's start: when no participant is the player's
+/// to control (only hired employees fight), the original's match start
+/// tears the scene's player body down with the old scene, spawns no new
+/// one (the player body word stays 0), points the camera from the spawn
+/// spot raised by [`crate::spectate::SPECTATE_CAMERA_OFFSET_CM`] at the
+/// spot and starts the Spectate game mode; the hub's arrival builds the
+/// manager again from his record.
+///
+/// Exarust's player survives the level change, so the bench does the
+/// teardown once the arena is in: the manager's record is kept with his
+/// possessions and health (his local items promoted first, as a save
+/// does) as the next player spawn's record ([`SavedPlayer`]), and the
+/// player is despawned. The session starts with the camera looking at the
+/// spawn spot. [Exarust's: the chase camera keeps its own orbit around that
+/// point instead of the original's fixed position.]
+#[allow(clippy::too_many_arguments)]
+fn bench_the_manager(
+    mut commands: Commands,
+    scene: Option<Res<crate::arena_live::ArenaScene>>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    levels: Query<&exa_world::LevelRoot>,
+    building: Query<(), With<exa_physics::StaticGeometry>>,
+    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
+    mut players: PlayerSaveQuery,
+    roots: Query<Entity, With<crate::player::Player>>,
+    created: Option<Res<crate::creator_screen::CreatedCharacter>>,
+    session: Option<ResMut<crate::spectate::SpectateSession>>,
+) {
+    let (Some(scene), Some(mut session)) = (scene, session) else {
+        return;
+    };
+    if scene.player_entry.is_some()
+        || scene.placed
+        || loading.is_some()
+        || !building.is_empty()
+        || roots.is_empty()
+        || !levels
+            .iter()
+            .any(|level| crate::arena_match::arena_index(&level.name).is_some())
+    {
+        return;
+    }
+    sync_players(&mut live, &mut players);
+    let Some(manager) = live_story_player(&players, created.as_deref()) else {
+        return;
+    };
+    let items = world_items(&live.db().world);
+    info!(
+        "arena match: no entrant is the player's ({:?}); the manager {:?} is benched ({} world items kept) and the match is spectated",
+        scene.entrants,
+        manager.record.name,
+        items.len()
+    );
+    commands.insert_resource(SavedPlayer {
+        record: manager.record,
+        items,
+    });
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
+    session.start_arena(Vec3::from_array(scene.spawn_at) / 100.0);
 }
 
 /// The level change's world sync: before the level goes, the surviving
