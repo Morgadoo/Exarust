@@ -1456,3 +1456,10 @@ An arena save SHALL write the week's prize and, per event, its template id, inde
 #### Scenario: Save and reload the week
 - **WHEN** a career is saved and its slot loaded
 - **THEN** the week's prize and each event's template, index and weapon row are those saved
+
+### Requirement: Saved week winners
+An arena save SHALL write 1 for each season week the company took and keep a rival winner the save held for the others; a load SHALL count a week whose winner is 1 as won.
+
+#### Scenario: Two weeks won
+- **WHEN** a career that took weeks one and three is saved and loaded
+- **THEN** weeks one and three are won and the others are not

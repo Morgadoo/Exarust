@@ -21,6 +21,9 @@ list's writer and loader (an unused word and the v7 character record).
   hold; the stand-in is removed; the spectate session's fixed pose;
   `arena_tables` writes and reads the hire list and the week's events.
 
+- The season's week winners: 1 for a week the company took.
+
 ## Out of scope
 
-- The season's week verdicts in the tournament chunk (kept from the save).
+- A rival's week winner is kept from the save (Exarust records only
+  whether the company won).

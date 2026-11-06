@@ -17,7 +17,7 @@
 //! row and the word after it; the loader rebuilds the rest from the
 //! template). What Exarust has no live model for keeps the chunk a save
 //! already holds, or the reader's default when there is none: the
-//! tournament's field until one is drawn and its season weeks, the day's
+//! tournament's field until one is drawn and a rival's week winner, the day's
 //! specials, and the company's second name string and three words.
 //! The day's spent and earned tallies, the lifetime coin records and the
 //! prize history are the career's; the coin values are stored as coin words. The
@@ -333,8 +333,19 @@ pub fn from_live(
         rows: rows_from_roster(&career.entries),
         field,
         events,
+        // The season's four week winners: 1 for a week the company took; a
+        // week it did not keeps the rival the save held (Exarust keeps only
+        // whether the company won).
+        weeks: std::array::from_fn(|week| {
+            if career.company.weeks[week] {
+                1
+            } else if previous.tournament.weeks[week] == 1 {
+                0
+            } else {
+                previous.tournament.weeks[week]
+            }
+        }),
         history: career.prize_history,
-        ..previous.tournament
     };
     tables
 }
@@ -551,6 +562,12 @@ pub fn apply(
     // asks for a new one.
     career.rivals = tables.tournament.field.map(|company| company as i32);
     career.prize_history = tables.tournament.history;
+    // A week the chunk names the company's (1) is won; Exarust's own
+    // session words may already hold it (an older Exarust save wrote the
+    // chunk's weeks as it found them), so a won week stays won.
+    for (won, winner) in career.company.weeks.iter_mut().zip(tables.tournament.weeks) {
+        *won |= winner == 1;
+    }
 }
 
 /// The hub stash's item ids from a save's tables.
@@ -782,6 +799,7 @@ mod tests {
     fn the_hire_list_and_the_weeks_events_round_trip() {
         let mut career = career("Hires");
         career.regenerate_tournament_at(0x1357_9bdf);
+        career.company.weeks = [true, false, true, false];
         career.hire_pool[0].outfit = crate::hirelings::Loadout {
             hands: [33, 0],
             items: vec![501, 502],
@@ -796,6 +814,7 @@ mod tests {
                 .unwrap();
         let mut back = ArenaCareer::default();
         back.hire_pool.clear();
+        back.company.weeks = [false; 4];
         apply(
             &mut back,
             &mut Staff::default(),
@@ -815,6 +834,7 @@ mod tests {
         }
         let saved = career.tournament.as_ref().unwrap();
         let loaded = back.tournament.as_ref().unwrap();
+        assert_eq!(back.company.weeks, career.company.weeks);
         assert_eq!(loaded.prize_id, saved.prize_id);
         for (l, s) in loaded.rows.iter().zip(&saved.rows) {
             assert_eq!(
