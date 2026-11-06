@@ -395,6 +395,17 @@ pub fn animate_grips(
             locomotion,
         );
         links.motion = clip;
+        if bevy::log::tracing::enabled!(target: "exa_physics::grip_trace", bevy::log::Level::DEBUG)
+        {
+            debug!(
+                target: "exa_physics::grip_trace",
+                "grip holder {owner} of {item}: clip {} ({clip:#x}), config {:?}, condition {:?}, locomotion {:?}",
+                anim.action,
+                anim.config,
+                condition,
+                locomotion
+            );
+        }
         if kind != GripKind::Other && links.mode != mode {
             debug!(
                 "grip mode: {item:?} ({kind:?}) {} -> {mode} (clip {clip:#x}, {})",
