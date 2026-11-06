@@ -378,8 +378,12 @@ pub struct Duellist {
     stab_aim: exa_combat::stab::StabAim,
     /// The body's step as this tick's combat state left it, and whether
     /// it started a step: written into the body by [`apply_feet_steps`].
-    feet_write: Option<(exa_physics::body::FootworkStep, bool, Option<(Vec3, f32)>)>,
+    feet_write: Option<FeetWrite>,
 }
+
+/// The body's step as the combat tick left it, whether it started a step,
+/// and the body's target (the foe's chest, m, and scale).
+type FeetWrite = (exa_physics::body::FootworkStep, bool, Option<(Vec3, f32)>);
 
 /// A step the duellist walks: where it goes (m) and when it started.
 #[derive(Debug, Clone, Copy, PartialEq)]

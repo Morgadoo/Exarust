@@ -1128,7 +1128,11 @@ fn a_queued_step_aims_from_the_chest() {
     let foe = Some((Vec3::new(0.8, 0.0, 0.0), 1.0));
     let step = queued_step(chest, chest, Vec3::new(0.7, 0.0, 0.0), Vec3::X, foe, 1.0, 1).unwrap();
     assert!(step.tell_ai);
-    assert!((step.target - Vec3::new(0.2, 0.0, 0.0)).length() < 1e-5, "{}", step.target);
+    assert!(
+        (step.target - Vec3::new(0.2, 0.0, 0.0)).length() < 1e-5,
+        "{}",
+        step.target
+    );
 }
 
 /// A lifted walking foot plants early before phase 0.2 when it moves

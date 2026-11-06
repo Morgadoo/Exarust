@@ -85,9 +85,8 @@ pub use feet::{
 };
 pub use feet::{
     FootState, Footstep, FullTone, GaitStep, NO_WATER_CM, QueuedStep, StepEnd, WET_SCENE_FROM,
-    WET_SCENE_WATER_CM, WalkedStep, WaterLevel, approach_bend, full_tone, gait_step,
-    gait_wet_step, queued_step,
-    step_end, step_loudness, step_position, water_level,
+    WET_SCENE_WATER_CM, WalkedStep, WaterLevel, approach_bend, full_tone, gait_step, gait_wet_step,
+    queued_step, step_end, step_loudness, step_position, water_level,
 };
 #[path = "body_pins.rs"]
 mod pins;

@@ -1129,7 +1129,8 @@ pub fn follow_and_search(
                 && npc.flight.is_none()
             {
                 state.walk.route.clear();
-                let at = exa_ai::drive::DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
+                let at =
+                    exa_ai::drive::DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
                 exa_ai::drive::soft_stop(req, &mut driven.0, &at);
             }
             if stepped && !state.rested {

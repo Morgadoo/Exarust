@@ -16,7 +16,8 @@
 //!   `d·pelvis forward / |d|`;
 //! - the heading eases a tenth of the way toward the direction and is made
 //!   a unit again (the engine's approximate reciprocal square root);
-//! - with `m = 0.007·|d|` (0.7 beyond 100 cm), an alignment not over `m`,
+//! - with `m = 0.007·|d|` (in double; 0.7 beyond 100 cm), an alignment not
+//!   over `m` (a NaN one included),
 //!   or a route no longer followed, asks only to move (flags 1) and moves
 //!   while the alignment passes `m/2`; otherwise the goal goes 150 cm out
 //!   from the standing point along `d`, the body moves (flags 1), and it
@@ -51,15 +52,15 @@ const CM: f32 = 100.0;
 /// The heading's and the look's ease a tick.
 const EASE: f32 = 0.1;
 /// The head drift's ease toward 0 a tick.
-const HEAD_EASE: f32 = 0.02;
+const HEAD_EASE: f64 = 0.02;
 /// The far goal's distance (cm) out from the standing point.
 const REACH_CM: f32 = 150.0;
 /// The moving gate's slope and cap: `min(0.007·|d|, 0.7)`.
-const GATE_SLOPE: f32 = 0.007;
+const GATE_SLOPE: f64 = 0.007;
 const GATE_CAP: f32 = 0.7;
 const GATE_FROM_CM: f32 = 100.0;
 /// A run needs this alignment, and the grid's cost at the goal at most this.
-const RUN_ALIGN: f32 = 0.9;
+const RUN_ALIGN: f64 = 0.9;
 const RUN_COST: f32 = 0.5;
 
 /// The driver's own state, kept by the state that walks: the heading and
@@ -151,6 +152,7 @@ fn ease(a: Vec3, b: Vec3, t: f32) -> Vec3 {
 /// 2 flee), `slow_turn` the idle states' slow turn, `cost` the grid's cost
 /// at a point (m). Returns false while the body steps (busy, nothing
 /// written).
+#[allow(clippy::too_many_arguments)]
 pub fn drive(
     req: &mut Locomotion,
     driver: &mut Driver,
@@ -176,7 +178,9 @@ pub fn drive(
     let mut d = carrot * CM - standing;
     d.y = 0.0;
     let squared = d.z * d.z + d.x * d.x + 0.0;
-    let (length, dir, align) = if squared <= 1.0 {
+    // Within 1 cm (or a NaN square) the frame's forward is the direction.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let (length, dir, align) = if !(squared > 1.0) {
         (1.0, body.frame_forward, 0.0)
     } else {
         let length = squared.sqrt();
@@ -186,21 +190,24 @@ pub fn drive(
         (length, dir, align)
     };
     driver.heading = unit(ease(driver.heading, dir, EASE));
+    // The short gate is formed in double from the double 0.007.
     let gate = if length <= GATE_FROM_CM {
-        length * GATE_SLOPE
+        (f64::from(length) * GATE_SLOPE) as f32
     } else {
         GATE_CAP
     };
-    if align <= gate || !following {
+    // An alignment not over the gate (a NaN one included) only asks to move.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    if !(gate < align) || !following {
         req.flags = flags::MOVE;
-        req.moving = align > gate * 0.5;
+        req.moving = gate * 0.5 < align;
     } else {
         let goal = standing + d * (REACH_CM / length);
         req.goal = goal / CM;
         let run = urgency >= 1 && cost(req.goal) <= RUN_COST;
         req.moving = true;
         req.flags = flags::MOVE;
-        if run && align > RUN_ALIGN {
+        if run && f64::from(align) > RUN_ALIGN {
             req.flags |= flags::RUN;
             if urgency == 2 {
                 req.flags |= flags::SPRINT;
@@ -213,7 +220,9 @@ pub fn drive(
     let look = heading(driver.look);
     req.look = look;
     req.desired = look;
-    driver.head_drift += (0.0 - driver.head_drift) * HEAD_EASE;
+    // The drift eases toward its zeroed target in double.
+    driver.head_drift =
+        (f64::from(-driver.head_drift) * HEAD_EASE + f64::from(driver.head_drift)) as f32;
     req.cursor = exa_physics::body::locomotion::wrap(yaw + driver.head_drift);
     true
 }
@@ -237,11 +246,7 @@ pub fn soft_stop(req: &mut Locomotion, driver: &mut Driver, body: &DriveBody) {
 /// cursors and the body's yaw take `yaw` at once, as Exarust's AI turns
 /// its characters while it stands (the original turns the body through its
 /// heading at the decision's rates). The caller turns the model too.
-pub fn face(
-    req: &mut Locomotion,
-    body: &mut exa_physics::body::locomotion::Locomotor,
-    yaw: f32,
-) {
+pub fn face(req: &mut Locomotion, body: &mut exa_physics::body::locomotion::Locomotor, yaw: f32) {
     req.heading = yaw;
     req.look = yaw;
     req.cursor = yaw;
@@ -253,12 +258,10 @@ pub fn face(
 /// Gives every fighter whose body has muscles the original's locomotion
 /// request, facing as its model faces, and the driver's state: from then on
 /// its body's movement decision turns it and walks it.
+#[allow(clippy::type_complexity)]
 pub fn add_locomotion(
     mut commands: Commands,
-    fighters: Query<
-        (Entity, &Transform, &Ragdoll),
-        (With<crate::Duellist>, Without<Locomotion>),
-    >,
+    fighters: Query<(Entity, &Transform, &Ragdoll), (With<crate::Duellist>, Without<Locomotion>)>,
 ) {
     for (entity, t, body) in &fighters {
         if body.drive.is_none() {
@@ -266,7 +269,9 @@ pub fn add_locomotion(
         }
         let yaw = exa_physics::body::locomotion::yaw_of(t.rotation * Vec3::Z);
         let (req, motor) = Locomotion::facing(yaw);
-        commands.entity(entity).insert((req, motor, Driven::default()));
+        commands
+            .entity(entity)
+            .insert((req, motor, Driven::default()));
     }
 }
 
@@ -276,6 +281,7 @@ pub fn add_locomotion(
 /// gives way to its stance over 20 frames with the fast ease, as the
 /// original's body tick starts the stored stance when it leaves the
 /// walking condition.
+#[allow(clippy::type_complexity)]
 pub fn face_standing(
     mut fighters: Query<(
         &Transform,
