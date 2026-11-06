@@ -1077,10 +1077,28 @@ impl ArenaMatch {
     }
 }
 
+/// The counter reading a repeatable run pins ([`fix_counter`]); 0 when the
+/// clock is read.
+static FIXED_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Pins [`counter_now`] to `reading` (not 0) for the rest of the process:
+/// a `--fixed-frames` run, which must repeat tick for tick, draws the
+/// arena's opponents, its board and its hires from a fixed reseed instead
+/// of the wall clock (two runs otherwise stood differently built
+/// opponents).
+pub fn fix_counter(reading: u64) {
+    FIXED_COUNTER.store(reading, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// A performance counter reading for the arena's draws. The original reads
 /// the Windows counter; this stands in with the system clock in 100 ns
-/// steps, the counter's usual rate.
+/// steps, the counter's usual rate, unless a repeatable run pinned it
+/// ([`fix_counter`]).
 pub fn counter_now() -> u64 {
+    let fixed = FIXED_COUNTER.load(std::sync::atomic::Ordering::Relaxed);
+    if fixed != 0 {
+        return fixed;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| (elapsed.as_nanos() / 100) as u64)

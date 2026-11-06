@@ -164,6 +164,7 @@
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
+//!                                     (the arena's draws read a fixed counter instead of the clock)
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
@@ -925,6 +926,10 @@ fn register_debug_commands(
         }
     });
 }
+
+/// The performance counter a `--fixed-frames` run's arena draws read
+/// (`exa_game::arena_match::fix_counter`).
+const FIXED_COUNTER_READING: u64 = 0x0123_4567_89AB_CDEF;
 
 fn main() -> AppExit {
     let all: Vec<String> = std::env::args().skip(1).collect();
@@ -1731,6 +1736,11 @@ fn main() -> AppExit {
     };
 
     let fixed_frames = options.fixed_frames;
+    if fixed_frames {
+        // The arena's draws reseed from a performance counter: a repeatable
+        // run reads a fixed one.
+        exa_game::arena_match::fix_counter(FIXED_COUNTER_READING);
+    }
     let schedule_ambiguities = options.schedule_ambiguities;
     let mut app = App::new();
     // The original holds a background window to 32 ms a frame (about 31 a
