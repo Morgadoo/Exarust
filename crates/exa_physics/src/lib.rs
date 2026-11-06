@@ -9,6 +9,7 @@ pub mod cloth;
 pub mod cloth_body;
 pub mod cloth_level;
 pub mod cloth_record;
+pub mod collision_share;
 pub mod contact;
 pub mod controller;
 pub mod door;
@@ -91,7 +92,13 @@ impl Plugin for PhysicsPlugin {
                 RunFixedMainLoop,
                 show_characters.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
             )
-            .add_plugins((body::BodyPlugin, prop::PropPlugin));
+            .add_plugins((body::BodyPlugin, prop::PropPlugin))
+            // The frame's picks query a replica of the collision world; the
+            // step shares what it changed at its end.
+            .init_resource::<collision_share::FramePhysics>()
+            .init_resource::<collision_share::CollisionChanges>()
+            .add_systems(FixedLast, collision_share::share_collision);
+        sim_app::add_frame_commands(app);
         grip_solve::plugin(app);
     }
 }
@@ -286,7 +293,7 @@ pub struct StaticNode;
 /// per collider that came from a [`StaticNode`]'s subtree; a collider of a
 /// rigid body is a prop's stand-in instead and has no entry. The name is not
 /// copied: the node entity's `Name` holds it.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct ColliderNodes(HashMap<ColliderHandle, Entity>);
 
 impl ColliderNodes {
@@ -668,7 +675,10 @@ impl CharacterBody {
 #[allow(clippy::too_many_arguments)]
 fn build_static_colliders(
     mut commands: Commands,
-    mut physics: ResMut<Physics>,
+    (mut physics, mut fixed): (
+        ResMut<collision_share::FramePhysics>,
+        Option<ResMut<sim_app::FixedCommands>>,
+    ),
     mut build: ResMut<StaticBuild>,
     mut stand_ins: ResMut<prop::StandIns>,
     mut collider_nodes: ResMut<ColliderNodes>,
@@ -703,6 +713,7 @@ fn build_static_colliders(
         });
     }
     let build = &mut *build;
+    let mut posted = Vec::new();
     // Finished builds join the world in the order they were handed out (a
     // build that finishes before an earlier one waits for it), so the
     // colliders' handles and the static grid's order do not depend on which
@@ -727,7 +738,10 @@ fn build_static_colliders(
                 }
                 let level = owner.is_none() && !pick_only;
                 let aabb = level.then(|| collider.compute_aabb());
-                let handle = physics.0.insert_collider(collider, None);
+                // The replica takes it now, the step's world at the next
+                // step, in this order (same handles).
+                let handle = physics.0.0.insert_collider(collider.clone(), None);
+                posted.push(collider);
                 if floor && !pick_only {
                     statics.insert_floor(handle);
                 }
@@ -750,6 +764,9 @@ fn build_static_colliders(
             build.built += *count;
             false
         });
+    }
+    if !posted.is_empty() {
+        collision_share::post_inserts(fixed.as_deref_mut(), posted);
     }
     // New builds, a batch of copied meshes each.
     let pool = AsyncComputeTaskPool::get();
@@ -1088,6 +1105,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
             .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<collision_share::FramePhysics>()
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
@@ -1121,9 +1139,13 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(!app.world().entity(root).contains::<StaticGeometry>());
-        app.world_mut().resource_mut::<Physics>().0.step();
+        app.world_mut()
+            .resource_mut::<collision_share::FramePhysics>()
+            .0
+            .0
+            .step();
         use crate::contact::Level;
-        let world = &app.world().resource::<Physics>().0;
+        let world = &app.world().resource::<collision_share::FramePhysics>().0.0;
         let statics = app.world().resource::<StaticColliders>();
         assert_eq!(statics.floor_count(), 1);
         let masked = body::MaskedLevel {
@@ -1139,7 +1161,7 @@ mod tests {
         let bare = body::MaskedLevel { world, masks: None };
         assert_eq!(bare.floor_below(Vec3::new(0.1, 0.3, 0.1), 0.6), None);
         // The barricade's floor cast: how far down the floor node is.
-        let physics = app.world().resource::<Physics>();
+        let physics = &app.world().resource::<collision_share::FramePhysics>().0;
         let depth = physics
             .static_floor_below(statics, Vec3::new(0.1, 0.3, 0.1), 0.6)
             .unwrap();
@@ -1155,6 +1177,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
             .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<collision_share::FramePhysics>()
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
@@ -1185,7 +1208,15 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(!app.world().entity(root).contains::<StaticGeometry>());
-        assert_eq!(app.world().resource::<Physics>().0.colliders.len(), 40);
+        assert_eq!(
+            app.world()
+                .resource::<collision_share::FramePhysics>()
+                .0
+                .0
+                .colliders
+                .len(),
+            40
+        );
         assert_eq!(app.world().resource::<StaticBuild>().fraction(), 1.0);
         // Every level collider joined the sector's static grid, as the
         // simulated-object stage scans it, with its world box and piece.
@@ -1198,7 +1229,8 @@ mod tests {
         assert!(record.centre_cm.abs_diff_eq(Vec3::ZERO, 1e-3));
         assert!(
             !app.world()
-                .resource::<Physics>()
+                .resource::<collision_share::FramePhysics>()
+                .0
                 .0
                 .colliders
                 .get_unknown_gen(record.piece)
@@ -1310,6 +1342,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
             .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<collision_share::FramePhysics>()
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
@@ -1346,7 +1379,7 @@ mod tests {
             app.update();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let world = &app.world().resource::<Physics>().0;
+        let world = &app.world().resource::<collision_share::FramePhysics>().0.0;
         assert_eq!(world.colliders.len(), 2);
         let stand_ins = &app.world().resource::<prop::StandIns>().0;
         assert_eq!(stand_ins.len(), 1);
@@ -1368,6 +1401,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
             .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<collision_share::FramePhysics>()
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
@@ -1408,10 +1442,14 @@ mod tests {
             app.update();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        app.world_mut().resource_mut::<Physics>().0.step();
+        app.world_mut()
+            .resource_mut::<collision_share::FramePhysics>()
+            .0
+            .0
+            .step();
         let nodes = app.world().resource::<ColliderNodes>();
         assert_eq!(nodes.len(), 1);
-        let physics = app.world().resource::<Physics>();
+        let physics = &app.world().resource::<collision_share::FramePhysics>().0;
         let at = Vec3::new(0.0, 1.0, 0.0);
         let (handle, _) = physics
             .fixed_pick(at + Vec3::Y, Vec3::NEG_Y, 2.0)
@@ -1430,6 +1468,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
             .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<collision_share::FramePhysics>()
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
@@ -1461,8 +1500,12 @@ mod tests {
             app.update();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        app.world_mut().resource_mut::<Physics>().0.step();
-        let physics = app.world().resource::<Physics>();
+        app.world_mut()
+            .resource_mut::<collision_share::FramePhysics>()
+            .0
+            .0
+            .step();
+        let physics = &app.world().resource::<collision_share::FramePhysics>().0;
         let nodes = app.world().resource::<ColliderNodes>();
         // From 3 m above, the box's top face is 1.5 m down.
         let from = Vec3::new(0.0, 3.0, 0.0);

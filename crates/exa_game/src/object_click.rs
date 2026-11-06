@@ -34,8 +34,8 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use exa_items::catalogue::ItemCatalogue;
+use exa_physics::ColliderNodes;
 use exa_physics::sector::Bounds;
-use exa_physics::{ColliderNodes, Physics};
 use exa_world::db_objects::PlaceholderNode;
 use exa_world::{ObjectSections, PartBounds, PlacedItem};
 
@@ -362,14 +362,18 @@ fn scripted_device_use(
 pub const SCRIPTED_USE_SOUND_FLAGS: u32 = 0x400;
 
 /// The single and double clicks on placed objects.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn run_object_clicks(
     mut commands: Commands,
     mut clicks: MessageReader<ObjectClick>,
     mut objects: WorldObjects,
     catalogue: Option<Res<ItemCatalogue>>,
     time: Option<Res<Time<Virtual>>>,
-    (mut physics, mut collider_nodes): (Option<ResMut<Physics>>, Option<ResMut<ColliderNodes>>),
+    (mut physics, mut collider_nodes, mut fixed): (
+        Option<ResMut<exa_physics::collision_share::FramePhysics>>,
+        Option<ResMut<ColliderNodes>>,
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    ),
     mut out: ClickOutputs,
     mut narrator: Narrator,
 ) {
@@ -567,9 +571,13 @@ pub fn run_object_clicks(
             if let (Some(physics), Some(collider_nodes)) =
                 (physics.as_deref_mut(), collider_nodes.as_deref_mut())
             {
-                for handle in collider_nodes.take_under(&nodes) {
-                    physics.0.remove_collider(handle);
-                }
+                // The replica now, the step's world at the next step.
+                let handles = collider_nodes.take_under(&nodes);
+                exa_physics::collision_share::remove_colliders(
+                    physics,
+                    fixed.as_deref_mut(),
+                    handles,
+                );
             }
             commands.entity(entity).despawn();
             continue;
@@ -758,7 +766,7 @@ mod tests {
             .init_resource::<DeviceClock>()
             .init_resource::<crate::player_controls::UseCursor>()
             .init_resource::<ColliderNodes>()
-            .insert_resource(Physics::default())
+            .insert_resource(exa_physics::collision_share::FramePhysics::default())
             .add_systems(Update, run_object_clicks);
         app
     }

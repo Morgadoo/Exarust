@@ -1130,7 +1130,7 @@ type PlayerParts = (
 /// the props' stand-ins and the scene nodes some static colliders came from.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct PickSources<'w> {
-    pub(crate) physics: Res<'w, Physics>,
+    pub(crate) physics: Res<'w, exa_physics::collision_share::FramePhysics>,
     pub(crate) stand_ins: Res<'w, StandIns>,
     pub(crate) collider_nodes: Res<'w, ColliderNodes>,
 }
@@ -3202,13 +3202,21 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
-        app.world_mut().resource_mut::<Physics>().0.step();
+        // The frame's picks query its replica of the collision world.
+        app.world_mut()
+            .resource_mut::<exa_physics::collision_share::FramePhysics>()
+            .0
+            .0
+            .step();
         // Aim at each node's own first usable triangle from just off it.
         let rays = [
             (shop, triangle_ray(app.world_mut(), shop)),
             (machine, triangle_ray(app.world_mut(), machine)),
         ];
-        let physics = app.world().resource::<Physics>();
+        let physics = &app
+            .world()
+            .resource::<exa_physics::collision_share::FramePhysics>()
+            .0;
         let collider_nodes = app.world().resource::<ColliderNodes>();
         let stand_ins = StandIns::default();
         for (node, ray) in rays {
@@ -3340,7 +3348,7 @@ mod tests {
             .init_resource::<ScriptedPointer>()
             .init_resource::<StandIns>()
             .init_resource::<ColliderNodes>()
-            .insert_resource(Physics::default())
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
             .init_resource::<Hand>()
             .init_resource::<ItemCursor>()
             .add_message::<WorldClick>()

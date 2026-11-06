@@ -45,7 +45,6 @@ use bevy::audio::AudioSource;
 use exa_assets::Game;
 use exa_audio::{AudioEnvironment, SoundBank, voice_flags};
 use exa_combat::Condition;
-use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 use exa_physics::prop::{PropBody, StandIns};
 
@@ -89,7 +88,7 @@ pub fn throwable(met: Met, held: bool) -> bool {
 #[allow(clippy::type_complexity)]
 pub(super) fn pick_throw(
     cursor: Res<KinesisCursor>,
-    physics: Option<Res<Physics>>,
+    physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
     stand_ins: Option<Res<StandIns>>,
     hand: Option<Res<Hand>>,
     bodies: Query<(Entity, &Ragdoll, Option<&Condition>, Has<PropBody>)>,
