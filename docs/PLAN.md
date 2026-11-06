@@ -949,6 +949,8 @@ Round 92 simfree: the simulation runs free on its own thread by default, as the 
 
 Round 93 gripfix: grip placement confirmed against the original; arena duels repeat tick for tick.
 
+Round 94 polearm: polearm and two-hander holders no longer topple.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
