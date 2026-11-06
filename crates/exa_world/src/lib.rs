@@ -1496,6 +1496,11 @@ pub fn spawn_model_nodes_at(
                 // Ground Query (the ray under a foot's toe) meets.
                 if node.floor {
                     commands.entity(part).insert(exa_physics::FloorMesh);
+                    // The part holding the node mesh's triangle 0, which
+                    // the Ground Query ignores.
+                    if node.first_part == Some(part_index) {
+                        commands.entity(part).insert(exa_physics::FirstFloorPart);
+                    }
                 }
                 if node.cloth {
                     commands.entity(part).insert(cloth::ClothNode);
@@ -3241,6 +3246,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
             gi_centred: false,
+            first_part: None,
             floor: false,
             gi_thin: false,
             rigid: None,

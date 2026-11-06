@@ -294,6 +294,14 @@ impl<L: Level + ?Sized> Level for MeshLevel<'_, L> {
         self.level.triangles(piece, lo, hi, out);
     }
 
+    fn indexed_triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<(u32, [Vec3; 3])>) {
+        self.level.indexed_triangles(piece, lo, hi, out);
+    }
+
+    fn floor_skips_first(&self, piece: u32) -> bool {
+        self.level.floor_skips_first(piece)
+    }
+
     fn mask(&self, piece: u32) -> u32 {
         self.level.mask(piece)
     }

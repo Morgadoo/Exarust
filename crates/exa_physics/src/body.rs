@@ -5466,6 +5466,10 @@ impl Level for MaskedLevel<'_> {
         self.world.triangles(piece, lo, hi, out);
     }
 
+    fn indexed_triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<(u32, [Vec3; 3])>) {
+        self.world.indexed_triangles(piece, lo, hi, out);
+    }
+
     fn mask(&self, piece: u32) -> u32 {
         self.masks
             .map_or(crate::sector::MASK_SMALL, |m| m.mask(piece))
@@ -5483,6 +5487,16 @@ impl Level for MaskedLevel<'_> {
                 .colliders
                 .get_unknown_gen(piece)
                 .is_some_and(|(_, handle)| m.is_floor(handle))
+        })
+    }
+
+    /// A floor piece that holds its node mesh's first triangle.
+    fn floor_skips_first(&self, piece: u32) -> bool {
+        self.masks.is_some_and(|m| {
+            self.world
+                .colliders
+                .get_unknown_gen(piece)
+                .is_some_and(|(_, handle)| m.skips_first(handle))
         })
     }
 }

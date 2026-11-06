@@ -2521,6 +2521,7 @@ mod tests {
             half_extents: Vec3::splat(0.1),
             gi_points: Default::default(),
             gi_centred: false,
+            first_part: None,
             floor: false,
             gi_thin: false,
             rigid: Some(model::NodeRigidBody {

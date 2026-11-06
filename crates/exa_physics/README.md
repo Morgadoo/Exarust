@@ -736,8 +736,22 @@ built from a `FloorMesh` (a floor node's mesh: its second flag word's
 into a `+Floor` node with that bit), static or a rigid body's stand-in;
 the build records them (`StaticColliders::is_floor`) and the body
 detection's level answers `Level::floor_piece` from them. The level logs
-how many it built ("static colliders built: … of them floor"). The
-original ignores a hit on a mesh's triangle 0; Exarust does not.
+how many it built ("static colliders built: … of them floor"). Each floor
+piece runs the engine's plain mesh ray (`contact::mesh_ray`: triangles in
+index order, front faces with the determinant at least the engine's epsilon,
+unnormalised barycentric bounds, dot products summed x, y, z, a hit strictly
+inside the limit) within the nearest hit so far, and a hit on triangle 0 of a
+piece that holds its node mesh's first triangle (`FirstFloorPart`, the part
+built from the group the index list starts with:
+`StaticColliders::skips_first`, `Level::floor_skips_first`) is dropped, as
+the original's query takes a mesh's hit only above index 0; the dropped hit
+also hides that piece's farther faces. A grid cell's merged floor is not one
+mesh in Exarust, so its first triangle is not reproduced.
+`Physics::line_cast` / `contact::line_cast` is the original's line cast
+(front faces of every fixed solid collider, any triangle counting), walked
+over the colliders whole so the frame's replica answers before the step has
+shared its tree; the viewer puts a new player at the level's own start onto
+its hit from 10 m up, 30 m down (`exa_world::start::cast_onto_floor`).
 `Physics::static_floor_below` is the original's floor cast (the force
 barricade's probe): static floor pieces only, straight down.
 The sole turn (`feet::turn_sole`) projects the toe's gap onto the side axis

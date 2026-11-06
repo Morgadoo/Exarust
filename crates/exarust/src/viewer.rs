@@ -968,6 +968,10 @@ fn play_level(
         ),
     };
     let mut yaw = yaw;
+    // The level's own start is cast onto the floor once the collision is in
+    // (the original's start of play without a player); a match layout, a
+    // landing plan or `--at` place the player themselves.
+    let mut cast_start = true;
     // The player's own entry is stood here; the other bodies are the scene
     // generator's (a generated opponent, the Beast, the other entrants).
     let foes = Vec::new();
@@ -981,6 +985,7 @@ fn play_level(
         for slot in &layout {
             match slot.who {
                 Fighter::Ours(index) if index == player_entry => {
+                    cast_start = false;
                     let at = start_of(&slot.place);
                     position = at.position;
                     yaw = at.yaw;
@@ -997,9 +1002,11 @@ fn play_level(
     if let Some((at, heading)) = landing.and_then(|landing| landing.player) {
         position = Vec3::from_array(at);
         yaw = heading;
+        cast_start = false;
     }
     if let Some(at) = options.at {
         position = Vec3::from_array(at);
+        cast_start = false;
     }
     info!("level {name}: player starts at {position}");
     let start = PlayStart {
@@ -1020,6 +1027,7 @@ fn play_level(
         root,
         name: name.to_string(),
         start,
+        cast_start,
         since: std::time::Instant::now(),
     });
 }
@@ -1063,6 +1071,9 @@ struct PendingCollision {
     root: Entity,
     name: String,
     start: PlayStart,
+    /// Whether the start is the level's own, which the player is put on
+    /// by the line cast ([`exa_world::start::cast_onto_floor`]).
+    cast_start: bool,
     since: std::time::Instant,
 }
 
@@ -1087,9 +1098,12 @@ fn finish_collision(
     mut commands: Commands,
     game: Res<Game>,
     options: Res<Options>,
-    pending: Res<PendingCollision>,
+    mut pending: ResMut<PendingCollision>,
     building: Query<(), With<exa_physics::StaticGeometry>>,
-    progress: Res<exa_physics::StaticBuild>,
+    (progress, frame_physics): (
+        Res<exa_physics::StaticBuild>,
+        Res<exa_physics::collision_share::FramePhysics>,
+    ),
     mut status: Option<ResMut<exa_ui::LoadingStatus>>,
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1155,6 +1169,20 @@ fn finish_collision(
         }
     }
     commands.remove_resource::<PendingCollision>();
+    // A new player at the level's own start: the original casts its start
+    // onto the floor before it adds the player there.
+    if pending.cast_start && players.is_empty() {
+        let from = pending.start.position;
+        match exa_world::start::cast_onto_floor(from, |at, dir, reach| {
+            frame_physics.0.line_cast(at, dir, reach)
+        }) {
+            Some(at) => {
+                info!("level start: the line cast puts the player at {at} (from {from})");
+                pending.start.position = at;
+            }
+            None => info!("level start: the line cast meets nothing under {from}"),
+        }
+    }
     if let Some(hold) = hold {
         if !hold.was_paused {
             time.unpause();
