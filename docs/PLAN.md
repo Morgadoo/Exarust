@@ -933,6 +933,8 @@ Round 83 simfree1: the lent data gets one owner each, ahead of the free-running 
 
 Round 84 simfree2: sounds, scripts, gizmos and effect draws get one owner per side ahead of the free loop.
 
+Round 86 motiledyn2: the AI steps on its own feet in combat instead of sliding.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
