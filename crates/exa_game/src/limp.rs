@@ -114,9 +114,10 @@ fn build_bodies(
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
     mut limb_meshes: Local<LimbMeshes>,
-    (loading, undressed): (
+    (loading, undressed, merged_runs): (
         Option<Res<exa_ui::LoadingStatus>>,
         Query<(), (With<exa_character::Outfit>, Without<exa_character::Dressed>)>,
+        Query<(), With<exa_character::FaceGarments>>,
     ),
 ) {
     let Some(motions) = motions else { return };
@@ -145,10 +146,21 @@ fn build_bodies(
             *delay -= 1;
             continue;
         }
+        // The skeleton's nodes only: the dressed character's merged mesh
+        // runs (its faces' garments) also carry a body part, of bone 0, so
+        // the skinning reads them in the model root's frame; a body built
+        // after its dressing must not take them for limbs (free parts at
+        // the model root, which the held item met at the hips).
         let found: Vec<(Entity, usize, GlobalTransform)> = children
             .iter_descendants(root)
+            .filter(|&e| !merged_runs.contains(e))
             .filter_map(|e| parts.get(e).ok().map(|(p, g)| (e, p.bone, *g)))
             .collect();
+        debug!(
+            "body {root}: {} parts, bones {:?}",
+            found.len(),
+            found.iter().map(|f| f.1).collect::<Vec<_>>()
+        );
         if found.is_empty() {
             continue;
         }
@@ -373,6 +385,13 @@ pub struct GroundPlacement {
     pub floor: f32,
 }
 
+/// Whether a listed body may be ground for the ground placement of the
+/// body whose first part is `own`: not an item that body holds ([inf]
+/// Exarust's own, see [`place_on_ground`]).
+fn ground_for(body: &Ragdoll, own: Option<Entity>) -> bool {
+    own.is_none() || body.held_by != own
+}
+
 /// Runs each asked placement on the ground
 /// ([`Ragdoll::place_on_ground`]): the leg snap from the character frame
 /// put on the walkable floor, then the current clip sampled by the
@@ -417,7 +436,12 @@ fn place_on_ground(
         // The Height Query in its mesh mode, as a grid scene's is: the body
         // meshes listed in the nine sector cells around the frame (props,
         // items, dead bodies' limbs; not a living limb) answer besides the
-        // level.
+        // level. [inf] Exarust's own: not the items this character holds.
+        // They move with its placement (the re-place below puts them back in
+        // its hands), and a blade held over a foot would otherwise be taken
+        // for the ground under it: the body was put 42 cm up and dropped,
+        // and the fall wrenched the weapon out of its grip.
+        let own = body.parts.first().map(|p| p.entity);
         let meshes = sector_bodies.as_deref().map_or_else(Vec::new, |grid| {
             exa_physics::sector_lists::height_meshes(
                 grid,
@@ -427,7 +451,13 @@ fn place_on_ground(
                         .get(e)
                         .is_ok_and(|(_, c)| c.is_some_and(|c| c.is_dead()))
                 },
-                |e| others.get(e).ok().map(|(r, _)| r),
+                |e| {
+                    others
+                        .get(e)
+                        .ok()
+                        .map(|(r, _)| r)
+                        .filter(|r| ground_for(r, own))
+                },
             )
         });
         for m in &meshes {
@@ -3050,5 +3080,39 @@ pub(crate) mod tests {
             physical
         );
         assert_eq!(lean.capture(None, &physical, lean.before), physical);
+    }
+
+    /// The ground placement stands a body on props and on other bodies'
+    /// items, never on an item it holds itself: a held blade under a foot's
+    /// probe put the arena player 42 cm up, and the drop wrenched the sword
+    /// out of its grip.
+    #[test]
+    fn a_body_is_not_placed_on_its_own_held_item() {
+        use bevy::math::Affine3A;
+        let rigid = |entity| {
+            Ragdoll::rigid(&[exa_physics::body::RigidPart {
+                entity,
+                parent: None,
+                world: Affine3A::IDENTITY,
+                rest: [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO],
+                point_masses: [1.0; 4],
+                mobility: 1.0,
+                parent_world: Affine3A::IDENTITY,
+                spheres: Vec::new(),
+                origin: Vec3::ZERO,
+                links: Vec::new(),
+                mesh: None,
+                triangles: None,
+            }])
+        };
+        let me = Entity::from_raw_u32(1).unwrap();
+        let other = Entity::from_raw_u32(2).unwrap();
+        let mut sword = rigid(Entity::from_raw_u32(3).unwrap());
+        assert!(ground_for(&sword, Some(me)), "a loose item is ground");
+        sword.held_by = Some(other);
+        assert!(ground_for(&sword, Some(me)), "another's item is ground");
+        sword.held_by = Some(me);
+        assert!(!ground_for(&sword, Some(me)));
+        assert!(ground_for(&sword, None));
     }
 }

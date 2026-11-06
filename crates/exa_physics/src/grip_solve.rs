@@ -181,7 +181,11 @@ pub fn build_grips(
     bodies: Query<&Ragdoll>,
 ) {
     for (entity, mut grip) in &mut held {
-        if grip.links.is_some() || grip.released {
+        // A grip whose holder is not known yet (equipped before its
+        // holder's body was built, `holder_key` still the placeholder)
+        // waits: links built for it would be taken for an ownerless grip's
+        // and dropped by [`release_freed_grips`].
+        if grip.links.is_some() || grip.released || grip.holder_key == Entity::PLACEHOLDER {
             continue;
         }
         let Ok(item) = bodies.get(entity) else {
@@ -328,6 +332,14 @@ pub fn build_grips(
                     }
                 }
             }
+            debug!(
+                "grip: {entity} tied to its holder {} ({:?}, hand part {hold_index}): item at {:.3}, hand at {:.3}, {:.1} cm apart",
+                grip.holder_key,
+                grip.kind,
+                Vec3::from(item_part.transform().translation),
+                Vec3::from(hold_part.transform().translation),
+                item_to_hand.translation.length() * 100.0
+            );
             grip.links = Some(links);
         }
     }
@@ -406,6 +418,14 @@ pub fn release_freed_grips(
         if owner.is_some() && !released {
             continue;
         }
+        debug!(
+            "grip: {entity} lets go ({})",
+            if released {
+                "released"
+            } else {
+                "no holder body"
+            }
+        );
         grip.released = true;
         grip.links = None;
         body.held_by = None;
