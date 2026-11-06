@@ -199,11 +199,21 @@ library's Mersenne twister and the engine's generator) are process-wide in
 the original and drawn from by both of its threads with no order between
 them (152 and 531 call sites across the GUI, particles, AI, dynamics and
 effects): the step keeps `EffectDraws` and `EffectRoll`, the frame its own
-`FrameEffectDraws` and `FrameEffectRoll`, each in its own order. Still
-lent: the collision world and its stand-ins and collider nodes, the
-navigation grid, the sound bank, audio environment and audio sources (the
-fall, kinesis, shock, throw and alarm sounds still play from the step),
-and the conversations and their contact mirror.
+`FrameEffectDraws` and `FrameEffectRoll`, each in its own order. The other sounds a step starts
+go the same way (`exa_audio::step_sounds`): the fall's scream and pit,
+the shock's hit and cry, the kinesis and throw picks and the throw's lift,
+whose voice the frame keeps under a key the step hands out so a later
+fade finds it; a voice line's "has a set" test reads the sound pack. The
+alarm's wake pitch draws from the step's own engine generator
+(`exa_game::golem_alarm::AlarmRoll`). The sound bank, the audio
+environment and the clips are the frame's alone. The script engine is the
+frame's too: the original runs it from the AI's target pass (encounters
+and greetings, simulation thread) and from the dialogue (main thread)
+with no lock; the step takes the pass's reports and the roles unit's
+relation query and hands the scripts to the frame, which runs them with
+the session cast after the step (`exa_game::role_scripts`). Still lent:
+the collision world and its stand-ins and collider nodes, and the
+navigation grid.
 
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own

@@ -395,6 +395,7 @@ pub struct CastPlugin;
 
 impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_frame_commands(app);
         app.add_message::<BarCommand>()
             .add_message::<super::live::ArcShocked>()
             .add_message::<Otherwhere>()

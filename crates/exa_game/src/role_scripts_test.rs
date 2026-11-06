@@ -41,6 +41,8 @@ fn a_reported_encounter_runs_the_role_script_once() {
         .characters
         .push(exa_script::cast::Character::new(1, "Observer"));
     world.insert_resource(conversations);
+    world.init_resource::<exa_physics::sim_app::FrameCommands>();
+    world.insert_resource(ScriptLocale(0));
     let mut time = Time::<Virtual>::default();
     time.advance_by(std::time::Duration::from_millis(1234));
     world.insert_resource(time);
@@ -63,6 +65,7 @@ fn a_reported_encounter_runs_the_role_script_once() {
     world.get_mut::<Npc>(observer).unwrap().pass.encounter = Some(partner.to_bits());
 
     world.run_system_once(run_encounter_scripts).unwrap();
+    exa_physics::sim_app::run_frame_commands(&mut world);
     let effects: Vec<_> = world
         .resource::<Messages<exa_script::ScriptEffect>>()
         .iter_current_update_messages()
@@ -96,6 +99,7 @@ fn a_reported_encounter_runs_the_role_script_once() {
         .resource_mut::<Messages<exa_script::ScriptEffect>>()
         .clear();
     world.run_system_once(run_encounter_scripts).unwrap();
+    exa_physics::sim_app::run_frame_commands(&mut world);
     assert_eq!(
         world
             .resource::<Messages<exa_script::ScriptEffect>>()
@@ -183,6 +187,7 @@ fn a_reported_greeting_reads_the_mirrored_contact() {
             narrator: None,
         });
         world.init_resource::<crate::script_cast::ContactMirror>();
+        world.init_resource::<exa_physics::sim_app::FrameCommands>();
         world.init_resource::<Messages<exa_script::ScriptEffect>>();
         let partner = world.spawn((Roles::default(), CharacterId(2))).id();
         let mut npc = Npc::new([0.0; 4]);
@@ -195,6 +200,7 @@ fn a_reported_greeting_reads_the_mirrored_contact() {
         npc.pass.greet = Some(partner.to_bits());
         let observer = world.spawn((npc, CharacterId(1))).id();
         world.run_system_once(run_greetings).unwrap();
+        exa_physics::sim_app::run_frame_commands(&mut world);
         assert_eq!(world.get::<Npc>(observer).unwrap().pass.greet, None);
         let conversations = world.resource::<exa_script::Conversations>();
         let contact = *conversations.cast.get(1).unwrap().contact(2).unwrap();

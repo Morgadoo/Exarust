@@ -377,7 +377,7 @@ pub fn add_frame_commands(app: &mut App) {
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FrameCommandsStep;
 
-fn run_frame_commands(world: &mut World) {
+pub fn run_frame_commands(world: &mut World) {
     let Some(mut commands) = world.get_resource_mut::<FrameCommands>() else {
         return;
     };

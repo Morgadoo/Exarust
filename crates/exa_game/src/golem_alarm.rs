@@ -126,11 +126,20 @@ pub struct AlarmCheckPoint(pub Vec3);
 
 pub struct GolemAlarmPlugin;
 
+/// The engine generator the zone check's wakes draw their pitch from. The
+/// original's generator is process-wide, drawn from by both its threads
+/// with no order between them; the step keeps its own sequence here (the
+/// frame's sound bank keeps the frame's). [Exarust: any fixed split of a
+/// stream the original interleaves by thread timing is as faithful as one.]
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct AlarmRoll(pub exa_audio::Lcg);
+
 /// The data the alarm-zone check touches in the simulation's frame start,
 /// for the simulation's bridge (`exa_physics::sim_bridge`).
 fn bridge_alarm_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_resource::<AlarmVolumes>()
+    app.bridge_move_resource::<AlarmRoll>()
+        .bridge_lend_resource::<AlarmVolumes>()
         .bridge_lend_resource::<GolemAlarm>()
         .bridge_copy::<AlarmCheckPoint>();
 }
@@ -140,6 +149,7 @@ impl Plugin for GolemAlarmPlugin {
         exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<AlarmVolumes>()
             .init_resource::<GolemAlarm>()
+            .init_resource::<AlarmRoll>()
             // The zone check is the original's AI manager frame's, after its
             // rise (the simulation loop's pre-step hook): it runs before
             // every step, after the rise and its restore.
@@ -227,7 +237,7 @@ pub fn check_alarm_zones(
     mut alarm: ResMut<GolemAlarm>,
     level: Option<Res<LevelRooms>>,
     catalogue: Option<Res<ItemCatalogue>>,
-    mut bank: Option<ResMut<exa_audio::SoundBank>>,
+    mut roll: Option<ResMut<AlarmRoll>>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut players: Query<
         (
@@ -295,7 +305,7 @@ pub fn check_alarm_zones(
                 &mut guardians,
                 entity,
                 player,
-                bank.as_deref_mut(),
+                roll.as_deref_mut(),
                 &mut sounds,
             )
         });
@@ -362,7 +372,7 @@ fn wake_one(
     guardians: &mut Guardians,
     entity: Entity,
     player: Entity,
-    bank: Option<&mut exa_audio::SoundBank>,
+    roll: Option<&mut AlarmRoll>,
     sounds: &mut MessageWriter<exa_audio::PointSounded>,
 ) -> bool {
     let Ok((_, gt, mut data, npc, combatant, fighter, flags, body, rest)) =
@@ -393,7 +403,7 @@ fn wake_one(
     };
     // The pitch is drawn inside the wake, after its exemption test.
     let roll = if rules & golem::WAKE_EXEMPT == 0 {
-        bank.map_or(0.5, |bank| bank.rng().unit_f64())
+        roll.map_or(0.5, |roll| roll.0.unit_f64())
     } else {
         0.0
     };

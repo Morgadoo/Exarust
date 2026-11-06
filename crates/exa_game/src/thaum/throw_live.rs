@@ -41,6 +41,7 @@
 use bevy::prelude::*;
 
 use super::user_stamp::UserStamp;
+use bevy::audio::AudioSource;
 use exa_assets::Game;
 use exa_audio::{AudioEnvironment, SoundBank, voice_flags};
 use exa_combat::Condition;
@@ -179,46 +180,56 @@ pub fn push_body(body: &mut Ragdoll, velocity: Vec3, steered: bool) {
     body.wake();
 }
 
-/// A throw ended before its drop: its lift's voice fades.
+/// A throw ended before its drop: its lift's voice fades (the key the step
+/// gave the lift's voice).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThrowFade(pub u32);
 
-/// What the throw sounds take from the game (none in tests without it).
-#[derive(bevy::ecs::system::SystemParam)]
-pub(super) struct ThrowAudio<'w> {
-    game: Option<Res<'w, Game>>,
-    bank: Option<ResMut<'w, SoundBank>>,
-    sources: Option<ResMut<'w, Assets<AudioSource>>>,
-    env: Option<ResMut<'w, AudioEnvironment>>,
+/// The frame's side of the thaum sounds the step decides (a throw's pick
+/// and lift, a kinesis pick): their sound sets by name, loaded once, and
+/// the lifts' voices by the key the step gave them (the step decides the
+/// sounds; the frame's sound bank plays them).
+#[derive(Resource, Default)]
+pub struct ThrowSounds {
+    sets: bevy::platform::collections::HashMap<&'static str, u32>,
+    voices: bevy::platform::collections::HashMap<u32, u32>,
 }
 
-/// The pick's and the lift's sound sets, loaded once.
-#[derive(Default)]
-pub(super) struct ThrowSets {
-    pick: Option<u32>,
-    lift: Option<u32>,
-}
-
-/// Plays `prefix`'s set at `at` (m): the roll first, then the variant.
-pub(super) fn play(
-    audio: &mut ThrowAudio,
-    set: &mut Option<u32>,
-    prefix: &str,
-    at: Vec3,
+/// Plays `prefix`'s set at `at` (m) on the frame: the set loaded on its
+/// first use, the bank's roll for the pitch first, then the variant; the
+/// voice is kept under `key` when one is given.
+pub(super) fn play_on_frame(
+    world: &mut World,
+    prefix: &'static str,
     volume: f32,
     pitch: fn(f32) -> f32,
-) -> Option<u32> {
-    let (Some(game), Some(bank), Some(sources), Some(env)) = (
-        audio.game.as_deref(),
-        audio.bank.as_deref_mut(),
-        audio.sources.as_deref_mut(),
-        audio.env.as_deref_mut(),
-    ) else {
-        return None;
+    at: Vec3,
+    key: Option<u32>,
+) {
+    let Some(game) = world.get_resource::<Game>().cloned() else {
+        return;
     };
-    let set = *set.get_or_insert_with(|| bank.load_set(game, sources, prefix));
-    let pitch = pitch(bank.random_unit());
-    env.play_set(bank, set, at, volume, pitch, 0)
+    if !world.contains_resource::<SoundBank>()
+        || !world.contains_resource::<Assets<AudioSource>>()
+        || !world.contains_resource::<AudioEnvironment>()
+    {
+        return;
+    }
+    let mut state = world.remove_resource::<ThrowSounds>().unwrap_or_default();
+    world.resource_scope(|world, mut bank: Mut<SoundBank>| {
+        let set = *state.sets.entry(prefix).or_insert_with(|| {
+            let mut sources = world.resource_mut::<Assets<AudioSource>>();
+            bank.load_set(&game, &mut sources, prefix)
+        });
+        let pitch = pitch(bank.random_unit());
+        let voice = world
+            .resource_mut::<AudioEnvironment>()
+            .play_set(&mut bank, set, at, volume, pitch, 0);
+        if let (Some(key), Some(voice)) = (key, voice) {
+            state.voices.insert(key, voice);
+        }
+    });
+    world.insert_resource(state);
 }
 
 /// Fades a lift's voice while it is still allocated.
@@ -230,20 +241,29 @@ pub fn fade_voice(env: &mut AudioEnvironment, voice: u32) {
     }
 }
 
+/// Fades the lift whose voice the step keyed `key`, on the frame.
+fn fade_on_frame(world: &mut World, key: u32) {
+    let voice = world
+        .get_resource_mut::<ThrowSounds>()
+        .and_then(|mut s| s.voices.remove(&key));
+    if let (Some(voice), Some(mut env)) = (voice, world.get_resource_mut::<AudioEnvironment>()) {
+        fade_voice(&mut env, voice);
+    }
+}
+
 /// After each tick, the throws' sounds: the pick's at the body when the
 /// cursor's throw started, the lift's, and the fades of throws that ended
-/// before their drop.
+/// before their drop. The step decides them; the frame plays them, a
+/// lift's voice kept under a key the step hands out (`ThrowFade` names it).
 pub(super) fn sound_throws(
     mut casters: Query<&mut PowerCaster>,
     bodies: Query<&Ragdoll>,
     mut faded: MessageReader<ThrowFade>,
-    mut audio: ThrowAudio,
-    mut sets: Local<ThrowSets>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
+    mut keys: Local<u32>,
 ) {
-    for &ThrowFade(voice) in faded.read() {
-        if let Some(env) = audio.env.as_deref_mut() {
-            fade_voice(env, voice);
-        }
+    for &ThrowFade(key) in faded.read() {
+        frame.send(move |world| fade_on_frame(world, key));
     }
     for mut caster in &mut casters {
         for entry in caster.active.iter_mut() {
@@ -260,24 +280,31 @@ pub(super) fn sound_throws(
                 .and_then(|b| b.origin_at(0));
             let Some(at) = at else { continue };
             if std::mem::take(&mut power.sound.pick) {
-                play(
-                    &mut audio,
-                    &mut sets.pick,
-                    THROW_PICK_SOUND,
-                    at,
-                    THROW_PICK_VOLUME,
-                    throw_pick_pitch,
-                );
+                frame.send(move |world| {
+                    play_on_frame(
+                        world,
+                        THROW_PICK_SOUND,
+                        THROW_PICK_VOLUME,
+                        throw_pick_pitch,
+                        at,
+                        None,
+                    );
+                });
             }
             if std::mem::take(&mut power.sound.lift) {
-                power.sound.voice = play(
-                    &mut audio,
-                    &mut sets.lift,
-                    THROW_LIFT_SOUND,
-                    at,
-                    THROW_LIFT_VOLUME,
-                    throw_lift_pitch,
-                );
+                *keys = keys.wrapping_add(1);
+                let key = *keys;
+                power.sound.voice = Some(key);
+                frame.send(move |world| {
+                    play_on_frame(
+                        world,
+                        THROW_LIFT_SOUND,
+                        THROW_LIFT_VOLUME,
+                        throw_lift_pitch,
+                        at,
+                        Some(key),
+                    );
+                });
             }
         }
     }

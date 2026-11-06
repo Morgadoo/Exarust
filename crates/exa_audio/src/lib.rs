@@ -29,6 +29,7 @@ mod music;
 mod playback;
 mod reverb;
 mod sounds;
+pub mod step_sounds;
 pub mod voices;
 
 use bevy::prelude::*;

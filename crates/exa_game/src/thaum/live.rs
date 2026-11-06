@@ -93,6 +93,7 @@ pub struct ThaumEffectsPlugin;
 impl Plugin for ThaumEffectsPlugin {
     fn build(&self, app: &mut App) {
         bridge_thaum_effects_types(app);
+        exa_physics::sim_app::add_frame_commands(app);
         app.add_message::<ArcShocked>()
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
@@ -171,8 +172,7 @@ impl Plugin for ThaumEffectsPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_thaum_effects_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_opaque_resource::<bevy::asset::Assets<bevy::audio::AudioSource>>()
-        .bridge_message::<exa_combat::impact::LimbImpact>()
+    app.bridge_message::<exa_combat::impact::LimbImpact>()
         .bridge_message::<crate::thaum::cast::Otherwhere>()
         .bridge_message::<crate::thaum::hold_live::HoldEnd>()
         .bridge_message::<crate::thaum::kinesis_live::KinesisPicked>()
@@ -180,8 +180,6 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_message::<crate::thaum::throw_live::ThrowFade>()
         .bridge_copy::<exa_ai::DuelPowers>()
         .bridge_copy_opaque_resource::<exa_assets::Game>()
-        .bridge_lend_resource::<exa_audio::SoundBank>()
-        .bridge_lend_resource::<exa_audio::AudioEnvironment>()
         .bridge_copy::<exa_character::held::HeldMoveset>()
         .bridge_copy::<crate::effects::danger::Hazard>()
         .bridge_copy_in_resource::<crate::player::CursorGround>()
@@ -520,7 +518,10 @@ pub(crate) fn shock_fighters(
     motions: Option<Res<exa_anim::Motions>>,
     mut roll: ResMut<EffectRoll>,
     mut commands: Commands,
-    mut audio: ShockAudio,
+    (game, mut frame): (
+        Option<Res<exa_assets::Game>>,
+        ResMut<exa_physics::sim_app::FrameCommands>,
+    ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
     // Next shock times set this tick on fighters that had none yet (their
@@ -567,7 +568,11 @@ pub(crate) fn shock_fighters(
             .as_deref()
             .and_then(|b| b.drive.as_ref())
             .and_then(|d| d.balance().chest());
-        play_shock(&mut audio, &mut commands, chest, taken.gain, taken.pitch);
+        // The frame's bank plays the hit and the cry the step decides on.
+        let (gain, pitch) = (taken.gain, taken.pitch);
+        frame.send(move |world| {
+            exa_audio::step_sounds::play_clip_named(world, "elechit", chest, gain, pitch);
+        });
         let rings = character.is_some_and(|c| c.record.race == 1);
         if fighter.stats.shocks_release && !dying {
             // A release race is not burnt: it is put into the shocked
@@ -614,16 +619,23 @@ pub(crate) fn shock_fighters(
                     && let Some(voice) = voice.as_deref_mut()
                 {
                     let name = voice.set(cry_line).unwrap_or_default().to_string();
-                    let set = audio.load_cry(&name);
-                    let answer = voice.speak(
-                        cry_line,
-                        set != exa_audio::SoundBank::EMPTY_SET,
-                        now as u32,
-                        gain,
-                        pitch,
-                    );
-                    if let exa_combat::voice::Answer::Played(spoken) = answer {
-                        audio.play_cry(set, chest, spoken.volume, spoken.pitch);
+                    let found = game
+                        .as_deref()
+                        .is_some_and(|g| exa_audio::SoundBank::set_size(g, &name) > 0);
+                    let answer = voice.speak(cry_line, found, now as u32, gain, pitch);
+                    if let exa_combat::voice::Answer::Played(spoken) = answer
+                        && let Some(at) = chest
+                    {
+                        frame.send(move |world| {
+                            exa_audio::step_sounds::play_set_named(
+                                world,
+                                &name,
+                                false,
+                                at,
+                                spoken.volume,
+                                spoken.pitch,
+                            );
+                        });
                     }
                 }
             }
@@ -798,63 +810,6 @@ pub(crate) struct ShockAudio<'w> {
     bank: Option<ResMut<'w, exa_audio::SoundBank>>,
     sources: Option<ResMut<'w, bevy::asset::Assets<bevy::audio::AudioSource>>>,
     env: Option<ResMut<'w, exa_audio::AudioEnvironment>>,
-}
-
-impl ShockAudio<'_> {
-    /// The cry's set, or none when the game is not loaded.
-    fn load_cry(&mut self, name: &str) -> u32 {
-        let (Some(game), Some(bank), Some(sources)) = (
-            self.game.as_ref(),
-            self.bank.as_mut(),
-            self.sources.as_mut(),
-        ) else {
-            return exa_audio::SoundBank::EMPTY_SET;
-        };
-        bank.load_set(game, sources, name)
-    }
-
-    /// Plays a loaded cry at the chest.
-    fn play_cry(&mut self, set: u32, at: Option<Vec3>, gain: f32, pitch: f32) {
-        let (Some(bank), Some(env), Some(at)) = (self.bank.as_mut(), self.env.as_mut(), at) else {
-            return;
-        };
-        env.play_set(bank, set, at, gain, pitch, 0);
-    }
-}
-
-/// The shock's hit, at the chest when there is one.
-fn play_shock(
-    audio: &mut ShockAudio,
-    commands: &mut Commands,
-    at: Option<Vec3>,
-    gain: f32,
-    pitch: f32,
-) {
-    let (Some(game), Some(bank), Some(sources)) = (
-        audio.game.as_ref(),
-        audio.bank.as_mut(),
-        audio.sources.as_mut(),
-    ) else {
-        return;
-    };
-    let Some(clip) = bank.get(game, sources, "elechit") else {
-        return;
-    };
-    let settings = bevy::audio::PlaybackSettings::DESPAWN
-        .with_volume(bevy::audio::Volume::Linear(gain))
-        .with_speed(pitch);
-    match at {
-        Some(at) => {
-            commands.spawn((
-                bevy::audio::AudioPlayer(clip),
-                settings.with_spatial(true),
-                Transform::from_translation(at),
-            ));
-        }
-        None => {
-            commands.spawn((bevy::audio::AudioPlayer(clip), settings));
-        }
-    }
 }
 
 /// Concern a front-limb impact adds toward the wall, and the gain it is
@@ -2372,6 +2327,7 @@ mod tests {
         app.add_message::<ArcShocked>()
             .insert_resource(BodyTicks(0))
             .insert_resource(EffectRoll(Roll(0)))
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
             .add_systems(Update, shock_fighters);
         let fighter = app.world_mut().spawn(Fighter::default()).id();
         let shock = ArcShocked {
@@ -2418,6 +2374,7 @@ mod tests {
         app.add_message::<ArcShocked>()
             .insert_resource(BodyTicks(0))
             .insert_resource(EffectRoll(Roll(0)))
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
             .add_systems(Update, shock_fighters);
         let req = Locomotion {
             moving: true,
@@ -2447,6 +2404,7 @@ mod tests {
         app.add_message::<ArcShocked>()
             .insert_resource(BodyTicks(0))
             .insert_resource(EffectRoll(Roll(0)))
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
             .add_systems(Update, shock_fighters);
         let mut data = exa_character::record::CharacterData::default();
         data.record.race = 1;
@@ -2476,6 +2434,7 @@ mod tests {
         app.add_message::<ArcShocked>()
             .insert_resource(BodyTicks(0))
             .insert_resource(EffectRoll(Roll(0)))
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
             .add_systems(Update, shock_fighters);
         let fighter = app
             .world_mut()

@@ -48,6 +48,11 @@ pub struct RoleScriptsPlugin;
 impl Plugin for RoleScriptsPlugin {
     fn build(&self, app: &mut App) {
         bridge_role_scripts_types(app);
+        exa_physics::sim_app::add_frame_commands(app);
+        app.init_resource::<ScriptLocale>().add_systems(
+            RunFixedMainLoop,
+            keep_script_locale.in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop),
+        );
         // The encounters a target pass reports run in the brains' tick, every
         // body tick, right after the AI tick that reported them.
         app.add_systems(
@@ -66,8 +71,7 @@ fn bridge_role_scripts_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<exa_script::ScriptEffect>()
         .bridge_lend_resource::<crate::role_scripts::ExtraEncounterScript>()
-        .bridge_lend_resource::<crate::script_cast::ContactMirror>()
-        .bridge_lend_resource::<exa_script::Conversations>()
+        .bridge_copy_in_resource::<crate::role_scripts::ScriptLocale>()
         .bridge_copy_in_resource::<exa_script::Scripts>();
 }
 
@@ -79,24 +83,35 @@ fn bridge_role_scripts_types(app: &mut App) {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ExtraEncounterScript(pub Vec<u8>);
 
-/// Runs the encounter scripts the last target passes reported.
+/// One encounter's scripts for the frame: the observer and partner record
+/// ids, the role, the partner's matched role and the script text.
+type EncounterWork = Vec<(u32, u32, u32, Option<u32>, Vec<u8>)>;
+
+/// Runs the encounter scripts the last target passes reported. The AI's
+/// side (the report taken, the roles unit's relation query and its scripts)
+/// is the step's; the script engine, the session cast and the dialogue are
+/// the frame's, which runs the scripts after the step ([`encounter_on_frame`]).
+/// The original calls the roles unit and the script engine from the AI's
+/// target pass on its simulation thread while its main thread runs the
+/// same engine for the dialogue, with no lock between them; Exarust gives
+/// the engine to the frame and the AI's results reach it in step order.
 #[allow(clippy::too_many_arguments)]
 pub fn run_encounter_scripts(
     scripts: Option<Res<exa_script::Scripts>>,
-    conversations: Option<ResMut<exa_script::Conversations>>,
     extra: Option<Res<ExtraEncounterScript>>,
     time: Option<Res<Time<Virtual>>>,
     mut observers: Query<(&mut Npc, &Roles, &mut Relations, Option<&CharacterId>)>,
     partners: Query<(&Roles, Option<&CharacterId>)>,
-    mut effects: MessageWriter<exa_script::ScriptEffect>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
+    locale: Option<Res<ScriptLocale>>,
 ) {
-    let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
+    let Some(scripts) = scripts else {
         return;
     };
     let now = time.map_or(0, |t| t.elapsed().as_millis() as u32);
-    let locale = conversations.locale;
+    let locale = locale.map_or(0, |l| l.0);
     let mut met = Vec::new();
-    let mut work = Vec::new();
+    let mut work: EncounterWork = Vec::new();
     for (mut npc, roles, mut relations, id) in &mut observers {
         let Some(target) = npc.pass.encounter.take() else {
             continue;
@@ -134,6 +149,43 @@ pub fn run_encounter_scripts(
             work.push((observer, partner.id, 0, None, extra.0.clone()));
         }
     }
+    if met.is_empty() {
+        return;
+    }
+    frame.send(move |world| {
+        if let Err(e) = world.run_system_cached_with(encounter_on_frame, (now, met, work)) {
+            warn!("encounter scripts: {e}");
+        }
+    });
+}
+
+/// The script language the session runs in, as the frame's conversations
+/// hold it; the step's relation query reads it.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScriptLocale(pub u32);
+
+/// Keeps [`ScriptLocale`] from the conversations, before the fixed steps.
+fn keep_script_locale(
+    conversations: Option<Res<exa_script::Conversations>>,
+    mut locale: ResMut<ScriptLocale>,
+) {
+    if let Some(c) = conversations {
+        locale.set_if_neq(ScriptLocale(c.locale));
+    }
+}
+
+/// The frame's half of an encounter: the meeting time written to the cast,
+/// then the scripts run through the engine and their effects sent.
+#[allow(clippy::type_complexity)]
+fn encounter_on_frame(
+    In((now, met, work)): In<(u32, Vec<(u32, u32)>, EncounterWork)>,
+    scripts: Option<Res<exa_script::Scripts>>,
+    conversations: Option<ResMut<exa_script::Conversations>>,
+    mut effects: MessageWriter<exa_script::ScriptEffect>,
+) {
+    let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
+        return;
+    };
     for (observer, partner) in met {
         if let Some(character) = conversations.cast.get_mut(observer) {
             character.relation_entry(partner).last_encounter = now;
@@ -177,14 +229,52 @@ pub fn run_encounter_scripts(
 }
 
 /// Runs the greetings the last target passes reported, after their
-/// encounter scripts.
-#[allow(clippy::type_complexity)]
+/// encounter scripts: the step takes the reports; the frame, which keeps
+/// the script engine and the session cast, mirrors the brain into the cast
+/// and runs the greeting after the step ([`greet_on_frame`]).
 pub fn run_greetings(
+    mut greeters: Query<(Entity, &CharacterId, &mut Npc)>,
+    ids: Query<&CharacterId>,
+    time: Option<Res<Time<Virtual>>>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
+) {
+    let now = time.map_or(0, |t| t.elapsed().as_millis() as u32);
+    let mut greets = Vec::new();
+    for (entity, id, mut npc) in &mut greeters {
+        let Some(target) = npc.pass.greet.take() else {
+            continue;
+        };
+        let Some(partner) = Entity::try_from_bits(target)
+            .and_then(|e| ids.get(e).ok())
+            .map(|id| id.0)
+        else {
+            continue;
+        };
+        let me = id.0;
+        if partner == 0 || partner == me {
+            continue;
+        }
+        greets.push((entity, me, partner));
+    }
+    if greets.is_empty() {
+        return;
+    }
+    frame.send(move |world| {
+        if let Err(e) = world.run_system_cached_with(greet_on_frame, (now, greets)) {
+            warn!("greetings: {e}");
+        }
+    });
+}
+
+/// The frame's half of the greetings: each greeter's brain mirrored into
+/// the cast, its mood, the greeting run and its effects sent.
+#[allow(clippy::type_complexity)]
+fn greet_on_frame(
+    In((now, greets)): In<(u32, Vec<(Entity, u32, u32)>)>,
     scripts: Option<Res<exa_script::Scripts>>,
     conversations: Option<ResMut<exa_script::Conversations>>,
     mirror: Option<ResMut<crate::script_cast::ContactMirror>>,
-    time: Option<Res<Time<Virtual>>>,
-    mut greeters: Query<(&CharacterId, &mut Npc, Option<&Relations>)>,
+    mut brains: Query<(&mut Npc, Option<&Relations>)>,
     ids: Query<&CharacterId>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
 ) {
@@ -194,23 +284,15 @@ pub fn run_greetings(
     let mut local = crate::script_cast::ContactMirror::default();
     let mut mirror = mirror;
     let mirror = mirror.as_deref_mut().unwrap_or(&mut local);
-    let now = time.map_or(0, |t| t.elapsed().as_millis() as u32);
     let character_of = |key: u64| {
         Entity::try_from_bits(key)
             .and_then(|e| ids.get(e).ok())
             .map(|id| id.0)
     };
-    for (id, mut npc, relations) in &mut greeters {
-        let Some(target) = npc.pass.greet.take() else {
+    for (entity, me, partner) in greets {
+        let Ok((mut npc, relations)) = brains.get_mut(entity) else {
             continue;
         };
-        let Some(partner) = character_of(target) else {
-            continue;
-        };
-        let me = id.0;
-        if partner == 0 || partner == me {
-            continue;
-        }
         crate::script_cast::sync_brain(
             &mut conversations.cast,
             mirror,
