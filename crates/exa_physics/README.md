@@ -147,6 +147,50 @@ ran in `Update`, then in `PostUpdate`, then the bodies' frame start), from
 commands) that runs it on the first fixed pass of each frame (Bevy's frame
 count, bridged, tells the frames apart): the same point in both worlds.
 
+Stage 6 (a simulation running apart from the frame) needs every value
+the two sides share to have one owner, since a free-running simulation
+cannot borrow the frame's data for a step. Lent resources the frame never
+touches stay lent for now; the ones it does take an owner group by group.
+`bridge_copy_in_resource` is a resource the frame owns and the simulation
+only reads (copied in when the frame changes it, never sent back; a
+simulation write is warned of once and stays there);
+`bridge_snapshot_resource` is one the simulation owns and the frame only
+reads (copied out when it changes, in only when the frame inserts it; a
+frame write is warned of once and not sent). The input and settings the
+player's steering reads (bindings, pad, hand, cursor ground, hardware
+settings, idle watch, spectate), the loading status, the item catalogue,
+scripts, role database, the search's items and the level's local items,
+the world clock, story mode, possession, the portal screen and the
+kinesis inputs are copied in; the effect clock, the path probe, the aim
+cursor and the kinesis pick hook are snapshots. The search reads the open
+loot windows and popups from `exa_game::npc_search::OpenSearchScreens`,
+which the frame keeps before its fixed steps, instead of the screens.
+
+Values both sides write take one owner too. `sim_app::FrameCommands` is
+the simulation's queue of writes to data the frame owns: a fixed-step
+system writes its own copy at once (without a change mark behind the
+bridge, so the copy is not sent back) and queues the same write, which the
+frame runs right after the step, before the step's other events; in one
+world it is a plain write. `sim_app::write_resource` is the other way, the
+resource form of `FixedCommands::write` for data the simulation owns.
+Owned by the frame and copied in, with the step's writes queued: the flow,
+the item cursor (the step takes the hand's released points), the doll's
+item set (its templates and copies behind `Arc`s, so the copy is cheap),
+the story's experience, the play session, the death fade and the chase
+camera. Owned by the simulation, the frame's writes posted: the attack
+latch, the simulation controls' scripted pauses (the frame's stepping and
+start-speed state is `exa_game::sim_control::SimStepping`), the blood
+sprays (jets now start in the post-step that dealt the bleeding blow, and
+tick from the next tick), the cloth debug counters; moved to the
+simulation with the frame's writes posted: the weapons' blood list, the
+room cells, the pass turn, the navigation revision, the search's world
+(its screenshot requests go out as `SearchShot` messages), the scan build
+(the debug scan is built at the next step) and the solver stages. Still
+lent: the collision world and its stand-ins and collider nodes, the
+navigation grid, the sound bank, audio environment and audio sources, the
+conversations and their contact mirror, the effect draws and rolls, and
+the gizmo storages.
+
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own
 schedule after `FixedLast`, which moves with the fixed step: a one-world run

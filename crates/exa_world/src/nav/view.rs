@@ -36,6 +36,7 @@ pub struct NavPlugin;
 impl Plugin for NavPlugin {
     fn build(&self, app: &mut App) {
         bridge_nav_types(app);
+        exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<NavState>()
             .init_resource::<InstalledPathfinder>()
             .init_resource::<NavOverlay>()
@@ -74,7 +75,7 @@ fn bridge_nav_types(app: &mut App) {
         .bridge_message::<crate::nav::view::NavMoved>()
         .bridge_copy::<crate::gi_volume::GiPoints>()
         .bridge_lend_resource::<crate::nav::view::NavMovers>()
-        .bridge_lend_resource::<crate::nav::view::NavRevision>()
+        .bridge_move_resource::<crate::nav::view::NavRevision>()
         .bridge_copy_resource::<NavRefreshMoved>();
 }
 
@@ -271,7 +272,7 @@ fn finish_build(
     build: Option<ResMut<NavBuild>>,
     mut state: ResMut<NavState>,
     mut installed: ResMut<InstalledPathfinder>,
-    mut revision: ResMut<NavRevision>,
+    fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let Some(mut build) = build else { return };
     let Some(grid) = block_on(poll_once(&mut build.0)) else {
@@ -287,7 +288,15 @@ fn finish_build(
     commands.insert_resource(NavMovers::default());
     *state = NavState::Built;
     *installed = InstalledPathfinder::install_level();
-    revision.0 = revision.0.wrapping_add(1);
+    // The revision belongs to the fixed step, which refreshes the grid: the
+    // new grid counts at the next step.
+    if let Some(mut fixed) = fixed {
+        fixed.post(|world| {
+            if let Some(mut revision) = world.get_resource_mut::<NavRevision>() {
+                revision.0 = revision.0.wrapping_add(1);
+            }
+        });
+    }
 }
 
 /// Queues the moved nodes and refreshes the grid's rectangles from the

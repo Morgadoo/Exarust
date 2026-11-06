@@ -336,7 +336,7 @@ impl AttackInput {
 /// The left button as the behaviour ticks see it: a press since the last
 /// tick counts even when it was let go before a tick ran (a click within a
 /// frame that ran no tick).
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Clone)]
 struct AttackButton {
     pressed_since_tick: bool,
 }
@@ -348,12 +348,20 @@ fn latch_attack_button(
     status: Option<Res<crate::gamepad::PadStatus>>,
     pad: Option<ResMut<crate::gamepad::PlayPad>>,
     mut latch: ResMut<AttackButton>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
-    latch.pressed_since_tick |= bindings.mouse_just_pressed(&buttons, Action::Primary);
+    let mut pressed = bindings.mouse_just_pressed(&buttons, Action::Primary);
     if status.as_ref().is_some_and(|s| s.active())
         && let Some(mut pad) = pad
     {
-        latch.pressed_since_tick |= pad.take_attack_press();
+        pressed |= pad.take_attack_press();
+    }
+    // The latch is the player tick's (it clears it): the press reaches it
+    // as a posted write.
+    if pressed {
+        exa_physics::sim_app::write_resource(fixed.as_deref_mut(), &mut latch, |l| {
+            l.pressed_since_tick = true;
+        });
     }
 }
 
@@ -384,7 +392,7 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
 
 /// The point under the cursor on the player's aim plane, for the right
 /// mouse button, combat facing and the world cursor.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Clone)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
 
 /// The cursor's aim pick reaches this far along its ray (m), as the
@@ -534,13 +542,14 @@ pub(crate) fn cursor_ground(
 /// it by `(0.4·AimSpeed + 0.1)²` a behaviour tick (the original eases the
 /// screen cursor and picks its point on the aim plane; Exarust eases the
 /// world point by the same factor).
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Clone)]
 pub(crate) struct AimCursor(pub(crate) Option<Vec3>);
 
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_frame_commands(app);
         bridge_player_types(app);
         app.init_resource::<CursorGround>()
             .init_resource::<AttackButton>()
@@ -604,18 +613,18 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>()
         .bridge_lend_resource::<exa_ai::presence::ActivationArea>()
         .bridge_copy::<exa_character::Wielded>()
-        .bridge_lend_resource::<crate::bindings::Bindings>()
-        .bridge_lend_resource::<crate::experience_live::StoryExperience>()
-        .bridge_lend_resource::<crate::gamepad::PadStatus>()
-        .bridge_lend_resource::<crate::gamepad::PlayPad>()
-        .bridge_lend_resource::<crate::hand::Hand>()
-        .bridge_lend_resource::<crate::hw_config::HardwareConfig>()
-        .bridge_lend_resource::<crate::idle_orbit::IdleWatch>()
-        .bridge_lend_resource::<crate::player::AimCursor>()
-        .bridge_lend_resource::<crate::spectate::SpectateSession>()
-        .bridge_lend_resource::<crate::player::AttackButton>()
-        .bridge_lend::<crate::player::ChaseCamera>()
-        .bridge_lend_resource::<crate::player_controls::PlaySession>()
+        .bridge_copy_in_resource::<crate::bindings::Bindings>()
+        .bridge_copy_in_resource::<crate::experience_live::StoryExperience>()
+        .bridge_copy_in_resource::<crate::gamepad::PadStatus>()
+        .bridge_copy_in_resource::<crate::gamepad::PlayPad>()
+        .bridge_copy_in_resource::<crate::hand::Hand>()
+        .bridge_copy_in_resource::<crate::hw_config::HardwareConfig>()
+        .bridge_copy_in_resource::<crate::idle_orbit::IdleWatch>()
+        .bridge_snapshot_resource::<crate::player::AimCursor>()
+        .bridge_copy_in_resource::<crate::spectate::SpectateSession>()
+        .bridge_snapshot_resource::<crate::player::AttackButton>()
+        .bridge_copy_in::<crate::player::ChaseCamera>()
+        .bridge_copy_in_resource::<crate::player_controls::PlaySession>()
         .bridge_copy::<crate::player_practice::PlayerPractice>();
 }
 
@@ -650,13 +659,17 @@ fn end_play_session(
 /// centre follows the player, and the AI takes the session's area.
 fn follow_activation_centre(
     mut session: ResMut<crate::player_controls::PlaySession>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
     area: Option<ResMut<exa_ai::presence::ActivationArea>>,
     players: Query<&GlobalTransform, With<Player>>,
 ) {
     if session.playing
         && let Some(at) = players.iter().next()
+        && session.activation_centre != at.translation()
     {
-        session.activation_centre = at.translation();
+        // The session is the frame's: the centre is written there too.
+        let centre = at.translation();
+        frame.write_resource(&mut session, move |s| s.activation_centre = centre);
     }
     if let Some(mut area) = area {
         area.centre_cm = session.activation_centre * 100.0;
@@ -1579,8 +1592,9 @@ fn pad_aim_cursor(
 /// alone.
 fn follow_body_camera(
     config: Option<Res<crate::hw_config::HardwareConfig>>,
-    mut cameras: Query<&mut ChaseCamera>,
+    mut cameras: Query<(Entity, &mut ChaseCamera)>,
     bodies: Query<&Locomotor, With<PlayerBody>>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
 ) {
     if !config.is_some_and(|config| config.live.cam_follow) {
         return;
@@ -1588,11 +1602,12 @@ fn follow_body_camera(
     let Some(body) = bodies.iter().next() else {
         return;
     };
-    let Ok(mut camera) = cameras.single_mut() else {
+    let Ok((entity, mut camera)) = cameras.single_mut() else {
         return;
     };
+    // The camera is the frame's: its yaw is turned there too.
     if let Some(yaw) = crate::player_behaviour::camera_follow_yaw(camera.yaw, body.yaw) {
-        camera.yaw = yaw;
+        frame.write(entity, &mut camera, move |c| c.yaw = yaw);
     }
 }
 
@@ -1923,7 +1938,7 @@ const CAMERA_EXTENT: f32 = 2000.0;
 /// preset's rate, 1 by default; the game's preset value is not traced]
 const WALL_RATE: f32 = 1.0;
 
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct ChaseCamera {
     /// The orbit's target yaw and the shown yaw (rad).
     pub yaw: f32,
@@ -3741,7 +3756,8 @@ mod tests {
     fn the_camera_follows_the_body_only_when_asked() {
         let run = |follow: bool| {
             let mut app = App::new();
-            app.add_systems(Update, follow_body_camera);
+            app.add_systems(Update, follow_body_camera)
+                .init_resource::<exa_physics::sim_app::FrameCommands>();
             let body = Locomotor {
                 yaw: 0.0,
                 ..Default::default()

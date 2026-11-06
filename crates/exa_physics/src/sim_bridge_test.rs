@@ -483,3 +483,144 @@ fn only_shared_entities_hierarchy_crosses() {
         Some(vec![mesh])
     );
 }
+
+/// A resource the frame owns and the simulation reads.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+struct Input(u32);
+/// A resource the simulation owns and the frame reads.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+struct Output(u32);
+
+/// Each step reads the input and counts the output up.
+fn one_way_step(input: Res<Input>, mut output: ResMut<Output>, mut seen: ResMut<SnapSeen>) {
+    seen.0.push(format!("in {} out {}", input.0, output.0));
+    output.0 += 1;
+}
+
+/// A write of the input, which the frame owns, by the simulation.
+fn rogue_step(mut input: ResMut<Input>) {
+    input.0 = 999;
+}
+
+/// The frame writes the input every frame and reads the output; at frame 6
+/// it writes the output too (not its own).
+fn one_way_run(shell: Option<SimMode>, rogue: bool) -> (Vec<String>, Vec<(u32, u32)>) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / crate::STEP_HZ,
+        )))
+        .init_resource::<SnapSeen>()
+        .init_resource::<Input>()
+        .init_resource::<Output>()
+        .add_systems(FixedUpdate, one_way_step);
+    if rogue {
+        app.add_systems(
+            FixedUpdate,
+            rogue_step
+                .after(one_way_step)
+                .run_if(|o: Res<Output>| o.0 == 5),
+        );
+    }
+    crate::sim_app::add_fixed_commands(&mut app);
+    if let Some(mode) = shell {
+        app.add_plugins((SimShellPlugin { mode }, SimBridgePlugin { extra: vec![] }))
+            .bridge_copy_in_resource::<Input>()
+            .bridge_snapshot_resource::<Output>()
+            .bridge_copy_resource::<SnapSeen>();
+    }
+    let mut frame = Vec::new();
+    for f in 0..10 {
+        app.world_mut().resource_mut::<Input>().0 = f * 10;
+        if f == 6 && rogue {
+            app.world_mut().resource_mut::<Output>().0 = 777;
+        }
+        app.update();
+        let w = app.world();
+        frame.push((w.resource::<Input>().0, w.resource::<Output>().0));
+    }
+    (app.world().resource::<SnapSeen>().0.clone(), frame)
+}
+
+/// A copied-in resource reaches the simulation each step its frame changed
+/// it and never comes back; a snapshot resource reaches the frame each
+/// step and the frame's own write to it never reaches the simulation.
+/// Without writes on the wrong side, both match one world.
+#[test]
+fn one_way_resources_cross_one_way() {
+    let (alone_sim, alone_frame) = one_way_run(None, false);
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        assert_eq!(
+            one_way_run(Some(mode), false),
+            (alone_sim.clone(), alone_frame.clone())
+        );
+        let (sim, frame) = one_way_run(Some(mode), true);
+        // The simulation's write of the input stays there: the frame keeps
+        // its own value.
+        assert!(frame.iter().all(|(i, _)| *i != 999), "{mode:?}: {frame:?}");
+        // The frame's write of the output never reached the simulation,
+        // and the next copy out replaced it.
+        assert!(
+            sim.iter().all(|s| !s.contains("out 777")),
+            "{mode:?}: {sim:?}"
+        );
+        assert_ne!(frame[6].1, 777, "{mode:?}");
+    }
+}
+
+/// A resource the frame owns that a fixed step also writes.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+struct Owned(Vec<u32>);
+
+/// Each step appends its count through the frame's queue, and reads what
+/// it has seen so far.
+fn owned_step(
+    mut owned: ResMut<Owned>,
+    mut frame: ResMut<crate::sim_app::FrameCommands>,
+    mut seen: ResMut<SnapSeen>,
+    mut n: Local<u32>,
+) {
+    *n += 1;
+    let k = *n;
+    seen.0.push(format!("{:?}", owned.0));
+    frame.write_resource(&mut owned, move |o| o.0.push(k));
+}
+
+/// The frame appends 100 + its frame number each frame too.
+fn owned_run(shell: Option<SimMode>) -> (Vec<String>, Vec<Vec<u32>>) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / crate::STEP_HZ,
+        )))
+        .init_resource::<SnapSeen>()
+        .init_resource::<Owned>()
+        .add_systems(FixedUpdate, owned_step);
+    crate::sim_app::add_fixed_commands(&mut app);
+    crate::sim_app::add_frame_commands(&mut app);
+    if let Some(mode) = shell {
+        app.add_plugins((SimShellPlugin { mode }, SimBridgePlugin { extra: vec![] }))
+            .bridge_copy_in_resource::<Owned>()
+            .bridge_copy_resource::<SnapSeen>();
+    }
+    let mut frame = Vec::new();
+    for f in 0..8 {
+        app.world_mut().resource_mut::<Owned>().0.push(100 + f);
+        app.update();
+        frame.push(app.world().resource::<Owned>().0.clone());
+    }
+    (app.world().resource::<SnapSeen>().0.clone(), frame)
+}
+
+/// A step's write to data the frame owns reaches the frame after the step
+/// and the step sees it at once: both sides see what one world sees.
+#[test]
+fn a_steps_write_to_frame_data_lands_after_the_step() {
+    let alone = owned_run(None);
+    assert!(alone.1.last().unwrap().contains(&3), "{alone:?}");
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        assert_eq!(owned_run(Some(mode)), alone, "{mode:?}");
+    }
+}

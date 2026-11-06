@@ -301,11 +301,13 @@ pub struct DollDrop {
 /// database's local and world tiers under its tagged id, refreshed from
 /// [`LiveObjects`] whenever it changes ([`Self::sync`]). A kit's copy, a
 /// level's own record and a promoted record each read their own bytes.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Clone)]
 pub struct DollItems {
-    items: HashMap<u32, Item>,
+    /// The game's item templates, shared: the fixed step reads a copy of
+    /// the set, which must not clone the whole database each time.
+    items: std::sync::Arc<HashMap<u32, Item>>,
     /// The live database's tagged records, by their whole id.
-    copies: HashMap<u32, Item>,
+    copies: std::sync::Arc<HashMap<u32, Item>>,
     /// The live database's revision the copies were read at.
     revision: u64,
     tried: bool,
@@ -327,7 +329,7 @@ impl DollItems {
             .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
             .map(|db| exa_formats::objdb::items(&db))
             .unwrap_or_default();
-        self.items = items.into_iter().map(|item| (item.id, item)).collect();
+        self.items = std::sync::Arc::new(items.into_iter().map(|item| (item.id, item)).collect());
     }
 
     /// Reads again what the live database changed since the last sync: the
@@ -342,18 +344,19 @@ impl DollItems {
                         continue;
                     };
                     if id & !ID_MASK == 0 {
-                        self.items.insert(id, item);
+                        std::sync::Arc::make_mut(&mut self.items).insert(id, item);
                     } else {
-                        self.copies.insert(id, item);
+                        std::sync::Arc::make_mut(&mut self.copies).insert(id, item);
                     }
                 }
             }
             Changes::All => {
-                self.copies = live
-                    .tagged_items()
-                    .into_iter()
-                    .map(|item| (item.id, item))
-                    .collect();
+                self.copies = std::sync::Arc::new(
+                    live.tagged_items()
+                        .into_iter()
+                        .map(|item| (item.id, item))
+                        .collect(),
+                );
             }
         }
         self.revision = live.revision();
@@ -1476,7 +1479,11 @@ fn cancel(screens: &mut GameScreens, drop: DollDrop) {
 
 /// Keeps [`DollItems`] on the live database's records.
 fn sync_doll_items(mut items: ResMut<DollItems>, live: Res<LiveObjects>) {
-    items.sync(&live);
+    // Touched only when the live database moved on, so the item set (which
+    // the fixed step reads as a copy) is not sent every frame.
+    if items.revision != live.revision() {
+        items.sync(&live);
+    }
 }
 
 /// The inventory's character view.
@@ -1588,7 +1595,7 @@ mod tests {
         db.local = Store::from_records([(0x12, 0x4000, payload.as_slice())]);
         let mut live = LiveObjects::of(db);
         let mut items = DollItems::default();
-        items.items.insert(0x12, weapon_item(0x12));
+        std::sync::Arc::make_mut(&mut items.items).insert(0x12, weapon_item(0x12));
         items.sync(&live);
         let copy = 0x8000_0012;
         assert_eq!(items.get(copy).unwrap().weapon.unwrap().damage, 0x60);

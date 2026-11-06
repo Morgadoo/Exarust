@@ -159,7 +159,10 @@ pub struct TeleportPlugin;
 impl Plugin for TeleportPlugin {
     fn build(&self, app: &mut App) {
         bridge_teleport_types(app);
+        exa_physics::sim_app::add_frame_commands(app);
+        exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<EffectClock>()
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
             .init_resource::<Possession>()
             .init_resource::<Latch>()
             .init_resource::<scan::ScanBuild>()
@@ -196,13 +199,13 @@ fn bridge_teleport_types(app: &mut App) {
         .bridge_message::<crate::teleporters::SessionEnded>()
         .bridge_message::<crate::teleporters::SlotReleased>()
         .bridge_message::<crate::teleporters::UseDevice>()
-        .bridge_lend_resource::<crate::destination::PortalScreenState>()
-        .bridge_lend_resource::<crate::effects::scan::ScanBuild>()
-        .bridge_lend_resource::<crate::flow::Flow>()
-        .bridge_lend_resource::<crate::item_cursor::ItemCursor>()
+        .bridge_copy_in_resource::<crate::destination::PortalScreenState>()
+        .bridge_move_resource::<crate::effects::scan::ScanBuild>()
+        .bridge_copy_in_resource::<crate::flow::Flow>()
+        .bridge_copy_in_resource::<crate::item_cursor::ItemCursor>()
         .bridge_copy::<crate::teleporters::DeviceGlow>()
         .bridge_copy::<crate::teleporters::GlowBase>()
-        .bridge_lend_resource::<crate::teleporters::Possession>()
+        .bridge_copy_in_resource::<crate::teleporters::Possession>()
         .bridge_copy::<crate::teleporters::RecordIdentity>()
         .bridge_copy::<exa_render::gi::VoxelLight>()
         .bridge_copy::<exa_world::TeleportDevice>()
@@ -274,7 +277,10 @@ fn use_devices(
     clock: Res<EffectClock>,
     mut latch: ResMut<Latch>,
     mut build: ResMut<scan::ScanBuild>,
-    mut flow: Option<ResMut<crate::flow::Flow>>,
+    (mut flow, mut frame): (
+        Option<ResMut<crate::flow::Flow>>,
+        ResMut<exa_physics::sim_app::FrameCommands>,
+    ),
     mut screens: PortalBridge<'_>,
     mut sounds: MessageWriter<DeviceSound>,
 ) {
@@ -371,8 +377,10 @@ fn use_devices(
                 // the reconstruction word and, beside it, the identity it
                 // compares with the dying player's record.
                 if let Some(flow) = flow.as_mut() {
-                    flow.story.reconstruction = crate::flow::REBUILDABLE;
-                    flow.story.checkpoint = identity;
+                    frame.write_resource(flow, move |flow| {
+                        flow.story.reconstruction = crate::flow::REBUILDABLE;
+                        flow.story.checkpoint = identity;
+                    });
                 }
                 commands.entity(use_it.device).insert(DeviceGlow {
                     start_ms: clock.now_ms,
@@ -432,12 +440,11 @@ pub struct DebugScan(pub Option<u32>);
 
 #[allow(clippy::too_many_arguments)]
 fn debug_scan(
-    mut commands: Commands,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
     script: Res<DebugScan>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     clock: Res<EffectClock>,
     players: Query<(Entity, &GlobalTransform), With<crate::player::PlayerBody>>,
-    mut build: ResMut<scan::ScanBuild>,
     mut sounds: MessageWriter<DeviceSound>,
     mut frames: Local<u32>,
 ) {
@@ -455,10 +462,19 @@ fn debug_scan(
         info!("debug scan: no player at frame {frame}");
         return;
     };
-    let scan = spawn_device_scan(&mut commands, &mut build, player, clock.now_ms);
+    // The scan's build belongs to the fixed step (a device's use builds
+    // it there): the debug scan is built at the next step.
+    let now_ms = clock.now_ms;
+    fixed.post(move |world| {
+        world.resource_scope(|world, mut build: Mut<scan::ScanBuild>| {
+            let mut commands = world.commands();
+            spawn_device_scan(&mut commands, &mut build, player, now_ms);
+        });
+        world.flush();
+    });
     sounds.write(DeviceSound::scan(at.translation()));
     info!(
-        "debug scan: {scan:?} on the player at {} ms, opening at {} ms",
+        "debug scan: on the player at {} ms, opening at {} ms",
         clock.now_ms,
         clock.now_ms.wrapping_add(teleporters::SCAN_DELAY_MS)
     );
@@ -509,6 +525,7 @@ pub fn glowing(base: Vec3, strength: f32) -> Vec3 {
 /// device and the latch cleared. Other devices ignore it.
 fn release_from_slots(
     mut items: Option<ResMut<crate::item_cursor::ItemCursor>>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
     devices: Query<Entity, With<TeleportDevice>>,
     children: Query<&Children>,
     names: Query<&Name>,
@@ -518,10 +535,18 @@ fn release_from_slots(
     let Some(items) = items.as_mut() else {
         return;
     };
-    let points = std::mem::take(&mut items.released_cm);
-    if points.is_empty() {
+    if items.released_cm.is_empty() {
         return;
     }
+    // The points the hand queued, taken here and dropped from the frame's
+    // own queue (which may have grown since) after the step.
+    let n = items.released_cm.len();
+    let points = frame.write_resource(items, move |items| {
+        items
+            .released_cm
+            .drain(..n.min(items.released_cm.len()))
+            .collect::<Vec<_>>()
+    });
     for device in &devices {
         let Some(slot) = find_slot_entity(device, &children, &names) else {
             continue;
@@ -544,6 +569,7 @@ fn power_down_devices(
     devices: Query<(&TeleportDevice, &GlobalTransform)>,
     mut latch: ResMut<Latch>,
     mut flow: Option<ResMut<crate::flow::Flow>>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
     mut sounds: MessageWriter<DeviceSound>,
 ) {
     for release in released.read() {
@@ -557,7 +583,7 @@ fn power_down_devices(
         latch.power_down();
         // The one reconstruction word: the story session no longer rebuilds.
         if let Some(flow) = flow.as_mut() {
-            flow.story.reconstruction = 0;
+            frame.write_resource(flow, |flow| flow.story.reconstruction = 0);
         }
     }
 }
@@ -680,6 +706,7 @@ mod tests {
     fn a_let_go_on_the_slot_powers_the_device_down() {
         let mut app = App::new();
         app.init_resource::<crate::item_cursor::ItemCursor>()
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
             .init_resource::<Latch>()
             .init_resource::<crate::flow::Flow>()
             .add_message::<SlotReleased>()
@@ -736,6 +763,7 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.init_resource::<EffectClock>()
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
             .init_resource::<Possession>()
             .init_resource::<Latch>()
             .init_resource::<crate::effects::scan::ScanBuild>()

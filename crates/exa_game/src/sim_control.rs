@@ -68,10 +68,6 @@ pub struct SimControl {
     /// Pause this many ticks after the first body starts its collapse (a
     /// killing blow).
     pub pause_after_collapse: Option<u64>,
-    /// Ticks asked for while paused, run one a frame.
-    steps: u32,
-    /// The starting speed is set (once the loading screen is gone).
-    started: bool,
     /// Why the simulation last paused by itself.
     pub reason: Option<String>,
 }
@@ -85,8 +81,6 @@ impl Default for SimControl {
             pause_after_jet: None,
             pause_on_hit: None,
             pause_after_collapse: None,
-            steps: 0,
-            started: false,
             reason: None,
         }
     }
@@ -157,6 +151,15 @@ pub fn next_speed(speed: f32, up: bool) -> f32 {
     }
 }
 
+/// The frame's side of the controls: the ticks asked for while paused (run
+/// one a frame) and whether the starting speed is set. The scripted pauses
+/// ([`SimControl`]) belong to the fixed step, which arms and takes them.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SimStepping {
+    steps: u32,
+    started: bool,
+}
+
 /// The simulation keys and the scripted pauses.
 pub struct SimControlPlugin;
 
@@ -165,8 +168,9 @@ impl Plugin for SimControlPlugin {
         exa_physics::sim_app::add_frame_start(app);
         bridge_sim_control_types(app);
         app.init_resource::<SimControl>()
+            .init_resource::<SimStepping>()
             .add_message::<exa_combat::Hit>()
-            .add_systems(Update, start_speed.run_if(|c: Res<SimControl>| !c.started))
+            .add_systems(Update, start_speed.run_if(|s: Res<SimStepping>| !s.started))
             .add_systems(
                 // After the hit chain, in the fixed step's post-step.
                 FixedUpdate,
@@ -207,21 +211,22 @@ impl Plugin for SimControlPlugin {
 fn bridge_sim_control_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<Undying>()
-        .bridge_lend_resource::<crate::sim_control::SimControl>()
-        .bridge_lend_resource::<exa_ui::loading::LoadingStatus>();
+        .bridge_snapshot_resource::<crate::sim_control::SimControl>()
+        .bridge_copy_in_resource::<exa_ui::loading::LoadingStatus>();
 }
 
 /// Sets the starting speed once the loading screen is gone, so that a slow
 /// run does not slow the load.
 fn start_speed(
-    mut control: ResMut<SimControl>,
+    control: Res<SimControl>,
+    mut stepping: ResMut<SimStepping>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut time: ResMut<Time<Virtual>>,
 ) {
     if loading.is_some() {
         return;
     }
-    control.started = true;
+    stepping.started = true;
     if control.speed > 0.0 && control.speed.is_finite() && control.speed != 1.0 {
         time.set_relative_speed(control.speed);
         info!("simulation at ×{}", control.speed);
@@ -241,7 +246,11 @@ fn bound_to_game(key: KeyCode, bindings: Option<&Bindings>) -> bool {
 fn sim_keys(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     bindings: Option<Res<Bindings>>,
-    mut control: ResMut<SimControl>,
+    (mut control, mut stepping, mut fixed): (
+        ResMut<SimControl>,
+        ResMut<SimStepping>,
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    ),
     mut time: ResMut<Time<Virtual>>,
 ) {
     let Some(keys) = keys else { return };
@@ -250,8 +259,13 @@ fn sim_keys(
     if just_pressed(PAUSE_KEY) {
         if time.is_paused() {
             time.unpause();
-            control.reason = None;
-            control.steps = 0;
+            // The pause's reason is the fixed step's to keep.
+            if control.reason.is_some() {
+                exa_physics::sim_app::write_resource(fixed.as_deref_mut(), &mut control, |c| {
+                    c.reason = None;
+                });
+            }
+            stepping.steps = 0;
         } else {
             time.pause();
         }
@@ -268,7 +282,7 @@ fn sim_keys(
         if !time.is_paused() {
             time.pause();
         }
-        control.steps += 1;
+        stepping.steps += 1;
     }
     for (key, up) in [(SLOWER_KEY, false), (FASTER_KEY, true)] {
         if just_pressed(key) {
@@ -302,7 +316,7 @@ fn hold_fixed_while_loading(
 /// loop finds exactly one timestep to spend, and the drawn bodies stay
 /// interpolated where they were.
 fn step_once(
-    mut control: ResMut<SimControl>,
+    mut control: ResMut<SimStepping>,
     virt: Res<Time<Virtual>>,
     mut fixed: ResMut<Time<Fixed>>,
 ) {
@@ -596,7 +610,7 @@ mod tests {
         }
         assert_eq!(ticks(&app), 40);
         assert!(app.world().resource::<Time<Virtual>>().is_paused());
-        app.world_mut().resource_mut::<SimControl>().steps = 2;
+        app.world_mut().resource_mut::<SimStepping>().steps = 2;
         app.update();
         assert_eq!(ticks(&app), 41);
         app.update();
@@ -756,7 +770,7 @@ mod tests {
         app.world_mut().remove_resource::<exa_ui::LoadingStatus>();
         app.update();
         assert_eq!(speed(&app), 0.25);
-        assert!(app.world().resource::<SimControl>().started);
+        assert!(app.world().resource::<SimStepping>().started);
     }
 
     /// At a quarter speed the clock runs a quarter as fast.

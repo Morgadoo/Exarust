@@ -290,6 +290,6 @@ fn bridge_game_types(app: &mut App) {
     app.bridge_copy::<crate::item_ability::ItemArcs>()
         .bridge_move_resource::<crate::joint_trace::JointTrace>()
         .bridge_move_resource::<crate::pair_trace::PairTrace>()
-        .bridge_lend_resource::<crate::path_probe::PathProbe>()
+        .bridge_snapshot_resource::<crate::path_probe::PathProbe>()
         .bridge_move_resource::<crate::trace::BodyTrace>();
 }

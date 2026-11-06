@@ -248,11 +248,119 @@ impl FixedCommands {
     }
 }
 
+/// [`FixedCommands::write`] for a resource the simulation owns, which the
+/// frame reads as a snapshot (`bridge_snapshot_resource`): written at once
+/// on the frame's copy without a change mark, and again on the
+/// simulation's at the start of the next step. In one world, or without a
+/// queue (a test's bare app), a plain write.
+pub fn write_resource<T, R>(
+    fixed: Option<&mut FixedCommands>,
+    local: &mut ResMut<T>,
+    write: impl Fn(&mut T) -> R + Send + Sync + 'static,
+) -> R
+where
+    T: Resource + Component<Mutability = bevy::ecs::component::Mutable>,
+{
+    let Some(fixed) = fixed.filter(|f| f.bridged) else {
+        return write(local);
+    };
+    let result = write(local.bypass_change_detection());
+    queue(&mut fixed.writes).push(Box::new(move |world: &mut World| {
+        if let Some(mut value) = world.get_resource_mut::<T>() {
+            write(&mut value);
+        }
+    }));
+    result
+}
+
+/// The simulation's writes to data the frame owns: the frame takes a value
+/// such as the flow, the open screens or the sound bank in (copied in, or
+/// not bridged at all), and a fixed-step system that changes it writes its
+/// own copy at once and queues the same write for the frame, which runs it
+/// after the step, in order. In one world (`bridged` false) a plain write.
+/// Behind the bridge the simulation's world holds its own queue; the frame's
+/// is unused.
+#[derive(Resource, Default)]
+pub struct FrameCommands {
+    queued: Mutex<Vec<FrameEvent>>,
+    bridged: bool,
+}
+
+impl FrameCommands {
+    /// The simulation's queue behind the bridge.
+    pub fn bridged() -> Self {
+        Self {
+            queued: Mutex::default(),
+            bridged: true,
+        }
+    }
+
+    /// Writes a resource the frame owns: the local copy at once (without a
+    /// change mark behind the bridge, so it is not sent back), and the
+    /// frame's after the step.
+    pub fn write_resource<T, R>(
+        &mut self,
+        local: &mut ResMut<T>,
+        write: impl Fn(&mut T) -> R + Send + Sync + 'static,
+    ) -> R
+    where
+        T: Resource + Component<Mutability = bevy::ecs::component::Mutable>,
+    {
+        if !self.bridged {
+            return write(local);
+        }
+        let result = write(local.bypass_change_detection());
+        queue(&mut self.queued).push(Box::new(move |world: &mut World| {
+            if let Some(mut value) = world.get_resource_mut::<T>() {
+                write(&mut value);
+            }
+        }));
+        result
+    }
+
+    /// [`Self::write_resource`] for a component of `entity` the frame owns.
+    pub fn write<T, R>(
+        &mut self,
+        entity: Entity,
+        local: &mut Mut<T>,
+        write: impl Fn(&mut T) -> R + Send + Sync + 'static,
+    ) -> R
+    where
+        T: Component<Mutability = bevy::ecs::component::Mutable>,
+    {
+        if !self.bridged {
+            return write(local);
+        }
+        let result = write(local.bypass_change_detection());
+        queue(&mut self.queued).push(Box::new(move |world: &mut World| {
+            if let Some(mut value) = world.get_mut::<T>(entity) {
+                write(&mut value);
+            }
+        }));
+        result
+    }
+
+    /// The queued writes, for the frame.
+    pub fn take(&mut self) -> Vec<FrameEvent> {
+        std::mem::take(queue(&mut self.queued))
+    }
+}
+
+/// Adds the frame's [`FrameCommands`] (unbridged: plain writes) once.
+pub fn add_frame_commands(app: &mut App) {
+    if app.world().contains_resource::<FrameCommands>() {
+        return;
+    }
+    use crate::sim_bridge::SimBridgeAppExt;
+    app.init_resource::<FrameCommands>()
+        .bridge_sim_only::<FrameCommands>();
+}
+
 /// The schedule that runs the [`FixedCommands`], before `FixedFirst`.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FixedCommandsStep;
 
-fn run_fixed_commands(world: &mut World) {
+pub fn run_fixed_commands(world: &mut World) {
     let Some(mut commands) = world.get_resource_mut::<FixedCommands>() else {
         return;
     };
@@ -611,6 +719,12 @@ fn step_world(
         command(world);
     }
     world.run_schedule(SimStep);
+    // The step's writes to the frame's data run on the frame first, before
+    // the step's other events.
+    let mut written = world
+        .get_resource_mut::<FrameCommands>()
+        .map(|mut f| f.take())
+        .unwrap_or_default();
     let bridge = bridged.then(|| {
         let (packet, gather_us, pool) = sim_gather(world);
         BridgeOut {
@@ -627,8 +741,11 @@ fn step_world(
         time_ms: clock.time_ms,
         linked: world.resource::<SimLinks>().len(),
     });
+    written.extend(std::mem::take(queue(
+        &mut world.resource_mut::<SimOutbox>().queued,
+    )));
     Stepped {
-        events: std::mem::take(queue(&mut world.resource_mut::<SimOutbox>().queued)),
+        events: written,
         bridge,
     }
 }

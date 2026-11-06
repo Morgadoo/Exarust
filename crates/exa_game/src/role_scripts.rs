@@ -68,7 +68,7 @@ fn bridge_role_scripts_types(app: &mut App) {
         .bridge_lend_resource::<crate::role_scripts::ExtraEncounterScript>()
         .bridge_lend_resource::<crate::script_cast::ContactMirror>()
         .bridge_lend_resource::<exa_script::Conversations>()
-        .bridge_lend_resource::<exa_script::Scripts>();
+        .bridge_copy_in_resource::<exa_script::Scripts>();
 }
 
 /// A debug tool (`exarust --encounter-script TEXT`): a script run as one

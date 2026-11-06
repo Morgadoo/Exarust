@@ -181,7 +181,7 @@ pub enum Holding {
 }
 
 /// The hand's state between frames.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct Hand {
     pub holding: Holding,
     /// The point under the cursor is out of reach.

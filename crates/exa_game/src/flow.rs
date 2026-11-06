@@ -3574,7 +3574,7 @@ impl Plugin for FlowPlugin {
 fn reset_level_state(
     changes: Option<Res<exa_world::level_lifecycle::LevelChangeState>>,
     mut seen: Local<u64>,
-    mut rooms: Option<ResMut<exa_ai::rooms::RoomCells>>,
+    fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     mut hub: Option<ResMut<crate::arena_hub_live::ArenaHub>>,
 ) {
     let Some(changes) = changes else {
@@ -3584,8 +3584,13 @@ fn reset_level_state(
         return;
     }
     *seen = changes.changes;
-    if let Some(rooms) = rooms.as_mut() {
-        **rooms = exa_ai::rooms::RoomCells::default();
+    // The room cells belong to the brains' tick: reset at the next step.
+    if let Some(mut fixed) = fixed {
+        fixed.post(|world| {
+            if let Some(mut rooms) = world.get_resource_mut::<exa_ai::rooms::RoomCells>() {
+                *rooms = exa_ai::rooms::RoomCells::default();
+            }
+        });
     }
     if let Some(hub) = hub.as_mut() {
         hub.level_changed();

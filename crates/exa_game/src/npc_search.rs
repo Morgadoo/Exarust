@@ -110,7 +110,7 @@ const GIVE_UP_BASE_MS: u32 = 2000;
 /// The items the search can weigh, read once from the game's object
 /// database, and the loaded level's own records (keyed by their tagged
 /// ids), with the size byte of each item that has a model.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct SearchItems {
     pub loot: BTreeMap<u32, Loot>,
     pub sizes: BTreeMap<u32, u8>,
@@ -226,6 +226,21 @@ pub struct SearchWorld {
     shots: Vec<(u32, String)>,
 }
 
+/// A screenshot the search asked for: frames to wait and a label. The
+/// search runs in the fixed step; the frame takes the shots.
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub struct SearchShot {
+    pub wait: u32,
+    pub label: String,
+}
+
+/// Hands the tick's screenshot requests to the frame.
+fn send_search_shots(mut world: ResMut<SearchWorld>, mut out: MessageWriter<SearchShot>) {
+    for (wait, label) in world.shots.drain(..) {
+        out.write(SearchShot { wait, label });
+    }
+}
+
 /// Screenshots of the search's steps (`--searcher-shots <dir>`): one when a
 /// follower's search picks, settles or loots, when it takes something out
 /// of the world, and 90 frames after a re-dress, numbered in order.
@@ -253,16 +268,16 @@ impl SearchShots {
 pub fn take_search_shots(
     mut commands: Commands,
     shots: Option<ResMut<SearchShots>>,
-    mut world: ResMut<SearchWorld>,
+    mut asked: MessageReader<SearchShot>,
     offscreen: Option<Res<crate::debug_shot::OffscreenImage>>,
 ) {
     let Some(mut shots) = shots else {
-        world.shots.clear();
+        asked.clear();
         return;
     };
     shots.frame = shots.frame.wrapping_add(1);
     let frame = shots.frame;
-    for (wait, label) in world.shots.drain(..) {
+    for SearchShot { wait, label } in asked.read().cloned() {
         shots.due.push((frame.wrapping_add(wait), label));
     }
     // One shot a frame: a second screenshot of the same target in the
@@ -956,7 +971,7 @@ pub fn follow_and_search(
     size: Option<Res<exa_ai::rooms::RoomGridSize>>,
     items: Res<SearchItems>,
     catalogue: Option<Res<ItemCatalogue>>,
-    screens: Option<Res<crate::gui_screens::GameScreens>>,
+    screens: Res<OpenSearchScreens>,
     mut world: ResMut<SearchWorld>,
     mut followers: Query<(
         Entity,
@@ -1061,23 +1076,18 @@ pub fn follow_and_search(
             );
         }
         world.scene.open = screens
-            .as_deref()
-            .map(|screens| {
-                screens
-                    .loot
+            .loot
+            .iter()
+            .filter_map(|&character| {
+                characters
                     .iter()
-                    .filter_map(|window| {
-                        characters
-                            .iter()
-                            .find(|(entity, ..)| entity.index().index() as i32 == window.character)
-                            .map(|(entity, _, _, _, id)| {
-                                id.map_or(entity.index().index(), |id| id.0) | search::CORPSE_TAG
-                            })
+                    .find(|(entity, ..)| entity.index().index() as i32 == character)
+                    .map(|(entity, _, _, _, id)| {
+                        id.map_or(entity.index().index(), |id| id.0) | search::CORPSE_TAG
                     })
-                    .chain(screens.popups.iter().map(|popup| popup.id))
-                    .collect()
             })
-            .unwrap_or_default();
+            .chain(screens.popups.iter().copied())
+            .collect();
         if world.generation != Some(items.generation) {
             world.generation = Some(items.generation);
             world.scene.items = items.all();
@@ -1480,6 +1490,9 @@ pub struct Wardrobe<'w, 's> {
     level: Option<Res<'w, exa_world::LevelLocalItems>>,
     catalogue: Option<Res<'w, ItemCatalogue>>,
     game: Option<Res<'w, Game>>,
+    /// The doll's item set is the frame's: its first read is repeated
+    /// there after the step.
+    frame: ResMut<'w, exa_physics::sim_app::FrameCommands>,
 }
 
 /// The garments that came off a worn list (`before` → `after`, each id
@@ -1556,8 +1569,10 @@ pub fn carry_out_search(
         return;
     }
     let w = &mut wardrobe;
-    if let Some(doll) = w.doll.as_deref_mut() {
-        doll.ensure(w.game.as_deref());
+    if let Some(doll) = w.doll.as_mut() {
+        let game = w.game.as_deref().cloned();
+        w.frame
+            .write_resource(doll, move |d| d.ensure(game.as_ref()));
     }
     for redress in effects.redress {
         let Ok((mut p, outfit, hands, data, torch, name)) = w.bodies.get_mut(redress.body) else {
@@ -1675,11 +1690,45 @@ pub fn carry_out_search(
 /// The follow and the search in the running game.
 pub struct NpcSearchPlugin;
 
+/// What the search reads of the open screens: the characters whose loot
+/// windows are open (their record ids) and the open container popups'
+/// tagged ids. The frame keeps it from [`crate::gui_screens::GameScreens`]
+/// before each frame's fixed steps; the simulation reads this copy instead
+/// of the screens themselves.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenSearchScreens {
+    pub loot: Vec<i32>,
+    pub popups: Vec<u32>,
+}
+
+/// Keeps [`OpenSearchScreens`] from the open screens, before the frame's
+/// fixed steps (where the screens were lent to the search before).
+fn keep_open_search_screens(
+    screens: Option<Res<crate::gui_screens::GameScreens>>,
+    mut open: ResMut<OpenSearchScreens>,
+) {
+    let now = screens
+        .as_deref()
+        .map_or_else(OpenSearchScreens::default, |s| OpenSearchScreens {
+            loot: s.loot.iter().map(|w| w.character).collect(),
+            popups: s.popups.iter().map(|p| p.id).collect(),
+        });
+    open.set_if_neq(now);
+}
+
 impl Plugin for NpcSearchPlugin {
     fn build(&self, app: &mut App) {
         bridge_npc_search_types(app);
+        exa_physics::sim_app::add_frame_commands(app);
         app.init_resource::<SearchItems>()
             .init_resource::<SearchWorld>()
+            .init_resource::<OpenSearchScreens>()
+            .add_message::<SearchShot>()
+            .add_systems(
+                RunFixedMainLoop,
+                keep_open_search_screens
+                    .in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop),
+            )
             .add_systems(
                 Update,
                 (
@@ -1694,7 +1743,7 @@ impl Plugin for NpcSearchPlugin {
             // their deeds leave is carried out right after.
             .add_systems(
                 exa_ai::BrainChain,
-                (follow_and_search, carry_out_search)
+                (follow_and_search, carry_out_search, send_search_shots)
                     .chain()
                     .after(exa_ai::brain::idle_walk),
             );
@@ -1707,15 +1756,16 @@ fn bridge_npc_search_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_lend_resource::<exa_ai::rooms::RoomGridSize>()
         .bridge_copy::<exa_character::Outfit>()
-        .bridge_lend_resource::<crate::doll_view::DollItems>()
-        .bridge_lend_opaque_resource::<crate::gui_screens::GameScreens>()
-        .bridge_lend_resource::<crate::npc_search::SearchItems>()
-        .bridge_lend_resource::<crate::npc_search::SearchWorld>()
+        .bridge_copy_in_resource::<crate::doll_view::DollItems>()
+        .bridge_copy_in_resource::<crate::npc_search::OpenSearchScreens>()
+        .bridge_copy_in_resource::<crate::npc_search::SearchItems>()
+        .bridge_move_resource::<crate::npc_search::SearchWorld>()
+        .bridge_message::<crate::npc_search::SearchShot>()
         .bridge_copy::<crate::torch::CarriesTorch>()
-        .bridge_lend_resource::<exa_items::catalogue::ItemCatalogue>()
+        .bridge_copy_in_resource::<exa_items::catalogue::ItemCatalogue>()
         .bridge_copy::<exa_items::possession::Possessions>()
         .bridge_lend_resource::<exa_physics::ColliderNodes>()
-        .bridge_lend_resource::<exa_world::LevelLocalItems>()
+        .bridge_copy_in_resource::<exa_world::LevelLocalItems>()
         .bridge_copy::<exa_world::ObjectSections>()
         .bridge_copy::<exa_world::PartBounds>()
         .bridge_copy::<exa_world::PlacedItem>();

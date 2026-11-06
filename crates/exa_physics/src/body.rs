@@ -2563,6 +2563,7 @@ impl Plugin for BodyPlugin {
         stages::configure(app);
         crate::sim_app::add_frame_start(app);
         crate::sim_app::add_fixed_commands(app);
+        crate::sim_app::add_frame_commands(app);
         app.world_mut()
             .resource_mut::<SolverStages>()
             .add(Pairs::default());
@@ -2613,7 +2614,7 @@ pub fn bridge_body_types(app: &mut App) {
         .bridge_lend_resource::<ShoveQueue>()
         .bridge_lend_resource::<DealtShoves>()
         .bridge_copy_resource::<BodyTicks>()
-        .bridge_lend_opaque_resource::<SolverStages>()
+        .bridge_move_resource::<SolverStages>()
         .bridge_lend_resource::<crate::sector_lists::SectorBodies>()
         .bridge_sim_only::<TickedCharacter>()
         .bridge_copy::<Fallen>()

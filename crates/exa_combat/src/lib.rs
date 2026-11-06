@@ -83,6 +83,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         bridge_combat_types(app);
+        exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<remedy::WorldClock>()
             .add_message::<Hit>()
             .add_message::<AttackAskedHook>()
@@ -205,7 +206,7 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::fighter::CombatScore>()
         .bridge_copy::<crate::wounds::BladeBlood>()
         .bridge_copy::<crate::wounds::WoundQueue>()
-        .bridge_lend_resource::<crate::weapon_blood::WeaponBlood>()
+        .bridge_move_resource::<crate::weapon_blood::WeaponBlood>()
         .bridge_message::<crate::condition::Awakened>()
         .bridge_message::<crate::fighter::SecondWindFired>()
         .bridge_message::<crate::fighter::Weakened>()
@@ -220,9 +221,9 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::block::ShieldHold>()
         .bridge_copy::<crate::burn::Burn>()
         .bridge_copy::<crate::condition::KnockOut>()
-        .bridge_lend_resource::<crate::fighter::StoryMode>()
+        .bridge_copy_in_resource::<crate::fighter::StoryMode>()
         .bridge_copy::<crate::impact::ImpactBook>()
-        .bridge_lend_resource::<crate::remedy::WorldClock>()
+        .bridge_copy_in_resource::<crate::remedy::WorldClock>()
         .bridge_copy::<crate::stab::StabAim>()
         .bridge_copy::<crate::strike_body::StrikeChest>()
         .bridge_copy::<crate::strike_body::TangleCount>()

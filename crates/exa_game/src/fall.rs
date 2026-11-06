@@ -43,6 +43,7 @@ pub struct FallPlugin;
 impl Plugin for FallPlugin {
     fn build(&self, app: &mut App) {
         bridge_fall_types(app);
+        exa_physics::sim_app::add_frame_commands(app);
         app.add_systems(
             CharacterTick,
             fall_to_death
@@ -59,7 +60,7 @@ impl Plugin for FallPlugin {
 fn bridge_fall_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<exa_combat::voice::CharacterVoice>()
-        .bridge_lend_resource::<exa_ui::fade::DeathFade>();
+        .bridge_copy_in_resource::<exa_ui::fade::DeathFade>();
 }
 
 /// The death fade's world-bus gain and whether the game pauses, from how many
@@ -206,7 +207,10 @@ pub(crate) fn fall_to_death(
     ticked: Res<TickedCharacter>,
     mut commands: Commands,
     ticks: Res<BodyTicks>,
-    mut fade: Option<ResMut<DeathFade>>,
+    (mut fade, mut frame): (
+        Option<ResMut<DeathFade>>,
+        ResMut<exa_physics::sim_app::FrameCommands>,
+    ),
     mut sounds: Sounds,
     mut roll: Local<Roll>,
     mut bodies: Query<(
@@ -283,10 +287,14 @@ pub(crate) fn fall_to_death(
             sounds.play(&mut commands, PIT_SOUND, PIT_GAIN, 1.0, None);
             // The fade starts at this tick's own clock: the original
             // stamps its frame clock, which the tick has just reached.
+            // The fade is the frame's: it starts there too.
             if let Some(fade) = fade.as_mut() {
-                fade.started = Some(now as f64);
-                fade.now = now as f64;
-                fade.paused = false;
+                let at = now as f64;
+                frame.write_resource(fade, move |fade| {
+                    fade.started = Some(at);
+                    fade.now = at;
+                    fade.paused = false;
+                });
             }
             info!(
                 "{entity:?} hears the pit, tick {}; the screen fades",
