@@ -58,7 +58,18 @@ against an older step: a drawn copy (`bridge_copy_drawn`: transforms, the
 drawn controller) keeps the simulation's newer value; any other keeps the
 frame's, as in lockstep; both are counted in the log every 1000 steps
 ("frame values after a newer simulation write"). A lent resource moves to
-the simulation for good in free mode; the lent types only the simulation
+the simulation for good in free mode; `--fixed-frames` keeps lockstep. The
+pause key holds a free simulation, the step key takes a single step while
+it is held and the speed keys scale its clock (`SimPause`; Exarust's debug
+controls, the original's loop reads the real clock unscaled). The moved
+schedules run on the `SingleThreadedExecutor` on the simulation's own
+thread, as the original's step runs on its thread: on the task pool the
+frame and the renderer share, a step waited for their work (exanima01
+29.5 ms a step on the pool, 18.7 ms on its own, in a busy grid; every
+body's every tick the same in lockstep). The body grid
+(`sector_lists::SectorBodies`) keeps the cells of bodies that did not
+change since its last rebuild instead of taking every sleeper's pose each
+step. `EXA_SIM_TIMING=1` logs each schedule's time a step; the lent types only the simulation
 touches are moved in every mode (`bridge_move_resource`), and the alarm's
 zones and state are copied in and a snapshot (the frame reads them).
 

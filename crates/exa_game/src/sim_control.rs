@@ -351,6 +351,8 @@ fn hold_the_simulation(
         );
     }
     pause.hold(held);
+    // The debug speed keys' clock speed, for a free-running simulation.
+    pause.set_speed(virt.relative_speed());
 }
 
 /// While paused, runs one tick a frame for each step asked for: the fixed
@@ -360,6 +362,10 @@ fn step_once(
     mut control: ResMut<SimStepping>,
     virt: Res<Time<Virtual>>,
     mut fixed: ResMut<Time<Fixed>>,
+    free: Option<(
+        Res<exa_physics::sim_app::FreeLink>,
+        ResMut<exa_physics::sim_app::SimPause>,
+    )>,
 ) {
     if control.steps == 0 {
         return;
@@ -369,6 +375,11 @@ fn step_once(
         return;
     }
     control.steps -= 1;
+    // A free-running simulation takes the step itself, held as it is.
+    if let Some((_, mut pause)) = free {
+        pause.step();
+        return;
+    }
     let step = fixed.timestep();
     fixed.accumulate_overstep(step);
 }

@@ -2192,14 +2192,64 @@ pub struct SimBridge {
 #[derive(Resource, Debug, Default, Clone)]
 pub struct SimFixedOrder(pub Vec<InternedScheduleLabel>);
 
-/// Runs the moved fixed-step schedules in order (in `SimStep`).
+/// Runs the moved fixed-step schedules in order (in `SimStep`). With
+/// `EXA_SIM_TIMING=1` each schedule's wall time is summed and logged every
+/// 1000 steps (`StepTiming`).
 pub fn run_fixed_order(world: &mut World) {
     let Some(order) = world.get_resource::<SimFixedOrder>().cloned() else {
         return;
     };
-    for label in order.0 {
-        let _ = world.try_run_schedule(label);
+    if !step_timing() {
+        for label in order.0 {
+            let _ = world.try_run_schedule(label);
+        }
+        return;
     }
+    let mut spent = Vec::with_capacity(order.0.len());
+    for label in order.0 {
+        let started = Instant::now();
+        let _ = world.try_run_schedule(label);
+        spent.push((label, started.elapsed().as_micros() as u64));
+    }
+    let mut timing = world.get_resource_or_init::<StepTiming>();
+    timing.steps += 1;
+    for (label, us) in spent {
+        match timing.schedules.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, total)) => *total += us,
+            None => timing.schedules.push((label, us)),
+        }
+    }
+    if timing.steps.is_multiple_of(crate::sim_app::LOG_EVERY) {
+        let steps = timing.steps as f64;
+        let line: Vec<String> = timing
+            .schedules
+            .iter()
+            .filter(|(_, us)| *us > 0)
+            .map(|(l, us)| format!("{l:?} {:.2}", *us as f64 / 1000.0 / steps))
+            .collect();
+        let total: u64 = timing.schedules.iter().map(|(_, us)| us).sum();
+        info!(
+            "simulation step timing (ms a step, last {} steps): {:.2} in all; {}",
+            timing.steps,
+            total as f64 / 1000.0 / steps,
+            line.join(", ")
+        );
+        timing.steps = 0;
+        timing.schedules.iter_mut().for_each(|(_, us)| *us = 0);
+    }
+}
+
+/// Whether the fixed step's schedules are timed (`EXA_SIM_TIMING=1`).
+fn step_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("EXA_SIM_TIMING").is_ok_and(|v| v == "1"))
+}
+
+/// The fixed step's schedules' wall time, summed (µs), and the steps.
+#[derive(Resource, Default)]
+struct StepTiming {
+    steps: u64,
+    schedules: Vec<(InternedScheduleLabel, u64)>,
 }
 
 /// The frame's half of a step's bridge traffic, in.
@@ -2525,9 +2575,20 @@ fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
         unbridged_seen,
     });
     // Build the moved schedules now, to read what their systems touch.
+    // The step runs its systems one at a time on the simulation's own
+    // thread, as the original's step runs on its thread, off the task pool
+    // the frame's systems and the renderer share (behind the bridge the
+    // shared pool made a step wait for the frame's work: exanima01 29.5 ms
+    // a step on the pool, 18.7 on its own; every body's every tick the same
+    // in lockstep). `EXA_SIM_EXECUTOR=multi` puts the pool back (a debug
+    // aid).
+    let single = !std::env::var("EXA_SIM_EXECUTOR").is_ok_and(|v| v == "multi");
     for mut schedule in setup.schedules {
         let label = schedule.label();
         coverage.schedules.push(format!("{label:?}"));
+        if single {
+            schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        }
         // The conditions first: the build moves them out of the graph.
         schedule.graph_mut().initialize(world);
         read_condition_access(world, &schedule, &covered, &mut coverage);

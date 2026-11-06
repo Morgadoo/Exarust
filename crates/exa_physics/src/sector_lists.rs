@@ -31,7 +31,9 @@
 //! # Exarust
 //!
 //! [`SectorBodies`] is rebuilt every fixed tick after the body step from
-//! every body's parts, in the bodies' query order; its cells are world
+//! every body's parts, in the bodies' query order (a body that did not
+//! change since the last rebuild keeps its cells, as the original keeps its
+//! grids as the bodies move); its cells are world
 //! cells (the grid's origin cell at the world origin). The level's static
 //! meshes are Exarust's physics-world colliders; their records keep the
 //! mesh entity they came from ([`crate::StaticColliders::mesh_of`]). The
@@ -73,6 +75,10 @@ pub struct BodyEntry {
 pub struct SectorBodies {
     cells: HashMap<(i32, i32), Vec<BodyEntry>>,
     count: usize,
+    /// Each body's listed parts with their cells, as of the body's last
+    /// change: a body that did not change since (most of a level's bodies
+    /// sleep) is listed again from here, without its parts' poses.
+    listed: bevy::ecs::entity::EntityHashMap<Vec<((i32, i32), BodyEntry)>>,
 }
 
 impl SectorBodies {
@@ -118,13 +124,43 @@ impl SectorBodies {
 
     /// Rebuilds the grid from `bodies`, in their order.
     pub fn rebuild<'a>(&mut self, bodies: impl Iterator<Item = (Entity, &'a Ragdoll)>) {
+        self.rebuild_changed(bodies.map(|(e, r)| (e, r, true)));
+    }
+
+    /// Rebuilds the grid from `bodies`, in their order; a body flagged
+    /// unchanged since the last rebuild is listed as it was then.
+    pub fn rebuild_changed<'a>(
+        &mut self,
+        bodies: impl Iterator<Item = (Entity, &'a Ragdoll, bool)>,
+    ) {
         self.clear();
-        for (body, ragdoll) in bodies {
-            let disabled = ragdoll.disabled();
-            for (part, p) in ragdoll.parts.iter().enumerate() {
+        let mut listed = std::mem::take(&mut self.listed);
+        let mut kept = bevy::ecs::entity::EntityHashMap::default();
+        for (body, ragdoll, changed) in bodies {
+            let entries = match listed.remove(&body) {
+                Some(entries) if !changed => entries,
+                _ => Self::entries(body, ragdoll),
+            };
+            for &(cell, entry) in &entries {
+                self.cells.entry(cell).or_default().push(entry);
+                self.count += 1;
+            }
+            kept.insert(body, entries);
+        }
+        self.listed = kept;
+    }
+
+    /// Body `body`'s parts with the cells their mesh box centres fall in.
+    fn entries(body: Entity, ragdoll: &Ragdoll) -> Vec<((i32, i32), BodyEntry)> {
+        let disabled = ragdoll.disabled();
+        ragdoll
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(part, p)| {
                 let centre = p.transform().transform_point3(p.pairing.mesh.centre);
-                self.insert(
-                    centre,
+                (
+                    world_cell(centre * 100.0),
                     BodyEntry {
                         body,
                         part,
@@ -132,9 +168,9 @@ impl SectorBodies {
                         limb: p.state.0 & PartState::LIMB == PartState::LIMB,
                         disabled,
                     },
-                );
-            }
-        }
+                )
+            })
+            .collect()
     }
 }
 
@@ -145,11 +181,15 @@ pub fn world_cell(centre_cm: Vec3) -> (i32, i32) {
 }
 
 /// Rebuilds [`SectorBodies`] after the body step.
-pub fn rebuild_sector_bodies(mut grid: ResMut<SectorBodies>, bodies: Query<(Entity, &Ragdoll)>) {
-    // In entity order, as the solver walks them.
-    let mut ordered: Vec<(Entity, &Ragdoll)> = bodies.iter().collect();
+pub fn rebuild_sector_bodies(
+    mut grid: ResMut<SectorBodies>,
+    bodies: Query<(Entity, Ref<Ragdoll>)>,
+) {
+    // In entity order, as the solver walks them; a body whose pose did not
+    // change since the last rebuild keeps its cells.
+    let mut ordered: Vec<(Entity, Ref<Ragdoll>)> = bodies.iter().collect();
     ordered.sort_unstable_by_key(|(e, _)| *e);
-    grid.rebuild(ordered.into_iter());
+    grid.rebuild_changed(ordered.iter().map(|(e, r)| (*e, &**r, r.is_changed())));
 }
 
 /// One body mesh as the Height Query reads it: the part's frame, its

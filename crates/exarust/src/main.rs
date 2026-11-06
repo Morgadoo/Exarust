@@ -1987,7 +1987,9 @@ fn main() -> AppExit {
     // The simulation's own world, stepped in lockstep with the fixed step
     // (it holds only its clock yet: `exa_physics::sim_app`).
     app.add_plugins(exa_physics::sim_app::SimShellPlugin {
-        mode: if options.sim_free && !options.no_sim_bridge {
+        // Scripted runs stay in lockstep: `--fixed-frames` repeats tick for
+        // tick only when the frame drives the steps.
+        mode: if options.sim_free && !options.no_sim_bridge && !options.fixed_frames {
             exa_physics::sim_app::SimMode::Free
         } else if options.sim_inline {
             exa_physics::sim_app::SimMode::Inline
