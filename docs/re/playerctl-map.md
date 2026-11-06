@@ -65,3 +65,29 @@ and 4 small or variant routines (about 1.6 KB: a helper, the head tracker
 with another eye offset, the disable hook that leaves the party) were not
 audited. The behaviour tick now leaves the player unsteered while the
 controls spectate.
+
+Round 81, the method table (FPC VMT slots from 96 bytes on, the class map's
+scan):
+- The head tracker with the other eye offset is slot 34 of the combatant
+  class, inherited unchanged by every behaviour (AI, player, character
+  view). Nothing calls through that slot on a behaviour: the only indirect
+  calls at its offset are on GUI and other classes' objects. It never runs.
+  (Slot 33, the head tracker, runs: the player behaviour's slot 33 calls it
+  directly, the AI tick through the slot.)
+- The "disable hook that leaves the party" is not the player behaviour's:
+  it is the AI class's slot 25. Slot 25 is the death hook, called through
+  the behaviour by the body's death routine. The player behaviour's own
+  slot 25 is the mouse-capture release (glue). The AI's hook ends a
+  follower's follow and stops a record-flag effect; it belongs to the AI
+  component.
+
+The behaviour tick (4,304 B) read whole against Exarust: the third-tick
+snap, contacts, activation centre, practice lesson, key poll, sprint latch,
+held-wake release, exploration steering and the combat ladder, step length,
+soft stop, cursor modes, CamFollow, auto-target, the attack executor and
+recovery blends are ported. One branch was not: while the narrator's reply
+panel offers choices, any player input (buttons over the game view, a
+movement key, the stick) sets the dialogue unit's end flag, which ends the
+narrator's conversations; now `dialogue_live::narration_input`. The
+cast/use callback the ladder calls with 1, 2 or 8 (the cast and use paths'
+own hooks) is left to those paths.
