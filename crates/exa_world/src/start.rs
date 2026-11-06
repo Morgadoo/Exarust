@@ -14,6 +14,29 @@ pub struct Start {
     pub yaw: f32,
 }
 
+/// How far over a start the original's start of play casts from (m): its
+/// start node's height plus 1000 cm.
+pub const START_CAST_LIFT: f32 = 10.0;
+/// How far down that cast reaches (m): 3000 cm.
+pub const START_CAST_REACH: f32 = 30.0;
+
+/// The original's start of play without a player: the start's position
+/// lifted [`START_CAST_LIFT`] is cast straight down at most
+/// [`START_CAST_REACH`] by the line cast (`cast(from, dir, reach)`, the
+/// level's front faces), and the player is added at the point it meets, with
+/// no lift. `None` when it meets nothing (the original then keeps the lifted
+/// point; Exarust keeps the start).
+pub fn cast_onto_floor(
+    start: Vec3,
+    cast: impl FnOnce(Vec3, Vec3, f32) -> Option<Vec3>,
+) -> Option<Vec3> {
+    cast(
+        start + Vec3::Y * START_CAST_LIFT,
+        Vec3::NEG_Y,
+        START_CAST_REACH,
+    )
+}
+
 /// Arena centres (metres), by arena name.
 const ARENA_CENTRES: [(&str, [f32; 3]); 12] = [
     ("arena1", [0.0, 0.0, 3.0]),

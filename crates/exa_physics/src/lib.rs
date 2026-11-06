@@ -154,7 +154,9 @@ impl Physics {
     /// The original's floor cast (the force barricade's probe): straight
     /// down from `origin` at most `max` metres against the static meshes
     /// of floor nodes only (`statics`' floor records; a rigid body's
-    /// stand-in is skipped). Returns how far down the floor is.
+    /// stand-in is skipped), any triangle counting (unlike the Ground
+    /// Query, it keeps a hit on a mesh's triangle 0). Returns how far down
+    /// the floor is.
     pub fn static_floor_below(
         &self,
         statics: &StaticColliders,
@@ -170,6 +172,15 @@ impl Physics {
             fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
                 self.0.triangles(piece, lo, hi, out);
             }
+            fn indexed_triangles(
+                &self,
+                piece: u32,
+                lo: Vec3,
+                hi: Vec3,
+                out: &mut Vec<(u32, [Vec3; 3])>,
+            ) {
+                self.0.indexed_triangles(piece, lo, hi, out);
+            }
             fn floor_piece(&self, piece: u32) -> bool {
                 !self.0.movable(piece) && self.0.floor_piece(piece)
             }
@@ -179,6 +190,48 @@ impl Physics {
             masks: Some(statics),
         });
         level.floor_below(origin, max).map(|y| origin.y - y)
+    }
+
+    /// The original's line cast ([`contact::line_cast`]): from `from`
+    /// along `dir` (unit) at most `reach` metres against the front faces
+    /// of the level's meshes and the rigid bodies' stand-ins (pick-only
+    /// geometry left out). Returns the point it meets. The colliders are
+    /// walked whole, not through the broad phase, so the frame's replica
+    /// answers before the step has shared its tree (a level start).
+    pub fn line_cast(&self, from: Vec3, dir: Vec3, reach: f32) -> Option<Vec3> {
+        struct Solid<'a>(&'a PhysicsWorld);
+        impl contact::Level for Solid<'_> {
+            fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+                use rapier3d::geometry::BoundingVolume;
+                let range = rapier3d::prelude::Aabb::new(lo, hi);
+                out.extend(
+                    self.0
+                        .colliders
+                        .iter()
+                        .filter(|(h, c)| {
+                            c.parent()
+                                .is_none_or(|b| self.0.bodies.get(b).is_some_and(|b| b.is_fixed()))
+                                && c.shape().as_trimesh().is_some()
+                                && solid(*h, c)
+                                && c.compute_aabb().intersects(&range)
+                        })
+                        .map(|(h, _)| h.into_raw_parts().0),
+                );
+            }
+            fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+                self.0.triangles(piece, lo, hi, out);
+            }
+            fn indexed_triangles(
+                &self,
+                piece: u32,
+                lo: Vec3,
+                hi: Vec3,
+                out: &mut Vec<(u32, [Vec3; 3])>,
+            ) {
+                self.0.indexed_triangles(piece, lo, hi, out);
+            }
+        }
+        contact::line_cast(&Solid(&self.0), from, dir, reach)
     }
 
     /// How far along `direction` (unit) from `origin` the first fixed
@@ -262,6 +315,15 @@ pub struct NoStaticCollider;
 /// a rigid body ([`StaticColliders::is_floor`]).
 #[derive(Component)]
 pub struct FloorMesh;
+
+/// A [`FloorMesh`] part that holds its node mesh's first triangle as its
+/// own triangle 0 (the part built from the mesh group the index list starts
+/// with, its triangles kept in file order). The original's Ground Query
+/// ignores a hit on a mesh's triangle 0 ([`StaticColliders::skips_first`]);
+/// a grid cell's merged floor is not one mesh in Exarust, so its parts never
+/// carry this.
+#[derive(Component)]
+pub struct FirstFloorPart;
 
 /// A mesh under a [`StaticGeometry`] root that the cursor's pick meets but
 /// nothing collides with: a model's `_null` group, which the original never
@@ -353,7 +415,7 @@ pub struct StaticColliders {
     meshes: Vec<Option<Entity>>,
     /// The colliders (level pieces and rigid bodies' stand-ins) built from
     /// a [`FloorMesh`], by index with their generation.
-    floors: HashMap<u32, u32>,
+    floors: HashMap<u32, (u32, bool)>,
 }
 
 impl Default for StaticColliders {
@@ -398,17 +460,28 @@ impl StaticColliders {
         self.floors.clear();
     }
 
-    /// Records that `collider` was built from a [`FloorMesh`].
-    pub fn insert_floor(&mut self, collider: ColliderHandle) {
+    /// Records that `collider` was built from a [`FloorMesh`]; `first`
+    /// says its triangle 0 is its node mesh's first triangle
+    /// ([`FirstFloorPart`]).
+    pub fn insert_floor(&mut self, collider: ColliderHandle, first: bool) {
         let (index, generation) = collider.into_raw_parts();
-        self.floors.insert(index, generation);
+        self.floors.insert(index, (generation, first));
     }
 
     /// Whether `collider` was built from a [`FloorMesh`]: the only
     /// colliders the original's Ground Query meets.
     pub fn is_floor(&self, collider: ColliderHandle) -> bool {
         let (index, generation) = collider.into_raw_parts();
-        self.floors.get(&index) == Some(&generation)
+        self.floors
+            .get(&index)
+            .is_some_and(|(g, _)| *g == generation)
+    }
+
+    /// Whether `collider` is a floor collider whose triangle 0 is its
+    /// node mesh's first triangle: the Ground Query drops a hit on it.
+    pub fn skips_first(&self, collider: ColliderHandle) -> bool {
+        let (index, generation) = collider.into_raw_parts();
+        self.floors.get(&index) == Some(&(generation, true))
     }
 
     /// How many colliders were built from a [`FloorMesh`].
@@ -500,13 +573,16 @@ struct RootBuild {
     parts: Vec<Entity>,
     /// How many of the parts are [`FloorMesh`]es.
     floors: usize,
+    /// How many of those are [`FirstFloorPart`]s.
+    first_floors: usize,
     handed: usize,
     tasks: Vec<(usize, Task<Vec<BuiltCollider>>)>,
 }
 
 /// A built collider, for a rigid body's stand-in the body's root node and
 /// the part it follows, and the scene node whose subtree the mesh was under,
-/// with the mesh's level mask and whether the mesh is floor.
+/// with the mesh's level mask and whether the mesh is floor (and then whether
+/// it holds its node mesh's first triangle, [`FirstFloorPart`]).
 type BuiltCollider = (
     Collider,
     Option<(Entity, usize)>,
@@ -514,7 +590,7 @@ type BuiltCollider = (
     bool,
     u32,
     Entity,
-    bool,
+    Option<bool>,
 );
 
 impl StaticBuild {
@@ -692,7 +768,7 @@ fn build_static_colliders(
     shapes: Query<(&Mesh3d, &GlobalTransform)>,
     no_collider: Query<(), With<NoStaticCollider>>,
     pick_only: Query<(), With<PickOnly>>,
-    floor_meshes: Query<(), With<FloorMesh>>,
+    floor_meshes: Query<Has<FirstFloorPart>, With<FloorMesh>>,
     meshes: Res<Assets<Mesh>>,
     mut statics: ResMut<StaticColliders>,
 ) {
@@ -706,10 +782,15 @@ fn build_static_colliders(
             .collect();
         build.total += parts.len();
         let floors = parts.iter().filter(|&&e| floor_meshes.contains(e)).count();
+        let first_floors = parts
+            .iter()
+            .filter(|&&e| floor_meshes.get(e) == Ok(true))
+            .count();
         build.roots.push(RootBuild {
             root,
             parts,
             floors,
+            first_floors,
             handed: 0,
             tasks: Vec::new(),
         });
@@ -744,8 +825,10 @@ fn build_static_colliders(
                 // step, in this order (same handles).
                 let handle = physics.0.0.insert_collider(collider.clone(), None);
                 posted.push(collider);
-                if floor && !pick_only {
-                    statics.insert_floor(handle);
+                if let Some(first) = floor
+                    && !pick_only
+                {
+                    statics.insert_floor(handle, first);
                 }
                 if let Some((body, part)) = owner {
                     stand_ins.0.entry(body).or_default().push((handle, part));
@@ -794,7 +877,7 @@ fn build_static_colliders(
                     copy.owner = moved_by(e, root.root, &parents, &body_nodes);
                     copy.node = scene_node_of(e, root.root, &parents, &static_nodes);
                     copy.pick_only = pick_only.contains(e);
-                    copy.floor = floor_meshes.contains(e);
+                    copy.floor = floor_meshes.get(e).ok();
                     copy.mesh = Some(e);
                     triangles += copy.indices.len() / 3;
                     batch.push(copy);
@@ -825,9 +908,10 @@ fn build_static_colliders(
             debug!("static colliders built: {} meshes", root.parts.len());
             if root.floors > 0 {
                 info!(
-                    "static colliders built: {} meshes, {} of them floor (the Ground Query's)",
+                    "static colliders built: {} meshes, {} of them floor (the Ground Query's), {} holding their node mesh's triangle 0",
                     root.parts.len(),
-                    root.floors
+                    root.floors,
+                    root.first_floors
                 );
             }
             if roots.contains(root.root) {
@@ -889,8 +973,9 @@ struct MeshCopy {
     node: Option<Entity>,
     /// The mesh is [`PickOnly`].
     pick_only: bool,
-    /// The mesh is a [`FloorMesh`].
-    floor: bool,
+    /// The mesh is a [`FloorMesh`], and then whether it is a
+    /// [`FirstFloorPart`].
+    floor: Option<bool>,
     /// The mesh entity it was copied from.
     mesh: Option<Entity>,
 }
@@ -906,7 +991,7 @@ impl MeshCopy {
             owner: None,
             node: None,
             pick_only: false,
-            floor: false,
+            floor: None,
             mesh: None,
         })
     }

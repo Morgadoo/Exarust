@@ -96,6 +96,12 @@ pub struct ModelNode {
     /// voxel to the sample's height and leaves the column's lowest slice
     /// alone (the original's second point path).
     pub gi_centred: bool,
+    /// The part (index into `parts`) built from the mesh group the index
+    /// list starts with: its triangle 0 is the node mesh's first triangle
+    /// (groups keep their triangles in file order), which the original's
+    /// Ground Query ignores on a floor node. `None` when no drawn part
+    /// holds it (a `_null` first group, or no mesh).
+    pub first_part: Option<usize>,
     /// The node is floor (its second flag word's
     /// [`exa_formats::rfc::Node::FLOOR`], the node's own word, an instance's
     /// too): the original's Ground Query, the point ray under a foot's toe,
@@ -760,12 +766,17 @@ impl ModelLoader<'_> {
                 }
                 _ => None,
             };
+            let mut first_part = None;
             let (parts, part_materials, part_flags, collision) = match mesh {
                 Some(mesh) => {
                     let mut parts = Vec::new();
                     let mut part_materials = Vec::new();
                     let mut part_flags = Vec::new();
                     for (group, mut bevy_mesh, flags) in built.meshes {
+                        if mesh.groups[group].first_index == 0 && mesh.groups[group].index_count > 0
+                        {
+                            first_part = Some(parts.len());
+                        }
                         let name = &mesh.groups[group].material;
                         let material = self.material(&entry, &scene, name);
                         // The GPU build copies the texture coordinates
@@ -816,6 +827,7 @@ impl ModelLoader<'_> {
                 half_extents: Vec3::from(node.bounds_half_extents),
                 gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, floor_set[i])),
                 gi_centred: node.flags2 & 0x10 != 0,
+                first_part,
                 floor: node.flags2 & exa_formats::rfc::Node::FLOOR != 0,
                 gi_thin: mesh
                     .and_then(|mesh| mesh.groups.first())
@@ -3862,6 +3874,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Arc::new(Vec::new()),
             gi_centred: false,
+            first_part: None,
             floor: false,
             gi_thin: false,
             rigid: None,

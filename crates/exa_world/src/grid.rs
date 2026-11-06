@@ -1534,6 +1534,13 @@ fn spawn_node(
         if floor.is_some() || n.floor {
             commands.entity(part).insert(exa_physics::FloorMesh);
         }
+        // A set piece's own floor node keeps its mesh: the part holding its
+        // triangle 0 is the one the Ground Query ignores. A cell's merged
+        // floor is one mesh in the original only; its first triangle is not
+        // reproduced.
+        if n.floor && floor.is_none() && n.first_part == Some(i) {
+            commands.entity(part).insert(exa_physics::FirstFloorPart);
+        }
         if let Some(room) = room {
             commands.entity(part).insert(InRoom(room));
         }
@@ -1591,6 +1598,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
             gi_centred: false,
+            first_part: None,
             floor: false,
             gi_thin: false,
             rigid: None,
