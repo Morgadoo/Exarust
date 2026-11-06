@@ -1573,6 +1573,8 @@ Round 76 playerctl: the arena spectate session is ported (reachable once the are
 
 Round 79 playerctl: spectated arena matches as in the original, the hire list dressed and priced, and SG_PlayerControls fully mapped.
 
+Round 80 playerctl: arena fighters choose their foes through the brain's target pass, the spectate camera starts at the original's pose, and the arena save keeps the hire list and the week.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
