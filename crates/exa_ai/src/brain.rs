@@ -2203,8 +2203,7 @@ pub fn idle_walk(
         );
         // Out of the scene the AI still runs its roam: the path follower
         // slides the character along its route (below).
-        let dormant =
-            presence.is_some_and(|p| p.state == crate::presence::PresenceState::Dormant);
+        let dormant = presence.is_some_and(|p| p.state == crate::presence::PresenceState::Dormant);
         // The scene's node move (leaving or entering) holds the walk for its
         // tick.
         if roaming

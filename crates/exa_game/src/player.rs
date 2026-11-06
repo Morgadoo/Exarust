@@ -976,12 +976,10 @@ pub(crate) fn steer_player(
                 );
                 // Then the original places the character on the ground
                 // from the floor ([`crate::limp::GroundPlacement`]).
-                commands
-                    .entity(child)
-                    .insert(crate::limp::GroundPlacement {
-                        floor: to.y,
-                        own_turn: false,
-                    });
+                commands.entity(child).insert(crate::limp::GroundPlacement {
+                    floor: to.y,
+                    own_turn: false,
+                });
                 if by != Vec3::ZERO {
                     standing += by;
                     at.translation = standing;
