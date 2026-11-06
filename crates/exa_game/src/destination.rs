@@ -35,7 +35,7 @@ use crate::effects::bubble::{Bubble, BubbleEffect, MATERIAL};
 use crate::teleporters::{DeviceGlow, OpenPortalScreen};
 
 /// The open screen.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct PortalScreenState {
     pub open: Option<OpenScreen>,
 }

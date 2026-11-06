@@ -384,7 +384,7 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
 
 /// The point under the cursor on the player's aim plane, for the right
 /// mouse button, combat facing and the world cursor.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Clone)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
 
 /// The cursor's aim pick reaches this far along its ray (m), as the
@@ -534,7 +534,7 @@ pub(crate) fn cursor_ground(
 /// it by `(0.4·AimSpeed + 0.1)²` a behaviour tick (the original eases the
 /// screen cursor and picks its point on the aim plane; Exarust eases the
 /// world point by the same factor).
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default, Debug, Clone)]
 pub(crate) struct AimCursor(pub(crate) Option<Vec3>);
 
 pub struct PlayerPlugin;
@@ -604,15 +604,15 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>()
         .bridge_lend_resource::<exa_ai::presence::ActivationArea>()
         .bridge_copy::<exa_character::Wielded>()
-        .bridge_lend_resource::<crate::bindings::Bindings>()
+        .bridge_copy_in_resource::<crate::bindings::Bindings>()
         .bridge_lend_resource::<crate::experience_live::StoryExperience>()
-        .bridge_lend_resource::<crate::gamepad::PadStatus>()
-        .bridge_lend_resource::<crate::gamepad::PlayPad>()
-        .bridge_lend_resource::<crate::hand::Hand>()
-        .bridge_lend_resource::<crate::hw_config::HardwareConfig>()
-        .bridge_lend_resource::<crate::idle_orbit::IdleWatch>()
-        .bridge_lend_resource::<crate::player::AimCursor>()
-        .bridge_lend_resource::<crate::spectate::SpectateSession>()
+        .bridge_copy_in_resource::<crate::gamepad::PadStatus>()
+        .bridge_copy_in_resource::<crate::gamepad::PlayPad>()
+        .bridge_copy_in_resource::<crate::hand::Hand>()
+        .bridge_copy_in_resource::<crate::hw_config::HardwareConfig>()
+        .bridge_copy_in_resource::<crate::idle_orbit::IdleWatch>()
+        .bridge_snapshot_resource::<crate::player::AimCursor>()
+        .bridge_copy_in_resource::<crate::spectate::SpectateSession>()
         .bridge_lend_resource::<crate::player::AttackButton>()
         .bridge_lend::<crate::player::ChaseCamera>()
         .bridge_lend_resource::<crate::player_controls::PlaySession>()

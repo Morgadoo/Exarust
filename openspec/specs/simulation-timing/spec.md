@@ -278,3 +278,10 @@ The rise, the restore and the golem alarm's zone check SHALL run before every si
 #### Scenario: An undead opponent rises
 - **WHEN** a debug duellist with the story's body rules dies in the arena, once in one world and once behind the bridge
 - **THEN** it rises at the same game time in both, on a step boundary
+
+### Requirement: One-way resources across the bridge
+A resource that only the frame writes SHALL cross to the simulation only, and one that only the simulation writes SHALL cross to the frame only (and in when the frame inserts it); a write on the other side SHALL not cross, alike inline and on the simulation's thread.
+
+#### Scenario: A rogue write
+- **WHEN** the simulation writes a resource the frame owns, or the frame writes one the simulation owns
+- **THEN** the other side never sees that write, and without such writes both sides see what one world sees

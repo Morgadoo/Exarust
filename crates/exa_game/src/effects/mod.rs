@@ -194,7 +194,7 @@ impl Plugin for EffectsPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_effects_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_resource::<crate::effects::EffectClock>()
+    app.bridge_snapshot_resource::<crate::effects::EffectClock>()
         .bridge_copy::<crate::effects::fire_row::Attached>()
         .bridge_copy::<crate::effects::fire_row::Flame>()
         .bridge_copy::<crate::effects::scan::ScanEffect>()

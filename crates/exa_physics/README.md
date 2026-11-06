@@ -147,6 +147,25 @@ ran in `Update`, then in `PostUpdate`, then the bodies' frame start), from
 commands) that runs it on the first fixed pass of each frame (Bevy's frame
 count, bridged, tells the frames apart): the same point in both worlds.
 
+Stage 6 (a simulation running apart from the frame) needs every value
+the two sides share to have one owner, since a free-running simulation
+cannot borrow the frame's data for a step. Lent resources the frame never
+touches stay lent for now; the ones it does take an owner group by group.
+`bridge_copy_in_resource` is a resource the frame owns and the simulation
+only reads (copied in when the frame changes it, never sent back; a
+simulation write is warned of once and stays there);
+`bridge_snapshot_resource` is one the simulation owns and the frame only
+reads (copied out when it changes, in only when the frame inserts it; a
+frame write is warned of once and not sent). The input and settings the
+player's steering reads (bindings, pad, hand, cursor ground, hardware
+settings, idle watch, spectate), the loading status, the item catalogue,
+scripts, role database, the search's items and the level's local items,
+the world clock, story mode, possession, the portal screen and the
+kinesis inputs are copied in; the effect clock, the path probe, the aim
+cursor and the kinesis pick hook are snapshots. The search reads the open
+loot windows and popups from `exa_game::npc_search::OpenSearchScreens`,
+which the frame keeps before its fixed steps, instead of the screens.
+
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own
 schedule after `FixedLast`, which moves with the fixed step: a one-world run

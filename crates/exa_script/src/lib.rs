@@ -52,7 +52,7 @@ impl Plugin for ScriptPlugin {
 }
 
 /// The installation's role database and narrator graph.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct Scripts {
     pub roles: RoleDb,
     pub narrator: Option<Dialogue>,

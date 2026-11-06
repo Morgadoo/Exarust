@@ -629,11 +629,31 @@ impl<T: Component<Mutability = Mutable> + Default> BridgeHalf for LendComponentH
 
 /// A resource copied by clone when it changed.
 pub struct CopyResource<T>(PhantomData<fn() -> T>);
+/// A resource the frame owns and the simulation only reads: copied in when
+/// the frame changes it, never sent back.
+pub struct CopyInResource<T>(PhantomData<fn() -> T>);
+/// A resource the simulation owns and the frame only reads: copied out
+/// when the simulation changes it, copied in only when the frame inserts
+/// it.
+pub struct SnapshotResource<T>(PhantomData<fn() -> T>);
 /// A resource lent for the step.
 pub struct LendResource<T>(PhantomData<fn() -> T>);
 
+/// Which way a copied resource crosses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Both,
+    /// Frame to simulation only.
+    In,
+    /// Simulation to frame, and the frame's inserts.
+    Out,
+}
+
 struct ResourceHalf<T: Resource + Component<Mutability = Mutable>> {
     lend: bool,
+    direction: Direction,
+    /// The owner-side rule was broken once (warned once).
+    warned: bool,
     /// The value to send: a clone, or (lent) the value itself, swapped for
     /// the spare.
     take: fn(&mut World, &mut Option<T>) -> Option<T>,
@@ -652,20 +672,48 @@ enum ResourcePacket<T> {
     Value(T, bool),
 }
 
+fn copied_half<T: Resource + Component<Mutability = Mutable> + Clone>(
+    direction: Direction,
+) -> Box<dyn BridgeHalf> {
+    Box::new(ResourceHalf::<T> {
+        lend: false,
+        direction,
+        warned: false,
+        take: |world, _| world.get_resource::<T>().cloned(),
+        spare: None,
+        id: None,
+        present: false,
+        since: Tick::new(0),
+    })
+}
+
 impl<T: Resource + Component<Mutability = Mutable> + Clone> BridgeType for CopyResource<T> {
     fn type_id(&self) -> TypeId {
         TypeId::of::<T>()
     }
 
     fn half(&self) -> Box<dyn BridgeHalf> {
-        Box::new(ResourceHalf::<T> {
-            lend: false,
-            take: |world, _| world.get_resource::<T>().cloned(),
-            spare: None,
-            id: None,
-            present: false,
-            since: Tick::new(0),
-        })
+        copied_half::<T>(Direction::Both)
+    }
+}
+
+impl<T: Resource + Component<Mutability = Mutable> + Clone> BridgeType for CopyInResource<T> {
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    fn half(&self) -> Box<dyn BridgeHalf> {
+        copied_half::<T>(Direction::In)
+    }
+}
+
+impl<T: Resource + Component<Mutability = Mutable> + Clone> BridgeType for SnapshotResource<T> {
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    fn half(&self) -> Box<dyn BridgeHalf> {
+        copied_half::<T>(Direction::Out)
     }
 }
 
@@ -677,6 +725,8 @@ impl<T: Resource + Component<Mutability = Mutable> + Default> BridgeType for Len
     fn half(&self) -> Box<dyn BridgeHalf> {
         Box::new(ResourceHalf::<T> {
             lend: true,
+            direction: Direction::Both,
+            warned: false,
             take: |world, spare| {
                 let mut r = world.get_resource_mut::<T>()?;
                 let mut value = spare.take().unwrap_or_default();
@@ -707,9 +757,38 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
         let all = ctx.all;
         let now = world.change_tick();
-        let changed = world
+        let since = self.since;
+        let mut changed = world
             .get_resource_ref::<T>()
-            .map(|r| all || r.last_changed().is_newer_than(self.since, now));
+            .map(|r| all || r.last_changed().is_newer_than(since, now));
+        // A one-way resource: the side that does not own it sends nothing
+        // but the frame's inserts and removals of a snapshot; a change
+        // there is a write that should have gone the other way.
+        let refused = match self.direction {
+            Direction::In if ctx.sim => {
+                let sent = changed == Some(true);
+                changed = changed.map(|_| false);
+                sent
+            }
+            Direction::Out if !ctx.sim && !all => {
+                let added = world
+                    .get_resource_ref::<T>()
+                    .is_some_and(|r| r.added().is_newer_than(since, now));
+                let sent = changed == Some(true) && !added;
+                changed = changed.map(|_| added);
+                sent
+            }
+            _ => false,
+        };
+        if refused && !self.warned {
+            self.warned = true;
+            warn!(
+                "simulation bridge: the {} changed {}, which the {} owns (not sent)",
+                if ctx.sim { "simulation" } else { "frame" },
+                type_name::<T>(),
+                if ctx.sim { "frame" } else { "simulation" }
+            );
+        }
         let was = std::mem::replace(&mut self.present, changed.is_some());
         let packet = match changed {
             None if was => ResourcePacket::Removed,
@@ -1201,6 +1280,22 @@ pub trait SimBridgeAppExt {
     >(
         &mut self,
     ) -> &mut Self;
+    /// A resource the frame owns and the simulation only reads: copied in
+    /// when the frame changes it (or removes it), never sent back; a
+    /// simulation change is warned of once.
+    fn bridge_copy_in_resource<
+        T: Resource + Component<Mutability = Mutable> + Clone + std::fmt::Debug,
+    >(
+        &mut self,
+    ) -> &mut Self;
+    /// A resource the simulation owns and the frame reads as a snapshot:
+    /// copied out when the simulation changes it, copied in only when the
+    /// frame inserts it; a frame change is warned of once and not sent.
+    fn bridge_snapshot_resource<
+        T: Resource + Component<Mutability = Mutable> + Clone + std::fmt::Debug,
+    >(
+        &mut self,
+    ) -> &mut Self;
     /// A resource lent to the simulation for each step.
     fn bridge_lend_resource<
         T: Resource + Component<Mutability = Mutable> + Default + std::fmt::Debug,
@@ -1310,6 +1405,30 @@ impl SimBridgeAppExt for App {
         add_digested(
             self,
             CopyResource::<T>(PhantomData),
+            Some(crate::sim_digest::resource::<T>),
+        )
+    }
+
+    fn bridge_copy_in_resource<
+        T: Resource + Component<Mutability = Mutable> + Clone + std::fmt::Debug,
+    >(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
+            self,
+            CopyInResource::<T>(PhantomData),
+            Some(crate::sim_digest::resource::<T>),
+        )
+    }
+
+    fn bridge_snapshot_resource<
+        T: Resource + Component<Mutability = Mutable> + Clone + std::fmt::Debug,
+    >(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
+            self,
+            SnapshotResource::<T>(PhantomData),
             Some(crate::sim_digest::resource::<T>),
         )
     }

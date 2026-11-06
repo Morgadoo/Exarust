@@ -208,7 +208,7 @@ fn bridge_sim_control_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<Undying>()
         .bridge_lend_resource::<crate::sim_control::SimControl>()
-        .bridge_lend_resource::<exa_ui::loading::LoadingStatus>();
+        .bridge_copy_in_resource::<exa_ui::loading::LoadingStatus>();
 }
 
 /// Sets the starting speed once the loading screen is gone, so that a slow

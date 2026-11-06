@@ -168,7 +168,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_lend_resource::<crate::brain::BrainClock>()
         .bridge_copy::<crate::brain::CharacterId>()
         .bridge_copy::<crate::brain::MindWarded>()
-        .bridge_lend_resource::<crate::brain::RoleDatabase>()
+        .bridge_copy_in_resource::<crate::brain::RoleDatabase>()
         .bridge_copy::<crate::brain::Unseen>()
         .bridge_lend_resource::<crate::pass_turn::PassTurn>()
         .bridge_copy::<crate::presence::Presence>()
