@@ -1809,7 +1809,7 @@ impl Plugin for NpcSearchPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_npc_search_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_resource::<exa_ai::rooms::RoomGridSize>()
+    app.bridge_move_resource::<exa_ai::rooms::RoomGridSize>()
         .bridge_copy::<exa_character::Outfit>()
         .bridge_copy_in_resource::<crate::doll_view::DollItems>()
         .bridge_copy_in_resource::<crate::npc_search::OpenSearchScreens>()

@@ -182,7 +182,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_lend_resource::<crate::BrainTickClock>()
         .bridge_copy::<crate::Duellist>()
         .bridge_copy::<crate::drive::Driven>()
-        .bridge_lend_resource::<crate::brain::BrainClock>()
+        .bridge_move_resource::<crate::brain::BrainClock>()
         .bridge_copy::<crate::brain::CharacterId>()
         .bridge_copy::<crate::brain::MindWarded>()
         .bridge_copy_in_resource::<crate::brain::RoleDatabase>()
@@ -196,7 +196,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_copy::<exa_character::record::CharacterData>()
         .bridge_copy::<exa_combat::AttackHook>()
         .bridge_move_resource::<exa_world::nav::NavGrid>()
-        .bridge_lend_resource::<exa_world::nav::footprint::NavFootprints>()
+        .bridge_move_resource::<exa_world::nav::footprint::NavFootprints>()
         .bridge_copy_resource::<exa_world::room_view::LevelRooms>();
 }
 

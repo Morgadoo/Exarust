@@ -131,16 +131,44 @@ impl StandIns {
     }
 }
 
+/// Whether a held item's body may be built: its holder's body exists. An
+/// item equipped before its holder's body was built (the load builds a body
+/// once it is dressed) waits for it, as the original attaches an item to a
+/// character already built: until then the hand's node is not where the
+/// body will put it, and the item's body, built there, would be tied to the
+/// hand at that offset. The frame the holder's body is built its parts are
+/// drawn onto the nodes before this runs, so the item is built at its grip
+/// under the hand. A grip with no hand or arm to find its holder by does
+/// not wait.
+fn holder_built(grip: &crate::grip::HeldGrip, bodies: &Query<&Ragdoll>) -> bool {
+    if grip.holder_key != Entity::PLACEHOLDER {
+        return true;
+    }
+    let Some(probe) = grip.hands.iter().chain(grip.arms.iter()).flatten().next() else {
+        return true;
+    };
+    bodies
+        .iter()
+        .any(|b| b.parts.iter().any(|p| p.entity == *probe))
+}
+
 /// Builds the bodies of props spawned this frame, at their nodes' world
-/// transforms, asleep.
+/// transforms, asleep. A held item's body waits for its holder's
+/// ([`holder_built`]).
 fn register_props(
     mut commands: Commands,
     pending: Query<(Entity, &PendingProp)>,
     scrape_slots: Query<&PendingScrapes>,
     globals: Query<&GlobalTransform>,
     parents: Query<&ChildOf>,
+    (held, bodies): (Query<&crate::grip::HeldGrip>, Query<&Ragdoll>),
 ) {
     for (root, PendingProp(parts)) in &pending {
+        if let Ok(grip) = held.get(root)
+            && !holder_built(grip, &bodies)
+        {
+            continue;
+        }
         let mut parts = parts.clone();
         for part in &mut parts {
             if let Ok(g) = globals.get(part.entity) {
@@ -272,6 +300,62 @@ mod tests {
         let body = e.get::<Ragdoll>().unwrap();
         assert!(body.asleep() && body.countdown() == 0);
         assert_eq!(body.parts[0].positions[3], at + Vec3::new(0.0, 0.4, 0.0));
+        let placed = e.get::<PropBody>().unwrap().placed()[0];
+        assert!(Vec3::from(placed.translation).distance(at) < 1e-5);
+    }
+
+    /// A held item equipped before its holder's body was built keeps its
+    /// body pending until the holder's body exists, then is built where its
+    /// node is that frame (under the hand the body has placed).
+    #[test]
+    fn a_held_items_body_waits_for_its_holders_body() {
+        use crate::grip::{GripSpec, HeldGrip, HeldKind};
+        let mut app = App::new();
+        app.add_systems(Update, register_props);
+        let hand = app.world_mut().spawn_empty().id();
+        let node = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(Vec3::new(0.0, 0.5, 0.0)))
+            .id();
+        let grip = HeldGrip {
+            spec: GripSpec {
+                hand: 0,
+                links: Vec::new(),
+                second_hand: None,
+                arm: None,
+                extra: None,
+            },
+            scale: 1.0,
+            size: 1.0,
+            second_hand_factor: 1.0,
+            flip: false,
+            class: 0x10,
+            soft_weld: false,
+            kind: HeldKind::Weapon,
+            holder_key: Entity::PLACEHOLDER,
+            hands: [Some(hand), None],
+            arms: [None, None],
+            links: None,
+            released: false,
+            head_extra: 0.0,
+        };
+        app.world_mut()
+            .entity_mut(node)
+            .insert((PendingProp(vec![crate_part(node)]), grip));
+        app.update();
+        assert!(app.world().entity(node).contains::<PendingProp>());
+        // The holder's body is built and has put the hand (and the item's
+        // node under it) where it holds it.
+        let at = Vec3::new(1.0, 1.2, 0.3);
+        let mut holder = crate_part(hand);
+        holder.world = Affine3A::from_translation(at);
+        app.world_mut().spawn(Ragdoll::rigid(&[holder]));
+        app.world_mut()
+            .entity_mut(node)
+            .insert(GlobalTransform::from_translation(at));
+        app.update();
+        let e = app.world().entity(node);
+        assert!(!e.contains::<PendingProp>());
         let placed = e.get::<PropBody>().unwrap().placed()[0];
         assert!(Vec3::from(placed.translation).distance(at) < 1e-5);
     }

@@ -91,6 +91,14 @@ pub trait BridgeHalf: Send + Sync + 'static {
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered;
     /// Applies the other side's changes.
     fn apply(&mut self, world: &mut World, packet: Packet, ctx: ApplyCtx) -> usize;
+    /// Free-running simulation, simulation side, since the last call: the
+    /// frame's values of data both sides write that came after the
+    /// simulation had written the same value in a step the frame had not
+    /// seen yet: dropped (a drawn copy, the simulation's newer value wins)
+    /// and applied (the frame's write wins, as in lockstep).
+    fn take_overtaken(&mut self) -> (u64, u64) {
+        (0, 0)
+    }
     /// After an apply: forgets the removals and messages the apply itself
     /// made, and marks the tick changes are measured from.
     fn settle(&mut self, world: &mut World, since: Tick);
@@ -182,6 +190,10 @@ pub struct GatherCtx {
     pub all: bool,
     /// The gathering world is the simulation's.
     pub sim: bool,
+    /// The simulation runs free of the frame (`crate::sim_app::SimMode::Free`).
+    pub free: bool,
+    /// Simulation side: the step just taken.
+    pub step: u64,
 }
 
 /// What an apply needs to know besides the packet.
@@ -192,6 +204,13 @@ pub struct ApplyCtx {
     /// The frame updated its messages since the last step: the
     /// simulation's messages are updated too (Bevy's double buffer).
     pub update_messages: bool,
+    /// Free-running simulation, simulation side: the last step the frame
+    /// had applied when it gathered this packet. A frame value of data both
+    /// sides write is dropped when the simulation wrote it in a later step
+    /// (the frame's write was made against an older state).
+    pub based_on: Option<u64>,
+    /// The simulation runs free of the frame.
+    pub free: bool,
 }
 
 // ---------------------------------------------------------------- removals
@@ -243,6 +262,9 @@ pub struct CopyComponent<T: Component + Clone> {
     refs: fn(&T) -> Option<Entity>,
     /// Sent from the frame only (the simulation owns it once it arrives).
     inbound: bool,
+    /// The frame writes it to draw (transforms, the drawn controller): a
+    /// free-running simulation's newer value wins over the frame's.
+    drawn: bool,
     /// A snapshot: sent from the simulation; from the frame only when the
     /// frame inserts it (the frame's writes go as posted commands).
     snapshot: bool,
@@ -253,6 +275,7 @@ struct CopyComponentHalf<T: Component + Clone> {
     assign: fn(&mut EntityWorldMut, T),
     refs: fn(&T) -> Option<Entity>,
     inbound: bool,
+    drawn: bool,
     snapshot: bool,
     /// The frame changed a snapshot without inserting it (a write not
     /// posted): warned once.
@@ -268,6 +291,11 @@ struct CopyComponentHalf<T: Component + Clone> {
     shared_changed: Option<SharedChangedQuery<T>>,
     removals: Removals,
     since: Tick,
+    /// Free mode, simulation side: the last step that wrote each entity's
+    /// value (data both sides write).
+    sim_written: bevy::ecs::entity::EntityHashMap<u64>,
+    prune_at: usize,
+    overtaken: (u64, u64),
 }
 
 /// Changed values of the entities the simulation holds.
@@ -302,6 +330,7 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
             assign: self.assign,
             refs: self.refs,
             inbound: self.inbound,
+            drawn: self.drawn,
             snapshot: self.snapshot,
             warned: false,
             added: None,
@@ -311,6 +340,9 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
             shared_changed: None,
             removals: Removals::new(),
             since: Tick::new(0),
+            sim_written: Default::default(),
+            prune_at: 4096,
+            overtaken: (0, 0),
         })
     }
 }
@@ -486,6 +518,11 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
             };
             query.iter().map(|(e, v)| (e, T::clone(v), true)).collect()
         };
+        if ctx.sim && ctx.free && !self.snapshot {
+            for (e, ..) in &values {
+                self.sim_written.insert(*e, ctx.step);
+            }
+        }
         let seen = self.removals.take();
         let removed = live_removals::<T>(world, &seen);
         // A relationship's target must exist on the other side too.
@@ -503,18 +540,44 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         }
     }
 
-    fn apply(&mut self, world: &mut World, packet: Packet, _: ApplyCtx) -> usize {
+    fn apply(&mut self, world: &mut World, packet: Packet, ctx: ApplyCtx) -> usize {
         let Ok(packet) = packet.downcast::<ComponentPacket<T>>() else {
             return 0;
         };
         apply_removals::<T>(world, &packet.removed);
+        if ctx.free && self.sim_written.len() > self.prune_at {
+            // Despawned entities' marks go.
+            self.sim_written
+                .retain(|e, _| world.entities().contains_spawned(*e));
+            self.prune_at = (self.sim_written.len() * 2).max(4096);
+        }
+        // Free mode: a frame value of data both sides write, after a
+        // simulation write the frame had not seen yet. A drawn copy loses
+        // to it; another wins, as in lockstep (counted).
+        let base = ctx
+            .based_on
+            .filter(|_| ctx.sim && !self.inbound && !self.snapshot);
         let n = packet.values.len();
         for (e, value, _) in packet.values {
+            if let Some(base) = base
+                && self.sim_written.get(&e).is_some_and(|&step| step > base)
+                && world.get::<T>(e).is_some()
+            {
+                if self.drawn {
+                    self.overtaken.0 += 1;
+                    continue;
+                }
+                self.overtaken.1 += 1;
+            }
             if let Ok(mut entity) = world.get_entity_mut(e) {
                 (self.assign)(&mut entity, value);
             }
         }
         n
+    }
+
+    fn take_overtaken(&mut self) -> (u64, u64) {
+        std::mem::take(&mut self.overtaken)
     }
 
     fn settle(&mut self, world: &mut World, since: Tick) {
@@ -663,6 +726,10 @@ struct ResourceHalf<T: Resource + Component<Mutability = Mutable>> {
     id: Option<ComponentId>,
     present: bool,
     since: Tick,
+    /// Free mode, simulation side: the last step that wrote it (data both
+    /// sides write), and the frame values dropped for it.
+    sim_written: Option<u64>,
+    overtaken: u64,
 }
 
 /// A resource's value, or its removal.
@@ -684,6 +751,8 @@ fn copied_half<T: Resource + Component<Mutability = Mutable> + Clone>(
         id: None,
         present: false,
         since: Tick::new(0),
+        sim_written: None,
+        overtaken: 0,
     })
 }
 
@@ -737,6 +806,8 @@ impl<T: Resource + Component<Mutability = Mutable> + Default> BridgeType for Len
             id: None,
             present: false,
             since: Tick::new(0),
+            sim_written: None,
+            overtaken: 0,
         })
     }
 }
@@ -755,6 +826,9 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
+        if self.lend && ctx.free {
+            return self.gather_moved(world, ctx);
+        }
         let all = ctx.all;
         let now = world.change_tick();
         let since = self.since;
@@ -789,6 +863,9 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
                 if ctx.sim { "frame" } else { "simulation" }
             );
         }
+        if ctx.sim && ctx.free && self.direction == Direction::Both && changed == Some(true) {
+            self.sim_written = Some(ctx.step);
+        }
         let was = std::mem::replace(&mut self.present, changed.is_some());
         let packet = match changed {
             None if was => ResourcePacket::Removed,
@@ -808,7 +885,7 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
         }
     }
 
-    fn apply(&mut self, world: &mut World, packet: Packet, _: ApplyCtx) -> usize {
+    fn apply(&mut self, world: &mut World, packet: Packet, ctx: ApplyCtx) -> usize {
         let Ok(packet) = packet.downcast::<ResourcePacket<T>>() else {
             return 0;
         };
@@ -819,8 +896,20 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
                 1
             }
             ResourcePacket::Value(value, changed) => {
+                if ctx.sim
+                    && self.direction == Direction::Both
+                    && !self.lend
+                    && ctx
+                        .based_on
+                        .zip(self.sim_written)
+                        .is_some_and(|(base, step)| step > base)
+                {
+                    // The simulation wrote it after the step the frame had
+                    // seen; the frame's write wins, as in lockstep.
+                    self.overtaken += 1;
+                }
                 match world.get_resource_mut::<T>() {
-                    Some(mut current) if self.lend => {
+                    Some(mut current) if self.lend && !ctx.free => {
                         let old = std::mem::replace(current.bypass_change_detection(), value);
                         self.spare = Some(old);
                         if changed {
@@ -835,9 +924,38 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
         }
     }
 
+    fn take_overtaken(&mut self) -> (u64, u64) {
+        (0, std::mem::take(&mut self.overtaken))
+    }
+
     fn settle(&mut self, world: &mut World, since: Tick) {
         self.present = world.contains_resource::<T>();
         self.since = since;
+    }
+}
+
+impl<T: Resource + Component<Mutability = Mutable>> ResourceHalf<T> {
+    /// A lent resource when the simulation runs free: it cannot come back
+    /// between steps, so it moves to the simulation for good. The frame
+    /// sends it each time it is in the frame's world (inserted again, as a
+    /// level load does) and the simulation never sends it back.
+    fn gather_moved(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
+        let moved = if ctx.sim {
+            None
+        } else {
+            world.remove_resource::<T>()
+        };
+        let packet = match moved {
+            Some(value) => ResourcePacket::Value(value, true),
+            None => ResourcePacket::Unchanged,
+        };
+        let values = usize::from(!matches!(packet, ResourcePacket::Unchanged));
+        Gathered {
+            packet: Box::new(packet),
+            touched: Vec::new(),
+            removed: Vec::new(),
+            values,
+        }
     }
 }
 
@@ -1270,6 +1388,8 @@ impl<C: bevy::gizmos::config::GizmoConfigGroup> BridgeType for GizmoSnapshot<C> 
                 id: None,
                 present: false,
                 since: Tick::new(0),
+                sim_written: None,
+                overtaken: 0,
             },
         )
     }
@@ -1332,6 +1452,13 @@ impl SimBridgeTypes {
 pub trait SimBridgeAppExt {
     /// A component copied when it changed.
     fn bridge_copy<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self;
+    /// [`Self::bridge_copy`] for a component the frame writes to draw it
+    /// (transforms, the drawn controller): when the simulation runs free, a
+    /// frame value that comes after a simulation write the frame had not
+    /// seen is dropped (in lockstep there is none).
+    fn bridge_copy_drawn<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
         &mut self,
     ) -> &mut Self;
     /// A relationship such as `ChildOf` (immutable) copied by re-inserting
@@ -1420,6 +1547,24 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: false,
+                drawn: false,
+                snapshot: false,
+                _t: PhantomData,
+            },
+            Some(crate::sim_digest::component::<T>),
+        )
+    }
+
+    fn bridge_copy_drawn<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
+            self,
+            CopyComponent::<T> {
+                assign: assign_mutable::<T>,
+                refs: |_| None,
+                inbound: false,
+                drawn: true,
                 snapshot: false,
                 _t: PhantomData,
             },
@@ -1436,6 +1581,7 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: true,
+                drawn: false,
                 snapshot: false,
                 _t: PhantomData,
             },
@@ -1452,6 +1598,7 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: false,
+                drawn: false,
                 snapshot: true,
                 _t: PhantomData,
             },
@@ -1466,6 +1613,7 @@ impl SimBridgeAppExt for App {
                 assign: assign_by_insert::<T>,
                 refs: |r| Some(r.get()),
                 inbound: false,
+                drawn: false,
                 snapshot: false,
                 _t: PhantomData,
             },
@@ -1682,8 +1830,31 @@ pub struct SidePacket {
     reserved: Vec<Entity>,
     /// The frame's writes to snapshot data, run first (frame → sim only).
     writes: Vec<crate::sim_app::SimCommand>,
-    update_messages: bool,
+    /// The frame's posted calls (`crate::sim_app::FixedCommands::post`),
+    /// queued on the simulation's own queue (frame → sim only).
+    posts: Vec<crate::sim_app::SimCommand>,
+    pub update_messages: bool,
+    /// Free mode (frame → sim): the last step the frame had applied.
+    based_on: Option<u64>,
     pub values: usize,
+}
+
+impl SidePacket {
+    /// A packet that changes nothing, for `n` halves: applied before a
+    /// step no frame packet came for, so the next gather counts from it.
+    fn empty(n: usize) -> Self {
+        Self {
+            packets: (0..n).map(|_| Box::new(()) as Packet).collect(),
+            touched: Vec::new(),
+            despawned: Vec::new(),
+            reserved: Vec::new(),
+            writes: Vec::new(),
+            posts: Vec::new(),
+            update_messages: false,
+            based_on: None,
+            values: 0,
+        }
+    }
 }
 
 /// One world's halves and their bookkeeping.
@@ -1692,6 +1863,13 @@ pub struct BridgeSide {
     ids: Vec<ComponentId>,
     first: bool,
     sim: bool,
+    /// The simulation runs free of the frame.
+    free: bool,
+    /// Simulation side: the step the next gather follows.
+    step: u64,
+    /// Free mode, simulation side: per half, frame values that came after
+    /// a simulation write the frame had not seen: dropped, applied.
+    overtaken: Vec<(u64, u64)>,
     /// Per half: values gathered, values applied, nanoseconds (both).
     stats: Vec<(u64, u64, u64)>,
     gathers: u64,
@@ -1710,6 +1888,9 @@ impl BridgeSide {
             ids: Vec::new(),
             first,
             sim: !first,
+            free: false,
+            step: 0,
+            overtaken: Vec::new(),
             stats: Vec::new(),
             gathers: 0,
             pending_shared: EntityHashSet::default(),
@@ -1746,6 +1927,32 @@ impl BridgeSide {
             line.join("; ")
         );
         self.stats.iter_mut().for_each(|s| *s = (0, 0, 0));
+        for (which, pick) in [
+            ("dropped", (|o: (u64, u64)| o.0) as fn((u64, u64)) -> u64),
+            ("applied", |o: (u64, u64)| o.1),
+        ] {
+            let mut top: Vec<(usize, u64)> = self
+                .overtaken
+                .iter()
+                .map(|&o| pick(o))
+                .enumerate()
+                .filter(|&(_, n)| n > 0)
+                .collect();
+            if top.is_empty() {
+                continue;
+            }
+            top.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+            let line: Vec<String> = top
+                .iter()
+                .take(12)
+                .map(|&(i, n)| format!("{} {n}", self.halves[i].name()))
+                .collect();
+            info!(
+                "simulation bridge: frame values after a newer simulation write ({which}): {}",
+                line.join("; ")
+            );
+        }
+        self.overtaken.iter_mut().for_each(|n| *n = (0, 0));
     }
 
     fn drain_removed(&mut self, world: &World) {
@@ -1758,6 +1965,8 @@ impl BridgeSide {
         let ctx = GatherCtx {
             all: std::mem::take(&mut self.first) || copy_everything(),
             sim: self.sim,
+            free: self.free,
+            step: self.step,
         };
         let mut packets: Vec<Option<Packet>> = (0..self.halves.len()).map(|_| None).collect();
         let mut touched = EntityHashSet::default();
@@ -1824,7 +2033,9 @@ impl BridgeSide {
             despawned,
             reserved: Vec::new(),
             writes: Vec::new(),
+            posts: Vec::new(),
             update_messages: false,
+            based_on: None,
             values,
         }
     }
@@ -1857,6 +2068,8 @@ impl BridgeSide {
         let ctx = ApplyCtx {
             sim,
             update_messages: packet.update_messages,
+            based_on: packet.based_on,
+            free: self.free,
         };
         let mut n = 0;
         self.stats.resize(self.halves.len(), (0, 0, 0));
@@ -1876,6 +2089,14 @@ impl BridgeSide {
             n += applied;
         }
         world.flush();
+        if self.free && sim {
+            self.overtaken.resize(self.halves.len(), (0, 0));
+            for (half, n) in self.halves.iter_mut().zip(&mut self.overtaken) {
+                let (dropped, applied) = half.take_overtaken();
+                n.0 += dropped;
+                n.1 += applied;
+            }
+        }
         let since = world.change_tick();
         for half in &mut self.halves {
             half.settle(world, since);
@@ -1927,6 +2148,7 @@ pub struct BridgeSetup {
     fixed_order: Vec<InternedScheduleLabel>,
     halves: Vec<Box<dyn BridgeHalf>>,
     already_built: Vec<String>,
+    free: bool,
 }
 
 /// The frame's side of the bridge (a resource of the frame's world).
@@ -1939,10 +2161,15 @@ pub struct FrameBridge {
     side: Option<BridgeSide>,
     frames: u64,
     last_frames: u64,
-    /// Reserved ids the simulation had left after the last step.
+    /// Reserved ids the simulation had left after the last step (counting
+    /// the ones reserved since, which it has not reported yet).
     pool_left: usize,
     pub cost: BridgeCost,
     pub coverage: Option<BridgeCoverage>,
+    /// The simulation runs free of the frame (`crate::sim_app::SimMode::Free`).
+    pub free: bool,
+    /// Free mode: the last step whose packet the frame applied.
+    pub applied_step: u64,
 }
 
 impl FrameBridge {
@@ -1998,6 +2225,10 @@ pub struct SimBridgePlugin {
 
 impl Plugin for SimBridgePlugin {
     fn build(&self, app: &mut App) {
+        let free = app
+            .world()
+            .get_resource::<crate::sim_app::SimShell>()
+            .is_some_and(|s| s.mode() == crate::sim_app::SimMode::Free);
         app.init_resource::<SimBridgeTypes>()
             .insert_resource(FrameBridge {
                 extra: [
@@ -2014,6 +2245,8 @@ impl Plugin for SimBridgePlugin {
                 pool_left: 0,
                 cost: BridgeCost::default(),
                 coverage: None,
+                free,
+                applied_step: 0,
             })
             .add_systems(First, count_frame)
             .add_systems(Last, drain_frame_removals);
@@ -2031,8 +2264,8 @@ impl Plugin for SimBridgePlugin {
 pub fn bridge_bevy_types(app: &mut App) {
     app.bridge_relationship::<ChildOf>()
         .bridge_children_order()
-        .bridge_copy::<Transform>()
-        .bridge_copy::<GlobalTransform>()
+        .bridge_copy_drawn::<Transform>()
+        .bridge_copy_drawn::<GlobalTransform>()
         .bridge_copy::<Name>()
         .bridge_copy_resource::<bevy::diagnostic::FrameCount>()
         .bridge_copy_resource::<Time>()
@@ -2079,34 +2312,37 @@ pub fn frame_gather(world: &mut World) -> Option<BridgeIn> {
                 .map(|t| (t.halves(), t.halves()));
             let (frame_halves, sim_halves) = halves.unwrap_or_default();
             let mut side = BridgeSide::new(frame_halves, true);
+            side.free = bridge.free;
             side.init(world);
             bridge.side = Some(side);
             if bridge.fixed_order.is_empty() {
                 // No frame has run its `First` (a test running `FixedMain`).
                 bridge.fixed_order = FixedMainScheduleOrder::default().labels;
             }
-            Some(take_schedules(
-                world,
-                &bridge.fixed_order,
-                &bridge.extra,
-                sim_halves,
-            ))
+            let mut setup = take_schedules(world, &bridge.fixed_order, &bridge.extra, sim_halves);
+            setup.free = bridge.free;
+            Some(setup)
         } else {
             None
         };
-        // The frame's writes to snapshot data, before the queue itself is
-        // lent across with the other data.
-        let writes = world
+        // The frame's writes to snapshot data and its posted calls: each
+        // side keeps its own queue, the frame's go in the packet.
+        let (writes, posts) = world
             .get_resource_mut::<crate::sim_app::FixedCommands>()
-            .map(|mut f| f.take_writes())
+            .map(|mut f| (f.take_writes(), f.take_posts()))
             .unwrap_or_default();
         let side = bridge.side.as_mut()?;
         let mut packet = side.gather(world);
         packet.writes = writes;
+        packet.posts = posts;
         packet.update_messages = bridge.frames != bridge.last_frames;
+        packet.based_on = bridge.free.then_some(bridge.applied_step);
         bridge.last_frames = bridge.frames;
         if setup.is_some() || bridge.pool_left < POOL_LOW {
             packet.reserved = reserve_ids(world, POOL_BATCH);
+            // Counted until the simulation reports again (a free-running
+            // simulation may not step for many frames).
+            bridge.pool_left += POOL_BATCH;
         }
         bridge.cost.values_in += packet.values as u64;
         bridge.cost.gather_in_us += started.elapsed().as_micros() as u64;
@@ -2146,6 +2382,7 @@ fn take_schedules(
         fixed_order,
         halves,
         already_built,
+        free: false,
     }
 }
 
@@ -2177,12 +2414,18 @@ pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCovera
     }
     let BridgeIn { mut packet, .. } = bridge_in;
     let frame_began = packet.update_messages;
-    // The frame's writes to snapshot data land on the simulation's own
-    // values first; one to a value the frame inserted since is a no-op, the
-    // inserted value (written already) arriving next.
-    for write in std::mem::take(&mut packet.writes) {
+    // The writes to snapshot data land on the simulation's own values
+    // first, the simulation's own queued ones before the frame's; one to a
+    // value the frame inserted since is a no-op, the inserted value
+    // (written already) arriving next.
+    let own = world
+        .get_resource_mut::<crate::sim_app::FixedCommands>()
+        .map(|mut f| f.take_writes())
+        .unwrap_or_default();
+    for write in own.into_iter().chain(std::mem::take(&mut packet.writes)) {
         write(world);
     }
+    let posts = std::mem::take(&mut packet.posts);
     world.resource_scope(|world, mut bridge: Mut<SimBridge>| {
         let reserved = packet.reserved.clone();
         if !reserved.is_empty() {
@@ -2191,12 +2434,53 @@ pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCovera
         }
         bridge.side.apply(world, packet, true);
     });
+    // The frame's posted calls after the simulation's own (they run in the
+    // fixed order's `FixedCommandsStep`).
+    if let Some(mut fixed) = world.get_resource_mut::<crate::sim_app::FixedCommands>() {
+        fixed.queue_posts(posts);
+    }
     (coverage, started.elapsed().as_micros() as u64, frame_began)
+}
+
+/// Simulation side, free mode: before a step no frame packet came for,
+/// settles every half (an apply of nothing), so the step's gather counts
+/// the step's changes only.
+pub fn sim_apply_nothing(world: &mut World) {
+    world.resource_scope(|world, mut bridge: Mut<SimBridge>| {
+        let n = bridge.side.halves.len();
+        bridge.side.apply(world, SidePacket::empty(n), true);
+    });
+}
+
+/// Frame side, free mode: after a gather no step packet answered this
+/// frame, settles every half (an apply of nothing), so the next gather
+/// sends only what the frame changes from now on.
+pub fn frame_settle(world: &mut World) {
+    if !world.contains_resource::<FrameBridge>() {
+        return;
+    }
+    world.resource_scope(|world, mut bridge: Mut<FrameBridge>| {
+        if let Some(side) = bridge.side.as_mut() {
+            let n = side.halves.len();
+            side.apply(world, SidePacket::empty(n), false);
+        }
+    });
+}
+
+/// Simulation side: whether the bridge has started (its first packet came).
+pub fn sim_bridge_started(world: &World) -> bool {
+    world.contains_resource::<SimBridge>()
 }
 
 fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
     let mut side = BridgeSide::new(setup.halves, false);
+    side.free = setup.free;
     side.init(world);
+    // The simulation's own queue of posted calls and writes; its writes
+    // stay snapshot writes, as the frame's queue's were when it was lent.
+    if let Some(mut fixed) = world.get_resource_mut::<crate::sim_app::FixedCommands>() {
+        fixed.set_bridged(true);
+    }
     let bridged_ids: HashSet<ComponentId> = side.ids.iter().copied().collect();
     let mut coverage = BridgeCoverage {
         already_built: setup.already_built,
@@ -2351,9 +2635,13 @@ fn note_access(
 /// counts the reserved ids it used, and clears its removal buffers.
 pub fn sim_gather(world: &mut World) -> (SidePacket, u64, usize) {
     let started = Instant::now();
+    let step = world
+        .get_resource::<crate::sim_app::SimClock>()
+        .map_or(0, |c| c.tick);
     let (packet, pool) = world.resource_scope(|world, mut bridge: Mut<SimBridge>| {
         let bridge = &mut *bridge;
         report_unbridged_components(world, bridge);
+        bridge.side.step = step;
         let packet = bridge.side.gather(world);
         // Reserved ids now spawned belong to the simulation's entities;
         // ids it freed this step go back to the pool.

@@ -76,7 +76,7 @@ fn bridge_nav_types(app: &mut App) {
         .bridge_copy::<MovingMesh>()
         .bridge_message::<crate::nav::view::NavMoved>()
         .bridge_copy::<crate::gi_volume::GiPoints>()
-        .bridge_lend_resource::<crate::nav::view::NavMovers>()
+        .bridge_move_resource::<crate::nav::view::NavMovers>()
         .bridge_move_resource::<crate::nav::view::NavRevision>()
         .bridge_copy_resource::<NavRefreshMoved>()
         .bridge_copy_in_resource::<NavOverlay>();
@@ -190,7 +190,7 @@ pub fn unload_level(
 ) {
     commands.remove_resource::<PendingNav>();
     forget_grid(commands);
-    commands.remove_resource::<NavMovers>();
+    forget_movers(commands);
     commands.remove_resource::<NavBuild>();
     *state = NavState::None;
     *installed = InstalledPathfinder::install_fallback();
@@ -206,6 +206,20 @@ fn forget_grid(commands: &mut Commands) {
         if let Some(mut fixed) = world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
             fixed.post_first_bridged(|world| {
                 world.remove_resource::<NavGrid>();
+            });
+        }
+    });
+}
+
+/// Drops the moving meshes' record: the frame's now, the simulation's
+/// (which owns it once it moved there) before anything else the frame
+/// sends it next.
+fn forget_movers(commands: &mut Commands) {
+    commands.remove_resource::<NavMovers>();
+    commands.queue(|world: &mut World| {
+        if let Some(mut fixed) = world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
+            fixed.post_first_bridged(|world| {
+                world.remove_resource::<NavMovers>();
             });
         }
     });
@@ -255,7 +269,7 @@ fn collect_source(
     let pending = *pending;
     commands.remove_resource::<PendingNav>();
     forget_grid(&mut commands);
-    commands.remove_resource::<NavMovers>();
+    forget_movers(&mut commands);
     // A build for the previous level is dropped, which cancels it.
     commands.remove_resource::<NavBuild>();
     let mut source = NavSource {

@@ -458,16 +458,21 @@ impl Plugin for GripRuntimePlugin {
                         .before(exa_physics::body::BodySystems),
                     swap_on_switch,
                     refresh_holds,
-                    resolve_pending_grips,
                 )
                     .after(TickBehaviour)
                     .before(GripSolveSet::Sync),
             )
             .add_systems(
                 FixedUpdate,
-                release_collapsed
+                // A grip equipped before its holder's body was built takes
+                // its holder key before the builder ties it to the hand: the
+                // builder and the release that follows it would otherwise
+                // see the item's links built for no known holder and drop
+                // it on the first tick both bodies exist.
+                (resolve_pending_grips, release_collapsed)
+                    .chain()
                     .after(TickBehaviour)
-                    .before(exa_physics::grip_solve::GripSolveSet::Build),
+                    .before(GripSolveSet::Build),
             );
     }
 }
@@ -967,6 +972,79 @@ mod tests {
         app.update();
         assert!(app.world().get::<PendingGrip>(item_e).is_none());
         assert_eq!(app.world().get::<HeldGrip>(item_e).unwrap().holder_key, key);
+    }
+
+    /// A weapon equipped before its holder's body is built (the load builds
+    /// a body only once it is dressed) is gripped by the hand once the body
+    /// exists: on the first fixed tick with both bodies the pending holder
+    /// key resolves before the grip builder runs, so the links tie the item
+    /// to the hand part and the grip is not taken for an ownerless one and
+    /// dropped.
+    #[test]
+    fn an_item_equipped_before_its_body_is_built_is_gripped_by_the_hand() {
+        let mut app = App::new();
+        app.init_resource::<exa_physics::body::SolverStages>()
+            .add_plugins(GripRuntimePlugin);
+        exa_physics::grip_solve::plugin(&mut app);
+        app.finish();
+        app.world_mut().run_schedule(Startup);
+        let owner = app.world_mut().spawn(Condition::COMBAT_IDLE).id();
+        let hand = Entity::from_raw_u32(2).unwrap();
+        let item_e = app.world_mut().spawn_empty().id();
+        let grip = HeldGrip {
+            spec: GripSpec {
+                hand: 0,
+                links: vec![exa_physics::grip::GripPoint {
+                    point: Vec3::new(0.0, 20.0, 0.0),
+                    slack: 0.0,
+                }],
+                second_hand: None,
+                arm: None,
+                extra: None,
+            },
+            scale: 1.0,
+            size: 1.0,
+            second_hand_factor: 1.0,
+            flip: false,
+            class: 0x10,
+            soft_weld: false,
+            kind: exa_physics::grip::HeldKind::Weapon,
+            holder_key: Entity::PLACEHOLDER,
+            hands: [Some(hand), None],
+            arms: [Some(hand), None],
+            links: None,
+            released: false,
+            head_extra: 0.0,
+        };
+        // The equip: the grip waits for the holder's body.
+        app.world_mut()
+            .entity_mut(item_e)
+            .insert((grip, PendingGrip { holder: owner }));
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(app.world().get::<PendingGrip>(item_e).is_some());
+        // Both bodies are built in the same frame, before the next tick.
+        let body = holder(owner, Vec3::ZERO);
+        let key = body.parts[0].entity;
+        app.world_mut().entity_mut(owner).insert(body);
+        app.world_mut()
+            .entity_mut(item_e)
+            .insert(item(item_e, Vec3::new(0.2, 0.2, 0.0)));
+        app.world_mut().run_schedule(FixedUpdate);
+        let grip = app.world().get::<HeldGrip>(item_e).unwrap();
+        assert_eq!(grip.holder_key, key);
+        assert!(!grip.released, "the grip was dropped as ownerless");
+        let links = grip
+            .links
+            .as_ref()
+            .expect("the hand does not grip the item");
+        assert!(links.links[links.main].enabled());
+        let rest = app
+            .world()
+            .get::<exa_physics::grip::HeldRest>(item_e)
+            .expect("the item has no place under its hand");
+        assert_eq!(rest.hand, 1, "gripped by the hand part");
+        let item_body = app.world().get::<Ragdoll>(item_e).unwrap();
+        assert_eq!(item_body.held_by, Some(key));
     }
 
     /// The clip's mode switches the two-hander's links, and a flip request

@@ -1242,7 +1242,9 @@ impl Plugin for ClothPlugin {
             // The meshes take the particles once a frame, after its ticks.
             .add_systems(
                 RunFixedMainLoop,
-                write_cloth_meshes.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
+                write_cloth_meshes
+                    .in_set(RunFixedMainLoopSystems::AfterFixedMainLoop)
+                    .after(exa_physics::sim_app::SimExchange),
             )
             .add_message::<ClothMeshUpdate>()
             .add_systems(FixedFirst, start_fixed_timer)
@@ -1254,7 +1256,7 @@ impl Plugin for ClothPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_cloth_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_lend_resource::<crate::cloth::ClothContacts>()
+    app.bridge_move_resource::<crate::cloth::ClothContacts>()
         .bridge_snapshot_resource::<crate::cloth::ClothDebug>()
         // The frame builds a cloth; the simulation owns it from then on and
         // hands the frame its mesh positions ([`ClothMeshUpdate`]), which
@@ -1264,7 +1266,7 @@ fn bridge_cloth_types(app: &mut App) {
         // exanima01 and exanima06.
         .bridge_copy_in::<crate::cloth::ClothInstance>()
         .bridge_message::<ClothMeshUpdate>()
-        .bridge_lend_resource::<crate::cloth::ClothObjects>();
+        .bridge_move_resource::<crate::cloth::ClothObjects>();
 }
 
 #[cfg(test)]

@@ -937,6 +937,10 @@ Round 86 motiledyn2: the AI steps on its own feet in combat instead of sliding.
 
 Round 87 simfree3: the collision world and navigation grid get one owner each; frame picks use a per-step replica.
 
+Round 88 simloop: the simulation can run free on its own thread (--sim-free), as the original's does.
+
+Round 89 gripfix: characters hold their weapons again (a round 85 regression).
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the

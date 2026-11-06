@@ -26,21 +26,29 @@
 //! the simulation's world holds only its clock; with it
 //! ([`crate::sim_bridge::SimBridgePlugin`]) the fixed step's schedules run
 //! there, the data they touch copied in before and out after each step.
+//!
+//! [`SimMode::Free`] runs it free of the frame instead, as the original's
+//! thread: its own 12 ms real-clock step, asleep while the frame holds it
+//! ([`SimPause`]), the frame's packets drained before each step and a
+//! stamped packet ([`FreeStamp`]) sent after it; the frame exchanges
+//! packets once a frame without waiting ([`exchange_free`]) and draws at
+//! the original's render fraction.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use bevy::app::{FixedMainScheduleOrder, SubApp};
+use bevy::app::{FixedMainScheduleOrder, RunFixedMainLoop, RunFixedMainLoopSystems, SubApp};
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
 use crate::STEP_HZ;
 use crate::sim_bridge::{
-    BridgeIn, BridgeOut, FrameBridge, POOL_BATCH, frame_apply, frame_gather, reserve_ids,
-    run_fixed_order, sim_apply, sim_gather,
+    BridgeCoverage, BridgeIn, BridgeOut, FrameBridge, POOL_BATCH, frame_apply, frame_gather,
+    reserve_ids, run_fixed_order, sim_apply, sim_apply_nothing, sim_bridge_started, sim_gather,
 };
+use crate::step_driver::{PAUSED_SLEEP_MS, Poll, StepDriver};
 
 /// Work the frame hands the simulation, run on the simulation's world at
 /// the start of the next step, in post order.
@@ -250,6 +258,17 @@ impl FixedCommands {
         std::mem::take(queue(&mut self.writes))
     }
 
+    /// The posted calls, for the step's packet (behind the bridge each
+    /// side keeps its own queue).
+    pub fn take_posts(&mut self) -> Vec<SimCommand> {
+        std::mem::take(queue(&mut self.queued))
+    }
+
+    /// Queues calls another world posted, after the ones queued here.
+    pub fn queue_posts(&mut self, posts: Vec<SimCommand>) {
+        queue(&mut self.queued).extend(posts);
+    }
+
     pub fn len(&mut self) -> usize {
         queue(&mut self.queued).len()
     }
@@ -434,7 +453,9 @@ pub fn add_fixed_commands(app: &mut App) {
         .init_resource::<FixedCommands>()
         .init_schedule(FixedCommandsStep)
         .add_systems(FixedCommandsStep, run_fixed_commands)
-        .bridge_lend_opaque_resource::<FixedCommands>();
+        // Each world keeps its own queue; the frame's posts and writes go
+        // in its packet to the simulation (`crate::sim_bridge`).
+        .bridge_own_resource::<FixedCommands>();
     app.world_mut()
         .resource_mut::<FixedMainScheduleOrder>()
         .insert_before(FixedFirst, FixedCommandsStep);
@@ -707,6 +728,13 @@ pub enum SimMode {
     /// On the `exa-sim` thread; the frame waits for each step.
     #[default]
     Thread,
+    /// On the `exa-sim` thread, free of the frame, as the original's
+    /// simulation thread: its own 12 ms real-clock step ([`crate::step_driver`]),
+    /// asleep while the frame's packets say it is paused, the frame's packets
+    /// drained before each step, a packet stamped with the step's tick and
+    /// time sent after it. The frame neither steps nor waits: it applies
+    /// every packet that arrived, in order, and sends its own.
+    Free,
 }
 
 /// A step the frame asks for: its commands and, with the bridge, the
@@ -755,6 +783,13 @@ fn step_world(
     snapshots: &SnapshotBuffer<SimSnapshot>,
 ) -> Stepped {
     let bridged = request.bridge.is_some();
+    let (coverage, apply_us) = apply_request(world, request);
+    run_step(world, bridged, coverage, apply_us, snapshots)
+}
+
+/// The frame's packet on the simulation's world: its changes, then its
+/// commands.
+fn apply_request(world: &mut World, request: StepRequest) -> (Option<BridgeCoverage>, u64) {
     let (mut coverage, mut apply_us) = (None, 0);
     if let Some(bridge_in) = request.bridge {
         (coverage, apply_us, _) = sim_apply(world, bridge_in);
@@ -762,6 +797,17 @@ fn step_world(
     for command in request.commands {
         command(world);
     }
+    (coverage, apply_us)
+}
+
+/// The step itself, then the snapshot and the events.
+fn run_step(
+    world: &mut World,
+    bridged: bool,
+    mut coverage: Option<BridgeCoverage>,
+    apply_us: u64,
+    snapshots: &SnapshotBuffer<SimSnapshot>,
+) -> Stepped {
     world.run_schedule(SimStep);
     // The step's writes to the frame's data run on the frame first, before
     // the step's other events.
@@ -794,6 +840,159 @@ fn step_world(
     }
 }
 
+/// The free-running simulation's own fixed-step clock: the frame's
+/// `Time<Fixed>` no longer steps it, so its systems' `Time` and
+/// `Time<Fixed>` advance by one timestep a step here, written without a
+/// change mark so that they are not sent to the frame.
+#[derive(Resource, Clone, Copy)]
+struct FreeTime(Time<Fixed>);
+
+fn advance_free_time(world: &mut World) {
+    let mut own = match world.remove_resource::<FreeTime>() {
+        Some(own) => own,
+        None => FreeTime(
+            world
+                .get_resource::<Time<Fixed>>()
+                .copied()
+                .unwrap_or_else(|| Time::<Fixed>::from_hz(STEP_HZ)),
+        ),
+    };
+    let step = own.0.timestep();
+    own.0.advance_by(step);
+    if let Some(mut fixed) = world.get_resource_mut::<Time<Fixed>>() {
+        *fixed.bypass_change_detection() = own.0;
+    } else {
+        world.insert_resource(own.0);
+    }
+    let generic = own.0.as_generic();
+    if let Some(mut time) = world.get_resource_mut::<Time>() {
+        *time.bypass_change_detection() = generic;
+    } else {
+        world.insert_resource(generic);
+    }
+    world.insert_resource(own);
+}
+
+/// One free step: every frame packet that arrived since the last step, in
+/// order (Bevy's messages are updated at most once a step, as the frame
+/// updates its own once a frame), then the step.
+fn free_step(
+    world: &mut World,
+    requests: Vec<FreeRequest>,
+    snapshots: &SnapshotBuffer<SimSnapshot>,
+) -> Stepped {
+    let mut bridged = false;
+    let (mut coverage, mut apply_us) = (None, 0);
+    let mut updated = false;
+    for FreeRequest { mut request, .. } in requests {
+        if let Some(b) = request.bridge.as_mut() {
+            bridged = true;
+            if b.packet.update_messages {
+                b.packet.update_messages = !updated;
+                updated = true;
+            }
+        }
+        let (c, us) = apply_request(world, request);
+        coverage = coverage.or(c);
+        apply_us += us;
+    }
+    if !bridged && sim_bridge_started(world) {
+        sim_apply_nothing(world);
+        bridged = true;
+    }
+    advance_free_time(world);
+    run_step(world, bridged, coverage, apply_us, snapshots)
+}
+
+/// The free-running simulation thread: the original's loop. While the
+/// frame's packets say paused it sleeps 11 ms a pass and the paused time
+/// stays out of its clock; otherwise, once a step is due on its 12 ms
+/// real clock (more than four steps late drops the backlog), it drains the
+/// frame's packets, steps, and sends the step's packet stamped with its
+/// tick and time. Its first step comes a step after the first unpaused
+/// packet, as the original's simulation starts paused.
+fn run_free(
+    mut sub_app: SubApp,
+    inbox: Receiver<FreeRequest>,
+    outbox: Sender<FreeStepped>,
+    epoch: std::time::Instant,
+    snapshots: SnapshotBuffer<SimSnapshot>,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::{Duration, Instant};
+    let mut pending: Vec<FreeRequest> = Vec::new();
+    let mut paused = true;
+    let mut paused_since: Option<Instant> = Some(epoch);
+    let mut paused_total = Duration::ZERO;
+    let mut driver: Option<StepDriver> = None;
+    let mut dropped_ms = 0u64;
+    let step_ms = STEP_MS as u32;
+    let take = |r: FreeRequest, pending: &mut Vec<FreeRequest>, paused: &mut bool| {
+        *paused = r.paused;
+        pending.push(r);
+    };
+    loop {
+        loop {
+            match inbox.try_recv() {
+                Ok(r) => take(r, &mut pending, &mut paused),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+            }
+        }
+        let now = Instant::now();
+        let wait = if paused {
+            paused_since.get_or_insert(now);
+            Duration::from_millis(u64::from(PAUSED_SLEEP_MS))
+        } else {
+            if let Some(since) = paused_since.take() {
+                paused_total += now - since;
+            }
+            let clock = ((now - epoch).saturating_sub(paused_total)).as_millis() as u32;
+            let d = driver.get_or_insert_with(|| StepDriver::new(step_ms, clock));
+            match d.poll(clock) {
+                Poll::Step {
+                    dropped_ms: dropped,
+                } => {
+                    dropped_ms += u64::from(dropped);
+                    if dropped > 0 {
+                        debug!("simulation: {dropped} ms of backlog dropped");
+                    }
+                    let requests = std::mem::take(&mut pending);
+                    let stepped = free_step(sub_app.world_mut(), requests, &snapshots);
+                    d.stepped();
+                    let stamp = FreeStamp {
+                        tick: u64::from(d.ticks),
+                        time_ms: d.time_ms,
+                        base_ms: d.base_ms,
+                        paused_ms: paused_total.as_millis() as u64,
+                        step_ms,
+                    };
+                    if u64::from(d.ticks).is_multiple_of(LOG_EVERY) {
+                        info!(
+                            "simulation free: {} steps, {dropped_ms} ms of backlog dropped, {} ms paused",
+                            d.ticks,
+                            paused_total.as_millis()
+                        );
+                    }
+                    if outbox.send(FreeStepped { stepped, stamp }).is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                // The original waits a millisecond short of the step on a
+                // waitable timer; below a millisecond, a short sleep.
+                Poll::Wait { ms: 0 } => Duration::from_micros(200),
+                Poll::Wait { ms } => Duration::from_millis(u64::from(ms)),
+            }
+        };
+        match inbox.recv_timeout(wait) {
+            Ok(r) => take(r, &mut pending, &mut paused),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
 enum Runner {
     Inline(Box<SubApp>),
     Thread {
@@ -801,6 +1000,61 @@ enum Runner {
         replies: Receiver<Stepped>,
         thread: Option<JoinHandle<()>>,
     },
+    Free {
+        requests: Sender<FreeRequest>,
+        replies: Receiver<FreeStepped>,
+        thread: Option<JoinHandle<()>>,
+    },
+}
+
+/// A frame's packet to the free-running simulation.
+struct FreeRequest {
+    request: StepRequest,
+    /// The frame holds the simulation (the loading screen, a menu, a pause):
+    /// the original's pause counter, raised.
+    paused: bool,
+}
+
+/// One free step's packet to the frame, stamped with its clock.
+struct FreeStepped {
+    stepped: Stepped,
+    stamp: FreeStamp,
+}
+
+/// The free-running simulation's clock after a step: what the frame reads
+/// to draw between the last two steps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FreeStamp {
+    /// The step's tick and time (ms of simulation time).
+    pub tick: u64,
+    pub time_ms: u32,
+    /// The clock reading the simulation's time counts from (ms; moved on
+    /// when a backlog was dropped).
+    pub base_ms: u32,
+    /// The time spent paused, left out of the clock (ms).
+    pub paused_ms: u64,
+    /// The step (ms).
+    pub step_ms: u32,
+}
+
+impl FreeStamp {
+    /// The original's render fraction: 1 + (frame clock − published
+    /// time) / step, at most 2 and at least −2. `clock_ms` is the
+    /// milliseconds since the shell's start (the pause time not yet left
+    /// out). 1 draws the step before the last, 2 the last
+    /// ([`overstep_of`]).
+    pub fn fraction(&self, clock_ms: u64) -> f32 {
+        let now = clock_ms
+            .saturating_sub(self.paused_ms)
+            .wrapping_sub(u64::from(self.base_ms)) as u32;
+        let step = f64::from(self.step_ms.max(1));
+        let f = if now > self.time_ms {
+            (f64::from(now - self.time_ms) / step + 1.0).min(2.0)
+        } else {
+            1.0 - f64::from(self.time_ms - now) / step
+        };
+        (f as f32).max(-2.0)
+    }
 }
 
 /// The thread ends with the shell, its world dropped before the frame's
@@ -808,16 +1062,24 @@ enum Runner {
 /// as the trace files, which flush when dropped).
 impl Drop for Runner {
     fn drop(&mut self) {
-        if let Runner::Thread {
-            requests, thread, ..
-        } = self
-        {
-            // Closing the channel ends the thread's loop.
-            let (closed, _) = channel();
-            *requests = closed;
-            if let Some(thread) = thread.take() {
-                let _ = thread.join();
+        // Closing the channel ends the thread's loop.
+        let thread = match self {
+            Runner::Thread {
+                requests, thread, ..
+            } => {
+                *requests = channel().0;
+                thread.take()
             }
+            Runner::Free {
+                requests, thread, ..
+            } => {
+                *requests = channel().0;
+                thread.take()
+            }
+            Runner::Inline(_) => None,
+        };
+        if let Some(thread) = thread {
+            let _ = thread.join();
         }
     }
 }
@@ -829,14 +1091,31 @@ pub struct SimShell {
     runner: Mutex<Runner>,
     snapshots: SnapshotBuffer<SimSnapshot>,
     mode: SimMode,
+    /// The clock the free-running simulation and the frame both read.
+    epoch: std::time::Instant,
 }
 
 impl SimShell {
     /// A shell around `sub_app`, run in `mode`.
     pub fn new(sub_app: SubApp, mode: SimMode) -> Self {
         let snapshots = SnapshotBuffer::default();
+        let epoch = std::time::Instant::now();
         let runner = match mode {
             SimMode::Inline => Runner::Inline(Box::new(sub_app)),
+            SimMode::Free => {
+                let (requests, inbox) = channel::<FreeRequest>();
+                let (outbox, replies) = channel();
+                let published = snapshots.clone();
+                let thread = std::thread::Builder::new()
+                    .name("exa-sim".into())
+                    .spawn(move || run_free(sub_app, inbox, outbox, epoch, published))
+                    .expect("the simulation thread starts");
+                Runner::Free {
+                    requests,
+                    replies,
+                    thread: Some(thread),
+                }
+            }
             SimMode::Thread => {
                 let (requests, inbox) = channel::<StepRequest>();
                 let (outbox, replies) = channel();
@@ -865,6 +1144,30 @@ impl SimShell {
             runner: Mutex::new(runner),
             snapshots,
             mode,
+            epoch,
+        }
+    }
+
+    /// Milliseconds since the shell started (the free clock's reading).
+    pub fn clock_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// Free mode: sends the frame's packet without waiting.
+    fn send_free(&self, request: FreeRequest) {
+        let runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Runner::Free { requests, .. } = &*runner {
+            // A closed thread (it panicked) has logged why.
+            let _ = requests.send(request);
+        }
+    }
+
+    /// Free mode: every step packet that arrived, in order.
+    fn take_free(&self) -> Vec<FreeStepped> {
+        let runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
+        match &*runner {
+            Runner::Free { replies, .. } => replies.try_iter().collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -885,6 +1188,7 @@ impl SimShell {
                     .expect("the simulation thread is running");
                 replies.recv().expect("the simulation thread stepped")
             }
+            Runner::Free { .. } => panic!("a free-running simulation is not stepped by the frame"),
         }
     }
 
@@ -893,7 +1197,7 @@ impl SimShell {
         let runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
         match &*runner {
             Runner::Inline(sub_app) => Some(f(sub_app.world())),
-            Runner::Thread { .. } => None,
+            Runner::Thread { .. } | Runner::Free { .. } => None,
         }
     }
 }
@@ -923,8 +1227,28 @@ impl Plugin for SimShellPlugin {
             .init_resource::<SimLinks>()
             .init_resource::<Snapshots<SimSnapshot>>()
             .init_resource::<LockstepCheck>()
+            .init_resource::<SimPause>()
             .init_schedule(SimLockstep)
             .add_systems(SimLockstep, step_lockstep);
+        if self.mode == SimMode::Free {
+            // The frame's fixed loop no longer steps anything: the
+            // simulation keeps its own clock; the frame exchanges packets
+            // once a frame, where the loop ran.
+            app.init_resource::<FreeLink>()
+                .configure_sets(
+                    RunFixedMainLoop,
+                    (
+                        RunFixedMainLoopSystems::FixedMainLoop.run_if(|| false),
+                        SimExchange.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
+                    ),
+                )
+                .add_systems(RunFixedMainLoop, exchange_free.in_set(SimExchange));
+        } else {
+            app.configure_sets(
+                RunFixedMainLoop,
+                SimExchange.in_set(RunFixedMainLoopSystems::FixedMainLoop),
+            );
+        }
         add_frame_start(app);
         app.world_mut()
             .resource_mut::<FixedMainScheduleOrder>()
@@ -935,10 +1259,192 @@ impl Plugin for SimShellPlugin {
     }
 }
 
+/// Where the frame meets the simulation each frame: the fixed loop in
+/// lockstep, the packet exchange when the simulation runs free. Frame
+/// systems that read the step's results before the frame's own work (the
+/// drawn controller, the cloth meshes) run after it.
+#[derive(bevy::ecs::schedule::SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SimExchange;
+
+/// The frame's hold on the simulation: the original's pause counter, which
+/// its screens raise (the loading screen, the menus, the creator, the end
+/// of a session; context/re/sim-thread-input.md). `held` is what the game's
+/// screens ask this frame; `raised` counts paired raises. A free-running
+/// simulation reads it from each of the frame's packets and sleeps while it
+/// is up; in lockstep the frame's own fixed loop holds instead.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SimPause {
+    held: bool,
+    raised: u32,
+}
+
+impl SimPause {
+    /// Sets this frame's hold from the screens that show.
+    pub fn hold(&mut self, held: bool) {
+        self.held = held;
+    }
+
+    /// A paired raise (a screen that opens), lowered by [`Self::lower`].
+    pub fn raise(&mut self) {
+        self.raised += 1;
+    }
+
+    pub fn lower(&mut self) {
+        self.raised = self.raised.saturating_sub(1);
+    }
+
+    pub fn paused(&self) -> bool {
+        self.held || self.raised > 0
+    }
+}
+
+/// The frame's side of a free-running simulation.
+#[derive(Resource, Debug, Default)]
+pub struct FreeLink {
+    /// The last step packet applied.
+    pub stamp: Option<FreeStamp>,
+    /// The render fraction the frame draws at ([`FreeStamp::fraction`]).
+    pub fraction: f32,
+    /// Step packets applied, and frames that exchanged.
+    pub steps: u64,
+    pub frames: u64,
+    /// The most step packets one frame applied.
+    pub most_in_a_frame: usize,
+    /// Step packets whose tick was not the next one.
+    pub gaps: u64,
+    /// The hold the frame last told the simulation (it starts held).
+    pub paused: bool,
+}
+
+/// The frame's overstep (in steps) for the original's render fraction.
+/// The original keeps three history entries per object (the last step's,
+/// the one before, and the one before that) and draws between the two
+/// older ones at the fraction (1 the step before the last, 2 that pair
+/// carried on a step, which is about the last step): one step behind the
+/// clock, as Exarust's lockstep frame draws between the last two ticks by
+/// the time since the last. Exarust's bodies keep the last two entries, so
+/// the same moment is drawn at fraction − 1 between them; a fraction below
+/// 1 (a frame that ran ahead of the step's time) holds at the step before
+/// the last.
+pub fn overstep_of(fraction: f32) -> f32 {
+    (fraction - 1.0).clamp(0.0, 1.0)
+}
+
+/// Free mode, once a frame: sends the frame's packet (its changes, its
+/// posted calls, its hold) without waiting, applies every step packet that
+/// arrived, in order, with its events, and sets the render fraction. The
+/// fraction replaces the fixed loop's overstep: the frame's `Time<Fixed>`
+/// carries it ([`overstep_of`]), so every drawing that reads
+/// `overstep_fraction` draws the moment the original's frame draws.
+pub fn exchange_free(world: &mut World) {
+    let paused = world
+        .get_resource::<SimPause>()
+        .is_some_and(SimPause::paused);
+    // Held, the frame keeps its changes and posts until it lets go (as the
+    // lockstep frame does while no step runs), and tells the simulation
+    // once.
+    let was_paused = std::mem::replace(&mut world.resource_mut::<FreeLink>().paused, paused);
+    let sent_changes = !paused;
+    let request = if paused {
+        (!was_paused).then(|| StepRequest {
+            commands: Vec::new(),
+            bridge: None,
+        })
+    } else {
+        let bridge = frame_gather(world);
+        let commands = world.resource_mut::<SimInbox>().take();
+        Some(StepRequest { commands, bridge })
+    };
+    // Held, the step packets that still arrive wait too: applying one
+    // would settle the frame's changes before they were gathered.
+    let arrived = {
+        let shell = world.resource::<SimShell>();
+        if let Some(request) = request {
+            shell.send_free(FreeRequest { request, paused });
+        }
+        if paused {
+            Vec::new()
+        } else {
+            shell.take_free()
+        }
+    };
+    let count = arrived.len();
+    if count == 0 && sent_changes {
+        crate::sim_bridge::frame_settle(world);
+    }
+    for FreeStepped { stepped, stamp } in arrived {
+        if let Some(out) = stepped.bridge {
+            frame_apply(world, out);
+            crate::sim_digest::write_frame_digest(world);
+        }
+        if let Some(mut bridge) = world.get_resource_mut::<FrameBridge>() {
+            bridge.applied_step = stamp.tick;
+        }
+        for event in stepped.events {
+            event(world);
+        }
+        let mut link = world.resource_mut::<FreeLink>();
+        if link.stamp.is_some_and(|s| s.tick + 1 != stamp.tick) {
+            link.gaps += 1;
+        }
+        link.stamp = Some(stamp);
+        link.steps += 1;
+        let steps = link.steps;
+        if steps.is_multiple_of(LOG_EVERY) {
+            let (frames, most, gaps) = (link.frames, link.most_in_a_frame, link.gaps);
+            link.most_in_a_frame = 0;
+            info!(
+                "simulation free (frame): {steps} steps applied over {frames} frames, at most {most} in a frame, {gaps} gaps"
+            );
+            if let Some(cost) = world.get_resource::<FrameBridge>().map(|b| b.cost) {
+                info!(
+                    "simulation bridge: {:.0} us a step copying ({} values in, {} out over {} steps; \
+                     gather in {} us, apply in {} us, gather out {} us, apply out {} us)",
+                    cost.us_per_step(),
+                    cost.values_in,
+                    cost.values_out,
+                    cost.steps,
+                    cost.gather_in_us,
+                    cost.apply_in_us,
+                    cost.gather_out_us,
+                    cost.apply_out_us
+                );
+            }
+        }
+    }
+    if let Some(snapshot) = world.resource::<SimShell>().snapshots.take() {
+        world
+            .resource_mut::<Snapshots<SimSnapshot>>()
+            .push(snapshot);
+    }
+    let clock = world.resource::<SimShell>().clock_ms();
+    let mut link = world.resource_mut::<FreeLink>();
+    link.frames += 1;
+    link.most_in_a_frame = link.most_in_a_frame.max(count);
+    // Paused, the original leaves its fraction where it was.
+    if paused {
+        return;
+    }
+    let Some(stamp) = link.stamp else {
+        return;
+    };
+    let fraction = stamp.fraction(clock);
+    link.fraction = fraction;
+    if let Some(mut fixed) = world.get_resource_mut::<Time<Fixed>>() {
+        let left = fixed.overstep();
+        fixed.discard_overstep(left);
+        let step = fixed.timestep();
+        fixed.accumulate_overstep(step.mul_f32(overstep_of(fraction)));
+    }
+}
+
 /// One simulation step for this pass of the fixed step: the inbox's
 /// commands go over, the frame waits, then runs the step's events and keeps
 /// its snapshot.
 pub fn step_lockstep(world: &mut World) {
+    if world.resource::<SimShell>().mode == SimMode::Free {
+        return;
+    }
     let bridge = frame_gather(world);
     let commands = world.resource_mut::<SimInbox>().take();
     let stepped = world
@@ -1101,6 +1607,94 @@ mod tests {
             .resource::<SimShell>()
             .with_world(|sim| sim.resource::<SimLinks>().len());
         assert_eq!(left, Some(0));
+    }
+
+    /// Runs the frame for `ms` milliseconds of real time.
+    fn run_frames_for(app: &mut App, ms: u64) {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < until {
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn a_free_simulation_steps_on_its_own_clock_and_sleeps_while_held() {
+        let mut app = app(SimMode::Free);
+        app.world_mut().resource_mut::<SimPause>().hold(true);
+        run_frames_for(&mut app, 120);
+        assert_eq!(app.world().resource::<FreeLink>().steps, 0, "held: no step");
+        app.world_mut().resource_mut::<SimPause>().hold(false);
+        run_frames_for(&mut app, 240);
+        // Let the last packets arrive.
+        app.world_mut().resource_mut::<SimPause>().hold(true);
+        run_frames_for(&mut app, 40);
+        let link = app.world().resource::<FreeLink>();
+        // 240 ms at 12 ms a step: 20, less the start and the scheduler's
+        // noise; never more than the real clock allows.
+        assert!(
+            (8..=24).contains(&link.steps),
+            "{} steps in 240 ms",
+            link.steps
+        );
+        assert_eq!(link.gaps, 0);
+        let stamp = link.stamp.unwrap();
+        assert_eq!(stamp.tick, link.steps);
+        assert_eq!(stamp.time_ms as u64, stamp.tick * STEP_MS);
+        // The paused time stays out of the clock.
+        assert!(stamp.paused_ms >= 100, "{stamp:?}");
+    }
+
+    #[test]
+    fn a_free_simulation_takes_the_frames_commands_in_post_order() {
+        let mut app = app(SimMode::Free);
+        let world = app.world_mut();
+        for k in 0..3u64 {
+            world.resource_mut::<SimInbox>().post(move |w: &mut World| {
+                w.resource_mut::<SimOutbox>().send(move |f: &mut World| {
+                    f.resource_mut::<Heard>().0.push(k);
+                });
+            });
+        }
+        app.update();
+        for k in 3..5u64 {
+            app.world_mut()
+                .resource_mut::<SimInbox>()
+                .post(move |w: &mut World| {
+                    w.resource_mut::<SimOutbox>().send(move |f: &mut World| {
+                        f.resource_mut::<Heard>().0.push(k);
+                    });
+                });
+        }
+        run_frames_for(&mut app, 100);
+        assert_eq!(app.world().resource::<Heard>().0, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn the_overstep_draws_the_originals_moment() {
+        // Fraction 1: the step before the last; 2: the last.
+        assert_eq!(overstep_of(1.0), 0.0);
+        assert_eq!(overstep_of(1.5), 0.5);
+        assert_eq!(overstep_of(2.0), 1.0);
+        assert_eq!(overstep_of(-2.0), 0.0);
+    }
+
+    #[test]
+    fn the_render_fraction_is_the_originals() {
+        let stamp = FreeStamp {
+            tick: 10,
+            time_ms: 120,
+            base_ms: 1000,
+            paused_ms: 500,
+            step_ms: 12,
+        };
+        // Clock 1620 less 500 paused, less the base 1000: at the step.
+        assert_eq!(stamp.fraction(1620), 1.0);
+        assert_eq!(stamp.fraction(1626), 1.5);
+        // At most two, at least minus two.
+        assert_eq!(stamp.fraction(1700), 2.0);
+        assert_eq!(stamp.fraction(1614), 0.5);
+        assert_eq!(stamp.fraction(1500), -2.0);
     }
 
     #[test]

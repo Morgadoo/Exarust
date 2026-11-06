@@ -151,6 +151,8 @@
 //!          --schedule-ambiguities     log the fixed step's (and the brains' chain's) pairs of unordered systems that
 //!                                     touch the same data
 //!          --sim-inline               run the simulation's own world on the frame's thread instead of its thread
+//!          --sim-free                 run the simulation free of the frame on its own 12 ms clock (83 Hz), as the
+//!                                     original's thread; the frame draws between its last two steps (default: lockstep)
 //!          --sim-digest <file>        write a hash of every bridged type after each fixed step (one world vs bridge)
 //!          --hold-loading             (kept for old scripts: game time always holds behind the loading screen)
 //!          --spectate                 enter the controls' spectate session after the load (double click a character to follow it)
@@ -158,6 +160,7 @@
 //!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
 //!                                     schedules, by direction (the simulation thread's hand-off)
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
+//!          --draw-trace <file.csv>    the player's drawn pelvis, the camera and the render fraction each frame
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
@@ -284,6 +287,7 @@
 //! `.` step one tick, `[` / `]` slower / faster.
 
 mod column;
+mod draw_trace;
 mod frame_loop;
 mod grid;
 mod map_panel;
@@ -479,6 +483,8 @@ pub struct Options {
     pub schedule_ambiguities: bool,
     /// Run the simulation's world on the frame's thread (`--sim-inline`).
     pub sim_inline: bool,
+    /// Run the simulation free of the frame on its own clock (`--sim-free`).
+    pub sim_free: bool,
     /// Keep the fixed step's schedules in the frame's world instead of
     /// running them in the simulation's behind the lockstep copy bridge
     /// (`--no-sim-bridge`).
@@ -495,6 +501,8 @@ pub struct Options {
     pub spectate: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
+    /// Write where the frame drew the player each frame (`--draw-trace`).
+    pub draw_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
     pub pair_trace: Option<PathBuf>,
     /// Every frame advances game time by exactly 1/60 s, so that runs
@@ -1110,6 +1118,7 @@ fn main() -> AppExit {
             "--profiler" => options.profiler = true,
             "--schedule-ambiguities" => options.schedule_ambiguities = true,
             "--sim-inline" => options.sim_inline = true,
+            "--sim-free" => options.sim_free = true,
             // The default now; kept so older command lines still run.
             "--sim-bridge" => options.no_sim_bridge = false,
             "--no-sim-bridge" => options.no_sim_bridge = true,
@@ -1132,6 +1141,7 @@ fn main() -> AppExit {
                     .collect();
             }
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
+            "--draw-trace" => options.draw_trace = args.next().map(PathBuf::from),
             "--pair-trace" => options.pair_trace = args.next().map(PathBuf::from),
             "--fixed-frames" => options.fixed_frames = true,
             "--sim-speed" => {
@@ -1768,6 +1778,18 @@ fn main() -> AppExit {
     if let Some(trace) = joint_trace {
         app.insert_resource(trace);
     }
+    if let Some(path) = options.draw_trace.as_deref() {
+        match draw_trace::DrawTrace::create(path) {
+            Ok(trace) => {
+                app.insert_resource(trace);
+            }
+            Err(e) => {
+                eprintln!("cannot write the draw trace: {e}");
+                return AppExit::from_code(2);
+            }
+        }
+    }
+    app.add_plugins(draw_trace::DrawTracePlugin);
     if let Some(trace) = pair_trace {
         app.insert_resource(trace);
     }
@@ -1965,7 +1987,9 @@ fn main() -> AppExit {
     // The simulation's own world, stepped in lockstep with the fixed step
     // (it holds only its clock yet: `exa_physics::sim_app`).
     app.add_plugins(exa_physics::sim_app::SimShellPlugin {
-        mode: if options.sim_inline {
+        mode: if options.sim_free && !options.no_sim_bridge {
+            exa_physics::sim_app::SimMode::Free
+        } else if options.sim_inline {
             exa_physics::sim_app::SimMode::Inline
         } else {
             exa_physics::sim_app::SimMode::Thread

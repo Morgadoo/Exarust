@@ -209,7 +209,7 @@ fn bridge_teleport_types(app: &mut App) {
         .bridge_copy::<crate::teleporters::RecordIdentity>()
         .bridge_copy::<exa_render::gi::VoxelLight>()
         .bridge_copy::<exa_world::TeleportDevice>()
-        .bridge_lend_resource::<exa_world::teleporters::Latch>();
+        .bridge_move_resource::<exa_world::teleporters::Latch>();
 }
 
 /// The device's model nodes the original sees as its children: the model's
