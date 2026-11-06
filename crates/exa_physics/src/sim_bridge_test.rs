@@ -568,3 +568,59 @@ fn one_way_resources_cross_one_way() {
         assert_ne!(frame[6].1, 777, "{mode:?}");
     }
 }
+
+/// A resource the frame owns that a fixed step also writes.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+struct Owned(Vec<u32>);
+
+/// Each step appends its count through the frame's queue, and reads what
+/// it has seen so far.
+fn owned_step(
+    mut owned: ResMut<Owned>,
+    mut frame: ResMut<crate::sim_app::FrameCommands>,
+    mut seen: ResMut<SnapSeen>,
+    mut n: Local<u32>,
+) {
+    *n += 1;
+    let k = *n;
+    seen.0.push(format!("{:?}", owned.0));
+    frame.write_resource(&mut owned, move |o| o.0.push(k));
+}
+
+/// The frame appends 100 + its frame number each frame too.
+fn owned_run(shell: Option<SimMode>) -> (Vec<String>, Vec<Vec<u32>>) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / crate::STEP_HZ,
+        )))
+        .init_resource::<SnapSeen>()
+        .init_resource::<Owned>()
+        .add_systems(FixedUpdate, owned_step);
+    crate::sim_app::add_fixed_commands(&mut app);
+    crate::sim_app::add_frame_commands(&mut app);
+    if let Some(mode) = shell {
+        app.add_plugins((SimShellPlugin { mode }, SimBridgePlugin { extra: vec![] }))
+            .bridge_copy_in_resource::<Owned>()
+            .bridge_copy_resource::<SnapSeen>();
+    }
+    let mut frame = Vec::new();
+    for f in 0..8 {
+        app.world_mut().resource_mut::<Owned>().0.push(100 + f);
+        app.update();
+        frame.push(app.world().resource::<Owned>().0.clone());
+    }
+    (app.world().resource::<SnapSeen>().0.clone(), frame)
+}
+
+/// A step's write to data the frame owns reaches the frame after the step
+/// and the step sees it at once: both sides see what one world sees.
+#[test]
+fn a_steps_write_to_frame_data_lands_after_the_step() {
+    let alone = owned_run(None);
+    assert!(alone.1.last().unwrap().contains(&3), "{alone:?}");
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        assert_eq!(owned_run(Some(mode)), alone, "{mode:?}");
+    }
+}

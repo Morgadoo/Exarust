@@ -148,17 +148,24 @@ impl WeaponBlood {
 }
 
 /// The world reset drops every spot and, since Exarust keeps the bodies
-/// the original rebuilds clean, every weapon's blood and spot.
+/// the original rebuilds clean, every weapon's blood and spot. The list
+/// belongs to the fixed step (the damage routine draws the spots): its
+/// clear is posted for the next step.
 pub fn clear_at_world_reset(
     mut resets: MessageReader<WorldReset>,
-    mut list: ResMut<WeaponBlood>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
     mut blades: Query<(Entity, &mut BladeBlood)>,
 ) {
     if resets.read().count() == 0 {
         return;
     }
-    let spots = list.spots.len();
-    list.clear_count();
+    fixed.post(|world| {
+        if let Some(mut list) = world.get_resource_mut::<WeaponBlood>() {
+            let spots = list.spots.len();
+            list.clear_count();
+            info!("world reset: the weapons' blood list drops {spots} spots");
+        }
+    });
     let mut cleared = 0;
     for (blade, mut blood) in &mut blades {
         if *blood != BladeBlood::default() {
@@ -170,22 +177,34 @@ pub fn clear_at_world_reset(
             cleared += 1;
         }
     }
-    info!("world reset: the weapons' blood list drops {spots} spots, {cleared} weapons cleaned");
+    info!("world reset: {cleared} weapons cleaned");
 }
 
 /// A weapon that leaves the world releases its spot: the list's spot whose
-/// source it is goes free (a body that is not a limb).
-pub fn release_gone_blades(mut gone: RemovedComponents<BladeBlood>, mut list: ResMut<WeaponBlood>) {
-    for blade in gone.read() {
-        let source = blade.to_bits() as usize;
-        if let Some(index) = list.spots.iter().position(|s| s.source == Some(source)) {
-            list.release_part(false, index + 1);
-            debug!(
-                "weapon {blade:?} left the world: blood spot {} released",
-                index + 1
-            );
-        }
+/// source it is goes free (a body that is not a limb), at the next step.
+pub fn release_gone_blades(
+    mut gone: RemovedComponents<BladeBlood>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
+) {
+    let gone: Vec<Entity> = gone.read().collect();
+    if gone.is_empty() {
+        return;
     }
+    fixed.post(move |world| {
+        let Some(mut list) = world.get_resource_mut::<WeaponBlood>() else {
+            return;
+        };
+        for blade in gone {
+            let source = blade.to_bits() as usize;
+            if let Some(index) = list.spots.iter().position(|s| s.source == Some(source)) {
+                list.release_part(false, index + 1);
+                debug!(
+                    "weapon {blade:?} left the world: blood spot {} released",
+                    index + 1
+                );
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -202,6 +221,12 @@ mod tests {
         app.init_resource::<WeaponBlood>()
             .add_message::<WorldReset>()
             .add_systems(Update, (clear_at_world_reset, release_gone_blades));
+        exa_physics::sim_app::add_fixed_commands(&mut app);
+        // The list's writes are posted for the next fixed step.
+        let update = |app: &mut App| {
+            app.update();
+            exa_physics::sim_app::run_fixed_commands(app.world_mut());
+        };
         let a = app.world_mut().spawn(BladeBlood::default()).id();
         let b = app.world_mut().spawn(BladeBlood::default()).id();
         let draw = |app: &mut App, blade: Entity, size: f32| {
@@ -223,7 +248,7 @@ mod tests {
         assert_eq!(list.amount(2), Some(0.1));
 
         app.world_mut().write_message(WorldReset);
-        app.update();
+        update(&mut app);
         assert!(app.world().resource::<WeaponBlood>().spots.is_empty());
         assert_eq!(blood(&app, a), BladeBlood::default());
         assert_eq!(blood(&app, b), BladeBlood::default());
@@ -232,7 +257,7 @@ mod tests {
 
         draw(&mut app, a, 0.2);
         app.world_mut().despawn(b);
-        app.update();
+        update(&mut app);
         let list = app.world().resource::<WeaponBlood>();
         assert_eq!(list.spots[0].source, None);
         assert_eq!(list.spots[1].source, Some(a.to_bits() as usize));

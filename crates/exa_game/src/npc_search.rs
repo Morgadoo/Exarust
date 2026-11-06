@@ -226,6 +226,21 @@ pub struct SearchWorld {
     shots: Vec<(u32, String)>,
 }
 
+/// A screenshot the search asked for: frames to wait and a label. The
+/// search runs in the fixed step; the frame takes the shots.
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub struct SearchShot {
+    pub wait: u32,
+    pub label: String,
+}
+
+/// Hands the tick's screenshot requests to the frame.
+fn send_search_shots(mut world: ResMut<SearchWorld>, mut out: MessageWriter<SearchShot>) {
+    for (wait, label) in world.shots.drain(..) {
+        out.write(SearchShot { wait, label });
+    }
+}
+
 /// Screenshots of the search's steps (`--searcher-shots <dir>`): one when a
 /// follower's search picks, settles or loots, when it takes something out
 /// of the world, and 90 frames after a re-dress, numbered in order.
@@ -253,16 +268,16 @@ impl SearchShots {
 pub fn take_search_shots(
     mut commands: Commands,
     shots: Option<ResMut<SearchShots>>,
-    mut world: ResMut<SearchWorld>,
+    mut asked: MessageReader<SearchShot>,
     offscreen: Option<Res<crate::debug_shot::OffscreenImage>>,
 ) {
     let Some(mut shots) = shots else {
-        world.shots.clear();
+        asked.clear();
         return;
     };
     shots.frame = shots.frame.wrapping_add(1);
     let frame = shots.frame;
-    for (wait, label) in world.shots.drain(..) {
+    for SearchShot { wait, label } in asked.read().cloned() {
         shots.due.push((frame.wrapping_add(wait), label));
     }
     // One shot a frame: a second screenshot of the same target in the
@@ -1475,6 +1490,9 @@ pub struct Wardrobe<'w, 's> {
     level: Option<Res<'w, exa_world::LevelLocalItems>>,
     catalogue: Option<Res<'w, ItemCatalogue>>,
     game: Option<Res<'w, Game>>,
+    /// The doll's item set is the frame's: its first read is repeated
+    /// there after the step.
+    frame: ResMut<'w, exa_physics::sim_app::FrameCommands>,
 }
 
 /// The garments that came off a worn list (`before` → `after`, each id
@@ -1551,8 +1569,10 @@ pub fn carry_out_search(
         return;
     }
     let w = &mut wardrobe;
-    if let Some(doll) = w.doll.as_deref_mut() {
-        doll.ensure(w.game.as_deref());
+    if let Some(doll) = w.doll.as_mut() {
+        let game = w.game.as_deref().cloned();
+        w.frame
+            .write_resource(doll, move |d| d.ensure(game.as_ref()));
     }
     for redress in effects.redress {
         let Ok((mut p, outfit, hands, data, torch, name)) = w.bodies.get_mut(redress.body) else {
@@ -1699,9 +1719,11 @@ fn keep_open_search_screens(
 impl Plugin for NpcSearchPlugin {
     fn build(&self, app: &mut App) {
         bridge_npc_search_types(app);
+        exa_physics::sim_app::add_frame_commands(app);
         app.init_resource::<SearchItems>()
             .init_resource::<SearchWorld>()
             .init_resource::<OpenSearchScreens>()
+            .add_message::<SearchShot>()
             .add_systems(
                 RunFixedMainLoop,
                 keep_open_search_screens
@@ -1721,7 +1743,7 @@ impl Plugin for NpcSearchPlugin {
             // their deeds leave is carried out right after.
             .add_systems(
                 exa_ai::BrainChain,
-                (follow_and_search, carry_out_search)
+                (follow_and_search, carry_out_search, send_search_shots)
                     .chain()
                     .after(exa_ai::brain::idle_walk),
             );
@@ -1734,10 +1756,11 @@ fn bridge_npc_search_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_lend_resource::<exa_ai::rooms::RoomGridSize>()
         .bridge_copy::<exa_character::Outfit>()
-        .bridge_lend_resource::<crate::doll_view::DollItems>()
+        .bridge_copy_in_resource::<crate::doll_view::DollItems>()
         .bridge_copy_in_resource::<crate::npc_search::OpenSearchScreens>()
         .bridge_copy_in_resource::<crate::npc_search::SearchItems>()
-        .bridge_lend_resource::<crate::npc_search::SearchWorld>()
+        .bridge_move_resource::<crate::npc_search::SearchWorld>()
+        .bridge_message::<crate::npc_search::SearchShot>()
         .bridge_copy::<crate::torch::CarriesTorch>()
         .bridge_copy_in_resource::<exa_items::catalogue::ItemCatalogue>()
         .bridge_copy::<exa_items::possession::Possessions>()

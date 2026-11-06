@@ -1841,16 +1841,23 @@ pub fn attach_snap(npc: &mut Npc, facing_yaw: f32) {
 pub fn forget_removed(
     mut removed: RemovedComponents<Npc>,
     mut npcs: Query<(&mut Npc, Option<&mut Combatant>)>,
-    mut turn: Option<ResMut<crate::pass_turn::PassTurn>>,
+    fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let gone: Vec<Entity> = removed.read().collect();
     if gone.is_empty() {
         return;
     }
-    if let Some(turn) = turn.as_deref_mut() {
-        for entity in &gone {
-            turn.forget(entity.to_bits());
-        }
+    // The pass turn belongs to the brains' tick: it forgets them at the
+    // next step.
+    if let Some(mut fixed) = fixed {
+        let forgotten = gone.clone();
+        fixed.post(move |world| {
+            if let Some(mut turn) = world.get_resource_mut::<crate::pass_turn::PassTurn>() {
+                for entity in &forgotten {
+                    turn.forget(entity.to_bits());
+                }
+            }
+        });
     }
     for (mut npc, combatant) in &mut npcs {
         for entity in &gone {

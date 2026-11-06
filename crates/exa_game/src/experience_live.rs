@@ -69,7 +69,7 @@ pub struct DiscoveryTick {
 
 /// The story's live experience: the account state, the player's learner and
 /// the companions in list order.
-#[derive(Resource, Debug)]
+#[derive(Resource, Debug, Clone)]
 pub struct StoryExperience {
     pub state: Experience,
     pub player: Learner,

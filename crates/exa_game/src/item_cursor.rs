@@ -806,7 +806,7 @@ pub fn claim_drag(
 
 /// The item cursor's state: the item it holds, the turn's ramp, the
 /// accumulated turn, what is under the cursor, and the drops waiting.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct ItemCursor {
     pub held: Option<HeldItem>,
     pub turn: TurnRamp,

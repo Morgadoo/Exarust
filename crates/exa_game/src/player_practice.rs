@@ -94,7 +94,10 @@ pub(crate) fn tick_player_practice(
         Option<&Animator>,
         Option<&mut CharacterData>,
     )>,
-    mut story: Option<ResMut<crate::experience_live::StoryExperience>>,
+    (mut story, mut frame): (
+        Option<ResMut<crate::experience_live::StoryExperience>>,
+        ResMut<exa_physics::sim_app::FrameCommands>,
+    ),
     others: Query<
         (
             Entity,
@@ -189,7 +192,10 @@ pub(crate) fn tick_player_practice(
             if let Some(story) = story.as_mut()
                 && story.started
             {
-                story.player.experience = story.player.experience.wrapping_add(paid as u32);
+                // The story's experience is the frame's: added there too.
+                frame.write_resource(story, move |story| {
+                    story.player.experience = story.player.experience.wrapping_add(paid as u32);
+                });
             }
             info!(
                 "practice: +{paid} to the practice count ({} in all; lesson {:.3}, fatigue {:.4})",
@@ -242,7 +248,8 @@ mod tests {
         assert!(paid > 0, "{paid}");
 
         let mut app = App::new();
-        app.add_systems(Update, tick_player_practice);
+        app.add_systems(Update, tick_player_practice)
+            .init_resource::<exa_physics::sim_app::FrameCommands>();
         let mut kept = PlayerPractice::default();
         kept.practice.lesson = 1.0;
         kept.practice.gain = 10.5;

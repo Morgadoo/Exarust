@@ -83,6 +83,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         bridge_combat_types(app);
+        exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<remedy::WorldClock>()
             .add_message::<Hit>()
             .add_message::<AttackAskedHook>()
@@ -205,7 +206,7 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::fighter::CombatScore>()
         .bridge_copy::<crate::wounds::BladeBlood>()
         .bridge_copy::<crate::wounds::WoundQueue>()
-        .bridge_lend_resource::<crate::weapon_blood::WeaponBlood>()
+        .bridge_move_resource::<crate::weapon_blood::WeaponBlood>()
         .bridge_message::<crate::condition::Awakened>()
         .bridge_message::<crate::fighter::SecondWindFired>()
         .bridge_message::<crate::fighter::Weakened>()

@@ -86,6 +86,7 @@ fn falling_biped() -> Ragdoll {
 /// `player`), under its root; returns the world, the root and the body.
 fn falling(branch: Branch, player: bool) -> (World, Entity, Entity) {
     let mut world = World::new();
+    world.init_resource::<exa_physics::sim_app::FrameCommands>();
     world.init_resource::<BodyTicks>();
     world.init_resource::<DeathFade>();
     let root = world.spawn(Transform::default()).id();
@@ -316,6 +317,7 @@ fn the_kill_plane() {
         (root, body)
     };
     let mut world = World::new();
+    world.init_resource::<exa_physics::sim_app::FrameCommands>();
     let corpse = spawn(&mut world, Condition::DEAD, FallDeath::default(), false);
     let player = spawn(&mut world, Condition::DEAD, FallDeath::default(), true);
     let living = spawn(&mut world, Condition::NORMAL, FallDeath::default(), false);

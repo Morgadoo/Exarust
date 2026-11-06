@@ -78,7 +78,6 @@ impl Plugin for SprayPlugin {
                 PostUpdate,
                 (
                     fire_debug_sprays.run_if(resource_exists::<DebugSprays>),
-                    start_jets,
                     load_spray_assets
                         .run_if(resource_exists::<Game>)
                         .run_if(not(resource_exists::<SprayAssets>))
@@ -91,8 +90,16 @@ impl Plugin for SprayPlugin {
                     .after(TransformSystems::Propagate)
                     .after(CombatSystems),
             )
-            // On the bodies' poses of the tick.
-            .add_systems(FixedUpdate, tick_sprays.after(BodySystems))
+            // On the bodies' poses of the tick; the tick's bleeding blows
+            // start their jets after it, in the post-step that dealt them,
+            // and tick from the next tick on.
+            .add_systems(
+                FixedUpdate,
+                (
+                    tick_sprays.after(BodySystems),
+                    start_jets.after(tick_sprays).after(CombatSystems),
+                ),
+            )
             .add_systems(
                 PreUpdate,
                 reset_sprays.run_if(on_message::<LevelChangeRequest>),
@@ -617,9 +624,18 @@ fn start_jets(
 /// ([`BloodSprays::reset`]). The droplets in flight fly on. Guess: the
 /// original's reset runs from the game's session routines that clear the
 /// world; Exarust's teardown request stands for them.
-fn reset_sprays(mut changes: MessageReader<LevelChangeRequest>, mut sprays: ResMut<BloodSprays>) {
+fn reset_sprays(
+    mut changes: MessageReader<LevelChangeRequest>,
+    mut sprays: ResMut<BloodSprays>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+) {
     if changes.read().any(|change| change.teardown) && !sprays.jets.is_empty() {
-        sprays.reset();
+        // The sprays are the fixed step's; the frame's copy is reset too.
+        exa_physics::sim_app::write_resource(fixed.as_deref_mut(), &mut sprays, |s| {
+            if !s.jets.is_empty() {
+                s.reset();
+            }
+        });
     }
 }
 

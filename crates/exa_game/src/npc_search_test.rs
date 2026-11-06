@@ -221,6 +221,7 @@ fn a_follower_searches_a_chest_and_a_loose_item() {
     app.insert_resource(items)
         .init_resource::<SearchWorld>()
         .init_resource::<OpenSearchScreens>()
+        .init_resource::<exa_physics::sim_app::FrameCommands>()
         .insert_resource(BodyTicks(0))
         .add_systems(Update, (follow_and_search, carry_out_search).chain());
     app.world_mut().spawn((
@@ -357,6 +358,7 @@ fn a_robbed_body_is_dressed_again() {
     tunic.worn_model = "TunicA".into();
     app.insert_resource(exa_world::LevelLocalItems(vec![tunic]))
         .init_resource::<SearchWorld>()
+        .init_resource::<exa_physics::sim_app::FrameCommands>()
         .add_systems(Update, carry_out_search);
     let body = app
         .world_mut()
@@ -432,6 +434,7 @@ fn a_follower_searches_a_dead_body() {
     app.insert_resource(items)
         .init_resource::<SearchWorld>()
         .init_resource::<OpenSearchScreens>()
+        .init_resource::<exa_physics::sim_app::FrameCommands>()
         .insert_resource(BodyTicks(0))
         .add_systems(Update, follow_and_search);
     // Away from the world origin, where a new search last gathered.

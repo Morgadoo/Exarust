@@ -2129,10 +2129,13 @@ fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
         world.register_component::<crate::sim_app::SimClock>(),
         world.register_component::<crate::sim_app::SimLinks>(),
         world.register_component::<crate::sim_app::SimOutbox>(),
+        world.register_component::<crate::sim_app::FrameCommands>(),
         world.register_component::<SimFixedOrder>(),
     ] {
         covered.insert(id);
     }
+    // The simulation's writes to the frame's data go back by its own queue.
+    world.insert_resource(crate::sim_app::FrameCommands::bridged());
     world.insert_resource(SimFixedOrder(setup.fixed_order));
     // Bevy's own bookkeeping of a changed hierarchy is not reported.
     let mut unbridged_seen = covered.clone();

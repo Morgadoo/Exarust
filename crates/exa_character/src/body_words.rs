@@ -173,7 +173,7 @@ fn bridge_body_words_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<crate::RaceWeaponry>()
         .bridge_copy::<crate::held::Hands>()
-        .bridge_lend_resource::<crate::spray::BloodSprays>();
+        .bridge_snapshot_resource::<crate::spray::BloodSprays>();
 }
 
 #[cfg(test)]

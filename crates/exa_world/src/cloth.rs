@@ -171,7 +171,7 @@ impl Default for ClothContacts {
 /// per cloth for the last tick, so a cost can be traced to cloths that
 /// never sleep, to many bodies, to many level triangles, or to work outside
 /// the stage.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct ClothDebug {
     /// Whether the counters run.
     pub on: bool,
@@ -1140,7 +1140,7 @@ pub fn write_cloth_meshes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut debug: ResMut<ClothDebug>,
     mut instances: Query<&mut ClothInstance>,
-    fixed: Option<Res<exa_physics::sim_app::FixedCommands>>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let started = debug.on.then(std::time::Instant::now);
     // The newest of each mesh's updates.
@@ -1164,7 +1164,7 @@ pub fn write_cloth_meshes(
         }
         written += 1;
     }
-    if fixed.is_some_and(|f| f.bridged()) && !newest.is_empty() {
+    if fixed.as_ref().is_some_and(|f| f.bridged()) && !newest.is_empty() {
         for mut instance in &mut instances {
             let Some(update) = newest.get(&instance.mesh.id()) else {
                 continue;
@@ -1177,10 +1177,14 @@ pub fn write_cloth_meshes(
             }
         }
     }
+    // The counters are the cloth stage's, which logs them: added there.
     if let Some(t) = started {
-        debug.frames += 1;
-        debug.meshes_written += written;
-        debug.write_micros += t.elapsed().as_micros() as u64;
+        let micros = t.elapsed().as_micros() as u64;
+        exa_physics::sim_app::write_resource(fixed.as_deref_mut(), &mut debug, move |d| {
+            d.frames += 1;
+            d.meshes_written += written;
+            d.write_micros += micros;
+        });
     }
 }
 
@@ -1251,7 +1255,7 @@ impl Plugin for ClothPlugin {
 fn bridge_cloth_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_lend_resource::<crate::cloth::ClothContacts>()
-        .bridge_lend_resource::<crate::cloth::ClothDebug>()
+        .bridge_snapshot_resource::<crate::cloth::ClothDebug>()
         // The frame builds a cloth; the simulation owns it from then on and
         // hands the frame its mesh positions ([`ClothMeshUpdate`]), which
         // also refresh the frame's particles for the hand's grab. The
