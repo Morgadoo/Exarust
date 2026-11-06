@@ -263,6 +263,11 @@ pub fn add_locomotion(
     mut commands: Commands,
     fighters: Query<(Entity, &Transform, &Ragdoll), (With<crate::Duellist>, Without<Locomotion>)>,
 ) {
+    // Debug aid: `EXA_NPC_NO_LOCOMOTION` leaves the fighters without the
+    // request (their routes slide as before).
+    if std::env::var_os("EXA_NPC_NO_LOCOMOTION").is_some() {
+        return;
+    }
     for (entity, t, body) in &fighters {
         if body.drive.is_none() {
             continue;

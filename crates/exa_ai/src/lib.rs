@@ -779,6 +779,8 @@ pub(crate) fn apply_feet_steps(mut fighters: Query<(&mut Duellist, &mut Ragdoll)
     for (mut ai, mut body) in &mut fighters {
         if let Some((step, start, aim)) = ai.feet_write.take() {
             body.write_footwork(&step, start);
+            // Debug aid: `EXA_NO_STEP_AIM` gives the body no target.
+            let aim = aim.filter(|_| std::env::var_os("EXA_NO_STEP_AIM").is_none());
             body.aim_steps(aim);
         }
     }
@@ -2120,6 +2122,32 @@ fn duellist(
                         );
                     }
                 }
+            }
+            // Debug aid: `EXA_DUEL_TRACE` logs what the combat tick read
+            // and chose.
+            if std::env::var_os("EXA_DUEL_TRACE").is_some() {
+                info!(
+                    "duel-trace {entity:?} t{} dist {:.0} can_step {} block {} run {} spd {:.2} \
+                     tone {:.2} sup {:.2} stepping {} state {} queue {} chosen {:?} step {:?} exit {:?} \
+                     mstep {} long {} cond {:#x}",
+                    me.now_ms,
+                    ai.bearing.1,
+                    me.can_step,
+                    me.blocking,
+                    me.running,
+                    me.forward_speed,
+                    me.tone,
+                    me.support,
+                    me.stepping,
+                    me.step_state,
+                    me.queue,
+                    out.chosen,
+                    out.step,
+                    out.exit,
+                    ai.mind.step,
+                    ai.mind.long_step,
+                    me.condition
+                );
             }
             if out.marks.queue_taken
                 && let Some(fw) = feet_step.as_mut()
