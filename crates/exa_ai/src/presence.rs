@@ -14,8 +14,8 @@
 //!   Out of range a present character starts leaving; in range a dormant
 //!   one starts entering. Leaving ends dormant and entering ends present
 //!   once the scene has moved its node ([`Presence::settle`]).
-//! - **Entering** resets the body: its condition clears, it takes its
-//!   stance, its stepping, run, moving and gait flags and velocities are
+//! - **Entering** resets the body: its condition clears, its clip snaps to
+//!   its stance (no blend, no capture), its stepping, run, moving and gait flags and velocities are
 //!   zeroed, its balance, tone and energy return to 1, and its cast hook is
 //!   asked event −1 and cleared with its power ([`Entered`]).
 //! - Only a present character's body moves under its AI; a dormant or
@@ -35,7 +35,7 @@ use bevy::prelude::*;
 use exa_anim::Animator;
 use exa_combat::Condition;
 use exa_combat::condition::StateFlags;
-use exa_combat::stance::{self, Stance};
+use exa_combat::stance::Stance;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{OutOfScene, Ragdoll};
 
@@ -333,8 +333,15 @@ pub fn check_presence(
         );
         if presence.step(near) == Some(Change::Enter) {
             *condition = Condition::NORMAL;
+            // The body reset snaps the clip to the stored stance: no blend
+            // and no capture of the pose the body held (a walk mid-stride),
+            // so the re-entry placement poses it standing.
             if let Some(mut anim) = anim {
-                stance::take_ai_stance(&mut anim, stance.copied().unwrap_or_default(), None);
+                let action = stance.copied().unwrap_or_default().action();
+                anim.start(action, true, None, 0, exa_anim::Ease::Linear);
+                anim.pending = None;
+                anim.leading = false;
+                anim.capture = None;
             }
             if let Some(mut locomotion) = locomotion {
                 locomotion.moving = false;

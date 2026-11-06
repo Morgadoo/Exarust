@@ -539,6 +539,11 @@ impl Balance {
     /// as both this tick's and last tick's, its fast and slow velocities
     /// zero, and the feet centre at `feet` (the mean of the placed
     /// anchors).
+    /// The body reset's balance part: the counter back to 0.
+    pub(super) fn reset_counter(&mut self) {
+        self.counter = 0;
+    }
+
     fn placed(&mut self, chest: Vec3, feet: Vec3) {
         self.chest = Some(chest);
         self.before = Some(chest);
@@ -1652,6 +1657,12 @@ impl Ragdoll {
     /// the character where it stands: Exarust's model root is at the
     /// feet, which stand on the character's ground, so only the parts take
     /// the snap's frame height.
+    /// Each leg's ground (m) as the last placement's snap measured it, and
+    /// its anchor: for logging a placement.
+    pub fn leg_grounds(&self) -> Vec<(Option<f32>, Vec3)> {
+        self.legs.iter().map(|l| (l.ground, l.anchor)).collect()
+    }
+
     pub fn placement_feet(&self) -> f32 {
         self.drive.as_ref().map_or(0.0, |d| d.balance.under)
     }
@@ -1758,6 +1769,16 @@ impl Ragdoll {
             let feet = super::placement::mean_point(&anchors, Vec3::splat(f32::NAN));
             drive.balance.placed(chest, feet);
         }
+        // The body starts afresh on the frame it was placed at: no carry
+        // from where its root was last aimed (a body the scene takes back
+        // was last aimed where it left), and the character frame's origin
+        // is taken anew from the placed pelvis; a sleeping body wakes.
+        if let Some(drive) = self.drive.as_mut() {
+            drive.root = None;
+            drive.anchor = None;
+            drive.frame = None;
+        }
+        self.wake();
         self.reset_link_lengths();
         Some(height)
     }

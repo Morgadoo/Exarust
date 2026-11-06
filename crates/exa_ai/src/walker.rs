@@ -120,6 +120,11 @@ pub struct IdleWalk {
     pub give_up_ms: u32,
     /// The velocity the walk last steered (m/s).
     pub velocity: Vec3,
+    /// Where the out-of-scene slide is on the route: the segment's end
+    /// index and the fraction along it ([`crate::path::slide`]); None while
+    /// the character is in the scene (the follower then projects its
+    /// ground point afresh).
+    pub slide: Option<(u32, f32)>,
 }
 
 impl Default for IdleWalk {
@@ -131,6 +136,7 @@ impl Default for IdleWalk {
             cursor: -1,
             give_up_ms: 0,
             velocity: Vec3::ZERO,
+            slide: None,
         }
     }
 }
@@ -262,6 +268,29 @@ pub fn follow_walk(walk: &mut IdleWalk, feet_cm: Vec3, now_ms: u32) -> Option<Ve
     crate::path::carrot(&walk.route, feet_cm)
         .goal
         .or(Some(last))
+}
+
+/// One tick of the out-of-scene follow: the path follower slides the
+/// standing point 2 cm along the route from where the slide is (or, at its
+/// first tick, from the ground point `feet_cm` projected onto the route),
+/// with no physics. Returns the new ground point (cm, the route's height),
+/// or None without a route of two points. The walk ends as in the scene,
+/// within 100 cm of the last point ([`follow_walk`]).
+pub fn slide_walk(walk: &mut IdleWalk, feet_cm: Vec3, now_ms: u32) -> Option<Vec3> {
+    if walk.route.len() < 2 {
+        walk.slide = None;
+        return None;
+    }
+    let (segment, fraction) = walk.slide.unwrap_or_else(|| {
+        let c = crate::path::carrot(&walk.route, feet_cm);
+        (c.segment, c.fraction)
+    });
+    let moved = crate::path::slide(&walk.route, segment, fraction, 0.0)?;
+    walk.slide = Some((moved.segment, moved.fraction));
+    if follow_walk(walk, moved.ground, now_ms).is_none() {
+        walk.slide = None;
+    }
+    Some(moved.ground)
 }
 
 #[cfg(test)]
@@ -575,5 +604,26 @@ mod tests {
         walk.route = vec![Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0)];
         assert_eq!(follow_walk(&mut walk, Vec3::ZERO, 1001), None);
         assert!(walk.route.is_empty());
+    }
+
+    /// Out of the scene the walker slides 2 cm a tick along its route, and
+    /// the leg ends within 100 cm of the last point.
+    #[test]
+    fn a_dormant_walker_slides_two_centimetres_a_tick() {
+        let mut walk = IdleWalk {
+            route: vec![Vec3::ZERO, Vec3::new(300.0, 0.0, 0.0)],
+            give_up_ms: u32::MAX,
+            ..IdleWalk::default()
+        };
+        let mut at = Vec3::new(10.0, 0.0, 0.0);
+        at = slide_walk(&mut walk, at, 0).unwrap();
+        assert!((at.x - 12.0).abs() < 1e-4, "{at}");
+        for _ in 0..94 {
+            at = slide_walk(&mut walk, at, 0).unwrap();
+        }
+        assert!((at.x - 200.0).abs() < 1e-2, "{at}");
+        assert!(!walk.route.is_empty());
+        slide_walk(&mut walk, at, 0);
+        assert!(walk.route.is_empty() && walk.slide.is_none());
     }
 }

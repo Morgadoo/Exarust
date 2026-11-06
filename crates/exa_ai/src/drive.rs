@@ -74,6 +74,12 @@ pub struct Driver {
     pub look: Vec3,
     /// The head's yaw drift (rad), eased toward 0.
     pub head_drift: f32,
+    /// The goal's direction across the ground (unit) the last drive
+    /// measured: the obstacle check walks along it.
+    pub dir: Vec3,
+    /// The character the obstacle check last stopped the walk for (its
+    /// entity bits): it is skipped until the brain plans again.
+    pub in_way: Option<u64>,
 }
 
 /// The driver's state on a character whose body walks by its locomotion
@@ -189,6 +195,7 @@ pub fn drive(
         let align = (d.z * p.z + d.y * p.y + d.x * p.x) / length;
         (length, dir, align)
     };
+    driver.dir = dir;
     driver.heading = unit(ease(driver.heading, dir, EASE));
     // The short gate is formed in double from the double 0.007.
     let gate = if length <= GATE_FROM_CM {
@@ -227,6 +234,37 @@ pub fn drive(
     true
 }
 
+/// The driver's obstacle check, after its drive: the first live nearby
+/// character (`bodies`, their entity bits and standing points in cm; a
+/// dead one skipped) whose point, moved 20 cm along the goal's direction,
+/// the walk from `from_cm` along that direction reaches within its 120 cm
+/// steer line ([`crate::motion::body_in_way`]), skipping the one it last
+/// stopped for. Such a character is remembered and the caller stops the
+/// walk: the soft stop, and the route is no longer followed.
+pub fn obstacle(driver: &mut Driver, from_cm: Vec3, bodies: &[(u64, Vec3, bool)]) -> bool {
+    let at: Vec<crate::motion::BodyAt> = bodies
+        .iter()
+        .enumerate()
+        .map(|(i, (_, p, dead))| crate::motion::BodyAt {
+            id: i,
+            position_cm: *p,
+            dead: *dead,
+        })
+        .collect();
+    let skip: Vec<usize> = bodies
+        .iter()
+        .position(|(id, ..)| Some(*id) == driver.in_way)
+        .into_iter()
+        .collect();
+    match crate::motion::body_in_way(from_cm, driver.dir, &at, &skip) {
+        Some(i) => {
+            driver.in_way = Some(bodies[i].0);
+            true
+        }
+        None => false,
+    }
+}
+
 /// The soft stop the driver ends a route with: the run bit off, the
 /// stopping bit on, no free walk, and a goal farther than `8·speed + 20`
 /// cm from the standing point pulled back to that along the frame's
@@ -243,16 +281,15 @@ pub fn soft_stop(req: &mut Locomotion, driver: &mut Driver, body: &DriveBody) {
 }
 
 /// Faces a character without walking: the request's heading, look and
-/// cursors and the body's yaw take `yaw` at once, as Exarust's AI turns
-/// its characters while it stands (the original turns the body through its
-/// heading at the decision's rates). The caller turns the model too.
-pub fn face(req: &mut Locomotion, body: &mut exa_physics::body::locomotion::Locomotor, yaw: f32) {
+/// cursors take `yaw` (the yaw the AI turned its model to), and the body's
+/// movement decision turns it there at its rates, as the original's AI
+/// writes the heading and lets the body tick turn the body (the idle
+/// states at the slow 0.5 rate).
+pub fn face(req: &mut Locomotion, yaw: f32) {
     req.heading = yaw;
     req.look = yaw;
     req.cursor = yaw;
     req.desired = yaw;
-    body.yaw = yaw;
-    body.stance_facing = yaw;
 }
 
 /// Gives every fighter whose body has muscles the original's locomotion
@@ -281,8 +318,9 @@ pub fn add_locomotion(
 }
 
 /// The standing character's facing, after the brains' passes: a character
-/// whose route is not driven and whose body does not walk faces as the AI
-/// turned its model ([`face`]), and a walk clip its body no longer walks
+/// whose route is not driven and whose body does not walk turns toward the
+/// yaw the AI turned its model to ([`face`]; the movement stage turns the
+/// body at its rates and puts the model back on the body's yaw), and a walk clip its body no longer walks
 /// gives way to its stance over 20 frames with the fast ease, as the
 /// original's body tick starts the stored stance when it leaves the
 /// walking condition.
@@ -291,19 +329,19 @@ pub fn face_standing(
     mut fighters: Query<(
         &Transform,
         &mut Locomotion,
-        &mut Locomotor,
+        &Locomotor,
         &Driven,
         Option<&mut Animator>,
         Option<&Stance>,
     )>,
 ) {
-    for (t, mut req, mut body, driven, anim, stance) in &mut fighters {
+    for (t, mut req, body, driven, anim, stance) in &mut fighters {
         if driven.0.driving || body.moving() {
             continue;
         }
         let yaw = exa_physics::body::locomotion::yaw_of(t.rotation * Vec3::Z);
-        if req.heading != yaw || body.yaw != yaw {
-            face(&mut req, &mut body, yaw);
+        if req.heading != yaw {
+            face(&mut req, yaw);
         }
         if let Some(mut anim) = anim
             && anim.looping
@@ -403,6 +441,24 @@ mod tests {
         assert_eq!((req.goal, req.flags), (carrot, flags::MOVE));
         // (0,0,1) + 0.1·((0,0,−1) − (0,0,1)) = (0,0,0.8), a unit again.
         assert!((driver.heading - Vec3::Z).length() < 1e-3);
+    }
+
+    /// A character 1 m ahead on the walk stops it, once: the next check
+    /// skips it; one beside the line does not.
+    #[test]
+    fn a_character_ahead_stops_the_walk_once() {
+        let mut driver = Driver {
+            dir: Vec3::Z,
+            ..Driver::default()
+        };
+        let ahead = [(7u64, Vec3::new(0.0, 0.0, 100.0), false)];
+        assert!(obstacle(&mut driver, Vec3::ZERO, &ahead));
+        assert_eq!(driver.in_way, Some(7));
+        assert!(!obstacle(&mut driver, Vec3::ZERO, &ahead));
+        let beside = [(8u64, Vec3::new(100.0, 0.0, 50.0), false)];
+        assert!(!obstacle(&mut driver, Vec3::ZERO, &beside));
+        let dead = [(9u64, Vec3::new(0.0, 0.0, 100.0), true)];
+        assert!(!obstacle(&mut driver, Vec3::ZERO, &dead));
     }
 
     /// A stepping body is busy: nothing is written.

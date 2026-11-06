@@ -3724,6 +3724,10 @@ impl Ragdoll {
             d.energy = 1.0;
             d.balance.value = 1.0;
             d.steps = steps::Steps::default();
+            // The reset's radius base is 60 cm (not the standing 30) and
+            // its balance counter 0, as the original's body reset writes.
+            d.steps.radius_base = steps::BASE_REENTRY;
+            d.balance.reset_counter();
             d.sag = 0.0;
             d.posture_wait = 0;
             d.carry = Vec3::ZERO;

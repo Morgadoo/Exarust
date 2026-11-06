@@ -1941,6 +1941,7 @@ pub fn flee_walk(
     )>,
     targets: Query<&GlobalTransform>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+    others: Query<(&GlobalTransform, &Condition)>,
     mut planning: Local<(crate::route::PlanTurn, u32)>,
 ) {
     // The flight steers once a body tick, as the brain's other passes do:
@@ -2099,7 +2100,7 @@ pub fn flee_walk(
                 if let Some((req, motor, driven, ragdoll)) = walking.as_mut() {
                     let at = DriveBody::of(feet, motor, ragdoll.as_deref());
                     let cost = |p: Vec3| crate::drive::grid_cost(nav.as_deref(), p);
-                    crate::drive::drive(
+                    let drove = crate::drive::drive(
                         req,
                         &mut driven.0,
                         &at,
@@ -2109,6 +2110,11 @@ pub fn flee_walk(
                         false,
                         &cost,
                     );
+                    let bodies = nearby_bodies(&npc.nearby, &others);
+                    if drove && crate::drive::obstacle(&mut driven.0, feet_cm, &bodies) {
+                        npc.flight_walk.route.clear();
+                        crate::drive::soft_stop(req, &mut driven.0, &at);
+                    }
                     continue;
                 }
                 let path = [feet, carrot / 100.0];
@@ -2171,7 +2177,8 @@ pub fn idle_walk(
         Option<&mut Animator>,
         Option<Walking>,
     )>,
-    mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+    mut roots: Query<(&mut CharacterBody, &GlobalTransform, &mut Transform), Without<Npc>>,
+    others: Query<(&GlobalTransform, &Condition)>,
     mut planning: Local<(crate::route::PlanTurn, u32)>,
 ) {
     let mut steer = true;
@@ -2194,13 +2201,29 @@ pub fn idle_walk(
             npc.routine.kind,
             crate::idle::Kind::Roam | crate::idle::Kind::Patrol
         );
+        // Out of the scene the AI still runs its roam: the path follower
+        // slides the character along its route (below).
+        let dormant = presence.is_some_and(|p| p.state == crate::presence::PresenceState::Dormant);
+        // The scene's node move (leaving or entering) holds the walk for its
+        // tick.
+        if roaming
+            && presence.is_some_and(|p| {
+                matches!(
+                    p.state,
+                    crate::presence::PresenceState::Leaving
+                        | crate::presence::PresenceState::Entering
+                )
+            })
+        {
+            continue;
+        }
         let active = roaming
-            && presence.is_none_or(|p| p.moves())
+            && (presence.is_none_or(|p| p.moves()) || dormant)
             && condition.0 & combatant::CONDITION_OUT == 0
             && !duellist.engaged
             && !duellist.fighting()
             && npc.flight.is_none();
-        let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
+        let Ok((mut body, root_gt, mut root_t)) = roots.get_mut(parent.parent()) else {
             continue;
         };
         if !active {
@@ -2247,7 +2270,7 @@ pub fn idle_walk(
                 .map(|grid| crate::route::NavRouter { grid, size: 0 });
             let npc = &mut *npc;
             let mut roll = npc.roll;
-            crate::walker::roam_step(
+            let step = crate::walker::roam_step(
                 &mut npc.routine,
                 &mut npc.walk,
                 crate::walker::RoamPlace {
@@ -2265,8 +2288,26 @@ pub fn idle_walk(
                 now,
                 &mut roll,
             );
+            // The planning turn forgets the character the walk last stopped
+            // for [guess: the original forgets it there once that body's
+            // state flag bit 2 is off, which Exarust does not track].
+            if step.planned
+                && let Some((_, _, driven, _)) = walking.as_mut()
+            {
+                driven.0.in_way = None;
+            }
             npc.roll = roll;
         }
+        // Out of the scene the follower slides the standing point 2 cm a
+        // tick along the route, with no physics; the body is placed there
+        // when the scene takes it back.
+        if dormant {
+            if let Some(ground) = crate::walker::slide_walk(&mut npc.walk, feet_cm, now) {
+                root_t.translation = ground / 100.0;
+            }
+            continue;
+        }
+        npc.walk.slide = None;
         // A body on its locomotion walks the route by the AI's driver: its
         // body turns and walks it on its feet.
         if let Some((req, motor, driven, ragdoll)) = walking.as_mut() {
@@ -2274,7 +2315,7 @@ pub fn idle_walk(
             match crate::walker::follow_walk(&mut npc.walk, feet_cm, now) {
                 Some(carrot) => {
                     let cost = |p: Vec3| crate::drive::grid_cost(nav.as_deref(), p);
-                    crate::drive::drive(
+                    let drove = crate::drive::drive(
                         req,
                         &mut driven.0,
                         &at,
@@ -2284,6 +2325,13 @@ pub fn idle_walk(
                         true,
                         &cost,
                     );
+                    // The driver's obstacle check: a character in the way
+                    // stops the walk and ends the leg.
+                    let bodies = nearby_bodies(&npc.nearby, &others);
+                    if drove && crate::drive::obstacle(&mut driven.0, feet_cm, &bodies) {
+                        npc.walk.route.clear();
+                        crate::drive::soft_stop(req, &mut driven.0, &at);
+                    }
                 }
                 None if driven.0.driving => crate::drive::soft_stop(req, &mut driven.0, &at),
                 None => {}
@@ -2321,6 +2369,21 @@ pub fn idle_walk(
             }
         }
     }
+}
+
+/// The nearby characters the obstacle check reads: their entity bits,
+/// standing points (cm) and whether each is dead (the condition 0xA00).
+pub fn nearby_bodies(
+    nearby: &[u64],
+    others: &Query<(&GlobalTransform, &Condition)>,
+) -> Vec<(u64, Vec3, bool)> {
+    nearby
+        .iter()
+        .filter_map(|&id| {
+            let (gt, condition) = others.get(Entity::from_bits(id)).ok()?;
+            Some((id, gt.translation() * 100.0, condition.0 == 0xA00))
+        })
+        .collect()
 }
 
 /// Turns a brain's body as the scene takes it back
@@ -3357,6 +3420,7 @@ mod tests {
             .spawn((
                 CharacterBody::default(),
                 GlobalTransform::from_translation(at),
+                Transform::from_translation(at),
             ))
             .id();
         let mut brain = Npc::new([0.0; 4]);
@@ -3624,6 +3688,7 @@ mod tests {
             .spawn((
                 CharacterBody::default(),
                 GlobalTransform::from_translation(at),
+                Transform::from_translation(at),
             ))
             .id();
         let mut brain = Npc::new([0.0; 4]);

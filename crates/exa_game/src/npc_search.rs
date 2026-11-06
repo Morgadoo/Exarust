@@ -994,6 +994,7 @@ pub fn follow_and_search(
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform), Without<Possessions>>,
     leader_root: Query<&GlobalTransform, (With<Player>, Without<Possessions>)>,
+    others: Query<(&GlobalTransform, &Condition)>,
     leader_body: Query<(Entity, &GlobalTransform), With<PlayerBody>>,
     objects: LevelObjects,
     mut clock: Local<(Option<u64>, exa_ai::route::PlanTurn, u32)>,
@@ -1452,7 +1453,7 @@ pub fn follow_and_search(
             match exa_ai::walker::follow_walk(&mut state.walk, feet_cm, now) {
                 Some(carrot) => {
                     let cost = |p: Vec3| exa_ai::drive::grid_cost(nav.as_deref(), p);
-                    exa_ai::drive::drive(
+                    let drove = exa_ai::drive::drive(
                         req,
                         &mut driven.0,
                         &at,
@@ -1462,6 +1463,11 @@ pub fn follow_and_search(
                         true,
                         &cost,
                     );
+                    let bodies = exa_ai::brain::nearby_bodies(&npc.nearby, &others);
+                    if drove && exa_ai::drive::obstacle(&mut driven.0, feet_cm, &bodies) {
+                        state.walk.route.clear();
+                        exa_ai::drive::soft_stop(req, &mut driven.0, &at);
+                    }
                 }
                 None if driven.0.driving => exa_ai::drive::soft_stop(req, &mut driven.0, &at),
                 None => {}
