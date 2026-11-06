@@ -281,16 +281,15 @@ pub fn soft_stop(req: &mut Locomotion, driver: &mut Driver, body: &DriveBody) {
 }
 
 /// Faces a character without walking: the request's heading, look and
-/// cursors and the body's yaw take `yaw` at once, as Exarust's AI turns
-/// its characters while it stands (the original turns the body through its
-/// heading at the decision's rates). The caller turns the model too.
-pub fn face(req: &mut Locomotion, body: &mut exa_physics::body::locomotion::Locomotor, yaw: f32) {
+/// cursors take `yaw` (the yaw the AI turned its model to), and the body's
+/// movement decision turns it there at its rates, as the original's AI
+/// writes the heading and lets the body tick turn the body (the idle
+/// states at the slow 0.5 rate).
+pub fn face(req: &mut Locomotion, yaw: f32) {
     req.heading = yaw;
     req.look = yaw;
     req.cursor = yaw;
     req.desired = yaw;
-    body.yaw = yaw;
-    body.stance_facing = yaw;
 }
 
 /// Gives every fighter whose body has muscles the original's locomotion
@@ -319,8 +318,9 @@ pub fn add_locomotion(
 }
 
 /// The standing character's facing, after the brains' passes: a character
-/// whose route is not driven and whose body does not walk faces as the AI
-/// turned its model ([`face`]), and a walk clip its body no longer walks
+/// whose route is not driven and whose body does not walk turns toward the
+/// yaw the AI turned its model to ([`face`]; the movement stage turns the
+/// body at its rates and puts the model back on the body's yaw), and a walk clip its body no longer walks
 /// gives way to its stance over 20 frames with the fast ease, as the
 /// original's body tick starts the stored stance when it leaves the
 /// walking condition.
@@ -329,19 +329,19 @@ pub fn face_standing(
     mut fighters: Query<(
         &Transform,
         &mut Locomotion,
-        &mut Locomotor,
+        &Locomotor,
         &Driven,
         Option<&mut Animator>,
         Option<&Stance>,
     )>,
 ) {
-    for (t, mut req, mut body, driven, anim, stance) in &mut fighters {
+    for (t, mut req, body, driven, anim, stance) in &mut fighters {
         if driven.0.driving || body.moving() {
             continue;
         }
         let yaw = exa_physics::body::locomotion::yaw_of(t.rotation * Vec3::Z);
-        if req.heading != yaw || body.yaw != yaw {
-            face(&mut req, &mut body, yaw);
+        if req.heading != yaw {
+            face(&mut req, yaw);
         }
         if let Some(mut anim) = anim
             && anim.looping

@@ -21,6 +21,8 @@ pub(super) const MS_PER_TICK: f32 = 1000.0 / HZ;
 const BALANCE_FLOOR: f32 = 0.2;
 /// The radius base (cm): the standing value, and the value after being down.
 const BASE_STANDING: f32 = 30.0;
+/// The radius base the body reset on re-entry sets (cm).
+pub(super) const BASE_REENTRY: f32 = 60.0;
 const BASE_AFTER_DOWN: f32 = 65.0;
 /// The base narrows by this (cm) each standing tick.
 const BASE_DECAY: f32 = 0.5;

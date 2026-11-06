@@ -546,6 +546,13 @@ fn place_on_ground(
             ),
             None => info!("ground placement {root:?}: no ground under the feet, left standing"),
         }
+        info!(
+            "ground placement {root:?}: legs (ground cm, anchor) {:?}",
+            body.leg_grounds()
+                .iter()
+                .map(|(g, a)| (g.map(|g| (g * CM).round()), (a * CM).round()))
+                .collect::<Vec<_>>()
+        );
     }
 }
 
