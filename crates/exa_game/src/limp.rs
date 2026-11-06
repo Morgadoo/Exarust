@@ -69,7 +69,10 @@ impl Plugin for LimpPlugin {
         )
         .add_systems(
             FixedUpdate,
-            place_entering.after(exa_ai::presence::check_presence),
+            place_entering
+                .after(exa_ai::presence::check_presence)
+                .after(exa_ai::BrainTick)
+                .before(exa_combat::condition::PostureTick),
         )
         .add_systems(Update, (pace_swings, install_limb_trees))
         .add_plugins(CharacterTickPlugin);
@@ -387,28 +390,41 @@ fn spawn_pose(
 #[derive(Component, Debug, Clone, Copy)]
 pub struct GroundPlacement {
     pub floor: f32,
-    /// The frame takes the model's own turn (its local rotation) rather
-    /// than its last drawn one: an AI body re-placed on entering the scene,
-    /// turned toward its route's goal this tick.
-    pub own_turn: bool,
+    /// The frame's yaw, when not the model's last drawn turn: an AI body
+    /// re-placed on entering the scene takes its body's yaw, or the yaw
+    /// toward its route's goal while it follows one.
+    pub yaw: Option<f32>,
 }
 
 /// The AI's re-placement of a body the scene takes back, as the original's
 /// attach routine runs it: the frame at the character's ground point (the
 /// out-of-scene slide's, when it followed a route), snapped onto the
-/// grid's nearest walkable point, facing its route's goal (the brain's
-/// [`exa_ai::brain::face_entering`]), then the placement on the ground
-/// ([`GroundPlacement`]). The body reset is the presence check's.
+/// grid's nearest walkable point, its turn the body's character frame, or
+/// a basis facing from the chest toward the route's goal while a route is
+/// followed; then the placement on the ground ([`GroundPlacement`]). The
+/// body's yaw, heading and look take the placed yaw. The body reset is the
+/// presence check's.
 #[allow(clippy::type_complexity)]
 pub(crate) fn place_entering(
     mut commands: Commands,
     mut entered: MessageReader<exa_ai::presence::Entered>,
     nav: Option<Res<exa_world::nav::NavGrid>>,
-    models: Query<&ChildOf, With<Ragdoll>>,
+    mut models: Query<
+        (
+            &ChildOf,
+            &Ragdoll,
+            Option<&exa_ai::brain::Npc>,
+            Option<&mut exa_physics::body::locomotion::Locomotor>,
+            Option<&mut exa_physics::body::locomotion::Locomotion>,
+            &mut Transform,
+        ),
+        Without<exa_physics::CharacterBody>,
+    >,
     mut roots: Query<&mut Transform, With<exa_physics::CharacterBody>>,
 ) {
+    use exa_physics::body::locomotion::yaw_of;
     for exa_ai::presence::Entered(entity) in entered.read() {
-        let Ok(parent) = models.get(*entity) else {
+        let Ok((parent, body, npc, motor, req, mut model)) = models.get_mut(*entity) else {
             continue;
         };
         let Ok(mut root) = roots.get_mut(parent.parent()) else {
@@ -419,13 +435,43 @@ pub(crate) fn place_entering(
             .as_deref()
             .map_or(at, |g| exa_world::nav::nearest_walkable(g, at));
         root.translation = Vec3::new(to.x, at.y, to.z);
+        // While a route is followed the basis faces from the chest toward
+        // its goal across the ground; otherwise the character frame's yaw.
+        let chest = body.chest_point().unwrap_or(at);
+        let toward = npc
+            .and_then(|n| n.walk.route.last().copied())
+            .map(|goal| (goal / CM - chest).with_y(0.0))
+            .filter(|d| d.length_squared() > 1e-8);
+        let yaw = match (toward, motor.as_deref()) {
+            (Some(d), _) => yaw_of(d),
+            (None, Some(m)) => m.yaw,
+            (None, None) => yaw_of(model.rotation * Vec3::Z),
+        };
+        model.rotation = Quat::from_rotation_y(yaw);
+        if let Some(mut m) = motor {
+            m.yaw = yaw;
+            m.frame_yaw = yaw;
+            m.stance_facing = yaw;
+        }
+        if let Some(mut r) = req {
+            r.heading = yaw;
+            r.look = yaw;
+            r.cursor = yaw;
+            r.desired = yaw;
+        }
         info!(
-            "re-entry placement {entity:?}: from ({:.2}, {:.2}, {:.2}) to the walkable ({:.2}, {:.2}, {:.2})",
-            at.x, at.y, at.z, to.x, to.y, to.z
+            "re-entry placement {entity:?}: from ({:.2}, {:.2}, {:.2}) to the walkable ({:.2}, {:.2}, {:.2}), yaw {:.1} deg",
+            at.x,
+            at.y,
+            at.z,
+            to.x,
+            to.y,
+            to.z,
+            yaw.to_degrees()
         );
         commands.entity(*entity).insert(GroundPlacement {
             floor: to.y,
-            own_turn: true,
+            yaw: Some(yaw),
         });
     }
 }
@@ -477,10 +523,8 @@ fn place_on_ground(
         };
         let mut floor = at.affine();
         floor.translation.y = placement.floor;
-        if placement.own_turn
-            && let Ok((t, _)) = nodes.get(root)
-        {
-            floor.matrix3 = bevy::math::Mat3A::from_quat(t.rotation);
+        if let Some(yaw) = placement.yaw {
+            floor.matrix3 = bevy::math::Mat3A::from_rotation_y(yaw);
         }
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
         // The Height Query in its mesh mode, as a grid scene's is: the body

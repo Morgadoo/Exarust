@@ -224,7 +224,7 @@ While a roaming character is out of the scene and follows a route, its roam SHAL
 - **THEN** its standing point moves 2 cm a tick along the route until the leg ends
 
 ### Requirement: The re-entry placement
-When the scene takes a character back, its clip SHALL snap to its stance, its standing point SHALL move to the nearest walkable point, and its body SHALL be placed on the ground there facing its route's goal, its frame taken afresh.
+When the scene takes a character back, its clip SHALL snap to its stance and its balance radius base SHALL be 60 cm with its counter 0, its standing point SHALL move to the nearest walkable point, and its body SHALL be placed on the ground there facing its body's yaw, or its route's goal while it follows one, its frame taken afresh and its yaw, heading and look set to the placed yaw. A standing character's turn SHALL go through its heading at the body's turn rates.
 
 #### Scenario: A slid walker comes back
 - **WHEN** a slid walker re-enters the range
