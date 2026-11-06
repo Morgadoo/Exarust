@@ -283,16 +283,17 @@ impl FixedCommands {
 /// on the frame's copy without a change mark, and again on the
 /// simulation's at the start of the next step. In one world, or without a
 /// queue (a test's bare app), a plain write.
-pub fn write_resource<T, R>(
+pub fn write_resource<T, R, L>(
     fixed: Option<&mut FixedCommands>,
-    local: &mut ResMut<T>,
+    local: &mut L,
     write: impl Fn(&mut T) -> R + Send + Sync + 'static,
 ) -> R
 where
     T: Resource + Component<Mutability = bevy::ecs::component::Mutable>,
+    L: bevy::ecs::change_detection::DetectChangesMut<Inner = T> + std::ops::DerefMut<Target = T>,
 {
     let Some(fixed) = fixed.filter(|f| f.bridged) else {
-        return write(local);
+        return write(&mut **local);
     };
     let result = write(local.bypass_change_detection());
     queue(&mut fixed.writes).push(Box::new(move |world: &mut World| {
@@ -942,7 +943,7 @@ impl FreeClock {
 fn run_free(
     mut sub_app: SubApp,
     inbox: Receiver<FreeRequest>,
-    outbox: Sender<FreeStepped>,
+    outbox: Sender<FreeReply>,
     epoch: std::time::Instant,
     snapshots: SnapshotBuffer<SimSnapshot>,
 ) {
@@ -951,6 +952,7 @@ fn run_free(
     let mut pending: Vec<FreeRequest> = Vec::new();
     let mut held = true;
     let mut singles = 0u32;
+    let mut acks = 0u32;
     let mut clock = FreeClock {
         ms: 0.0,
         last: epoch,
@@ -965,11 +967,12 @@ fn run_free(
     let take = |r: FreeRequest,
                 pending: &mut Vec<FreeRequest>,
                 held: &mut bool,
-                singles: &mut u32,
+                (singles, acks): (&mut u32, &mut u32),
                 clock: &mut FreeClock| {
         clock.advance(Instant::now(), *held);
         *held = r.paused;
         *singles += r.steps;
+        *acks += u32::from(r.ack);
         if r.speed > 0.0 && r.speed.is_finite() {
             clock.speed = r.speed;
         }
@@ -978,9 +981,23 @@ fn run_free(
     loop {
         loop {
             match inbox.try_recv() {
-                Ok(r) => take(r, &mut pending, &mut held, &mut singles, &mut clock),
+                Ok(r) => take(
+                    r,
+                    &mut pending,
+                    &mut held,
+                    (&mut singles, &mut acks),
+                    &mut clock,
+                ),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+            }
+        }
+        // A hold the frame waits for: answered between steps, after every
+        // step taken before it was sent.
+        while acks > 0 {
+            acks -= 1;
+            if outbox.send(FreeReply::Held).is_err() {
+                return;
             }
         }
         clock.advance(Instant::now(), held);
@@ -1036,7 +1053,10 @@ fn run_free(
                             d.ticks, clock.held_ms
                         );
                     }
-                    if outbox.send(FreeStepped { stepped, stamp }).is_err() {
+                    if outbox
+                        .send(FreeReply::Stepped(Box::new(FreeStepped { stepped, stamp })))
+                        .is_err()
+                    {
                         return;
                     }
                     continue;
@@ -1052,7 +1072,13 @@ fn run_free(
             }
         };
         match inbox.recv_timeout(wait) {
-            Ok(r) => take(r, &mut pending, &mut held, &mut singles, &mut clock),
+            Ok(r) => take(
+                r,
+                &mut pending,
+                &mut held,
+                (&mut singles, &mut acks),
+                &mut clock,
+            ),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -1068,7 +1094,7 @@ enum Runner {
     },
     Free {
         requests: Sender<FreeRequest>,
-        replies: Receiver<FreeStepped>,
+        replies: Receiver<FreeReply>,
         thread: Option<JoinHandle<()>>,
     },
 }
@@ -1083,6 +1109,16 @@ struct FreeRequest {
     /// steps asked for since the last packet (the step key while paused).
     speed: f32,
     steps: u32,
+    /// The frame waits for the simulation to answer that it is held.
+    ack: bool,
+}
+
+/// What the free-running simulation sends the frame.
+enum FreeReply {
+    Stepped(Box<FreeStepped>),
+    /// The answer to a hold the frame waits for: no step comes after it
+    /// until the frame lets go.
+    Held,
 }
 
 /// One free step's packet to the frame, stamped with its clock.
@@ -1240,8 +1276,35 @@ impl SimShell {
     fn take_free(&self) -> Vec<FreeStepped> {
         let runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
         match &*runner {
-            Runner::Free { replies, .. } => replies.try_iter().collect(),
+            Runner::Free { replies, .. } => replies
+                .try_iter()
+                .filter_map(|r| match r {
+                    FreeReply::Stepped(s) => Some(*s),
+                    FreeReply::Held => None,
+                })
+                .collect(),
             _ => Vec::new(),
+        }
+    }
+
+    /// Free mode: the step packets that come before the simulation's
+    /// answer to a hold, in order (waiting for the answer, at most a few
+    /// seconds).
+    fn take_until_held(&self) -> Vec<FreeStepped> {
+        let runner = self.runner.lock().unwrap_or_else(|e| e.into_inner());
+        let Runner::Free { replies, .. } = &*runner else {
+            return Vec::new();
+        };
+        let mut arrived = Vec::new();
+        loop {
+            match replies.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(FreeReply::Stepped(s)) => arrived.push(*s),
+                Ok(FreeReply::Held) => return arrived,
+                Err(_) => {
+                    error!("simulation: no answer to the frame's hold");
+                    return arrived;
+                }
+            }
         }
     }
 
@@ -1354,9 +1417,21 @@ pub struct SimPause {
     /// and the single steps asked for while paused, not yet sent.
     speed: f32,
     steps: u32,
+    /// Held through a level's teardown and the load after it.
+    teardown: bool,
 }
 
 impl SimPause {
+    /// Whether a teardown's hold is up.
+    pub fn in_teardown(&self) -> bool {
+        self.teardown
+    }
+
+    /// Lets go of a teardown's hold (the next level is in).
+    pub fn release_teardown(&mut self) {
+        self.teardown = false;
+    }
+
     /// Sets this frame's hold from the screens that show.
     pub fn hold(&mut self, held: bool) {
         self.held = held;
@@ -1372,7 +1447,7 @@ impl SimPause {
     }
 
     pub fn paused(&self) -> bool {
-        self.held || self.raised > 0
+        self.held || self.raised > 0 || self.teardown
     }
 
     /// The debug speed the simulation's clock runs at.
@@ -1449,7 +1524,11 @@ pub fn exchange_free(world: &mut World) {
         link.awaiting += steps;
         (std::mem::replace(&mut link.paused, paused), link.awaiting)
     };
-    let exchanging = !paused || awaiting > 0;
+    // Entering a hold, the frame waits for the simulation to answer it and
+    // applies the steps taken before it, so none arrives after the frame
+    // went on (a level's teardown, a load) to name what is gone.
+    let entering = paused && !was_paused;
+    let exchanging = !paused || awaiting > 0 || entering;
     let request = if exchanging {
         let bridge = frame_gather(world);
         let commands = world.resource_mut::<SimInbox>().take();
@@ -1470,9 +1549,12 @@ pub fn exchange_free(world: &mut World) {
                 paused,
                 speed,
                 steps,
+                ack: entering,
             });
         }
-        if exchanging {
+        if entering {
+            shell.take_until_held()
+        } else if exchanging {
             shell.take_free()
         } else {
             Vec::new()
@@ -1551,6 +1633,21 @@ pub fn exchange_free(world: &mut World) {
         let step = fixed.timestep();
         fixed.accumulate_overstep(step.mul_f32(overstep_of(fraction)));
     }
+}
+
+/// Holds a free-running simulation now and waits until it is held, its
+/// queued steps applied (the original's level change raises the pause
+/// counter before it drops the scene): run before a level's teardown. The
+/// hold lasts until the game lets go of it ([`SimPause::release_teardown`]).
+/// In lockstep nothing is in flight: no-op.
+pub fn hold_and_drain(world: &mut World) {
+    if !world.contains_resource::<FreeLink>() {
+        return;
+    }
+    if let Some(mut pause) = world.get_resource_mut::<SimPause>() {
+        pause.teardown = true;
+    }
+    exchange_free(world);
 }
 
 /// One simulation step for this pass of the fixed step: the inbox's

@@ -1804,6 +1804,28 @@ pub fn ensure_spawned(world: &mut World, e: Entity) -> bool {
     false
 }
 
+/// [`ensure_spawned`] on the frame's side, which hands out every id: an
+/// entity of the frame's that took the index since (a newer generation) or
+/// a resource is never despawned for a value the simulation sent. A free
+/// simulation's step can name an entity the frame despawned while the step
+/// ran; that value is stale and is dropped.
+pub fn ensure_spawned_on_frame(world: &mut World, e: Entity) -> bool {
+    let current = world.entities().resolve_from_index(e.index());
+    if world.entities().is_index_spawned(e.index()) && current != e {
+        let newer = current
+            .generation()
+            .to_bits()
+            .wrapping_sub(e.generation().to_bits());
+        let resource = world
+            .get_entity(current)
+            .is_ok_and(|c| c.contains::<IsResource>());
+        if resource || (newer != 0 && newer <= u32::MAX / 2) {
+            return false;
+        }
+    }
+    ensure_spawned(world, e)
+}
+
 /// Despawns `e` without freeing its id and without despawning its children
 /// with it (each side's children are mirrored on their own).
 pub fn despawn_unfreed(world: &mut World, e: Entity) {
@@ -2049,7 +2071,11 @@ impl BridgeSide {
             }
         }
         for &e in &packet.touched {
-            ensure_spawned(world, e);
+            if sim {
+                ensure_spawned(world, e);
+            } else {
+                ensure_spawned_on_frame(world, e);
+            }
         }
         // The frame holds what the simulation sent as shared: those
         // entities are in sync; their ancestors go whole at the next gather.

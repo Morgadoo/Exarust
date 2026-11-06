@@ -625,3 +625,84 @@ fn a_steps_write_to_frame_data_lands_after_the_step() {
         assert_eq!(owned_run(Some(mode)), alone, "{mode:?}");
     }
 }
+
+/// Moves every `Pos` on each fixed step (each step's packet names them).
+fn drift(mut all: Query<&mut Pos>) {
+    for mut p in &mut all {
+        p.0 += 1.0;
+    }
+}
+
+/// A frame resource spawned after a teardown (it may take a despawned
+/// entity's index).
+#[derive(Resource, Default)]
+struct AfterTeardown;
+
+/// A free-running simulation's step names entities the frame then tears
+/// down: the teardown holds the simulation and applies its queued steps
+/// first, so no step arrives later to name a despawned entity, and nothing
+/// of the frame's (a newer entity at the same index, a resource) is
+/// despawned for one.
+#[test]
+fn a_teardown_holds_the_free_simulation_first() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins(SimShellPlugin {
+            mode: SimMode::Free,
+        })
+        .add_plugins(SimBridgePlugin { extra: Vec::new() })
+        .bridge_copy::<Pos>()
+        .bridge_copy::<Tag>()
+        .add_systems(FixedUpdate, drift);
+    let world = app.world_mut();
+    let bodies: Vec<Entity> = (0..64)
+        .map(|k| world.spawn((Tag(k), Pos(0.0))).id())
+        .collect();
+    world.resource_mut::<crate::sim_app::SimPause>().hold(false);
+    let run = |app: &mut App, ms: u64| {
+        let until = std::time::Instant::now() + Duration::from_millis(ms);
+        while std::time::Instant::now() < until {
+            app.update();
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    };
+    run(&mut app, 150);
+    let world = app.world_mut();
+    assert!(world.resource::<crate::sim_app::FreeLink>().steps > 0);
+    // The teardown: hold and drain, then despawn and spawn anew (reusing
+    // the indices).
+    crate::sim_app::hold_and_drain(world);
+    for &e in &bodies {
+        world.despawn(e);
+    }
+    let fresh: Vec<Entity> = (0..64).map(|k| world.spawn(Tag(100 + k)).id()).collect();
+    world.init_resource::<AfterTeardown>();
+    run(&mut app, 80);
+    app.world_mut()
+        .resource_mut::<crate::sim_app::SimPause>()
+        .release_teardown();
+    run(&mut app, 150);
+    let world = app.world();
+    assert!(world.contains_resource::<AfterTeardown>());
+    for e in fresh {
+        assert!(world.get_entity(e).is_ok(), "{e} survives");
+    }
+    for e in bodies {
+        assert!(world.get_entity(e).is_err(), "{e} stays gone");
+    }
+    assert_eq!(world.resource::<crate::sim_app::FreeLink>().gaps, 0);
+}
+
+/// A value the simulation sent for an entity the frame has since replaced
+/// at the same index (a newer generation) is dropped on the frame's side.
+#[test]
+fn a_stale_value_never_despawns_the_frames_newer_entity() {
+    let mut world = World::new();
+    let old = world.spawn_empty().id();
+    world.despawn(old);
+    // The index taken again at a later generation.
+    let newer = Entity::from_index_and_generation(old.index(), old.generation().after_versions(1));
+    assert!(ensure_spawned(&mut world, newer));
+    assert!(!ensure_spawned_on_frame(&mut world, old));
+    assert!(world.get_entity(newer).is_ok());
+}

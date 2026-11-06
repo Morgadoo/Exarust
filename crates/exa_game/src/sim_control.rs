@@ -329,10 +329,28 @@ fn hold_the_simulation(
     end_menu: Option<Res<crate::end_menu_screen::EndMenuScreen>>,
     splash: Option<Res<crate::splash::SplashScreen>>,
     mut was: Local<Option<bool>>,
+    (change, mut settled): (
+        Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
+        Local<u32>,
+    ),
 ) {
     let Some(mut pause) = pause else {
         return;
     };
+    // A level's teardown holds the simulation until the next level is in:
+    // no change waiting for its load, no loading screen, the game clock
+    // running, for two frames in a row.
+    if pause.in_teardown() {
+        if change.is_none() && loading.is_none() && !virt.is_paused() {
+            *settled += 1;
+            if *settled >= 2 {
+                pause.release_teardown();
+                *settled = 0;
+            }
+        } else {
+            *settled = 0;
+        }
+    }
     let held = loading.is_some()
         || virt.is_paused()
         || menu.is_some_and(|m| m.open)

@@ -70,7 +70,13 @@ frame and the renderer share, a step waited for their work (exanima01
 body's every tick the same in lockstep). The body grid
 (`sector_lists::SectorBodies`) keeps the cells of bodies that did not
 change since its last rebuild instead of taking every sleeper's pose each
-step. `EXA_SIM_TIMING=1` logs each schedule's time a step; the lent types only the simulation
+step. `EXA_SIM_TIMING=1` logs each schedule's time a step.
+Entering a hold, the frame waits for the simulation's answer and applies
+the steps taken before it, so no step arrives after the frame went on;
+a level's teardown holds the simulation first (`hold_and_drain`, the
+original's level change raising the pause counter) until the next level
+is in, and the frame never despawns an entity of its own (a newer one at
+the index, a resource) for a value a step sent; the lent types only the simulation
 touches are moved in every mode (`bridge_move_resource`), and the alarm's
 zones and state are copied in and a snapshot (the frame reads them).
 
