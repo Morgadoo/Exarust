@@ -253,13 +253,17 @@ pub struct Bleed {
 }
 
 /// Counts every fighter's waiting wounds down by the body ticks run since
-/// the last frame, and sends each wound whose delay is up as a [`Bleed`],
-/// with how its striker moved on as this frame draws it.
+/// it last ran, and sends each wound whose delay is up as a [`Bleed`], with
+/// how its striker moved on since the blow. In the fixed step it runs
+/// before the characters' ticks, once a tick, as the original's body tick
+/// paints its queued marks: a wound dealt in a tick's post-step bleeds at
+/// the seventh tick after it, its striker read where the tick before left
+/// it ([`crate::Blade::frame`]).
 pub(crate) fn count_down_wounds(
     ticks: Option<Res<BodyTicks>>,
     mut seen: Local<Option<u64>>,
     mut queues: Query<(Entity, &mut WoundQueue)>,
-    transforms: Query<&GlobalTransform>,
+    (blades, transforms): (Query<&crate::Blade>, Query<&GlobalTransform>),
     mut bleeds: MessageWriter<Bleed>,
 ) {
     let Some(ticks) = ticks else { return };
@@ -274,10 +278,14 @@ pub(crate) fn count_down_wounds(
                 break;
             }
             let Some(w) = queue.tick() else { continue };
+            let frame = match blades.get(w.striker) {
+                Ok(blade) => blade.frame_or(transforms.get(w.striker).ok()),
+                Err(_) => transforms.get(w.striker).ok().map(GlobalTransform::affine),
+            };
             let now = w
                 .weights
-                .zip(transforms.get(w.striker).ok())
-                .map(|(weights, g)| tetra_point(&weights, &frame_tetra(&g.affine())));
+                .zip(frame)
+                .map(|(weights, f)| tetra_point(&weights, &frame_tetra(&f)));
             let travel = now.map_or(Vec3::ZERO, |p| p - w.contact);
             debug!(
                 "wound on {body:?} bleeds: R {:.3}, travel {:.0} cm",

@@ -776,7 +776,7 @@ pub fn run_swings(
     motions: Option<Res<Motions>>,
     (blades, blade_frames, mut item_bodies, grips): (
         Query<&Blade>,
-        Query<(Entity, &Blade, &GlobalTransform)>,
+        Query<(Entity, &Blade, Option<&GlobalTransform>)>,
         Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
         Query<&exa_physics::grip::HeldGrip>,
     ),
@@ -997,8 +997,7 @@ pub fn run_swings(
         && state.flags & flags::CLEAVING == 0
         && let Some(aim_cm) = stab_aim.and_then(|a| a.point_cm)
         && let Some(slot) = attacker.primary
-        && let Some((item, blade, item_gt)) = blade_frames
-            .iter()
+        && let Some((item, blade, item_gt)) = striker_frames(&blade_frames)
             .find(|(_, b, _)| b.wielder == entity && b.slot == slot && b.record.armed())
         && let Some(body) = body.as_deref_mut()
     {
@@ -1008,7 +1007,7 @@ pub fn run_swings(
             StabHeld {
                 item,
                 blade,
-                at: item_gt,
+                at: &item_gt,
                 class: u32::from(attacking.weapon_class),
             },
             progress,
@@ -1028,8 +1027,7 @@ pub fn run_swings(
                 .is_some_and(|slot| state.open[slot.index()]),
         )
         && let Some(slot) = attacker.primary
-        && let Some((item, blade, item_gt)) = blade_frames
-            .iter()
+        && let Some((item, blade, item_gt)) = striker_frames(&blade_frames)
             .find(|(_, b, _)| b.wielder == entity && b.slot == slot && b.record.armed())
         && let Some(body) = body.as_deref_mut()
     {
@@ -1044,7 +1042,7 @@ pub fn run_swings(
             &mut item_bodies,
             item,
             blade,
-            item_gt,
+            &item_gt,
             &state.tracker[slot.index()],
             progress,
             class,
@@ -1056,7 +1054,7 @@ pub fn run_swings(
                 &mut item_bodies,
                 item,
                 blade,
-                item_gt,
+                &item_gt,
                 progress,
                 class,
             );
@@ -1066,13 +1064,24 @@ pub fn run_swings(
                 &mut item_bodies,
                 item,
                 blade,
-                item_gt,
+                &item_gt,
                 progress,
                 class,
                 chest.y_cm,
             );
         }
     }
+}
+
+/// Each held striker with its frame where the last body tick left it
+/// ([`crate::Blade::frame`]): the swing routine pushes the weapon from its
+/// body's particles, not from the scene the frame last drew.
+fn striker_frames<'a>(
+    blades: &'a Query<(Entity, &Blade, Option<&GlobalTransform>)>,
+) -> impl Iterator<Item = (Entity, &'a Blade, GlobalTransform)> {
+    blades
+        .iter()
+        .filter_map(|(e, b, g)| Some((e, b, GlobalTransform::from(b.frame_or(g)?))))
 }
 
 /// The edge points sit 20 cm either side of the weapon's origin, on its
@@ -1150,7 +1159,8 @@ fn home_tip(
 ) {
     let crouch = body.drive.as_ref().map_or(0.0, |d| d.bearing.crouch);
     let tip = at.transform_point(Vec3::Y * blade.length);
-    let before = blade.tip_last.unwrap_or(tip);
+    // A tick ago: where the tick before last left it.
+    let before = blade.swept_from.map_or(tip, |(_, tip)| tip);
     let Some(gap) = crate::strike_body::vertical_homing(
         progress,
         tip.y * CM,
@@ -1224,7 +1234,8 @@ fn pull_overhead(
         return;
     }
     let tip = at.transform_point(Vec3::Y * blade.length);
-    let before = blade.tip_last.unwrap_or(tip);
+    // A tick ago: where the tick before last left it.
+    let before = blade.swept_from.map_or(tip, |(_, tip)| tip);
     let Some(pull) = crate::strike_body::overhead_pull(
         progress,
         chest * CM,

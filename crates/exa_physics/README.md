@@ -86,7 +86,7 @@ removals, spawns, children and messages on both sides as one world
 Stage 4 turns the frame's writers of simulation data into work the
 simulation does itself and the copies out into snapshots, group by group.
 `sim_app::SimFrameStart` holds the fixed step's once-a-frame work (the
-bodies' frame start: the frame's blows queued, the tick counts reset), run
+bodies' frame start: their per-frame tick counts reset), run
 on the first fixed pass of each frame in either world, so the frame no
 longer writes every awake body. Cloths cross as `ClothMeshUpdate`
 snapshots (`exa_world::cloth`); the cloth itself is `bridge_copy_in` (sent
@@ -108,15 +108,19 @@ same-frame readers: the rise and its restore, then the golem alarm's zone
 check, run in `SimPreStep` before every fixed step (the original installs
 its AI manager's frame routine as its simulation loop's pre-step hook, which
 the loop calls before each 12 ms step; the routine has no rate guard of its
-own, the zone check only its 3 cm movement test). The hit chain (wounds,
-blade tracking, hit detection, the reaction and the bites) with the brains'
-reaction to blows and the debug pauses that read it runs in `SimFrameStart`,
-on the first step of each frame: the original's damage routine takes a
-pending hit in its dynamics' post-step, every step, but Exarust's blade
-tracking reads the blade frames the frame propagates, so it stays once a
-frame until blade frames are taken from the parts within the step. The
-bodies' frame start (the blows queued, the per-frame tick count) also stays
-there, after the hit chain that sends the blows.
+own, the zone check only its 3 cm movement test). The hit chain runs every
+step in the fixed step's post-step (`body::BodyPostStep`), as the original's
+post-step hands a character's pending hit to its damage routine every 12 ms
+step: the strikers tracked from the bodies the tick left (a held body's
+first part, or the wielder's carrying part and the striker's placement under
+it; the tip's velocity over one tick), the held bodies' contacts classified,
+the bodyless strikers' sweep against the target's body parts, the damage, the
+bites, then the brains' reaction to blows and the debug pauses. The waiting
+wounds count down before the characters' ticks (the original's body tick
+paints its queued marks), and `body::deal_shoves`, first in every tick, deals
+the blows the last post-step (and the frame) sent: the original's damage
+routine sets the push, daze, sag and knockback step in the post-step, so the
+next body tick already sees them.
 
 The hand stays in the frame, as the original's hand runs on its main thread
 per input event (the GUI's cursor handlers) and writes the bodies directly.

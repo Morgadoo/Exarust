@@ -2514,7 +2514,8 @@ pub struct Shove {
 #[derive(Resource, Debug, Default)]
 pub struct ShoveQueue(pub Vec<Shove>);
 
-/// The blows the last tick dealt, for the debug tools (the joint trace).
+/// The blows dealt at the start of the last tick, for the debug tools (the
+/// joint trace).
 #[derive(Resource, Debug, Default)]
 pub struct DealtShoves(pub Vec<Shove>);
 
@@ -2583,6 +2584,9 @@ impl Plugin for BodyPlugin {
                 crate::sim_app::SimFrameStart,
                 begin_frame.in_set(crate::sim_app::SimFrameStartSystems::Bodies),
             )
+            // The blows of the last post-step (its hits and impacts) and
+            // the frame's, first in the tick.
+            .add_systems(FixedUpdate, deal_shoves.before(TickBehaviour))
             // After every frame system that moves a character or a body
             // root (the drawn controller, turns, a get-up's teleport).
             .add_systems(PostUpdate, draw_bodies.before(TransformSystems::Propagate));
@@ -5376,14 +5380,36 @@ pub fn world_with(
     world
 }
 
-/// Before a frame's ticks: queues the blows sent since the last frame, and
-/// starts counting the frame's ticks afresh.
-fn begin_frame(
+/// Every tick, first: deals the blows sent since the last tick (the last
+/// post-step's hits and impacts, and any the frame sent) before anything
+/// reads the bodies. The original's damage routine pushes the struck part,
+/// sets its daze and sag and its knockback step in the striker's
+/// post-step, so the next tick's body tick already sees them; nothing
+/// touches a body between the post-step and the next tick's start.
+pub fn deal_shoves(
     mut shoves: MessageReader<Shove>,
     mut queue: ResMut<ShoveQueue>,
+    mut dealt: ResMut<DealtShoves>,
     mut bodies: Query<&mut Ragdoll, Without<OutOfScene>>,
 ) {
+    dealt.0.clear();
     queue.0.extend(shoves.read().copied());
+    for s in queue.0.drain(..) {
+        if let Ok(mut body) = bodies.get_mut(s.body) {
+            body.shove(s.bone, s.velocity, s.daze);
+            if let Some(sag) = s.sag {
+                body.sag_from_blow(sag);
+            }
+            if let Some(offset) = s.step {
+                body.begin_knockback(offset);
+            }
+            dealt.0.push(s);
+        }
+    }
+}
+
+/// Before a frame's ticks: starts counting the frame's ticks afresh.
+fn begin_frame(mut bodies: Query<&mut Ragdoll, Without<OutOfScene>>) {
     for mut body in &mut bodies {
         if body.ticks != 0 {
             body.ticks = 0;
@@ -5456,33 +5482,18 @@ pub fn first_by_key<'a, T>(
     found
 }
 
-/// The solver's tick over every body (the character ticks ran before it):
-/// the queued blows, then one tick of the world's solver over the awake
-/// bodies, with the solver stages, which see the sleeping bodies too (a
-/// contact wakes them). A sleeper is marked changed only once something
-/// woke it.
+/// The solver's tick over every body (the blows were dealt first in the
+/// tick, [`deal_shoves`], and the character ticks ran before it): one tick
+/// of the world's solver over the awake bodies, with the solver stages,
+/// which see the sleeping bodies too (a contact wakes them). A sleeper is
+/// marked changed only once something woke it.
 pub fn step_bodies(
     physics: Res<Physics>,
     statics: Option<Res<crate::StaticColliders>>,
-    mut queue: ResMut<ShoveQueue>,
-    mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
     mut stages: ResMut<SolverStages>,
     mut bodies: Query<(Entity, &mut Ragdoll), Without<OutOfScene>>,
 ) {
-    dealt.0.clear();
-    for s in queue.0.drain(..) {
-        if let Ok((_, mut body)) = bodies.get_mut(s.body) {
-            body.shove(s.bone, s.velocity, s.daze);
-            if let Some(sag) = s.sag {
-                body.sag_from_blow(sag);
-            }
-            if let Some(offset) = s.step {
-                body.begin_knockback(offset);
-            }
-            dealt.0.push(s);
-        }
-    }
     let (mut awake, mut sleeping): (Vec<Mut<Ragdoll>>, Vec<Mut<Ragdoll>>) =
         (Vec::new(), Vec::new());
     // The bodies in entity order (the order they were spawned, as the
