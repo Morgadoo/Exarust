@@ -1577,6 +1577,8 @@ Round 79 playerctl: spectated arena matches as in the original, the hire list dr
 
 Round 80 playerctl: arena fighters choose their foes through the brain's target pass, the spectate camera starts at the original's pose, and the arena save keeps the hire list and the week.
 
+Round 82 playerctl: the guessed AI hold is removed and the narrator's offer ends on player input, as the behaviour tick does.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
