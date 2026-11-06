@@ -477,7 +477,7 @@ pub(crate) fn cursor_ground(
     players: Query<(&GlobalTransform, Option<&Children>), With<Player>>,
     bodies: Query<&PlayerBody>,
     targets: Query<(&GlobalTransform, Option<&Ragdoll>)>,
-    physics: Option<Res<Physics>>,
+    physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
 ) {
     ground.0 = None;
     let (Ok(window), Ok((camera, eye, projection)), Some((player, children))) =

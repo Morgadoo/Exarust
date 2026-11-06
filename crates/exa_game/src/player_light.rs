@@ -35,7 +35,6 @@ use bevy::prelude::*;
 use exa_character::held::Hands;
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::possession::Possessions;
-use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 
 use crate::player::PlayerBody;
@@ -224,7 +223,7 @@ fn switch_player_light(
 /// The light's frame: its ramp, then its place over the head.
 fn place_player_light(
     time: Res<Time<Virtual>>,
-    physics: Option<Res<Physics>>,
+    physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
     players: Query<&Ragdoll, With<PlayerBody>>,
     mut lights: Query<(&mut PlayerLight, &mut PointLight, &mut Transform)>,
 ) {

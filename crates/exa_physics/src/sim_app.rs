@@ -129,6 +129,17 @@ impl FixedCommands {
         queue(&mut self.queued).push(Box::new(write));
     }
 
+    /// Behind the bridge, queues `change` for the simulation's world, run
+    /// before the frame's other changes are applied there (with the posted
+    /// writes): a removal of a resource the simulation owns that a new
+    /// insert from the frame may follow in the same step. In one world it
+    /// does nothing (the frame's own change is the simulation's).
+    pub fn post_first_bridged(&mut self, change: impl FnOnce(&mut World) + Send + 'static) {
+        if self.bridged {
+            queue(&mut self.writes).push(Box::new(change));
+        }
+    }
+
     /// Queues `system` with `input`, run once at the start of the next
     /// fixed step (a function system: it is cached in that world).
     pub fn run<I, M, S>(&mut self, system: S, input: I::Inner<'static>)

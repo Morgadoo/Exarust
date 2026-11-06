@@ -1950,7 +1950,7 @@ struct LevelCensus<'w, 's> {
     entities: Query<'w, 's, Entity>,
     level: Query<'w, 's, (), With<exa_world::level_lifecycle::LevelEntity>>,
     players: Query<'w, 's, (), With<exa_game::player::Player>>,
-    physics: Option<Res<'w, exa_physics::Physics>>,
+    physics: Option<Res<'w, exa_physics::collision_share::FramePhysics>>,
     meshes: Res<'w, Assets<Mesh>>,
     images: Res<'w, Assets<Image>>,
     materials: Res<'w, Assets<exa_render::material::ExaMaterial>>,

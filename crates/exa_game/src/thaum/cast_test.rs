@@ -671,7 +671,8 @@ fn a_throw_takes_the_kinesis_crate_and_lifts_it() {
     use exa_physics::prop::PropPlugin;
     let mut app = new_app();
     app.add_plugins(PropPlugin)
-        .insert_resource(exa_physics::Physics::default());
+        .insert_resource(exa_physics::Physics::default())
+        .init_resource::<exa_physics::collision_share::FramePhysics>();
     let caster = caster(&mut app, &[KINESIS, THROW]);
     app.world_mut()
         .get_mut::<PowerCaster>(caster)
@@ -744,7 +745,8 @@ fn a_running_kinesis_takes_the_hands_pick() {
     use exa_physics::prop::PropPlugin;
     let mut app = new_app();
     app.add_plugins(PropPlugin)
-        .insert_resource(exa_physics::Physics::default());
+        .insert_resource(exa_physics::Physics::default())
+        .init_resource::<exa_physics::collision_share::FramePhysics>();
     let caster = caster(&mut app, &[crate::thaum::force::KINESIS]);
     app.world_mut()
         .get_mut::<PowerCaster>(caster)

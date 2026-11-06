@@ -178,7 +178,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_copy::<crate::sense::Mind>()
         .bridge_copy::<exa_character::record::CharacterData>()
         .bridge_copy::<exa_combat::AttackHook>()
-        .bridge_lend_resource::<exa_world::nav::NavGrid>()
+        .bridge_move_resource::<exa_world::nav::NavGrid>()
         .bridge_lend_resource::<exa_world::nav::footprint::NavFootprints>()
         .bridge_copy_resource::<exa_world::room_view::LevelRooms>();
 }
