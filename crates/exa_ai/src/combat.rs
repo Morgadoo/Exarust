@@ -1695,6 +1695,9 @@ pub struct StepMarks {
     pub restart: bool,
     /// The queue goes back to 0.
     pub clear_queue: bool,
+    /// The body had taken the queued step (its queue under 0): the footwork
+    /// plan turned it over, and the body's queue goes back to 0.
+    pub queue_taken: bool,
 }
 
 /// The step from the chosen place, and the long-step mark.
@@ -2153,6 +2156,7 @@ pub fn tick(
         d
     };
     let plan = footwork(mind, me, &d, k, roll);
+    out.marks.queue_taken = plan.queue_taken;
     let found = search(mind, me, foe, traits, plan, &d, world.contacts, world.field);
     if let Some(c) = found.switched {
         let contact = &world.contacts[c];
@@ -2248,7 +2252,10 @@ pub fn tick(
     let place = found.places[chosen];
     let (step, marks) = take_step(mind, me, foe, plan, chosen, place.offset, world.field);
     out.step = step;
-    out.marks = marks;
+    out.marks = StepMarks {
+        queue_taken: plan.queue_taken,
+        ..marks
+    };
     let mut turn_to = yaw(to_target);
     if 0 < choice && HALF_PI < gap(me.yaw, place.bearing).abs() {
         guard_kind = 1;

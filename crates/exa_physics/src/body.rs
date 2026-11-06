@@ -1953,6 +1953,10 @@ pub struct FootworkStep {
     pub queued: Vec3,
     /// The feet centre (m): the mean of the foot contacts.
     pub feet_centre: Vec3,
+    /// The landings since the episode started (the step start's landing
+    /// count, which the AI's footwork reads: before the first landing a
+    /// change of step pays the step cost).
+    pub landed: u32,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -2930,6 +2934,7 @@ impl Ragdoll {
             queue: s.queue,
             queued: s.queued,
             feet_centre: drive.balance.feet_centre(),
+            landed: drive.balance.landings().saturating_sub(s.landed_from),
         })
     }
 
@@ -2958,6 +2963,15 @@ impl Ragdoll {
             s.started = s.clock;
             s.near = 0;
             s.still_plus = 0.0;
+        }
+    }
+
+    /// Advances the step clock by `ticks` body ticks without a balance
+    /// pass, so a step's age grows as if the body had ticked (for tests and
+    /// tools that drive a behaviour without the body's tick).
+    pub fn age_step(&mut self, ticks: u32) {
+        if let Some(drive) = self.drive.as_mut() {
+            drive.steps.clock = drive.steps.clock.saturating_add(ticks);
         }
     }
 

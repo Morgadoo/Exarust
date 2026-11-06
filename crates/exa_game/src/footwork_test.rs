@@ -253,6 +253,7 @@ fn the_record_mirrors_the_body_step() {
         queue: -1,
         queued: Vec3::Z,
         feet_centre: Vec3::Y,
+        landed: 2,
     };
     let mut step = StepRecord::default();
     step.read_body(&body, 1000);
@@ -268,6 +269,7 @@ fn the_record_mirrors_the_body_step() {
         FootworkStep {
             age_ms: 0.0,
             feet_centre: Vec3::ZERO,
+            landed: 0,
             ..body
         }
     );

@@ -722,8 +722,10 @@ stands in when none is free, and the standing position moves so that
 foot's spot is where the foot is. A queued footwork step is taken by the original's rule at the
 next landing while the queue word waits (`steps::take_queued`,
 `Ragdoll::queue_step`): the queue becomes its countdown, the step kind and
-balance flag clear. The player's combat footwork reads and writes the
-body's step (`Ragdoll::footwork_step`, `write_footwork`, `FootworkStep`):
+balance flag clear. The player's combat footwork and the AI's duellist
+read and write the body's step (`Ragdoll::footwork_step`, `write_footwork`,
+`FootworkStep`, whose `landed` counts the episode's landings;
+`Ragdoll::age_step` ages a step without a tick, for tests and tools):
 its start, target, long kind and queue; the body walks it on its feet and
 the character follows the frame. The episode's balance-step flag is set
 when the balance routine starts a step from rest and cleared by every

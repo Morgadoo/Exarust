@@ -145,7 +145,7 @@ impl Plugin for AiPlugin {
                     brain_clock_mark(1),
                     brain::ai_tick,
                     brain_clock_mark(2),
-                    duellist.in_set(DuelSystems),
+                    (duellist, apply_feet_steps).chain().in_set(DuelSystems),
                     brain_clock_mark(3),
                     brain::flee_walk,
                     brain::face_entering,
@@ -364,6 +364,9 @@ pub struct Duellist {
     /// The stab's aim, which the behaviour turns toward the foe while a
     /// stab plays and the body's stab drive pulls the weapon onto.
     stab_aim: exa_combat::stab::StabAim,
+    /// The body's step as this tick's combat state left it, and whether
+    /// it started a step: written into the body by [`apply_feet_steps`].
+    feet_write: Option<(exa_physics::body::FootworkStep, bool)>,
 }
 
 /// A step the duellist walks: where it goes (m) and when it started.
@@ -427,6 +430,7 @@ impl Duellist {
             focus: None,
             dropped: false,
             stab_aim: exa_combat::stab::StabAim::default(),
+            feet_write: None,
         }
     }
 }
@@ -702,6 +706,67 @@ fn published_blow(
 /// step on the body wins, because that is the body's own step. Otherwise the
 /// combat step, which is kept on the duellist rather than written onto the
 /// body. Neither: not stepping, and `fallback_cm` is only a stand-in.
+/// The step of a body that walks its footwork on its feet (one with
+/// muscles), as its combat state reads it; None for a body without muscles,
+/// which glides its interim step.
+fn feet_step_of(ragdoll: Option<&Ragdoll>) -> Option<exa_physics::body::FootworkStep> {
+    ragdoll
+        .filter(|r| r.drive.is_some())
+        .and_then(Ragdoll::footwork_step)
+}
+
+/// What the combat state's step does to the body's step fields, as the
+/// original's AI writes them: a chosen place that is the step it is in
+/// makes the step of the plain kind again (`marks.restart`), a place of no
+/// step clears the queue; a new step aims the target at the place (the
+/// chest plus its offset) and starts (stepping on, no balance step; the
+/// body's start stamps its clock and clears its landing count); a long
+/// step's second half re-aims the target and makes the step of the long
+/// kind, without a new start; a step while one is under way queues the
+/// place's offset (cm). Returns whether a step started.
+fn feet_outcome(
+    fw: &mut exa_physics::body::FootworkStep,
+    step: combat::Footstep,
+    marks: combat::StepMarks,
+) -> bool {
+    if marks.restart {
+        fw.long = false;
+    }
+    if marks.clear_queue {
+        fw.queue = 0;
+    }
+    match step {
+        combat::Footstep::Start { goal, .. } => {
+            fw.target = goal / CM;
+            fw.stepping = true;
+            fw.balance_step = false;
+            true
+        }
+        combat::Footstep::Continue { goal, .. } => {
+            fw.target = goal / CM;
+            fw.long = true;
+            false
+        }
+        combat::Footstep::Queue { offset, .. } => {
+            fw.queue = 1;
+            fw.queued = offset / CM;
+            false
+        }
+        combat::Footstep::Stay => false,
+    }
+}
+
+/// Writes each duellist's step back into its body, after the combat tick
+/// ([`Duellist::feet_write`]); the body's balance and feet routines then
+/// walk it.
+pub(crate) fn apply_feet_steps(mut fighters: Query<(&mut Duellist, &mut Ragdoll)>) {
+    for (mut ai, mut body) in &mut fighters {
+        if let Some((step, start)) = ai.feet_write.take() {
+            body.write_footwork(&step, start);
+        }
+    }
+}
+
 fn step_measure(
     ragdoll: Option<&Ragdoll>,
     combat_goal_m: Option<Vec3>,
@@ -1331,9 +1396,52 @@ fn duellist(
             blow.sweeping = false;
         }
 
+        // A body with muscles walks its footwork on its own feet, as the
+        // original's AI writes its steps into its body's step fields (the
+        // fields the player's footwork writes) and its body's balance and
+        // feet routines walk them: the combat tick reads the body's step as
+        // it is ([`feet_step_of`]) and writes it back after its tick
+        // ([`apply_feet_steps`]). A body without muscles glides its
+        // interim step below.
+        let mut feet_step = feet_step_of(ragdoll);
+        if let Some(fw) = feet_step.as_mut() {
+            // A queued step the body took on its last landing was aimed
+            // at the chest plus the queued vector, bent at the target's
+            // circle when the vector points along the facing (the queued-step
+            // taker's approach clamp), then line-walked from the chest.
+            // Exarust's body has no target nor grid, so the AI does both on
+            // its next tick from the chest it has then.
+            if fw.queue < 0 {
+                let chest = stance::chest_point(gt, ragdoll) * CM;
+                let mut to = fw.target * CM;
+                let foe = target_body
+                    .filter(|_| ai.focus.is_none() && !ai.dropped)
+                    .map(|(_, _, _, f, ..)| f.stats.scale);
+                if let Some(foe_scale) = foe
+                    && ragdoll.is_some_and(Ragdoll::step_told_ai)
+                {
+                    let mut offset = fw.queued * CM;
+                    combat::keep_off(chest, foe_chest, foe_scale, &mut offset);
+                    to = chest + offset;
+                }
+                ground::walk_line(nav.as_deref(), chest, &mut to);
+                fw.target = to / CM;
+            }
+            ai.queued = None;
+            ai.queue = fw.queue;
+            ai.step = fw.stepping.then(|| Stepping {
+                goal: fw.target,
+                started_ms: (now as u32).wrapping_sub(fw.age_ms.max(0.0) as u32),
+                state: if fw.long { 2 } else { 0 },
+                landed_from: ragdoll
+                    .map_or(0, Ragdoll::landings)
+                    .saturating_sub(fw.landed),
+            });
+        }
         // The step it walks ends at its goal, or when it has taken too long;
         // a queued one starts then.
-        if let Some(step) = ai.step {
+        if feet_step.is_some() {
+        } else if let Some(step) = ai.step {
             let to = step.goal - root_gt.translation();
             let arrived = Vec3::new(to.x, 0.0, to.z).length() < STEP_DONE;
             if arrived || (now as u32).wrapping_sub(step.started_ms) > STEP_MOST_MS {
@@ -1511,6 +1619,7 @@ fn duellist(
             _ => None,
         };
         let mut placed = runs == 0;
+        let mut feet_started = false;
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
             let stepping = ai.step;
@@ -1908,6 +2017,9 @@ fn duellist(
                 && let Some(step) = ai.step.as_mut()
             {
                 step.goal = stopped.step_goal / CM;
+                if let Some(fw) = feet_step.as_mut() {
+                    fw.target = stopped.step_goal / CM;
+                }
             }
             // The bits the tick set, and the clear it asks for once the
             // swing is over: everything but the idle mask goes.
@@ -2002,8 +2114,16 @@ fn duellist(
                     }
                 }
             }
+            if out.marks.queue_taken
+                && let Some(fw) = feet_step.as_mut()
+            {
+                fw.queue = 0;
+            }
             if out.exit.is_some() {
                 continue;
+            }
+            if let Some(fw) = feet_step.as_mut() {
+                feet_started |= feet_outcome(fw, out.step, out.marks);
             }
             match out.step {
                 combat::Footstep::Start { goal, .. } => {
@@ -2097,6 +2217,8 @@ fn duellist(
                 );
             }
         }
+        // The body takes back its step as the combat state left it.
+        ai.feet_write = feet_step.map(|fw| (fw, feet_started));
         // While a stab plays, the behaviour's stab aim turns toward the
         // foe's estimate each tick, from the anchor by the shoulder in the
         // character frame, kept near the body's heading.
@@ -2158,7 +2280,8 @@ fn duellist(
             continue;
         }
         match ai.step {
-            Some(step) if !ai.holds_ground => {
+            // A body on its feet steps by them in its stance.
+            Some(step) if !ai.holds_ground && feet_step.is_none() => {
                 let order = follow(&[feet, step.goal], feet, yaw_of(t.rotation), 0);
                 body.desired_velocity = order.velocity;
                 anim.play_loop(COMBAT_WALK);
@@ -2230,7 +2353,10 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Time>()
             .add_message::<exa_combat::AttackAskedHook>()
-            .add_systems(Update, (begin_requested, duellist).chain());
+            .add_systems(
+                Update,
+                (begin_requested, duellist, apply_feet_steps).chain(),
+            );
         let target = app
             .world_mut()
             .spawn((
@@ -2423,7 +2549,8 @@ mod tests {
     }
 
     /// A tone under 0.7, or support that does not pass 0.7, leaves it
-    /// standing. The same body, toned and supported, steps in.
+    /// standing. The same body, toned and supported, steps in: on its own
+    /// feet (its body's step starts), with no glide.
     #[test]
     fn without_tone_or_support_it_does_not_step() {
         let walks = |tone: f32, support: f32| {
@@ -2449,7 +2576,9 @@ mod tests {
             engage(&mut app, fighter);
             for _ in 0..1500 {
                 step(&mut app);
-                if velocity(&app, root).length() > 0.0 {
+                assert_eq!(velocity(&app, root), Vec3::ZERO);
+                let body = app.world().get::<Ragdoll>(fighter).unwrap();
+                if body.footwork_step().unwrap().stepping {
                     return true;
                 }
             }
@@ -2510,28 +2639,93 @@ mod tests {
                 ai.mind.long_step = true;
                 ai.mind.step = 1;
                 ai.last_tick = Some(26);
-                ai.step = Some(Stepping {
-                    goal: Vec3::new(0.0, 0.0, 9.0),
-                    started_ms: 0,
-                    state: 0,
-                    landed_from: 0,
-                });
+            }
+            // Its body steps, 26 ticks into the step.
+            {
+                let mut body = app.world_mut().get_mut::<Ragdoll>(fighter).unwrap();
+                let step = exa_physics::body::FootworkStep {
+                    target: Vec3::new(0.0, 0.0, 9.0),
+                    ..Default::default()
+                };
+                body.write_footwork(&step, true);
+                body.age_step(26);
             }
             app.world_mut().insert_resource(BodyTicks(26));
             step(&mut app);
-            let goal = app
-                .world()
-                .get::<Duellist>(fighter)
-                .unwrap()
-                .step
-                .unwrap()
-                .goal;
+            // The second half re-aims the body's step and makes it long,
+            // without a new start.
+            let body = app.world().get::<Ragdoll>(fighter).unwrap();
+            let fw = body.footwork_step().unwrap();
+            assert!(fw.stepping && fw.long);
+            assert!(fw.age_ms > 200.0, "{}", fw.age_ms);
+            let goal = fw.target;
             Vec3::new(goal.x, 0.0, goal.z).length()
         };
         let full = length(1.0);
         let half = length(0.5);
         assert!(full > 0.5, "{full}");
         assert!((half - full * 0.5).abs() < 1e-3, "{half} vs {full}");
+    }
+
+    /// The combat state's step goes into the body's step fields as the
+    /// original's AI writes them: a new step aims and starts (no balance
+    /// step), a long step's second half re-aims and makes it long without a
+    /// start, a step under way queues the place's offset (cm into m), a
+    /// re-chosen step is plain again and a place of no step clears the
+    /// queue.
+    #[test]
+    fn the_combat_step_goes_into_the_body_step() {
+        use exa_physics::body::FootworkStep;
+        let marks = combat::StepMarks::default();
+        let mut fw = FootworkStep {
+            balance_step: true,
+            long: true,
+            queue: 1,
+            ..Default::default()
+        };
+        let goal = Vec3::new(100.0, 150.0, -50.0);
+        let start = combat::Footstep::Start {
+            dir: 1,
+            goal,
+            step_cm: None,
+        };
+        assert!(feet_outcome(&mut fw, start, marks));
+        assert!(fw.stepping && !fw.balance_step && fw.long);
+        assert_eq!((fw.target, fw.queue), (goal / CM, 1));
+        let restart = combat::StepMarks {
+            restart: true,
+            ..marks
+        };
+        let cont = combat::Footstep::Continue {
+            goal: Vec3::ZERO,
+            step_cm: 80.0,
+        };
+        assert!(!feet_outcome(&mut fw, cont, restart));
+        assert!(fw.long, "the second half is long whatever came before");
+        assert_eq!(fw.target, Vec3::ZERO);
+        assert!(!feet_outcome(&mut fw, combat::Footstep::Stay, restart));
+        assert!(!fw.long);
+        let queue = combat::Footstep::Queue {
+            dir: 3,
+            offset: Vec3::new(0.0, 0.0, 80.0),
+        };
+        fw.queue = 0;
+        assert!(!feet_outcome(&mut fw, queue, marks));
+        assert_eq!((fw.queue, fw.queued), (1, Vec3::new(0.0, 0.0, 0.8)));
+        let clear = combat::StepMarks {
+            clear_queue: true,
+            ..marks
+        };
+        assert!(!feet_outcome(&mut fw, combat::Footstep::Stay, clear));
+        assert_eq!(fw.queue, 0);
+    }
+
+    /// A body without muscles glides its interim step: no feet step is read.
+    #[test]
+    fn only_a_muscled_body_steps_on_its_feet() {
+        assert!(feet_step_of(None).is_none());
+        assert!(feet_step_of(Some(&Ragdoll::new(&[]))).is_none());
+        assert!(feet_step_of(Some(&Ragdoll::new(&[]).with_drive())).is_some());
     }
 
     /// A second character standing to the right is scored from its own chest,

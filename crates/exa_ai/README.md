@@ -33,8 +33,16 @@ steps to the cheapest, strikes from the cheapest strike place through the origin
 Defence stance when tired, and turns its heading 0.03 of the gap a tick
 (by the swing's sweep while it swings, leaning against a foe's side
 swing on guard). Its eagerness drifts up at full energy and its press
-comes within 3 s, so it hesitates before it closes. Exarust walks a
-chosen step in its interim combat walk until it arrives; a guard lets go
+comes within 3 s, so it hesitates before it closes. A fighter whose
+body has muscles steps on its own feet, as the original's AI writes its
+chosen step into its body's step fields (the player's footwork's fields):
+the combat state reads the body's step (stepping, kind, age, landings,
+queue) and writes back a start (target at the place), a long step's second
+half (re-aimed, long, no new start), a queued offset or a cleared queue
+(`apply_feet_steps`, after the duellist); a queued step the body took is
+bent at the foe's circle and line-walked on the next tick, and the fighter
+keeps its stance. A body without muscles still walks the chosen step in
+the interim combat walk until it arrives; a guard lets go
 of a swing in progress (once a swing), and a fighter stuck for 21 ticks
 runs the chase route through the navigation grid when the level has one,
 walking the route while the combat tick ends at the chase; it can be told
