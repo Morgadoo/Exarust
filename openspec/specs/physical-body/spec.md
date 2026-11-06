@@ -2652,3 +2652,10 @@ A held item SHALL be tied to the part it hangs under (the holding hand, or a shi
 #### Scenario: A sword turned about its grip line
 - **WHEN** a held sword with the one-hander's two grip points is turned 40 degrees about the line through them
 - **THEN** the grip stage brings its origin back under the hand, where two points alone leave it more than 5 cm off
+
+### Requirement: Two-handed arm link on the shoulder
+A two-hander's or polearm's arm link SHALL tie its haft point to the holding side's shoulder, the root of the arm chain, not to the forearm.
+
+#### Scenario: A polearm at rest
+- **WHEN** a character holds a polearm in the Idle clip's pose
+- **THEN** its arm link spans about 12 cm to the shoulder's point, and relaxed to no slack it does not topple the holder

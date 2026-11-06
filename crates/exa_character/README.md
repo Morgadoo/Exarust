@@ -351,7 +351,10 @@ tested rules of their own.
   the top part moves the item's root entity (which carries its blade,
   grip and carried fire), the others their own node entities. A
   `PendingProp` and an `exa_physics::grip::HeldGrip` carry its grip spec,
-  holder body, hand and forearm entities, its held kind (weapon, shield or
+  holder body, hand and arm entities (a weapon's arms are the shoulders,
+  the arm chains' roots its arm link ties a two-hander's or polearm's haft
+  to, as the original's link builder does; a shield's the forearms), its
+  held kind (weapon, shield or
   torch) and the parry-weld gate (off in the heavy-claws state and for a
   creature-body race, whose body rule flags carry the creature bit). The grip
   may be hung before the holder's body exists: `PendingGrip` then fills its

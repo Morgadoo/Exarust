@@ -1019,9 +1019,15 @@ fn log_fitted_body(model: &str, part: &exa_physics::body::RigidPart) {
     );
 }
 
-/// The bones the original's grip links attach to: the forearms, right then
-/// left.
+/// The forearms, right then left: a shield hangs from its hand's forearm
+/// (the original attaches it under the hand's parent part).
 pub(crate) const FOREARM_BONES: [usize; 2] = [13, 16];
+
+/// The right and left shoulders: the roots of the arm chains the original's
+/// character init stores (the torso's children with a body, by the side
+/// their rest offset lies on), whose part a two-hander's and a polearm's
+/// arm link ties the haft to.
+pub(crate) const SHOULDER_BONES: [usize; 2] = [11, 14];
 
 fn fist_records(race: &RaceWeaponry, hands: [(f32, f32); 2], holder: &Holder) -> [WeaponRecord; 2] {
     let sections = weapon_record::unarmed(race.index, race.weapons.claws);
@@ -1978,9 +1984,11 @@ fn equip_outfits(
                                 by_bone.get(&RIGHT_HAND).copied(),
                                 by_bone.get(&LEFT_HAND).copied(),
                             ],
+                            // The arm link's part: the original ties it to
+                            // the arm chain's root, the shoulder.
                             arms: [
-                                by_bone.get(&FOREARM_BONES[0]).copied(),
-                                by_bone.get(&FOREARM_BONES[1]).copied(),
+                                by_bone.get(&SHOULDER_BONES[0]).copied(),
+                                by_bone.get(&SHOULDER_BONES[1]).copied(),
                             ],
                             links: None,
                             released: false,
@@ -2638,3 +2646,7 @@ mod tests {
         assert!(parts.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "grip_pose_test.rs"]
+mod grip_pose_test;
