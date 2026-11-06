@@ -22,7 +22,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Characters, motion & animation | 506 | 198 | 23 | 79% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 81% | 0% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 89% | 0% |  |
+| AI & behaviour | 437 | 206 | 17 | 90% | 0% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 81% | 0% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% |  |
