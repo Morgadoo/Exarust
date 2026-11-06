@@ -96,6 +96,8 @@ impl Plugin for ThaumEffectsPlugin {
         app.add_message::<ArcShocked>()
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
+            .init_resource::<FrameEffectDraws>()
+            .init_resource::<FrameEffectRoll>()
             .init_resource::<super::effect_draw::ForceNoise>()
             .add_systems(
                 FixedUpdate,
@@ -192,8 +194,8 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_copy_in_resource::<crate::thaum::kinesis_live::KinesisCursor>()
         .bridge_copy_in_resource::<crate::thaum::kinesis_live::KinesisKeys>()
         .bridge_snapshot_resource::<crate::thaum::kinesis_live::KinesisPickHook>()
-        .bridge_lend_resource::<crate::thaum::live::EffectDraws>()
-        .bridge_lend_resource::<crate::thaum::live::EffectRoll>()
+        .bridge_move_resource::<crate::thaum::live::EffectDraws>()
+        .bridge_move_resource::<crate::thaum::live::EffectRoll>()
         .bridge_copy::<crate::thaum::live::LiveArcs>()
         .bridge_copy::<crate::thaum::live::LiveBarricade>()
         .bridge_copy::<crate::thaum::live::LiveWisps>()
@@ -222,6 +224,45 @@ impl Default for EffectDraws {
 /// The engine's own generator, for the effects that use it.
 #[derive(Resource, Default, Debug)]
 pub struct EffectRoll(pub Roll);
+
+/// The draws of the effects the frame runs (their drawing, the GUI's casts,
+/// the items' abilities): the original's run-time stream and engine
+/// generator are process-wide, drawn from by its main thread and its
+/// simulation thread with no order between them, so each side keeps its
+/// own sequence here, in its own order. [Exarust: the original interleaves
+/// the two threads' draws as their timing falls.]
+#[derive(Resource, Default, Debug)]
+pub struct FrameEffectDraws(pub EffectDraws);
+
+/// The frame's engine generator for its effects ([`FrameEffectDraws`]).
+#[derive(Resource, Default, Debug)]
+pub struct FrameEffectRoll(pub EffectRoll);
+
+impl std::ops::Deref for FrameEffectDraws {
+    type Target = EffectDraws;
+    fn deref(&self) -> &EffectDraws {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for FrameEffectDraws {
+    fn deref_mut(&mut self) -> &mut EffectDraws {
+        &mut self.0
+    }
+}
+
+impl std::ops::Deref for FrameEffectRoll {
+    type Target = EffectRoll;
+    fn deref(&self) -> &EffectRoll {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for FrameEffectRoll {
+    fn deref_mut(&mut self) -> &mut EffectRoll {
+        &mut self.0
+    }
+}
 
 /// Which test effects to put on the player (the debug flags).
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1229,8 +1270,8 @@ fn spawn_debug_effects(
     physics: Option<Res<Physics>>,
     statics: Option<Res<exa_physics::StaticColliders>>,
     ticks: Option<Res<BodyTicks>>,
-    mut draws: ResMut<EffectDraws>,
-    mut roll: ResMut<EffectRoll>,
+    mut draws: ResMut<FrameEffectDraws>,
+    mut roll: ResMut<FrameEffectRoll>,
     mut done: Local<ThaumDebug>,
 ) {
     let Some((player, body, facing)) = players.iter().next() else {
@@ -1241,7 +1282,7 @@ fn spawn_debug_effects(
     }
     if debug.arcs && !done.arcs {
         done.arcs = true;
-        let mut arcs = ArcEmitter::new(&hand_arcs(), &mut draws.0);
+        let mut arcs = ArcEmitter::new(&hand_arcs(), &mut draws.0.0);
         arcs.anchor =
             bone_part(body, RIGHT_HAND).and_then(|k| part_point(body, k, HAND_ARCS_OFFSET));
         commands.spawn((
@@ -1284,7 +1325,7 @@ fn spawn_debug_effects(
             );
             depth
         };
-        let place = place_barricade(hit, at, floor, roll.0.unit());
+        let place = place_barricade(hit, at, floor, roll.0.0.unit());
         let frame = WallFrame::facing(place.centre, place.facing);
         let now = ticks.as_deref().map_or(0, |t| t.millis()) as u32;
         let trim = |start: Vec3, dir: Vec3, len: f32| {
@@ -1293,7 +1334,7 @@ fn spawn_debug_effects(
                 .and_then(|p| p.fixed_hit(start / CM, dir, len / CM))
                 .map(|d| d * CM)
         };
-        let wall = Barricade::raise(frame, 0.25, now, trim, None, &mut draws.0);
+        let wall = Barricade::raise(frame, 0.25, now, trim, None, &mut draws.0.0);
         commands.spawn((
             Name::new("_DebugBarricade"),
             LiveBarricade {
@@ -1320,8 +1361,8 @@ fn spawn_debug_effects(
                 .and_then(|&k| part_point(body, k, s.local))
                 .unwrap_or(s.local)
         };
-        let mut wisps = Wisps::new(strands, 12.0, world, || draws.0.unit() as f32);
-        wisps.place(12, world, &mut roll.0);
+        let mut wisps = Wisps::new(strands, 12.0, world, || draws.0.0.unit() as f32);
+        wisps.place(12, world, &mut roll.0.0);
         commands.spawn((
             Name::new("_DebugWisps"),
             LiveWisps {
@@ -1448,7 +1489,7 @@ fn draw_arcs(
     mut voxels: Query<(&mut VoxelLight, &mut Transform, &mut GlobalTransform), Without<Camera3d>>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
-    mut draws: ResMut<EffectDraws>,
+    mut draws: ResMut<FrameEffectDraws>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GlowMaterial>>,
     mut audio: ShockAudio,
@@ -1458,7 +1499,7 @@ fn draw_arcs(
     let alpha = time.overstep_fraction();
     for (entity, mut live, drawn, light) in &mut arcs {
         let voxel = held_voxels.get(entity).ok();
-        let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0);
+        let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0.0);
         let at = live.arcs.anchor.map(|p| p / CM).unwrap_or(Vec3::ZERO);
         drive_arc_hum(
             &mut audio,
@@ -1696,7 +1737,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
             .init_asset::<GlowMaterial>()
-            .insert_resource(EffectDraws::default())
+            .insert_resource(FrameEffectDraws::default())
             .add_systems(Update, draw_arcs);
         let mut arcs = ArcEmitter::allocate(1, 4, 2.0);
         arcs.light_kind = ArcLight::Points;
@@ -1771,7 +1812,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
             .init_asset::<GlowMaterial>()
-            .insert_resource(EffectDraws::default())
+            .insert_resource(FrameEffectDraws::default())
             .add_systems(Update, draw_arcs);
         let mut arcs = ArcEmitter::new(&hand_arcs(), &mut Mt19937::new(1));
         arcs.total = arcs.segments * arcs.tendrils.len() as i32;

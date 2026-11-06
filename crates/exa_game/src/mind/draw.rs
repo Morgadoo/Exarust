@@ -41,7 +41,7 @@ use super::sight::{
     SIGHT_NOISE, SPHERE_RADIUS, SPHERE_SEGMENTS, SightAnchor, SightBasis, SightEntry,
     entry_colours, overlay_entry_alpha, shape_sphere, sight_basis,
 };
-use crate::thaum::live::EffectRoll;
+use crate::thaum::live::FrameEffectRoll;
 use crate::thaum::visuals::noise_bytes;
 
 /// A body the sight draws: its head frame and the entry it wears.
@@ -165,7 +165,7 @@ pub(crate) fn draw_mind_sight(
     mut assets: ResMut<MindSightAssets>,
     view: Res<MindSightView>,
     ticks: Option<Res<BodyTicks>>,
-    mut roll: ResMut<EffectRoll>,
+    mut roll: ResMut<FrameEffectRoll>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     anchors: Query<(Entity, &MindSightAnchor)>,
     spheres: Query<(Entity, &MindSightSphere, &MeshMaterial3d<MindSightMaterial>)>,
@@ -194,13 +194,13 @@ pub(crate) fn draw_mind_sight(
     }
     match assets.field.as_mut() {
         None => {
-            let field = SIGHT_NOISE.field(now, || roll.0.step());
+            let field = SIGHT_NOISE.field(now, || roll.0.0.step());
             let pixels = noise_bytes(&field);
             assets.noise = Some(images.add(noise_image(&pixels, SIGHT_NOISE.side, false)));
             assets.field = Some(field);
         }
         Some(field) => {
-            if field.tick(now, || roll.0.step()) {
+            if field.tick(now, || roll.0.0.step()) {
                 let pixels = noise_bytes(field);
                 if let Some(handle) = &assets.noise
                     && let Some(mut image) = images.get_mut(handle)
@@ -254,7 +254,7 @@ impl Plugin for MindSightPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MindSightAssets>()
             .init_resource::<MindSightView>()
-            .init_resource::<EffectRoll>()
+            .init_resource::<FrameEffectRoll>()
             .add_systems(PostUpdate, draw_mind_sight);
     }
 }

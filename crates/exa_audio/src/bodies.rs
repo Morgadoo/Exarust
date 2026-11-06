@@ -33,6 +33,7 @@ use exa_physics::body::{
 use exa_physics::prop::BodySounds;
 
 use crate::{AudioEnvironment, SoundBank, VoiceHandle, voice_flags};
+use bevy::audio::AudioSource;
 
 /// The impacts the pair stage dealt `body`'s parts this tick, in pair
 /// order: each touch's sphere side first, then its touched side.
@@ -113,20 +114,118 @@ pub(crate) fn drive_scrape(
     }
 }
 
-/// Plays the plain bodies' impact sounds and drives their scrape loops,
-/// once per body tick.
+/// The frame's side of the bodies' sounds: the sets it resolved by name
+/// and each body's scrape loops. The simulation decides what sounds and
+/// hands the frame the plays ([`exa_physics::sim_app::FrameCommands::send`]),
+/// which resolves the names to the sound bank's sets.
+#[derive(Resource, Default)]
+pub struct FrameBodySounds {
+    sets: HashMap<String, u32>,
+    loops: HashMap<Entity, Vec<VoiceHandle>>,
+}
+
+/// The set named `name` on the frame (loaded on its first use, kept).
+fn frame_set(world: &mut World, name: &str) -> u32 {
+    if let Some(&id) = world
+        .get_resource::<FrameBodySounds>()
+        .and_then(|f| f.sets.get(name))
+    {
+        return id;
+    }
+    let Some(game) = world.get_resource::<Game>().cloned() else {
+        return SoundBank::EMPTY_SET;
+    };
+    let id = world.resource_scope(|world, mut bank: Mut<SoundBank>| {
+        let mut sources = world.resource_mut::<Assets<AudioSource>>();
+        bank.load_set(&game, &mut sources, name)
+    });
+    world
+        .get_resource_or_init::<FrameBodySounds>()
+        .sets
+        .insert(name.to_owned(), id);
+    id
+}
+
+/// Plays `rung` (sets by name, points and sounds) on the frame, after
+/// resolving every set the body's parts name, in order.
+fn play_rung(world: &mut World, names: &[Option<String>], rung: &[(usize, Vec3, ImpactEvent)]) {
+    let sets: Vec<u32> = names
+        .iter()
+        .map(|n| {
+            n.as_deref()
+                .map_or(SoundBank::EMPTY_SET, |n| frame_set(world, n))
+        })
+        .collect();
+    world.resource_scope(|world, mut bank: Mut<SoundBank>| {
+        let mut env = world.resource_mut::<AudioEnvironment>();
+        for &(part, point, sound) in rung {
+            let set = sets.get(part).copied().unwrap_or(SoundBank::EMPTY_SET);
+            env.play_set(&mut bank, set, point, sound.volume, sound.pitch, 0);
+        }
+    });
+}
+
+/// Drives `body`'s scrape loops on the frame: each `(index, set name,
+/// event)` as the post-step drives its source.
+fn drive_scrapes(world: &mut World, body: Entity, scrapes: &[(usize, String, ScrapeEvent)]) {
+    for (i, name, event) in scrapes {
+        let mut state = world.get_resource_or_init::<FrameBodySounds>();
+        let handles = state.loops.entry(body).or_default();
+        if handles.len() <= *i {
+            handles.resize_with(i + 1, || VoiceHandle::NONE);
+        }
+        let mut handle = handles[*i];
+        let fresh = handle == VoiceHandle::NONE;
+        if fresh && !event.playing {
+            continue;
+        }
+        let set = frame_set(world, name);
+        world.resource_scope(|world, mut bank: Mut<SoundBank>| {
+            let mut env = world.resource_mut::<AudioEnvironment>();
+            if fresh {
+                handle = env.new_handle();
+            }
+            drive_scrape(&mut env, &mut bank, handle, set, event);
+        });
+        if fresh && let Some(mut state) = world.get_resource_mut::<FrameBodySounds>() {
+            state.loops.entry(body).or_default()[*i] = handle;
+        }
+    }
+}
+
+/// Frees the loops of bodies that left the world, as their destructor does.
+fn free_loops(world: &mut World, gone: &[Entity]) {
+    let freed: Vec<VoiceHandle> = world
+        .get_resource_mut::<FrameBodySounds>()
+        .map(|mut s| {
+            gone.iter()
+                .filter_map(|e| s.loops.remove(e))
+                .flatten()
+                .collect()
+        })
+        .unwrap_or_default();
+    world.resource_scope(|world, mut bank: Mut<SoundBank>| {
+        let mut env = world.resource_mut::<AudioEnvironment>();
+        for h in freed {
+            env.free_handle(&mut bank, h);
+        }
+    });
+}
+
+/// Rings the plain bodies' impacts and runs their scrape sources, once per
+/// body tick, as the original's post-step does; the frame plays what rang
+/// and drives the loops. Whether a part's set has a variant is read from
+/// the sound pack (the frame's bank is the frame's).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn body_sounds(
     game: Option<Res<Game>>,
     ticks: Option<Res<BodyTicks>>,
     stages: Option<Res<SolverStages>>,
     mut bodies: Query<(Entity, &mut Ragdoll, &BodySounds)>,
-    mut bank: ResMut<SoundBank>,
-    mut sources: ResMut<Assets<AudioSource>>,
-    mut env: ResMut<AudioEnvironment>,
-    mut sets: Local<HashMap<String, u32>>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
+    mut sizes: Local<HashMap<String, usize>>,
     mut roll: Local<u32>,
-    mut loops: Local<HashMap<Entity, Vec<VoiceHandle>>>,
+    mut sounding: Local<bevy::ecs::entity::EntityHashSet>,
 ) {
     let Some(game) = game else { return };
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
@@ -134,10 +233,10 @@ pub(crate) fn body_sounds(
         .as_ref()
         .and_then(|s| s.get::<Pairs>())
         .map_or(&[][..], Pairs::touches);
-    let mut resolve = |name: &str, bank: &mut SoundBank| {
-        *sets
+    let mut size = |name: &str| {
+        *sizes
             .entry(name.to_owned())
-            .or_insert_with(|| bank.load_set(&game, &mut sources, name))
+            .or_insert_with(|| SoundBank::set_size(&game, name))
     };
     for (entity, mut body, names) in &mut bodies {
         if body.held_by.is_some() {
@@ -146,54 +245,55 @@ pub(crate) fn body_sounds(
         let mut impacts = struck_parts(touches, entity);
         impacts.extend(body.level_impacts().iter().map(|i| (i.part, i.strength)));
         if !impacts.is_empty() {
-            let part_sets: Vec<u32> = names
+            let sounded: Vec<bool> = names
                 .impact
                 .iter()
-                .map(|n| {
-                    n.as_deref()
-                        .map_or(SoundBank::EMPTY_SET, |n| resolve(n, &mut bank))
-                })
+                .map(|n| n.as_deref().is_some_and(|n| size(n) > 0))
                 .collect();
-            let set_of = |part: usize| part_sets.get(part).copied().unwrap_or(SoundBank::EMPTY_SET);
-            let sounded = |part: usize| bank.set_count(set_of(part)) > 0;
-            for (part, sound) in ring_impacts(&mut body, &impacts, sounded, now, &mut roll) {
+            let rung: Vec<(usize, Vec3, ImpactEvent)> = ring_impacts(
+                &mut body,
+                &impacts,
+                |part| sounded.get(part).copied().unwrap_or(false),
+                now,
+                &mut roll,
+            )
+            .into_iter()
+            .map(|(part, sound)| {
                 let p = &body.parts[part];
-                let point = p.transform().transform_point3(p.pairing.mesh.centre);
-                env.play_set(&mut bank, set_of(part), point, sound.volume, sound.pitch, 0);
-            }
+                (
+                    part,
+                    p.transform().transform_point3(p.pairing.mesh.centre),
+                    sound,
+                )
+            })
+            .collect();
+            let part_names = names.impact.clone();
+            frame.send(move |world| play_rung(world, &part_names, &rung));
         }
         let events = body.scrape_events();
         if events.is_empty() {
             continue;
         }
-        let handles = loops.entry(entity).or_default();
-        for (i, event) in events.iter().enumerate() {
-            let Some(name) = names.scrapes.get(i) else {
-                continue;
-            };
-            if handles.len() <= i {
-                handles.resize_with(i + 1, || VoiceHandle::NONE);
-            }
-            if handles[i] == VoiceHandle::NONE {
-                if !event.playing {
-                    continue;
-                }
-                handles[i] = env.new_handle();
-            }
-            let set = resolve(name, &mut bank);
-            drive_scrape(&mut env, &mut bank, handles[i], set, event);
-        }
+        let scrapes: Vec<(usize, String, ScrapeEvent)> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| Some((i, names.scrapes.get(i)?.clone(), *e)))
+            .collect();
+        sounding.insert(entity);
+        frame.send(move |world| drive_scrapes(world, entity, &scrapes));
     }
     // A body that left the world frees its loops, as its destructor does.
-    loops.retain(|entity, handles| {
-        let keep = bodies.contains(*entity);
-        if !keep {
-            for &h in handles.iter() {
-                env.free_handle(&mut bank, h);
-            }
+    let gone: Vec<Entity> = sounding
+        .iter()
+        .copied()
+        .filter(|e| !bodies.contains(*e))
+        .collect();
+    if !gone.is_empty() {
+        for e in &gone {
+            sounding.remove(e);
         }
-        keep
-    });
+        frame.send(move |world| free_loops(world, &gone));
+    }
 }
 
 #[cfg(test)]

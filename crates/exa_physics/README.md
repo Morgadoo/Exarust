@@ -185,11 +185,25 @@ tick from the next tick), the cloth debug counters; moved to the
 simulation with the frame's writes posted: the weapons' blood list, the
 room cells, the pass turn, the navigation revision, the search's world
 (its screenshot requests go out as `SearchShot` messages), the scan build
-(the debug scan is built at the next step) and the solver stages. Still
+(the debug scan is built at the next step) and the solver stages. `FrameCommands::send` hands the frame
+work it alone does with a step's results (behind the bridge after the
+step's copy out, in one world in `FrameCommandsStep` after `FixedLast`):
+the plain bodies' impact sounds and scrape loops are decided in the step
+(whether a set has a variant is read from the sound pack,
+`exa_audio::SoundBank::set_size`) and played and driven by the frame,
+which resolves the set names (`exa_audio::bodies::FrameBodySounds`). Each
+gizmo group keeps its own drawing buffer on each side
+(`bridge_own_resource`) and the step's collected gizmos reach the frame as
+a snapshot (`bridge_gizmos`). The effects' random streams (the run-time
+library's Mersenne twister and the engine's generator) are process-wide in
+the original and drawn from by both of its threads with no order between
+them (152 and 531 call sites across the GUI, particles, AI, dynamics and
+effects): the step keeps `EffectDraws` and `EffectRoll`, the frame its own
+`FrameEffectDraws` and `FrameEffectRoll`, each in its own order. Still
 lent: the collision world and its stand-ins and collider nodes, the
-navigation grid, the sound bank, audio environment and audio sources, the
-conversations and their contact mirror, the effect draws and rolls, and
-the gizmo storages.
+navigation grid, the sound bank, audio environment and audio sources (the
+fall, kinesis, shock, throw and alarm sounds still play from the step),
+and the conversations and their contact mirror.
 
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own

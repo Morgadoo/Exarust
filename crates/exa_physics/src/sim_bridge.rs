@@ -1195,6 +1195,86 @@ impl<T: Component> BridgeHalf for SimOnlyHalf<T> {
     fn settle(&mut self, _: &mut World, _: Tick) {}
 }
 
+// ---------------------------------------------------------------- own
+
+/// A resource each side keeps its own of, never copied (a scratch buffer
+/// such as the gizmos the step draws before it collects them): the
+/// simulation's world gets a default one when the bridge starts.
+pub struct OwnResource<T>(PhantomData<fn() -> T>);
+
+struct OwnResourceHalf<T: Resource + Default> {
+    id: Option<ComponentId>,
+    _t: PhantomData<fn() -> T>,
+}
+
+impl<T: Resource + Default> BridgeType for OwnResource<T> {
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    fn half(&self) -> Box<dyn BridgeHalf> {
+        Box::new(OwnResourceHalf::<T> {
+            id: None,
+            _t: PhantomData,
+        })
+    }
+}
+
+impl<T: Resource + Default> BridgeHalf for OwnResourceHalf<T> {
+    fn name(&self) -> &'static str {
+        type_name::<T>()
+    }
+
+    fn init(&mut self, world: &mut World) -> ComponentId {
+        world.init_resource::<T>();
+        component_id::<T>(world, &mut self.id)
+    }
+
+    fn drain_removed(&mut self, _: &World) {}
+
+    fn gather(&mut self, _: &mut World, _: GatherCtx) -> Gathered {
+        Gathered::empty()
+    }
+
+    fn apply(&mut self, _: &mut World, _: Packet, _: ApplyCtx) -> usize {
+        0
+    }
+
+    fn settle(&mut self, _: &mut World, _: Tick) {}
+}
+
+/// The gizmos the fixed step drew, as a snapshot for the frame to draw:
+/// copied out (by appending into a fresh storage) when the step collected
+/// them.
+pub struct GizmoSnapshot<C>(PhantomData<fn() -> C>);
+
+impl<C: bevy::gizmos::config::GizmoConfigGroup> BridgeType for GizmoSnapshot<C> {
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<bevy::gizmos::gizmos::GizmoStorage<C, Fixed>>()
+    }
+
+    fn half(&self) -> Box<dyn BridgeHalf> {
+        Box::new(
+            ResourceHalf::<bevy::gizmos::gizmos::GizmoStorage<C, Fixed>> {
+                lend: false,
+                direction: Direction::Out,
+                warned: false,
+                take: |world, _| {
+                    let drawn =
+                        world.get_resource::<bevy::gizmos::gizmos::GizmoStorage<C, Fixed>>()?;
+                    let mut copy = bevy::gizmos::gizmos::GizmoStorage::<C, Fixed>::default();
+                    copy.append_storage(drawn);
+                    Some(copy)
+                },
+                spare: None,
+                id: None,
+                present: false,
+                since: Tick::new(0),
+            },
+        )
+    }
+}
+
 // ---------------------------------------------------------------- registry
 
 /// The bridged types, registered on the frame's app.
@@ -1322,6 +1402,12 @@ pub trait SimBridgeAppExt {
     /// A resource the frame inserts and only the simulation's systems
     /// touch: moved to the simulation when it appears.
     fn bridge_move_resource<T: Resource>(&mut self) -> &mut Self;
+    /// A resource each side keeps its own of, never copied.
+    fn bridge_own_resource<T: Resource + Default>(&mut self) -> &mut Self;
+    /// A gizmo group the fixed step draws into: each side keeps its own
+    /// drawing buffer, and the step's collected gizmos reach the frame as
+    /// a snapshot.
+    fn bridge_gizmos<C: bevy::gizmos::config::GizmoConfigGroup>(&mut self) -> &mut Self;
 }
 
 impl SimBridgeAppExt for App {
@@ -1471,6 +1557,18 @@ impl SimBridgeAppExt for App {
 
     fn bridge_sim_only<T: Component>(&mut self) -> &mut Self {
         add_type(self, SimOnly::<T>(PhantomData))
+    }
+
+    fn bridge_own_resource<T: Resource + Default>(&mut self) -> &mut Self {
+        add_type(self, OwnResource::<T>(PhantomData))
+    }
+
+    fn bridge_gizmos<C: bevy::gizmos::config::GizmoConfigGroup>(&mut self) -> &mut Self {
+        add_type(
+            self,
+            OwnResource::<bevy::gizmos::gizmos::GizmoStorage<C, ()>>(PhantomData),
+        );
+        add_type(self, GizmoSnapshot::<C>(PhantomData))
     }
 
     fn bridge_move_resource<T: Resource>(&mut self) -> &mut Self {
@@ -1941,16 +2039,11 @@ pub fn bridge_bevy_types(app: &mut App) {
         .bridge_copy_resource::<Time<Fixed>>()
         .bridge_copy_resource::<Time<Virtual>>()
         .bridge_copy_resource::<Time<Real>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, ()>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, ()>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, ()>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, ()>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, bevy::time::Fixed>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, ()>>()
-        .bridge_lend_opaque_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, bevy::time::Fixed>>();
+        .bridge_gizmos::<bevy::gizmos::aabb::AabbGizmoConfigGroup>()
+        .bridge_gizmos::<bevy::gizmos::config::DefaultGizmoConfigGroup>()
+        .bridge_gizmos::<bevy::gizmos::frustum::FrustumGizmoConfigGroup>()
+        .bridge_gizmos::<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup>()
+        .bridge_gizmos::<bevy::light::gizmos::LightGizmoConfigGroup>();
 }
 
 fn count_frame(mut bridge: ResMut<FrameBridge>, order: Option<Res<FixedMainScheduleOrder>>) {

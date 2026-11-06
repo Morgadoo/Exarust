@@ -41,7 +41,7 @@ use exa_render::image_noise::NoiseField;
 use super::blast_live::LiveBlast;
 use super::cast::LiveShellAura;
 use super::effect_material::{NOISE_SIDE, NoiseTexture, noise_upload};
-use super::live::{EffectMesh, EffectRoll};
+use super::live::{EffectMesh, FrameEffectRoll};
 use super::torrent_live::LiveTorrent;
 use super::visuals::{noise_bytes, noise_field};
 use crate::thaum::{ShellBox, ShellFrame, ShellUniforms, shell_uniforms};
@@ -81,21 +81,21 @@ pub(crate) fn force_effects_alive(effects: Query<(), ForceEffect>) -> bool {
 pub(crate) fn tick_force_noise(
     mut noise: ResMut<ForceNoise>,
     mut images: ResMut<Assets<Image>>,
-    mut roll: ResMut<EffectRoll>,
+    mut roll: ResMut<FrameEffectRoll>,
     ticks: Option<Res<BodyTicks>>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     let texture = NoiseTexture::default();
     let noise = &mut *noise;
     let Some(field) = noise.field.as_mut() else {
-        let field = noise_field(now, || roll.0.step());
+        let field = noise_field(now, || roll.0.0.step());
         let pixels = noise_bytes(&field);
         noise.image = Some(images.add(noise_image(&pixels, NOISE_SIDE, texture.mipmaps())));
         noise.field = Some(field);
         noise.uploads = 1;
         return;
     };
-    let fresh = field.tick(now, || roll.0.step());
+    let fresh = field.tick(now, || roll.0.0.step());
     if !fresh {
         return;
     }
@@ -593,7 +593,7 @@ pub(crate) fn ripple_shell_hits(
     mut auras: Query<(&ShellAuraOf, &mut LiveShellAura)>,
     bodies: Query<&Ragdoll>,
     ticks: Option<Res<BodyTicks>>,
-    mut roll: Option<ResMut<EffectRoll>>,
+    mut roll: Option<ResMut<FrameEffectRoll>>,
     mut audio: ShellHitAudio,
     mut set: Local<Option<u32>>,
 ) {
@@ -612,7 +612,7 @@ pub(crate) fn ripple_shell_hits(
             if of.0 != hit.fighter {
                 continue;
             }
-            let mut unit = || roll.as_mut().map(|r| r.0.unit()).unwrap_or(0.0);
+            let mut unit = || roll.as_mut().map(|r| r.0.0.unit()).unwrap_or(0.0);
             if let Some((pitch, volume)) = aura.0.hit(place, hit.volume, now, &mut unit) {
                 audio.play(&mut set, hit.point, volume, pitch);
             }
@@ -639,7 +639,7 @@ pub(crate) fn ripple_strikes(
     bodies: Query<&Ragdoll>,
     globals: Query<&GlobalTransform>,
     ticks: Option<Res<BodyTicks>>,
-    mut roll: Option<ResMut<EffectRoll>>,
+    mut roll: Option<ResMut<FrameEffectRoll>>,
     mut audio: ShellHitAudio,
     mut set: Local<Option<u32>>,
 ) {
@@ -686,7 +686,7 @@ pub(crate) fn ripple_strikes(
             },
         };
         let local = part_frame(world).local(hook.point * CM);
-        let mut unit = || roll.as_mut().map(|r| r.0.unit()).unwrap_or(0.0);
+        let mut unit = || roll.as_mut().map(|r| r.0.0.unit()).unwrap_or(0.0);
         let sound = aura
             .0
             .hit(local.to_array(), hook.strength * 0.5, now, &mut unit);
@@ -907,7 +907,7 @@ mod tests {
             .init_asset::<Mesh>()
             .init_asset::<ForceShellMaterial>()
             .init_resource::<ForceNoise>()
-            .init_resource::<EffectRoll>()
+            .init_resource::<FrameEffectRoll>()
             .add_systems(
                 Update,
                 (
@@ -964,7 +964,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Image>()
             .init_resource::<ForceNoise>()
-            .init_resource::<EffectRoll>()
+            .init_resource::<FrameEffectRoll>()
             .insert_resource(BodyTicks::default())
             .add_systems(Update, tick_force_noise.run_if(force_effects_alive));
         app.update();
