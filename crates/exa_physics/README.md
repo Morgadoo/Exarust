@@ -33,7 +33,8 @@ for it, and `LockstepCheck` counts the steps against the snapshots' ticks
 only its clock, so a body's every pose is the same bit for bit with or
 without the shell (`body_floor_test`).
 
-With `SimMode::Free` (`--sim-free`; lockstep stays the default) the
+With `SimMode::Free` (the game's default; `--sim-lockstep`, `--fixed-frames`,
+`--sim-inline` and `--no-sim-bridge` step in lockstep) the
 simulation runs on its own thread as the original's does
 (context/re/sim-thread-input.md): a 12 ms real-clock step from
 `step_driver` (more than four steps late drops the backlog), asleep 11 ms a

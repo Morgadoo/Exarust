@@ -1,8 +1,8 @@
 //! `--draw-trace <file.csv>`: where the frame drew the player each frame,
 //! after the transforms propagated: the frame, the real clock (ms since the
-//! start), the render fraction the frame drew at, the player's drawn pelvis
+//! start), the body ticks the frame has seen, the render fraction the frame drew at, the player's drawn pelvis
 //! and the camera (cm). A smoothness check for the drawing between steps:
-//! a lockstep run and a free-running one (`--sim-free`) compare by the
+//! a lockstep run (`--sim-lockstep`) and a free-running one compare by the
 //! pelvis's speed from frame to frame.
 
 use std::fs::File;
@@ -28,7 +28,7 @@ impl DrawTrace {
         let mut out = BufWriter::new(File::create(path)?);
         writeln!(
             out,
-            "frame,real_ms,fraction,pelvis_x,pelvis_y,pelvis_z,camera_x,camera_y,camera_z"
+            "frame,real_ms,ticks,fraction,pelvis_x,pelvis_y,pelvis_z,camera_x,camera_y,camera_z"
         )?;
         Ok(Self {
             out,
@@ -54,6 +54,7 @@ impl Plugin for DrawTracePlugin {
 fn write_row(
     mut trace: ResMut<DrawTrace>,
     fixed: Res<Time<Fixed>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
     places: Query<&GlobalTransform>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
@@ -74,9 +75,10 @@ fn write_row(
         .map_or(Vec3::NAN, |g| g.translation() * 100.0);
     let (frame, ms) = (trace.frame, trace.start.elapsed().as_secs_f64() * 1000.0);
     let fraction = fixed.overstep_fraction();
+    let ticks = ticks.map_or(0, |t| t.0);
     let _ = writeln!(
         trace.out,
-        "{frame},{ms:.3},{fraction:.4},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
+        "{frame},{ms:.3},{ticks},{fraction:.4},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
         pelvis.x, pelvis.y, pelvis.z, camera.x, camera.y, camera.z
     );
 }

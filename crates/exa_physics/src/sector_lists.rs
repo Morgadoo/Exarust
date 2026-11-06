@@ -79,6 +79,7 @@ pub struct SectorBodies {
     /// change: a body that did not change since (most of a level's bodies
     /// sleep) is listed again from here, without its parts' poses.
     listed: bevy::ecs::entity::EntityHashMap<Vec<((i32, i32), BodyEntry)>>,
+    spare: bevy::ecs::entity::EntityHashMap<Vec<((i32, i32), BodyEntry)>>,
 }
 
 impl SectorBodies {
@@ -135,7 +136,8 @@ impl SectorBodies {
     ) {
         self.clear();
         let mut listed = std::mem::take(&mut self.listed);
-        let mut kept = bevy::ecs::entity::EntityHashMap::default();
+        let mut kept = std::mem::take(&mut self.spare);
+        kept.clear();
         for (body, ragdoll, changed) in bodies {
             let entries = match listed.remove(&body) {
                 Some(entries) if !changed => entries,
@@ -148,6 +150,10 @@ impl SectorBodies {
             kept.insert(body, entries);
         }
         self.listed = kept;
+        // The bodies gone since: their lists go, the map is kept for its
+        // room.
+        listed.clear();
+        self.spare = listed;
     }
 
     /// Body `body`'s parts with the cells their mesh box centres fall in.
