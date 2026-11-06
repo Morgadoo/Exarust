@@ -29,6 +29,7 @@ mod music;
 mod playback;
 mod reverb;
 mod sounds;
+pub mod step_sounds;
 pub mod voices;
 
 use bevy::prelude::*;
@@ -100,10 +101,12 @@ impl Plugin for AudioPlugin {
                 )
                     .chain(),
             )
+            .init_resource::<bodies::FrameBodySounds>()
             .add_systems(
                 FixedUpdate,
                 bodies::body_sounds.after(exa_physics::body::BodySystems),
             );
+        exa_physics::sim_app::add_frame_commands(app);
         // The reverb bus needs Bevy's audio output (absent in tests and
         // headless tools).
         if app.is_plugin_added::<bevy::audio::AudioPlugin>() {

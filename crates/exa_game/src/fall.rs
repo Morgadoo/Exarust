@@ -22,7 +22,6 @@
 //! the story's respawn reset it ([`reset_death_fade`]), which gives the
 //! game time back when the fade had paused it.
 
-use bevy::audio::Volume;
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::{AudioEnvironment, SoundBank};
@@ -136,67 +135,37 @@ pub fn reset_death_fade(fade: &mut DeathFade, time: Option<&mut Time<Virtual>>) 
 pub const PIT_SOUND: &str = "pitdeath01";
 const PIT_GAIN: f32 = 0.1;
 
-/// What a fall takes sounds from (none in tests without the game).
+/// What a fall's sounds need in the step: the game, to tell whether a
+/// voice set has a variant; the frame's sound bank plays them.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct Sounds<'w> {
     game: Option<Res<'w, Game>>,
-    bank: Option<ResMut<'w, SoundBank>>,
-    sources: Option<ResMut<'w, Assets<AudioSource>>>,
-    env: Option<ResMut<'w, AudioEnvironment>>,
+    frame: ResMut<'w, exa_physics::sim_app::FrameCommands>,
 }
 
 impl Sounds<'_> {
     /// Plays `name` once at `gain` and `pitch`: at `at` in the world, or on
-    /// the interface.
-    fn play(
-        &mut self,
-        commands: &mut Commands,
-        name: &str,
-        gain: f32,
-        pitch: f32,
-        at: Option<Vec3>,
-    ) {
-        let (Some(game), Some(bank), Some(sources)) = (
-            self.game.as_ref(),
-            self.bank.as_mut(),
-            self.sources.as_mut(),
-        ) else {
-            return;
-        };
-        let Some(clip) = bank.get(game, sources, name) else {
-            return;
-        };
-        let settings = PlaybackSettings::DESPAWN
-            .with_volume(Volume::Linear(gain))
-            .with_speed(pitch);
-        match at {
-            Some(at) => commands.spawn((
-                AudioPlayer(clip),
-                settings.with_spatial(true),
-                Transform::from_translation(at),
-            )),
-            None => commands.spawn((AudioPlayer(clip), settings)),
-        };
+    /// the interface (on the frame, after the step).
+    fn play(&mut self, name: &'static str, gain: f32, pitch: f32, at: Option<Vec3>) {
+        self.frame.send(move |world| {
+            exa_audio::step_sounds::play_clip_named(world, name, at, gain, pitch);
+        });
     }
 
-    /// Loads (or finds) the numbered set `name`.
-    fn load_set(&mut self, name: &str) -> u32 {
-        let (Some(game), Some(bank), Some(sources)) = (
-            self.game.as_ref(),
-            self.bank.as_mut(),
-            self.sources.as_mut(),
-        ) else {
-            return SoundBank::EMPTY_SET;
-        };
-        bank.load_set(game, sources, name)
+    /// Whether the numbered set `name` has a variant in the sound pack.
+    fn has_set(&self, name: &str) -> bool {
+        self.game
+            .as_deref()
+            .is_some_and(|g| SoundBank::set_size(g, name) > 0)
     }
 
-    /// Plays a loaded set at `at` with the voice request's gains.
-    fn play_set(&mut self, set: u32, at: Option<Vec3>, gain: f32, pitch: f32) {
-        let (Some(bank), Some(env), Some(at)) = (self.bank.as_mut(), self.env.as_mut(), at) else {
-            return;
-        };
-        env.play_set(bank, set, at, gain, pitch, 0);
+    /// Plays the set `name` (loaded once) at `at` with the voice request's
+    /// gains, on the frame after the step.
+    fn play_set(&mut self, name: String, at: Option<Vec3>, gain: f32, pitch: f32) {
+        let Some(at) = at else { return };
+        self.frame.send(move |world| {
+            exa_audio::step_sounds::play_set_named(world, &name, true, at, gain, pitch);
+        });
     }
 }
 
@@ -207,10 +176,7 @@ pub(crate) fn fall_to_death(
     ticked: Res<TickedCharacter>,
     mut commands: Commands,
     ticks: Res<BodyTicks>,
-    (mut fade, mut frame): (
-        Option<ResMut<DeathFade>>,
-        ResMut<exa_physics::sim_app::FrameCommands>,
-    ),
+    mut fade: Option<ResMut<DeathFade>>,
     mut sounds: Sounds,
     mut roll: Local<Roll>,
     mut bodies: Query<(
@@ -225,7 +191,7 @@ pub(crate) fn fall_to_death(
         Option<&mut CharacterVoice>,
     )>,
     mut combatants: Query<&mut exa_ai::combatant::Combatant>,
-    mut sets: Local<bevy::platform::collections::HashMap<String, u32>>,
+    mut sets: Local<bevy::platform::collections::HashMap<String, bool>>,
 ) {
     let now = ticks.millis();
     if let Ok((
@@ -265,12 +231,12 @@ pub(crate) fn fall_to_death(
             // Line 2 is the voice entry's heavy groan (the original's voice
             // request of kind 2).
             let name = voice.set(2).unwrap_or_default().to_string();
-            let set = *sets
+            let found = *sets
                 .entry(name.clone())
-                .or_insert_with(|| sounds.load_set(&name));
-            let answer = voice.speak(2, set != SoundBank::EMPTY_SET, now as u32, gain, pitch);
+                .or_insert_with(|| sounds.has_set(&name));
+            let answer = voice.speak(2, found, now as u32, gain, pitch);
             if let Answer::Played(spoken) = answer {
-                sounds.play_set(set, balance.chest(), spoken.volume, spoken.pitch);
+                sounds.play_set(name.clone(), balance.chest(), spoken.volume, spoken.pitch);
             }
             info!(
                 "{entity:?} screams as it falls, tick {} ({name}, {answer:?})",
@@ -284,13 +250,13 @@ pub(crate) fn fall_to_death(
             );
         }
         if step.pit {
-            sounds.play(&mut commands, PIT_SOUND, PIT_GAIN, 1.0, None);
+            sounds.play(PIT_SOUND, PIT_GAIN, 1.0, None);
             // The fade starts at this tick's own clock: the original
             // stamps its frame clock, which the tick has just reached.
             // The fade is the frame's: it starts there too.
             if let Some(fade) = fade.as_mut() {
                 let at = now as f64;
-                frame.write_resource(fade, move |fade| {
+                sounds.frame.write_resource(fade, move |fade| {
                     fade.started = Some(at);
                     fade.now = at;
                     fade.paused = false;

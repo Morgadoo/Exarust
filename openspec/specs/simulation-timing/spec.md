@@ -292,3 +292,17 @@ A fixed-step system that changes data the frame owns SHALL see its own write at 
 #### Scenario: A step appends to frame data
 - **WHEN** the frame and each fixed step append to the same frame-owned list
 - **THEN** both sides see the same list after every frame as one world does
+
+### Requirement: Frame work from step results
+Work only the frame does with a step's results (sounds the step decided on) SHALL run on the frame's world after that step, in the order the step queued it, alike in one world and behind the bridge.
+
+#### Scenario: A prop strikes the floor
+- **WHEN** a plain body's part rings an impact in a step
+- **THEN** the frame plays its set's sound after that step, at the part's mesh centre, in one world and behind the bridge alike
+
+### Requirement: Scripts and sounds on the frame
+Sounds a fixed step starts and the scripts an AI's target pass reports SHALL be run by the frame after the step, in the step's order, with the step keeping only what it decides (which sound, which scripts); a voice that a later step fades SHALL be found by a key the step gave it.
+
+#### Scenario: A throw that ends before its drop
+- **WHEN** a throw's lift sound starts and the throw ends before its drop
+- **THEN** the frame fades the lift's voice found by the key the step gave it

@@ -475,6 +475,26 @@ impl SoundBank {
         self.buffer(id).is_some_and(|b| b.stereo)
     }
 
+    /// How many variants [`Self::load_set`] would find for `prefix`, read
+    /// from the game's sound pack alone (no buffers made): what the
+    /// simulation asks before it starts a sound the frame plays.
+    pub fn set_size(game: &Game, prefix: &str) -> usize {
+        if prefix.is_empty() || prefix.len() > MAX_SET_BASE_LEN {
+            return 0;
+        }
+        let Some(pack) = game.0.pack(PackKind::Sound) else {
+            return 0;
+        };
+        (1..=MAX_VARIANTS)
+            .take_while(|n| {
+                let name = NameKey::new(&format!("{prefix}{n:02}")).text();
+                pack.get(&name)
+                    .and_then(wave_info)
+                    .is_some_and(|info| info.data_len != 0)
+            })
+            .count()
+    }
+
     /// Loads (or finds) the numbered set `prefix01` … up to its first gap or
     /// 16 variants, and adds a reference. The variants are loaded outside the
     /// name index, one fresh buffer each. Returns the empty set when the

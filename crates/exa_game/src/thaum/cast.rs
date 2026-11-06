@@ -77,7 +77,9 @@ use super::energy::{EnergyStart, energy_front_end, shock_charge};
 use super::force::{
     BARRICADE, ForceStart, ForceWorld, GroundHit, KINESIS, WAVE_SETUP, place_barricade, place_dome,
 };
-use super::live::{EffectDraws, EffectRoll, LiveArcs, LiveBarricade, LiveWisps};
+use super::live::{
+    EffectDraws, EffectRoll, FrameEffectDraws, FrameEffectRoll, LiveArcs, LiveBarricade, LiveWisps,
+};
 use super::power::displacement::{
     ConstantDisplacement, LONG_DOOR, LongDoor, NavAnswer, Summon, Vanish,
 };
@@ -393,6 +395,7 @@ pub struct CastPlugin;
 
 impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::sim_app::add_frame_commands(app);
         app.add_message::<BarCommand>()
             .add_message::<super::live::ArcShocked>()
             .add_message::<Otherwhere>()
@@ -410,6 +413,8 @@ impl Plugin for CastPlugin {
             .init_resource::<super::throw_live::ThrowPick>()
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
+            .init_resource::<FrameEffectDraws>()
+            .init_resource::<FrameEffectRoll>()
             .init_resource::<super::debug_cast::DebugCasts>()
             // What the bar's Mind casts read and write (the mind runtime's
             // plugin runs them).
@@ -590,8 +595,8 @@ pub(crate) fn run_bar_commands(
     physics: Option<Res<Physics>>,
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
-    mut draws: ResMut<EffectDraws>,
-    mut roll: ResMut<EffectRoll>,
+    mut draws: ResMut<FrameEffectDraws>,
+    mut roll: ResMut<FrameEffectRoll>,
     mut screen: Option<ResMut<PowerScreen>>,
     weapons: Query<(
         Entity,

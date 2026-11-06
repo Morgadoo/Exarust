@@ -227,7 +227,7 @@ pub(crate) fn debug_bubble(
     loading: Option<Res<exa_ui::LoadingStatus>>,
     clock: Res<EffectClock>,
     players: Query<&GlobalTransform, With<crate::player::PlayerBody>>,
-    roll: Option<ResMut<crate::thaum::live::EffectRoll>>,
+    roll: Option<ResMut<crate::thaum::live::FrameEffectRoll>>,
     mut frames: Local<u32>,
 ) {
     let Some(at) = script.0 else {
@@ -245,7 +245,7 @@ pub(crate) fn debug_bubble(
         return;
     };
     let tex_pos = match roll {
-        Some(mut roll) => [roll.0.unit(), roll.0.unit()],
+        Some(mut roll) => [roll.0.0.unit(), roll.0.0.unit()],
         None => [0.0, 0.0],
     };
     // A journey's bubble rises 98 cm above the teleporter the user stands

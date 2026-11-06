@@ -340,6 +340,14 @@ impl FrameCommands {
         result
     }
 
+    /// Runs `event` on the frame's world after the step: behind the bridge
+    /// right after the step's copy out, in one world at the end of the
+    /// fixed step ([`FrameCommandsStep`]). For work only the frame does with
+    /// the step's results, such as starting the sounds a step decided on.
+    pub fn send(&mut self, event: impl FnOnce(&mut World) + Send + 'static) {
+        queue(&mut self.queued).push(Box::new(event));
+    }
+
     /// The queued writes, for the frame.
     pub fn take(&mut self) -> Vec<FrameEvent> {
         std::mem::take(queue(&mut self.queued))
@@ -354,6 +362,31 @@ pub fn add_frame_commands(app: &mut App) {
     use crate::sim_bridge::SimBridgeAppExt;
     app.init_resource::<FrameCommands>()
         .bridge_sim_only::<FrameCommands>();
+    if app.world().contains_resource::<FixedMainScheduleOrder>() {
+        app.init_schedule(FrameCommandsStep)
+            .add_systems(FrameCommandsStep, run_frame_commands);
+        app.world_mut()
+            .resource_mut::<FixedMainScheduleOrder>()
+            .insert_after(FixedLast, FrameCommandsStep);
+    }
+}
+
+/// The schedule that runs the [`FrameCommands`] queued in one world, after
+/// `FixedLast` (behind the bridge the simulation's queue goes to the frame
+/// with the step's events instead, and this finds the queue bridged).
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FrameCommandsStep;
+
+pub fn run_frame_commands(world: &mut World) {
+    let Some(mut commands) = world.get_resource_mut::<FrameCommands>() else {
+        return;
+    };
+    if commands.bridged {
+        return;
+    }
+    for event in commands.take() {
+        event(world);
+    }
 }
 
 /// The schedule that runs the [`FixedCommands`], before `FixedFirst`.

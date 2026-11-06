@@ -60,7 +60,7 @@ use super::power::force::{
 };
 use super::power::force::{PICK_VOLUME, pick_pitch};
 use super::power::{ENDING, RUNNING};
-use super::throw_live::{ThrowAudio, play};
+use super::throw_live::play_on_frame;
 use crate::bindings::{Action, Bindings};
 use crate::player::{ChaseCamera, PlayerBody, window_ray};
 
@@ -134,8 +134,7 @@ pub(super) fn take_kinesis_picks(
     stand_ins: Option<Res<StandIns>>,
     mut roll: ResMut<EffectRoll>,
     mut draws: Option<ResMut<EffectDraws>>,
-    mut audio: ThrowAudio,
-    mut pick_set: Local<Option<u32>>,
+    mut frame: ResMut<exa_physics::sim_app::FrameCommands>,
 ) {
     for pick in picked.read() {
         let (Ok(mut caster), Ok(mut body)) =
@@ -183,14 +182,10 @@ pub(super) fn take_kinesis_picks(
         );
         kinesis.shell = Some(shell.to_bits());
         kinesis.material = Some(pick.body.to_bits());
-        play(
-            &mut audio,
-            &mut pick_set,
-            KINESIS_SOUND,
-            centre,
-            PICK_VOLUME,
-            pick_pitch,
-        );
+        // The frame's sound bank plays it.
+        frame.send(move |world| {
+            play_on_frame(world, KINESIS_SOUND, PICK_VOLUME, pick_pitch, centre, None);
+        });
         info!(
             "kinesis: holds {:?} at depth {:.1} cm under shell {shell:?}",
             pick.body, kinesis.depth

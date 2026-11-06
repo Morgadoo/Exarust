@@ -100,7 +100,7 @@ use crate::effects::fire_row::{self, AttachedRow, Flame, HeldFire, ItemAbility};
 use crate::item_effects;
 use crate::player::PlayerBody;
 use crate::thaum::arcs::{HUM_ARCS_OFFSET, hum_arcs, spark_burst};
-use crate::thaum::live::{ArcShocked, EffectDraws, LiveArcs};
+use crate::thaum::live::{ArcShocked, FrameEffectDraws, LiveArcs};
 
 /// The weapon section's tag.
 pub const WEAPON_SECTION: u32 = 0x4000;
@@ -453,7 +453,7 @@ pub(crate) fn ability_tick(
     mut blades: Query<BladeItem>,
     mut rows: Query<&mut Flame>,
     mut arcs: Query<&mut LiveArcs>,
-    draws: Option<ResMut<EffectDraws>>,
+    draws: Option<ResMut<FrameEffectDraws>>,
     mut seed: Local<u32>,
 ) {
     let (Some(time), Some(mut objects), Some(mut draws)) = (time, objects, draws) else {
@@ -512,7 +512,7 @@ pub(crate) fn ability_tick(
                                 .spawn((
                                     Name::new("_MaceArcs"),
                                     LiveArcs {
-                                        arcs: hum_arcs(&mut draws.0),
+                                        arcs: hum_arcs(&mut draws.0.0),
                                         hand: None,
                                         weapon: None,
                                         caster: Some(character),
@@ -680,7 +680,7 @@ fn hit_hooks(
     possessions: Query<&Possessions>,
     objects: Option<ResMut<LiveObjects>>,
     mut arcs: Query<&mut LiveArcs>,
-    draws: Option<ResMut<EffectDraws>>,
+    draws: Option<ResMut<FrameEffectDraws>>,
     mut bank: ResMut<SoundBank>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut shocked: MessageWriter<ArcShocked>,
@@ -746,7 +746,7 @@ fn hit_hooks(
                     end_arcs(&mut arcs, hum.arcs);
                     commands.entity(hit.striker).remove::<HumArcs>();
                 }
-                let mut burst = spark_burst(&mut draws.0);
+                let mut burst = spark_burst(&mut draws.0.0);
                 burst.anchor = Some(hit.point * 100.0);
                 commands.spawn((
                     Name::new("_MaceSpark"),
