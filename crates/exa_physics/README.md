@@ -1252,7 +1252,10 @@ each axis that leans against the cross of the other two (dot under 0.1) is
 re-formed as that cross, and the particles are put back on the rest
 tetrahedron under the matrix; the velocity is left alone. `prop` registers
 them from what the level loader gives (`prop::PendingProp`, `prop::BodyNode`)
-once transforms propagate; the static build keeps their meshes as
+once transforms propagate (a held item whose holder has no body yet waits for
+it, so it is built at its grip under the hand the body placed; the grip builder
+likewise waits while the holder key is the placeholder, and logs at debug a
+grip tied, "grip: … tied to its holder", and let go); the static build keeps their meshes as
 stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`) for
 the character capsules, which bodies skip: a prop body meets the level, and
 characters' parts, corpses and other props through the pairs, by its

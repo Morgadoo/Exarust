@@ -355,7 +355,9 @@ tested rules of their own.
   torch) and the parry-weld gate (off in the heavy-claws state and for a
   creature-body race, whose body rule flags carry the creature bit). The grip
   may be hung before the holder's body exists: `PendingGrip` then fills its
-  holder key once the body's first part does. An assembled factory weapon
+  holder key once the body's first part does, on the fixed tick before the
+  grip builder runs (the builder would otherwise tie links for an unknown
+  holder, and the release after it drop the item as having no owner). An assembled factory weapon
   (a `@` model, which stores no rigid node) is a body too, as the
   original's factory builds one for every weapon it assembles but the
   inventory icon and the colour preview: `item_bodies` falls back to

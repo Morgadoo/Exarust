@@ -341,13 +341,14 @@ fn light_torches(
             .insert((TorchRoot, exa_world::flame::CarriedFire, ChildOf(holder)));
         // The torch as a body, like a weapon: its rigid root, the grip
         // links to its hand and the impact book its own collisions keep.
-        if let Some(key) = ragdolls
+        // The holder's body may not be built yet (the load builds a body
+        // once it is dressed): the grip then waits for it (`PendingGrip`).
+        let key = ragdolls
             .get(body)
             .ok()
             .and_then(|r| r.parts.first())
-            .map(|p| p.entity)
-            && !model.nodes.is_empty()
-        {
+            .map(|p| p.entity);
+        if !model.nodes.is_empty() {
             let parts = exa_character::held_item_bodies(&model, root, &nodes);
             if parts.is_empty() {
                 continue;
@@ -367,7 +368,7 @@ fn light_torches(
                     class: 0x90,
                     soft_weld: true,
                     kind: exa_physics::grip::HeldKind::Torch,
-                    holder_key: key,
+                    holder_key: key.unwrap_or(Entity::PLACEHOLDER),
                     hands: [
                         by_bone.get(&exa_character::RIGHT_HAND).copied(),
                         by_bone.get(&exa_character::LEFT_HAND).copied(),
@@ -378,6 +379,11 @@ fn light_torches(
                     head_extra: 0.0,
                 },
             ));
+            if key.is_none() {
+                commands
+                    .entity(root)
+                    .insert(exa_character::grip_runtime::PendingGrip { holder: body });
+            }
         }
     }
 }
