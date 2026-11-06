@@ -1201,6 +1201,73 @@ pub fn sole_floor(
     floor.min(knee_cm)
 }
 
+/// The radius (cm per unit of the target's scale) the approach bend keeps
+/// from the target.
+pub const APPROACH_RADIUS_CM: f32 = 60.0;
+/// The least cosine between the bent step's end and the start, both seen
+/// from the target, for the bend to be taken.
+pub const APPROACH_COS: f32 = 0.75;
+
+/// The movement goal's bend for a lone forward word while the body has a
+/// target: `step` is the goal's vector (cm, its stride applied) from the
+/// chest `from` (cm), `target` the target's chest (cm) and `scale` its
+/// scale, all taken across the ground (x and z). With `d = from − target`
+/// and the radius `r = 60·scale`:
+/// - farther than `r` (`|d|² > r²`; an unordered compare counts as
+///   farther), the step is cut where it first enters the circle of radius
+///   `r` about the target, `t = (−b − √(b² − 4a(|d|² − r²)))/(2a)` with
+///   `a = |step|²` and `b = 2·d·step`: when the discriminant is not
+///   negative and `t` lies in 0..=1 (an unordered `t` is refused), the
+///   step shortens to `t·step` if the angle test passes;
+/// - otherwise, when `r` is over `|d|²` (the squared distance, as the
+///   original compares it), the step becomes `d` scaled to `r`, away from
+///   the target; else it is zero (its height too).
+///
+/// The angle test reads a vector whose first component the original writes
+/// twice: the end's x offset is overwritten by its z offset,
+/// `(from.z + t·step.z) − target.z`, and its second component is a stack
+/// word nothing in the routine writes [guess: zero]. Its cosine with `d`,
+/// `q·d / √(|d|²·|q|²)`, must be at least 0.75 (an unordered cosine
+/// passes). The other branches keep the step's height.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn approach_bend(step: Vec3, from: Vec3, target: Vec3, scale: f32) -> Vec3 {
+    // The engine's two-component length and dot: x then z.
+    let len2 = |x: f32, z: f32| x * x + z * z;
+    let dot = |ax: f32, az: f32, bx: f32, bz: f32| ax * bx + az * bz;
+    let (dx, dz) = (from.x - target.x, from.z - target.z);
+    let r = APPROACH_RADIUS_CM * scale;
+    let d2 = len2(dx, dz);
+    // `r² < |d|²` or unordered: the intersection branch.
+    if !(d2 <= r * r) {
+        let c = d2 - r * r;
+        let a = len2(step.x, step.z);
+        let b = dot(dx, dz, step.x, step.z) * 2.0;
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            return step;
+        }
+        let t = (-b - disc.sqrt()) / (2.0 * a);
+        if !(0.0..=1.0).contains(&t) {
+            return step;
+        }
+        let (wx, wz) = (step.x * t, step.z * t);
+        // The end's offset as the original stores it (see above).
+        let qx = (from.z + wz) - target.z;
+        let qz = 0.0;
+        let q2 = len2(qx, qz);
+        let cos = dot(qx, qz, dx, dz) / (d2 * q2).sqrt();
+        if cos < APPROACH_COS {
+            return step;
+        }
+        Vec3::new(wx, step.y, wz)
+    } else if r > d2 {
+        let k = 1.0 / d2.sqrt();
+        Vec3::new(dx * r * k, step.y, dz * r * k)
+    } else {
+        Vec3::ZERO
+    }
+}
+
 /// What a queued step does: its new target, whether the AI is told, and the
 /// countdown the queue takes (`−2` before the first landing, `−1` after).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1213,18 +1280,21 @@ pub struct QueuedStep {
 /// A queued footwork step (a positive queue count): with the body's feet
 /// on their stance spots and the queue waiting, the step is taken when the
 /// cosine between the queued vector and the line from the chest to the
-/// step target is under 0.7, or the target is nearer than 40 × scale cm. It aims at the chest
-/// plus the queued vector and tells the AI when that vector points along
-/// the facing (the dot summed z + (y + x), strictly above 0). The original
-/// clamps the target through its pathfinder; the caller does. The
-/// countdown becomes −2 before the first landing (`landings < 1`) and −1
-/// after it. The player's combat footwork (`exa_game::footwork`) takes its
-/// queue through it when its interim step lands.
+/// step target is under 0.7, or the target is nearer than 40 × scale cm.
+/// When the body has a target (`aim`: its chest, m, and its scale) and the
+/// queued vector points along the look `look` (the dot summed z + (y + x),
+/// strictly above 0), the vector is first bent at the target's circle
+/// ([`approach_bend`], in cm); the step then aims at the chest plus the
+/// vector. The original line-walks and snaps the target through its
+/// pathfinder; the caller does. The countdown becomes −2 before the first
+/// landing (`landings < 1`) and −1 after it.
+#[allow(clippy::too_many_arguments)]
 pub fn queued_step(
     chest: Vec3,
     target: Vec3,
     queued: Vec3,
-    facing: Vec3,
+    look: Vec3,
+    aim: Option<(Vec3, f32)>,
     scale: f32,
     landings: i32,
 ) -> Option<QueuedStep> {
@@ -1244,9 +1314,15 @@ pub fn queued_step(
     let off_line = f64::from(cos) < 0.7;
     let near = (40.0 * scale) * (40.0 * scale) > cm(d).length_squared();
     if off_line || near {
-        let end = step_end(true, queued, facing, chest);
+        let end = step_end(aim.is_some(), queued, look, chest);
+        let target = match aim.filter(|_| end.tell_ai) {
+            Some((foe, foe_scale)) => {
+                chest + approach_bend(cm(queued), cm(chest), cm(foe), foe_scale) / 100.0
+            }
+            None => end.target,
+        };
         Some(QueuedStep {
-            target: end.target,
+            target,
             tell_ai: end.tell_ai,
             countdown: if landings < 1 { -2 } else { -1 },
         })

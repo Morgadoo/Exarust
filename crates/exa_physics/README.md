@@ -763,7 +763,11 @@ over unless it has reached, the search starts from the original's
 just-under-maximum sentinel so a NaN distance never wins, the first leg
 stands in when none is free, and the standing position moves so that
 foot's spot is where the foot is. A queued footwork step is taken by the original's rule at the
-next landing while the queue word waits (`steps::take_queued`,
+next landing; a queued vector along the body's look (`Ragdoll::look_steps`, set by the movement
+stage from the request's look) is first bent at the body's target's circle (`approach_bend`;
+the target is the behaviour's, `Ragdoll::aim_steps`: the player's auto-target, the duellist's
+foe). It is taken
+while the queue word waits (`steps::take_queued`,
 `Ragdoll::queue_step`): the queue becomes its countdown, the step kind and
 balance flag clear. The player's combat footwork and the AI's duellist
 read and write the body's step (`Ragdoll::footwork_step`, `write_footwork`,
