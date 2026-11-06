@@ -1255,7 +1255,13 @@ them from what the level loader gives (`prop::PendingProp`, `prop::BodyNode`)
 once transforms propagate (a held item whose holder has no body yet waits for
 it, so it is built at its grip under the hand the body placed; the grip builder
 likewise waits while the holder key is the placeholder, and logs at debug a
-grip tied, "grip: … tied to its holder", and let go); the static build keeps their meshes as
+grip tied, "grip: … tied to its holder", and let go; a held item's first
+link is the attach's origin pivot, its origin to its place in the hand's (a
+shield's forearm's) frame, as the original's register-under-parent adds it,
+so the grip's two table points do not leave it a free turn; the
+`exa_physics::grip_trace` log target at debug writes every held item's grip
+after each tick: mode, each link's state, slack and span, and the item
+against its hand); the static build keeps their meshes as
 stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`) for
 the character capsules, which bodies skip: a prop body meets the level, and
 characters' parts, corpses and other props through the pairs, by its

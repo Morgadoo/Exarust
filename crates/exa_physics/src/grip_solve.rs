@@ -262,6 +262,17 @@ pub fn build_grips(
         let arm_shift = (grip.kind == HeldKind::Weapon && grip.class & grip::ARMED_GRIP != 0)
             .then(|| grip.spec.arm.map(|pair| (pair.part, grip.head_extra)))
             .flatten();
+        // The part the item hangs under and its place there: the shield's
+        // forearm (the holding hand without one), else the holding hand.
+        let (parent_index, item_in_parent) = if grip.kind == HeldKind::Shield {
+            let arm = grip.arms[holding].and_then(part_of).unwrap_or(hold_index);
+            let Some(arm_part) = holder.parts.get(arm) else {
+                continue;
+            };
+            (arm, arm_part.transform().inverse() * item_part.transform())
+        } else {
+            (hold_index, item_to_hand)
+        };
         let built = match grip.kind {
             // The torch's own two pivots and its soft weld, from its attach
             // routine rather than the grip table.
@@ -331,6 +342,16 @@ pub fn build_grips(
                         links.links.push(weld);
                     }
                 }
+            }
+            // The attach's origin pivot, the item's first link.
+            if let Some(pivot) = grip::origin_pivot(
+                item,
+                holder,
+                HeldGrip::ITEM_PART,
+                parent_index,
+                item_in_parent,
+            ) {
+                links = links.with_origin_pivot(pivot);
             }
             debug!(
                 "grip: {entity} tied to its holder {} ({:?}, hand part {hold_index}): item at {:.3}, hand at {:.3}, {:.1} cm apart",
@@ -560,10 +581,29 @@ pub fn sync_grips(held: Query<(Entity, &HeldGrip)>, mut stages: ResMut<SolverSta
 /// Keeps each grip link's smoothed length after the tick's solver: the
 /// stage works on a copy of the links, and a slack link's damper must carry
 /// its length from tick to tick as the original's link records do.
-pub fn store_grip_lengths(mut held: Query<&mut HeldGrip>, stages: Res<SolverStages>) {
+///
+/// With the `exa_physics::grip_trace` log target at debug level it also
+/// writes each held item's grip after the tick, a debug tool for holds
+/// that drift: the mode, every link's state (`P` pivot, `E` once enabled,
+/// `-` disabled, `W` a world weld), slack and current span in cm, and the
+/// item's root part against its holding hand.
+pub fn store_grip_lengths(
+    mut held: Query<&mut HeldGrip>,
+    stages: Res<SolverStages>,
+    bodies: Query<&Ragdoll>,
+    ticks: Option<Res<crate::body::BodyTicks>>,
+) {
     let Some(solver) = stages.get::<GripSolver>() else {
         return;
     };
+    if bevy::log::tracing::enabled!(target: "exa_physics::grip_trace", bevy::log::Level::DEBUG) {
+        let tick = ticks.map_or(0, |t| t.0);
+        for group in &solver.groups {
+            if let Ok(grip) = held.get(group.item) {
+                trace_grip(tick, group, grip, &bodies);
+            }
+        }
+    }
     for group in &solver.groups {
         let Ok(mut grip) = held.get_mut(group.item) else {
             continue;
@@ -575,6 +615,55 @@ pub fn store_grip_lengths(mut held: Query<&mut HeldGrip>, stages: Res<SolverStag
             kept.length = solved.length;
         }
     }
+}
+
+/// One held item's line of the grip trace ([`store_grip_lengths`]).
+fn trace_grip(tick: u64, group: &GripGroup, grip: &HeldGrip, bodies: &Query<&Ragdoll>) {
+    let (Ok(item), Some(links)) = (bodies.get(group.item), grip.links.as_ref()) else {
+        return;
+    };
+    let Some(holder) = bodies
+        .iter()
+        .find(|b| b.parts.iter().any(|p| p.entity == group.probe))
+    else {
+        return;
+    };
+    let mut words = String::new();
+    for (i, link) in links.links.iter().enumerate() {
+        let state = format!(
+            "{}{}{}{}",
+            if link.hand.is_none() { "W" } else { "" },
+            if link.flags & grip::PIVOT != 0 {
+                "P"
+            } else {
+                ""
+            },
+            if link.once_enabled() { "E" } else { "" },
+            if link.enabled() { "" } else { "-" },
+        );
+        let span = grip::link_distance(link, item, holder).map_or(-1.0, |d| d * CM);
+        words.push_str(&format!(
+            " {i}{}:{state} s{:.1} d{:.1}",
+            if i == links.main { "*" } else { "" },
+            link.slack * CM,
+            span
+        ));
+    }
+    let hand = grip.hands[grip.spec.hand.min(1)]
+        .and_then(|h| holder.parts.iter().find(|p| p.entity == h))
+        .map(|p| Vec3::from(p.transform().translation));
+    let root = item.parts.first().map(|p| p.transform());
+    let (at, up) = root.map_or((Vec3::NAN, Vec3::NAN), |t| {
+        (Vec3::from(t.translation), Vec3::from(t.matrix3.y_axis))
+    });
+    debug!(
+        target: "exa_physics::grip_trace",
+        "grip trace tick {tick} item {} mode {} item {at:.3} up {up:.2} hand {:.3?} off {:.1} cm;{words}",
+        group.item,
+        links.mode,
+        hand,
+        hand.map_or(-1.0, |h| h.distance(at) * CM),
+    );
 }
 
 /// Installs the grip stage into the solver's stages.

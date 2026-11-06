@@ -220,6 +220,27 @@ pub struct GripLinks {
 }
 
 impl GripLinks {
+    /// Puts `pivot` (the item's [`origin_pivot`]) first, as the attach
+    /// registers it before the grip's links, moving every link index the
+    /// grip keeps past it.
+    pub fn with_origin_pivot(mut self, pivot: GripLink) -> Self {
+        self.links.insert(0, pivot);
+        self.main += 1;
+        for index in [
+            &mut self.second,
+            &mut self.arm,
+            &mut self.extra,
+            &mut self.flip,
+            &mut self.world_soft,
+            &mut self.world_hard,
+        ] {
+            if let Some(i) = index.as_mut() {
+                *i += 1;
+            }
+        }
+        self
+    }
+
     /// The parry's end on this item. The parry grip is the main link, and
     /// only when its index is past the pivot: that link's flags become the
     /// disabled bit alone. The pivot link is left as it is.
@@ -427,7 +448,7 @@ pub fn unarmed_hand_mobility(base_mass: f32, heavy_claws: bool) -> f32 {
 }
 
 /// The distance (m) between a link's two points now.
-fn link_distance(link: &GripLink, item: &Ragdoll, hand: &Ragdoll) -> Option<f32> {
+pub fn link_distance(link: &GripLink, item: &Ragdoll, hand: &Ragdoll) -> Option<f32> {
     let a = item.point_at(link.item, &link.on_item)?;
     let b = link
         .hand
@@ -478,6 +499,41 @@ fn make_link(
             smoothing
         },
         flags,
+        shares: shares(item_mobility, parent_mobility),
+        anchor: None,
+    })
+}
+
+/// The origin pivot a held item gets when it is attached under its
+/// parent part, as every body part registered under a parent body does: a
+/// hard pivot (slack 0, strength 1, the body-link and made-by-code flags)
+/// from the item part's own origin to where that origin sits in the parent
+/// part's frame (`item_in_parent`, the item node's matrix in the parent's
+/// frame, m). The attach makes it the item's first link and the grip's
+/// links follow it. With the grip table's two points it holds the item
+/// still under the hand; without it the item turns freely about the line
+/// through those two points. `None` when a part is missing.
+pub fn origin_pivot(
+    item: &Ragdoll,
+    holder: &Ragdoll,
+    item_part: usize,
+    parent: usize,
+    item_in_parent: Affine3A,
+) -> Option<GripLink> {
+    let on_item = item.weights_at(item_part, Vec3::ZERO)?;
+    let on_hand = holder.weights_at(parent, Vec3::from(item_in_parent.translation))?;
+    let item_mobility = item.parts.get(item_part)?.inverse_mass;
+    let parent_mobility = holder.link_mobility(parent)?;
+    Some(GripLink {
+        item: item_part,
+        on_item,
+        hand: Some(parent),
+        on_hand,
+        slack: 0.0,
+        length: 0.0,
+        strength: 1.0,
+        smoothing: DEFAULT_SMOOTHING,
+        flags: PIVOT | RUNTIME,
         shares: shares(item_mobility, parent_mobility),
         anchor: None,
     })

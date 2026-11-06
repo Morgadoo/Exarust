@@ -381,12 +381,16 @@ fn a_held_items_links_are_built_from_its_bodies() {
     app.update();
     let grip = app.world().get::<HeldGrip>(item_e).unwrap();
     let links = grip.links.as_ref().expect("the links were not built");
-    assert_eq!(links.links.len(), 2);
-    assert_eq!(links.main, 0);
+    // The attach's origin pivot first, then the table's pivot and the
+    // stiff world weld.
+    assert_eq!(links.links.len(), 3);
+    assert_eq!(links.links[0].flags, PIVOT | crate::grip::RUNTIME);
+    assert_eq!(links.links[0].slack, 0.0);
+    assert_eq!(links.main, 1);
     assert_eq!(links.world_soft, None);
-    assert_eq!(links.world_hard, Some(1));
-    assert_eq!(links.links[1].flags & DISABLED, DISABLED);
-    assert!(links.links[0].enabled());
+    assert_eq!(links.world_hard, Some(2));
+    assert_eq!(links.links[2].flags & DISABLED, DISABLED);
+    assert!(links.links[0].enabled() && links.links[1].enabled());
     assert!(holder_e != Entity::PLACEHOLDER);
 }
 
@@ -600,13 +604,16 @@ fn a_shield_item_builds_its_face_pivots() {
         .links
         .as_ref()
         .expect("the shield links were not built");
-    assert_eq!(links.links.len(), 4);
-    assert_eq!(links.world_soft, Some(3));
+    // The origin pivot to the forearm, the three face pivots, the soft
+    // world weld.
+    assert_eq!(links.links.len(), 5);
+    assert_eq!(links.main, 1);
+    assert_eq!(links.world_soft, Some(4));
     assert_eq!(links.world_hard, None);
-    for link in &links.links[..3] {
+    for link in &links.links[..4] {
         assert_eq!(link.flags, PIVOT | crate::grip::RUNTIME);
     }
-    assert_eq!(links.links[3].flags, crate::grip::RUNTIME | DISABLED);
+    assert_eq!(links.links[4].flags, crate::grip::RUNTIME | DISABLED);
 }
 
 /// The re-place after a move: a body moved a metre leaves its held item
@@ -739,4 +746,86 @@ fn a_flipped_items_rest_turns_half_a_turn() {
     assert_eq!(plain.translation, turned.translation);
     let x = turned.transform_vector3(Vec3::X);
     assert!((x + Vec3::X).length() < 1e-6);
+}
+
+/// A held item hangs under its hand by the attach's origin pivot and the
+/// grip's two points: turned about the line through the two points, it is
+/// brought back, as three pivots hold a rigid body still. Without the
+/// origin pivot a two-point grip leaves that turn free and the item swings
+/// away from the palm.
+#[test]
+fn the_origin_pivot_holds_the_item_still_under_its_hand() {
+    use crate::grip::{GripBindings, origin_pivot};
+    let item_e = Entity::from_raw_u32(1).unwrap();
+    let hand_e = Entity::from_raw_u32(2).unwrap();
+    let item = rigid(item_e, Vec3::new(0.0, 0.0, 0.0), 1.0);
+    let hand = rigid(hand_e, Vec3::new(0.0, 0.0, 0.0), 0.0);
+    let bindings = GripBindings {
+        item_part: 0,
+        hand_parts: [0, 0],
+        arm_parts: [0, 0],
+    };
+    let spec = crate::grip::GripSpec {
+        hand: 0,
+        links: vec![
+            crate::grip::GripPoint {
+                point: Vec3::new(0.0, 20.0, 0.0),
+                slack: 0.0,
+            },
+            crate::grip::GripPoint {
+                point: Vec3::new(15.0, 0.0, 0.0),
+                slack: 0.0,
+            },
+        ],
+        second_hand: None,
+        arm: None,
+        extra: None,
+    };
+    let solve = |with_pivot: bool| {
+        let built = crate::grip::build(
+            &item,
+            &hand,
+            bindings,
+            &spec,
+            1.0,
+            1.0,
+            Affine3A::IDENTITY,
+            false,
+            1.0,
+        )
+        .unwrap();
+        let links = if with_pivot {
+            built.with_origin_pivot(origin_pivot(&item, &hand, 0, 0, Affine3A::IDENTITY).unwrap())
+        } else {
+            built
+        };
+        // Turn the item 40 degrees about the line through its two grip
+        // points, then let the grip stage run.
+        let a = Vec3::new(0.0, 0.2, 0.0);
+        let b = Vec3::new(0.15, 0.0, 0.0);
+        let axis = (b - a).normalize();
+        let turn = Affine3A::from_translation(a)
+            * Affine3A::from_axis_angle(axis, 40f32.to_radians())
+            * Affine3A::from_translation(-a);
+        let mut turned = item.clone();
+        turned.place_at(&[turn]);
+        let mut solver = GripSolver {
+            groups: vec![GripGroup {
+                item: item_e,
+                probe: hand_e,
+                links,
+            }],
+        };
+        let mut hand = hand.clone();
+        for i in 0..20 {
+            let mut bodies = [&mut turned, &mut hand];
+            solver.links(&mut bodies, i);
+        }
+        let origin = turned.weights_at(0, Vec3::ZERO).unwrap();
+        turned.point_at(0, &origin).unwrap().length() * 100.0
+    };
+    // The origin stays off by the turn without the pivot, and comes back
+    // with it.
+    assert!(solve(false) > 5.0, "the two points alone hold the turn");
+    assert!(solve(true) < 0.5, "the origin pivot brings it back");
 }
