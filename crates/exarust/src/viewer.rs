@@ -2076,8 +2076,29 @@ fn finish_dressing(
         ),
     >,
     options: Res<Options>,
+    arena: Option<Res<exa_game::arena_live::ArenaScene>>,
+    mut stood_frames: Local<u32>,
 ) {
     let (total, left) = (outfits.iter().count(), undressed.iter().count());
+    // An arena match the player enters stands its first round behind the
+    // loading screen: the load waits until it is stood and two frames more,
+    // in which the scene generator reads its spawn commands and their
+    // bodies appear (and are counted above). Game time stands still
+    // meanwhile, so the wait in frames changes no tick.
+    let standing = match arena.as_ref() {
+        Some(scene) if scene.player_entry.is_some() => {
+            if scene.placed {
+                *stood_frames += 1;
+            } else {
+                *stood_frames = 0;
+            }
+            *stood_frames <= 2
+        }
+        _ => false,
+    };
+    if standing && stage_waits(pending.since, &options) {
+        return;
+    }
     // The bodies' limb trees are built on worker threads; the load waits for
     // them too, so the level's first tick does not depend on when a thread
     // finished one (a tree installed a tick later changes the limbs'
@@ -2100,6 +2121,7 @@ fn finish_dressing(
             "{building} bodies or their limb trees still building after {STAGE_TIMEOUT:?}; starting anyway"
         );
     }
+    debug!("dressing stage done: {total} outfits, {left} undressed, {building} building");
     commands.remove_resource::<PendingDressing>();
     begin_lighting(&mut commands, &gi, DRESSED_AT);
 }

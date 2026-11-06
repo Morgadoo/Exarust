@@ -271,6 +271,41 @@ mod tests {
         }
     }
 
+    /// The placement's turn is the original's rotation builder, whose rows
+    /// are the item's axes under the hand (row-vector convention), with
+    /// the table's x, y and z angles: row 0 (cz·cy, sz, −cz·sy), row 1
+    /// (sx·sy − cx·sz·cy, cx·cz, sx·cy + cx·sz·sy), row 2 (cx·sy + sx·sz·cy,
+    /// −sx·cz, cx·cy − sx·sz·sy). Every grip of the table, unflipped and
+    /// flipped (the flip negates the x and z rows).
+    #[test]
+    fn the_placement_turn_is_the_original_rotation_builder() {
+        for grip in GRIPS.iter().filter(|g| !g.links.is_empty()) {
+            let a = grip.euler * std::f32::consts::PI / 180.0;
+            let (sx, cx) = a.x.sin_cos();
+            let (sy, cy) = a.y.sin_cos();
+            let (sz, cz) = a.z.sin_cos();
+            let rows = [
+                Vec3::new(cz * cy, sz, -cz * sy),
+                Vec3::new(sx * sy - cx * sz * cy, cx * cz, sx * cy + cx * sz * sy),
+                Vec3::new(cx * sy + sx * sz * cy, -sx * cz, cx * cy - sx * sz * sy),
+            ];
+            for flipped in [false, true] {
+                let turn = Mat3::from_quat(grip.rotation(flipped));
+                let sign = if flipped { -1.0 } else { 1.0 };
+                let want = [rows[0] * sign, rows[1], rows[2] * sign];
+                for (axis, row) in [turn.x_axis, turn.y_axis, turn.z_axis]
+                    .into_iter()
+                    .zip(want)
+                {
+                    assert!(
+                        (axis - row).length() < 1e-5,
+                        "{grip:?} {flipped}: {axis} vs {row}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn each_hand_class_has_the_original_grip() {
         let one = &GRIPS[1];

@@ -660,9 +660,15 @@ fn draw_end_screen(
     ));
 }
 
-/// Stands the first round's bodies once the level is loaded and the player
+/// Stands the first round's bodies once the level is built and the player
 /// is there; in a spectated match (no entrant is the player's) once the
-/// player is gone (`crate::save_live`'s bench).
+/// loading screen is gone and the player with it (`crate::save_live`'s
+/// bench). A match the player enters is stood behind the loading screen,
+/// as the original builds a round's bodies within its load: the play
+/// view's load then waits for them to be dressed and built, and the
+/// match's first tick is the same from run to run (stood after the load,
+/// the bodies were dressed on whichever frame the dressing budget and the
+/// paint jobs allowed, a varying tick).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stand_first_round(
     scene: Option<ResMut<ArenaScene>>,
@@ -685,7 +691,8 @@ pub(crate) fn stand_first_round(
     } else {
         players.is_empty()
     };
-    if scene.placed || loading.is_some() || !building.is_empty() || !player_ready {
+    let spectated = scene.player_entry.is_none();
+    if scene.placed || (spectated && loading.is_some()) || !building.is_empty() || !player_ready {
         return;
     }
     if !levels

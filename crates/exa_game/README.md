@@ -2103,8 +2103,13 @@ saved records are not kept [guess].
 arena in process (`exa_world::level_lifecycle`): the career is the running
 `ArenaCareer` resource and the board's setup (with the event weapon row) is
 kept in `PendingArenaLaunch`, so no hand-off file is written or read. The
-match stands the first round from `match_layout::layout`, and the round tick
-ends the round as before. The round's result opens `ArenaEndScreen`, which
+match stands the first round from `match_layout::layout`, behind the
+loading screen when the player enters it (the play view's dressing stage
+waits for those bodies, so the first tick repeats; a spectated match still
+stands after the load), and the round tick ends the round as before. The
+arena's draws reseed from `arena_match::counter_now`, the wall clock, which
+a `--fixed-frames` run pins (`arena_match::fix_counter`) so its opponents
+are built the same every run. The round's result opens `ArenaEndScreen`, which
 paints the arena's single-row end menu through the GUI path (`NEXT FIGHT`
 on screen 3, `EXIT;` on screen 2) and takes Enter or a pointer release over
 its first row: a next round stands the winner, brings `regenerate_round`'s

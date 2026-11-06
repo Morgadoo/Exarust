@@ -2019,6 +2019,10 @@ fn equip_outfits(
         if do_hands {
             with.wielded = wielded.cloned();
         }
+        debug!(
+            "dressed {body}: outfit {do_outfit}, hands {do_hands} ({})",
+            wielded.map_or("empty", |w| w.model.as_str())
+        );
         commands
             .entity(body)
             .insert((Dressed, with))
