@@ -943,6 +943,8 @@ Round 89 gripfix: characters hold their weapons again (a round 85 regression).
 
 Round 90 pivot: the sword no longer floats off the hand in combat stance.
 
+Round 91 motiledyn2: NPCs walk their routes on their own feet instead of sliding.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
