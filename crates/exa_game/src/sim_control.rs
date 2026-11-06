@@ -193,7 +193,7 @@ impl Plugin for SimControlPlugin {
             )
             .add_systems(
                 RunFixedMainLoop,
-                (hold_fixed_while_loading, step_once)
+                (hold_fixed_while_loading, step_once, hold_the_simulation)
                     .chain()
                     .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
             )
@@ -310,6 +310,47 @@ fn hold_fixed_while_loading(
         let left = fixed.overstep();
         fixed.discard_overstep(left);
     }
+}
+
+/// The screens that hold the simulation, as the original's raise its pause
+/// counter (context/re/sim-thread-input.md): the loading screen, the main
+/// menu, the splash, the character creator and the saves' screen, the end
+/// of a session's menu, and a paused game clock (the pause key, a level
+/// change, the death fade). A free-running simulation sleeps while any
+/// shows ([`exa_physics::sim_app::SimPause`]); in lockstep the fixed loop's
+/// own hold and the paused clock do the same.
+#[allow(clippy::too_many_arguments)]
+fn hold_the_simulation(
+    pause: Option<ResMut<exa_physics::sim_app::SimPause>>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    virt: Res<Time<Virtual>>,
+    menu: Option<Res<crate::menu_screen::MenuScreen>>,
+    creator: Option<Res<crate::creator_screen::CreatorScreen>>,
+    end_menu: Option<Res<crate::end_menu_screen::EndMenuScreen>>,
+    splash: Option<Res<crate::splash::SplashScreen>>,
+    mut was: Local<Option<bool>>,
+) {
+    let Some(mut pause) = pause else {
+        return;
+    };
+    let held = loading.is_some()
+        || virt.is_paused()
+        || menu.is_some_and(|m| m.open)
+        || creator.is_some_and(|c| c.is_open())
+        || end_menu.is_some_and(|m| m.open)
+        || splash.is_some_and(|s| s.0.is_some());
+    if *was != Some(held) {
+        *was = Some(held);
+        debug!(
+            "simulation {}",
+            if held {
+                "held by the frame"
+            } else {
+                "released"
+            }
+        );
+    }
+    pause.hold(held);
 }
 
 /// While paused, runs one tick a frame for each step asked for: the fixed

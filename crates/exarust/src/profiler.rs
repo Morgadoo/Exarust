@@ -81,8 +81,12 @@ struct FrameRecord {
 struct Probes {
     marks: [Option<Instant>; 7],
     last_start: Option<Instant>,
-    ticks: u32,
 }
+
+/// The fixed ticks since the last frame's first probe, counted by the
+/// fixed step wherever it runs (one counter shared by both worlds' copies).
+#[derive(Resource, Debug, Clone, Default)]
+struct ProbeTicks(Arc<std::sync::atomic::AtomicU32>);
 
 #[derive(Resource, Default)]
 struct FrameHistory {
@@ -288,9 +292,9 @@ pub(crate) struct ProfilerPlugin;
 
 impl Plugin for ProfilerPlugin {
     fn build(&self, app: &mut App) {
-        // The fixed step's probes run in the simulation's world under the
-        // bridge: the probes are lent to it for each step.
-        exa_physics::sim_bridge::SimBridgeAppExt::bridge_lend_resource::<Probes>(app);
+        // The fixed step's tick count runs in the simulation's world under
+        // the bridge: both worlds hold the same counter.
+        exa_physics::sim_bridge::SimBridgeAppExt::bridge_copy_in_resource::<ProbeTicks>(app);
         let (on, shown) = app
             .world()
             .get_resource::<Options>()
@@ -305,6 +309,7 @@ impl Plugin for ProfilerPlugin {
             .insert_resource(ProfilerOverlay { on: shown })
             .insert_resource(render_time.clone())
             .init_resource::<Probes>()
+            .init_resource::<ProbeTicks>()
             .init_resource::<exa_ai::BrainTickClock>()
             .init_resource::<Counts>()
             .init_resource::<AssetChurn>()
@@ -324,19 +329,22 @@ impl Plugin for ProfilerPlugin {
             app.add_systems(
                 Probe(i),
                 move |probes: ResMut<Probes>,
+                      ticks: Res<ProbeTicks>,
                       history: ResMut<FrameHistory>,
                       render: Res<RenderTime>,
                       brains: Option<ResMut<exa_ai::BrainTickClock>>| {
-                    probe(i, probes, history, render, brains)
+                    probe(i, probes, &ticks, history, render, brains)
                 },
             );
         }
-        app.add_systems(FixedFirst, |mut p: ResMut<Probes>| p.ticks += 1)
-            .add_systems(
-                Update,
-                (toggle_overlay, show_overlay, update_overlay).chain(),
-            )
-            .add_systems(Last, (count, count_churn, log_report).chain());
+        app.add_systems(FixedFirst, |p: Res<ProbeTicks>| {
+            p.0.fetch_add(1, Ordering::Relaxed);
+        })
+        .add_systems(
+            Update,
+            (toggle_overlay, show_overlay, update_overlay).chain(),
+        )
+        .add_systems(Last, (count, count_churn, log_report).chain());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -356,6 +364,7 @@ impl Plugin for ProfilerPlugin {
 fn probe(
     i: usize,
     mut probes: ResMut<Probes>,
+    ticks: &ProbeTicks,
     mut history: ResMut<FrameHistory>,
     render: Res<RenderTime>,
     brains: Option<ResMut<exa_ai::BrainTickClock>>,
@@ -374,7 +383,7 @@ fn probe(
                 total: ms(start, now),
                 stages,
                 rest: ms(end, now),
-                ticks: probes.ticks,
+                ticks: ticks.0.load(Ordering::Relaxed),
                 render: render.0.load(Ordering::Relaxed) as f32 / 1000.0,
                 ..Default::default()
             };
@@ -395,7 +404,7 @@ fn probe(
         }
         probes.last_start = Some(now);
         probes.marks = [None; 7];
-        probes.ticks = 0;
+        ticks.0.store(0, Ordering::Relaxed);
     }
     probes.marks[i] = Some(now);
 }

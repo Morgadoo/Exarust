@@ -109,7 +109,7 @@ fn bridge_character_tick_types(app: &mut App) {
         .bridge_copy_opaque_resource::<exa_anim::Motions>()
         .bridge_copy::<PlayerBody>()
         .bridge_copy::<OutOfScene>()
-        .bridge_copy::<CharacterBody>()
+        .bridge_copy_drawn::<CharacterBody>()
         .bridge_copy::<exa_ai::brain::Npc>()
         .bridge_copy::<exa_ai::combatant::Combatant>()
         .bridge_copy::<exa_combat::Attacking>()
@@ -124,7 +124,7 @@ fn bridge_character_tick_types(app: &mut App) {
         .bridge_copy::<crate::balance::ShockHeld>()
         .bridge_copy::<crate::golem_body::StatueRest>()
         .bridge_copy::<crate::item_effects::WornEffects>()
-        .bridge_lend_resource::<sampler::SampledPose>()
+        .bridge_move_resource::<sampler::SampledPose>()
         .bridge_message::<exa_physics::body::Footstep>()
         .bridge_message::<exa_physics::body::FootSounded>();
 }

@@ -70,7 +70,7 @@ impl Plugin for RoleScriptsPlugin {
 fn bridge_role_scripts_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<exa_script::ScriptEffect>()
-        .bridge_lend_resource::<crate::role_scripts::ExtraEncounterScript>()
+        .bridge_move_resource::<crate::role_scripts::ExtraEncounterScript>()
         .bridge_copy_in_resource::<crate::role_scripts::ScriptLocale>()
         .bridge_copy_in_resource::<exa_script::Scripts>();
 }

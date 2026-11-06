@@ -611,7 +611,7 @@ fn bridge_player_types(app: &mut App) {
     app.bridge_copy::<Player>()
         .bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>()
         .bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>()
-        .bridge_lend_resource::<exa_ai::presence::ActivationArea>()
+        .bridge_move_resource::<exa_ai::presence::ActivationArea>()
         .bridge_copy::<exa_character::Wielded>()
         .bridge_copy_in_resource::<crate::bindings::Bindings>()
         .bridge_copy_in_resource::<crate::experience_live::StoryExperience>()

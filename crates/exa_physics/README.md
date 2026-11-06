@@ -33,6 +33,33 @@ for it, and `LockstepCheck` counts the steps against the snapshots' ticks
 only its clock, so a body's every pose is the same bit for bit with or
 without the shell (`body_floor_test`).
 
+With `SimMode::Free` (`--sim-free`; lockstep stays the default) the
+simulation runs on its own thread as the original's does
+(context/re/sim-thread-input.md): a 12 ms real-clock step from
+`step_driver` (more than four steps late drops the backlog), asleep 11 ms a
+pass while the frame's packets say it is held (`SimPause`: the loading
+screen, the menus, the splash, the creator, the end menu, a paused game
+clock; the paused time stays out of its clock), the frame's packets
+drained before each step (its changes, its writes and posted calls, Bevy's
+messages updated at most once a step) and a packet stamped with the step's
+tick and time (`FreeStamp`) sent after it. Its `Time` and `Time<Fixed>`
+are its own, advanced a timestep a step. The frame's fixed loop does not
+run: once a frame (`SimExchange`, where the loop ran) the frame sends its
+packet without waiting and applies every step packet that arrived, in
+order, with its events; held, it keeps its changes and posts until it lets
+go. The original's render fraction, 1 + (frame clock − published time) /
+step clamped to [−2, 2], goes into the frame's `Time<Fixed>` as its
+overstep (0 to 2 steps), so every drawing that reads `overstep_fraction`
+draws between the last two steps, or ahead of the last along its step, as
+the original's frame does. Data both sides write meets a frame write made
+against an older step: a drawn copy (`bridge_copy_drawn`: transforms, the
+drawn controller) keeps the simulation's newer value; any other keeps the
+frame's, as in lockstep; both are counted in the log every 1000 steps
+("frame values after a newer simulation write"). A lent resource moves to
+the simulation for good in free mode; the lent types only the simulation
+touches are moved in every mode (`bridge_move_resource`), and the alarm's
+zones and state are copied in and a snapshot (the frame reads them).
+
 `sim_bridge` is the lockstep copy bridge (stage 3): `SimBridgePlugin` moves
 the fixed step's schedules (`FixedMainScheduleOrder`'s, plus the ones it
 names, such as the character tick and the brain chain) whole, with their

@@ -139,8 +139,11 @@ pub struct AlarmRoll(pub exa_audio::Lcg);
 fn bridge_alarm_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_move_resource::<AlarmRoll>()
-        .bridge_lend_resource::<AlarmVolumes>()
-        .bridge_lend_resource::<GolemAlarm>()
+        // The frame inserts the zones at the level start and reads them and
+        // the alarm when the flow returns from an alarm; the zone check
+        // (simulation) rings it.
+        .bridge_copy_in_resource::<AlarmVolumes>()
+        .bridge_snapshot_resource::<GolemAlarm>()
         .bridge_copy::<AlarmCheckPoint>();
 }
 

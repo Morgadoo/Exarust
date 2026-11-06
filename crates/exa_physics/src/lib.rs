@@ -90,7 +90,9 @@ impl Plugin for PhysicsPlugin {
             )
             .add_systems(
                 RunFixedMainLoop,
-                show_characters.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
+                show_characters
+                    .in_set(RunFixedMainLoopSystems::AfterFixedMainLoop)
+                    .after(sim_app::SimExchange),
             )
             .add_plugins((body::BodyPlugin, prop::PropPlugin))
             // The frame's picks query a replica of the collision world; the
