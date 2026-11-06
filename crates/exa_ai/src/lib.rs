@@ -88,13 +88,14 @@ impl Plugin for AiPlugin {
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::BlowNoticed>()
             .add_message::<struck::Taught>()
-            // The brains' reaction to this frame's blows follows the hit
-            // chain into the simulation's frame start.
+            // The brains' reaction to the tick's blows follows the hit
+            // chain in the post-step: the original's damage routine calls
+            // the struck behaviour once per contact.
             .add_systems(
-                exa_physics::sim_app::SimFrameStart,
+                FixedUpdate,
                 struck::react_to_blows
                     .in_set(struck::HitReactions)
-                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Late)
+                    .in_set(exa_physics::body::BodyPostStep)
                     .after(exa_combat::CombatSystems),
             )
             .add_systems(

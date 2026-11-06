@@ -168,18 +168,17 @@ impl Plugin for SimControlPlugin {
             .add_message::<exa_combat::Hit>()
             .add_systems(Update, start_speed.run_if(|c: Res<SimControl>| !c.started))
             .add_systems(
-                // After the hit chain, in the simulation's frame start.
-                exa_physics::sim_app::SimFrameStart,
+                // After the hit chain, in the fixed step's post-step.
+                FixedUpdate,
                 (
                     arm_pause_on_hit.run_if(|c: Res<SimControl>| c.pause_on_hit.is_some()),
                     arm_pause_after_collapse
                         .run_if(|c: Res<SimControl>| c.pause_after_collapse.is_some()),
                     refill_undying,
                 )
-                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Late)
+                    .in_set(exa_physics::body::BodyPostStep)
                     .after(exa_combat::CombatSystems),
             )
-            .add_systems(FixedUpdate, refill_undying.after(BodySystems))
             .add_systems(Update, sim_keys)
             // The fixed loop neither takes the frame's time nor runs while
             // the loading screen shows.
@@ -341,7 +340,7 @@ fn arm_pause_on_hit(
 }
 
 /// `--pause-after-collapse`: the first body whose condition becomes
-/// collapsing (a killing blow, dealt in the frame's combat systems) sets the
+/// collapsing (a killing blow, dealt in the fixed step's post-step) sets the
 /// pause that many ticks after the current tick, so a shot shows the
 /// collapse that long after the blow.
 fn arm_pause_after_collapse(
@@ -633,9 +632,9 @@ mod tests {
     }
 
     /// `--pause-on-hit 3`: the duellist's blow arms nothing; the player's
-    /// first blow pauses the run three ticks after the tick count of the
-    /// frame start that took it (the hit chain runs before the ticks),
-    /// and a later blow no longer moves the pause.
+    /// first blow pauses the run three ticks after the tick whose post-step
+    /// dealt it (the frame's first), and a later blow no longer moves the
+    /// pause.
     #[test]
     fn pause_three_ticks_after_the_players_blow() {
         use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
@@ -674,9 +673,9 @@ mod tests {
         app.update();
         assert_eq!(app.world().resource::<SimControl>().pause_at_tick, None);
         app.world_mut().write_message(blow(player));
-        // The hit chain runs at the frame's start, before its ticks: the
-        // blow lands at the tick count the frame starts on.
-        let landed = ticks(&app);
+        // The hit chain runs in each tick's post-step: the frame's first
+        // tick deals the blow.
+        let landed = ticks(&app) + 1;
         app.update();
         assert_eq!(
             app.world().resource::<SimControl>().pause_at_tick,
@@ -692,7 +691,7 @@ mod tests {
 
     /// `--pause-after-collapse 83`: a living fighter arms nothing; the
     /// first body to start collapsing pauses the run 83 ticks (1 s) after
-    /// the tick it started in, and a later collapse no longer moves it.
+    /// the tick whose post-step sees it, and a later collapse no longer moves it.
     #[test]
     fn pause_a_second_after_a_collapse() {
         use exa_combat::Condition;
@@ -704,8 +703,8 @@ mod tests {
         }
         assert_eq!(app.world().resource::<SimControl>().pause_at_tick, None);
         *app.world_mut().get_mut::<Condition>(fighter).unwrap() = Condition::COLLAPSING;
-        // Seen at the frame's start, before its ticks.
-        let collapsed = ticks(&app);
+        // Seen in the post-step of the frame's first tick.
+        let collapsed = ticks(&app) + 1;
         app.update();
         assert_eq!(
             app.world().resource::<SimControl>().pause_at_tick,

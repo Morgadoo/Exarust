@@ -56,6 +56,7 @@ use std::collections::HashSet;
 
 pub use aim::{HeadLook, HeadTrack, track_head, track_head_far};
 use attack::{AttackMotion, Attacker, Slot};
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 pub use condition::{Condition, StateFlags};
 use damage::{Strike, WeaponRecord};
@@ -64,7 +65,8 @@ use exa_formats::character_stats::BodyRules;
 use exa_formats::characters::Perk;
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{
-    BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
+    BodyPostStep, BodyPreStep, BodySystems, BodyTicks, CharacterStage, CharacterTick, Fallen,
+    GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
 };
 use exa_physics::part::{PART_SOUND_SPREAD_MS, part_sound_ready};
 use exa_world::PartBounds;
@@ -154,25 +156,33 @@ impl Plugin for CombatPlugin {
                         .after(regen::regenerate_red),
                 ),
             )
-            // The hit chain runs in the simulation's frame start, before
-            // the frame's ticks (on the simulation's thread behind the
-            // bridge): the original's damage routine takes a pending hit in
-            // its dynamics' post-step, on its simulation thread. It reads the
-            // transforms the frame last propagated.
+            // The hit chain, every body tick after the solver, on the
+            // simulation's thread behind the bridge: the original's
+            // post-step deals each character's pending hit through its
+            // damage routine every 12 ms step (`0x1001592d0` calls it,
+            // then clears the pending kind). The strikers are tracked from
+            // the bodies the tick left, the held bodies' contacts are
+            // classified, then the sweep of the strikers with no body, the
+            // damage, and the bites the wounds open.
             .add_systems(
-                exa_physics::sim_app::SimFrameStart,
-                // Wounds struck this frame wait from the next tick on.
+                FixedUpdate,
                 (
-                    wounds::count_down_wounds,
-                    track_blades,
-                    detect_hits,
-                    react_to_hits,
-                    bite::open_bites,
-                )
-                    .chain()
-                    .in_set(CombatSystems)
-                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Late),
-            );
+                    track_blades
+                        .after(BodySystems)
+                        .before(block::strike_held)
+                        .before(impact::strike_limbs),
+                    (detect_hits, react_to_hits, bite::open_bites)
+                        .chain()
+                        .in_set(CombatSystems)
+                        .after(block::strike_held)
+                        .after(impact::strike_limbs)
+                        .after(impact::level_impacts),
+                ),
+            )
+            // The waiting wounds count down before the characters' ticks,
+            // as the original's body tick paints its queued marks.
+            .add_systems(FixedUpdate, wounds::count_down_wounds.in_set(BodyPreStep))
+            .configure_sets(FixedUpdate, CombatSystems.in_set(BodyPostStep));
         exa_physics::sim_app::add_frame_start(app);
     }
 }
@@ -219,8 +229,9 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::swing_voice::SwingVoice>();
 }
 
-/// The combat's frame systems: wounds counted down, blades tracked, hits
-/// found and dealt. In `PostUpdate`, after transforms propagate.
+/// The combat's post-step: the strikers' sweep, the hits dealt and the
+/// bites opened. In the fixed step's [`BodyPostStep`], after the held
+/// bodies' contacts are classified.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CombatSystems;
 
@@ -274,13 +285,18 @@ pub struct Blade {
     /// The weapon's stats.
     pub record: WeaponRecord,
     pub tip_last: Option<Vec3>,
-    /// Grip and tip last frame, for sweeping the blade between frames.
+    /// Grip and tip at the step before, for sweeping the blade between
+    /// steps.
     pub swept_from: Option<(Vec3, Vec3)>,
     pub tip_speed: f32,
-    /// Tip velocity, m/s.
+    /// Tip velocity, m/s, over the last body tick.
     pub tip_velocity: Vec3,
-    /// Grip position last frame.
+    /// Grip position at the step before.
     pub grip_last: Vec3,
+    /// The striker's frame where the last body tick left it (grip at the
+    /// origin, the weapon along +Y), as [`track_blades`] took it from the
+    /// bodies; none before it was first tracked.
+    pub frame: Option<Affine3A>,
 }
 
 impl Blade {
@@ -296,7 +312,14 @@ impl Blade {
             tip_speed: 0.0,
             tip_velocity: Vec3::ZERO,
             grip_last: Vec3::ZERO,
+            frame: None,
         }
+    }
+
+    /// The striker's frame at the last body tick, else its scene transform
+    /// (a striker not tracked yet).
+    pub fn frame_or(&self, scene: Option<&GlobalTransform>) -> Option<Affine3A> {
+        self.frame.or_else(|| scene.map(GlobalTransform::affine))
     }
 
     /// The same striker as the held item in `slot`.
@@ -553,22 +576,69 @@ pub fn start_attack<'a>(
         .insert(Attacking::new(motion, start.weapon_class));
 }
 
-fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform)>) {
-    let dt = time.delta_secs().max(1e-4);
-    for (mut blade, gt) in &mut blades {
-        let tip = gt.transform_point(Vec3::Y * blade.length);
+/// The striker's frame where the last body tick left it, from the bodies
+/// rather than the scene the frame last drew: a held item with a body of
+/// its own is moved through the blade's entity (its first part), so its
+/// frame is that part's; a striker carried by a part of its wielder's body
+/// (a fist, a held model with no body) is that part's frame times its own
+/// placement under it. Anything else keeps its scene transform.
+pub fn striker_frame(
+    entity: Entity,
+    blade: &Blade,
+    local: Option<&Transform>,
+    parent: Option<&ChildOf>,
+    scene: Option<&GlobalTransform>,
+    bodies: &Query<&Ragdoll>,
+) -> Option<Affine3A> {
+    let part_frame = |owner: Entity, part: Entity| {
+        let body = bodies.get(owner).ok()?;
+        let p = body.parts.iter().find(|p| p.entity == part)?;
+        Some(p.drawn(1.0))
+    };
+    if let Some(own) = part_frame(entity, entity) {
+        return Some(own);
+    }
+    if let (Some(local), Some(parent)) = (local, parent)
+        && let Some(carrier) = part_frame(blade.wielder, parent.parent())
+    {
+        return Some(carrier * local.compute_affine());
+    }
+    scene.map(GlobalTransform::affine)
+}
+
+/// Every striker's frame, grip and tip after the body tick, with the tip's
+/// velocity over the tick (m/s): the original's strikers move with their
+/// bodies, and the swing tracker reads the tip's velocity each tick.
+#[allow(clippy::type_complexity)]
+pub(crate) fn track_blades(
+    mut blades: Query<(
+        Entity,
+        &mut Blade,
+        Option<&Transform>,
+        Option<&ChildOf>,
+        Option<&GlobalTransform>,
+    )>,
+    bodies: Query<&Ragdoll>,
+) {
+    let dt = 1.0 / BODY_HZ;
+    for (entity, mut blade, local, parent, scene) in &mut blades {
+        let Some(frame) = striker_frame(entity, &blade, local, parent, scene, &bodies) else {
+            continue;
+        };
+        let tip = frame.transform_point3(Vec3::Y * blade.length);
         blade.swept_from = blade.tip_last.map(|last| (blade.grip_last, last));
         blade.tip_velocity = blade.tip_last.map_or(Vec3::ZERO, |last| (tip - last) / dt);
         blade.tip_speed = blade.tip_velocity.length();
         blade.tip_last = Some(tip);
-        blade.grip_last = gt.translation();
+        blade.grip_last = frame.translation.into();
+        blade.frame = Some(frame);
     }
 }
 
 #[allow(clippy::type_complexity)]
 fn detect_hits(
     motions: Option<Res<Motions>>,
-    blades: Query<(Entity, &Blade, &GlobalTransform, Option<&Ragdoll>)>,
+    blades: Query<(Entity, &Blade, Option<&GlobalTransform>, Option<&Ragdoll>)>,
     mut attackers: Query<(
         &Animator,
         &mut Attacking,
@@ -577,12 +647,15 @@ fn detect_hits(
         Option<&PowerFactors>,
     )>,
     fighters: Query<(Entity, &Condition, Has<block::ShieldHold>), With<Fighter>>,
-    children: Query<&Children>,
-    parts: Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
+    (children, parts): (
+        Query<&Children>,
+        Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
+    ),
+    (bodies, bounds): (Query<&Ragdoll>, Query<&PartBounds>),
     mut hits: MessageWriter<Hit>,
 ) {
     let Some(motions) = motions else { return };
-    for (striker, blade, gt, item_body) in &blades {
+    for (striker, blade, scene, item_body) in &blades {
         // A held weapon that is its own body wounds where that body touches
         // a limb, in the pair stage ([`block::strike_held`]), as the
         // original's striking part does.
@@ -605,30 +678,46 @@ fn detect_hits(
         let progress = motions
             .clip(anim, &anim.action)
             .map_or(0.0, |c| anim.clip_progress(c));
-        let a = gt.translation();
-        let b = gt.transform_point(Vec3::Y * blade.length);
+        // The blade where the body tick left it.
+        let Some(frame) = blade.frame_or(scene) else {
+            continue;
+        };
+        let a = Vec3::from(frame.translation);
+        let b = frame.transform_point3(Vec3::Y * blade.length);
         let (a0, b0) = blade.swept_from.unwrap_or((a, b));
         for (target, condition, shielded) in &fighters {
             if target == blade.wielder || condition.is_dead() || attack.struck.contains(&target) {
                 continue;
             }
-            let spheres: Vec<(usize, Vec3, f32)> = children
-                .iter_descendants(target)
-                .filter_map(|e| {
-                    let (part, pgt, bounds) = parts.get(e).ok()?;
-                    // The hand holding a shield is never wounded: the
-                    // striking part's classifier refuses it.
-                    if shielded && part.bone == block::SHIELD_HAND_BONE {
-                        return None;
-                    }
-                    let (c, r) = match bounds {
-                        // The enclosing sphere is generous; use most of it.
-                        Some(b) => (pgt.transform_point(b.centre), b.radius * 0.75),
-                        None => (pgt.translation(), PART_RADIUS),
-                    };
-                    Some((part.bone, c, r))
-                })
-                .collect();
+            // The hand holding a shield is never wounded: the striking
+            // part's classifier refuses it.
+            let sphere = |bone: usize, frame: Affine3A, bounds: Option<&PartBounds>| {
+                if shielded && bone == block::SHIELD_HAND_BONE {
+                    return None;
+                }
+                let (c, r) = match bounds {
+                    // The enclosing sphere is generous; use most of it.
+                    Some(b) => (frame.transform_point3(b.centre), b.radius * 0.75),
+                    None => (Vec3::from(frame.translation), PART_RADIUS),
+                };
+                Some((bone, c, r))
+            };
+            // The target's parts where the body tick left them; a target
+            // with no body yet, where the frame drew its parts.
+            let spheres: Vec<(usize, Vec3, f32)> = match bodies.get(target) {
+                Ok(body) => body
+                    .parts
+                    .iter()
+                    .filter_map(|p| sphere(p.bone, p.drawn(1.0), bounds.get(p.entity).ok()))
+                    .collect(),
+                Err(_) => children
+                    .iter_descendants(target)
+                    .filter_map(|e| {
+                        let (part, pgt, b) = parts.get(e).ok()?;
+                        sphere(part.bone, pgt.affine(), b)
+                    })
+                    .collect(),
+            };
             // The first position of the sweep since last frame that meets a
             // body part, and the part nearest the blade there.
             let contact = (1..=SWEEP_STEPS).find_map(|k| {
@@ -653,7 +742,7 @@ fn detect_hits(
                     blade.tip_speed, attack.motion
                 );
                 attack.struck.insert(target);
-                let strike = blade_strike(blade, gt, point, &attack, progress, wielder, powers);
+                let strike = blade_strike(blade, &frame, point, &attack, progress, wielder, powers);
                 hits.write(Hit {
                     attacker: blade.wielder,
                     striker,
@@ -676,14 +765,14 @@ fn detect_hits(
 /// weapon turns about the grip), and the swing it belongs to.
 pub(crate) fn blade_strike(
     blade: &Blade,
-    gt: &GlobalTransform,
+    frame: &Affine3A,
     point: Vec3,
     attack: &Attacking,
     progress: f32,
     wielder: Option<&Fighter>,
     powers: Option<&PowerFactors>,
 ) -> Strike {
-    let mut along = gt.affine().inverse().transform_point3(point).y * CM_PER_M;
+    let mut along = frame.inverse().transform_point3(point).y * CM_PER_M;
     if !blade.record.armed() {
         along = along.min(blade.length * CM_PER_M - KNUCKLES_INSIDE);
     }
@@ -824,6 +913,11 @@ fn react_to_hits(
     let tick = ticks.as_ref().map_or(0, |t| t.0);
     let now = ticks.as_ref().map_or(0, |t| t.millis());
     let story = story.is_some_and(|s| s.0);
+    // A striker's frame where the body tick left it ([`track_blades`]).
+    let striker_frame_of = |e: Entity| match slots.get(e) {
+        Ok(blade) => blade.frame_or(strikers.get(e).ok()),
+        Err(_) => strikers.get(e).ok().map(GlobalTransform::affine),
+    };
     for hit in hits.read() {
         // A held item's contact is dealt: the striking part may record
         // another.
@@ -1227,10 +1321,8 @@ fn react_to_hits(
                     droplets: wounds::jet_droplets(strength),
                 });
                 if let Some(mut queue) = queue {
-                    let weights = strikers
-                        .get(hit.striker)
-                        .ok()
-                        .and_then(|g| tetra_weights(hit.point, &frame_tetra(&g.affine())));
+                    let weights = striker_frame_of(hit.striker)
+                        .and_then(|f| tetra_weights(hit.point, &frame_tetra(&f)));
                     if queue.push(hit.striker, weights, hit.point, outcome.wound) {
                         debug!("wound R {:.3} queued on {:?}", outcome.wound, hit.target);
                     } else {
@@ -1462,15 +1554,16 @@ fn react_to_hits(
                 // the record's length.
                 if clash
                     && let Struck::Weapon { item, .. } = hit.struck
-                    && let (Ok(blade), Ok(at)) = (slots.get(item), strikers.get(item))
+                    && let Ok(blade) = slots.get(item)
+                    && let Some(at) = striker_frame_of(item)
                 {
                     let own = blade.record.hit_sound_name();
                     let struck = sounds::StruckItem {
                         record_word: blade.record.flags,
                         split: blade.record.start,
                         length: blade.record.length,
-                        origin: at.translation() * CM_PER_M,
-                        axis: Vec3::from(at.affine().matrix3.y_axis).normalize_or_zero(),
+                        origin: Vec3::from(at.translation) * CM_PER_M,
+                        axis: Vec3::from(at.matrix3.y_axis).normalize_or_zero(),
                         own_sound: own.is_some(),
                     };
                     let (ready, sound) = sounds::struck_item_sound(
@@ -3822,6 +3915,81 @@ mod tests {
         let bled: Vec<_> = (0..7).flat_map(|_| tick(&mut app)).collect();
         assert_eq!(bled.len(), 1);
         assert_eq!(bled[0].body, struck);
+    }
+
+    /// A body of one part at `at`, its part's entity `part`.
+    fn body_at(part: Entity, at: Vec3) -> Ragdoll {
+        Ragdoll::new(&[exa_physics::body::PartSetup {
+            bone: 17,
+            entity: part,
+            parent: None,
+            world: bevy::math::Affine3A::from_rotation_translation(Quat::from_rotation_z(0.5), at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.05),
+            spheres: None,
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        }])
+    }
+
+    /// The strikers are tracked from the bodies the tick left, not from the
+    /// scene the frame last drew: a fist from the wielder's hand part and
+    /// its placement under it, a held body from its own first part (the
+    /// blade's entity); the tip's velocity is its travel over one tick.
+    #[test]
+    fn strikers_follow_their_bodies_each_tick() {
+        let mut app = App::new();
+        app.add_systems(Update, track_blades);
+        let hand = app.world_mut().spawn_empty().id();
+        let wielder = app
+            .world_mut()
+            .spawn(body_at(hand, Vec3::new(1.0, 1.0, 0.0)))
+            .id();
+        app.world_mut().entity_mut(hand).insert(ChildOf(wielder));
+        let local = Transform::from_xyz(0.0, 0.05, 0.02);
+        let knuckles = app
+            .world_mut()
+            .spawn((
+                local,
+                // A stale scene transform the tracking must not read.
+                GlobalTransform::IDENTITY,
+                ChildOf(hand),
+                Blade::new(wielder, 0.1, fist()),
+            ))
+            .id();
+        let item = app.world_mut().spawn_empty().id();
+        app.world_mut().entity_mut(item).insert((
+            body_at(item, Vec3::new(-1.0, 1.2, 0.5)),
+            GlobalTransform::IDENTITY,
+            Blade::new(wielder, 0.9, fist()),
+        ));
+        app.update();
+        let hand_now = app.world().get::<Ragdoll>(wielder).unwrap().parts[0].drawn(1.0);
+        let item_now = app.world().get::<Ragdoll>(item).unwrap().parts[0].drawn(1.0);
+        let blade = |app: &App, e| app.world().get::<Blade>(e).unwrap().clone();
+        let close = |a: Affine3A, b: Affine3A| {
+            a.to_cols_array()
+                .iter()
+                .zip(b.to_cols_array())
+                .all(|(x, y)| (x - y).abs() < 1e-5)
+        };
+        assert!(close(
+            blade(&app, knuckles).frame.unwrap(),
+            hand_now * local.compute_affine()
+        ));
+        assert!(close(blade(&app, item).frame.unwrap(), item_now));
+        assert_eq!(blade(&app, knuckles).tip_velocity, Vec3::ZERO);
+        // One tick moves the wielder's hand 2 cm: the tip moved 2 cm a tick.
+        app.world_mut()
+            .get_mut::<Ragdoll>(wielder)
+            .unwrap()
+            .translate(Vec3::X * 0.02);
+        app.update();
+        let v = blade(&app, knuckles).tip_velocity * CM_PER_M / BODY_HZ;
+        assert!((v - Vec3::X * 2.0).length() < 1e-3, "{v}");
+        assert_eq!(blade(&app, item).tip_velocity, Vec3::ZERO);
     }
 
     /// The plugin builds and ticks with no game, bodies or motion set: the

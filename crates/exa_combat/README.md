@@ -131,7 +131,16 @@ striking part's frame, once a target a swing, refused while a clash or
 block waits and on the hand holding the struck fighter's shield; a clash
 or block in the same tick replaces it, and it replaces nothing. There is no
 speed gate. The blade sweep is left to the fists and to a held model with
-no body, and never wounds the hand holding a shield. Blocks and clashes are logged at info
+no body, and never wounds the hand holding a shield. The whole hit chain
+runs every body tick, in the fixed step's post-step, as the original's
+post-step deals a character's pending hit every 12 ms step: the strikers
+are tracked from the bodies the tick left (`striker_frame`: a held body's
+first part, else the wielder's part carrying the striker times its
+placement; `Blade::frame`, the tip's velocity over one tick), the sweep
+tests the target's body parts where the tick left them, and the swing
+routine's edge, overhead pull, homing and stab drive read the same frames
+(the tip a tick ago from the sweep's last position). Waiting wounds count
+down before the characters' ticks. Blocks and clashes are logged at info
 ("a block", "blow on …'s shield"), each classified contact at debug. Rules and
 numbers: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Damage.
 

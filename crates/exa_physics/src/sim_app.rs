@@ -72,9 +72,10 @@ pub struct SimPreStep;
 
 /// The order of [`SimFrameStart`]'s work, as the frame ran it before it
 /// moved: what ran in `Update` (`Early`: nothing now, the rise went to
-/// [`SimPreStep`]), then what ran in `PostUpdate` (the hit chain and its
-/// readers), then the bodies' own frame start, which queues the blows the
-/// others sent.
+/// [`SimPreStep`]), then what ran in `PostUpdate` (`Late`: nothing now, the
+/// hit chain and its readers went to the fixed step's post-step, as the
+/// original deals a pending hit every step), then the bodies' own frame
+/// start, which restarts their tick count.
 #[derive(bevy::ecs::schedule::SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SimFrameStartSystems {
     Early,

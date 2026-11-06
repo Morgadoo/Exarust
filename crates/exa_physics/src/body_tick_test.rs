@@ -165,8 +165,8 @@ fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
     });
     app.update();
     assert_eq!(ticks(&app), before, "the frame ran a tick");
-    // The blow waits as a message: the bodies' frame start that queues it
-    // runs with the next frame's first tick.
+    // The blow waits as a message: the tick's queue, right before its
+    // solver, takes it.
     assert_eq!(energy(&app), 1.0, "dealt without a tick");
     while ticks(&app) == before {
         app.update();

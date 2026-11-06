@@ -927,6 +927,8 @@ Round 77 simthread4f: the bridge copies only what the simulation holds; the orig
 
 Round 78 simthread6a: the AI manager frame runs before every simulation step, as the original's pre-step hook.
 
+Round 81 hitstep: hits land at step resolution from the bodies' frames, as in the original.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the

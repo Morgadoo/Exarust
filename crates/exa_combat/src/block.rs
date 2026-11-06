@@ -141,8 +141,7 @@ struct Accepted {
     struck: Struck,
     bone: usize,
     /// The contact in the striking part's frame (m): where along the
-    /// weapon it lies is read from it, not from the item's scene transform,
-    /// which may lag the body by a frame.
+    /// weapon it lies is read from it, placed on the striker's frame.
     local: Vec3,
 }
 
@@ -157,7 +156,7 @@ pub fn strike_held(
     stages: Option<Res<SolverStages>>,
     motions: Option<Res<Motions>>,
     held: Query<(Entity, &Ragdoll, Option<&HeldGrip>, Option<&Blade>)>,
-    blades: Query<(&Blade, &GlobalTransform)>,
+    blades: Query<(&Blade, Option<&GlobalTransform>)>,
     mut attackers: Query<(
         &mut Attacking,
         &mut SwingState,
@@ -345,7 +344,11 @@ pub fn strike_held(
         }
     }
     for (attacker, contact) in accepted {
-        let Ok((blade, gt)) = blades.get(contact.striker) else {
+        let Ok((blade, scene)) = blades.get(contact.striker) else {
+            continue;
+        };
+        // The striker's frame where this tick left it ([`crate::track_blades`]).
+        let Some(frame) = blade.frame_or(scene) else {
             continue;
         };
         let Ok((mut attack, _, anim, powers)) = attackers.get_mut(attacker) else {
@@ -379,8 +382,9 @@ pub fn strike_held(
         };
         // Where on the weapon: the contact as the striking part holds it,
         // placed on the blade's frame.
-        let on_blade = gt.transform_point(contact.local);
-        let strike = crate::blade_strike(blade, gt, on_blade, &attack, progress, wielder, powers);
+        let on_blade = frame.transform_point3(contact.local);
+        let strike =
+            crate::blade_strike(blade, &frame, on_blade, &attack, progress, wielder, powers);
         if contact.struck == Struck::Limb {
             debug!(
                 "{attacker:?}'s weapon body met {:?}'s bone {} at {:.0} cm, {:.1} cm/tick: a wound \

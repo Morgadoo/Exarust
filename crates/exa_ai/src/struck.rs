@@ -36,8 +36,8 @@ use crate::combatant::{self, Blow, Combatant, NearbyAim};
 /// Centimetres per metre: the reaction measures in the original's units.
 const CM: f32 = 100.0;
 
-/// The hit reactions: after the combat's frame systems have dealt the
-/// blows. The game applies [`Taught`] after it.
+/// The hit reactions: in the fixed step's post-step, after the combat has
+/// dealt the tick's blows. The game applies [`Taught`] after it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HitReactions;
 
@@ -62,7 +62,7 @@ fn reach_cm(fighter: Entity, blades: &Query<&Blade>) -> f32 {
         * CM
 }
 
-/// Every blow noticed this frame, on a character with a combatant: the
+/// Every blow noticed this tick, on a character with a combatant: the
 /// base's courage and mark, then the AI's concern for the attacker.
 #[allow(clippy::type_complexity)]
 pub fn react_to_blows(
