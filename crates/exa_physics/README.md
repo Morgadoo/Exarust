@@ -39,7 +39,7 @@ simulation runs on its own thread as the original's does
 (context/re/sim-thread-input.md): a 12 ms real-clock step from
 `step_driver` (more than four steps late drops the backlog), asleep 11 ms a
 pass while the frame's packets say it is held (`SimPause`: the loading
-screen, the menus, the splash, the creator, the end menu, a paused game
+screen, the menus, the splash, the creator, a paused game
 clock; the paused time stays out of its clock), the frame's packets
 drained before each step (its changes, its writes and posted calls, Bevy's
 messages updated at most once a step) and a packet stamped with the step's
@@ -76,7 +76,11 @@ the steps taken before it, so no step arrives after the frame went on;
 a level's teardown holds the simulation first (`hold_and_drain`, the
 original's level change raising the pause counter) until the next level
 is in, and the frame never despawns an entity of its own (a newer one at
-the index, a resource) for a value a step sent; the lent types only the simulation
+the index, a resource) for a value a step sent; a value a side sent before it had
+seen the other side's removal of that component does not put it back (a
+dead body's clip player, removed by the frame's go-limp, came back from
+steps in flight and stood the corpse up); and a frame value the frame only
+touched (still as the simulation last sent it) is not sent back; the lent types only the simulation
 touches are moved in every mode (`bridge_move_resource`), and the alarm's
 zones and state are copied in and a snapshot (the frame reads them).
 

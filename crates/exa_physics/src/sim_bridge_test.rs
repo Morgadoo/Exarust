@@ -706,3 +706,74 @@ fn a_stale_value_never_despawns_the_frames_newer_entity() {
     assert!(!ensure_spawned_on_frame(&mut world, old));
     assert!(world.get_entity(newer).is_ok());
 }
+
+/// A component the frame removes while the free simulation keeps writing
+/// it (its steps in flight still carry it) stays removed on both sides; the
+/// same for one the simulation removes while the frame writes it.
+#[test]
+fn a_removal_is_not_undone_by_a_value_in_flight() {
+    #[derive(Component, Clone, Debug, Default, PartialEq)]
+    struct Clip(u32);
+    /// The simulation drops `Vel` from a body once its `Pos` passes 30.
+    fn advance(
+        mut clips: Query<&mut Clip>,
+        mut commands: Commands,
+        vels: Query<(Entity, &Pos), With<Vel>>,
+    ) {
+        for mut c in &mut clips {
+            c.0 += 1;
+        }
+        for (e, p) in &vels {
+            if p.0 > 30.0 {
+                commands.entity(e).remove::<Vel>();
+            }
+        }
+    }
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins(SimShellPlugin {
+            mode: SimMode::Free,
+        })
+        .add_plugins(SimBridgePlugin { extra: Vec::new() })
+        .bridge_copy::<Clip>()
+        .bridge_copy::<Pos>()
+        .bridge_copy::<Vel>()
+        .add_systems(FixedUpdate, (drift, advance));
+    let world = app.world_mut();
+    let clipped: Vec<Entity> = (0..16)
+        .map(|k| world.spawn((Tag(k), Clip(0))).id())
+        .collect();
+    let moving: Vec<Entity> = (0..16)
+        .map(|k| world.spawn((Tag(100 + k), Pos(0.0), Vel(1.0))).id())
+        .collect();
+    world.resource_mut::<crate::sim_app::SimPause>().hold(false);
+    let run = |app: &mut App, ms: u64, touch: bool| {
+        let until = std::time::Instant::now() + Duration::from_millis(ms);
+        while std::time::Instant::now() < until {
+            app.update();
+            if touch {
+                // The frame keeps writing `Vel` (a stale value once the
+                // simulation dropped it).
+                let world = app.world_mut();
+                let mut q = world.query::<&mut Vel>();
+                for mut v in q.iter_mut(world) {
+                    v.0 += 0.0;
+                    v.set_changed();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    run(&mut app, 120, false);
+    for &e in &clipped {
+        app.world_mut().entity_mut(e).remove::<Clip>();
+    }
+    run(&mut app, 700, true);
+    let world = app.world();
+    for e in clipped {
+        assert!(world.get::<Clip>(e).is_none(), "{e} keeps its Clip removed");
+    }
+    for e in moving {
+        assert!(world.get::<Vel>(e).is_none(), "{e} keeps its Vel removed");
+    }
+}

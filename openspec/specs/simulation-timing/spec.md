@@ -322,7 +322,7 @@ Data only the simulation's systems touch SHALL move to the simulation's world on
 - **THEN** the simulation drops its record before the frame's other changes of that packet and takes the new one, with no copy back to the frame
 
 ### Requirement: Free-running simulation
-With the free mode on, the simulation SHALL step on its own 12 ms real clock, dropping its backlog when more than four steps late, SHALL not step while the frame holds it (the loading screen, a menu, the splash, the character creator, the end menu, a paused game clock) and SHALL leave the held time out of its clock.
+With the free mode on, the simulation SHALL step on its own 12 ms real clock, dropping its backlog when more than four steps late, SHALL not step while the frame holds it (the loading screen, a menu, the splash, the character creator, a paused game clock; not the end of a session's menu, behind which the world goes on) and SHALL leave the held time out of its clock.
 
 #### Scenario: Held and released
 - **WHEN** the frame holds the simulation for a while and then releases it
@@ -376,3 +376,10 @@ With the free mode on, a level's teardown SHALL first hold the simulation and ap
 #### Scenario: A teardown while the simulation steps
 - **WHEN** the simulation steps entities and the frame tears them down and spawns new ones at the same indices
 - **THEN** the new entities and resources survive, the old ones stay gone, and the steps go on without a gap after the release
+
+### Requirement: Removals survive values in flight
+With the free mode on, a component one side removes SHALL stay removed when the other side sends a value for it that it wrote before it had seen the removal.
+
+#### Scenario: A dead body's clip player
+- **WHEN** the frame removes a dying body's clip player while the simulation's steps in flight still carry it
+- **THEN** the clip player does not come back on either side, and the body lies as in lockstep

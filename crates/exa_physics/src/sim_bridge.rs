@@ -99,6 +99,11 @@ pub trait BridgeHalf: Send + Sync + 'static {
     fn take_overtaken(&mut self) -> (u64, u64) {
         (0, 0)
     }
+    /// Free mode, frame side, since the last call: values the frame only
+    /// touched (still as the simulation sent them), not sent.
+    fn take_untouched(&mut self) -> u64 {
+        0
+    }
     /// After an apply: forgets the removals and messages the apply itself
     /// made, and marks the tick changes are measured from.
     fn settle(&mut self, world: &mut World, since: Tick);
@@ -192,7 +197,8 @@ pub struct GatherCtx {
     pub sim: bool,
     /// The simulation runs free of the frame (`crate::sim_app::SimMode::Free`).
     pub free: bool,
-    /// Simulation side: the step just taken.
+    /// Simulation side: the step just taken. Frame side: the frame
+    /// packet's number.
     pub step: u64,
 }
 
@@ -211,6 +217,9 @@ pub struct ApplyCtx {
     pub based_on: Option<u64>,
     /// The simulation runs free of the frame.
     pub free: bool,
+    /// Free mode, frame side: the last frame packet the simulation had
+    /// applied before the step that sent this packet.
+    pub seen_seq: Option<u64>,
 }
 
 // ---------------------------------------------------------------- removals
@@ -265,6 +274,10 @@ pub struct CopyComponent<T: Component + Clone> {
     /// The frame writes it to draw (transforms, the drawn controller): a
     /// free-running simulation's newer value wins over the frame's.
     drawn: bool,
+    /// A hash of a value's `Debug` text (free mode: tells a frame write
+    /// that left the value as the simulation sent it).
+    hash: fn(&T) -> u64,
+    text: fn(&T) -> String,
     /// A snapshot: sent from the simulation; from the frame only when the
     /// frame inserts it (the frame's writes go as posted commands).
     snapshot: bool,
@@ -276,6 +289,19 @@ struct CopyComponentHalf<T: Component + Clone> {
     refs: fn(&T) -> Option<Entity>,
     inbound: bool,
     drawn: bool,
+    hash: fn(&T) -> u64,
+    text: fn(&T) -> String,
+    /// `EXA_BRIDGE_WRITES=<type name part>`, free mode, frame side: the
+    /// values as last received, to log what a frame write changed.
+    texts: bevy::ecs::entity::EntityHashMap<String>,
+    logged: u32,
+    /// Free mode, frame side: the hash of each entity's value as the
+    /// simulation last sent it. A frame value still equal to it was only
+    /// touched (a write of the same value, a mutable borrow) and is not
+    /// sent: it would undo the simulation's newer writes.
+    received: bevy::ecs::entity::EntityHashMap<u64>,
+    /// Frame values not sent for that, since the last report.
+    untouched: u64,
     snapshot: bool,
     /// The frame changed a snapshot without inserting it (a write not
     /// posted): warned once.
@@ -296,6 +322,10 @@ struct CopyComponentHalf<T: Component + Clone> {
     sim_written: bevy::ecs::entity::EntityHashMap<u64>,
     prune_at: usize,
     overtaken: (u64, u64),
+    /// Free mode: when this side removed the component from an entity (the
+    /// frame packet's number, or the simulation's step). A value the other
+    /// side sent before it had seen that removal does not put it back.
+    removed_at: bevy::ecs::entity::EntityHashMap<u64>,
 }
 
 /// Changed values of the entities the simulation holds.
@@ -331,6 +361,12 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
             refs: self.refs,
             inbound: self.inbound,
             drawn: self.drawn,
+            hash: self.hash,
+            text: self.text,
+            texts: Default::default(),
+            logged: 0,
+            received: Default::default(),
+            untouched: 0,
             snapshot: self.snapshot,
             warned: false,
             added: None,
@@ -343,6 +379,7 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
             sim_written: Default::default(),
             prune_at: 4096,
             overtaken: (0, 0),
+            removed_at: Default::default(),
         })
     }
 }
@@ -370,10 +407,29 @@ fn apply_removals<T: Component>(world: &mut World, removed: &[Entity]) {
 }
 
 impl<T: Component + Clone> CopyComponentHalf<T> {
+    /// Free mode: notes when this side removed the component.
+    fn note_removed(&mut self, removed: &[Entity], ctx: GatherCtx) {
+        if ctx.free {
+            for &e in removed {
+                self.removed_at.insert(e, ctx.step);
+            }
+        }
+    }
+
+    /// Free mode: whether a value for `e` (which lacks the component here)
+    /// was sent before the other side had seen this side's removal: it
+    /// would put the component back.
+    fn removed_since(&mut self, e: Entity, seen: Option<u64>) -> bool {
+        let Some(seen) = seen else {
+            return false;
+        };
+        self.removed_at.get(&e).is_some_and(|&at| at > seen)
+    }
+
     /// The frame's side of a hierarchy type: the changed values of the
     /// entities the simulation holds, and every value of those marked in
     /// this gather.
-    fn gather_shared(&mut self, world: &mut World) -> Gathered {
+    fn gather_shared(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
         let now = world.change_tick();
         let since = self.since;
         let Some(changed) = self.shared_changed.as_mut() else {
@@ -397,6 +453,7 @@ impl<T: Component + Clone> CopyComponentHalf<T> {
         );
         let seen = self.removals.take();
         let removed = live_removals::<T>(world, &seen);
+        self.note_removed(&removed, ctx);
         let touched = values
             .iter()
             .flat_map(|(e, v, _)| [Some(*e), (self.refs)(v)])
@@ -414,7 +471,7 @@ impl<T: Component + Clone> CopyComponentHalf<T> {
     /// The frame's side of a snapshot: the values the frame inserted since
     /// the last copy out, and its removals; a value it only changed is not
     /// sent (warned once: a write that should have been posted).
-    fn gather_inserted(&mut self, world: &mut World) -> Gathered {
+    fn gather_inserted(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
         let now = world.change_tick();
         let since = self.since;
         let Some(query) = self.added.as_mut() else {
@@ -445,6 +502,7 @@ impl<T: Component + Clone> CopyComponentHalf<T> {
         }
         let seen = self.removals.take();
         let removed = live_removals::<T>(world, &seen);
+        self.note_removed(&removed, ctx);
         let touched = values.iter().map(|(e, ..)| *e).collect();
         let n = values.len() + removed.len();
         Gathered {
@@ -488,10 +546,10 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
             return Gathered::empty();
         }
         if self.snapshot && !ctx.sim && !all {
-            return self.gather_inserted(world);
+            return self.gather_inserted(world, ctx);
         }
         if !ctx.sim && world.contains_resource::<NewlyShared>() && self.hierarchy() {
-            return self.gather_shared(world);
+            return self.gather_shared(world, ctx);
         }
         let now = world.change_tick();
         let since = self.since;
@@ -523,8 +581,29 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
                 self.sim_written.insert(*e, ctx.step);
             }
         }
+        let mut values = values;
+        if !ctx.sim && ctx.free && !all && !self.received.is_empty() {
+            let (hash, received) = (self.hash, &self.received);
+            let before = values.len();
+            values.retain(|(e, v, _)| received.get(e) != Some(&hash(v)));
+            self.untouched += (before - values.len()) as u64;
+            if self.logged < 20 && writes_logged(type_name::<T>()) {
+                for (e, v, _) in &values {
+                    if let Some(was) = self.texts.get(e) {
+                        let now = (self.text)(v);
+                        let (a, b) = first_difference(was, &now);
+                        info!(
+                            "simulation bridge: the frame wrote {} of {e}: …{a}… -> …{b}…",
+                            type_name::<T>()
+                        );
+                        self.logged += 1;
+                    }
+                }
+            }
+        }
         let seen = self.removals.take();
         let removed = live_removals::<T>(world, &seen);
+        self.note_removed(&removed, ctx);
         // A relationship's target must exist on the other side too.
         let touched = values
             .iter()
@@ -545,6 +624,24 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
             return 0;
         };
         apply_removals::<T>(world, &packet.removed);
+        if !ctx.sim && ctx.free && !self.drawn && !self.inbound && !self.snapshot {
+            for e in &packet.removed {
+                self.received.remove(e);
+            }
+            for (e, v, _) in &packet.values {
+                self.received.insert(*e, (self.hash)(v));
+            }
+            if writes_logged(type_name::<T>()) {
+                for (e, v, _) in &packet.values {
+                    self.texts.insert(*e, (self.text)(v));
+                }
+            }
+            if self.received.len() > self.prune_at {
+                self.received
+                    .retain(|e, _| world.entities().contains_spawned(*e));
+                self.prune_at = (self.received.len() * 2).max(4096);
+            }
+        }
         if ctx.free && self.sim_written.len() > self.prune_at {
             // Despawned entities' marks go.
             self.sim_written
@@ -558,7 +655,19 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
             .based_on
             .filter(|_| ctx.sim && !self.inbound && !self.snapshot);
         let n = packet.values.len();
+        let seen = if ctx.sim { ctx.based_on } else { ctx.seen_seq };
+        if ctx.free
+            && let Some(seen) = seen
+        {
+            self.removed_at.retain(|_, at| *at > seen);
+        }
         for (e, value, _) in packet.values {
+            if ctx.free
+                && world.get_entity(e).is_ok_and(|w| !w.contains::<T>())
+                && self.removed_since(e, seen)
+            {
+                continue;
+            }
             if let Some(base) = base
                 && self.sim_written.get(&e).is_some_and(|&step| step > base)
                 && world.get::<T>(e).is_some()
@@ -580,12 +689,64 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         std::mem::take(&mut self.overtaken)
     }
 
+    fn take_untouched(&mut self) -> u64 {
+        std::mem::take(&mut self.untouched)
+    }
+
     fn settle(&mut self, world: &mut World, since: Tick) {
         if let Some(id) = self.id {
             self.removals.skip(world, id);
         }
         self.since = since;
     }
+}
+
+/// Whether `EXA_BRIDGE_WRITES` names (part of) `name`: a debug aid that
+/// logs the first frame writes of that type a free simulation's newer
+/// value met, by their first differing text.
+fn writes_logged(name: &str) -> bool {
+    static PART: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PART.get_or_init(|| std::env::var("EXA_BRIDGE_WRITES").ok())
+        .as_deref()
+        .is_some_and(|p| name.contains(p))
+}
+
+/// Where two texts first differ, with some context on each side.
+fn first_difference(a: &str, b: &str) -> (String, String) {
+    let at = a
+        .char_indices()
+        .zip(b.chars())
+        .find(|((_, x), y)| x != y)
+        .map_or(a.len().min(b.len()), |((i, _), _)| i);
+    let from = a[..at].char_indices().rev().nth(40).map_or(0, |(i, _)| i);
+    let cut = |t: &str| {
+        t.get(from..)
+            .unwrap_or("")
+            .chars()
+            .take(160)
+            .collect::<String>()
+    };
+    (cut(a), cut(b))
+}
+
+fn debug_text<T: std::fmt::Debug>(value: &T) -> String {
+    format!("{value:?}")
+}
+
+/// A hash of `value`'s `Debug` text, written into the hasher without a
+/// string.
+fn debug_hash<T: std::fmt::Debug>(value: &T) -> u64 {
+    use std::hash::Hasher;
+    struct Feed(std::collections::hash_map::DefaultHasher);
+    impl std::fmt::Write for Feed {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.write(s.as_bytes());
+            Ok(())
+        }
+    }
+    let mut feed = Feed(Default::default());
+    let _ = std::fmt::Write::write_fmt(&mut feed, format_args!("{value:?}"));
+    feed.0.finish()
 }
 
 /// A component lent for the step: the value moves across and back, a
@@ -1547,6 +1708,8 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: false,
+                hash: debug_hash::<T>,
+                text: debug_text::<T>,
                 drawn: false,
                 snapshot: false,
                 _t: PhantomData,
@@ -1564,6 +1727,8 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: false,
+                hash: debug_hash::<T>,
+                text: debug_text::<T>,
                 drawn: true,
                 snapshot: false,
                 _t: PhantomData,
@@ -1581,6 +1746,8 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: true,
+                hash: debug_hash::<T>,
+                text: debug_text::<T>,
                 drawn: false,
                 snapshot: false,
                 _t: PhantomData,
@@ -1598,6 +1765,8 @@ impl SimBridgeAppExt for App {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
                 inbound: false,
+                hash: debug_hash::<T>,
+                text: debug_text::<T>,
                 drawn: false,
                 snapshot: true,
                 _t: PhantomData,
@@ -1613,6 +1782,8 @@ impl SimBridgeAppExt for App {
                 assign: assign_by_insert::<T>,
                 refs: |r| Some(r.get()),
                 inbound: false,
+                hash: debug_hash::<T>,
+                text: debug_text::<T>,
                 drawn: false,
                 snapshot: false,
                 _t: PhantomData,
@@ -1858,6 +2029,9 @@ pub struct SidePacket {
     pub update_messages: bool,
     /// Free mode (frame → sim): the last step the frame had applied.
     based_on: Option<u64>,
+    /// Frame → sim: the frame packet's number; sim → frame: the last frame
+    /// packet the simulation had applied.
+    seq: u64,
     pub values: usize,
 }
 
@@ -1874,6 +2048,7 @@ impl SidePacket {
             posts: Vec::new(),
             update_messages: false,
             based_on: None,
+            seq: 0,
             values: 0,
         }
     }
@@ -1889,6 +2064,9 @@ pub struct BridgeSide {
     free: bool,
     /// Simulation side: the step the next gather follows.
     step: u64,
+    /// Frame side: the packets gathered; simulation side: the last frame
+    /// packet applied.
+    seq: u64,
     /// Free mode, simulation side: per half, frame values that came after
     /// a simulation write the frame had not seen: dropped, applied.
     overtaken: Vec<(u64, u64)>,
@@ -1912,6 +2090,7 @@ impl BridgeSide {
             sim: !first,
             free: false,
             step: 0,
+            seq: 0,
             overtaken: Vec::new(),
             stats: Vec::new(),
             gathers: 0,
@@ -1975,6 +2154,25 @@ impl BridgeSide {
             );
         }
         self.overtaken.iter_mut().for_each(|n| *n = (0, 0));
+        let mut untouched: Vec<(usize, u64)> = self
+            .halves
+            .iter_mut()
+            .map(|h| h.take_untouched())
+            .enumerate()
+            .filter(|&(_, n)| n > 0)
+            .collect();
+        if !untouched.is_empty() {
+            untouched.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+            let line: Vec<String> = untouched
+                .iter()
+                .take(12)
+                .map(|&(i, n)| format!("{} {n}", self.halves[i].name()))
+                .collect();
+            info!(
+                "simulation bridge: frame values only touched since the simulation sent them (not sent): {}",
+                line.join("; ")
+            );
+        }
     }
 
     fn drain_removed(&mut self, world: &World) {
@@ -1984,11 +2182,14 @@ impl BridgeSide {
     }
 
     fn gather(&mut self, world: &mut World) -> SidePacket {
+        if !self.sim {
+            self.seq += 1;
+        }
         let ctx = GatherCtx {
             all: std::mem::take(&mut self.first) || copy_everything(),
             sim: self.sim,
             free: self.free,
-            step: self.step,
+            step: if self.sim { self.step } else { self.seq },
         };
         let mut packets: Vec<Option<Packet>> = (0..self.halves.len()).map(|_| None).collect();
         let mut touched = EntityHashSet::default();
@@ -2058,6 +2259,7 @@ impl BridgeSide {
             posts: Vec::new(),
             update_messages: false,
             based_on: None,
+            seq: self.seq,
             values,
         }
     }
@@ -2091,11 +2293,17 @@ impl BridgeSide {
                 }
             }
         }
+        // The frame packet the simulation applies now (empty packets carry
+        // none).
+        if sim && packet.seq > 0 {
+            self.seq = packet.seq;
+        }
         let ctx = ApplyCtx {
             sim,
             update_messages: packet.update_messages,
             based_on: packet.based_on,
             free: self.free,
+            seen_seq: (!sim && self.free).then_some(packet.seq),
         };
         let mut n = 0;
         self.stats.resize(self.halves.len(), (0, 0, 0));
