@@ -43,6 +43,9 @@ pub struct SpectateSession {
     /// An arena match's entry started the session (no entrant was the
     /// player's): the hub's arrival ends it.
     pub arena: bool,
+    /// The fixed camera pose the arena's start puts the camera at: the eye
+    /// and the point it looks at (m). A follow replaces it.
+    pub pose: Option<(Vec3, Vec3)>,
 }
 
 /// Where the original's spectated match start puts the camera: the arena's
@@ -64,6 +67,10 @@ impl SpectateSession {
         self.start();
         self.arena = true;
         self.focus = Some(spot);
+        self.pose = Some((
+            spot + Vec3::from_array(SPECTATE_CAMERA_OFFSET_CM) / 100.0,
+            spot,
+        ));
     }
 
     /// The session's end: the flag cleared, the camera's follow cleared.
@@ -72,6 +79,7 @@ impl SpectateSession {
         self.follow = None;
         self.last_press = None;
         self.arena = false;
+        self.pose = None;
     }
 
     /// Whether the controls are spectating.
@@ -152,6 +160,9 @@ fn spectate_clicks(
     let follow = spectate_follow(picked.map(|p| p.hit));
     if follow != session.follow {
         info!("spectate: the camera follows {follow:?}");
+    }
+    if follow.is_some() {
+        session.pose = None;
     }
     session.follow = follow;
 }
@@ -236,8 +247,12 @@ mod tests {
         s.start_arena(Vec3::new(1.0, 2.0, 3.0));
         assert!(s.active && s.arena && s.follow.is_none());
         assert_eq!(s.focus, Some(Vec3::new(1.0, 2.0, 3.0)));
+        // The camera stands 7, 11.8 and 11 m off the spot, looking at it.
+        let (eye, at) = s.pose.unwrap();
+        assert!(eye.abs_diff_eq(Vec3::new(8.0, 13.8, 14.0), 1e-5), "{eye}");
+        assert_eq!(at, Vec3::new(1.0, 2.0, 3.0));
         s.end();
-        assert!(!s.active && !s.arena);
+        assert!(!s.active && !s.arena && s.pose.is_none());
     }
 
     /// A character (living or dead) is followed; a prop, the level, a

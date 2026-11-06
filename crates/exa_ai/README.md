@@ -46,7 +46,9 @@ their relations and traits. When they appear their roles choose their idle
 activity, and they choose it again whenever the held roles change; every
 body tick they rate the player from both sides' roles, which feeds the contact
 rating (`sense`), and the brain's target pass decides whether the character
-engages the player. The player's id is the original's new-character id,
+engages, and whom: its combat entry makes the character it picked the
+duellist's foe (the player or anyone else), and a held AI clock
+(`Duellist::hold_until_ms`) defers the entry. The player's id is the original's new-character id,
 `brain::PLAYER_ID` = `0x4000_0001`: a story start empties both character
 databases and adds the new character to the world one under its first free
 id from 1 (`first_free_id`), tagged with the world database's bit; a saved

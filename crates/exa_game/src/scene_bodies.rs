@@ -91,10 +91,11 @@ pub enum BodyLook {
 /// Which brain drives a scene body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyBrain {
-    /// A match opponent: the duellist AI, which engages after this many
-    /// milliseconds (0: at once).
+    /// The duellist AI alone (a practice partner), which engages after
+    /// this many milliseconds (0: at once).
     Duellist { reaction_ms: u32 },
-    /// A placed-character brain: a company entrant or a hub NPC.
+    /// A placed-character brain: a match fighter, a company entrant or a
+    /// hub NPC; its target pass picks its foe.
     Npc,
 }
 
@@ -209,6 +210,9 @@ pub fn opponent_plan(
     body.condition_health = plan.health;
     body.act_at_ms = now_ms.wrapping_add(act_grace_ms);
     body.behaviour = Some(OPPONENT_BEHAVIOUR);
+    // Every match fighter thinks with its own brain: the target pass picks
+    // its foe among the other sides, with or without the player.
+    body.brain = BodyBrain::Npc;
     body
 }
 
@@ -302,6 +306,7 @@ pub fn beast_scene_plan(tier: u32, place: &Place, now_ms: u32, act_grace_ms: u32
     body.condition_health = plan.health;
     body.act_at_ms = now_ms.wrapping_add(act_grace_ms);
     body.behaviour = Some(OPPONENT_BEHAVIOUR);
+    body.brain = BodyBrain::Npc;
     body
 }
 
@@ -723,10 +728,19 @@ pub fn spawn_scene_body(
             commands.entity(model_entity).insert(duellist);
         }
         BodyBrain::Npc => {
+            // The brain's target pass picks its foe; until the plan's first
+            // action (the match's grace on the AI clock) it enters no fight.
+            let mut duellist = exa_ai::Duellist::new(context.player);
+            if plan.act_at_ms > context.now_ms {
+                duellist.hold_until_ms = Some(plan.act_at_ms.into());
+            }
+            // Its relations hold what the role database rates each other
+            // character by (a scene body without them rates everyone 0).
             commands.entity(model_entity).insert((
                 exa_ai::brain::Npc::of_record(&record, context.roll),
                 exa_ai::Mind::new(0.0),
-                exa_ai::Duellist::new(context.player),
+                duellist,
+                exa_ai::roles::Relations::default(),
             ));
             insert_powers(commands, model_entity, &record, &specials);
         }

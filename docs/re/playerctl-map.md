@@ -47,9 +47,9 @@ entry, run when the next mode (the hub's Character mode) starts.
 Exarust (round 77): the board's lineup travels on the launch; a match with
 no player entry benches the manager (his record, possessions and health
 kept for the next player spawn, the player despawned) and starts the
-session looking at the spawn spot; the fighters duel the nearest other side
-(Exarust's stand-in for the brain's target pass, which otherwise follows
-the player); the hub's arrival rebuilds the manager and ends the session.
+session with the camera at the original's fixed pose (the spawn spot
+raised by 700, 1180, 1100 cm, looking at it); every match fighter's brain
+picks its foe through its target pass (round 80); the hub's arrival rebuilds the manager and ends the session.
 Recruits are not in Exarust's roster yet, so only the manager can be the
 player's entry.
 

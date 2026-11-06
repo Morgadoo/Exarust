@@ -1598,8 +1598,11 @@ mod tests {
         assert_eq!(tables.day.matches_today, 1);
         assert_eq!(tables.employees.employees.len(), 1);
         assert_eq!(tables.employees.employees[0].character, 0x55);
-        // The writer's empty hireables is a zero count.
-        assert_eq!(tables.hireables, 0u32.to_le_bytes());
+        // The hireables carry the career's candidates: their count first.
+        assert_eq!(
+            tables.hireables[..4],
+            (career.hire_pool.len() as u32).to_le_bytes()
+        );
 
         let mut loaded_career = ArenaCareer::default();
         let mut loaded_staff = Staff::default();

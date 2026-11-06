@@ -179,7 +179,7 @@ tournament's six forty-eight-byte roster rows. A load reads them back
 (`arena_save::read_tables`) and `Session::apply_arena_tables` puts them into
 the live company, staff, arsenal and stash; a save with none of the arena
 chunks leaves the session without tables. What Exarust has no live model
-for (the hireables, the tournament's field, prizes and events, the
+for (the tournament's field until one is drawn and its season weeks, the
 merchant's stock type, the day's specials and daily tallies, the company's
 second string and three words) keeps the chunk the save already held, and
 the merchant's specialisation is the writer's constant −1.
@@ -767,8 +767,11 @@ picked character (anything else frees it, the camera keeping its last
 point), and its end clears both. The arena starts it when no participant
 is the player's to control (only hired employees entered): the bench
 (`save_live`) keeps the manager's record as the next player spawn's and
-despawns the player, the camera looks at the arena's spawn spot, the
-fighters duel the nearest other side (`arena_live`), and the hub's arrival
+despawns the player, the camera stands at the original's fixed pose (the
+spawn spot raised by 700, 1180 and 1100 cm, looking at it) until a double
+click follows someone, every match fighter carries a brain (with
+relations, its combat entry held until the match's grace) whose target
+pass picks its foe, and the hub's arrival
 rebuilds the manager and ends the session. A match's company entries are
 the board's lineup (`ArenaMatchLaunch::entrants`): entry `i` is pool slot
 `entrants[i]`, the manager at slot 0. `--spectate` starts the session in
@@ -2163,7 +2166,10 @@ reset keeps the hire list and the week's events, as the original's does, and
 ends by rolling the day's matches. The arena save's company chunk carries
 all thirteen records (the two coin totals as coin words), the day chunk the
 day's spent and earned coin words and the tournament chunk the prize
-history; the week's event rows and the hire list are not yet saved.
+history, the week's prize and its six events (template id, index, weapon
+row, the word after it; the load rebuilds each from its template), and
+the hireables chunk the hire list, each candidate as its character export
+(`arena_tables::candidate_record` / `candidate_member`).
 
 The fall to death (`fall`) runs the player's death fade on the body ticks'
 game clock: it completes, and pauses the game, only after the tick that

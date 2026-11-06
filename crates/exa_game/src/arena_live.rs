@@ -313,93 +313,7 @@ impl Plugin for ArenaLivePlugin {
                 )
                     .chain()
                     .after(crate::gui_screens::draw_screens),
-            )
-            .add_systems(
-                Update,
-                aim_spectated_fighters.run_if(resource_exists::<ArenaScene>),
             );
-    }
-}
-
-/// The foe a spectated match's fighter duels: the nearest living fighter
-/// of another side (the company's bodies are one side, every other team
-/// word another), as `(entity, team, company, alive, position)` rows.
-#[must_use]
-pub fn spectated_foe(
-    me: (Entity, u32, bool, Vec3),
-    fighters: &[(Entity, u32, bool, bool, Vec3)],
-) -> Option<Entity> {
-    let (me, team, company, at) = me;
-    fighters
-        .iter()
-        .filter(|(entity, other_team, other_company, alive, _)| {
-            *entity != me
-                && *alive
-                && (company != *other_company || (!company && team != *other_team))
-        })
-        .min_by(|a, b| {
-            at.distance_squared(a.4)
-                .total_cmp(&at.distance_squared(b.4))
-        })
-        .map(|(entity, ..)| *entity)
-}
-
-/// A spectated match's duels. Exarust's scene bodies start with the player
-/// as their duel target (the brain's target pass reads it as the foe it
-/// tracks), and a spectated match has no player body, so each fighter
-/// whose target is not a living fighter of another side takes the nearest
-/// one. [Exarust's stand-in: the original's target pass picks the foe
-/// among the contacts its senses rate hostile, which the arena's roles
-/// make of every other side.] The write lands in the simulation's copy
-/// through [`exa_physics::sim_app::FixedCommands`].
-fn aim_spectated_fighters(
-    scene: Res<ArenaScene>,
-    mut bodies: Query<(
-        Entity,
-        &SceneFighter,
-        &Condition,
-        &GlobalTransform,
-        Option<&mut exa_ai::Duellist>,
-    )>,
-    fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
-) {
-    if scene.player_entry.is_some() || !scene.placed {
-        return;
-    }
-    let Some(mut fixed) = fixed else {
-        return;
-    };
-    let rows: Vec<(Entity, u32, bool, bool, Vec3)> = bodies
-        .iter()
-        .map(|(entity, fighter, condition, at, _)| {
-            (
-                entity,
-                fighter.team,
-                fighter.company,
-                *condition != Condition::DEAD,
-                at.translation(),
-            )
-        })
-        .collect();
-    for (entity, fighter, condition, at, duellist) in &mut bodies {
-        let Some(mut duellist) = duellist else {
-            continue;
-        };
-        if *condition == Condition::DEAD {
-            continue;
-        }
-        let me = (entity, fighter.team, fighter.company, at.translation());
-        let current = rows.iter().find(|row| row.0 == duellist.target);
-        let keeps = current.is_some_and(|row| {
-            row.3 && spectated_foe(me, std::slice::from_ref(row)) == Some(row.0)
-        });
-        if keeps {
-            continue;
-        }
-        if let Some(foe) = spectated_foe(me, &rows) {
-            info!("arena match (spectated): {entity} duels {foe}");
-            fixed.write(entity, &mut duellist, move |d| d.target = foe);
-        }
     }
 }
 
@@ -1404,7 +1318,7 @@ mod tests {
         let plans = round_plans(&scene(), None, &slots, 1_000, 3_000);
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].team, 2);
-        assert!(matches!(plans[0].brain, BodyBrain::Duellist { .. }));
+        assert!(matches!(plans[0].brain, BodyBrain::Npc));
         assert_eq!(
             plans[0].at,
             Vec3::from_array(opponent_place(spawn).position) / 100.0
@@ -1420,36 +1334,6 @@ mod tests {
             plans[1].at,
             Vec3::from_array(our_place(spawn).position) / 100.0
         );
-    }
-
-    /// A spectated fighter duels the nearest living fighter of another
-    /// side: the company's bodies are one side, each other team another.
-    #[test]
-    fn a_spectated_fighter_duels_the_nearest_other_side() {
-        let e = |n| Entity::from_raw_u32(n).unwrap();
-        let rows = [
-            (e(1), 1, true, true, Vec3::ZERO),
-            (e(2), 1, true, true, Vec3::X),
-            (e(3), 2, false, true, Vec3::X * 5.0),
-            (e(4), 3, false, false, Vec3::X * 0.5),
-            (e(5), 3, false, true, Vec3::X * 9.0),
-        ];
-        // A company body takes the nearest living opponent, not its fellow
-        // or the dead one.
-        assert_eq!(
-            spectated_foe((e(1), 1, true, Vec3::ZERO), &rows),
-            Some(e(3))
-        );
-        // An opponent takes another team's fighter, the company's or a rival.
-        assert_eq!(
-            spectated_foe((e(5), 3, false, Vec3::X * 9.0), &rows),
-            Some(e(3))
-        );
-        assert_eq!(
-            spectated_foe((e(3), 2, false, Vec3::X * 5.0), &rows),
-            Some(e(2))
-        );
-        assert_eq!(spectated_foe((e(1), 1, true, Vec3::ZERO), &rows[..2]), None);
     }
 
     /// A company entry is the lineup's pool slot: its member and its id
