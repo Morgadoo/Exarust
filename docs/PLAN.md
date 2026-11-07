@@ -1387,6 +1387,8 @@ Round 116 forms: the merchant options, the company dialog with its emblem form a
 
 Round 125 combatrules: the 24 combat-rule routines were re-audited against the assembly and the workspace; most had been ported and wired since their 2026-10-23 ratings (the NPC combat state 5 to 85, enter combat 15 to 95, applying damage 50 to 95, the weapon mesh assembly 40 to 90, the weapon record builder 55 to 85, recoil 0 to 70, sweet spot 0 to 85), with an independent review lowering six of the proposed rises. The blade-length walk now passes over a non-rigid node as the original does (no shipped weapon affected; the arena duel and exanima01 traces byte-identical to main). Open: held_record reads the weapon's start and end unflipped, the off-hand factory item loses its seeds and extents, and the recoil's immediate stance switch and dual-wield counter attack.
 
+Round 126 motilepart: the attack starters aim at the foe parry, the AI side attacks take the starter pick, the two-weapon counter chains the other side and shields fight in the Ward or Synchrony style.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
