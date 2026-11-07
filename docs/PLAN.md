@@ -963,6 +963,8 @@ Round 97 linecast: arena spawns and level loads stand bodies on the floor the or
 
 Round 99 motilepart3: the status-effect broadcast is live and the ghouls' chest pins are halved as in the original.
 
+Round 101 racebodies: ghouls, Fael and every other placed race get the physical body the original gives them.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
