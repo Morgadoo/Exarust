@@ -1178,7 +1178,13 @@ set the merchant's stock type and specialisation), the new career's company
 dialog with the emblem form (the name field, the picture steps and number
 fields, the mirror boxes, the colour swatches through the palette swatch
 popup, Randomise, Previous, BACK and NEXT, and the emblem preview), and the
-colour picker form; `--open-hub-window merchant|company|picker` opens them. A
+colour picker form; `--open-hub-window merchant|company|picker` opens them.
+The message box stands on the stack too (`HubForms::open_message`, built by
+`exa_ui::modal_screens::open_message_box`): a refused hire shows "Hire" with
+the refusal's text and the company dialog's NEXT with an empty name shows
+"Company Name"; Enter, Space, Escape and its Ok button close it, and while it
+is on top nothing under it closes. `--open-hub-window nameless` presses NEXT
+on an empty company dialog for a scripted shot. A
 board Enter, Begin or Continue takes the event's entry fee from the purse
 (a short purse stops at 0; nothing refuses the match), warns once when the
 board's Begin enters the manager, drops the first unhealthy specialist,

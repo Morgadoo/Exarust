@@ -1882,6 +1882,23 @@ fn close_hub_windows(
     mut windows: ResMut<HubWindows>,
     mut hub: ResMut<ArenaHub>,
 ) {
+    // A message box on top takes the keys (Enter and Space close it,
+    // Escape closes it with -1) and nothing else closes under it.
+    if windows.forms.message_on_top() {
+        let code = if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+            Some(exa_ui::modal_screens::KEY_ENTER)
+        } else if keys.just_pressed(KeyCode::Space) {
+            Some(exa_ui::modal_screens::KEY_SPACE)
+        } else if keys.just_pressed(KeyCode::Escape) {
+            Some(exa_ui::modal_screens::KEY_ESCAPE)
+        } else {
+            None
+        };
+        if let Some(code) = code {
+            windows.forms.message_key(code);
+        }
+        return;
+    }
     let right = buttons.just_released(MouseButton::Right);
     if right && std::mem::take(&mut windows.card_press) {
         return;

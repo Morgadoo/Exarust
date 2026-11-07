@@ -32,7 +32,8 @@
 //!   panel); the arena's forms have none, so the hub opens it only through
 //!   `--open-hub-window picker`.
 //!
-//! Not built: the "Please name your company" message box (logged), the
+//! NEXT's refusal shows the "Please name your company" message box over the
+//! stack ([`crate::hub_forms::HubForms::open_message`]). Not built: the
 //! creator that NEXT starts (the hub does not run it), the colour image's
 //! picture (no constructor or refresh gives the record one; it draws its
 //! shade), a spinner's typed value and drag, and the combo boxes' keys.
@@ -262,10 +263,14 @@ impl HubWindows {
         };
         match crate::emblem::confirm_company(&name, &state.editor) {
             crate::emblem::CompanyConfirm::MissingName => {
-                info!(
-                    "company dialog: NEXT refused: {:?} ({:?}; the message box is not built)",
+                info!("company dialog: NEXT refused: the name is empty");
+                let (screen, unit) = (self.task.screen, self.unit_or_4());
+                self.forms.open_message(
+                    crate::emblem::COMPANY_NAME_TITLE,
                     crate::emblem::COMPANY_NAME_PROMPT,
-                    crate::emblem::COMPANY_NAME_TITLE
+                    crate::emblem::COMPANY_NAME_BOX_WORD,
+                    screen,
+                    unit,
                 );
             }
             crate::emblem::CompanyConfirm::Named { name, emblem } => {
@@ -1260,6 +1265,20 @@ mod tests {
         let next = centre(dialog, company::NEXT);
         click(&mut windows, &mut career, next);
         assert!(windows.forms.get(FormWindow::Emblem).is_some());
+        // ... and shows the "Company Name" box over it, which takes the
+        // pointer until Enter closes it.
+        assert!(windows.forms.message_on_top());
+        let open = windows.forms.message.as_ref().unwrap();
+        assert_eq!(
+            (open.title, open.text, open.flags),
+            (
+                crate::emblem::COMPANY_NAME_TITLE,
+                crate::emblem::COMPANY_NAME_PROMPT,
+                0xc1
+            )
+        );
+        assert!(windows.forms.message_key(exa_ui::modal_screens::KEY_ENTER));
+        assert!(!windows.forms.message_on_top());
         // Typing a name and NEXT store the company.
         let form = windows.forms.get(FormWindow::Emblem).unwrap();
         let name = centre(form, emblem_records::NAME);

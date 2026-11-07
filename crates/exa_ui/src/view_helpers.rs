@@ -2,10 +2,13 @@
 //! read and change, and the cursor-action list the player controls, the
 //! navigation, the character view and the inventory register on.
 //!
-//! An action entry is 24 bytes: the event mask, the form and the callback.
-//! An event with no top nibble gains `0x1000`. Removing an entry shifts the
-//! following entries down; the original's loop scans the whole list, so
-//! every entry of the form goes.
+//! An action entry is 24 bytes: the event mask, then the registered handler
+//! as the method pointer stores it, its code first and its object second.
+//! An event with no top nibble gains `0x1000`. Removing compares only the
+//! handler's code (the entry's second word with the method pointer's first),
+//! shifts the following entries down and does not step its index after a
+//! removal, so every entry with that code goes, whichever object it was
+//! registered for.
 //!
 //! Evidence: the super-sample get/set and the list add/remove routines
 //! (`docs/UI.md`, the 3D viewport).
@@ -33,10 +36,11 @@ impl SuperSample {
 pub struct CursorAction {
     /// The event mask; a mask with no top nibble gains `0x1000`.
     pub mask: u32,
-    /// The form the action belongs to.
-    pub form: u64,
-    /// The callback.
+    /// The handler's code: the method pointer's first word, the one a
+    /// removal compares.
     pub callback: u64,
+    /// The object the handler runs on: the method pointer's second word.
+    pub form: u64,
 }
 
 /// The action list a viewport keeps.
@@ -51,9 +55,10 @@ impl CursorActions {
         &self.entries
     }
 
-    /// Registers an action and returns its index. An event mask without a
-    /// top nibble is marked `0x1000`.
-    pub fn add(&mut self, mask: u32, form: u64, callback: u64) -> usize {
+    /// Registers an action (its mask, then the handler's code and object)
+    /// and returns its index. An event mask without a top nibble is marked
+    /// `0x1000`.
+    pub fn add(&mut self, mask: u32, callback: u64, form: u64) -> usize {
         let mask = if mask & 0xf000 == 0 {
             mask | 0x1000
         } else {
@@ -61,19 +66,20 @@ impl CursorActions {
         };
         self.entries.push(CursorAction {
             mask,
-            form,
             callback,
+            form,
         });
         self.entries.len() - 1
     }
 
-    /// Removes every entry of `form`, shifting the rest down. The original
-    /// scans the whole list and does not step its index after a removal, so
-    /// matching entries anywhere in the list all go. Returns whether any
-    /// entry went.
-    pub fn remove(&mut self, form: u64) -> bool {
+    /// Removes every entry whose handler code is `callback`, shifting the
+    /// rest down. Only the code is compared (the object is not), and the
+    /// original does not step its index after a removal, so matching
+    /// entries anywhere in the list all go, those registered for other
+    /// objects of the same class included. Returns whether any entry went.
+    pub fn remove(&mut self, callback: u64) -> bool {
         let before = self.entries.len();
-        self.entries.retain(|e| e.form != form);
+        self.entries.retain(|e| e.callback != callback);
         self.entries.len() != before
     }
 
@@ -107,7 +113,8 @@ mod tests {
         assert_eq!(list.add(0x3000, 11, 21), 1);
         assert_eq!(list.entries()[0].mask, 0x2002);
         assert_eq!(list.entries()[1].mask, 0x3000);
-        assert_eq!(list.entries()[1].form, 11);
+        assert_eq!(list.entries()[1].callback, 11);
+        assert_eq!(list.entries()[1].form, 21);
         assert!(list.remove(10));
         assert!(!list.remove(10));
         assert_eq!(list.entries().len(), 1);
@@ -117,14 +124,19 @@ mod tests {
     }
 
     #[test]
-    fn a_removal_takes_every_copy_of_the_form() {
+    fn a_removal_takes_every_entry_of_the_handler() {
         let mut list = CursorActions::default();
+        // The same handler registered for two objects, and another handler
+        // on the first object.
         list.add(0x1000, 7, 1);
         list.add(0x1000, 7, 2);
-        list.add(0x1000, 8, 3);
+        list.add(0x1000, 8, 1);
         list.add(0x1000, 7, 4);
         assert!(list.remove(7));
         assert_eq!(list.entries().len(), 1);
-        assert_eq!(list.entries()[0].form, 8);
+        assert_eq!(list.entries()[0].callback, 8);
+        assert_eq!(list.entries()[0].form, 1);
+        // The object alone does not match.
+        assert!(!list.remove(1));
     }
 }

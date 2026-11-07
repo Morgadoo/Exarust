@@ -138,6 +138,9 @@ impl Refusal {
 
 /// The hire message box's title.
 pub const HIRE_TITLE: &str = "Hire";
+/// The flag word the hire and recruitment refusals pass to the message
+/// box: Ok, with the frame (0x41).
+pub const REFUSAL_BOX_WORD: u32 = 0x41;
 /// The recruitment message box's title.
 pub const RECRUIT_TITLE: &str = "Recruitment";
 

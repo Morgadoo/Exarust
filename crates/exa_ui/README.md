@@ -795,7 +795,10 @@ The remaining retail forms are modelled from their own routines.
 `tooltips` holds the delayed show (256-unit fade, 2500-unit auto-hide),
 the box sizing and placement (text plus four units, two units taller than
 a line, kept on the screen, 153 alpha) and the skill tooltip's 50-unit
-field. `modal_screens` holds the message box, the shader warm-up screen's
+field. `modal_screens` holds the message box (its key and click answers,
+and its form: `message_box_spec` builds the record array from the box's
+layout, `open_message_box` and `place_message_box` show and place it, which
+the arena hub uses), the shader warm-up screen's
 three phases, its 200-unit fades and its one-row-a-frame walk of the
 renderer's 29-row warm-up, and the key-capture screen's warning, binding
 table, Escape close and mouse codes; both screens' paints produce their
@@ -831,7 +834,7 @@ change steps.
 `popups` has the item card, the container popup (its close saves the panel's contents into the container record; `GameScreen::Container` is its screen kind, tagged `0xce1c2013`, closed by a right click) and the parchment (its size, alpha hit test with the factor divided in double precision, and its draw: one textured white quad at the GUI's alpha, the fade step first and the alpha scales reset after a finished fade). `dialogs` has the colour window's
 gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack`,
 `game_tips` (its eighteen tips and six indexed messages), `colour_swatch`, `view_helpers` (the viewport's super-sample
-and cursor-action list) and the journal close in `game_gui` complete the
+and cursor-action list, removed by the handler's code) and the journal close in `game_gui` complete the
 unit. The draw records are plain data; no new form is painted by the
 running app yet.
 

@@ -56,6 +56,18 @@ pub enum FormWindow {
     Emblem,
     /// The colour picker form.
     Picker,
+    /// A message box ([`exa_ui::modal_screens::open_message_box`]).
+    Message,
+}
+
+/// The open message box's words: its title, text and flag word (to place
+/// it again after a resize) and its key and result state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenMessage {
+    pub title: &'static str,
+    pub text: &'static str,
+    pub flags: u32,
+    pub state: exa_ui::modal_screens::MessageBox,
 }
 
 /// An open table-built window.
@@ -81,6 +93,11 @@ pub struct HubForms {
     /// The extended-control forms' popup, focus and models
     /// ([`crate::option_forms`]).
     pub options: crate::option_forms::OptionForms,
+    /// The message box on the stack, if any.
+    pub message: Option<OpenMessage>,
+    /// The result the last message box closed with: 1 for Ok, 0 for Cancel
+    /// or Enter and Space, −1 for Escape.
+    pub message_result: Option<i32>,
 }
 
 impl HubForms {
@@ -143,6 +160,11 @@ impl HubForms {
         match window {
             FormWindow::Emblem => options.emblem = None,
             FormWindow::Picker => options.picker = None,
+            FormWindow::Message => {
+                if let Some(open) = self.message.take() {
+                    self.message_result = Some(open.state.result);
+                }
+            }
             _ => {}
         }
     }
@@ -151,12 +173,88 @@ impl HubForms {
         self.forms.clear();
         self.arsenal = None;
         self.options.clear();
+        self.message = None;
     }
 
-    /// Rebuilds every form for another screen or unit.
+    /// Rebuilds every form for another screen or unit (a message box is
+    /// placed again, as its place follows the screen).
     pub fn resize(&mut self, screen: (i32, i32), unit: i32) {
         for f in &mut self.forms {
             f.form.resize(screen, unit);
+            if f.window == FormWindow::Message
+                && let Some(open) = self.message.as_ref()
+            {
+                exa_ui::modal_screens::place_message_box(&mut f.form, open.flags);
+            }
+        }
+    }
+
+    /// Shows a message box on top of the stack, as the original's
+    /// message-box routine does: one box at a time here (a second replaces
+    /// the first). Every caller Exarust reaches passes no close hook.
+    pub fn open_message(
+        &mut self,
+        title: &'static str,
+        text: &'static str,
+        flags: u32,
+        screen: (i32, i32),
+        unit: i32,
+    ) {
+        let form = exa_ui::modal_screens::open_message_box(title, text, flags, screen, unit);
+        self.message = Some(OpenMessage {
+            title,
+            text,
+            flags,
+            state: exa_ui::modal_screens::MessageBox::default(),
+        });
+        // The box takes the keys: a text field under it loses the focus.
+        self.options.focus = None;
+        self.push(FormWindow::Message, form);
+        info!("message box: {title:?}: {text:?}");
+    }
+
+    /// Whether a message box is the top form (it takes the keys).
+    pub fn message_on_top(&self) -> bool {
+        self.top().is_some_and(|f| f.window == FormWindow::Message)
+    }
+
+    /// A key on the top message box ([`exa_ui::modal_screens::MessageBox::key`]):
+    /// Enter and Space close it, Escape closes it with −1. Returns whether
+    /// the box closed.
+    pub fn message_key(&mut self, code: u32) -> bool {
+        if !self.message_on_top() {
+            return false;
+        }
+        let Some(open) = self.message.as_mut() else {
+            return false;
+        };
+        if !open.state.key(code, 0) {
+            return false;
+        }
+        self.remove(FormWindow::Message);
+        true
+    }
+
+    /// A message box's button: Ok stores 1, Cancel 0, and the box closes
+    /// ([`exa_ui::gui_core::message_box_button`]).
+    fn message_button(&mut self, record: usize) {
+        let names = self
+            .get(FormWindow::Message)
+            .and_then(|form| form.spec.records.get(record))
+            .and_then(|r| r.text);
+        let ok = match names {
+            Some("Ok") => true,
+            Some("Cancel") => false,
+            _ => return,
+        };
+        let answer = exa_ui::gui_core::message_box_button(ok, false);
+        let Some(open) = self.message.as_mut() else {
+            return;
+        };
+        open.state.result = answer.result;
+        open.state.closed = answer.closes;
+        if answer.closes {
+            self.remove(FormWindow::Message);
         }
     }
 
@@ -562,6 +660,9 @@ impl HubWindows {
                     self.forms.remove(window);
                 }
             }
+            FormWindow::Message if record != exa_ui::modal_screens::MESSAGE_LABEL => {
+                self.forms.message_button(record);
+            }
             w if crate::option_forms::is_option_window(w) => {
                 self.answer_options(career, w, record);
             }
@@ -675,6 +776,13 @@ impl HubWindows {
                             }
                         };
                         info!("hub hire: {}", refusal.message());
+                        self.forms.open_message(
+                            crate::staff::HIRE_TITLE,
+                            refusal.message(),
+                            crate::staff::REFUSAL_BOX_WORD,
+                            self.task.screen,
+                            self.unit_now(),
+                        );
                     }
                 }
             }
@@ -981,10 +1089,12 @@ pub struct OpenHubWindow {
 
 /// The names `--open-hub-window` takes. `dismiss` may name the roster row
 /// to dismiss (`dismiss:1`, the first employee; the manager's row 0 by
-/// default); `arsenal` opens the arsenal as Manage Company's Arsenal does.
-pub const HUB_WINDOW_NAMES: [&str; 13] = [
+/// default); `arsenal` opens the arsenal as Manage Company's Arsenal does;
+/// `nameless` opens the company dialog and presses NEXT with the name still
+/// empty, which shows the "Company Name" message box.
+pub const HUB_WINDOW_NAMES: [&str; 14] = [
     "board", "shop", "manage", "records", "status", "loadout", "hire", "dismiss", "yesno",
-    "arsenal", "merchant", "company", "picker",
+    "arsenal", "merchant", "company", "picker", "nameless",
 ];
 
 /// Whether `--open-hub-window` takes `name`: one of [`HUB_WINDOW_NAMES`],
@@ -1001,7 +1111,7 @@ pub fn open_hub_window_on_load(
     mut ask: ResMut<OpenHubWindow>,
     hub: Res<crate::arena_hub_live::ArenaHub>,
     mut windows: ResMut<HubWindows>,
-    career: Res<ArenaCareer>,
+    mut career: ResMut<ArenaCareer>,
     mut open_arsenal: MessageWriter<crate::arsenal_view::OpenArsenal>,
     mut open_shop: MessageWriter<crate::arena_hub_live::OpenHubShop>,
 ) {
@@ -1012,9 +1122,9 @@ pub fn open_hub_window_on_load(
         return;
     };
     ask.done = true;
-    let manage_first = |windows: &mut HubWindows| {
+    let manage_first = |windows: &mut HubWindows, career: &ArenaCareer| {
         if !windows.is_kind(HubWindowKind::Manage) {
-            windows.open_manage(&career);
+            windows.open_manage(career);
         }
     };
     let (name, row) = match name.split_once(':') {
@@ -1040,20 +1150,29 @@ pub fn open_hub_window_on_load(
         // The new career's company dialog and emblem form; the hub has no
         // front end, so a debug opener stands in for New Career.
         "company" => windows.open_company(),
+        "nameless" => {
+            windows.open_company();
+            windows.answer(
+                &mut career,
+                FormWindow::Company,
+                exa_ui::emblem_form::company::NEXT,
+                true,
+            );
+        }
         // The colour picker on a white swatch, as the editor's lighting
         // panel's swatches open it.
         "picker" => windows.open_picker([0xff, 0xff, 0xff, 0xff], "Global Tint"),
-        "manage" => manage_first(&mut windows),
+        "manage" => manage_first(&mut windows, &career),
         "records" => {
-            manage_first(&mut windows);
+            manage_first(&mut windows, &career);
             windows.open_records(&career);
         }
         "status" => {
-            manage_first(&mut windows);
+            manage_first(&mut windows, &career);
             windows.open_status(&career);
         }
         "loadout" | "hire" => {
-            manage_first(&mut windows);
+            manage_first(&mut windows, &career);
             let page = if name == "hire" {
                 PAGE_HIRE
             } else {
@@ -1062,7 +1181,7 @@ pub fn open_hub_window_on_load(
             windows.open_loadout(page, &career);
         }
         "dismiss" => {
-            manage_first(&mut windows);
+            manage_first(&mut windows, &career);
             windows.open_loadout(PAGE_ROSTER, &career);
             let mut name = career.player.name.clone();
             if let Some(mut arsenal) = windows.forms.arsenal {
@@ -1308,6 +1427,57 @@ pub fn hub_form_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn boxed() -> HubForms {
+        let mut forms = HubForms::default();
+        forms.open_message(
+            crate::staff::HIRE_TITLE,
+            crate::staff::Refusal::Funds.message(),
+            crate::staff::REFUSAL_BOX_WORD,
+            (1280, 720),
+            4,
+        );
+        forms
+    }
+
+    /// A message box goes on top, takes Enter, Space and Escape, and
+    /// leaves its result.
+    #[test]
+    fn a_message_box_closes_on_its_keys() {
+        let mut forms = boxed();
+        assert!(forms.message_on_top());
+        assert!(!forms.message_key(u32::from(b'a')));
+        assert!(forms.message_on_top());
+        assert!(forms.message_key(exa_ui::modal_screens::KEY_ESCAPE));
+        assert!(!forms.message_on_top() && forms.message.is_none());
+        assert_eq!(forms.message_result, Some(-1));
+        let mut forms = boxed();
+        assert!(forms.message_key(exa_ui::modal_screens::KEY_ENTER));
+        assert_eq!(forms.message_result, Some(0));
+        let mut forms = boxed();
+        assert!(forms.message_key(exa_ui::modal_screens::KEY_SPACE));
+        assert_eq!(forms.message_result, Some(0));
+        assert!(!forms.message_key(exa_ui::modal_screens::KEY_SPACE));
+    }
+
+    /// Its Ok button stores 1 and closes it; a resize places it again.
+    #[test]
+    fn a_message_box_ok_stores_one() {
+        let mut forms = boxed();
+        forms.resize((2560, 1440), 8);
+        let form = forms.get(FormWindow::Message).unwrap();
+        let r = form.rect();
+        assert_eq!(r.x, (2560 - r.w) / 2);
+        let (ox, oy) = form.origin();
+        let ok = &form.controls()[1];
+        let at = (ox + ok.x + ok.w / 2, oy + ok.y + ok.h / 2);
+        forms.input(at, true, false);
+        let answered = forms.input(at, false, true);
+        assert_eq!(answered, vec![(FormWindow::Message, 1, true)]);
+        forms.message_button(1);
+        assert!(forms.message.is_none() && forms.forms.is_empty());
+        assert_eq!(forms.message_result, Some(1));
+    }
 
     /// The tournament day's pass clears an entry naming fewer than its
     /// event's fighters per side and keeps a full one of an unarmed event.
