@@ -132,14 +132,16 @@ const LIMP_HEIGHT_TAKE: f64 = 0.05;
 const LIMP_HEIGHT_KEEP: f64 = 0.95;
 
 /// Snaps a part's four particles to where `target` puts its rest
-/// tetrahedron, with no velocity: both the current and the previous
-/// particles are the animated place, as the muscles-off sampler leaves
-/// them.
+/// tetrahedron, with no velocity: the current, the previous and the
+/// two-ticks-ago particles are all the animated place, as the muscles-off
+/// sampler leaves its three particle sets (it copies the current set into
+/// the previous one and that into the third).
 pub fn snap_part(part: &mut Part, target: Affine3A) {
     for i in 0..4 {
         let at = target.transform_point3(part.rest[i]);
         part.positions[i] = at;
         part.previous[i] = at;
+        part.two_ticks_ago[i] = at;
     }
 }
 

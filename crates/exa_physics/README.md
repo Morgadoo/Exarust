@@ -1578,9 +1578,11 @@ keeps so a leg's limit link follows its link; no run-time caller exists, so
 the tests and tooling use the whole-state `Clone`, which shares the sphere
 array the same way. The body also keeps the particles where the last
 post-step left them (the original's third particle set, rolled each
-post-step and on the first tick of sleep), so `Part::two_step_point`
-gives a point's displacement since then (two ticks mid-step, one between
-ticks), and its tree-wide take of sleep ticks (`Ragdoll::take_ticks`,
+post-step, on the first tick of sleep and in the muscles-off snap), so
+`Part::two_step_point` gives a point's displacement since then (two ticks
+mid-step, one between ticks); `Ragdoll::root_moved`, which the locomotion
+stage and the lift servo read, is the two-step point of the root's own
+origin, as the original's character tick reads it; and its tree-wide take of sleep ticks (`Ragdoll::take_ticks`,
 holding the count at one) that the frozen step and a dormant living
 body use. `Ragdoll::set_disabled` sets the original's state bit 0x800 (an
 item on the cursor): the pair stage and the level detection skip the body
