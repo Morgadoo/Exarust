@@ -15,7 +15,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 |---|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 13% | 73% |  |
 | Core, math & threading | 282 | 37 | 11 | 80% | 1% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 81% | 0% |  |
+| Data, assets & I/O | 440 | 91 | 26 | 82% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 80% | 1% |  |
 | World, levels & terrain | 454 | 174 | 31 | 77% | 0% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 90% | 0% |  |
