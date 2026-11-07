@@ -208,6 +208,13 @@ A fighter stuck past 21 ticks SHALL run the chase route: with no route followed 
 - **WHEN** a fighter on a flat grid chases a fresh foe 5.1 m away, then chases again
 - **THEN** it follows the route and its tick runs on the first time, and ends at the chase the second time without a new plan
 
+### Requirement: The chase walk's arrival
+A chasing fighter's walk SHALL stop following, with the soft stop, once its ground point is within 100 cm (3-D) of its route's last point; it SHALL also stop following when it has no route or the fighter leaves combat, so the next combat tick runs on past the chase.
+
+#### Scenario: Arrival
+- **WHEN** a chasing fighter's ground point comes 99 cm from its route's last point
+- **THEN** the walk soft-stops, its route is cleared and the next combat tick runs on past the chase
+
 ### Requirement: The unreachable mark
 A chase plan SHALL mark the foe's contact unreachable for 3 s plus a draw of up to 3 s when the route has fewer than two points, ends more than 150 cm across the ground from the estimate, or more than 100 cm off the estimate's height less 100 cm; otherwise it SHALL clear the mark.
 

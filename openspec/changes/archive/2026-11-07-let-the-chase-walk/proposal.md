@@ -39,6 +39,9 @@ every tick.
 
 ## Out of scope
 
-The demon summoned in exanima67 swings at the player whom its caster is
-felling but lands nothing (its side swings start at 1.8–2.1 m against a
-kneeling target); not traced further.
+The demon its shaper summons in exanima67 starts 9 to 14 swings at 1.8 to
+2.1 m against the standing player (the place score's ideal is its weapon's
+220 cm reach) and none touches anything (no hit, no block). The same demon
+spawned in exanima07 or summoned in the arena lands blows from the same
+distances. Not traced further: the held weapon's pair contacts in that
+scene.
