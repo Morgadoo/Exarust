@@ -31,7 +31,9 @@ struct ExaParams {
     texture_bias: f32,
     // The second flag word (`material::flags2`).
     flags2: u32,
-    pad2: u32,
+    // The camera's cut-away fade: the opacity that replaces the diffuse
+    // alpha with `CUT_AWAY_BLEND` (`ExaParams::cut_away_opacity`).
+    cut_away_opacity: f32,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
     // Parallax scale per UV axis (xy), displacement-shadow step (z), bias (w).
@@ -149,6 +151,20 @@ const SHADOW_STEPS: i32 = 16;
 const LOCAL_REFLECTION: u32 = 1u;
 // `EXA_LOCAL_REF_DEBUG`: such a surface shows its low-field read × 4.
 const DEBUG_LOCAL_REFLECTION: u32 = 2u;
+// `flags2`: the camera's cut-away fade, blended at `cut_away_opacity`.
+const CUT_AWAY_BLEND: u32 = 4u;
+// `flags2`: the cut-away fade settled under supersampling: drawn into half
+// of each 2 × 2 block (`exa_render::material::flags2::CUT_AWAY_HALF`).
+const CUT_AWAY_HALF: u32 = 8u;
+
+// The material's opacity (`MatDif.a`): the cut-away fade's own while the
+// mesh fades, as the original's faded pass writes it for the draw.
+fn material_alpha() -> f32 {
+    if (material.flags2 & CUT_AWAY_BLEND) != 0u {
+        return material.cut_away_opacity;
+    }
+    return material.diffuse.a;
+}
 const LOCAL_PUSH_BASE: f32 = 1.05;
 const LOCAL_PUSH_SCALE: f32 = 0.05;
 const LOCAL_READ_GAIN: f32 = 1.5;
@@ -285,6 +301,14 @@ fn fogged(colour: vec3<f32>, p: vec3<f32>, amb: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var out: FragmentOutput;
+    // A settled cut-away under supersampling keeps one diagonal of each
+    // 2 × 2 block: half of the four sub-frames the block resolves.
+    if (material.flags2 & CUT_AWAY_HALF) != 0u {
+        let cell = vec2<u32>(in.position.xy);
+        if ((cell.x ^ cell.y) & 1u) != 0u {
+            discard;
+        }
+    }
     var uv = vec2(0.0);
 @if(VERTEX_UVS_A) {
     uv = in.uv;
@@ -325,11 +349,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             dif_tex = vec4(dif_tex.rrr, dif_tex.a);
         }
     }
-    var alpha = material.diffuse.a * dif_tex.a;
+    var alpha = material_alpha() * dif_tex.a;
     var opacity = 1.0;
     if has(OPACITY_MAP) {
         opacity = textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a;
-        alpha = material.diffuse.a * opacity * opacity;
+        alpha = material_alpha() * opacity * opacity;
     }
 
     // Unlit: emissive only. An emissive map's glow uses its alpha unless the
@@ -534,7 +558,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The skin program sets the fragment's alpha to the material opacity at
     // the end, ignoring the diffuse map's alpha.
     if skin {
-        alpha = material.diffuse.a;
+        alpha = material_alpha();
     }
     // The hair program's alpha: 1 with a specular map, (a − 1 + MatEmi.a)/
     // MatEmi.a of the diffuse map's alpha, MatDif.a × the opacity map (not
@@ -546,11 +570,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             let e = material.emissive.a;
             alpha = (dif_tex.a - 1.0 + e) / e;
         } else if has(OPACITY_MAP) {
-            alpha = material.diffuse.a * opacity;
+            alpha = material_alpha() * opacity;
         } else {
-            alpha = material.diffuse.a;
+            alpha = material_alpha();
         }
-        alpha *= material.diffuse.a;
+        alpha *= material_alpha();
     }
     var rim = vec3(0.0);
     if hair {

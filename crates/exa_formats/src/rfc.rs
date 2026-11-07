@@ -184,6 +184,24 @@ impl Node {
     /// bodies whose node carries it.
     pub const FLOOR: u32 = 0x80_0000;
 
+    /// `flags2` bits: the node's cut-away kind. A mesh with any of them
+    /// fades out when it stands between the camera and the player: `0x2…`
+    /// is met by the camera's segment through its triangles, `0x3…` by its
+    /// bounding sphere alone, `0x6…` by a probe straight down onto the
+    /// player through its triangles.
+    pub const CUT_AWAY_KIND: u32 = 0x7000_0000;
+    /// `flags2` bit: the node is a cut-away candidate (part of every kind).
+    pub const CUT_AWAY: u32 = 0x2000_0000;
+    /// `flags2` bit: a cut-away mark or clear carries to the node's parent.
+    /// The mesh loader drops it from a candidate whose parent is not a mesh.
+    pub const CUT_AWAY_PARENT: u32 = 0x0100_0000;
+    /// `flags2` bit: a cut-away mark (overhead kind only) or clear carries
+    /// to the node's mesh children.
+    pub const CUT_AWAY_CHILDREN: u32 = 0x0200_0000;
+    /// `flags2` bit: the mesh fades all the way out when cut away (target
+    /// 1); without it the fade settles at ½.
+    pub const CUT_AWAY_FULL: u32 = 0x0800_0000;
+
     /// Whether the node's scene class is a light: the class bits its
     /// registration masks with `0x5f` are `5`.
     pub fn is_light_node(&self) -> bool {

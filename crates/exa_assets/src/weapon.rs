@@ -475,6 +475,7 @@ impl ModelLoader<'_> {
             is_skin: false,
             placeholder: false,
             visibility: 0,
+            cut_away: None,
             cloth: false,
             cloth_mesh: None,
             mesh: false,

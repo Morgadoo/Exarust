@@ -120,9 +120,13 @@ pub const MAIN: u32 = 0x1;
 pub const SEEN: u32 = 0x0100_0000;
 /// Mesh visibility: drawn through a portal scissor.
 pub const SCISSOR: u32 = 0x1000_0000;
-/// Mesh visibility: drawn dithered while fading.
+/// Mesh visibility: fading. The original draws such a mesh after the
+/// blended surfaces, depth first and then blended at an opacity of one
+/// less the fade amount (the name is the scene unit's; nothing dithers).
 pub const DITHERED: u32 = 0x2000_0000;
-/// Mesh visibility: drawn partially once the fade settles below 0.999.
+/// Mesh visibility: the fade settled below 0.999. Without supersampling
+/// the original draws it as [`DITHERED`]; supersampled, in the opaque
+/// pass into half of each pass's jittered sub-frames.
 pub const PARTIAL: u32 = 0x4000_0000;
 /// Mesh visibility: the one bit the hidden-sector pass keeps (its meaning
 /// is not established).
@@ -933,8 +937,14 @@ pub struct SceneNode {
     pub cut_away: bool,
     /// Fade amount, 0 solid to 1 cut away.
     pub fade: f32,
-    /// What the fade moves towards.
+    /// What the fade moves towards: ½, or 1 for a mesh whose second flag
+    /// word carries the fade-all-the-way bit (`0x0800_0000`), as the mesh
+    /// loader sets it.
     pub fade_target: f32,
+    /// The mesh's triangles in its own space, which the cut-away kinds
+    /// `0x2…` and `0x6…` ask through their callbacks; `None` stops the
+    /// test at the bounding sphere.
+    pub cut_triangles: Option<std::sync::Arc<Vec<[Vec3; 3]>>>,
     /// The far sort key the node draw pass reads (`-100000` when reset).
     pub sort_key: f32,
     /// The node's sub-objects (a mesh's parts), for the world-light flag
@@ -1002,7 +1012,8 @@ impl SceneNode {
             mask: 0,
             cut_away: false,
             fade: 0.0,
-            fade_target: 1.0,
+            fade_target: 0.5,
+            cut_triangles: None,
             sort_key: SORT_KEY_NONE,
             parts: Vec::new(),
             part_materials: Vec::new(),
@@ -2924,10 +2935,12 @@ impl Scene {
     /// `direction` for `length` (the camera unit's `cut_away_segment`). The
     /// segment must meet the mesh's bounding sphere (its box's centre and
     /// the box's radius); a [`CUT_AWAY_SPHERE`] mesh is then marked, and a
-    /// [`CUT_AWAY_TESTED`] mesh would be asked its own segment callback
-    /// (guess: with no CPU triangles Exarust stops at the sphere). The
-    /// overhead mesh's own ray callback is likewise the sphere test. Any
-    /// other kind is not marked at all.
+    /// [`CUT_AWAY_TESTED`] mesh is asked its segment callback: a 50 cm
+    /// sphere swept along the segment in the mesh's space against its
+    /// triangles ([`crate::cut_away::sphere_cast`]). The overhead mesh is
+    /// asked its ray callback ([`crate::cut_away::ray_cast`]). A mesh
+    /// without [`SceneNode::cut_triangles`] stops at the sphere. Any other
+    /// kind is not marked at all.
     ///
     /// Marking carries to the parent ([`CUT_AWAY_PARENT`]) on every marked
     /// kind, but to the mesh children ([`CUT_AWAY_CHILDREN`]) only from the
@@ -2964,11 +2977,36 @@ impl Scene {
                 let flags = node.scene_flags;
                 let (centre, radius) = (node.world, radius_of(node.half_extents));
                 let kind = flags & CUT_AWAY_KIND;
+                // The callbacks run in the mesh's own space.
+                let to_local = |p: Vec3| node.world_rotation.transpose() * (p - node.world);
+                let along = |d: Vec3| node.world_rotation.transpose() * d;
                 let cut = if kind == CUT_AWAY_OVERHEAD {
                     segment_sphere(top, down, centre, radius)
-                } else {
+                        && node.cut_triangles.as_ref().is_none_or(|t| {
+                            crate::cut_away::ray_cast(
+                                t,
+                                to_local(top),
+                                along(Vec3::NEG_Y),
+                                CUT_AWAY_OVERHEAD_HEIGHT,
+                            )
+                            .is_some()
+                        })
+                } else if kind == CUT_AWAY_SPHERE {
                     segment_sphere(from, segment, centre, radius)
-                        && (kind == CUT_AWAY_TESTED || kind == CUT_AWAY_SPHERE)
+                } else if kind == CUT_AWAY_TESTED {
+                    segment_sphere(from, segment, centre, radius)
+                        && node.cut_triangles.as_ref().is_none_or(|t| {
+                            crate::cut_away::sphere_cast(
+                                t,
+                                to_local(from),
+                                along(direction),
+                                length,
+                                crate::cut_away::CAST_RADIUS,
+                            )
+                            .is_some()
+                        })
+                } else {
+                    false
                 };
                 if !cut && !node.cut_away {
                     continue;
@@ -3454,38 +3492,58 @@ pub fn scissor_rect(views: &[ConvexVolume], project: &dyn Fn(Vec3) -> Vec2) -> S
 ///   the amount snaps to the target, and below 0.999 (double precision, a
 ///   NaN too) a solid mesh is drawn partially, else not at all.
 fn fade_node(node: &mut SceneNode, dt_ms: i32) {
-    if node.mask & (MAIN | SEEN) == 0 {
-        return;
+    node.mask = fade_step(
+        node.mask,
+        node.cut_away,
+        &mut node.fade,
+        node.fade_target,
+        dt_ms,
+    );
+}
+
+/// [`fade_node`]'s rule on its own, for callers that keep a mesh's fade
+/// outside a [`Scene`] (the live cut-away in `exa_game`): `mask` is the
+/// mesh's visibility mask after the view tests, `cut_away` the detector's
+/// mark, `fade` the amount it moves and `target` its fade target (½, or 1
+/// for a mesh that fades all the way). Returns the mask with the draw bits
+/// the step leaves: [`MAIN`] solid, [`DITHERED`] while the amount moves,
+/// [`PARTIAL`] once it settles below 0.999, none once it settles at or
+/// above. A mask with neither [`MAIN`] nor [`SEEN`] is left as it is, and
+/// so is the amount.
+pub fn fade_step(mask: u32, cut_away: bool, fade: &mut f32, target: f32, dt_ms: i32) -> u32 {
+    if mask & (MAIN | SEEN) == 0 {
+        return mask;
     }
     // The frame delta is read as an unsigned 32-bit count of milliseconds.
     let step = dt_ms as u32 as f32 * FADE_RATE;
-    if !node.cut_away {
-        if 0.0 < node.fade {
-            node.fade -= step;
-            if !(f64::from(node.fade) > FADE_DONE) {
-                node.fade = 0.0;
+    if !cut_away {
+        if 0.0 < *fade {
+            *fade -= step;
+            if !(f64::from(*fade) > FADE_DONE) {
+                *fade = 0.0;
             } else {
                 // Unlike the cut-away branch, no test of the main bit: a
                 // seen-only mesh becomes dithered too.
-                node.mask = (node.mask & !MAIN) | DITHERED;
+                return (mask & !MAIN) | DITHERED;
             }
         }
-        return;
+        return mask;
     }
-    node.fade += step;
-    if !(node.fade >= node.fade_target - FADE_EPSILON) {
-        if node.mask & MAIN != 0 {
-            node.mask = (node.mask & !MAIN) | DITHERED;
+    *fade += step;
+    if !(*fade >= target - FADE_EPSILON) {
+        if mask & MAIN != 0 {
+            return (mask & !MAIN) | DITHERED;
         }
-        return;
+        return mask;
     }
-    node.fade = node.fade_target;
-    if !(f64::from(node.fade) >= FADE_PARTIAL) {
-        if node.mask & MAIN != 0 {
-            node.mask = (node.mask & !MAIN) | PARTIAL;
+    *fade = target;
+    if !(f64::from(*fade) >= FADE_PARTIAL) {
+        if mask & MAIN != 0 {
+            return (mask & !MAIN) | PARTIAL;
         }
+        mask
     } else {
-        node.mask &= !MAIN;
+        mask & !MAIN
     }
 }
 

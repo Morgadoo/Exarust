@@ -3747,6 +3747,82 @@ scales (the poles half a column to the left), the tangent runs from a
 column point to the next round the equator (none at the poles), and the
 colour word is -1. `exa_assets::polyhedra::uv_sphere` builds it.
 
+## Cut-away fade
+
+Roofs, awnings, overhangs and the levels' upper floors fade out while they
+stand between the camera and the player. Established with REA on
+`Exanima.exe` (the camera's per-frame driver, the scene probe, the mesh
+callbacks, the mesh loader, the view's draw sequence and the material
+bind) and a corpus test over Objlib and Resource.
+
+**Candidates.** A mesh whose node's second flag word carries `0x20000000`
+is a candidate; `flags2 & 0x70000000` is its kind: `0x2…` is met by the
+camera's segment and then its segment callback, `0x3…` by its bounding
+sphere alone, `0x6…` (overhead) by a 10 m probe straight down onto the
+looked-at point and then its ray callback. `0x01000000` carries a mark or
+clear to the node's parent (the mesh loader drops it when the parent is not
+a mesh), `0x02000000` to its mesh children (a mark from the overhead kind
+only, a clear from every kind). The fade's target is 1 with `0x08000000`,
+else ½. Shipped: Objlib 142 candidates (kind `0x2` 94, `0x3` 11, `0x6` 37),
+Resource 38 (arena7 and arenao4 posts and overhangs, exanima01's `Fade`
+plane over the cave whose mark carries to the four floor pieces above it,
+exanima02's five `RoofFade` planes over the scaffold planks, exanima03,
+exanima08 and exanima67 meshes). None ships `0x08000000`, so every fade
+settles at ½.
+
+**Detector.** Each frame the camera's driver casts from twice the camera's
+distance back along its backward vector from the looked-at point to a
+metre short of it (`nav_camera::cut_away_segment`). Every candidate in a
+drawn sector is tested against its bounding sphere and then, in the mesh's
+own space, its callback:
+
+- the segment callback sweeps a 50 cm sphere along the segment against the
+  mesh's triangles: a triangle counts when the sphere's centre starts on or
+  in front of its plane, moves toward it and reaches within the radius by
+  the end; the centre where the sphere first touches the plane is taken to
+  the triangle's nearest point, and the sweep's distance to that point is
+  the hit (each hit shortens the sweep);
+- the ray callback is a one-sided ray–triangle test (determinant at least
+  the engine's epsilon, unnormalised barycentric bounds), the nearest hit
+  within 10 m.
+
+The original keeps each triangle's plane with the mesh and finds the
+nearest point with approximate reciprocals; Exarust takes the plane from
+the triangle's winding and divides exactly (`exa_world::cut_away`).
+
+**Fade.** A seen mesh's amount moves 0.003 a millisecond toward its target
+when marked and back to 0 when not (`scene_nodes::fade_step`): solid at 0,
+fading in between, settled once it reaches the target (½: settled below
+0.999; 1: not drawn).
+
+**Draw.** The view draws the opaque and alpha-tested lists, the decals and
+the blended surfaces, and then the faded pass: depth only for the faded
+meshes (colour masked off), then their colour with depth writes off, the
+material's `MatDif.a` set to one less the fade amount and its blend to
+source alpha, one minus source alpha (restored after the draw; the value
+comes from the first faded mesh of each material). It is a blend, not a
+dither; the shadow passes do not read the fade, so a faded roof keeps its
+shadow. A settled mesh joins the faded pass when the game is not
+supersampled; supersampled (2 to 4 sub-frames), it is drawn in the opaque
+pass into half of each pass's jittered sub-frames instead, and with more
+sub-frames only in the first round of four. Blended surfaces of a fading or
+settled mesh are not drawn.
+
+Exarust (`exa_game::cut_away_live`) gives a fading part a blended copy of
+its material whose opacity replaces the diffuse alpha (`flags2` bit 4,
+`ExaParams::cut_away_opacity`) and writes depth while its opacity is above
+0, standing in for the depth pass; a settled part under supersampling keeps
+its opaque material and draws only one diagonal of each 2 × 2 block of the
+supersampled scene (`flags2` bit 8); a part at opacity 0 is still drawn so
+that it casts. The shadow casters ignore both bits. `EXA_CUT_AWAY=0` turns
+the fade off. Not reproduced: the depth-first pass itself (the copy writes
+its depth while it blends, so a layer drawn before a nearer one of the same
+mesh still shows), the per-material opacity of the first mesh, the
+alpha test of an alpha-tested surface while it fades, the drawn-sector test
+(a mesh counts as in a drawn sector when one of its parts is in view, a
+partless one when its node is not hidden) and the carries of grid set
+pieces.
+
 ## Not done yet
 
 The per-tick

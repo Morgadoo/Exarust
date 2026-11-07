@@ -1710,6 +1710,7 @@ fn spawn_node(
         .spawn((transform, Visibility::default(), ChildOf(parent)))
         .id();
     if drawn {
+        let mut parts = Vec::with_capacity(n.parts.len());
         for (i, (mesh, material)) in n.parts.iter().enumerate() {
             let part = commands
                 .spawn((
@@ -1733,6 +1734,10 @@ fn spawn_node(
             if let Some(room) = room {
                 commands.entity(part).insert(InRoom(room));
             }
+            parts.push(part);
+        }
+        if let Some(record) = crate::cut_away::grid_record(n, parts) {
+            commands.entity(e).insert(record);
         }
     }
     if let Some(light) = &n.light {
@@ -1799,6 +1804,7 @@ mod tests {
             is_skin: false,
             placeholder: false,
             visibility: 0,
+            cut_away: None,
             cloth: false,
             cloth_mesh: None,
             mesh: true,

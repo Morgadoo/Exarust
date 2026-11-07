@@ -167,6 +167,63 @@ pub struct ModelNode {
     /// hides its lights and fires once the level's daylight is above the
     /// threshold). Copied from the file; resolved when the model is spawned.
     pub visibility: u32,
+    /// The mesh's cut-away record ([`CutAwayMesh`]): `None` for a node
+    /// that is not a mesh, and for a mesh whose second flag word carries
+    /// none of the cut-away or fade-all-the-way bits.
+    pub cut_away: Option<Arc<CutAwayMesh>>,
+}
+
+/// What a mesh brings to the camera's cut-away fade: its second flag
+/// word's cut-away bits as the mesh loader leaves them (kind, carries and
+/// the fade-all-the-way bit; the parent carry is dropped when the parent
+/// is not a mesh) and, for the kinds whose callbacks walk the mesh (the
+/// camera segment's `0x2…` and the overhead `0x6…`), the node mesh's
+/// triangles in the node's space (metres). Rules: `docs/RENDERING.md`
+/// (Cut-away fade).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CutAwayMesh {
+    /// `flags2 & 0x7B00_0000` after the loader's parent rule.
+    pub word: u32,
+    /// The mesh triangles, for the kinds that ask them.
+    pub triangles: Option<Arc<Vec<[Vec3; 3]>>>,
+}
+
+impl CutAwayMesh {
+    /// The bits the record keeps.
+    pub const BITS: u32 = exa_formats::rfc::Node::CUT_AWAY_KIND
+        | exa_formats::rfc::Node::CUT_AWAY_PARENT
+        | exa_formats::rfc::Node::CUT_AWAY_CHILDREN
+        | exa_formats::rfc::Node::CUT_AWAY_FULL;
+
+    /// The record of a mesh node with second flag word `flags2`, whose
+    /// parent is a mesh when `parent_is_mesh`: the mesh loader clears the
+    /// parent carry of a cut-away mesh whose parent is not a mesh. `None`
+    /// when no kept bit is left. `triangles` is asked only for the kinds
+    /// whose callbacks walk the mesh.
+    pub fn of(
+        flags2: u32,
+        parent_is_mesh: bool,
+        triangles: impl FnOnce() -> Option<Arc<Vec<[Vec3; 3]>>>,
+    ) -> Option<Self> {
+        use exa_formats::rfc::Node;
+        let mut word = flags2 & Self::BITS;
+        if word & Node::CUT_AWAY_KIND == 0 {
+            // The carries are read only on a candidate (and the same bits
+            // mean other things elsewhere); the fade target is any mesh's.
+            word &= Node::CUT_AWAY_FULL;
+        } else if word & Node::CUT_AWAY_PARENT != 0 && !parent_is_mesh {
+            word &= !Node::CUT_AWAY_PARENT;
+        }
+        if word == 0 {
+            return None;
+        }
+        let kind = word & Node::CUT_AWAY_KIND;
+        let walks = kind == 0x2000_0000 || kind == 0x6000_0000;
+        Some(Self {
+            word,
+            triangles: if walks { triangles() } else { None },
+        })
+    }
 }
 
 /// What a cloth node's controller is built from beyond its drawn parts:
@@ -394,6 +451,14 @@ pub fn mesh_triangles(mesh: &RfcMesh) -> Option<Vec<[Vec3; 3]>> {
         .map(|t| Some([at(t[0])?, at(t[1])?, at(t[2])?]))
         .collect::<Option<_>>()?;
     (!triangles.is_empty()).then_some(triangles)
+}
+
+/// Whether `node`'s parent in `scene` is a mesh node.
+fn parent_is_mesh(scene: &Scene, node: &Node) -> bool {
+    node.parent
+        .and_then(|p| p.checked_sub(1))
+        .and_then(|p| instance_root(scene, p))
+        .is_some_and(|p| matches!(scene.nodes[p].body, NodeBody::Mesh(_)))
 }
 
 /// A loaded texture and whether it carries alpha.
@@ -835,6 +900,15 @@ impl ModelLoader<'_> {
                     .any(|g| crate::human_skin::is_race_skin(&entry, &g.material)),
                 _ => false,
             };
+            let cut_away = mesh
+                .and_then(|mesh| {
+                    CutAwayMesh::of(node.flags2, parent_is_mesh(&scene, node), || {
+                        triangles
+                            .clone()
+                            .or_else(|| mesh_triangles(mesh).map(Arc::new))
+                    })
+                })
+                .map(Arc::new);
             nodes.push(ModelNode {
                 name: node.name.clone(),
                 parent: node
@@ -896,6 +970,7 @@ impl ModelLoader<'_> {
                 triangles,
                 render_flags: mesh.map_or(0, |mesh| mesh.render_flags),
                 visibility: node.flags,
+                cut_away,
             });
         }
         // An instance node shares the node it names (1-based): the original
@@ -957,6 +1032,19 @@ impl ModelLoader<'_> {
             dst.fire = fire;
             dst.portal = portal;
             dst.cloth_mesh = cloth_mesh;
+            // The instance's own second flag word over its owner's mesh.
+            if let NodeBody::Mesh(mesh) = &scene.nodes[owner].body {
+                let own = &scene.nodes[i];
+                let owned = nodes[owner]
+                    .cut_away
+                    .as_ref()
+                    .and_then(|c| c.triangles.clone());
+                nodes[i].cut_away =
+                    CutAwayMesh::of(own.flags2, parent_is_mesh(&scene, own), || {
+                        owned.or_else(|| mesh_triangles(mesh).map(Arc::new))
+                    })
+                    .map(Arc::new);
+            }
         }
         Model { nodes }
     }
@@ -3925,6 +4013,29 @@ mod tests {
         assert_eq!(floor_set_generation_nodes(&nodes), vec![false]);
     }
 
+    /// The mesh loader drops the parent carry of a candidate whose parent
+    /// is not a mesh, keeps the fade-all-the-way bit alone on a mesh that
+    /// is no candidate, and walks the triangles only for the kinds whose
+    /// callbacks need them.
+    #[test]
+    fn the_cut_away_record_follows_the_loader() {
+        let tri = || Some(Arc::new(vec![[Vec3::ZERO, Vec3::X, Vec3::Z]]));
+        let a = CutAwayMesh::of(0x2100_0013, false, tri).unwrap();
+        assert_eq!(a.word, 0x2000_0000);
+        assert!(a.triangles.is_some());
+        let b = CutAwayMesh::of(0x3300_0000, true, tri).unwrap();
+        assert_eq!(b.word, 0x3300_0000);
+        assert!(b.triangles.is_none());
+        let c = CutAwayMesh::of(0x6a00_0000, true, tri).unwrap();
+        assert_eq!(c.word, 0x6a00_0000);
+        assert!(c.triangles.is_some());
+        assert_eq!(
+            CutAwayMesh::of(0x0b00_0000, true, tri).unwrap().word,
+            0x0800_0000
+        );
+        assert!(CutAwayMesh::of(0x0300_0010, true, tri).is_none());
+    }
+
     fn material_node(materials: &[&str]) -> ModelNode {
         ModelNode {
             prop_skin: None,
@@ -3953,6 +4064,7 @@ mod tests {
             is_skin: false,
             placeholder: false,
             visibility: 0,
+            cut_away: None,
             cloth: false,
             cloth_mesh: None,
             mesh: false,
