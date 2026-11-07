@@ -1621,6 +1621,8 @@ Round 82 playerctl: the guessed AI hold is removed and the narrator's offer ends
 
 Round 85 determinism: story levels repeat for every body from the first tick; the AI death hook releases followers.
 
+Round 106 mipmaps: the resampling unit's icon path and format refusals follow the original; generated mip chains match the shipped ones closely.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
