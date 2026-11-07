@@ -844,3 +844,10 @@ A model root mesh whose render word has `0x400000`, that owns its data and is no
 #### Scenario: The shipped objects
 - **WHEN** every Objlib and Objects model is loaded
 - **THEN** 22 objects with 105 member meshes are skinned, each member's stored weights naming only the walk's bones and its own among them
+
+### Requirement: Held skinned items
+A held item whose model has a skinned linked-body object SHALL draw that object's meshes skinned over the item's own node entities, which its grip and bodies move, and SHALL leave the grip and the bodies unchanged.
+
+#### Scenario: A held flail
+- **WHEN** the player holds `flail a01` and swings it
+- **THEN** its five meshes are skinned over its five nodes and no Rebalance is logged
