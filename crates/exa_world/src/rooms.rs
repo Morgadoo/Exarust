@@ -79,6 +79,9 @@ pub struct Rooms {
     height: u32,
     /// Per cell, its room.
     cell_room: Vec<Option<u16>>,
+    /// Per cell, its plane A word (the open flag and the side codes), as
+    /// the grid the rooms were flooded from holds it.
+    cell_words: Vec<u32>,
     rooms: Vec<Room>,
 }
 
@@ -204,12 +207,30 @@ impl Rooms {
         for room in &mut rooms {
             group_links(&mut room.links, &cell_room);
         }
+        let cell_words = (0..n as u32).map(edges).collect();
         Self {
             width: w,
             height: h,
             cell_room,
+            cell_words,
             rooms,
         }
+    }
+
+    /// The grid's columns.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// The grid's rows.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// A cell's plane A word (0 outside the grid): [`CELL_OPEN`] marks an
+    /// open cell.
+    pub fn cell_word(&self, cell: u32) -> u32 {
+        self.cell_words.get(cell as usize).copied().unwrap_or(0)
     }
 
     pub fn len(&self) -> usize {
@@ -738,7 +759,7 @@ fn within_reach(from: Vec2, point: Vec2) -> bool {
 /// neighbour's centre (a quarter of the way: 1.5 m in from the door).
 const DOOR_POINT: f32 = 0.25;
 /// An entering room's overlay below this alpha ends its fade.
-const FADE_DONE_ALPHA: f32 = 0.01;
+const FADE_DONE_ALPHA: f64 = 0.01;
 
 /// A room's place in the active list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -869,18 +890,26 @@ impl RoomTracker {
 
     /// The rooms wanted for an anchor at `anchor` (metres, X/Z): its room,
     /// then the rooms behind the open doors of its cell whose door point is
-    /// within [`DOOR_REACH`]. `open` is false for a shut door, which does
-    /// not load the room behind it. Empty when the anchor's cell has no room.
+    /// strictly within [`DOOR_REACH`]. `open` is false for a shut door,
+    /// which does not load the room behind it. Empty when the anchor's cell
+    /// has no room.
+    ///
+    /// As the original's per-frame walk: the anchor's cell is its linear
+    /// index (row × width + column) checked only against the cell count, so
+    /// a column off the grid's side reads the row before or after, as
+    /// [`Rooms::room_at`] does; the door point's reach is the squared
+    /// distance against the squared radius, not a square root.
     pub fn wanted_through(
         rooms: &Rooms,
         anchor: Vec2,
         open: impl Fn(DoorLink) -> bool,
     ) -> Vec<u16> {
-        let (x, y) = rooms.cell_of(anchor);
-        let Some(room) = rooms.room_of_cell(x, y) else {
+        let Some(cell) = rooms.linear_cell(anchor) else {
             return Vec::new();
         };
-        let cell = (y * rooms.width as i64 + x) as u32;
+        let Some(room) = rooms.room_of_index(cell) else {
+            return Vec::new();
+        };
         let mut wanted = vec![room];
         for link in rooms.room(room).map_or(&[][..], |r| &r.links[..]) {
             if link.from != cell || !open(*link) {
@@ -888,7 +917,8 @@ impl RoomTracker {
             }
             let own = rooms.cell_centre(link.from);
             let point = own + (rooms.cell_centre(link.to) - own) * DOOR_POINT;
-            if point.distance(anchor) >= DOOR_REACH {
+            let (dx, dz) = (point.x - anchor.x, point.y - anchor.y);
+            if dx * dx + dz * dz >= DOOR_REACH * DOOR_REACH {
                 continue;
             }
             if let Some(r) = rooms.room_of_index(link.to)
@@ -981,20 +1011,28 @@ impl RoomTracker {
     /// The black overlay alpha of a room fading in or out at `now` (ms), or
     /// `None` when it shows none. An entering room whose overlay has nearly
     /// cleared becomes active here, as the original's overlay pass does.
+    ///
+    /// The numbers follow the original's fade pass: the elapsed time is a
+    /// signed difference divided by the fade length in double precision; an
+    /// entering room's `1 − t` is taken in double, rounded once to single,
+    /// and that single widened again is compared with 0.01 in double (a
+    /// not-a-number draws). The alpha is clamped to 0…1 here, as the
+    /// original's fixed-point colour target clamps it.
     pub fn overlay(&mut self, room: u16, now: u64) -> Option<f32> {
         let ri = room as usize;
-        let t = (now.saturating_sub(*self.since.get(ri)?)) as f32 / FADE_MS as f32;
+        let elapsed = now as i64 - *self.since.get(ri)? as i64;
+        let t = elapsed as f64 / FADE_MS as f64;
         match self.fade[ri] {
             Fade::Entering => {
-                let alpha = 1.0 - t;
-                if alpha < FADE_DONE_ALPHA {
+                let alpha = (1.0 - t) as f32;
+                if f64::from(alpha) < FADE_DONE_ALPHA {
                     self.fade[ri] = Fade::Active;
                     None
                 } else {
-                    Some(alpha.min(1.0))
+                    Some(alpha.clamp(0.0, 1.0))
                 }
             }
-            Fade::Leaving => Some(t.clamp(0.0, 1.0)),
+            Fade::Leaving => Some((t as f32).clamp(0.0, 1.0)),
             _ => None,
         }
     }
@@ -1333,6 +1371,25 @@ mod tests {
         assert_eq!(u.overlay(0, 989).map(|a| a > 0.0), Some(true));
         assert_eq!(u.overlay(0, 991), None);
         assert_eq!(u.fade(0), Fade::Active);
+        // At 990 ms the double `1 − 0.99` rounds to the single nearest 0.01,
+        // which widened is just under 0.01: the fade ends there, not later.
+        let mut v = RoomTracker::new(rooms.len());
+        v.update(&rooms, inside, 0);
+        assert!(v.overlay(0, 989).is_some());
+        assert_eq!(v.overlay(0, 990), None);
+        assert_eq!(v.fade(0), Fade::Active);
+    }
+
+    /// The rooms keep the grid's size and each cell's plane A word.
+    #[test]
+    fn the_rooms_keep_the_grid_size_and_cell_words() {
+        let grid = two_rooms().0;
+        let rooms = Rooms::flood(&grid);
+        assert_eq!((rooms.width(), rooms.height()), (grid.width, grid.height));
+        for cell in 0..grid.width * grid.height {
+            assert_eq!(rooms.cell_word(cell), grid.edges[cell as usize]);
+        }
+        assert_eq!(rooms.cell_word(grid.width * grid.height), 0);
     }
 
     #[test]

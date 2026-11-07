@@ -155,6 +155,7 @@ impl Plugin for ArenaHubPlugin {
             .add_message::<ArenaMatchLaunch>()
             .add_message::<crate::arsenal_view::OpenArsenal>()
             .add_message::<OpenHubShop>()
+            .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_message::<crate::item_card::WorldCard>()
             .init_resource::<ShopBuyScript>()
             .add_message::<crate::scene_bodies::SceneCommand>()
@@ -208,6 +209,16 @@ impl Plugin for ArenaHubPlugin {
                 hub_enter_on_load
                     .after(crate::hub_forms::hub_employee_kit_on_load)
                     .before(hub_clicks),
+            )
+            .add_systems(
+                Update,
+                (
+                    crate::option_forms::hub_form_typing,
+                    crate::option_forms::load_emblem_textures,
+                )
+                    .chain()
+                    .after(crate::hub_forms::hub_form_input)
+                    .in_set(HubWindowSystems),
             )
             .add_systems(Update, read_hire_facts.before(enter_loaded_hub))
             .add_systems(
@@ -1117,9 +1128,12 @@ impl HubShop<'_, '_> {
     }
 }
 
-/// Opens the shop as the hub's click on it does (`--open-hub-window shop`).
+/// Opens the shop as the hub's click on it does (`--open-hub-window shop`),
+/// or the merchant's trade with its options (`--open-hub-window merchant`).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpenHubShop;
+pub struct OpenHubShop {
+    pub merchant: bool,
+}
 
 /// `--shop-buy ROW` (debug): once the scripted shop opens, its stock row
 /// `ROW` is clicked into the buy basket and the trade confirmed through the
@@ -1158,11 +1172,13 @@ fn scripted_shop(
     let Some(mut career) = career else {
         return;
     };
-    for _ in opens.read() {
-        shop.open(false, &mut career, &mut windows);
+    for open in opens.read() {
+        shop.open(open.merchant, &mut career, &mut windows);
         info!(
-            "hub shop: opened by script, {} on the shelf",
-            career.company.stock.len()
+            "hub shop: opened by script (merchant {}), {} on the shelf, {} with the merchant",
+            open.merchant,
+            career.company.stock.len(),
+            career.merchant_stock.len()
         );
         if buy.row.is_some() {
             buy.stage = 1;
@@ -1257,6 +1273,11 @@ fn hub_clicks(
     let took = std::mem::take(&mut windows.took_pointer);
     for click in clicks.read() {
         if took {
+            continue;
+        }
+        // The table-built forms take their own pointer, with or without a
+        // hub window under them (the company dialog stands alone).
+        if windows.forms.contains(click.pointer.x, click.pointer.y) {
             continue;
         }
         // A window takes the click while it is open: the board's own hit

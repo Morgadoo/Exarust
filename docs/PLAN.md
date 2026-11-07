@@ -291,6 +291,8 @@ Round 110 propskin: sacks, mattresses and hanging growths bend as one skinned su
 
 Round 112 heldskin: a flail in hand keeps its import-built skin, as in the original.
 
+Round 117 rooms: the room walk and fade follow the original's numbers, and story walks explore the active rooms' cells.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1368,6 +1370,8 @@ Round 60 itemability (S12, S13): item abilities are crystal sockets, not a recor
 Round 61 crystalsockets (S12): the crystal sockets and all three item abilities are live for every character.
 
 Round 114 uitext: the combo box draws as the original's, and every shipped item's description is checked against the original's rules.
+
+Round 116 forms: the merchant options, the company dialog with its emblem form and the colour picker are built from the original's records.
 
 ### Phase 5 — Visual and audio fidelity (started)
 

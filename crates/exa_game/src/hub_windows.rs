@@ -1127,6 +1127,10 @@ impl HubWindows {
             centred(SHOP_SIZE, self.task.screen),
             Vec::new(),
         );
+        // The merchant's trade adds its options form.
+        if merchant {
+            self.open_merchant_options(career);
+        }
     }
 
     /// Fill each item's value word. `price_of` reads the catalogue (the
@@ -1942,7 +1946,10 @@ pub fn draw_hub_windows(
     let Some(windows) = windows else {
         return;
     };
-    if !windows.is_open() {
+    // The company dialog and the colour picker stand on their own, without
+    // a hub window under them.
+    let forms_only = !windows.is_open() && !windows.forms.is_empty();
+    if !windows.is_open() && !forms_only {
         // A reopened window fades in again even if its form id comes back.
         fade.form = None;
         return;
@@ -1950,8 +1957,10 @@ pub fn draw_hub_windows(
     if game_screens.is_none() {
         frames.clear();
     }
-    let Some(bounds) = windows.bounds() else {
-        return;
+    let bounds = match windows.bounds() {
+        Some(bounds) => bounds,
+        None if forms_only => GuiRect::new(0, 0, windows.task.screen.0, windows.task.screen.1),
+        None => return,
     };
     let empty = GuiTextures::default();
     let textures = textures.as_deref().unwrap_or(&empty);
@@ -1989,7 +1998,7 @@ pub fn draw_hub_windows(
             .shop
             .as_ref()
             .map(|shop| paint_shop(shop, bounds, &look, icons.as_deref_mut(), pointer)),
-        HubWindowKind::None => None,
+        HubWindowKind::None => forms_only.then(gui_paint::Painted::default),
     };
     let Some(mut painted) = painted else {
         debug!("hub windows: {:?} open but nothing to paint", windows.kind);
@@ -2007,14 +2016,43 @@ pub fn draw_hub_windows(
                 [0, 0, 0, u8::MAX],
             ));
         }
-        let frame = (open.window != crate::hub_forms::FormWindow::Manage)
-            .then(|| crate::hub_forms::paint_form(&mut painted, &open.form, &shown).0);
+        if open.window == crate::hub_forms::FormWindow::Company {
+            // The company dialog's paint: a quad over the whole form in its
+            // colour, opaque black, before the base paint.
+            let r = open.form.rect();
+            let [red, green, blue, alpha] = crate::emblem::COMPANY_FORM_COLOUR;
+            painted.push(exa_ui::loadout::solid_layer(
+                [r.x, r.y, r.w, r.h],
+                [red, green, blue, alpha],
+            ));
+        }
+        let options = &windows.forms.options;
+        let extras = crate::hub_forms::FormExtras {
+            focus: options
+                .focus
+                .filter(|(window, _)| *window == open.window)
+                .map(|(_, record)| record),
+            picker: (open.window == crate::hub_forms::FormWindow::Picker)
+                .then(|| options.picker.as_ref().map(|state| &state.picker))
+                .flatten(),
+        };
+        let frame = (open.window != crate::hub_forms::FormWindow::Manage).then(|| {
+            crate::hub_forms::paint_form_with(&mut painted, &open.form, &shown, &extras).0
+        });
+        if open.window == crate::hub_forms::FormWindow::Emblem
+            && let Some(state) = options.emblem.as_ref()
+        {
+            crate::option_forms::paint_emblem_preview(&mut painted, &open.form, state, &shown);
+        }
         if open.window == crate::hub_forms::FormWindow::Loadout
             && let Some(kit) = kit.as_deref()
         {
             crate::loadout_kit::paint_kit(&mut painted, kit, icons.as_deref_mut(), &shown, pointer);
         }
         painted.layers.extend(frame.into_iter().flatten());
+    }
+    if let Some(popup) = windows.forms.options.popup.as_ref() {
+        crate::option_forms::paint_popup(&mut painted, popup, &shown);
     }
     debug!(
         "hub windows: {:?} at {:?} paints {} layers ({} stacked forms, fade {alpha})",

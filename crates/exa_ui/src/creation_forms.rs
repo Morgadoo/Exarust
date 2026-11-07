@@ -69,6 +69,10 @@ pub struct FormRecord {
     pub max_len: i32,
     /// The record has a callback.
     pub reports: bool,
+    /// A combo box's item list: the words at 0x48 (the count) and 0x50
+    /// (the list of strings). The word at 0x38 ([`Self::amount`]) is its
+    /// 1-based selection.
+    pub items: &'static [&'static str],
 }
 
 pub(crate) const fn record(class: u16, id: u16, x: i32, y: i32, w: i32, h: i32) -> FormRecord {
@@ -90,6 +94,7 @@ pub(crate) const fn record(class: u16, id: u16, x: i32, y: i32, w: i32, h: i32) 
         steps: 0,
         max_len: 0,
         reports: false,
+        items: &[],
     }
 }
 
@@ -420,6 +425,14 @@ pub fn control(r: &FormRecord) -> Control {
     c.value = r.value;
     c.icon = r.icon;
     c.reports = r.reports;
+    // A combo box shows its selected item (the 1-based word at 0x38).
+    if !r.items.is_empty()
+        && let Some(item) = (r.amount as usize)
+            .checked_sub(1)
+            .and_then(|i| r.items.get(i))
+    {
+        c.text = item.as_bytes().to_vec();
+    }
     if let Some(class) = extended_class(r.class) {
         if c.w == 0 {
             c.w = class.size.0;
