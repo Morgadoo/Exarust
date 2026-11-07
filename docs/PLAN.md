@@ -1407,6 +1407,8 @@ Round 135 itemtext: a repair refreshes an open item card in place, and one appar
 
 Round 136 blocked: the player controls block on knock-out, death and the arena forms as in the original; only the second block and the off switch refuse the hotkeys.
 
+Round 141 motilepart2: support pins are pulled per part after its links, and the attack starters end an ongoing parry as the original does.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
