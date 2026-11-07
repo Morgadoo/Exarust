@@ -1916,16 +1916,19 @@ fn leave_swing(
 /// The camera's distance from the player (m): fixed, as the original's;
 /// zoom narrows the field of view instead.
 const CAMERA_DISTANCE: f32 = 20.0;
-/// The spring constants per tick.
-const ORBIT_STIFFNESS: f32 = 0.0718;
-const ORBIT_RETENTION: f32 = 0.616;
+// The yaw spring's stiffness and retention per tick are the game camera
+// preset's view (250/59²) and retention (the 59th root of 3.94e-13):
+// [`ChaseCamera::controller`].
 /// The yaw leads the shown yaw by at most this per tick (rad).
 const MAX_YAW_LEAD: f32 = std::f32::consts::FRAC_PI_4;
-/// Zoom stops: 800 + 240·level, in the original's units (2000 = 45°).
-const ZOOM_MIN: f32 = 800.0;
-const ZOOM_MAX: f32 = ZOOM_MIN + 240.0 * 5.0;
-const ZOOM_START: f32 = 1300.0;
-/// The steepest pitch the orbit drag reaches (rad below the horizon).
+/// Zoom stops: 800 + 240·level, in the original's units (2000 = 45°): the
+/// game camera preset's smallest and largest distance, and its first one
+/// the zoom starts from (`nav_camera::GAME_CAMERA_PRESET`).
+const ZOOM_MIN: f32 = crate::nav_camera::GAME_CAMERA_PRESET.min_distance;
+const ZOOM_MAX: f32 = crate::nav_camera::GAME_CAMERA_PRESET.max_distance;
+const ZOOM_START: f32 = crate::nav_camera::GAME_CAMERA_PRESET.distance;
+/// The steepest pitch the orbit drag reaches (rad below the horizon): the
+/// preset's default upper bound.
 const MAX_PITCH: f32 = 1.5;
 /// A shake offset shows while its squared length is above the original's
 /// 1e-5 cm² (here in m²).
@@ -1982,10 +1985,16 @@ pub struct ChaseCamera {
     wall_climb: bool,
     wall_tilt: f32,
     wall_before: f32,
+    /// The camera controller the level's view builds from the game camera
+    /// preset: the yaw spring's stiffness (the preset's view) and
+    /// retention, and the zoom's ease, are its numbers.
+    controller: crate::nav_camera::NavController,
 }
 
 impl Default for ChaseCamera {
     fn default() -> Self {
+        let controller =
+            crate::nav_camera::NavController::new(crate::nav_camera::GAME_CAMERA_PRESET, 0, false);
         let mut cam = Self {
             yaw: 0.0,
             shown_yaw: 0.0,
@@ -2003,6 +2012,7 @@ impl Default for ChaseCamera {
             wall_climb: false,
             wall_tilt: 0.0,
             wall_before: 0.0,
+            controller,
         };
         cam.before = (cam.backward(), cam.shown_zoom);
         cam
@@ -2109,20 +2119,45 @@ impl ChaseCamera {
         cam
     }
 
-    /// Turns the orbit at once to look along a shot from `eye` to `focus`
-    /// (any units; only the horizontal bearing counts): the target and
-    /// shown yaw become the bearing of the eye from the focus, the orbit
-    /// stops, and the pitch and zoom stay the camera's own. A shot with no
-    /// horizontal offset leaves the camera.
-    pub fn face_shot(&mut self, eye: Vec3, focus: Vec3) {
+    /// The zoom the camera eases to (800–2000).
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    /// Places the camera for a shot from `eye` to `focus` (any units), as
+    /// the original's placement routine does
+    /// ([`crate::nav_camera::place`]): the target and shown yaw become the
+    /// engine's planar yaw of the backward vector from the focus to the eye,
+    /// and the orbit stops. A shot with a `distance` (a fast shot's 1300)
+    /// starts the zoom again from it: the shown zoom takes the distance and
+    /// the zoom raised to the smallest distance and, the camera being the
+    /// stepped one, lowered to the largest. A shot without one keeps the
+    /// zoom [guess: the original passes the controller's own last placed
+    /// distance, which Exarust does not keep apart from the wheel's zoom].
+    /// The pitch stays the camera's own rules'. A shot with no horizontal
+    /// offset leaves the camera.
+    pub fn face_shot(&mut self, eye: Vec3, focus: Vec3, distance: Option<f32>) {
         let back = eye - focus;
         if back.x == 0.0 && back.z == 0.0 || !back.is_finite() {
             return;
         }
-        let yaw = back.x.atan2(back.z);
-        self.yaw = yaw;
-        self.shown_yaw = yaw;
+        let preset = self.controller.preset;
+        let limits = crate::nav_camera::HeightLimits {
+            min: preset.min_height,
+            max: preset.max_height,
+        };
+        let placed = crate::nav_camera::place(focus, eye, None, limits);
+        self.yaw = placed.yaw;
+        self.shown_yaw = placed.yaw;
         self.yaw_speed = 0.0;
+        if let Some(distance) = distance {
+            self.zoom = crate::nav_camera::clamp_distance(
+                distance,
+                preset.min_distance,
+                preset.max_distance,
+            );
+            self.shown_zoom = distance;
+        }
         self.before = (self.backward(), self.shown_zoom);
     }
 
@@ -2198,12 +2233,12 @@ impl ChaseCamera {
             self.shake_before = Vec3::ZERO;
         }
         let lead = turn_between(self.shown_yaw, self.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
-        self.yaw_speed = ORBIT_RETENTION * (self.yaw_speed + ORBIT_STIFFNESS * lead);
+        let preset = &self.controller.preset;
+        self.yaw_speed = preset.retention * (self.yaw_speed + preset.view * lead);
         self.shown_yaw += self.yaw_speed;
         let target_pitch = pitch_held(self.user_pitch, pitch_floor(self.shown_zoom));
         self.pitch = crate::nav_camera::ease_pitch(self.pitch, target_pitch);
-        let ease = 5.0 / 59.0;
-        self.shown_zoom += (self.zoom - self.shown_zoom) * ease;
+        self.shown_zoom += (self.zoom - self.shown_zoom) * self.controller.preset.zoom_speed;
     }
 
     /// Runs the ticks whose start the frame has reached, `dt` (s) after the
@@ -3803,6 +3838,34 @@ mod tests {
         assert_eq!(run(false), 1.0);
         let expect = crate::player_behaviour::camera_follow_yaw(1.0, 0.0).unwrap();
         assert!((run(true) - expect).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_shot_places_the_camera_by_the_engines_yaw_and_distance() {
+        let mut cam = ChaseCamera {
+            zoom: 1900.0,
+            shown_zoom: 1850.0,
+            yaw_speed: 0.3,
+            ..default()
+        };
+        // The story shot: the eye 600, 600, 1300 cm off the player.
+        let focus = Vec3::new(10.0, 20.0, 30.0);
+        cam.face_shot(focus + Vec3::new(600.0, 600.0, 1300.0), focus, Some(1300.0));
+        let yaw = crate::nav_camera::planar_yaw(Vec3::new(600.0, 600.0, 1300.0).normalize());
+        assert!((cam.yaw - yaw).abs() < 1e-6, "{} {yaw}", cam.yaw);
+        // The engine's arc cosine, not atan2: about 5e-4 rad apart here.
+        assert!((cam.yaw - 600f32.atan2(1300.0)).abs() < 2e-3);
+        assert_eq!((cam.shown_yaw, cam.yaw_speed), (cam.yaw, 0.0));
+        assert_eq!((cam.zoom, cam.shown_zoom), (1300.0, 1300.0));
+        // A distance outside the stops is held to them; the shown zoom
+        // takes it as it is.
+        cam.face_shot(focus + Vec3::X, focus, Some(5000.0));
+        assert_eq!((cam.zoom, cam.shown_zoom), (2000.0, 5000.0));
+        // A shot without a distance keeps the zoom.
+        cam.zoom = 900.0;
+        cam.face_shot(focus - Vec3::Z, focus, None);
+        assert_eq!(cam.zoom, 900.0);
+        assert!((cam.yaw.abs() - std::f32::consts::PI).abs() < 1e-6);
     }
 
     #[test]

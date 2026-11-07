@@ -1780,7 +1780,18 @@ character body's possession routines; addresses are in the research notes.
   the aim plane and the hand picks through the physics world.
 - **Middle mouse** orbits: 4.8 rad per screen width (the division in
   double precision), through a near critically damped spring (stiffness
-  0.0718 and retention 0.616 per tick), leading by at most 45° per tick.
+  250/59² = 0.0718184 and retention 0.6162461 per tick, the game camera
+  preset's view and default retention as the preset applies them:
+  `nav_camera::GAME_CAMERA_PRESET`, built into the chase camera's
+  controller), leading by at most 45° per tick.
+- A scripted **camera shot** (session start, next fight, story start and
+  continue, arena shots) goes through the placement routine
+  (`nav_camera::place`): the target and shown yaw become the engine's
+  planar yaw (its fast arc cosine) of the eye's offset from the target and
+  the orbit stops; a fast shot's distance (1300) becomes the shown zoom and,
+  held between 800 and 2000, the zoom (`ChaseCamera::face_shot`). A slow
+  shot keeps the zoom [guess: the original passes its own last placed
+  distance].
   Releasing the button snaps the target a quarter turn from the shown yaw
   once the drag passed an eighth of a turn (`nav_drag::free_drag_release`,
   the unit's close branch).

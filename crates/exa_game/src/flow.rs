@@ -275,9 +275,10 @@ pub struct Viewport {
 pub struct CameraFrame {
     pub camera: Vec3,
     pub target: Vec3,
-    /// The movement speed forced on the view (`Some(1300.0)` after a session
-    /// start; `None` keeps the view's own).
-    pub speed: Option<f32>,
+    /// The distance the camera's placement takes (`Some(1300.0)` after a
+    /// session start: the zoom starts again from it; `None` keeps the view's
+    /// own).
+    pub distance: Option<f32>,
     /// The client point the cursor is moved to.
     pub warp: (i32, i32),
 }
@@ -294,8 +295,8 @@ pub mod camera {
     /// start and next fight, the story continue, the arena hub), 700, 1180,
     /// 1100 cm.
     pub const NEAR_OFFSET: Vec3 = Vec3::new(700.0, 1180.0, 1100.0);
-    /// The speed a fast shot forces on the view.
-    pub const START_SPEED: f32 = 1300.0;
+    /// The distance a fast shot places the camera at: the zoom's start.
+    pub const START_DISTANCE: f32 = 1300.0;
     /// The camera's offset from the player in the story start's shot.
     pub const STORY_OFFSET: Vec3 = Vec3::new(600.0, 600.0, 1300.0);
     /// The horizontal cursor offset of the point shots, per 1/1140 of the
@@ -330,14 +331,14 @@ pub mod camera {
     }
 
     /// Frames `point`: the target at the point, the camera at the point plus
-    /// [`FAR_OFFSET`] (`far`) or [`NEAR_OFFSET`], the start speed when
+    /// [`FAR_OFFSET`] (`far`) or [`NEAR_OFFSET`], the start distance when
     /// `fast`, and the shot's cursor warp. (The original sets the camera to
     /// the offset and adds the point to it in place.)
     pub fn frame_point(point: Vec3, fast: bool, far: bool, viewport: Viewport) -> CameraFrame {
         CameraFrame {
             camera: (if far { FAR_OFFSET } else { NEAR_OFFSET }) + point,
             target: point,
-            speed: fast.then_some(START_SPEED),
+            distance: fast.then_some(START_DISTANCE),
             warp: warp(viewport.width, viewport.height, WARP_X, WARP_Y),
         }
     }
@@ -352,19 +353,19 @@ pub mod camera {
         CameraFrame {
             camera,
             target,
-            speed: fast.then_some(START_SPEED),
+            distance: fast.then_some(START_DISTANCE),
             warp: warp(viewport.width, viewport.height, WARP_X, WARP_Y),
         }
     }
 
     /// Frames the player at `point`: the camera at the point plus
-    /// [`STORY_OFFSET`], the start speed, and the cursor moved left of
+    /// [`STORY_OFFSET`], the start distance, and the cursor moved left of
     /// centre.
     pub fn frame_player(point: Vec3, viewport: Viewport) -> CameraFrame {
         CameraFrame {
             camera: point + STORY_OFFSET,
             target: point,
-            speed: Some(START_SPEED),
+            distance: Some(START_DISTANCE),
             warp: warp(viewport.width, viewport.height, -STORY_WARP_X, 0.0),
         }
     }
@@ -4184,12 +4185,21 @@ fn apply_steps(
                 }
             }
             Step::Camera(frame) => {
-                // The shot turns the chase camera to its bearing; the
-                // original's view position, forced speed and the cursor
-                // warp are not taken (the chase camera keeps its distance
-                // and pitch rules).
+                // The shot places the chase camera as the original's
+                // placement does: the bearing of the eye from the target,
+                // and a fast shot's distance as the zoom. The view position
+                // and the cursor warp are not taken (the chase camera keeps
+                // its own distance and pitch rules).
                 for mut camera in &mut cameras {
-                    camera.face_shot(frame.camera, frame.target);
+                    camera.face_shot(frame.camera, frame.target, frame.distance);
+                    info!(
+                        "camera shot: eye {} target {} distance {:?}: yaw {:.6} zoom {}",
+                        frame.camera,
+                        frame.target,
+                        frame.distance,
+                        camera.yaw,
+                        camera.zoom()
+                    );
                 }
             }
             Step::CombatMode(on) => {
@@ -4933,11 +4943,11 @@ mod tests {
         let shot = camera::frame_point(PRACTICE_POINT, true, true, view);
         assert_eq!(shot.camera, Vec3::new(300.0, 1180.0, 1800.0));
         assert_eq!(shot.target, Vec3::new(0.0, 0.0, 500.0));
-        assert_eq!(shot.speed, Some(1300.0));
+        assert_eq!(shot.distance, Some(1300.0));
         assert_eq!(shot.warp, (920, 370));
         let near = camera::frame_point(PRACTICE_POINT, false, false, view);
         assert_eq!(near.camera, Vec3::new(700.0, 1180.0, 1600.0));
-        assert_eq!(near.speed, None);
+        assert_eq!(near.distance, None);
         let two = camera::frame_two_points(Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0), true, view);
         assert_eq!(two.camera, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(two.target, Vec3::ZERO);
