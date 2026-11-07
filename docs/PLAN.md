@@ -977,6 +977,8 @@ Round 104 demon: the demon gets its full body with tail and wings; unarmed AI re
 
 Round 111 chase: NPC chases walk their route and end on the original's 1 m arrival.
 
+Round 113 frames: scripted runs end after their frames, and a held-weapon trace explains the summoned demon's misses.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
