@@ -5,7 +5,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **79.2% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **79.3% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
 - Weighted by function count (zero-byte imported names left out): 71.2% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **45.4%** reproduced.
 
@@ -79,8 +79,8 @@ Ordered by code size; these are where most of the original still has no counterp
 | TSimSector | Physics, bodies & cloth | 28 | 85% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
 | XA_SaveGames | Game modes, arena & session | 27 | 87% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
+| RF_Skinning | Characters, motion & animation | 25 | 91% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | TGUIItemContainer | Items, materials & crafting | 26 | 88% | exa_game/src/item_container.rs; exa_items/src/card.rs |
-| RF_Skinning | Characters, motion & animation | 25 | 90% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | TGSLines | UI | 24 | 88% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
 | TMesh | Rendering & GPU | 25 | 84% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 82% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
