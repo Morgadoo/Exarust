@@ -1109,6 +1109,16 @@ impl Ragdoll {
             drive.steps.loudness = work.loudness;
             drive.foot_cues.append(&mut work.cues);
             if drive.steps.stepping {
+                // The body tick's use counter for the movement rises every
+                // tick a step runs past the balance routine: 0.005 in a long
+                // step, else 0.0025 (double, as the original's).
+                let amount = if drive.steps.knockback {
+                    super::muscle::ATTACK_USE
+                } else {
+                    super::muscle::STEP_USE
+                };
+                let used = &mut drive.item_use[0];
+                *used = (f64::from(*used) + amount) as f32;
                 let dist = cm((chest - drive.steps.target).with_y(0.0)).length();
                 let toward = cm(fast.with_y(0.0))
                     .dot((drive.steps.target - chest).with_y(0.0).normalize_or_zero());

@@ -34,7 +34,7 @@ checked unreachable).
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **98,850 of 122,823 needed bytes (80 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 77,301 of their 100,371 bytes). Counting only what the running game calls, about **84,740 bytes (69 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below; earlier lanes' additions are in the paragraphs that follow.)
+Weighted by the partial shares, about **99,110 of 122,823 needed bytes (81 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 77,561 of their 100,371 bytes). Counting only what the running game calls, about **85,000 bytes (69 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below; earlier lanes' additions are in the paragraphs that follow.)
 The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live (about 80,400 B). The kernel lane then added about 1,670 B reproduced (the pain sounds and player jolt of #8, the feet modes of #50, the leg order of #73: tested only) and about 360 B live (the standing body's drive reset in #49, the golem link smoothing of #73, and the init's foot-mask union, which was live but not credited).
 The sampler lane added about 3,070 B reproduced, tested only: the pose-only sampler's key pick, root source and height tail (#76, about 890 B), the living sampler's height tail and queued-clip switch (#81, about 880 B), the down body's probe (#49, about 150 B) and the placement routines' part, anchor, pin and mean arithmetic (#62 about 715 B, #58 about 440 B). Its one live change, the living hunch moved onto the thorax's own placement (#81), corrects code that was already credited, so the live total stays.
 The muscles-off lane added about 900 B reproduced, tested only (the sampler is not scheduled): in #82 the bracket's branch order (the lead-in divides by the first key alone unless the blend is positive, no guard between the keys, a NaN clock between the keys), the progress (raw clock over the last key), the gait overlay by √run (from the capture's turn while it leads in) and the normalisation, the height target ((2·run + 2)·scale while walking, the −500 cm floor, the original's sum order) and the queued-clip switch (about 765 B); #84, the capture of the current targets, as `Animator::capture_targets` (about 140 B). Nothing live changed; #84's earlier live credit (about 70 B) was the living sampler's rebase, which is not this routine, so the live count drops to about 80,690 B (66 %).
@@ -109,11 +109,25 @@ takes the combat femur posture and a 0.9° twist (anchors 1–2 cm apart from ma
 diverges from tick 3; exanima01's first re-entered feral body takes the hunch, and the trace
 diverges at tick 347 in that body alone (about 700 B newly live).
 
+The body tick's two use counters (#49), read in the assembly: the movement's counter rises
+0.0005 × the locomotion speed (cm a tick) on every tick of the walk-or-run branch, 0.0025 on
+every tick a step runs past the balance routine (0.005 when the step is long, the step kind 2),
+and the attack's 0.005 on every tick of an attack clip (5 to 12) in the posture block's attack
+branch, whether or not its slot calls the arm setter; each sum is taken in double. The item-effect
+list's once-a-second run (the item power component) reads them for the golem suit's worn tick and
+the gauntlets' apparel tick and takes one off each above one; an empty list clears both. Exarust's
+list kept the counters but nothing fed them; now the drive keeps them (`Drive::item_use`), the
+muscle tune and the balance routine feed them, and `item_effects::run_worn_effects` reads and
+writes them back. Exarust feeds the step's counter where its balance routine checks the episode's
+end (the original's end checks follow the add in the body tick; the jolt's and the get-up's ends,
+earlier in Exarust's balance pass, add nothing that tick). None of the scripted scenes has a body
+with a golem suit or gauntlets effect, so nothing visible changed there; about 260 B newly live.
+
 ## Largest remaining work
 
 | routine | size | left (est.) | role | missing |
 |---|---|---|---|---|
-| #49 | 20,293 | 5,635 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | some state flags; the sampler call's tail and carry propagation |
+| #49 | 20,293 | 5,375 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | some state flags; the sampler call's tail and carry propagation; the look point's smoothing is data only (its readers are the AI's and the camera's) |
 | #8 | 13,157 | 1,845 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; script hook and callbacks; the struck item's own sound (#4) in the clash branch not called |
 | #18 | 8,061 | 1,209 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | wet step (no water surface); nav calls; parity unverified block by block |
 | #76 | 3,562 | 530 | Pose-only sampler (spawn and placement) | the walking target and the leg reach not called; the render nodes' locals |

@@ -519,6 +519,17 @@ Each tick, unless shocked (which leaves the arms as they are), the arms' stiffne
 - **WHEN** a shocked body's arms were 0.6 the tick before
 - **THEN** their stiffness, cap and saturation stay as they were
 
+### Requirement: Item use counters
+The body tick SHALL feed two use counters, each sum in double: the movement's by 0.0005 times the locomotion speed (cm a tick) on each tick of the walk or the run and by 0.0025 on each tick a step runs (0.005 for a long step), and the attack's by 0.005 on each tick of an attack clip on its feet. The character's item-effect run SHALL read them and take one off each that is above one; with no effects it SHALL clear both.
+
+#### Scenario: A walking body
+- **WHEN** a body walks one tick at 10 cm a tick
+- **THEN** its movement counter rises by 0.005
+
+#### Scenario: An attack
+- **WHEN** a body plays two ticks of an attack clip
+- **THEN** its attack counter rises by 0.01
+
 ### Requirement: Placement pose routing
 A placement on the ground SHALL pose each part as the pose-only sampler routes it: the thighs' clip turns carrying the femur posture before the chain, the torso's midline parts but the head turned by the twist (the part under the root half way), the head on the untwisted chain, and the part with the support pins taking the thorax hunch when the feral level is over 0.1. No leg IK, look or foot pitch SHALL run there. A first spawn SHALL take the plain clip chain.
 
