@@ -205,8 +205,9 @@ pub(super) fn read_kinesis_input(
     mut word: ResMut<KinesisKeys>,
     control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
-    // The controls off, the key word is empty.
-    let off = crate::player_controls::PlayerControl::is_off(control.as_deref());
+    // The controls off, the key word is empty; the block pair clears it
+    // and suspends the behaviour.
+    let off = crate::player_controls::PlayerControl::input_suspended(control.as_deref());
     let ray = scripted.as_deref().and_then(|scripted| {
         let window = windows.single().ok()?;
         let (camera, eye) = cameras.single().ok()?;

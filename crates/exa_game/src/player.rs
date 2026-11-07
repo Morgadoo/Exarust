@@ -215,6 +215,9 @@ pub struct PlayerBody {
     /// The player's controls were off at its last behaviour tick: their
     /// switch off clears the move request once.
     controls_off: bool,
+    /// The player's controls were blocked at its last behaviour tick: the
+    /// block clears the locomotion flags and the moving byte once.
+    controls_blocked: bool,
 }
 
 impl PlayerBody {
@@ -242,6 +245,7 @@ impl PlayerBody {
             head: HeadTrack { yaw, pitch: 0.0 },
             hovers: false,
             controls_off: false,
+            controls_blocked: false,
         }
     }
 
@@ -426,8 +430,9 @@ fn latch_attack_button(
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
-    // The controls off, a press is the open form's.
-    if crate::player_controls::PlayerControl::is_off(control.as_deref()) {
+    // The controls off, a press is the open form's; blocked, the
+    // behaviour that takes it is suspended.
+    if crate::player_controls::PlayerControl::input_suspended(control.as_deref()) {
         return;
     }
     let mut pressed = bindings.mouse_just_pressed(&buttons, Action::Primary);
@@ -913,8 +918,9 @@ fn cursor_look(
     // The original drops the capture without a release while its GUI's
     // focus is off the game view; Exarust's nearest is the window's focus.
     // The controls off, their mouse hook is dropped with its capture (the
-    // same drop, with no release).
-    if !window.focused || crate::player_controls::PlayerControl::is_off(control.as_deref()) {
+    // same drop, with no release); the block pair drops it too.
+    if !window.focused || crate::player_controls::PlayerControl::input_suspended(control.as_deref())
+    {
         if look.active {
             look.active = false;
             look.target = None;
@@ -1089,8 +1095,9 @@ pub(crate) fn release_held_wake(
     mut flags: Query<&mut exa_combat::StateFlags, With<PlayerBody>>,
     control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
-    // The controls off, the behaviour reads no key, button or stick.
-    if crate::player_controls::PlayerControl::is_off(control.as_deref()) {
+    // The controls off, the behaviour reads no key, button or stick; the
+    // block pair suspends the behaviour.
+    if crate::player_controls::PlayerControl::input_suspended(control.as_deref()) {
         return;
     }
     let held = |action| bindings.pressed(&keys, action);
@@ -1179,7 +1186,12 @@ pub(crate) fn steer_player(
     // The controls off, a form has the keyboard and the mouse: the movement
     // request does not run and the behaviour reads no key, no button and no
     // pad ([`crate::controls_live`]).
-    let off = crate::player_controls::PlayerControl::is_off(control.as_deref());
+    let switched_off = crate::player_controls::PlayerControl::is_off(control.as_deref());
+    // Blocked (or second-blocked) the request does not run and the
+    // behaviour is suspended, so no input reaches it either.
+    let off = crate::player_controls::PlayerControl::input_suspended(control.as_deref());
+    let blocked = crate::player_controls::PlayerControl::is_blocked(control.as_deref());
+    let suspended = crate::player_controls::PlayerControl::behaviour_suspended(control.as_deref());
     let held = |action| !off && bindings.pressed(&keys, action);
     let input = Keys {
         w: held(Action::Forward),
@@ -1218,11 +1230,19 @@ pub(crate) fn steer_player(
             let state = condition.copied().unwrap_or_default();
             // The controls' switch off clears the behaviour's move request
             // and the locomotion flags, once.
-            if off && !pb.controls_off {
+            if switched_off && !pb.controls_off {
                 pb.steering.requested = false;
                 req.flags = 0;
             }
-            pb.controls_off = off;
+            pb.controls_off = switched_off;
+            // The block clears the locomotion flags and the moving byte,
+            // once (the second block leaves them).
+            if blocked && !pb.controls_blocked {
+                pb.steering.requested = false;
+                req.flags = 0;
+                req.moving = false;
+            }
+            pb.controls_blocked = blocked;
             // Where its feet are in the simulation, as its next step starts
             // from.
             let mut standing = capsule.feet(&at);
@@ -1282,6 +1302,11 @@ pub(crate) fn steer_player(
                 body.moving(),
                 down,
             );
+            // The block pair suspends the behaviour: its tick stops after
+            // its head, before any steering.
+            if suspended {
+                continue;
+            }
             // Not steered while it falls (Exarust's own) or its condition is
             // helpless: down, getting up, collapsing, dead.
             if fallen || state.helpless() || spectating {
@@ -1997,8 +2022,9 @@ fn request_attacks(
     ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
-    // The controls off, the behaviour's button word is empty.
-    let off = crate::player_controls::PlayerControl::is_off(control.as_deref());
+    // The controls off, the behaviour's button word is empty; the block
+    // pair suspends the behaviour that reads it.
+    let off = crate::player_controls::PlayerControl::input_suspended(control.as_deref());
     let pad_active = pad_status.as_ref().is_some_and(|s| s.active()) && pad.is_some();
     let down = !off
         && (bindings.mouse_pressed(&buttons, Action::Primary)

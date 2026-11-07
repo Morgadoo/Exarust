@@ -554,8 +554,8 @@ fn hotkeys(
         return;
     }
     // The tree's key is the controls' key-down handler's: it opens nothing
-    // while the controls are off.
-    if !crate::player_controls::PlayerControl::is_off(control.as_deref())
+    // while the controls are off or second-blocked.
+    if !crate::player_controls::PlayerControl::keys_refused(control.as_deref())
         && bindings
             .key_code(Action::PowerTree)
             .is_some_and(|key| keys.just_pressed(key))

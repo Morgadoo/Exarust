@@ -875,6 +875,22 @@ and the locomotion flags once), the mouse capture is dropped, the idle
 camera stops and the casting and kinesis inputs read nothing; the skill
 screen and the power tree also hold the pointer over the GUI.
 
+The controls' block pair (`PlayerControl::set_blocked` and
+`set_second_block`, live in `controls_live`, the flow's `Step::Block` and
+the arena match tick) is separate from the off switch. The knock-out, the
+death, the practice ladder's last win and the arena manager's fall block
+the controls; the revive releases them and the start of play clears the
+byte. While blocked the movement request and the behaviour read nothing
+(the block clears the move request, the locomotion flags and the moving
+byte once, and the behaviour stops before its steering), the mouse capture
+is dropped, the attack, casting and kinesis inputs read nothing, the left
+press picks nothing in the world, and the idle camera turns ten seconds
+after the block whatever the pointer does; the hotkeys still run, as the
+original's key handler does not test the byte. The second block is set
+while the arena hub's loadout form is open: it suspends the same inputs
+and the idle camera and also refuses the hotkeys, without clearing the
+locomotion flags.
+
 The controls' rules (`player_controls`) are the click's and the
 double-click interaction's outcomes (a lock's key and first-unlock
 reward, a container, an item use in hand, a button push, a corpse's scripts,

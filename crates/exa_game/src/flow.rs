@@ -1392,6 +1392,10 @@ pub enum Step {
     /// enable (the revive) or their re-attach to the player at a session
     /// start or the story respawn, which also clears the disabled flag.
     Controls(bool),
+    /// The player controls' block pair ([`crate::player_controls::PlayerControl::set_blocked`]):
+    /// `true` blocks them (the knock-out, the death, the practice ladder's
+    /// last win), `false` releases them (the revive).
+    Block(bool),
     /// Turn the player's combat mode on or off: the player controls' setter
     /// (the practice start and each next fight turn it on, the revive off).
     CombatMode(bool),
@@ -2637,6 +2641,9 @@ impl Flow {
                     } else {
                         steps.push(Step::Tip(6));
                     }
+                    // The practice end menu blocks the controls (only in
+                    // the practice mode, and only for the won ladder).
+                    steps.push(Step::Block(true));
                 }
                 steps.push(Step::EndMenu(menu));
                 steps.push(Step::Hook(Hook::None));
@@ -2801,6 +2808,9 @@ impl Flow {
                 reconstructed = true;
             }
         }
+        // The death blocks the controls after its tip and the save's fate,
+        // before the end menu is built.
+        steps.push(Step::Block(true));
         let kind = if reconstructed {
             MENU_RECONSTRUCTED
         } else {
@@ -2817,7 +2827,13 @@ impl Flow {
     pub fn knock_out(&mut self, now: u32) -> Vec<Step> {
         self.hook = Hook::Knockout;
         self.story.knockout_ms = now;
-        vec![Step::GameGui(false), Step::Controls(false), Step::Tip(2)]
+        // The knock-out blocks the controls after its tip.
+        vec![
+            Step::GameGui(false),
+            Step::Controls(false),
+            Step::Tip(2),
+            Step::Block(true),
+        ]
     }
 
     /// The knocked-out player's check: five seconds after the knock-out a
@@ -2869,6 +2885,8 @@ impl Flow {
             Step::CombatMode(false),
             Step::ReviveBody,
             Step::Wake(WakePose::revived()),
+            // The block's release, after the wake is held.
+            Step::Block(false),
             Step::Controls(true),
             Step::GameGui(true),
             Step::Hook(Hook::Story),
@@ -4194,6 +4212,11 @@ fn apply_steps(
                     session.playing = on;
                 }
             }
+            Step::Block(on) => {
+                if let Some(control) = out.control.as_deref_mut() {
+                    crate::controls_live::block_controls(control, on, "flow");
+                }
+            }
             Step::Camera(frame) => {
                 // The shot places the chase camera as the original's
                 // placement does: the bearing of the eye from the target,
@@ -4654,6 +4677,8 @@ struct FlowOutputs<'w> {
     /// The steps' writes to the player's body, posted for the next step
     /// ([`exa_physics::sim_app::FixedCommands::write`]).
     fixed: ResMut<'w, exa_physics::sim_app::FixedCommands>,
+    /// The player-control singleton the block pair writes.
+    control: Option<ResMut<'w, crate::player_controls::PlayerControl>>,
 }
 
 /// The resources the story start's and the tips' steps write.

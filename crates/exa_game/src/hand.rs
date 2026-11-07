@@ -273,6 +273,8 @@ pub struct PressState {
     pub out_of_reach: bool,
     /// The player is down (condition bit 0x200).
     pub down: bool,
+    /// The player's controls are blocked (the block pair's byte).
+    pub blocked: bool,
     pub ctrl: bool,
     /// The player locomotes.
     pub moving: bool,
@@ -300,7 +302,7 @@ pub enum Press {
 /// What a left press on `named` (the pick's name; `None` when it hit
 /// nothing) starts in `state`.
 pub fn press(state: PressState, named: Option<Pick>) -> Press {
-    if state.kept_for_combat || state.out_of_reach || state.down {
+    if state.kept_for_combat || state.out_of_reach || state.down || state.blocked {
         return Press::Ignored;
     }
     let Some(named) = named else {
@@ -1211,6 +1213,7 @@ type PressMechanisms<'w, 's> = (
     Option<Res<'w, player_controls::UseCursor>>,
     Option<ResMut<'w, Messages<MechanismSounded>>>,
     ResMut<'w, exa_physics::sim_app::FixedCommands>,
+    Option<Res<'w, player_controls::PlayerControl>>,
 );
 
 /// What a body's nodes say of the placed object they belong to: its id,
@@ -1552,7 +1555,16 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
-    (over_gui, objects, mut doors, mut levers, use_cursor, mut mechanism_sounds, mut fixed): PressMechanisms,
+    (
+        over_gui,
+        objects,
+        mut doors,
+        mut levers,
+        use_cursor,
+        mut mechanism_sounds,
+        mut fixed,
+        control,
+    ): PressMechanisms,
 ) {
     // The press that ended the use cursor was taken by the cursor's
     // callback (its answer's bit 0); the world does not see it.
@@ -1652,6 +1664,7 @@ fn press_hand(
             named,
         ),
         down: condition.off_feet(),
+        blocked: player_controls::PlayerControl::is_blocked(control.as_deref()),
         ctrl,
         moving: locomotor.is_some_and(Locomotor::moving),
     };
@@ -2851,6 +2864,7 @@ mod tests {
             kept_for_combat: false,
             out_of_reach: false,
             down: false,
+            blocked: false,
             ctrl: false,
             moving: false,
         }
@@ -2913,6 +2927,10 @@ mod tests {
             },
             PressState {
                 down: true,
+                ..exploring()
+            },
+            PressState {
+                blocked: true,
                 ..exploring()
             },
         ] {

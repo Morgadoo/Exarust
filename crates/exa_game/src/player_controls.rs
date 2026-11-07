@@ -329,6 +329,15 @@ pub struct PlayerControl {
     /// Character and Spectate modes' starts, set by their ends, and set
     /// while a form that suspends the controls is open.
     pub off: bool,
+    /// The controls are blocked: set by the block routine (the knock-out,
+    /// the death, the practice ladder's last win, the arena manager's
+    /// fall), cleared by its release (the revive) and by the start of
+    /// play. See [`PlayerControl::set_blocked`].
+    pub blocked: bool,
+    /// The second block: set while an arena form holds the controls (the
+    /// company's loadout form, the recruit's creator), cleared when it
+    /// closes. See [`PlayerControl::set_second_block`].
+    pub second_block: bool,
     /// The constructor's second flag: 1 [guess: the combat flag].
     pub combat: bool,
 }
@@ -345,6 +354,8 @@ impl PlayerControl {
         Self {
             hotkey_mask: 31,
             off: true,
+            blocked: false,
+            second_block: false,
             combat: true,
         }
     }
@@ -380,6 +391,73 @@ impl PlayerControl {
     /// controls) counts as on.
     pub fn is_off(control: Option<&Self>) -> bool {
         control.is_some_and(|c| c.off)
+    }
+
+    /// The block routine's pair: `true` blocks the controls, `false`
+    /// releases them; answers whether the byte changed.
+    ///
+    /// The block stamps the idle clock, sets the byte, drops the mouse
+    /// hook for the orbit and Cursor Look with its capture, clears the key
+    /// word, suspends the player's behaviour (its tick stops after its
+    /// head), clears the body's locomotion flags and its moving byte, gives
+    /// the pad the menu action set and lifts the drag's reach limit. The
+    /// release clears the byte, puts the mouse hook back, resumes the
+    /// behaviour, restores the reach limit and gives the pad the combat or
+    /// the interact set. Neither touches the off byte.
+    ///
+    /// While blocked, the controls' frame runs only the blocked idle turn
+    /// (the camera turns ten seconds after the block, whatever the pointer
+    /// does) and not the movement request, and the left press picks
+    /// nothing in the world. The key-down handler does not test the byte:
+    /// the hotkeys still run (the dead player's handler only ends a
+    /// dialogue).
+    ///
+    /// Its callers: the knock-out and the death (block), the revive
+    /// (release), the practice end menu after the ladder's last fight
+    /// (block), the arena match tick when the manager falls (block), and
+    /// the teleport's travel (block on the click, release on arrival; the
+    /// teleport is not in Exarust). The start of play and the Spectate
+    /// mode's start clear the byte directly.
+    pub fn set_blocked(&mut self, on: bool) -> bool {
+        let changed = self.blocked != on;
+        self.blocked = on;
+        changed
+    }
+
+    /// The second block's pair: as [`Self::set_blocked`] without the idle
+    /// stamp and without clearing the body's locomotion flags. While it is
+    /// set the controls' frame does nothing, and the key-down handler and
+    /// the combat toggle refuse. Its callers: the arena's loadout form
+    /// (block on show, release on close) and the arena recruit's creator
+    /// (block on open, release on back).
+    pub fn set_second_block(&mut self, on: bool) -> bool {
+        let changed = self.second_block != on;
+        self.second_block = on;
+        changed
+    }
+
+    /// The player's input is suspended: the controls off, blocked or
+    /// second-blocked. The movement request, the behaviour's keys,
+    /// buttons and pad, the mouse hook and the attack latch read nothing.
+    pub fn input_suspended(control: Option<&Self>) -> bool {
+        control.is_some_and(|c| c.off || c.blocked || c.second_block)
+    }
+
+    /// The key-down handler refuses: the controls off or second-blocked
+    /// (a block alone leaves the hotkeys running).
+    pub fn keys_refused(control: Option<&Self>) -> bool {
+        control.is_some_and(|c| c.off || c.second_block)
+    }
+
+    /// The player's behaviour is suspended (its tick stops after its
+    /// head): blocked or second-blocked.
+    pub fn behaviour_suspended(control: Option<&Self>) -> bool {
+        control.is_some_and(|c| c.blocked || c.second_block)
+    }
+
+    /// The controls are blocked (the first byte of the pair).
+    pub fn is_blocked(control: Option<&Self>) -> bool {
+        control.is_some_and(|c| c.blocked)
     }
 }
 
@@ -2097,6 +2175,30 @@ mod tests {
         assert!(c.set_off(true));
         assert!(PlayerControl::is_off(Some(&c)));
         assert!(!PlayerControl::is_off(None));
+    }
+
+    /// The block pair suspends the input and the behaviour; only the
+    /// second block (or the off byte) refuses the hotkeys.
+    #[test]
+    fn the_block_pair_gates_the_input_and_the_second_the_keys() {
+        let mut c = PlayerControl::new();
+        c.set_off(false);
+        assert!(!PlayerControl::input_suspended(Some(&c)));
+        assert!(c.set_blocked(true));
+        assert!(!c.set_blocked(true));
+        assert!(PlayerControl::input_suspended(Some(&c)));
+        assert!(PlayerControl::behaviour_suspended(Some(&c)));
+        assert!(!PlayerControl::keys_refused(Some(&c)));
+        assert!(c.set_blocked(false));
+        assert!(c.set_second_block(true));
+        assert!(PlayerControl::input_suspended(Some(&c)));
+        assert!(PlayerControl::behaviour_suspended(Some(&c)));
+        assert!(PlayerControl::keys_refused(Some(&c)));
+        assert!(!PlayerControl::is_blocked(Some(&c)));
+        c.set_second_block(false);
+        assert!(!PlayerControl::input_suspended(Some(&c)));
+        assert!(!PlayerControl::input_suspended(None));
+        assert!(!PlayerControl::keys_refused(None));
     }
 
     #[allow(clippy::too_many_arguments)]

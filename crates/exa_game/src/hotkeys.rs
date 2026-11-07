@@ -382,8 +382,9 @@ fn press_hotkeys(
     ),
 ) {
     // The controls off, the key-down handler and the pad routine (the
-    // controls' frame task) dispatch nothing.
-    if PlayerControl::is_off(control.as_deref()) {
+    // controls' frame task) dispatch nothing; the second block refuses the
+    // keys too (the block alone does not).
+    if PlayerControl::keys_refused(control.as_deref()) {
         return;
     }
     let pressed: Vec<u32> = keys
