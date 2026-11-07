@@ -287,6 +287,8 @@ Round 100 cellfloor: cell floors are built as the original builds them, through 
 
 Round 109 scene: placed props carry their placement's light and fire rules, as the original's importer does.
 
+Round 110 propskin: sacks, mattresses and hanging growths bend as one skinned surface over their linked bodies, as in the original.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
