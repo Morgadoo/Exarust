@@ -2238,11 +2238,15 @@ pub fn idle_walk(
             continue;
         };
         if !active {
-            // Combat, a flight or the scene takes the body: the leg ends
-            // (a body on its locomotion soft-stops).
+            // Combat, a flight or the scene takes the body: a leg that was
+            // under way ends (a body on its locomotion soft-stops). Only the
+            // leg's own walk is stopped: the original runs one state of the
+            // AI a tick, so once combat owns the driver (its chase walks a
+            // route through it) the idle walk no longer touches it.
             if let Some((req, motor, driven, ragdoll)) = walking.as_mut()
                 && driven.0.driving
                 && npc.flight.is_none()
+                && !npc.walk.route.is_empty()
             {
                 npc.walk.route.clear();
                 let at = DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
@@ -3487,6 +3491,70 @@ mod tests {
         tick(&mut app);
         assert!(app.world().get::<Npc>(npc).unwrap().walk.route.is_empty());
         assert_eq!(app.world().get::<Animator>(npc).unwrap().action, "Idle");
+    }
+
+    /// Combat owns the driver once it takes the body: a fighter's chase
+    /// that drives its route is left driving by the idle walk, while a leg
+    /// still under way when combat comes is soft-stopped once.
+    #[test]
+    fn the_idle_walk_leaves_a_fighters_chase_driving() {
+        use exa_physics::body::locomotion::{Locomotion, flags};
+        let mut app = App::new();
+        app.add_systems(Update, idle_walk);
+        app.insert_resource(BodyTicks(1));
+        let player = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::IDENTITY,
+                Transform::default(),
+            ))
+            .id();
+        let mut duellist = crate::Duellist::new(player);
+        duellist.engaged = true;
+        let (req, motor) = Locomotion::facing(0.0);
+        let mut driven = crate::drive::Driven::default();
+        driven.0.driving = true;
+        let npc = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                duellist,
+                Condition::NORMAL,
+                Transform::default(),
+                ChildOf(root),
+                (req, motor, driven),
+            ))
+            .id();
+        let tick = |app: &mut App| {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.update();
+        };
+        for _ in 0..3 {
+            tick(&mut app);
+        }
+        assert!(
+            app.world()
+                .get::<crate::drive::Driven>(npc)
+                .unwrap()
+                .0
+                .driving
+        );
+        let stopping = app.world().get::<Locomotion>(npc).unwrap().flags & flags::STOPPING;
+        assert_eq!(stopping, 0);
+        // A leg under way when combat came ends with the soft stop.
+        app.world_mut().get_mut::<Npc>(npc).unwrap().walk.route =
+            vec![Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0)];
+        tick(&mut app);
+        assert!(
+            !app.world()
+                .get::<crate::drive::Driven>(npc)
+                .unwrap()
+                .0
+                .driving
+        );
+        assert!(app.world().get::<Npc>(npc).unwrap().walk.route.is_empty());
     }
 
     /// A body the scene takes back mid-leg faces its route's goal; one

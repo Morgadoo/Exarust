@@ -564,6 +564,13 @@ pub fn arrive(approach: Approach) -> Arrival {
     }
 }
 
+/// Whether a hurried walk (urgency 1 or more, the chase's) has arrived:
+/// its ground point (cm) is under 100 cm of the path's last point (cm), in
+/// 3-D, where [`arrive`] soft-stops it and the walk stops following.
+pub fn hurried_arrival(ground: Vec3, last: Vec3) -> bool {
+    ground.distance_squared(last) < STOP_AT_END
+}
+
 /// The run bit and re-plan flag after walking from the ground to the carrot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineReplan {
@@ -1217,6 +1224,11 @@ mod tests {
         let back = arrive(approach(-1, false, 0.0));
         assert_eq!(back.flags, 1 | LOCO_RUN);
         assert!(!back.stopped);
+
+        // The chase's arrival is the hurried walk's soft stop, in 3-D.
+        assert!(hurried_arrival(Vec3::ZERO, Vec3::new(99.0, 0.0, 0.0)));
+        assert!(!hurried_arrival(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0)));
+        assert!(!hurried_arrival(Vec3::ZERO, Vec3::new(80.0, 70.0, 0.0)));
     }
 
     fn yard(wall: bool) -> (NavGrid, Vec3, Vec3) {

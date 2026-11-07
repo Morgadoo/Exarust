@@ -421,6 +421,9 @@ impl Duellist {
     pub fn leave(&mut self) {
         self.engaged = false;
         self.in_combat = false;
+        // The idle state takes the walk: the chase's route ends.
+        self.route.clear();
+        self.chase.following = false;
     }
 
     /// A duellist of `target`, waiting for the fight to start.
@@ -2121,6 +2124,11 @@ fn duellist(
                         Vec::new()
                     };
                 }
+                // Without a route the walk follows nothing: the chase's
+                // follow state ends with it.
+                if ai.route.is_empty() {
+                    ai.chase.following = false;
+                }
                 if outcome.end == chase::End::Left {
                     info!("duellist {entity:?} leaves combat: its foe is out of reach");
                     ai.leave();
@@ -2155,7 +2163,9 @@ fn duellist(
                 info!(
                     "duel-trace {entity:?} t{} dist {:.0} can_step {} block {} run {} spd {:.2} \
                      tone {:.2} sup {:.2} stepping {} state {} queue {} chosen {:?} step {:?} exit {:?} \
-                     mstep {} long {} cond {:#x} stuck {} why {} tp {:.0?} gy {:.0}",
+                     mstep {} long {} cond {:#x} stuck {} why {} tp {:.0?} gy {:.0} \
+                     blow {:?} ready {} energy {:.2}/{:.2} looping {} holds {} attacking {} \
+                     reach {:.0} size {:.2}",
                     me.now_ms,
                     ai.bearing.1,
                     me.can_step,
@@ -2176,7 +2186,16 @@ fn duellist(
                     ai.mind.stuck,
                     ai.mind.stuck_why,
                     me.target_point,
-                    me.ground_y
+                    me.ground_y,
+                    out.blow.motion,
+                    me.can_attack,
+                    me.energy,
+                    me.max_energy,
+                    anim.looping,
+                    ai.holds_ground,
+                    attacking.is_some(),
+                    me.reach_cm,
+                    me.size
                 );
             }
             if out.marks.queue_taken
@@ -2344,21 +2363,37 @@ fn duellist(
             let at = drive::DriveBody::of(feet, motor, ragdoll);
             if ai.chasing && !ai.route.is_empty() {
                 if std::env::var_os("EXA_DUEL_TRACE").is_some() {
+                    let body_step = ragdoll.and_then(Ragdoll::footwork_step);
                     info!(
-                        "chase-walk {entity:?} feet {:.0?} route {} carrot {:.0?} driving {}",
+                        "chase-walk {entity:?} feet {:.0?} route {} carrot {:.0?} driving {} \
+                         body_step {:?}",
                         feet * CM,
                         ai.route.len(),
                         crate::path::carrot(&ai.route, feet * CM).goal,
-                        driven.0.driving
+                        driven.0.driving,
+                        body_step.map(|s| (
+                            s.stepping,
+                            s.balance_step,
+                            s.long,
+                            s.age_ms as i32,
+                            s.queue,
+                            s.landed,
+                            (s.target * CM).round(),
+                            (s.feet_centre * CM).round()
+                        ))
                     );
                 }
                 if let Some(goal) = crate::path::carrot(&ai.route, feet * CM).goal {
                     let cost = |p: Vec3| drive::grid_cost(nav.as_deref(), p);
                     drive::drive(req, &mut driven.0, &at, goal / CM, true, 1, false, &cost);
                 }
-                let last = ai.route[ai.route.len() - 1] / CM;
-                if Vec3::new(last.x - feet.x, 0.0, last.z - feet.z).length() < 0.5 {
+                // The path follower soft-stops a hurried walk within a
+                // metre of the route's end, and the walk no longer follows:
+                // the next combat tick runs on past the chase.
+                let last = ai.route[ai.route.len() - 1];
+                if crate::path::hurried_arrival(feet * CM, last) {
                     ai.route.clear();
+                    ai.chase.following = false;
                     drive::soft_stop(req, &mut driven.0, &at);
                 }
                 continue;
@@ -2374,9 +2409,10 @@ fn duellist(
                 body.desired_velocity = order.velocity;
                 anim.play_loop(COMBAT_WALK);
             }
-            let last = ai.route[ai.route.len() - 1] / CM;
-            if Vec3::new(last.x - feet.x, 0.0, last.z - feet.z).length() < 0.5 {
+            let last = ai.route[ai.route.len() - 1];
+            if crate::path::hurried_arrival(feet * CM, last) {
                 ai.route.clear();
+                ai.chase.following = false;
             }
             continue;
         }
