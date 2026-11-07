@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Support pin pull
-In each iteration a supported living body SHALL pull each part's support pins right after that part's own links, parts children first: the thorax's two pins in order, and the pelvis origin twice, last, each pull reading the pushes before it, toward the carry's goals. One pull, in cm: 0.2·e·|e|/60 under 60, else 12 along e, less this tick's horizontal displacement, capped at 8, times S²·(G·(P·F)), G the pin-gain (from 0.08), F the pin factor. A gap under 1.19e-7 cm², walking, or off its feet (down, getting up, dormant or dead) pulls nothing.
+Each iteration a supported living body SHALL pull each part's support pins after its links, children first (the thorax's two, last the pelvis origin twice), each reading the pushes before it, toward the carry's goals. One pull, in cm: 0.2·e·|e|/60 under 60, else 12 along e, less this tick's horizontal displacement, capped at 8, times S²·(G·(P·F)), G the pin-gain (from 0.08), F the pin factor. A gap under 1.19e-7 cm², walking, or off its feet (down, getting up, dormant or dead) pulls nothing.
 
 #### Scenario: Pelvis origin twice
 - **WHEN** a supported pelvis origin and a thorax pin are each 10 cm from their clamped targets and have not moved this tick
