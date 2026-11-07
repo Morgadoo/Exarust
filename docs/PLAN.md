@@ -299,6 +299,8 @@ Round 120 loadplace: a loaded story puts its player where it was saved, so a rel
 
 Round 122 navsys: every thread runs in the engine's float mode, and the chase camera is built from the game's camera preset.
 
+Round 127 terrain: a spectated arena match shows only the room at its spawn spot, as the original match starts set it; the terrain and grid routine tables were rebuilt.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
