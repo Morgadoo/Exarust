@@ -470,6 +470,12 @@ pub fn placement_touches<'a>(
     };
     let me = placement_body(probe, p, frame, ragdoll.disabled());
     let cell = world_cell(frame.transform_point3(p.pairing.mesh.centre) * 100.0);
+    debug!(
+        "placement query: {probe} part {part} at {:.1?} cm (r {:.1}), cell {cell:?}, {} listed near",
+        me.sphere.0,
+        me.sphere.1,
+        grid.near(cell).count()
+    );
     for entry in grid.near(cell) {
         // The probe meets itself in the original too, which changes
         // nothing (its countdown against its own).
@@ -484,14 +490,17 @@ pub fn placement_touches<'a>(
         };
         let q_frame = q.transform();
         let them = placement_body(entry.body, q, q_frame, other.disabled());
-        if !sector::placement_offered(&me, &them) {
-            continue;
-        }
-        let touched = if them.key < me.key {
-            placement_touch(q, q_frame, p, frame)
-        } else {
-            placement_touch(p, frame, q, q_frame)
-        };
+        let offered = sector::placement_offered(&me, &them);
+        let touched = offered
+            && if them.key < me.key {
+                placement_touch(q, q_frame, p, frame)
+            } else {
+                placement_touch(p, frame, q, q_frame)
+            };
+        debug!(
+            "placement query: {} part {} at {:.1?} cm: offered {offered}, touched {touched}",
+            entry.body, entry.part, them.sphere.0
+        );
         if touched {
             out.push(entry.body);
         }

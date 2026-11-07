@@ -3985,6 +3985,15 @@ impl Ragdoll {
         self.wake_to(count);
     }
 
+    /// Drops every part's kept world contacts, as the original's place of a
+    /// released item zeroes its world-contact count on the body and on each
+    /// body below it: the next tick finds them again where the item is.
+    pub fn clear_world_contacts(&mut self) {
+        for p in &mut self.parts {
+            p.contacts.clear();
+        }
+    }
+
     /// Sets this tick's animated pose (the character tick does, every tick
     /// before the solver): the root's world transform, and each part's
     /// animated world transform, the root's times the clip's pose. A
