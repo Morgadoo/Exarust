@@ -132,6 +132,8 @@ Done (osmain3 lane, Claude, after the DeepSeek provider failed): the OS layer no
 
 Round 57 contentstream (S5): the stream thread runs; the original never streams drops or spawned items, only icons and requested characters.
 
+Round 105 os: the original's pointer warp hold and full-screen confinement act on the window, and the clipboard is ported.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
