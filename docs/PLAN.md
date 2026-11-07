@@ -2423,6 +2423,8 @@ Round 103 thaum2: displacement tendrils draw with their own material and the AI'
 
 Round 124 forcepicks: the force blast meets struck parts in their frame and stirs the cloths; the throw, barricade, long door and summoning ask the navigation picks.
 
+Round 132 trees: the skill screen opens in play on K with learn, forget and close, and four port bugs in it are fixed; the power tree has nothing missing.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
