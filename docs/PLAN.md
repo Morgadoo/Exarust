@@ -987,6 +987,8 @@ Round 113 frames: scripted runs end after their frames, and a held-weapon trace 
 
 Round 118 sector: a released item wakes the bodies at its old place, as the sector's placement query does.
 
+Round 121 pick: dropped items can be lifted again.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
