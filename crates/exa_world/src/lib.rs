@@ -843,7 +843,7 @@ fn spawn_placed_object(
     parent: Entity,
     object: &exa_formats::rfc::PlacedObject,
     mechanism_bodies: bodies::MechanismBodies,
-    darkness: f32,
+    daylight: f32,
 ) -> Option<PlacedSpawn> {
     let item = level_item(scene, global, object)?;
     // `@` names a weapon assembled by a factory.
@@ -929,7 +929,7 @@ fn spawn_placed_object(
         }
         None => model,
     };
-    let (e, nodes) = spawn_model_nodes_at(commands, model, Some(placement), darkness);
+    let (e, nodes) = spawn_model_nodes_at(commands, model, Some(placement), daylight);
     mark_cloth_starts(commands, model, &nodes, &object.attachments);
     commands.entity(e).insert((
         Name::new(item.name.clone()),
@@ -996,7 +996,7 @@ struct PlacedObjectBuilder<'a, 'w, 's, 'l> {
     root: Entity,
     mechanism_bodies: bodies::MechanismBodies,
     /// The level's daylight scale, for the object's visibility rules.
-    darkness: f32,
+    daylight: f32,
     /// What the last entry's spawn came to.
     spawned: Option<PlacedSpawn>,
     /// The last entry's index in the level's list, when it spawned an
@@ -1015,7 +1015,7 @@ impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_,
             self.root,
             object,
             self.mechanism_bodies,
-            self.darkness,
+            self.daylight,
         );
         self.index = None;
         let entity = match self.spawned {
@@ -1382,34 +1382,48 @@ fn apply_transform_attachments(
 /// Spawns `model` under a new entity. With a placement, the placement takes
 /// the place of the model's root transform, the way a level places an object;
 /// without one the stored node transforms are used.
-/// Whether a visibility rule on `index` or one of its ancestors hides it.
+/// Whether the visibility rule of the root above `index` hides it, as the
+/// original's importer applies the rules when it finishes a load: only a
+/// root's flags are read, and its rule walks the whole tree under it.
 /// `0x100000` hides a light. `0x200000` hides a light or a fire once
-/// `darkness` is above the limit; a NaN or exactly the limit leaves it shown.
-fn node_hidden(model: &Model, index: usize, darkness: f32) -> bool {
+/// `daylight` (the level's daylight scale) is above the limit; a NaN or
+/// exactly the limit leaves it shown.
+fn node_hidden(model: &Model, index: usize, daylight: f32) -> bool {
     let node = &model.nodes[index];
     let light = node.light.is_some();
     let fire = node.fire.is_some();
     if !light && !fire {
         return false;
     }
-    let mut at = Some(index);
+    let mut root = index;
     for _ in 0..=model.nodes.len() {
-        let Some(i) = at else {
-            return false;
-        };
-        let flags = model.nodes[i].visibility & exa_formats::rfc::VISIBILITY_MASK;
-        if flags == exa_formats::rfc::VISIBILITY_HIDE && light {
-            return true;
+        match model.nodes[root].parent {
+            Some(parent) if parent < model.nodes.len() => root = parent,
+            _ => break,
         }
-        if flags == exa_formats::rfc::VISIBILITY_FADE
-            && (light || fire)
-            && darkness > exa_formats::rfc::DARKNESS_LIMIT
-        {
-            return true;
-        }
-        at = model.nodes[i].parent;
     }
-    false
+    match model.nodes[root].visibility & exa_formats::rfc::VISIBILITY_MASK {
+        exa_formats::rfc::VISIBILITY_HIDE => light,
+        exa_formats::rfc::VISIBILITY_FADE => daylight > exa_formats::rfc::DAYLIGHT_LIMIT,
+        _ => false,
+    }
+}
+
+/// `model` with a level placement's node flags on its object node (the
+/// first root, which takes the placement): the original's prop reader
+/// replaces that node's static bit and visibility rules
+/// ([`exa_formats::level::Prop::NODE_FLAGS`]) with the placement's. `None`
+/// when the bits are already the placement's.
+fn with_placement_flags(model: &Model, flags: u32) -> Option<Model> {
+    use exa_formats::level::Prop;
+    let root = model.roots().next()?;
+    let visibility = model.nodes[root].visibility & !Prop::NODE_FLAGS | flags & Prop::NODE_FLAGS;
+    if visibility == model.nodes[root].visibility {
+        return None;
+    }
+    let mut placed = model.clone();
+    placed.nodes[root].visibility = visibility;
+    Some(placed)
 }
 
 pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Transform>) -> Entity {
@@ -1418,7 +1432,7 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
 
 /// [`spawn_model`], also returning each node's entity (in the model's node
 /// order). Lights and fires a visibility rule hides are spawned hidden.
-/// `darkness` is the scene's daylight scale; pass 0 when the level has not
+/// `daylight` is the scene's daylight scale; pass 0 when the level has not
 /// placed the sun.
 pub fn spawn_model_nodes(
     commands: &mut Commands,
@@ -1433,7 +1447,7 @@ pub fn spawn_model_nodes_at(
     commands: &mut Commands,
     model: &Model,
     placement: Option<Transform>,
-    darkness: f32,
+    daylight: f32,
 ) -> (Entity, Vec<Entity>) {
     let root = commands
         .spawn((placement.unwrap_or_default(), Visibility::default()))
@@ -1458,7 +1472,7 @@ pub fn spawn_model_nodes_at(
                 // geometry carries no marker and stays the level.
                 exa_physics::StaticNode,
                 local,
-                if node_hidden(model, i, darkness) {
+                if node_hidden(model, i, daylight) {
                     Visibility::Hidden
                 } else {
                     Visibility::default()
@@ -2123,9 +2137,17 @@ impl LevelLoad {
                     let e = match base {
                         Some(model) => {
                             self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
+                            let flagged;
+                            let model: &Model = match with_placement_flags(&model, prop.flags) {
+                                Some(m) => {
+                                    flagged = m;
+                                    &flagged
+                                }
+                                None => &model,
+                            };
                             let owned;
                             let model: &Model = match with_placement_transforms(
-                                &model,
+                                model,
                                 &prop.attachments,
                                 placement,
                             ) {
@@ -2133,7 +2155,7 @@ impl LevelLoad {
                                     owned = m;
                                     &owned
                                 }
-                                None => &model,
+                                None => model,
                             };
                             let (e, nodes) = spawn_model_nodes_at(
                                 commands,
@@ -2210,7 +2232,7 @@ impl LevelLoad {
                         items: &self.global_items,
                         root: self.root,
                         mechanism_bodies: self.mechanism_bodies,
-                        darkness: self.daylight,
+                        daylight: self.daylight,
                         spawned: None,
                         index: None,
                     };
@@ -2240,7 +2262,7 @@ impl LevelLoad {
                         items: &self.global_items,
                         root: self.root,
                         mechanism_bodies: self.mechanism_bodies,
-                        darkness: self.daylight,
+                        daylight: self.daylight,
                         spawned: None,
                         index: None,
                     };
@@ -2681,6 +2703,137 @@ mod tests {
         let (point, gi, ..) = light_bundle(&fill);
         assert!((point.range - 30.625).abs() < 1e-4);
         assert_eq!(gi.0, 0.0);
+    }
+
+    /// A placement's node flags replace the object node's own: the
+    /// visibility rules then hide the object's lights (and, by day, its
+    /// fires), and a rule on a node under the root is not read.
+    #[test]
+    fn a_placement_carries_its_visibility_rule_onto_the_object() {
+        let mut root = node("lantern", None, None);
+        root.visibility = exa_formats::rfc::VISIBILITY_HIDE | 0x5;
+        let mut lamp = node("flame", Some(0), None);
+        lamp.light = Some(exa_formats::rfc::Light {
+            flags: 0,
+            color: [1.0, 1.0, 1.0],
+            multiplier: 1.0,
+            intensity: 1.0,
+            radius: 1.0,
+            softness: 0.0,
+            spot: None,
+            ranged: true,
+            animation: None,
+        });
+        let model = Model {
+            nodes: vec![root, lamp],
+        };
+        // The placement's bits replace the node's: none clears the rule.
+        let cleared = with_placement_flags(&model, 0).unwrap();
+        assert_eq!(cleared.nodes[0].visibility, 0x5);
+        assert!(!node_hidden(&cleared, 1, 1.0));
+        assert!(with_placement_flags(&model, exa_formats::rfc::VISIBILITY_HIDE).is_none());
+        let faded = with_placement_flags(&model, 0x20_0000 | 0x40_0000).unwrap();
+        assert_eq!(
+            faded.nodes[0].visibility, 0x20_0005,
+            "0x400000 is not copied"
+        );
+        assert!(node_hidden(&faded, 1, 0.5));
+        assert!(!node_hidden(&faded, 1, 0.1));
+        // A rule on the light's own node, not a root, is not read.
+        let mut inner = model.clone();
+        inner.nodes[0].visibility = 0;
+        inner.nodes[1].visibility = exa_formats::rfc::VISIBILITY_HIDE;
+        assert!(!node_hidden(&inner, 1, 1.0));
+    }
+
+    /// The shipped levels (with `EXANIMA_DIR`) place seven props with a
+    /// visibility rule, all at the top of the prop list: two arenao1
+    /// lanterns whose lights are always off and one that goes out by day,
+    /// three arenao3 braziers that go out by day, and an exanima03 bed
+    /// (also static). The lantern's and the brazier's model each have the
+    /// one light or fire the rule reaches; the bed has none.
+    #[test]
+    fn shipped_props_with_a_visibility_rule() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let mut ruled = Vec::new();
+        let mut props = 0;
+        for entry in resource.entries() {
+            if !entry.name.ends_with(".rfc") {
+                continue;
+            }
+            let Ok(scene) = exa_formats::rfc::Scene::parse(resource.bytes(entry)) else {
+                continue;
+            };
+            props += scene.props.len();
+            for (i, prop) in scene.props.iter().enumerate() {
+                if prop.flags & exa_formats::rfc::VISIBILITY_MASK == 0 {
+                    continue;
+                }
+                let child = scene.props.iter().any(|p| p.parent == Some(i + 1));
+                ruled.push((
+                    entry.name.clone(),
+                    prop.object.clone(),
+                    prop.flags & exa_formats::level::Prop::NODE_FLAGS,
+                    prop.parent,
+                    child,
+                ));
+            }
+        }
+        ruled.sort();
+        eprintln!("{props} props; ruled: {ruled:#?}");
+        let summary: Vec<(&str, &str, u32)> = ruled
+            .iter()
+            .map(|(l, o, f, ..)| (l.as_str(), o.as_str(), *f))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("arenao1.rfc", "lantern a01 mb", 0x10_0000),
+                ("arenao1.rfc", "lantern a01 mb", 0x10_0000),
+                ("arenao1.rfc", "lantern a01 mb", 0x20_0000),
+                ("arenao3.rfc", "brazier xaa02 01", 0x20_0000),
+                ("arenao3.rfc", "brazier xaa02 01", 0x20_0000),
+                ("arenao3.rfc", "brazier xaa02 01", 0x20_0000),
+                ("exanima03.rfc", "beddouble", 0x18_0000),
+            ]
+        );
+        assert!(
+            ruled
+                .iter()
+                .all(|(.., parent, child)| parent.is_none() && !child),
+            "every ruled prop is a root with no prop under it"
+        );
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        for (level, object, flags, ..) in &ruled {
+            let model = loader.object_model(object).unwrap();
+            let placed = with_placement_flags(&model, *flags).unwrap();
+            let hidden = (0..placed.nodes.len())
+                .filter(|&i| node_hidden(&placed, i, 1.0))
+                .count();
+            let shown = (0..model.nodes.len())
+                .filter(|&i| node_hidden(&model, i, 1.0))
+                .count();
+            eprintln!("{level} {object}: {hidden} hidden by day");
+            assert_eq!(shown, 0, "{object}: no rule of its own");
+            // The lantern's and the brazier's one light or fire; the bed has
+            // none for its rule to reach.
+            assert_eq!(hidden, usize::from(*object != "beddouble"), "{object}");
+        }
     }
 
     /// The installed exanima01 (with `EXANIMA_DIR`) holds the start room's
@@ -3285,7 +3438,7 @@ mod tests {
         let model = Model {
             nodes: vec![parent, lamp],
         };
-        assert!(!node_hidden(&model, 1, exa_formats::rfc::DARKNESS_LIMIT));
+        assert!(!node_hidden(&model, 1, exa_formats::rfc::DAYLIGHT_LIMIT));
         assert!(!node_hidden(&model, 1, f32::NAN));
         assert!(node_hidden(&model, 1, 0.13));
         assert!(

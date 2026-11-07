@@ -55,8 +55,10 @@ impl LevelGrid {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prop {
     pub object: String,
-    /// Placement flags; the original copies `0xB8_0000` of them onto the
-    /// object's root node ([`Prop::STATIC`]).
+    /// Placement flags; the original copies [`Prop::NODE_FLAGS`] of them
+    /// onto the object's root node, replacing the node's own: the static
+    /// bit ([`Prop::STATIC`]) and the visibility rules (`0x100000` hides the
+    /// object's lights, `0x200000` its lights and fires by day).
     pub flags: u32,
     /// Row-major 3×4: three rotation rows, then the translation (metres).
     pub transform: [[f32; 3]; 4],
@@ -127,6 +129,10 @@ impl Prop {
     /// marks every node under it, so none of its rigid bodies is
     /// registered and its meshes stay static colliders.
     pub const STATIC: u32 = 0x8_0000;
+
+    /// The placement flags the prop reader writes over the object node's
+    /// own (the rest of the node's flags stay).
+    pub const NODE_FLAGS: u32 = 0xB8_0000;
 
     /// Whether the prop is placed as static level geometry ([`Prop::STATIC`]).
     pub fn is_static(&self) -> bool {
