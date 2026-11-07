@@ -404,6 +404,21 @@ impl CursorFollower {
     pub(crate) fn yaw(&self) -> f32 {
         self.yaw
     }
+
+    /// The yaw it follows.
+    pub(crate) fn target(&self) -> f32 {
+        self.target
+    }
+}
+
+/// The controls' mouse capture as the behaviour tick reads it: while the
+/// orbit or Cursor Look holds the mouse (`held`) the cursor's point is not
+/// read, and while Cursor Look turns (`look`, its target yaw) the cursor
+/// follower follows that target and the raw cursor direction is it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Capture {
+    pub(crate) held: bool,
+    pub(crate) look: Option<f32>,
 }
 
 /// What a grid query of the behaviour was for.
@@ -477,6 +492,8 @@ pub(crate) struct Steering {
     /// The left button holds an object (a lever, a door, a dragged item):
     /// no quarter turns meanwhile. The hand sets it ([`crate::hand`]).
     pub(crate) holds_object: bool,
+    /// The controls' mouse capture this tick ([`Capture`]).
+    pub(crate) capture: Capture,
     /// Behaviour ticks counted toward the spawn snap.
     pub(crate) ticks: u8,
     /// The last line walk on the grid (the navigation overlay draws it).
@@ -584,6 +601,13 @@ impl Steering {
     /// target; the follower ticks, and its yaw is the request's smoothed
     /// cursor direction. Down (`down`), the raw direction and the look are
     /// the heading.
+    ///
+    /// While the controls hold the mouse (the orbit or Cursor Look,
+    /// [`Capture`]) the cursor's point is not read and its distance is
+    /// kept. While Cursor Look turns, its target is the follower's (the
+    /// controls' frame sets it as the original's look turn does) and, after
+    /// the follower's tick, the raw direction (even down, as the original
+    /// writes it last).
     pub(crate) fn aim(&mut self, req: &mut Locomotion, to: Option<Vec3>, down: bool) {
         let follower = self
             .follower
@@ -592,15 +616,22 @@ impl Steering {
             self.raw = Some((req.heading, self.raw.map_or(0.0, |(_, d)| d)));
             req.look = req.heading;
             follower.follow(req.heading);
-        } else if let Some(to) = to.map(|t| t.with_y(0.0))
+        } else if !self.capture.held
+            && let Some(to) = to.map(|t| t.with_y(0.0))
             && to.length() >= CURSOR_MIN
         {
             let yaw = yaw_of(to);
             self.raw = Some((yaw, to.length()));
             follower.follow(yaw);
         }
+        if let Some(look) = self.capture.look {
+            follower.follow(look);
+        }
         follower.tick();
         req.cursor = follower.yaw();
+        if let Some(look) = self.capture.look {
+            self.raw = Some((look, self.raw.map_or(0.0, |(_, d)| d)));
+        }
         if let Some((yaw, _)) = self.raw {
             req.desired = yaw;
         }

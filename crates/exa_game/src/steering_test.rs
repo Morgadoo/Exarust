@@ -914,3 +914,36 @@ fn the_key_step_is_the_word_scaled_to_the_step() {
     // No direction: the division by zero gives a NaN vector.
     assert!(key_step(facing, 0, Vec3::ZERO, 80.0, 1.0).is_nan());
 }
+
+/// While the controls hold the mouse the cursor's point is not read and
+/// its distance is kept; while Cursor Look turns, the follower follows the
+/// look's target and the raw direction (the desired one) is that target,
+/// down or not.
+#[test]
+fn the_capture_freezes_the_cursor_and_cursor_look_steers_it() {
+    let (mut s, mut req, _) = standing();
+    s.aim(&mut req, Some(Vec3::new(2.0, 0.0, 0.0)), false);
+    assert_eq!(s.raw, Some((FRAC_PI_2, 2.0)));
+    // The orbit holds the mouse: a new point is not read.
+    s.capture = Capture {
+        held: true,
+        look: None,
+    };
+    s.aim(&mut req, Some(Vec3::new(0.0, 0.0, 3.0)), false);
+    assert_eq!(s.raw, Some((FRAC_PI_2, 2.0)));
+    // Cursor Look turns: the target is the look's, the distance kept.
+    s.capture = Capture {
+        held: true,
+        look: Some(1.0),
+    };
+    let before = s.follower.unwrap().yaw();
+    s.aim(&mut req, Some(Vec3::new(0.0, 0.0, 3.0)), false);
+    assert_eq!(s.raw, Some((1.0, 2.0)));
+    assert_eq!(req.desired, 1.0);
+    assert_eq!(s.follower.unwrap().target(), 1.0);
+    assert_ne!(s.follower.unwrap().yaw(), before);
+    assert_eq!(req.cursor, s.follower.unwrap().yaw());
+    // Down, the original writes the look's direction last.
+    s.aim(&mut req, None, true);
+    assert_eq!(s.raw, Some((1.0, 2.0)));
+}

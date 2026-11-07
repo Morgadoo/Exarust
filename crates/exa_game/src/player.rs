@@ -55,14 +55,41 @@ const CROUCH_FALL: f64 = 0.02;
 /// mouse motion.
 pub const CURSOR_LOOK_SENSITIVITY: f32 = 3.6;
 
-/// Cursor Look's held state and where the pointer was before it captured
-/// the mouse.
+/// The controls' mouse capture: the orbit (middle button) and Cursor Look
+/// (V) are one routine in the original. Holding either captures the mouse
+/// and re-centres the pointer every frame; the kind is fixed at the start
+/// (Cursor Look's when its key is down then, else the orbit's). Letting
+/// both go ends it: the camera's drag gets its close message and the
+/// pointer is warped, with the OS layer's hold, to the screen point of the
+/// player's aim point, or back where it was when the capture began over
+/// the GUI.
 #[derive(Resource, Debug, Default)]
 pub struct CursorLook {
-    /// The key is held and the mouse is captured.
+    /// The key or button is held and the mouse is captured.
     pub active: bool,
-    /// The window pointer before capture, restored on release.
+    /// The capture is Cursor Look's: the mouse turns the look. Else it is
+    /// the orbit's: the mouse drags the camera.
+    pub turns: bool,
+    /// The capture began this frame (the orbit drags from the next).
+    pub began: bool,
+    /// The capture ended this frame.
+    pub ended: bool,
+    /// The window pointer before capture.
     saved: Option<Vec2>,
+    /// The capture began over the GUI: the pointer goes back to `saved`.
+    over_gui: bool,
+    /// Cursor Look's target yaw: the cursor follower's target, turned by
+    /// the mouse.
+    target: Option<f32>,
+    /// Spectating, the look's flat direction (a yaw) and distance (m) from
+    /// the camera's look-at point, measured at the start.
+    spectate: Option<(f32, f32)>,
+    /// The GUI's pointer while the capture holds: the aim point's screen
+    /// point, or `saved`.
+    pointer: Option<Vec2>,
+    /// The view and the reference point (the player's feet, or the
+    /// spectating camera's look-at point) at the end of the last frame.
+    last: Option<(GlobalTransform, Vec3)>,
 }
 
 impl CursorLook {
@@ -70,7 +97,51 @@ impl CursorLook {
     pub fn turn(dx: f32, width: f32) -> f32 {
         dx * CURSOR_LOOK_SENSITIVITY / width.max(1.0)
     }
+
+    /// The orbit holds the mouse: the camera is dragged.
+    pub fn orbits(&self) -> bool {
+        self.active && !self.turns
+    }
+
+    /// What the behaviour tick reads of the capture.
+    pub(crate) fn capture(&self) -> crate::steering::Capture {
+        crate::steering::Capture {
+            held: self.active,
+            look: self.target.filter(|_| self.active && self.turns),
+        }
+    }
 }
+
+/// The controls' capture as the simulation's behaviour tick reads it,
+/// written by the frame when it changes.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
+pub(crate) struct LookCapture(pub(crate) crate::steering::Capture);
+
+/// The original's aim point (m): the point at the aim plane's height
+/// (`AIM_HEIGHT` over the ground under `base`) that lies `distance` along
+/// the flat direction `yaw` from `base`.
+pub(crate) fn aim_point(base: Vec3, ground: f32, yaw: f32, distance: f32) -> Vec3 {
+    Vec3::new(base.x, ground + AIM_HEIGHT, base.z) + forward(yaw) * distance
+}
+
+/// Where a ray from `origin` along `dir` meets the level plane at `height`
+/// (m), as the original's pick computes it: the parameter is the plane's
+/// height less the origin's over the direction's height, with no test of
+/// its sign. None when it is not finite.
+pub(crate) fn level_plane_hit(origin: Vec3, dir: Vec3, height: f32) -> Option<Vec3> {
+    let t = (height - origin.y) / dir.y;
+    let at = origin + dir * t;
+    at.is_finite().then_some(at)
+}
+
+/// The flat direction (a yaw) and length (m) from `base` to `point`, the
+/// height ignored; none for a zero length.
+pub(crate) fn flat_offset(base: Vec3, point: Vec3) -> Option<(f32, f32)> {
+    let d = (point - base).with_y(0.0);
+    let length = d.length();
+    (length > 0.0 && length.is_finite()).then(|| (yaw_of(d), length))
+}
+
 /// Without a navigation grid the look-ahead's line walk casts from this
 /// far above the feet (hip height, m), and clamps its goal a grid cell (m)
 /// more than [`NO_GRID_CLEARANCE`] short of what it meets.
@@ -472,6 +543,7 @@ fn aim_locked_height(
 pub(crate) fn cursor_ground(
     mut ground: ResMut<CursorGround>,
     scripted: Res<exa_ui::ScriptedPointer>,
+    look: Res<CursorLook>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform, &Projection), With<ChaseCamera>>,
     players: Query<(&GlobalTransform, Option<&Children>), With<Player>>,
@@ -486,7 +558,10 @@ pub(crate) fn cursor_ground(
         return;
     };
     let body = children.and_then(|c| c.iter().find_map(|child| bodies.get(child).ok()));
-    let Some(cursor) = scripted.position(window) else {
+    // While the controls hold the mouse the GUI's pointer is the aim
+    // point's screen point (`cursor_look`), not the re-centred one.
+    let pointer = look.pointer.filter(|_| look.active);
+    let Some(cursor) = pointer.or_else(|| scripted.position(window)) else {
         return;
     };
     let Some(ray) = window_ray(camera, eye, window, cursor) else {
@@ -555,6 +630,7 @@ impl Plugin for PlayerPlugin {
             .init_resource::<AttackButton>()
             .init_resource::<Bindings>()
             .init_resource::<CursorLook>()
+            .init_resource::<LookCapture>()
             .init_resource::<crate::gamepad::PlayPad>()
             .init_resource::<crate::gamepad::PadStatus>()
             .init_resource::<AimCursor>()
@@ -620,6 +696,7 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy_in_resource::<crate::hand::Hand>()
         .bridge_copy_in_resource::<crate::hw_config::HardwareConfig>()
         .bridge_copy_in_resource::<crate::idle_orbit::IdleWatch>()
+        .bridge_copy_in_resource::<crate::player::LookCapture>()
         .bridge_snapshot_resource::<crate::player::AimCursor>()
         .bridge_copy_in_resource::<crate::spectate::SpectateSession>()
         .bridge_snapshot_resource::<crate::player::AttackButton>()
@@ -732,20 +809,71 @@ fn wayland() -> bool {
     crate::os_pointer::wayland()
 }
 
+/// The players the controls' capture reads: the root (feet) and the
+/// body's behaviour state and request.
+type LookPlayers<'w, 's> =
+    Query<'w, 's, (&'static GlobalTransform, &'static Children), With<Player>>;
+type LookBodies<'w, 's> = Query<'w, 's, (&'static PlayerBody, &'static Locomotion)>;
+type LookCamera<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static mut ChaseCamera,
+        &'static Camera,
+        &'static GlobalTransform,
+    ),
+>;
+
+/// The player's aim point and the yaw the camera aligns behind: the feet,
+/// the smoothed cursor direction and the cursor's distance (the original's
+/// aim point reads the drawn cursor direction and its last distance).
+fn player_aim(players: &LookPlayers, bodies: &LookBodies) -> Option<(Vec3, f32, f32)> {
+    let (feet, children) = players.iter().next()?;
+    let (pb, req) = children.iter().find_map(|c| bodies.get(c).ok())?;
+    let distance = pb.steering.raw.map_or(0.0, |(_, d)| d);
+    Some((feet.translation(), req.cursor, distance))
+}
+
+/// The controls' frame routine for the mouse capture (the original's one
+/// routine for the orbit and Cursor Look), each frame. See [`CursorLook`].
+///
+/// - Held, the first frame: the kind is fixed, the pointer saved, and
+///   whether it began over the GUI; spectating, the look's direction and
+///   distance from the camera's look-at point are measured from the
+///   pointer's point on the plane 80 cm over it.
+/// - Held, later frames: the orbit's drag is the camera's
+///   (`chase_camera`); Cursor Look turns its target by 3.6 × Δx / width
+///   rad (not spectating; the behaviour tick turns the cursor follower to
+///   it) and aligns the camera behind the drawn cursor direction (the
+///   spectating look's direction while spectating), every frame.
+/// - Every held frame the pointer is put back at the window's centre and
+///   the GUI's pointer is the aim point's screen point (or the saved one).
+/// - Let go: the drag's close message (`chase_camera`) and the warp.
+/// - Neither held nor captured, while the camera still turns to an
+///   alignment: the pointer is moved so it stays over the same flat offset
+///   from the player as on the view of the frame before.
 #[allow(clippy::too_many_arguments)]
 fn cursor_look(
     mut look: ResMut<CursorLook>,
+    mut sim_capture: ResMut<LookCapture>,
     keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     motion: Res<AccumulatedMouseMotion>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
-    mut players: Query<(&mut PlayerBody, &mut Locomotion, &mut Locomotor)>,
-    mut cameras: Query<&mut ChaseCamera>,
+    (players, bodies): (LookPlayers, LookBodies),
+    mut cameras: LookCamera,
     mut capture: ResMut<CursorCapture>,
     mut warp: Option<ResMut<crate::os_pointer::PointerWarp>>,
+    (over_gui, spectate): (
+        Option<Res<crate::panel_live::PointerOverGui>>,
+        Option<Res<crate::spectate::SpectateSession>>,
+    ),
 ) {
+    look.began = false;
+    look.ended = false;
     let Ok((mut window, mut options)) = windows.single_mut() else {
         return;
     };
@@ -767,59 +895,166 @@ fn cursor_look(
             }
         }
         capture.0 = false;
+        sim_capture.set_if_neq(LookCapture(look.capture()));
         return;
     }
-    let held = bindings.pressed(&keys, Action::CursorLook);
-    if held && !look.active && window.focused {
-        look.active = true;
-        look.saved = window.cursor_position();
-        // Locked falls back to confined where it is unsupported (X11,
-        // Windows); there the pointer is also centred. Wayland locks it in
-        // place and only moves it while locked.
-        options.grab_mode = CursorGrabMode::Locked;
+    // The original drops the capture without a release while its GUI's
+    // focus is off the game view; Exarust's nearest is the window's focus.
+    if !window.focused {
+        if look.active {
+            look.active = false;
+            look.target = None;
+            look.pointer = None;
+            options.grab_mode = CursorGrabMode::None;
+            options.visible = true;
+        }
+        capture.0 = false;
+        sim_capture.set_if_neq(LookCapture(look.capture()));
+        return;
+    }
+    let spectating = spectate.as_deref().filter(|s| s.active);
+    let look_key = bindings.pressed(&keys, Action::CursorLook);
+    let orbit_key =
+        bindings.mouse_pressed(&buttons, Action::Orbit) || bindings.pressed(&keys, Action::Orbit);
+    let held = look_key || orbit_key;
+    let camera = cameras.single_mut().ok();
+    let (mut cam, view_camera, view) = match camera {
+        Some((cam, camera, view)) => (Some(cam), Some(camera), Some(*view)),
+        None => (None, None, None),
+    };
+    let aim = player_aim(&players, &bodies);
+    // The reference point the aim point is measured from and the plane's
+    // ground: the player's feet, or spectating the camera's look-at point.
+    let reference = match spectating {
+        Some(session) => session.focus,
+        None => aim.map(|(feet, ..)| feet),
+    };
+    // The aim point now, as the original's screen point of it reads it.
+    let aim_now = |look: &CursorLook| -> Option<Vec3> {
+        match spectating {
+            Some(session) => {
+                let focus = session.focus?;
+                let (yaw, distance) = look.spectate?;
+                Some(aim_point(focus, focus.y, yaw, distance))
+            }
+            None => {
+                let (feet, yaw, distance) = aim?;
+                Some(aim_point(feet, feet.y, yaw, distance))
+            }
+        }
+    };
+    if held {
+        if !look.active {
+            look.active = true;
+            look.began = true;
+            look.turns = look_key;
+            look.saved = window.cursor_position();
+            look.over_gui = over_gui.as_deref().is_some_and(|o| o.0);
+            look.target = None;
+            look.spectate = None;
+            if let (Some(session), Some(saved), Some(camera), Some(view)) =
+                (spectating, look.saved, view_camera, view.as_ref())
+                && let Some(focus) = session.focus
+                && let Some(ray) = window_ray(camera, view, &window, saved)
+                && let Some(hit) = level_plane_hit(ray.origin, *ray.direction, focus.y + AIM_HEIGHT)
+            {
+                look.spectate = flat_offset(focus, hit);
+            }
+            if look.turns && spectating.is_none() {
+                // The look's target starts at the follower's own.
+                look.target = players.iter().next().and_then(|(_, children)| {
+                    children.iter().find_map(|c| {
+                        let (pb, req) = bodies.get(c).ok()?;
+                        Some(pb.steering.follower.map_or(req.heading, |f| f.target()))
+                    })
+                });
+            }
+            // Locked falls back to confined where it is unsupported (X11,
+            // Windows). Wayland locks it in place and only moves it while
+            // locked.
+            options.grab_mode = CursorGrabMode::Locked;
+            options.visible = false;
+        } else if look.turns && spectating.is_none() {
+            let turn = CursorLook::turn(motion.delta.x, window.width());
+            if let Some(target) = look.target.as_mut() {
+                *target += turn;
+            }
+        }
+        if look.turns
+            && let Some(cam) = cam.as_mut()
+        {
+            // Behind the drawn cursor direction (spectating, the look's),
+            // kept within half a turn of the camera's present yaw.
+            let yaw = match spectating {
+                Some(_) => look.spectate.map(|(yaw, _)| yaw),
+                None => aim.map(|(_, yaw, _)| yaw),
+            };
+            if let Some(yaw) = yaw {
+                cam.align(yaw + std::f32::consts::PI);
+            }
+        }
         if !wayland() {
             let centre = window.size() * 0.5;
             window.set_cursor_position(Some(centre));
         }
-        options.visible = false;
-    }
-    if look.active {
-        let turn = CursorLook::turn(motion.delta.x, window.width());
-        if turn != 0.0 {
-            let mut yaw = None;
-            for (mut pb, mut req, mut body) in &mut players {
-                let facing = turn_between(0.0, body.yaw + turn);
-                body.yaw = facing;
-                req.heading = facing;
-                pb.aim = facing;
-                yaw = Some(facing);
-            }
-            if let Some(yaw) = yaw {
-                for mut camera in &mut cameras {
-                    // Behind the new facing, kept within half a turn of
-                    // the camera's present yaw.
-                    let shown = camera.shown_yaw;
-                    camera.yaw = align_behind(yaw + std::f32::consts::PI, shown);
-                }
-            }
-        }
-    }
-    if look.active && (!held || !window.focused) {
+        look.pointer = if look.over_gui {
+            look.saved
+        } else {
+            aim_now(&look)
+                .zip(view_camera.zip(view.as_ref()))
+                .and_then(|(point, (camera, view))| window_point(camera, view, &window, point))
+                .or(look.saved)
+        };
+    } else if look.active {
         look.active = false;
+        look.ended = true;
+        look.target = None;
+        look.pointer = None;
         options.grab_mode = CursorGrabMode::None;
         options.visible = true;
+        // The aim point's screen point, unless the capture began over the
+        // GUI (or there is no aim point): then where the pointer was.
+        let to = if look.over_gui {
+            look.saved
+        } else {
+            aim_now(&look)
+                .zip(view_camera.zip(view.as_ref()))
+                .and_then(|(point, (camera, view))| window_point(camera, view, &window, point))
+                .or(look.saved)
+        };
+        look.saved = None;
         // The window's position is applied before the grab is released, so
         // Wayland takes it as the lock's hint and leaves the pointer there.
-        // Elsewhere the pointer is warped back with the original's hold
+        // Elsewhere the pointer is warped with the original's hold
         // (`os_pointer`), which puts back the moves still on their way.
-        if let Some(saved) = look.saved.take() {
+        if let Some(to) = to {
             match warp.as_deref_mut().filter(|_| !wayland()) {
-                Some(warp) => warp.warp(&mut window, saved),
-                None => window.set_cursor_position(Some(saved)),
+                Some(warp) => warp.warp(&mut window, to),
+                None => window.set_cursor_position(Some(to)),
             }
         }
+    } else if cam.as_ref().is_some_and(|c| c.aligning)
+        && !wayland()
+        && let (Some((last_view, last_reference)), Some(reference)) = (look.last, reference)
+        && let (Some(camera), Some(view)) = (view_camera, view.as_ref())
+        && let Some(pointer) = window.cursor_position()
+        && let Some(ray) = window_ray(camera, &last_view, &window, pointer)
+        && let Some(hit) = level_plane_hit(ray.origin, *ray.direction, reference.y + AIM_HEIGHT)
+        && let Some((yaw, distance)) = flat_offset(last_reference, hit)
+        && let Some(to) = window_point(
+            camera,
+            view,
+            &window,
+            aim_point(reference, reference.y, yaw, distance),
+        )
+    {
+        // The camera still swings to the alignment Cursor Look left: the
+        // pointer keeps its flat offset from the player.
+        window.set_cursor_position(Some(to));
     }
+    look.last = view.zip(reference);
     capture.0 = look.active;
+    sim_capture.set_if_neq(LookCapture(look.capture()));
 }
 
 /// The player's behaviour's release of a held knock-out: while the
@@ -910,12 +1145,14 @@ pub(crate) fn steer_player(
         Option<&mut Ragdoll>,
         Has<Attacking>,
     )>,
-    (targets, spectate): (
+    (targets, spectate, look): (
         Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
         Option<Res<crate::spectate::SpectateSession>>,
+        Option<Res<LookCapture>>,
     ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
+    let capture = look.map_or_else(Default::default, |l| l.0);
     // Spectating, the controls' frame does nothing: no key steers.
     let spectating = crate::spectate::SpectateSession::spectating(spectate.as_deref());
     let held = |action| bindings.pressed(&keys, action);
@@ -1026,6 +1263,7 @@ pub(crate) fn steer_player(
                 .filter(|_| idle.as_ref().is_none_or(|i| i.follows_cursor))
                 .map(|c| c - standing);
             let mut steering = pb.steering;
+            steering.capture = capture;
             steering.body_stepping = ragdoll.is_some_and(Ragdoll::stepping);
             Steering::latch(&mut req, &input);
             if pb.combat {
@@ -1641,7 +1879,12 @@ pub(crate) fn player_combat(
         return;
     };
     let pad_active = pad_status.as_ref().is_some_and(|s| s.active());
-    if look.active && !pad_active {
+    // While the controls hold the mouse the cursor's point is not read:
+    // Cursor Look's target is the cursor's direction, the orbit leaves the
+    // aim as it was.
+    let captured = look.active && !pad_active;
+    let look_aim = look.capture().look;
+    if captured && look_aim.is_none() {
         return;
     }
     for (mut pb, mut req, condition, fallen) in &mut bodies {
@@ -1650,14 +1893,18 @@ pub(crate) fn player_combat(
         }
         // The eased aim cursor's direction, once a stick asks for it; the
         // mouse's point under the cursor otherwise.
-        let aim = aim_cursor
-            .0
-            .and_then(|point| aim_from(player.translation(), point))
-            .or_else(|| {
-                cursor
-                    .0
-                    .and_then(|point| aim_from(player.translation(), point))
-            });
+        let aim = if captured {
+            look_aim
+        } else {
+            aim_cursor
+                .0
+                .and_then(|point| aim_from(player.translation(), point))
+                .or_else(|| {
+                    cursor
+                        .0
+                        .and_then(|point| aim_from(player.translation(), point))
+                })
+        };
         if let Some(aim) = aim {
             pb.aim = aim;
             req.heading = combat_heading(req.heading, aim, pb.attack.requested);
@@ -1989,7 +2236,14 @@ pub struct ChaseCamera {
     /// preset: the yaw spring's stiffness (the preset's view) and
     /// retention, and the zoom's ease, are its numbers.
     controller: crate::nav_camera::NavController,
+    /// The yaw was set by an alignment (Cursor Look's) and the shown yaw
+    /// has not yet come within [`ALIGNED`] of it; an orbit drag ends it.
+    pub(crate) aligning: bool,
 }
+
+/// An alignment is over once the shown yaw is this near its target (rad,
+/// compared in double precision).
+const ALIGNED: f64 = 0.01;
 
 impl Default for ChaseCamera {
     fn default() -> Self {
@@ -2008,6 +2262,7 @@ impl Default for ChaseCamera {
             before: (Vec3::Z, ZOOM_START),
             shake: Vec3::ZERO,
             shake_before: Vec3::ZERO,
+            aligning: false,
             wall_steps: 0,
             wall_climb: false,
             wall_tilt: 0.0,
@@ -2219,6 +2474,14 @@ impl ChaseCamera {
         self.wall_tilt = tilt;
     }
 
+    /// The original's camera alignment: the target yaw becomes `yaw`,
+    /// kept within half a turn of the shown yaw, and the camera is marked
+    /// aligning.
+    pub(crate) fn align(&mut self, yaw: f32) {
+        self.yaw = align_behind(yaw, self.shown_yaw);
+        self.aligning = true;
+    }
+
     /// One 17 ms tick: the shake, the orbit spring, the pitch and the zoom
     /// ease.
     fn tick(&mut self) {
@@ -2231,6 +2494,11 @@ impl ChaseCamera {
         } else {
             self.shake = Vec3::ZERO;
             self.shake_before = Vec3::ZERO;
+        }
+        // The controller's update ends an alignment once the shown yaw is
+        // within 0.01 rad of the target, before the spring's step.
+        if self.aligning && f64::from((self.yaw - self.shown_yaw).abs()) < ALIGNED {
+            self.aligning = false;
         }
         let lead = turn_between(self.shown_yaw, self.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
         let preset = &self.controller.preset;
@@ -2309,8 +2577,6 @@ fn camera_focus(feet: Vec3, body: Option<&Ragdoll>, alpha: f32) -> Vec3 {
 pub(crate) fn chase_camera(
     time: Res<Time<Real>>,
     fixed: Res<Time<Fixed>>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    bindings: Res<Bindings>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
@@ -2319,10 +2585,11 @@ pub(crate) fn chase_camera(
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
     mut cameras: Query<(&mut ChaseCamera, &mut Transform, &mut Projection)>,
-    (mut spectate, every_body, mut cut_away): (
+    (mut spectate, every_body, mut cut_away, look): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
         Option<ResMut<crate::cut_away_live::CutAwayCamera>>,
+        Res<CursorLook>,
     ),
 ) {
     let player_focus = players.iter().next().map(|target| {
@@ -2372,7 +2639,10 @@ pub(crate) fn chase_camera(
         )
     });
     for (mut cam, mut t, mut projection) in &mut cameras {
-        if bindings.mouse_pressed(&buttons, Action::Orbit) {
+        // The controls' capture drags while it is the orbit's, from the
+        // frame after it began (`cursor_look`); a drag ends an alignment.
+        if look.orbits() && !look.began {
+            cam.aligning = false;
             let per_pixel = orbit_per_pixel(width);
             cam.yaw = orbit_yaw(cam.yaw, motion.delta.x, per_pixel);
             cam.user_pitch = orbit_pitch(
@@ -2382,8 +2652,9 @@ pub(crate) fn chase_camera(
                 pitch_floor(cam.shown_zoom),
                 MAX_PITCH,
             );
-        } else if bindings.mouse_just_released(&buttons, Action::Orbit) {
-            // The drag's close message snaps the target a quarter turn from
+        } else if look.ended {
+            // The capture's end (the orbit's or Cursor Look's) sends the
+            // drag's close message: it snaps the target a quarter turn from
             // the shown yaw when it turned past an eighth (`nav_drag`).
             cam.yaw = crate::nav_drag::free_drag_release(cam.yaw, cam.shown_yaw);
         }
@@ -4133,5 +4404,139 @@ mod tests {
         assert!((CursorLook::turn(-800.0, 1600.0) + 1.8).abs() < 1e-6);
         // A zero width is clamped to one pixel rather than dividing by 0.
         assert_eq!(CursorLook::turn(10.0, 0.0), 36.0);
+    }
+
+    #[test]
+    fn the_aim_point_lies_on_the_aim_plane_along_the_cursor() {
+        let at = aim_point(
+            Vec3::new(1.0, 5.0, 2.0),
+            0.5,
+            std::f32::consts::FRAC_PI_2,
+            3.0,
+        );
+        assert!((at - Vec3::new(4.0, 1.3, 2.0)).length() < 1e-6, "{at}");
+        // The plane hit takes no sign test: behind the origin counts.
+        let hit = level_plane_hit(Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 1.0, 1.0), 1.0).unwrap();
+        assert_eq!(hit, Vec3::new(0.0, 1.0, -1.0));
+        assert_eq!(level_plane_hit(Vec3::Y, Vec3::X, 0.0), None);
+        let (yaw, length) =
+            flat_offset(Vec3::new(1.0, 9.0, 1.0), Vec3::new(1.0, 0.0, 3.0)).unwrap();
+        assert_eq!((yaw, length), (0.0, 2.0));
+        assert_eq!(flat_offset(Vec3::ZERO, Vec3::Y), None);
+    }
+
+    #[test]
+    fn an_alignment_holds_until_the_shown_yaw_is_within_a_hundredth() {
+        let mut cam = ChaseCamera::default();
+        cam.align(1.0);
+        assert!(cam.aligning);
+        assert_eq!(cam.yaw, 1.0);
+        // Within half a turn of the shown yaw.
+        cam.align(std::f32::consts::TAU - 0.5);
+        assert!((cam.yaw + 0.5).abs() < 1e-6, "{}", cam.yaw);
+        for _ in 0..400 {
+            cam.tick();
+        }
+        assert!(!cam.aligning);
+        assert!((cam.yaw - cam.shown_yaw).abs() < 0.01);
+    }
+
+    /// The capture's state through a Cursor Look hold and an orbit hold
+    /// (no camera, so no aim point: the warp goes back where the pointer
+    /// was).
+    #[test]
+    fn the_orbit_and_cursor_look_share_one_capture() {
+        let mut app = App::new();
+        app.init_resource::<CursorLook>()
+            .init_resource::<LookCapture>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<CursorCapture>()
+            .init_resource::<crate::panel_live::PointerOverGui>()
+            .add_systems(Update, cursor_look);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(800, 600),
+                    focused: true,
+                    ..default()
+                },
+                CursorOptions::default(),
+                PrimaryWindow,
+            ))
+            .id();
+        app.world_mut()
+            .entity_mut(window)
+            .get_mut::<Window>()
+            .unwrap()
+            .set_cursor_position(Some(Vec2::new(100.0, 50.0)));
+        let body = app.world_mut().spawn(PlayerBody::new(0.0)).id();
+        app.world_mut()
+            .spawn((Player, GlobalTransform::default()))
+            .add_child(body);
+        let press = |app: &mut App, key: Option<KeyCode>, button: Option<MouseButton>, dx: f32| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset_all();
+            keys.release_all();
+            if let Some(key) = key {
+                keys.press(key);
+            }
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.release_all();
+            if let Some(button) = button {
+                buttons.press(button);
+            }
+            app.world_mut()
+                .resource_mut::<AccumulatedMouseMotion>()
+                .delta = Vec2::new(dx, 0.0);
+            app.update();
+        };
+        // Cursor Look: the first frame fixes the kind and starts the
+        // target at the follower's (the heading, 0).
+        press(&mut app, Some(KeyCode::KeyV), None, 400.0);
+        let look = app.world().resource::<CursorLook>();
+        assert!(look.active && look.turns && look.began);
+        assert_eq!(look.target, Some(0.0));
+        assert_eq!(
+            app.world().resource::<LookCapture>().0,
+            crate::steering::Capture {
+                held: true,
+                look: Some(0.0)
+            }
+        );
+        // Later frames turn it by 3.6 × Δx / width; the orbit's button
+        // does not change the kind.
+        press(
+            &mut app,
+            Some(KeyCode::KeyV),
+            Some(MouseButton::Middle),
+            400.0,
+        );
+        let look = app.world().resource::<CursorLook>();
+        assert!(look.turns && !look.began);
+        assert!((look.target.unwrap() - 1.8).abs() < 1e-6);
+        press(&mut app, None, Some(MouseButton::Middle), 0.0);
+        assert!(app.world().resource::<CursorLook>().active);
+        // Both let go: the capture ends and the pointer goes back.
+        press(&mut app, None, None, 0.0);
+        let look = app.world().resource::<CursorLook>();
+        assert!(!look.active && look.ended && look.target.is_none());
+        assert_eq!(app.world().resource::<LookCapture>().0, Default::default());
+        let window = app.world().entity(window).get::<Window>().unwrap();
+        assert_eq!(window.cursor_position(), Some(Vec2::new(100.0, 50.0)));
+        // The orbit's capture: no target, the cursor only frozen.
+        press(&mut app, None, Some(MouseButton::Middle), 10.0);
+        let look = app.world().resource::<CursorLook>();
+        assert!(look.orbits() && look.target.is_none());
+        assert_eq!(
+            app.world().resource::<LookCapture>().0,
+            crate::steering::Capture {
+                held: true,
+                look: None
+            }
+        );
     }
 }

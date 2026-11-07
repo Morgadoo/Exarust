@@ -68,17 +68,44 @@ decides from it each tick (below). Outside combat:
   take the sprint row (the feral character's own, toward the jog by its
   feral level), and the capsule's run end is the jog speed times the
   feral sprint thrust over the jog thrust.
-- **Cursor Look (V)** captures the mouse while held: the pointer and world
-  cursor are hidden, horizontal mouse motion turns the facing (the body's
-  yaw and the request's heading) by 3.6 × Δx / window width radians per
-  pixel (no drag needed), and the camera target turns behind the new
-  facing. Releasing restores the pointer where it was, with the OS
-  layer's four-move warp hold (`exa_game::os_pointer`). The original's
-  release puts it on the screen point of the player's aim point instead
-  when the look began over the game view, and where it was only when it
-  began over the GUI; its middle-button orbit is the same routine
-  (recentred pointer, the same warp on release). The settings
-  screen's binding template shows SPACE, but the shipped table's slot is V.
+- **Cursor Look (V)** and the **orbit (middle button)** are one routine
+  of the controls' frame (`exa_game::player::cursor_look`). Holding either
+  captures the mouse (pointer and world cursor hidden) and puts the pointer
+  back at the window's centre every frame (Wayland locks it in place
+  instead). The kind is fixed when the capture begins: Cursor Look's when V
+  is down then, else the orbit's; pressing the other key meanwhile changes
+  nothing, and the capture lasts until both are let go.
+  - Cursor Look turns its target by 3.6 × Δx / window width radians per
+    pixel (no drag needed). The target starts at the cursor follower's own
+    and is the follower's target while V holds, so the smoothed cursor
+    direction turns toward it and the raw cursor direction (the walk's
+    desired direction, the combat aim) is it; the body turns as the
+    steering turns it toward the cursor. Every held frame the camera's
+    target aligns behind the smoothed cursor direction.
+  - The orbit drags the camera from the frame after it began; a drag ends
+    an alignment.
+  - While either holds, the cursor's point is not read (its distance is
+    kept), and the GUI's pointer is the aim point's screen point: the point
+    on the 80 cm aim plane along the smoothed cursor direction at the
+    cursor's last distance from the player.
+  - Letting go sends the camera drag's close message (the quarter-turn
+    snap, for both kinds) and warps the pointer, with the OS layer's
+    four-move hold (`exa_game::os_pointer`), to the aim point's screen
+    point, or back where it was when the capture began over the GUI.
+  - After a release, while the camera still swings to Cursor Look's
+    alignment (until its shown yaw is within 0.01 rad of the target), the
+    pointer is moved each frame so it stays over the same flat offset from
+    the player as on the frame before's view.
+  - Spectating, the look's direction and distance from the camera's look-at
+    point are measured at the start (the pointer's point on the plane 80 cm
+    over it); the mouse does not turn it, the camera aligns behind it and
+    the release warps to its screen point.
+  - Losing the window's focus drops the capture without a warp (the
+    original drops it while its GUI's focus is off the game view).
+  The settings screen's binding template shows SPACE for Cursor Look, but
+  the shipped table's slot is V. Pointer moves cannot be seen in the
+  offscreen grid; the rules are unit-tested (`exa_game` player, steering,
+  os_pointer).
 - **Crouch (X)** sets the crouch amount to 1 while the body is not
   moving (by its last movement decision), or while it is down (condition
   bit 0x200); every tick the amount first falls by 0.02 while above 0, so
