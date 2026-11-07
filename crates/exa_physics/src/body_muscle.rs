@@ -136,6 +136,9 @@ pub struct RaceMuscles {
     /// feet routine then probes once under the pelvis instead of under
     /// each foot ([`super::FeetMode::Hovering`]).
     pub hovers: bool,
+    /// The character init's chest pin re-scale (the ghouls' half size;
+    /// 1 keeps the stored pins): applied by [`super::Ragdoll::with_race`].
+    pub chest_pins: f32,
 }
 
 /// The smoothing of a golem's body links (the character init's 0.995 for
@@ -152,6 +155,7 @@ impl RaceMuscles {
         gaits: GaitTable::HUMAN_ROWS,
         golem: false,
         hovers: false,
+        chest_pins: 1.0,
     };
 }
 

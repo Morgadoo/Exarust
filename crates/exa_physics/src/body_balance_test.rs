@@ -185,6 +185,20 @@ fn the_chest_is_the_mean_of_the_thorax_pins() {
     );
 }
 
+/// The ghouls' chest pin re-scale moves each thorax pin about the thorax's
+/// origin: at half, the chest is half as far from it.
+#[test]
+fn the_chest_pins_scale_about_the_thorax() {
+    let mut body = biped();
+    let thorax = Vec3::from(body.part_of(9).unwrap().transform().translation);
+    body.scale_chest_pins(0.5);
+    let chest = body.chest_point().unwrap();
+    assert!(
+        chest.abs_diff_eq(thorax + cm(0.0, 9.65, 1.25) * 0.5, 1e-5),
+        "{chest}"
+    );
+}
+
 /// Each lower leg is a leg, in part order. Its contact is its foot part's
 /// origin, the ankle (1.2, −41.9, −2.3 cm), not the stored point, as the
 /// original's muscle setup moves it; the leg's length is knee (43.2 cm) +

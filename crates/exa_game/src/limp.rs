@@ -233,7 +233,15 @@ fn build_bodies(
             spawn_pose(
                 root, frame, &mut body, &found, &motions, &animators, &parents, &nodes,
             );
-            body.place_foot_pitches()
+            let body = body.place_foot_pitches();
+            if race.chest_pins != 1.0 {
+                info!(
+                    "chest pins: {root:?} re-scaled by {:.3} (the ghouls' half size), chest at {:?} m",
+                    race.chest_pins,
+                    body.chest_point()
+                );
+            }
+            body
         };
         // Each limb's node mesh, as the original's limb builder leaves it:
         // the pair stage queries it where the limb is the mesh side, and

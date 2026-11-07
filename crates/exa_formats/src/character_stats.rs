@@ -59,6 +59,9 @@ const OGRE: u8 = 3;
 const SIR: u8 = 4;
 const FAEL: u8 = 5;
 const GHOUL: u8 = 6;
+/// The share of the character size the ghouls' init re-scales the chest
+/// pins by (it halves the size word around the re-scale).
+const GHOUL_CHEST_PINS: f32 = 0.5;
 const HULKING_GHOUL: u8 = 7;
 const GOBBLER: u8 = 8;
 const MANIPULATOR: u8 = 9;
@@ -350,6 +353,11 @@ pub struct CharacterStats {
     /// Its race byte is a golem's: it walks on the golem footstep set
     /// whatever its race names, and its golem suit starts powered.
     pub golem: bool,
+    /// What the character init scales its chest pins by (the thorax's two
+    /// pin points, about the part's origin): the ghouls' init re-scales
+    /// them at half the character size ([`Self::size`] × 0.5); every other
+    /// race keeps the pins as stored (1).
+    pub chest_pin_scale: f32,
 }
 
 impl Default for CharacterStats {
@@ -465,6 +473,11 @@ impl CharacterStats {
             }),
             footstep_volume: preset.footstep_volume.unwrap_or(footstep_volume),
             golem,
+            chest_pin_scale: if byte == GHOUL || byte == HULKING_GHOUL {
+                body.size * shrink * GHOUL_CHEST_PINS
+            } else {
+                1.0
+            },
         }
     }
 

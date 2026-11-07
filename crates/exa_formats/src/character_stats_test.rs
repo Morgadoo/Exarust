@@ -671,6 +671,26 @@ fn race_presets_override_the_record() {
     assert!(!of(WRAITH).golem && !of(SKELETON).golem);
 }
 
+/// The ghouls' init re-scales the chest pins at half the character size;
+/// every other race keeps them (1).
+#[test]
+fn the_ghouls_chest_pins_take_half_the_size() {
+    let mut ghoul = race(GHOUL, 1.0);
+    ghoul.body.size = 1.5;
+    let s = CharacterStats::derive(&record(GHOUL, 1.0, 0.0), Some(&ghoul), ALIVE);
+    assert!(
+        close(s.chest_pin_scale, 1.5 * 0.95 * 0.5),
+        "{}",
+        s.chest_pin_scale
+    );
+    let mut hulking = race(HULKING_GHOUL, 1.0);
+    hulking.body.size = 2.0;
+    let h = CharacterStats::derive(&record(HULKING_GHOUL, 0.0, 0.0), Some(&hulking), ALIVE);
+    assert!(close(h.chest_pin_scale, 1.0));
+    let human = CharacterStats::derive(&record(0, -1.0, 0.0), Some(&human()), ALIVE);
+    assert_eq!(human.chest_pin_scale, 1.0);
+}
+
 /// Footstep volume: the body scale, doubled over 1.3 (compared in
 /// double precision), 5 for the ogre whatever its scale.
 #[test]
