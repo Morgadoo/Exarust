@@ -399,6 +399,12 @@ pub struct Options {
     pub still_opponent: bool,
     /// The debug duellist takes a level character's brain too.
     pub opponent_brain: bool,
+    /// `--opponent-powers`: the powers the debug duellist knows, cast by
+    /// its combat state through the AI front ends.
+    pub opponent_powers: Vec<u32>,
+    /// `--opponent-turn`: degrees the debug duellist starts turned from
+    /// facing the player.
+    pub opponent_turn: f32,
     /// `--opponent-race`: the race byte the debug duellist's brain is made
     /// from (its body stays human), so it installs that race's sense.
     pub opponent_race: Option<u8>,
@@ -1052,6 +1058,27 @@ fn main() -> AppExit {
             "--opponent-brain" => {
                 options.opponent = true;
                 options.opponent_brain = true;
+            }
+            "--opponent-turn" => {
+                options.opponent = true;
+                options.opponent_turn = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|f: &f32| f.is_finite())
+                    .unwrap_or(180.0);
+            }
+            "--opponent-powers" => {
+                let list = args.next().unwrap_or_default();
+                match exa_game::thaum::cast::parse_power_list(&list) {
+                    Some(powers) => {
+                        options.opponent = true;
+                        options.opponent_powers = powers;
+                    }
+                    None => {
+                        eprintln!("--opponent-powers: cannot read {list:?} (id,id,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
             }
             "--trace" => options.trace = args.next().map(PathBuf::from),
             "--trace-all" => options.trace_all = true,

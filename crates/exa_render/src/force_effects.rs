@@ -55,6 +55,7 @@ impl Plugin for ForceEffectsPlugin {
         embedded_asset!(app, "force_ribbon.wesl");
         embedded_asset!(app, "force_shell.wesl");
         embedded_asset!(app, "disp_shell.wesl");
+        embedded_asset!(app, "disp_tendril.wesl");
         embedded_asset!(app, "tele_bubble.wesl");
         embedded_asset!(app, "force_dome.wesl");
         app.add_plugins((
@@ -62,6 +63,7 @@ impl Plugin for ForceEffectsPlugin {
             MaterialPlugin::<ForceRibbonMaterial>::default(),
             MaterialPlugin::<ForceShellMaterial>::default(),
             MaterialPlugin::<DispShellMaterial>::default(),
+            MaterialPlugin::<DispTendrilMaterial>::default(),
             MaterialPlugin::<TeleBubbleMaterial>::default(),
         ));
     }
@@ -93,6 +95,16 @@ pub const TELE_BUBBLE_RECORD_FLAGS: u32 = 0x0048_0008;
 /// the barricade's material): the aura's.
 pub const FORCE_BARRIER_BLEND_WORD: u16 = 0x163;
 pub const FORCE_BARRIER_RECORD_FLAGS: u32 = 0x0048_0008;
+/// The `_TDispMat01` record's blend word (the displacement tendrils'):
+/// ONE, ONE_MINUS_SRC_ALPHA, layer 6, as the force records'.
+pub const DISP_TENDRIL_BLEND_WORD: u16 = 0x163;
+/// The `_TDispMat01` record's flags: emissive, two-sided.
+pub const DISP_TENDRIL_RECORD_FLAGS: u32 = 0x0048_0018;
+/// The `_TDispMat01` record's opacity, the program's `MatDif.a`.
+pub const DISP_TENDRIL_OPACITY: f32 = 0.5;
+/// The `_TDispMat01` record's emissive layer, the program's `EmiTex`.
+pub const DISP_TENDRIL_TEXTURE: &str = "flameletsa3";
+
 /// The record flags' two-sided bit.
 pub const TWO_SIDED: u32 = 0x10;
 /// The skinned shell copy's push along its normal: 2 cm.
@@ -116,6 +128,7 @@ fn shader(name: &str) -> ShaderRef {
     let path = match name {
         "ribbon" => embedded_path!("force_ribbon.wesl"),
         "disp" => embedded_path!("disp_shell.wesl"),
+        "tendril" => embedded_path!("disp_tendril.wesl"),
         "tele" => embedded_path!("tele_bubble.wesl"),
         "dome" => embedded_path!("force_dome.wesl"),
         _ => embedded_path!("force_shell.wesl"),
@@ -1155,5 +1168,85 @@ mod tests {
         let flat = noise_image(&vec![7; 256 * 256], 256, false);
         assert_eq!(flat.texture_descriptor.mip_level_count, 1);
         assert_eq!(flat.data.as_ref().unwrap().len(), 0x1_0000);
+    }
+}
+
+/// The displacement tendrils' uniform, laid out as `DispTendrilParams` in
+/// `disp_tendril.wesl`.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub struct DispTendrilParams {
+    /// `MatDif`: the record's diffuse colour (black) with its opacity.
+    pub mat_dif: Vec4,
+}
+
+/// The displacement tendrils' strip (`_TDispMat01` through the surface
+/// program: `vrCol · EmiTex(vrTex) · MatDif.a`), drawn with the record's
+/// premultiplied blend, both faces and no depth write.
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+pub struct DispTendrilMaterial {
+    #[uniform(0)]
+    pub params: DispTendrilParams,
+    /// `EmiTex`: the record's `FlameletsA3` layer.
+    #[texture(1)]
+    #[sampler(2)]
+    pub texture: Handle<Image>,
+}
+
+impl DispTendrilMaterial {
+    /// The record's material over `texture`.
+    pub fn new(texture: Handle<Image>) -> Self {
+        Self {
+            params: DispTendrilParams {
+                mat_dif: Vec4::new(0.0, 0.0, 0.0, DISP_TENDRIL_OPACITY),
+            },
+            texture,
+        }
+    }
+}
+
+impl Material for DispTendrilMaterial {
+    fn fragment_shader() -> ShaderRef {
+        shader("tendril")
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        blend_alpha_mode(DISP_TENDRIL_BLEND_WORD).unwrap_or(AlphaMode::Premultiplied)
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn enable_oit() -> bool {
+        false
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if DISP_TENDRIL_RECORD_FLAGS & TWO_SIDED != 0 {
+            descriptor.primitive.cull_mode = None;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tendril_tests {
+    use super::*;
+
+    #[test]
+    fn the_tendril_record_blends_premultiplied_on_both_faces() {
+        let m = DispTendrilMaterial::new(Handle::default());
+        assert_eq!(m.alpha_mode(), AlphaMode::Premultiplied);
+        assert_eq!(m.params.mat_dif.w, 0.5);
+        assert_ne!(DISP_TENDRIL_RECORD_FLAGS & TWO_SIDED, 0);
     }
 }

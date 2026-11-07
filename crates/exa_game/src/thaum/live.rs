@@ -1333,7 +1333,6 @@ fn spawn_debug_effects(
 /// The glow tint each effect draws with.
 const ARC_TINT: Vec4 = Vec4::new(1.0, 1.0, 1.0, 1.0);
 const WALL_TINT: Vec4 = Vec4::new(0.45, 0.33, 0.95, 0.25);
-const WISP_TINT: Vec4 = Vec4::new(1.0, 1.0, 1.0, 0.6);
 
 fn mesh_of(positions: Vec<[f32; 3]>, colours: Vec<[f32; 4]>, indices: Vec<u32>) -> Mesh {
     let uvs = vec![[0.0, 0.0]; positions.len()];
@@ -1559,6 +1558,11 @@ fn draw_barricades(
     }
 }
 
+/// The displacement tendrils' picture (`_TDispMat01`'s emissive layer),
+/// loaded once, and the material every strip shares.
+#[derive(Resource, Clone)]
+pub(crate) struct TendrilLook(Handle<exa_render::force_effects::DispTendrilMaterial>);
+
 #[allow(clippy::too_many_arguments)]
 fn draw_wisps(
     mut commands: Commands,
@@ -1566,8 +1570,27 @@ fn draw_wisps(
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<GlowMaterial>>,
+    materials: Option<ResMut<Assets<exa_render::force_effects::DispTendrilMaterial>>>,
+    mut images: ResMut<Assets<Image>>,
+    game: Option<Res<exa_assets::Game>>,
+    look: Option<Res<TendrilLook>>,
 ) {
+    let Some(mut materials) = materials else {
+        return;
+    };
+    if sets.is_empty() {
+        return;
+    }
+    let material = match look {
+        Some(look) => look.0.clone(),
+        None => {
+            let texture = super::vanish_live::load_texture(game.as_deref(), &mut images);
+            let handle =
+                materials.add(exa_render::force_effects::DispTendrilMaterial::new(texture));
+            commands.insert_resource(TendrilLook(handle.clone()));
+            handle
+        }
+    };
     let eye = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
     for (entity, mut live, drawn) in &mut sets {
@@ -1576,30 +1599,37 @@ fn draw_wisps(
             commands.entity(entity).despawn();
             continue;
         }
+        // The strip as the original uploads it: positions, the first
+        // coordinate set (the side and the texture distance along), and the
+        // colour bytes (`vCol · 1/255`). The second set (the light share and
+        // the strip's running distance) is uploaded too but the surface
+        // program `_TDispMat01` builds never reads it.
         let positions = r.positions.iter().map(|p| (*p / CM).to_array()).collect();
         let colours = r
             .colours
             .iter()
-            .zip(&r.fade)
-            .map(|(c, f)| {
-                [
-                    f32::from(c[0]) / 255.0,
-                    f32::from(c[1]) / 255.0,
-                    f32::from(c[2]) / 255.0,
-                    f32::from(c[3]) / 255.0 * f[0],
-                ]
-            })
+            .map(|c| c.map(|b| f32::from(b) / 255.0))
             .collect();
-        let mesh = mesh_of(positions, colours, r.indices);
-        show(
-            &mut commands,
-            entity,
-            drawn,
-            mesh,
-            WISP_TINT,
-            &mut meshes,
-            &mut materials,
-        );
+        let mesh = mesh_of_uv(positions, r.uvs.clone(), colours, r.indices);
+        match drawn {
+            Some(EffectMesh(handle)) => {
+                if let Some(mut m) = meshes.get_mut(handle) {
+                    *m = mesh;
+                }
+            }
+            None => {
+                let handle = meshes.add(mesh);
+                commands.entity(entity).insert((
+                    EffectMesh(handle.clone()),
+                    Mesh3d(handle),
+                    MeshMaterial3d(material.clone()),
+                    Transform::IDENTITY,
+                    NoFrustumCulling,
+                    bevy::light::NotShadowCaster,
+                    bevy::light::NotShadowReceiver,
+                ));
+            }
+        }
     }
 }
 

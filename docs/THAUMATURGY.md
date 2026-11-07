@@ -769,6 +769,31 @@ hook back: once a body has run Constant Displacement, blows keep being
 asked [the original then reads the ended power's freed record; Exarust
 keeps the streak on the body]. A fist's blade has no body of its own in
 Exarust: the attacker's part nearest the contact stands for it.
+
+The AI's Long Door (`exa_game::thaum::long_door_live`) starts with no
+destination at phase 0x10 and asks the navigation grid each control tick
+there: the subject is the caster's target (else the caster), the goal its
+place 300 cm back along its body's forward vector, the search runs from
+the subject's place, and the path's last point is the destination when
+the path has more than one point and the point lies more than √200 cm away
+across the floor; anything else ends the door. The original shares one
+search between casters and makes a door wait while another holds it;
+Exarust's search answers at once. `play arena --opponent-powers 0x602
+--opponent-turn 180` shows a duellist take the door behind the player.
+
+The Summon (`TPwrDispSummonDemon_I`) spawns the character record
+`demon_a01` from the character database at its picked place, facing the
+caster's way (or the place's line), links it to the caster both ways with
+familiarity 75 and topic 0x1c, gives it role 0x21, and grows, fades and
+clears its vanish effect around it; the demon's body (a non-human race) is
+not built in Exarust yet.
+
+The vanish's, the Long Door's and the Summon's shell restore and clear
+walks act on the body's physics parts: the restore gives a part that
+carries the shell mark state bit 0x1000 for up to 1000 physics steps
+(clearing 0x900) and takes 0x800 from the others; the clear takes 0x1000
+away. Those bits belong to the physics part's step and are not modelled in
+`exa_physics` yet, so the walks stay unported.
 `play arena --opponent --undying --powers 0x20603 --press Tab@100,C@120,Q@140`
 logs each pass (`a blow on … phases through`) and each restore.
 
@@ -1182,7 +1207,24 @@ mesh's flagged sub-meshes), which the skinned copies of the vanish draw
 stand in for. The vanish's show and hide are still the effect
 class's own, not applied to Exarust's drawn body.
 
-The arcs', wisps' and barricade's meshes come from their own builders but
+The displacement tendrils (a constant displacement's wisps and a phased
+blow's strand) draw with their own record, `_TDispMat01`, which the
+executable builds in code: emissive (0.25, 0.25, 0.25), opacity 0.5, blend
+word 0x163 (ONE, ONE_MINUS_SRC_ALPHA), shading flags 0x480018 (unlit,
+emissive, two-sided), no shadows, and one emissive layer, `FlameletsA3`.
+Through the engine's surface program builder (`exa-tool shader --record
+<file> --vertex-colors` expands it) that record is `shading_f` with
+`FragColor = vrCol · EmiTex(vrTex) · MatDif.a` and `vrCol = vCol/255`, so
+the strip's first coordinate set (the side, 0 or 1, and the texture
+distance along the strand) and its colour bytes draw it; its second set
+(the light share and the running distance) is uploaded but never read
+(`exa_render::force_effects::DispTendrilMaterial`, `disp_tendril.wesl`).
+The original's tendril draw repeats the strip once per super-sampling
+sub-frame with that sub-frame's colour mask and its composite matrix,
+whose depth term it shifts by `((i + first) + ½)·0.002 / count − 0.001`
+and puts back afterwards; with Exarust's one draw a frame the shift is 0.
+
+The arcs' and barricade's meshes come from their own builders but
 are drawn with `exa_render::glow::GlowMaterial`, an additive stand-in: the
 original's electricity program and `effectfbrcd` are not ported, nor are
 the lights and sounds. The displacement tendril's `effectforce_v` /

@@ -174,6 +174,11 @@ enum Cmd {
         shader_library: String,
         /// Material name in that library.
         material: Option<String>,
+        /// Read the material record (its payload: the 184-byte block and
+        /// its layers) from this file instead of a library entry, e.g. a
+        /// record the executable builds in code.
+        #[arg(long)]
+        record: Option<PathBuf>,
         /// Lights on the object, 0 through 6.
         #[arg(long, default_value_t = 0)]
         lights: u32,
@@ -279,6 +284,7 @@ fn main() -> Result<()> {
             library,
             shader_library,
             material,
+            record,
             lights,
             quality,
             shadow_quality,
@@ -305,6 +311,7 @@ fn main() -> Result<()> {
                 library,
                 shader_library,
                 material,
+                record,
                 lights,
                 quality,
                 shadow_quality,
@@ -844,6 +851,7 @@ struct ShaderRequest {
     library: String,
     shader_library: String,
     material: Option<String>,
+    record: Option<PathBuf>,
     lights: u32,
     quality: u32,
     shadow_quality: u32,
@@ -970,14 +978,18 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         }
         return Ok(());
     }
-    let name = request
-        .material
-        .as_deref()
-        .ok_or_else(|| anyhow!("name a material, or pass --list, --all, --dump or --warmup"))?;
-    let payload = library
-        .get(name)
-        .ok_or_else(|| anyhow!("material {name:?} not found in {}", request.library))?;
-    let material = Material::parse(payload)?;
+    let (name, material) = if let Some(path) = &request.record {
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        (path.display().to_string(), Material::parse(&bytes)?)
+    } else {
+        let name = request.material.as_deref().ok_or_else(|| {
+            anyhow!("name a material, or pass --record, --list, --all, --dump or --warmup")
+        })?;
+        let payload = library
+            .get(name)
+            .ok_or_else(|| anyhow!("material {name:?} not found in {}", request.library))?;
+        (name.to_string(), Material::parse(payload)?)
+    };
     let geometry = GeometryOptions {
         vertex_colors: request.vertex_colors,
         vertex_delta: request.vertex_delta,

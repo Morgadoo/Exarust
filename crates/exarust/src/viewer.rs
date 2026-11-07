@@ -1780,7 +1780,11 @@ fn spawn_players(
                 0x2F1D_3B57,
             );
             commands.entity(foe).insert((
-                Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),
+                // `--opponent-turn`: the duellist starts turned away by that
+                // many degrees.
+                Transform::from_rotation(Quat::from_rotation_y(
+                    foe_at.yaw + options.opponent_turn.to_radians(),
+                )),
                 anim,
                 exa_character::held::Hands::default(),
                 if garments.is_empty() {
@@ -1824,6 +1828,17 @@ fn spawn_players(
             }
             if let Some(options) = practice.as_ref() {
                 insert_duel_powers(commands, foe, &options.record, &Default::default());
+            }
+            // `--opponent-powers`: the duellist knows these powers.
+            if !options.opponent_powers.is_empty() {
+                info!(
+                    "duellist {foe:?} knows powers: {:x?}",
+                    options.opponent_powers
+                );
+                commands.entity(foe).insert((
+                    exa_game::thaum::cast::PowerCaster::new(&options.opponent_powers),
+                    exa_ai::DuelPowers::default(),
+                ));
             }
         }
     }

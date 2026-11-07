@@ -511,7 +511,10 @@ pub(crate) fn drop_vanish_copies(
 /// The shell's picture: the record's emissive layer from the game's
 /// textures, its values read raw; a mid-grey texel when the install does
 /// not have it.
-fn load_texture(game: Option<&exa_assets::Game>, images: &mut Assets<Image>) -> Handle<Image> {
+pub(crate) fn load_texture(
+    game: Option<&exa_assets::Game>,
+    images: &mut Assets<Image>,
+) -> Handle<Image> {
     let loaded = game.map(|game| {
         game.load_texture(
             DISP_SHELL_TEXTURE,

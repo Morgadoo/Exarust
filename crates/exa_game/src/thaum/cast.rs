@@ -434,6 +434,13 @@ impl Plugin for CastPlugin {
                     .after(tick_casters)
                     .after(exa_combat::CombatSystems),
             )
+            // An AI's Long Door asks the grid before the walk runs it.
+            .add_systems(
+                FixedUpdate,
+                super::long_door_live::pick_long_doors
+                    .before(tick_casters)
+                    .after(BodySystems),
+            )
             .add_message::<super::live::ArcShocked>()
             .add_message::<Otherwhere>()
             .add_message::<exa_ai::presence::Entered>()
@@ -1811,7 +1818,10 @@ fn create_displacement(
             tick_cost,
             to,
         } => {
-            let mut power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
+            // No destination at the cast: the AI's door, which asks the
+            // navigation grid from its first phase (`long_door_live`).
+            let ai = to.is_none();
+            let mut power = LongDoor::new(context.now, to.map(|p| p.to_array()), ai, tick_cost);
             if let Some(head) = ragdoll.and_then(|r| r.parts.first()) {
                 let at = head.transform().translation * CM;
                 power.follow(Vec3::from_array([at.x, at.y, at.z]));
@@ -1990,6 +2000,7 @@ fn apply_otherwhere(
     for Otherwhere { entity, to } in moves.read().copied() {
         if let Ok(mut doll) = bodies.get_mut(entity) {
             let target = otherwhere_root(&doll, to);
+            info!("long door: {entity:?} is placed at {to:?} cm (root {target:?} m)");
             super::visuals::teleport(&mut doll, target, None);
             // The original's Long Door then puts the body's held items
             // back in its hands.
@@ -2683,7 +2694,7 @@ pub(crate) fn tick_casters(
                         let nav = if power.destination.is_some() {
                             NavAnswer::Found
                         } else {
-                            NavAnswer::Waiting
+                            power.nav
                         };
                         let step = power.control(now, nav);
                         if step.moved

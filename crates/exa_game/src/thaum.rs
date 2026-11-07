@@ -55,6 +55,7 @@ pub mod force;
 pub mod hold_live;
 pub mod kinesis_live;
 pub mod live;
+pub mod long_door_live;
 pub mod power;
 pub mod shell_hum;
 pub mod throw_live;

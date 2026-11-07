@@ -164,8 +164,9 @@ pub struct DemonSummon {
 pub const DEMON_RECORD: &str = "demon a01";
 /// The role it takes.
 pub const DEMON_ROLE: u32 = 0x21;
-/// The relation the two characters gain toward each other.
-pub const DEMON_RELATION: f32 = 300.0;
+/// The familiarity the two characters gain toward each other (the
+/// summon's literal is 75.0).
+pub const DEMON_RELATION: f32 = 75.0;
 /// The relation topic.
 pub const DEMON_TOPIC: u32 = 0x1c;
 
@@ -554,6 +555,9 @@ pub struct LongDoor {
     pub base: VanishBase,
     pub drain: f32,
     pub destination: Option<[f32; 3]>,
+    /// The grid's last answer for an AI's door ([`nav_answer`]); a
+    /// player's door knows its destination at the cast.
+    pub nav: NavAnswer,
     /// The light and the after-image it carries.
     pub node: LongDoorNode,
 }
@@ -567,6 +571,7 @@ impl LongDoor {
             base: VanishBase::begin(now, false, ai),
             drain,
             destination,
+            nav: NavAnswer::Waiting,
             node: LongDoorNode {
                 light: true,
                 image: true,
@@ -1157,7 +1162,7 @@ mod tests {
         let demon = demon_summon();
         assert_eq!(demon.record, "demon a01");
         assert_eq!(demon.role, 0x21);
-        assert_eq!(demon.relation, 300.0);
+        assert_eq!(demon.relation, 75.0);
         assert_eq!(demon.topic, 0x1c);
     }
 

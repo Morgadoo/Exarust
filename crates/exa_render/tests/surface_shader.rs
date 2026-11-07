@@ -338,6 +338,20 @@ fn the_displacement_shell_shader_composes_and_validates() {
 }
 
 #[test]
+fn the_displacement_tendril_shader_composes_and_validates() {
+    let (mut cache, tendril) =
+        cache_with_every_shader_and("embedded://exa_render/disp_tendril.wesl");
+    // The wisps' strip (coordinates and colours), and a bare mesh.
+    let variants: [&[&'static str]; 2] = [&["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_COLORS"], &[]];
+    for (pipeline, extra) in variants.iter().enumerate() {
+        let module = cache
+            .get(pipeline, tendril, &defs(extra))
+            .unwrap_or_else(|error| panic!("disp_tendril.wesl with {extra:?}: {error}"));
+        assert!(stages(&module).contains(&naga::ShaderStage::Fragment));
+    }
+}
+
+#[test]
 fn the_tele_bubble_shader_composes_and_validates() {
     let (mut cache, bubble) = cache_with_every_shader_and("embedded://exa_render/tele_bubble.wesl");
     // The bubble's sphere carries positions only.
