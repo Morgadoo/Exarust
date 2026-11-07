@@ -271,6 +271,18 @@ impl Wisps {
         }
     }
 
+    /// The tendril image's end: every strand frozen (the strand records'
+    /// mark 8), the fade back to 0 and the fade-out started (state 0x10).
+    pub fn end(&mut self) {
+        self.freeze();
+        self.fade_out();
+    }
+
+    /// The image has been ended (it is fading out or faded).
+    pub fn ended(&self) -> bool {
+        self.state >= state::FADING_OUT
+    }
+
     /// One tick. `world` places a strand's point in the world.
     pub fn tick(&mut self, world: impl Fn(&Strand) -> Vec3, roll: &mut Roll) {
         self.scroll[1] = self.scroll[0];

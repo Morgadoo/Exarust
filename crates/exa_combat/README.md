@@ -199,6 +199,20 @@ strikes a weapon part; Exarust's held item bodies are not classified by
 the force wall yet, so the call stays unexercised. The original's
 50·clock attack-reach penalty has no attack reach to take it from.
 
+### The hit veto
+
+`veto`: the damage routine asks the struck body's veto, when it carries
+one ([`veto::PhaseVeto`]), about a weapon contact on a living limb that
+lands short of the weapon's tip, right after the regeneration ramp's
+reset; a veto ends the routine there (nothing dealt, no striker reaction)
+and announces the pass (`veto::BlowPhased`). The only veto 0.9.5 installs
+is Constant Displacement's phasing streak: a blow passes when the
+generator's percentage is at most `100 >> (s + 1)` (`s ≥ 0`) or
+`100 − (100 >> (1 − s))` (`s < 0`), and a pass draws the phasing sound's
+pitch `0.9 + 0.2·r` in double. The power system (`exa_game::thaum::veil_live`)
+does the rest. The streak's draws come from the combat's own sequence of
+the engine generator, which the original shares with the whole game.
+
 ## Grips
 
 `grip`: the original's grip table (`GRIPS`, six entries by hand class:

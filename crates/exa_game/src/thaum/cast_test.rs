@@ -410,6 +410,74 @@ fn constant_displacement_casts_and_hangs_wisps() {
     assert!(matches!(state.active[0].class, ActiveClass::Constant(_)));
     assert!((state.body.reserved - 0.35).abs() < 1e-6);
     assert_eq!(count::<LiveWisps>(&mut app), 1);
+    // The start puts the veto and the veil on the running body; the first
+    // fixed step gives its parts the displaced bit.
+    assert_eq!(
+        app.world().get::<exa_combat::veto::PhaseVeto>(caster),
+        Some(&exa_combat::veto::PhaseVeto { streak: 0 })
+    );
+    app.world_mut().run_schedule(FixedUpdate);
+    let body = app.world().get::<Ragdoll>(caster).unwrap();
+    assert_eq!(body.layer(0).unwrap() & 0x4000, 0x4000);
+}
+
+/// Displacement: a blow the veto let through phases its striker (bits
+/// 0xC000), hangs a tendril from it and asks for the phasing sound; 500 ms
+/// later the striker gets its collisions back and the tendril ends.
+#[test]
+fn a_phased_blow_lets_the_striker_through_for_500_ms() {
+    use crate::thaum::veil_live::{BlowTendril, LiveVeil, VeilSounded};
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let caster = caster(&mut app, &[CONSTANT]);
+    cast(&mut app, caster);
+    let weapon = app.world_mut().spawn(ragdoll()).id();
+    app.world_mut().write_message(exa_combat::veto::BlowPhased {
+        target: caster,
+        attacker: weapon,
+        striker: weapon,
+        point: Vec3::new(0.0, 0.05, 0.0),
+        pitch: 1.0,
+    });
+    app.world_mut().run_schedule(FixedUpdate);
+    let layer = app
+        .world()
+        .get::<Ragdoll>(weapon)
+        .unwrap()
+        .layer(0)
+        .unwrap();
+    assert_eq!(layer & 0xC000, 0xC000);
+    assert_eq!(count::<BlowTendril>(&mut app), 1);
+    assert_eq!(app.world().get::<LiveVeil>(caster).unwrap().phased.len(), 1);
+    let sounded = app
+        .world_mut()
+        .resource_mut::<Messages<VeilSounded>>()
+        .drain()
+        .count();
+    assert_eq!(sounded, 1);
+    // 500 ms on is not yet past the stamp + 500; one tick later it is.
+    let ticks = 500 / exa_physics::body::GAME_MS_PER_TICK;
+    app.insert_resource(BodyTicks(ticks));
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(app.world().get::<LiveVeil>(caster).unwrap().phased.len(), 1);
+    app.insert_resource(BodyTicks(ticks + 1));
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(
+        app.world()
+            .get::<LiveVeil>(caster)
+            .unwrap()
+            .phased
+            .is_empty()
+    );
+    let layer = app
+        .world()
+        .get::<Ragdoll>(weapon)
+        .unwrap()
+        .layer(0)
+        .unwrap();
+    assert_eq!(layer & 0xC000, 0);
+    let mut tendrils = app.world_mut().query::<(&BlowTendril, &LiveWisps)>();
+    assert!(tendrils.iter(app.world()).all(|(_, w)| w.wisps.ended()));
 }
 
 /// A power told to end releases, clears the cast motion and can start
