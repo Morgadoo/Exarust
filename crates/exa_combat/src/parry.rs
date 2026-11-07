@@ -1057,6 +1057,172 @@ pub fn end_for_request(
     }
 }
 
+/// What an attack start does to its fighter's parry (the original's four
+/// attack starters and the motion start they call, read in the assembly).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttackParryEnd {
+    /// Only the parrying flag goes: a side attack that starts aimed at the
+    /// foe's parry keeps its grips and hands until its own clip is left.
+    Flag,
+    /// The parry's release: the flag, the countered motion, every held
+    /// item's parry grip disabled and both hands (and their parents)
+    /// without the arm bit.
+    Release,
+    /// The release with the parry's stance chosen again (the Defence
+    /// stance when failing or dazed, else the combat idle), unless the
+    /// condition holds its clip still: the overhead's and the stab's
+    /// starters end a parry this way before they start.
+    Restance,
+}
+
+/// How an attack start of `motion` ends the parry state: `parrying` is the
+/// fighter's parrying flag, `from_attack` whether the clip it leaves is an
+/// attack (motions 5 to 12) and `aimed` whether a side pick was aimed at
+/// the foe's parry.
+///
+/// - Overhead and stab: a parrying fighter's parry ends in full, its stance
+///   chosen again, before the start; else a start leaving an attack
+///   releases (the motion start's rule).
+/// - Side attacks: the motion start comes first, and leaving an attack it
+///   clears the flag and releases; otherwise a parrying fighter loses the
+///   flag, and also the grips and hands unless the pick was aimed.
+pub fn attack_parry_end(
+    parrying: bool,
+    from_attack: bool,
+    motion: crate::attack::AttackMotion,
+    aimed: bool,
+) -> Option<AttackParryEnd> {
+    if motion.is_side() {
+        if from_attack {
+            Some(AttackParryEnd::Release)
+        } else if parrying {
+            Some(if aimed {
+                AttackParryEnd::Flag
+            } else {
+                AttackParryEnd::Release
+            })
+        } else {
+            None
+        }
+    } else if parrying {
+        Some(AttackParryEnd::Restance)
+    } else if from_attack {
+        Some(AttackParryEnd::Release)
+    } else {
+        None
+    }
+}
+
+/// The parry's release on a body: both hands and their parents lose the
+/// arm bit and every item it holds has its parry grip disabled.
+/// Only a hold that is on is released (a hand with the arm bit): the
+/// parry grip is enabled by the parry's hold alone.
+fn release_parry_hold(world: &mut World, entity: Entity) {
+    let key = world.get_mut::<Ragdoll>(entity).and_then(|mut body| {
+        if !holds_parry_arms(&body) {
+            return None;
+        }
+        body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+        body.parts.first().map(|part| part.entity)
+    });
+    let Some(key) = key else { return };
+    let mut grips = world.query::<&mut exa_physics::grip::HeldGrip>();
+    for mut grip in grips.iter_mut(world) {
+        if grip.holder_key == key
+            && let Some(links) = grip.links.as_mut()
+        {
+            links.release_parry();
+        }
+    }
+}
+
+/// Whether either hand carries the parry's arm bit.
+fn holds_parry_arms(body: &Ragdoll) -> bool {
+    body.parts.iter().any(|part| {
+        Ragdoll::PARRY_HANDS.contains(&part.bone)
+            && part.state.has(exa_physics::part::PartState::ARM)
+    })
+}
+
+/// Queues an attack start's end of the parry ([`attack_parry_end`]) on
+/// `fighter`, before the start's countered-motion write: `from_attack`
+/// whether the clip it leaves is an attack, `aimed` whether its side pick
+/// was aimed. The parrying flag is read when the queue runs, before the
+/// tick's parry check. The attack's own return clip follows a stance
+/// chosen again.
+pub fn end_parry_for_attack(
+    commands: &mut Commands,
+    fighter: Entity,
+    from_attack: bool,
+    motion: crate::attack::AttackMotion,
+    aimed: bool,
+) {
+    commands.queue(move |world: &mut World| {
+        let parrying = world
+            .get::<Fighter>(fighter)
+            .is_some_and(|f| f.parry.active);
+        let Some(end) = attack_parry_end(parrying, from_attack, motion, aimed) else {
+            return;
+        };
+        if parrying {
+            info!(
+                "attack start ends the parry: {fighter:?} {} {end:?} (aimed {aimed})",
+                motion.action()
+            );
+        }
+        let dazed = world
+            .get::<Ragdoll>(fighter)
+            .and_then(|b| b.drive.as_ref())
+            .is_some_and(|d| d.dazed());
+        let still = world
+            .get::<Condition>(fighter)
+            .is_some_and(|c| c.clip_stands_still());
+        let Some(mut f) = world.get_mut::<Fighter>(fighter) else {
+            return;
+        };
+        let was = f.parry.active;
+        f.parry.active = false;
+        if end != AttackParryEnd::Flag {
+            f.parry.counter_motion = None;
+        }
+        if f.guard == Guard::Parry {
+            f.guard = Guard::Open;
+        }
+        let stance = (end == AttackParryEnd::Restance && was && !still)
+            .then(|| parry_stance(f.health.yellow, dazed));
+        if end == AttackParryEnd::Flag {
+            return;
+        }
+        if let Some(new) = stance
+            && let Some(mut slot) = world.get_mut::<Stance>(fighter)
+        {
+            let old = slot.action();
+            *slot = new;
+            if let Some(mut anim) = world.get_mut::<Animator>(fighter)
+                && anim.then.as_deref() == Some(old)
+            {
+                anim.then = Some(new.action().into());
+            }
+        }
+        release_parry_hold(world, fighter);
+    });
+}
+
+/// The release the original's motion start makes when the clip it leaves
+/// is an attack, for a fighter whose attack has ended into another clip
+/// while it is not parrying: the countered motion goes and, when an attack
+/// aimed from a parry kept them, the hands' arm bit and the parry grips.
+fn attack_left(fighter: &mut Fighter) -> bool {
+    if fighter.parry.active || fighter.parry.counter_motion.is_none() {
+        return false;
+    }
+    fighter.parry.counter_motion = None;
+    if fighter.guard == Guard::Parry {
+        fighter.guard = Guard::Open;
+    }
+    true
+}
+
 /// The blow a parry answers: the attacker's motion (the counter's), and the
 /// parry clip the height table gives for it.
 #[derive(Clone, Copy, Debug)]
@@ -1519,6 +1685,35 @@ pub(crate) fn run_parries(
     let Some(motions) = motions else { return };
     let now = ticks.as_ref().map_or(0, |t| t.millis());
     let entity = ticked.body;
+    // An attack that has ended into another clip: the original's motion
+    // start leaving an attack releases what the attack kept.
+    let attacking = bodies
+        .p1()
+        .get(entity)
+        .is_ok_and(|(_, _, _, _, _, attacking, _, _)| attacking.is_some());
+    if !attacking {
+        let mut own = bodies.p0();
+        if let Ok((mut fighter, anim, _, _, _, _, body)) = own.get_mut(entity)
+            && !fighter.parry.active
+            && fighter.parry.counter_motion.is_some()
+            && crate::attack::AttackMotion::of_action(&anim.action).is_none()
+            && attack_left(&mut fighter)
+            && let Some(mut body) = body
+            && holds_parry_arms(&body)
+        {
+            info!("attack left: {entity:?} releases the parry hold its aimed start kept");
+            body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+            if let Some(key) = body.parts.first().map(|part| part.entity) {
+                for mut grip in &mut grips {
+                    if grip.holder_key == key
+                        && let Some(links) = grip.links.as_mut()
+                    {
+                        links.release_parry();
+                    }
+                }
+            }
+        }
+    }
     // Whether the body checks a blow this tick: it parries, or it stands in
     // the combat idle ready to. `rests` is a body that only lets its counter
     // drift or its stance return.
@@ -1996,6 +2191,111 @@ mod wiring_tests {
         fn foe_rests(&mut self) {
             *self.app.world_mut().get_mut::<Condition>(self.foe).unwrap() = Condition::COMBAT_IDLE;
         }
+    }
+
+    /// The four starters' ends of a parry, and the motion start's release
+    /// when the clip left is an attack.
+    #[test]
+    fn an_attack_start_ends_the_parry_by_its_starter() {
+        use AttackParryEnd::*;
+        let side = AttackMotion::Main(1);
+        assert_eq!(attack_parry_end(true, false, side, true), Some(Flag));
+        assert_eq!(attack_parry_end(true, false, side, false), Some(Release));
+        assert_eq!(attack_parry_end(false, false, side, false), None);
+        assert_eq!(attack_parry_end(false, true, side, true), Some(Release));
+        let other = AttackMotion::Other(0);
+        assert_eq!(attack_parry_end(true, true, other, true), Some(Release));
+        for m in [AttackMotion::Overhead, AttackMotion::Stab] {
+            assert_eq!(attack_parry_end(true, false, m, true), Some(Restance));
+            assert_eq!(attack_parry_end(true, true, m, false), Some(Restance));
+            assert_eq!(attack_parry_end(false, true, m, false), Some(Release));
+            assert_eq!(attack_parry_end(false, false, m, true), None);
+        }
+    }
+
+    fn arms_held(d: &Duel) -> bool {
+        d.get::<Ragdoll>()
+            .parts
+            .iter()
+            .all(|part| part.state.has(exa_physics::part::PartState::ARM))
+    }
+
+    fn grip_held(d: &Duel) -> bool {
+        d.app
+            .world()
+            .get::<exa_physics::grip::HeldGrip>(d.grip)
+            .unwrap()
+            .links
+            .as_ref()
+            .unwrap()
+            .links[1]
+            .enabled()
+    }
+
+    fn start_from_parry(d: &mut Duel, motion: AttackMotion, aimed: bool) {
+        let me = d.me;
+        let world = d.app.world_mut();
+        end_parry_for_attack(&mut world.commands(), me, false, motion, aimed);
+        world.flush();
+    }
+
+    /// A side attack started unaimed from a parry ends it: the flag, the
+    /// countered motion, the hands' arm bit and the parry grip go.
+    #[test]
+    fn an_unaimed_side_start_releases_the_parry() {
+        let mut d = Duel::high();
+        d.tick();
+        assert!(d.parrying() && arms_held(&d) && grip_held(&d));
+        start_from_parry(&mut d, AttackMotion::Main(0), false);
+        let f = d.get::<Fighter>();
+        assert!(!f.parry.active);
+        assert_eq!(f.parry.counter_motion, None);
+        assert!(matches!(f.guard, Guard::Open));
+        assert!(!arms_held(&d) && !grip_held(&d));
+    }
+
+    /// An aimed side start clears only the parrying flag: the hands and the
+    /// grip stay until the attack's clip is left for another, when the
+    /// countered motion goes with them.
+    #[test]
+    fn an_aimed_side_start_keeps_the_hold_until_the_attack_is_left() {
+        let mut d = Duel::high();
+        d.tick();
+        start_from_parry(&mut d, AttackMotion::Main(0), true);
+        assert!(!d.parrying());
+        assert_eq!(d.get::<Fighter>().parry.counter_motion, Some(5));
+        assert!(arms_held(&d) && grip_held(&d));
+        // The attack plays: nothing is released.
+        d.foe_rests();
+        let me = d.me;
+        d.app
+            .world_mut()
+            .entity_mut(me)
+            .insert(Attacking::new(AttackMotion::Main(0), 0x80));
+        d.edit::<Animator>(|a| a.play_once("Attack Mid", "Cmbt - Idle"));
+        d.tick();
+        assert!(arms_held(&d) && grip_held(&d));
+        // The attack ends into its stance: the hold is released.
+        d.app.world_mut().entity_mut(me).remove::<Attacking>();
+        d.edit::<Animator>(|a| a.start("Cmbt - Idle", true, None, 0, Ease::Smooth));
+        d.tick();
+        assert_eq!(d.get::<Fighter>().parry.counter_motion, None);
+        assert!(!arms_held(&d) && !grip_held(&d));
+    }
+
+    /// The overhead's starter ends a parry in full and chooses the parry's
+    /// stance again, which the attack's clip then returns to.
+    #[test]
+    fn an_overhead_start_ends_the_parry_into_its_stance() {
+        let mut d = Duel::high();
+        d.tick();
+        d.edit::<Stance>(|s| *s = Stance::Defence);
+        d.edit::<Animator>(|a| a.play_once("Overhead Swing", "Defence stance"));
+        start_from_parry(&mut d, AttackMotion::Overhead, true);
+        assert!(!d.parrying());
+        assert_eq!(*d.get::<Stance>(), Stance::CombatIdle);
+        assert_eq!(d.get::<Animator>().then.as_deref(), Some("Cmbt - Idle"));
+        assert!(!arms_held(&d) && !grip_held(&d));
     }
 
     /// An attacker mid-swing 1 m in front within reach + 150 cm starts the

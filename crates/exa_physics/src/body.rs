@@ -5135,13 +5135,14 @@ impl Ragdoll {
     /// One constraint iteration over the body tree. A living body is solved
     /// children first, from its hands and feet in to its pelvis; a limp one
     /// parents first, from the pelvis out. Each part takes its links to its
-    /// parent, then its stored level contacts, then its edges. In a living
+    /// parent, then (living) its support pins, foot contact and sole, then
+    /// its stored level contacts, then its edges. In a living
     /// body each slack link with an anchor is also a link muscle. A link's
     /// correction is shared by the two parts' mobilities and spread over
     /// each part's particles by the point's weights, so the parts' momenta
     /// change by equal and opposite amounts.
     fn iterate(&mut self) {
-        self.pull_support_pins();
+        let pins = self.support_pulls();
         let gains = self.drive.as_ref().map(Drive::muscle_gains);
         let feet = self
             .drive
@@ -5211,6 +5212,10 @@ impl Ragdoll {
             // The hand's grabs come last among a limp part's links.
             if gains.is_none() && !self.grabs.is_empty() {
                 self.pull_grabs(i);
+            }
+            // A living part's support pins follow its own links.
+            if let Some(pins) = &pins {
+                self.pull_part_pins(i, pins);
             }
             // A lower leg's foot contact, then a foot's sole. The target
             // rotations were taken once when the targets were installed.

@@ -701,7 +701,9 @@ writes the exertion value the head tilt reads, and `pelvis_lead_pose`, both
 by the class set-up's rate factor 85/83), then clamped about the feet
 centre; the thorax goals' mean is kept for the stance score. In each solver
 iteration the support pins pull the two thorax pins once and the pelvis
-pin twice horizontally toward those goals. `EXA_PIN_GOALS=1` logs every goal the carry leads or
+pin twice horizontally toward those goals, each part's pins right after
+its own links (`Ragdoll::pull_part_pins`, parts children first, so the
+pelvis's come last), as the original's living link iteration does. `EXA_PIN_GOALS=1` logs every goal the carry leads or
 clamps (its posed, led and final place and the reach). Each foot's ground is its own: the controller's floor
 does not raise the lift (`src/body_lift.rs`). The feet routine's two other modes run
 in `measure_balance` (`feet_mode`, kept as `Drive::feet_mode`): on a flat floor

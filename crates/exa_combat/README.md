@@ -64,6 +64,16 @@ on the striking weapon past 0.4 of the clip, in place of the interrupt:
 (`Attacking::continued_from`), which the parry chooser reads while the
 swing carries the continuation.
 
+An attack start ends the fighter's parry as the original's starters do
+(`parry::attack_parry_end`, queued by `start_attack` and the chain before
+the countered-motion write): a side attack clears the parrying flag and,
+unless its pick was aimed, releases the parry's hold (the countered
+motion, the held items' parry grips, both hands' arm bit); the overhead
+and the stab end the parry in full and choose its stance again, which the
+attack returns to. When an attack is left for another clip, its countered
+motion and any hold its aimed start kept are released (the motion start's
+rule, in `parry::run_parries`).
+
 A blocked striker recoils (`recoil`): strength and the stall rate become
 0.5 and the released bit clears. A class word of 0x90 (two weapons) that
 is already continuing stops there; one whose clock widens past 0.4 in a
