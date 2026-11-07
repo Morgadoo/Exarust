@@ -426,8 +426,12 @@ bolt's sampled walk on static bodies that zeroes a chunk's weight, the simulated
 stir and the torrent's surface push. The engine's GL passes are what
 remains out. A blast or bolt cast runs its
 blast as an entity (`thaum::blast_live`): the cast motion and hook as the
-original's start sets them, Exarust's own sphere test against the other
-bodies' limbs, the level sweep that rebounds a chunk, the release's alert
+original's start sets them, the per-part contact in each struck part's
+frame against its node mesh (the chunk pushed out of the faces it reaches,
+the limb push with the part's velocity at the chunk's particle weights,
+the knock, pins and wake per part; a part without a mesh answers with its
+spheres), the cloths' stir (their particles, rustle envelope and wake),
+the level sweep that rebounds a chunk, the release's alert
 to the caster's known characters, the instability counter and the concern
 a struck character takes, and its ribbon drawn with the glow material. A barrier cast runs its dome as an entity
 (`thaum::barrier_live`): cast motion 0x23 and the hook that ends it, the
@@ -1265,7 +1269,7 @@ bounding sphere and box, the nearest mesh within the best distance, the
 ground pick with its 5 cm/1 mm grown sphere and top-of-sphere ask, and the
 kinesis pick; both record the sphere-top crossing plus the distance the
 mesh callback writes back, shortening the segment so a nearer surface met
-later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the
+later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the casts ask the ground and nearest-mesh picks from the cursor (`thaum::cast_pick`: the throw, the barricade's placement and dismissal, the long door and the summoning, each with the original's accept test and the 15 cm back-off off a floor mesh), and the
 physics world answers as the mesh callback because Exarust keeps no CPU
 triangles for a picked node; where a mesh does carry the engine's kd-tree,
 `KdMesh` answers with its own front-face walk. Its free-camera drag and zoom handlers are `nav_drag`: the

@@ -644,6 +644,9 @@ struct CastContext {
     standing: Vec3,
     /// The throwable body and part under the player's cursor.
     throw_pick: Option<Entity>,
+    /// The barricade's ground pick under the player's cursor
+    /// ([`CastPlace::barricade_ground`]).
+    barricade_ground: Option<Option<GroundHit>>,
 }
 
 /// One caster's bar command.
@@ -678,6 +681,8 @@ pub(crate) fn run_bar_commands(
         Option<&GlobalTransform>,
     )>,
     mut mind: MindBar,
+    picker: super::cast_pick::CastPicker,
+    walls: Query<&super::live::LiveBarricade>,
 ) {
     for command in commands_in.read().copied() {
         // The bar on a body the player was handed: its cast entry asks the
@@ -764,24 +769,57 @@ pub(crate) fn run_bar_commands(
                     matches!(&entry.class, ActiveClass::Kinesis(k)
                         if entry.state != ENDING && k.target.is_some())
                 });
+                // The barricade's cast asks the nearest-mesh pick: the
+                // segment from the eye to its point meeting a running
+                // barricade's node bounds ends that barricade.
+                let barricades: Vec<Entity> = caster
+                    .active
+                    .iter()
+                    .filter(|entry| entry.id == BARRICADE)
+                    .filter_map(|entry| entry.entity)
+                    .collect();
+                let cursor_on_barricade = !barricades.is_empty()
+                    && picker
+                        .eye()
+                        .zip(picker.mesh_point())
+                        .is_some_and(|(eye, point)| {
+                            barricades.iter().any(|&wall| {
+                                walls.get(wall).is_ok_and(|live| {
+                                    super::cast_pick::segment_meets_wall(eye, point, &live.wall)
+                                })
+                            })
+                        });
                 let world = ForceWorld {
                     controls_busy: busy,
                     possessing,
-                    cursor_on_barricade: false,
+                    cursor_on_barricade,
                     throw_pick: picked.is_some(),
                     kinesis_holds,
                 };
+                // The long door and the summoning take the ground pick
+                // under the cursor, every node accepted. Without a cursor
+                // ray (a scripted `--debug-cast` without `--cursor`) the
+                // aim plane's point stands in, taken as it is.
+                let cursor = if picker.ray().is_some() {
+                    picker.ground(|_| true).map(|hit| CursorHit {
+                        point: hit.point * CM,
+                        direction: hit.direction,
+                        exact: hit.exact(),
+                    })
+                } else {
+                    ground.as_deref().and_then(|g| g.0).map(|point| CursorHit {
+                        point: point * CM,
+                        direction: Vec3::NEG_Y,
+                        exact: true,
+                    })
+                };
+                debug!(
+                    "cast picks: ground {:?}, on a barricade {cursor_on_barricade}",
+                    cursor.map(|c| (c.point(), c.exact))
+                );
                 let aim = DisplacementAim {
                     player: true,
-                    // [inf: the running game has the cursor's point on the
-                    // aim plane, not a surface hit with a normal, so the
-                    // point is taken as it stands (exact) and the original's
-                    // 15 cm back-off along a hit normal does not apply.]
-                    cursor: ground.as_deref().and_then(|g| g.0).map(|point| CursorHit {
-                        point: point * CM,
-                        normal: Vec3::Y,
-                        exact: true,
-                    }),
+                    cursor,
                     possessing,
                 };
                 let slot = chosen_slot(caster);
@@ -898,6 +936,20 @@ pub(crate) fn run_bar_commands(
                             .write(crate::mind::runtime::spirit_request(feet, yaw, entity));
                     }
                 }
+                // The barricade's placement takes the ground pick under the
+                // cursor, its accept test taking the nodes without an
+                // object; without a cursor ray the aim plane's point stands
+                // in, as for the long door.
+                let barricade_ground = if picker.ray().is_some() {
+                    Some(picker.ground(|object| !object).map(|hit| GroundHit {
+                        point: hit.point * CM,
+                        direction: hit.direction,
+                        exact: hit.exact(),
+                    }))
+                } else {
+                    None
+                };
+                debug!("cast picks: the barricade's ground {barricade_ground:?}");
                 let place = CastPlace {
                     now,
                     ragdoll,
@@ -907,6 +959,7 @@ pub(crate) fn run_bar_commands(
                     target: None,
                     standing: None,
                     throw_pick: picked,
+                    barricade_ground,
                 };
                 let armed = weapon_arcs_of(entity, &weapons);
                 begin_cast(
@@ -960,6 +1013,10 @@ struct CastPlace<'a> {
     /// The caster's transform's place (cm), when it has one.
     standing: Option<Vec3>,
     throw_pick: Option<Entity>,
+    /// The barricade's ground pick under the player's cursor: `Some(None)`
+    /// when the pick met nothing (no barricade is placed), `None` when the
+    /// caster has no cursor ray (the AI's, or a scripted cast).
+    barricade_ground: Option<Option<GroundHit>>,
 }
 
 /// After a domain's front end: a started power gets the class its creator makes, and the body's power
@@ -989,6 +1046,7 @@ fn begin_cast(
             target: place.target,
             standing: place.standing.unwrap_or(root),
             throw_pick: place.throw_pick,
+            barricade_ground: place.barricade_ground,
         };
         let made = create_active(
             commands,
@@ -1239,6 +1297,7 @@ fn cast_for_duellists(
             target: Some(duellist.target),
             standing: Some(at.translation() * CM),
             throw_pick: None,
+            barricade_ground: None,
         };
         let armed = weapon_arcs_of(entity, &weapons);
         begin_cast(
@@ -1470,6 +1529,7 @@ fn create_force(
                         target: context.target,
                         hooked,
                         generation,
+                        contact_scale: 0.0,
                     },
                     hazard,
                 ))
@@ -1575,6 +1635,12 @@ fn create_force(
             Some(entity)
         }
         ForceStart::Barricade { cost } => {
+            // The player's placement needs the ground pick to meet
+            // something; with nothing met the original places nothing.
+            if context.barricade_ground == Some(None) {
+                debug!("force barricade: the ground pick meets nothing");
+                return None;
+            }
             let place = barricade_place(context, physics, roll);
             let frame = WallFrame::facing(place.centre, place.facing);
             let now = context.now;
@@ -2087,21 +2153,24 @@ fn push_active(
     caster.sync_body();
 }
 
-/// Place a barricade: the cursor's aim-plane point when there is one, else
-/// two metres ahead; the floor probe is the level's.
+/// Place a barricade: the player's ground pick under the cursor; without a
+/// cursor ray the cast's point (the aim plane's, or the AI's target), else
+/// two metres ahead, taken as it stands; the floor probe is the level's.
 fn barricade_place(
     context: &CastContext,
     physics: Option<&Physics>,
     roll: &mut EffectRoll,
 ) -> super::force::BarricadePlace {
-    let point = context
-        .cursor
-        .unwrap_or_else(|| context.caster + context.heading * 200.0 - Vec3::Y * 80.0);
-    let hit = GroundHit {
-        point,
-        normal: Vec3::Y,
-        exact: context.cursor.is_none(),
-    };
+    let hit = context
+        .barricade_ground
+        .flatten()
+        .unwrap_or_else(|| GroundHit {
+            point: context
+                .cursor
+                .unwrap_or_else(|| context.caster + context.heading * 200.0 - Vec3::Y * 80.0),
+            direction: Vec3::NEG_Y,
+            exact: true,
+        });
     let floor = |from: Vec3, reach: f32| {
         physics
             .and_then(|p| p.fixed_hit(from / CM, Vec3::NEG_Y, reach / CM))

@@ -16,30 +16,39 @@
 //!   chest, else the player's cursor), pays its drain from the caster's
 //!   focus and ticks ([`Blast::tick`]); a thrown blast strikes the other
 //!   bodies' limbs and leaves the scene when [`BlastEvents::removed`] says so.
-//! - **Strikes** ([`strike_bodies`]): each live thrown chunk meets a limb
-//!   sphere within its contact reach (`reach·scale + margin + 10`); the
-//!   limb takes [`limb_push`]'s impulse at the sphere's surface point
-//!   toward the chunk, the chunk moves and keeps [`contact_weight`] of its
-//!   weight, and a character struck takes [`character_knock`] of its
-//!   gathered impulse: the energy, a knockback step along the knock, its
-//!   instability counter +1 and concern 1 at 0.01 toward the caster.
-//!   [inf: the original's mesh and sphere tests that find a contact are not
-//!   in the notes; this sphere test, the body's mass as the sum of its
-//!   parts' masses, and the knock as a knockback step are Exarust's.]
-//!
+//! - **Contacts** (after the tick, in the sector's order: the level, the
+//!   simulated objects, the bodies' parts; each contact leaves its reach
+//!   scale for the next): a thrown blast meets the level ([`strike_level`]),
+//!   stirs the level's cloths ([`stir_cloth`]: [`hit_sim_object`] over the
+//!   particles in the cloth's frame, the cloth woken to 256 ticks and its
+//!   rustle envelope taking the stir), and meets each other body part by
+//!   part ([`strike_part`]): the chunk taken into the part's frame, its
+//!   reach `reach·scale + margin + 10` tested against the node's sphere and
+//!   box, the node mesh asked its sphere query with the chunk pushed out of
+//!   every face it reaches ([`push_out`]), and the pushed chunk handed back
+//!   to the limb callback ([`limb_push`] with the part's velocity at the
+//!   chunk's particle weights, the impulse pushed at those weights with the
+//!   strain, the chunk's weight loss). A part met wakes its body to 256
+//!   ticks; a character's part also takes [`character_knock`] of that
+//!   part's gathered impulse: the energy, a knockback step, its instability
+//!   counter +1, concern 1 at 0.01 toward the caster and the loosened pins.
+//!   [inf: a part built without a node mesh answers with its collision
+//!   spheres; the sector's offer of nearby parts is a sphere test against
+//!   the blast's bounds; the knock is a knockback step.]
 //! - **Release and level**: the release alerts the caster's known
 //!   characters ([`alert_amount`]); thrown chunks meet the level as a swept
 //!   ball ([`rebound`], or the bolt's sampled contact); the thrown ribbon
 //!   draws with the glow stand-in ([`draw_blasts`]).
 //!
-//! - **The struck body** ([`loosen_pins`]): after the knock, the body's
-//!   support-pin gain becomes the knock's `(1 − k)·0.08` and its balance's
-//!   landing momentum takes its full weight 5.
+//! - **The struck body** ([`loosen_pins`]): after each part's knock, the
+//!   body's support-pin gain becomes the knock's `(1 − k)·0.08` (0.008 past
+//!   0.08, 0 below 0) and its balance's landing momentum takes its full
+//!   weight 5.
 //! - **The light** (`super::effect_light`): the blast registers its GI
 //!   multi-point shape when it starts and frees it when its frame builds
 //!   nothing or it leaves the scene.
 //!
-//! Not wired: the sounds and the simulated objects' points. Another motion
+//! Not wired: the sounds. Another motion
 //! replacing the cast motion calls the hook (`cast::call_motion_hooks`),
 //! which fizzles a charging blast.
 //!
@@ -57,7 +66,6 @@ use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
 use exa_physics::body::{Drive, Ragdoll};
 
-use super::barricade::WAKE_TICKS;
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook};
 use super::force::{BLAST_MOTION, BlastSetup};
@@ -65,8 +73,9 @@ use super::live::{EffectDraws, EffectMesh, mesh_of_ribbon};
 use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{
     ALERT_GAIN, Blast, BlastChunk, BlastView, CHARGING, CONTACT_WEAR, CharacterKnock,
-    HIT_HOSTILITY, HIT_LANDING_WEIGHT, STATIC_EXTRA, THROWN, alert_amount, character_knock,
-    contact_reach, contact_weight, limb_push, limb_terms, rebound,
+    HIT_HOSTILITY, HIT_LANDING_WEIGHT, STATIC_EXTRA, SimPoints, THROWN, alert_amount,
+    character_knock, contact_reach, contact_weight, hit_sim_object, limb_push, limb_terms,
+    push_out, rebound,
 };
 use crate::player::CursorGround;
 
@@ -92,6 +101,9 @@ pub struct LiveBlast {
     pub hooked: bool,
     /// The cast generation whose hook the blast took.
     pub generation: u64,
+    /// The reach scale the blast's last contact set (0 before any): the
+    /// simulated objects' walk reads it.
+    pub contact_scale: f32,
 }
 
 /// The blast's start on its caster: cast motion 0x22 with the setup's power
@@ -292,22 +304,8 @@ pub(crate) fn bounds_miss(low: Vec3, high: Vec3, effect: (Vec3, Vec3)) -> bool {
     high.x < el.x || low.x > eh.x || high.y < el.y || low.y > eh.y || high.z < el.z || low.z > eh.z
 }
 
-/// One tick of a thrown blast's chunks against `body`: each live chunk
-/// pushes the limb spheres it reaches. Returns the impulse a character
-/// gathered, `None` when nothing was struck.
-pub(crate) fn strike_bodies(
-    blast: &mut Blast,
-    body: &mut Ragdoll,
-    alive: &mut Vec<bool>,
-    limbs: &mut Vec<LimbSphere>,
-) -> Option<Vec3> {
-    alive.clear();
-    alive.extend(blast.lives.iter().map(|l| l.ticks >= 1));
-    strike_chunks(&mut blast.chunks, alive, &blast.setup, body, limbs)
-}
-
-/// The chunks marked alive against `body`'s limb spheres, as
-/// [`strike_bodies`] does for a blast: `limbs` is the scratch buffer. The
+/// The chunks marked alive against `body`'s limb spheres (the force wave's
+/// contact, `super::wave_live`): `limbs` is the scratch buffer. The
 /// body is skipped when its limbs' box misses the live chunks' box grown by
 /// their most reach; a chunk moves only when it meets a limb, so that test
 /// skips only bodies no chunk could meet.
@@ -384,6 +382,224 @@ pub(crate) fn strike_chunks(
     struck.then_some(gathered)
 }
 
+/// The countdown a struck body is woken to (the engine's wake of 256 ticks).
+const BODY_WAKE: i32 = 256;
+/// The reach scale a static body's contact sets.
+const STATIC_SCALE: f32 = 2.0;
+
+/// What one part's contact left: whether a chunk met it, the impulse the
+/// part gathered (cm) and the reach scale the contact set.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PartStrike {
+    pub struck: bool,
+    pub impulse: Vec3,
+    pub scale: f32,
+}
+
+/// The node mesh a part's contact walks, in the part's frame (m): its
+/// triangles (through its kd-tree when it has one), or, for a part built
+/// without a mesh, its collision spheres as Exarust's stand-in.
+enum PartMesh {
+    Triangles(
+        std::sync::Arc<Vec<[Vec3; 3]>>,
+        Option<std::sync::Arc<exa_physics::mesh_tree::MeshTree>>,
+    ),
+    Spheres(std::sync::Arc<Vec<(Vec3, f32)>>),
+}
+
+impl PartMesh {
+    /// The mesh's sphere query with the push-out callback: each surface
+    /// point within the query's radius pushes its centre out to that radius
+    /// ([`push_out`]). Returns whether a face was met.
+    fn query(&self, sphere: &mut (Vec3, f32)) -> bool {
+        let push = |s: &mut (Vec3, f32), point: Vec3| {
+            if let Some(moved) = push_out(s.0, s.1, point) {
+                s.0 = moved;
+            }
+        };
+        match self {
+            PartMesh::Triangles(triangles, tree) => {
+                exa_physics::mesh_tree::sphere_contacts(triangles, tree.as_deref(), sphere, push)
+            }
+            // [inf: a part without a node mesh answers with its spheres:
+            // each one's surface point toward the query, met within the
+            // query's radius, as a face's closest point would be.]
+            PartMesh::Spheres(spheres) => {
+                let mut hit = false;
+                for &(centre, radius) in spheres.iter() {
+                    let d = sphere.0 - centre;
+                    let distance = d.length();
+                    if !(distance > 0.0) || !(distance < radius + sphere.1) {
+                        continue;
+                    }
+                    let point = centre + d * (radius / distance);
+                    push(sphere, point);
+                    hit = true;
+                }
+                hit
+            }
+        }
+    }
+}
+
+/// The particle weights of a world point (cm) over a part's particles where
+/// they stand (cm), by the engine's fast barycentric.
+fn part_weights(part: &exa_physics::body::Part, at_cm: Vec3) -> [f32; 4] {
+    let tet = part.positions.map(|p| (p * CM).to_array());
+    exa_physics::engine_math::barycentric_fast(at_cm, &tet)
+}
+
+/// How far the weighted point moved this tick (cm): the weighted sum of the
+/// particles less the weighted sum of where they were, each summed in
+/// particle order.
+fn weighted_motion(part: &exa_physics::body::Part, w: [f32; 4]) -> Vec3 {
+    let sum = |points: &[Vec3; 4]| {
+        let p = points.map(|p| p * CM);
+        p[0] * w[0] + p[1] * w[1] + p[2] * w[2] + p[3] * w[3]
+    };
+    sum(&part.positions) - sum(&part.previous)
+}
+
+/// One part's limb contact, as the original's per-part contact runs it:
+/// the part's terms ([`limb_terms`]: share, reach scale and push), then
+/// each live chunk taken into the part's frame, its reach
+/// `reach·scale + margin + 10` tested against the node's bounding sphere
+/// and box, and the node mesh's sphere query asked with the chunk pushed
+/// out of every face it reaches. A chunk the mesh meets is handed, at its
+/// pushed place back in the world, to the limb callback: [`limb_push`]'s
+/// arithmetic with the part's velocity at the chunk (its particles'
+/// weighted motion), the impulse given to the particles at the chunk's
+/// weights with the push strain, the chunk's move and its weight's loss
+/// ([`contact_weight`]). The part's frame is read once, before the walk, as
+/// the original reads the part's matrix.
+pub(crate) fn strike_part(
+    blast: &mut Blast,
+    body: &mut Ragdoll,
+    part: usize,
+    character: bool,
+    mass: f32,
+) -> PartStrike {
+    let setup = blast.setup;
+    let Some(p) = body.parts.get(part) else {
+        return PartStrike {
+            struck: false,
+            impulse: Vec3::ZERO,
+            scale: 0.0,
+        };
+    };
+    let inverse = p.inverse_mass;
+    let (share, scale, push) = limb_terms(&setup, character, inverse, mass);
+    let frame = p.transform();
+    let to_part = frame.inverse();
+    let (bounds, mesh) = match &p.triangles {
+        Some(triangles) => (
+            p.pairing.mesh,
+            PartMesh::Triangles(triangles.clone(), p.tree.clone()),
+        ),
+        None => (p.pairing.sphere, PartMesh::Spheres(p.spheres.clone())),
+    };
+    let mut gathered = Vec3::ZERO;
+    let mut struck = false;
+    for index in 0..blast.chunks.len() {
+        if blast.lives[index].ticks < 1 {
+            continue;
+        }
+        let chunk = blast.chunks[index];
+        let local = to_part.transform_point3(chunk.at / CM);
+        let reach = contact_reach(&chunk, scale, setup.margin, LIMB_EXTRA) / CM;
+        let span = reach + bounds.radius;
+        if !(local.distance_squared(bounds.centre) <= span * span) {
+            continue;
+        }
+        let outside =
+            exa_physics::intersect::point_aabb_distance_squared(local, bounds.centre, bounds.half);
+        if !(outside <= reach * reach) {
+            continue;
+        }
+        let mut sphere = (local, reach);
+        if !mesh.query(&mut sphere) {
+            continue;
+        }
+        let point = frame.transform_point3(sphere.0) * CM;
+        let part_now = &body.parts[part];
+        let w = part_weights(part_now, chunk.at);
+        let velocity = weighted_motion(part_now, w);
+        let Some(hit) = limb_push(&chunk, point, velocity, inverse, share, push) else {
+            continue;
+        };
+        if let Some(impulse) = hit.impulse {
+            gathered += impulse;
+            body.push_part_weighted(part, w, impulse / CM);
+        }
+        let chunk = &mut blast.chunks[index];
+        chunk.at = hit.at;
+        let (weight, wear) = contact_weight(chunk.weight, setup.piercing, character);
+        chunk.weight = weight;
+        if 0.0 < wear {
+            chunk.wear = wear;
+        }
+        struck = true;
+    }
+    PartStrike {
+        struck,
+        impulse: gathered,
+        scale,
+    }
+}
+
+/// Whether the sector would hand the blast a part for its contact: the
+/// part's mesh sphere (cm) meets the blast's bounding sphere.
+/// [inf: the original's sector walk offers the parts in its grid cells
+/// near the blast; this sphere test stands in for that walk.]
+fn part_near(blast: &Blast, part: &exa_physics::body::Part) -> bool {
+    let bounds = if part.triangles.is_some() {
+        part.pairing.mesh
+    } else {
+        part.pairing.sphere
+    };
+    let centre = part.transform().transform_point3(bounds.centre) * CM;
+    let span = bounds.radius * CM + blast.bound_radius;
+    !(centre.distance_squared(blast.centre) > span * span)
+}
+
+/// The blast's walk over a cloth: the chunks stir its particles
+/// ([`hit_sim_object`]) in the cloth's own frame (cm), with the node's
+/// bounds the particles' box; a cloth met is woken to 256 ticks and its
+/// rustle envelope takes the stir. [inf: the original compares the chunks
+/// with the object's points directly; Exarust's cloth keeps its particles
+/// in its node's frame, so the chunks are taken into it.]
+fn stir_cloth(blast: &Blast, scale: f32, cloth: &mut exa_world::cloth::ClothInstance) -> bool {
+    let frame = cloth.frame.unwrap_or(bevy::math::Affine3A::IDENTITY);
+    let to_cloth = frame.inverse();
+    let mut local = blast.clone();
+    for chunk in &mut local.chunks {
+        chunk.at = to_cloth.transform_point3(chunk.at / CM) * CM;
+        chunk.previous = to_cloth.transform_point3(chunk.previous / CM) * CM;
+    }
+    let (low, high) = exa_physics::cloth::bounds(&cloth.cloth.particles);
+    let centre = (low + high) * 0.5;
+    let half = high - centre;
+    let mut object = SimPoints {
+        points: cloth.cloth.particles.iter().map(|p| p.position).collect(),
+        stir: cloth.cloth.rustle_tail,
+        centre,
+        radius: half.length(),
+        half,
+    };
+    if !hit_sim_object(&local, &mut object, scale) {
+        return false;
+    }
+    for (particle, point) in cloth.cloth.particles.iter_mut().zip(&object.points) {
+        particle.position = *point;
+    }
+    cloth.cloth.rustle_tail = object.stir;
+    if BODY_WAKE > cloth.cloth.sleep {
+        cloth.cloth.sleep = BODY_WAKE;
+    }
+    cloth.stale_mesh = true;
+    true
+}
+
 /// The level's static contact: every live chunk is swept as a ball of its
 /// contact reach along its move. One that meets the level rebounds half way
 /// to the contact and keeps nine tenths of its weight; a piercing blast
@@ -432,6 +648,49 @@ fn strike_level(blast: &mut Blast, physics: &Physics) -> usize {
     hits
 }
 
+/// What a struck character takes from one part's contact, as the
+/// original's part contact ends: its energy and the knock from the part's
+/// gathered impulse ([`character_knock`]), its instability counter +1, the
+/// concern 1 at 0.01 toward the caster, and the pins loosened
+/// ([`loosen_pins`]).
+/// [unread: the contact also clears a body byte and, for a part of kind
+/// 0x10, sets its node's 0x80 bit and zeroes a part word; their readers are
+/// not traced, so Exarust does neither.]
+fn knock_character(
+    body: &mut Ragdoll,
+    mass: f32,
+    impulse: Vec3,
+    caster: Entity,
+    struck: Entity,
+    combatants: &mut Query<&mut Combatant>,
+    npcs: &Query<&Npc>,
+) {
+    let Some(knock) = body.drive.as_mut().map(|drive| {
+        let knock = character_knock(mass, drive.energy, impulse);
+        drive.energy = knock.energy;
+        let counter = drive.balance().counter() + 1;
+        drive.balance_mut().set_counter(counter);
+        knock
+    }) else {
+        return;
+    };
+    if let Some((direction, size)) = knock.knock {
+        let flat = Vec3::new(direction.x, 0.0, direction.z);
+        body.begin_knockback(flat * (size / CM));
+    }
+    if let Ok(mut combatant) = combatants.get_mut(struck) {
+        let aggression = npcs
+            .get(struck)
+            .ok()
+            .and_then(|npc| npc.personality)
+            .map_or(0.0, |personality| personality.restraint);
+        combatant.add_concern(caster, aggression, HIT_HOSTILITY.0, HIT_HOSTILITY.1);
+    }
+    if let Some(drive) = body.drive.as_mut() {
+        loosen_pins(drive, &knock);
+    }
+}
+
 /// Ticks every blast in the scene.
 #[allow(
     clippy::too_many_arguments,
@@ -453,8 +712,7 @@ pub(crate) fn tick_blasts(
     mut combatants: Query<&mut Combatant>,
     npcs: Query<&Npc>,
     mut draws: ResMut<EffectDraws>,
-    mut alive: Local<Vec<bool>>,
-    mut limbs: Local<Vec<LimbSphere>>,
+    mut cloths: Query<&mut exa_world::cloth::ClothInstance>,
 ) {
     for (entity, mut live) in &mut blasts {
         let live = &mut *live;
@@ -565,46 +823,49 @@ pub(crate) fn tick_blasts(
             caster.sync_body();
         }
         if live.blast.state == THROWN {
+            // The sector's object contacts in the order its step makes
+            // them: the level, the simulated objects, then the bodies'
+            // parts. Each contact leaves its reach scale for the next.
             if let Some(physics) = physics.as_deref() {
                 strike_level(&mut live.blast, physics);
+                live.contact_scale = STATIC_SCALE;
+            }
+            for mut cloth in &mut cloths {
+                if stir_cloth(&live.blast, live.contact_scale, &mut cloth) {
+                    debug!("blast {entity:?} stirs a cloth");
+                }
             }
             for (other, mut body) in &mut bodies {
                 if other == live.caster {
                     continue;
                 }
-                let Some(impulse) =
-                    strike_bodies(&mut live.blast, &mut body, &mut alive, &mut limbs)
-                else {
-                    continue;
-                };
-                body.touch(WAKE_TICKS);
+                let character = body.drive.is_some();
                 let mass = body_mass(&body);
-                let Some(knock) = body.drive.as_mut().map(|drive| {
-                    let knock = character_knock(mass, drive.energy, impulse);
-                    drive.energy = knock.energy;
-                    let counter = drive.balance().counter() + 1;
-                    drive.balance_mut().set_counter(counter);
-                    loosen_pins(drive, &knock);
-                    knock
-                }) else {
-                    continue;
-                };
-                if let Some((direction, size)) = knock.knock {
-                    let flat = Vec3::new(direction.x, 0.0, direction.z);
-                    body.begin_knockback(flat * (size / CM));
-                }
-                if let Ok(mut combatant) = combatants.get_mut(other) {
-                    let aggression = npcs
-                        .get(other)
-                        .ok()
-                        .and_then(|npc| npc.personality)
-                        .map_or(0.0, |personality| personality.restraint);
-                    combatant.add_concern(
-                        live.caster,
-                        aggression,
-                        HIT_HOSTILITY.0,
-                        HIT_HOSTILITY.1,
+                for part in 0..body.parts.len() {
+                    if !part_near(&live.blast, &body.parts[part]) {
+                        continue;
+                    }
+                    let strike = strike_part(&mut live.blast, &mut body, part, character, mass);
+                    live.contact_scale = strike.scale;
+                    if !strike.struck {
+                        continue;
+                    }
+                    debug!(
+                        "blast {entity:?} strikes {other:?} part {part}: impulse {:.3?} cm",
+                        strike.impulse
                     );
+                    if character {
+                        knock_character(
+                            &mut body,
+                            mass,
+                            strike.impulse,
+                            live.caster,
+                            other,
+                            &mut combatants,
+                            &npcs,
+                        );
+                    }
+                    body.touch(BODY_WAKE);
                 }
             }
         }
@@ -846,6 +1107,7 @@ mod tests {
             target: None,
             hooked,
             generation: body.cast_generation,
+            contact_scale: 0.0,
         }
     }
 
@@ -1050,5 +1312,161 @@ mod tests {
             struck > 50 && skipped > 50,
             "{struck} struck, {skipped} not"
         );
+    }
+
+    /// A rigid part at the origin whose node mesh is one face in the plane
+    /// x = 0.3 m facing +x.
+    fn wall_body() -> Ragdoll {
+        use bevy::math::Affine3A;
+        use exa_physics::body::RigidPart;
+        Ragdoll::rigid(&[RigidPart {
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            rest: [
+                Vec3::new(-0.2, 0.0, -0.2),
+                Vec3::new(0.2, 0.0, -0.2),
+                Vec3::new(0.0, 0.0, 0.2),
+                Vec3::new(0.0, 0.4, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: Affine3A::IDENTITY,
+            mobility: 1.0,
+            spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: Some(exa_physics::sector::Bounds::of_box(
+                Vec3::new(0.3, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 1.0),
+            )),
+            triangles: Some(std::sync::Arc::new(vec![[
+                Vec3::new(0.3, -1.0, -1.0),
+                Vec3::new(0.3, 1.0, -1.0),
+                Vec3::new(0.3, 0.0, 1.0),
+            ]])),
+        }])
+    }
+
+    /// A thrown blast whose first chunk alone lives, at `at` (cm) moving by
+    /// `motion`, reach 4.
+    fn one_chunk(at: Vec3, motion: Vec3) -> Blast {
+        let mut body = CastBody::default();
+        let mut blast = live(&mut body).blast;
+        blast.state = THROWN;
+        for (index, life) in blast.lives.iter_mut().enumerate() {
+            life.ticks = i32::from(index == 0);
+        }
+        let chunk = &mut blast.chunks[0];
+        chunk.at = at;
+        chunk.previous = at - motion;
+        chunk.reach = 4.0;
+        chunk.weight = 1.0;
+        blast
+    }
+
+    #[test]
+    fn a_part_contact_pushes_the_chunk_out_of_the_mesh_in_the_parts_frame() {
+        let mut body = wall_body();
+        let before = body.parts[0].positions;
+        let mut blast = one_chunk(Vec3::new(35.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 0.0));
+        let mass = body_mass(&body);
+        let strike = strike_part(&mut blast, &mut body, 0, false, mass);
+        // A prop part of mobility 1: share 0.2, scale min(0.5 + 2, 3) = 2.5,
+        // so the reach is 4·2.5 + 10 = 20 cm. The chunk 5 cm in front of the
+        // face is pushed out to 20 cm from it (x = 50): the callback's
+        // `to` is +15 along x against the move of −5.
+        assert!(strike.struck);
+        assert_eq!(strike.scale, 2.5);
+        let share = 0.2f32 / (1.0 + 0.2);
+        let expected = 35.0 + 15.0 * (share * 0.25) + -5.0 * -0.05;
+        assert!((blast.chunks[0].at.x - expected).abs() < 1e-4);
+        // The part at rest has no velocity at the chunk, so f = 1 and the
+        // limb takes move·(−k)·0.2 with k = −(1/1.2)·0.5.
+        let k = (-1.0f32 / (1.0 + 0.2)) * BLAST_SETUP.body_push;
+        assert!((strike.impulse.x - (-5.0 * (-k * 0.2))).abs() < 1e-5);
+        assert_eq!(blast.chunks[0].weight, (0.9f64) as f32);
+        // The push moved the particles along −x by their weights.
+        let moved: f32 = body.parts[0]
+            .positions
+            .iter()
+            .zip(before)
+            .map(|(a, b)| a.x - b.x)
+            .sum();
+        assert!(moved < 0.0);
+    }
+
+    #[test]
+    fn a_part_contact_misses_beyond_the_reach_and_behind_the_face() {
+        let mut body = wall_body();
+        let mass = body_mass(&body);
+        let mut far = one_chunk(Vec3::new(55.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 0.0));
+        assert!(!strike_part(&mut far, &mut body, 0, false, mass).struck);
+        assert_eq!(far.chunks[0].at.x, 55.0);
+        // Behind the face (the query needs the chunk in front of it).
+        let mut behind = one_chunk(Vec3::new(25.0, 0.0, 0.0), Vec3::new(5.0, 0.0, 0.0));
+        assert!(!strike_part(&mut behind, &mut body, 0, false, mass).struck);
+        // A spent chunk is not walked.
+        let mut spent = one_chunk(Vec3::new(35.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 0.0));
+        spent.lives[0].ticks = 0;
+        assert!(!strike_part(&mut spent, &mut body, 0, false, mass).struck);
+    }
+
+    #[test]
+    fn a_part_without_a_mesh_answers_with_its_spheres() {
+        let mut body = crate_body();
+        let mass = body_mass(&body);
+        // The sphere at y = 20 cm, radius 20: a chunk 30 cm above its
+        // centre, falling, is within the 20 cm reach of its top.
+        let mut blast = one_chunk(Vec3::new(0.0, 50.0, 0.0), Vec3::new(0.0, -5.0, 0.0));
+        let strike = strike_part(&mut blast, &mut body, 0, false, mass);
+        assert!(strike.struck);
+        // Pushed out to 20 cm above the top (y = 60), so it moves up.
+        assert!(blast.chunks[0].at.y > 50.0);
+    }
+
+    #[test]
+    fn a_thrown_chunk_stirs_a_cloth_in_its_frame_and_wakes_it() {
+        use exa_physics::cloth::{Cloth, Particle};
+        let particles = vec![
+            Particle {
+                position: Vec3::ZERO,
+                previous: Vec3::ZERO,
+            },
+            Particle {
+                position: Vec3::new(0.0, 0.0, 30.0),
+                previous: Vec3::new(0.0, 0.0, 30.0),
+            },
+        ];
+        let mut cloth = exa_world::cloth::ClothInstance::new(
+            Cloth::new(particles),
+            Handle::default(),
+            vec![0, 1],
+        );
+        cloth.cloth.sleep = 0;
+        // The cloth's node stands 2 m along x: the chunk is taken into it.
+        cloth.frame = Some(bevy::math::Affine3A::from_translation(Vec3::new(
+            2.0, 0.0, 0.0,
+        )));
+        let mut blast = one_chunk(Vec3::new(200.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 10.0));
+        for chunk in &mut blast.chunks[1..] {
+            chunk.at = Vec3::new(9000.0, 0.0, 0.0);
+            chunk.previous = chunk.at;
+        }
+        assert!(stir_cloth(&blast, 2.0, &mut cloth));
+        // Reach 4·2 + 40 = 48: both points move along the chunk's +z move.
+        assert!(cloth.cloth.particles[0].position.z > 0.0);
+        assert!(cloth.cloth.particles[1].position.z > 30.0);
+        assert!(cloth.cloth.rustle_tail > 0.0);
+        assert_eq!(cloth.cloth.sleep, BODY_WAKE);
+        assert!(cloth.stale_mesh);
+        // Far from the node, nothing moves.
+        let mut far = one_chunk(Vec3::new(-900.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 10.0));
+        for chunk in &mut far.chunks[1..] {
+            chunk.at = Vec3::new(9000.0, 0.0, 0.0);
+            chunk.previous = chunk.at;
+        }
+        let before = cloth.cloth.particles.clone();
+        assert!(!stir_cloth(&far, 2.0, &mut cloth));
+        assert_eq!(cloth.cloth.particles, before);
     }
 }

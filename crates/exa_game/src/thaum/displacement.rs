@@ -13,13 +13,13 @@
 //!   (its answer ignored), which the vanish's hook takes as its end; it needs 80 times its cost in focus, the instant gate
 //!   ([`super::casting::displacement_gate`]) and a cast start without a
 //!   motion. **The long door** needs 0.8 times its cost (in double
-//!   precision), the instant gate and, for the player, the ground under the
-//!   cursor (15 cm back along the hit's normal unless the surface asks
-//!   otherwise); it drains the tick in milliseconds times its cost times
+//!   precision), the instant gate and, for the player, the ground pick under
+//!   the cursor (`super::cast_pick`; 15 cm back along the cursor's ray
+//!   unless the mesh met is a floor); it drains the tick in milliseconds times its cost times
 //!   0.001 a tick while it charges. **Constant displacement** is a
 //!   persistent power under the held gate. **The summoning** needs its cost
-//!   and the held gate, plays cast motion 0x28 at the cursor's point (or
-//!   the AI's), and spends its cost at once.
+//!   and the held gate, plays cast motion 0x28 at the same ground pick's
+//!   point (or the AI's), and spends its cost at once.
 //! - **Phasing** ([`PhaseStreak`]): a streak s decides each blow on a
 //!   phased body. The blow passes when a percentage roll of the engine's
 //!   generator is at most `100 >> (s + 1)` (s ≥ 0) or `100 − (100 >>
@@ -115,22 +115,22 @@ pub enum DisplacementStart {
     },
 }
 
-/// The cursor's ground hit, for the player's long door and summoning.
+/// The cursor's ground hit, for the player's long door and summoning: the
+/// point (cm), the ray's unit direction and whether the mesh met is a floor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CursorHit {
     pub point: Vec3,
-    pub normal: Vec3,
+    pub direction: Vec3,
     pub exact: bool,
 }
 
 impl CursorHit {
-    /// The hit, 15 cm back along its normal unless the surface asks to keep
-    /// it.
+    /// The hit, 15 cm back along the ray unless the mesh met is a floor.
     pub fn point(&self) -> Vec3 {
         if self.exact {
             self.point
         } else {
-            self.point + self.normal * -15.0
+            self.point + self.direction * -15.0
         }
     }
 }
@@ -506,7 +506,7 @@ mod tests {
             player: true,
             cursor: Some(CursorHit {
                 point: Vec3::new(100.0, 0.0, 0.0),
-                normal: Vec3::Y,
+                direction: Vec3::Y,
                 exact: false,
             }),
             possessing: false,

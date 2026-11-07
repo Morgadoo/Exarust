@@ -33,9 +33,10 @@
 //!   ([`super::casting::persistent_advice`]). The AI front end prices the
 //!   row as the player's does, without the status test, and answers
 //!   0x400_0000 for an id the table lacks.
-//! - **Barricade placement** ([`place_barricade`]): the ground under the
-//!   cursor (15 cm back along the hit's normal unless the surface asks
-//!   otherwise), 10 cm up; a probe down of 210 cm that meets the floor
+//! - **Barricade placement** ([`place_barricade`]): the ground pick under
+//!   the cursor (`super::cast_pick`, its accept test taking the nodes
+//!   without an object; no hit places nothing), 15 cm back along the
+//!   cursor's ray unless the mesh met is a floor, 10 cm up; a probe down of 210 cm that meets the floor
 //!   moves it there, and the wall's middle is 100 cm above. The wall faces
 //!   away from the caster on the level and spans 300 cm to each side until
 //!   the level trims it; its placing sound plays at volume 0.3 and pitch
@@ -544,12 +545,14 @@ pub fn restore_force_power(id: u32, body: &mut CastBody) -> Option<f32> {
     Some(row.cost)
 }
 
-/// Where the cursor's ray met the level for a barricade.
+/// Where the cursor's ground pick met the scene for a barricade.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroundHit {
     pub point: Vec3,
-    pub normal: Vec3,
-    /// The surface keeps the hit point as it is.
+    /// The cursor's ray, a unit vector: a hit off a floor mesh is taken
+    /// 15 cm back along it.
+    pub direction: Vec3,
+    /// The mesh met is a floor: the hit point is kept as it is.
     pub exact: bool,
 }
 
@@ -581,7 +584,7 @@ pub fn place_barricade(
 ) -> BarricadePlace {
     let mut point = hit.point;
     if !hit.exact {
-        point += hit.normal * -15.0;
+        point += hit.direction * -15.0;
     }
     point.y += 10.0;
     if let Some(depth) = floor_below(point, 210.0) {
@@ -1174,7 +1177,7 @@ mod tests {
         assert_eq!(start_pitch(0.124), 0.649_600_03);
         let hit = GroundHit {
             point: Vec3::ZERO,
-            normal: Vec3::Y,
+            direction: Vec3::Y,
             exact: true,
         };
         let place = place_barricade(hit, Vec3::ZERO, |_, _| None, 0.029);
@@ -1185,7 +1188,7 @@ mod tests {
     fn a_barricade_stands_on_the_floor_facing_away() {
         let hit = GroundHit {
             point: Vec3::new(100.0, 0.0, 0.0),
-            normal: Vec3::Y,
+            direction: Vec3::Y,
             exact: false,
         };
         let place = place_barricade(
@@ -1200,7 +1203,7 @@ mod tests {
         assert_eq!(place.pitch, 1.0);
         let wall = GroundHit {
             point: Vec3::new(0.0, 20.0, 50.0),
-            normal: Vec3::X,
+            direction: Vec3::X,
             exact: true,
         };
         let place = place_barricade(wall, Vec3::ZERO, |_, _| None, 0.0);

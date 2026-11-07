@@ -2,10 +2,12 @@
 //! that body each tick and the velocity it puts on it
 //! (`docs/THAUMATURGY.md`, Force).
 //!
-//! **The pick.** The cursor's ray passes over the level and meets the
-//! nearest body: a prop's stand-in or a character's sphere. It can be
-//! thrown when it is a dead character, or a prop whose mobility is at least
-//! 0.01 (compared in double), and nobody holds it. A throw a kinesis starts
+//! **The pick.** The navigation unit's ground pick from the cursor
+//! (`super::cast_pick`), its accept test taking the nodes with an object,
+//! meets the nearest node: the level, a prop's stand-in or a character's
+//! limb. A body met can be thrown when it is a dead character, or a prop
+//! whose mobility is at least 0.01 (compared in double), and nobody holds
+//! it; the level met throws nothing. A throw a kinesis starts
 //! takes the body the kinesis held instead, and its lift aims at the body's
 //! centre and spends nothing a tick: the kinesis's start lifts it without
 //! storing the cast's cost.
@@ -46,21 +48,18 @@ use exa_assets::Game;
 use exa_audio::{AudioEnvironment, SoundBank, voice_flags};
 use exa_combat::Condition;
 use exa_physics::body::Ragdoll;
-use exa_physics::prop::{PropBody, StandIns};
+use exa_physics::prop::PropBody;
 
 use super::cast::{ActiveClass, PowerCaster, TICK_MS};
-use super::kinesis_live::KinesisCursor;
 use super::power::ENDING;
 use super::power::force::{
     THROW_LIFT_SOUND, THROW_LIFT_VOLUME, THROW_PICK_SOUND, THROW_PICK_VOLUME, ThrowView,
     kinesis_spin, throw_lift_pitch, throw_pick_pitch,
 };
-use crate::hand::{Hand, Holding, character_hit};
+use crate::hand::{Hand, Holding};
 use crate::player::{CursorGround, PlayerBody};
 
 const CM: f32 = 100.0;
-/// How far the cursor's ray looks for a body (m).
-const PICK_RANGE: f32 = 40.0;
 /// The least mobility a thrown prop has.
 const LEAST_MOBILITY: f64 = 0.01;
 
@@ -84,36 +83,31 @@ pub fn throwable(met: Met, held: bool) -> bool {
     kind && !held
 }
 
-/// Each frame, the throwable body under the player's cursor.
+/// Each frame, the throwable body under the player's cursor: the ground
+/// pick from the cursor ([`super::cast_pick::CastPicker::ground`]), its
+/// accept test taking the nodes with an object, and the node it meets
+/// taken when it is a body the throw can take ([`throwable`]).
 #[allow(clippy::type_complexity)]
 pub(super) fn pick_throw(
-    cursor: Res<KinesisCursor>,
-    physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
-    stand_ins: Option<Res<StandIns>>,
+    picker: super::cast_pick::CastPicker,
     hand: Option<Res<Hand>>,
-    bodies: Query<(Entity, &Ragdoll, Option<&Condition>, Has<PropBody>)>,
+    bodies: Query<(&Ragdoll, Option<&Condition>, Has<PropBody>)>,
     mut pick: ResMut<ThrowPick>,
 ) {
     let found = (|| {
-        let (origin, dir) = cursor.0?;
-        let (physics, stand_ins) = (physics.as_deref()?, stand_ins.as_deref()?);
-        let not_prop = |h| stand_ins.owner_of(h).is_none();
-        let prop = physics
-            .fixed_pick_except(origin, dir, PICK_RANGE, &not_prop)
-            .and_then(|(h, t)| stand_ins.owner_of(h).map(|(body, _)| (t, body)));
-        let reach = prop.map_or(PICK_RANGE, |p| p.0);
-        let characters = bodies
-            .iter()
-            .filter_map(|(e, r, c, is_prop)| (!is_prop).then_some((e, r, c.copied()?)));
-        let (body, met) = match character_hit(origin, dir, reach, characters) {
-            Some((_, crate::hand::Hit::Character { body, dead, .. })) => {
-                (body, Met::Character { dead })
+        let hit = picker.ground(|object| object)?;
+        trace!("throw pick: {hit:?}");
+        let super::cast_pick::Owner::Body(body) = hit.owner else {
+            return None;
+        };
+        let (ragdoll, condition, is_prop) = bodies.get(body).ok()?;
+        let met = if is_prop {
+            Met::Prop {
+                mobility: ragdoll.parts.first()?.inverse_mass,
             }
-            _ => {
-                let (_, body) = prop?;
-                let (_, ragdoll, ..) = bodies.get(body).ok()?;
-                let mobility = ragdoll.parts.first()?.inverse_mass;
-                (body, Met::Prop { mobility })
+        } else {
+            Met::Character {
+                dead: condition?.is_dead(),
             }
         };
         let held = hand
@@ -121,7 +115,9 @@ pub(super) fn pick_throw(
             .is_some_and(|h| matches!(h.holding, Holding::Drag { body: b, .. } if b == body));
         throwable(met, held).then_some(body)
     })();
-    pick.set_if_neq(ThrowPick(found));
+    if pick.set_if_neq(ThrowPick(found)) {
+        debug!("throw pick: {found:?}");
+    }
 }
 
 /// What a throw reads of `body` (and of its caster) before a tick.

@@ -1047,6 +1047,7 @@ mod tests {
                 target: None,
                 hooked: false,
                 generation: 0,
+                contact_scale: 0.0,
             })
             .id();
         app.update();
@@ -1097,6 +1098,7 @@ mod tests {
                 target: None,
                 hooked: false,
                 generation: 0,
+                contact_scale: 0.0,
             })
             .id();
         app.update();

@@ -1,8 +1,11 @@
 //! The original's picking routines: a screen point's ray, the point where it
 //! meets a plane, the nearest mesh along it, the ground pick and the kinesis
 //! pick. The cursor's aim plane (`crate::player::cursor_ground`) uses them;
-//! the world cursor's reach is the hand's (`crate::hand`), which picks the
-//! level and the props through the physics world directly.
+//! the thaumaturgy casts ask the ground pick and the nearest-mesh pick from
+//! the cursor (`crate::thaum::cast_pick`: the throw, the barricade, the long
+//! door and the summoning); the world cursor's reach is the hand's
+//! (`crate::hand`), which picks the level and the props through the physics
+//! world directly.
 //!
 //! The original finds the nearest hit by walking its scene's sectors and
 //! their geometry nodes, rejecting nodes by class, layer and option bits and
@@ -324,14 +327,14 @@ pub fn kinesis_hit(
 /// length back into its query and returning that face's index plus one;
 /// the pick then records the crossing plus that distance and the face.
 /// Exarust has neither callback, so the accept test is the caller's closure
-/// and [`RayMesh`]'s nearest hit stands in for the column [guess: the swept
+/// (given the node's index and the node) and [`RayMesh`]'s nearest hit stands in for the column [guess: the swept
 /// radius is not modelled]. The crossing uses the engine's `1 / direction.y`,
 /// held to zero when it is positive (the ray looks up): a level ray gives
 /// an infinite crossing, as the original's division does.
 pub fn ground_hit(
     ray: Ray,
     layer_mask: u32,
-    accept: impl Fn(&Candidate<'_>) -> bool,
+    accept: impl Fn(usize, &Candidate<'_>) -> bool,
     candidates: &[Candidate<'_>],
 ) -> (Option<Hit>, f32) {
     let ratio = 1.0 / ray.direction.y;
@@ -343,7 +346,7 @@ pub fn ground_hit(
         if !node.pickable(layer_mask) {
             continue;
         }
-        let grow = if accept(node) {
+        let grow = if accept(index, node) {
             GROUND_RADIUS_ACCEPTED
         } else {
             GROUND_RADIUS_REFUSED
@@ -787,14 +790,14 @@ mod tests {
         target.radius = 0.5;
         // Taken: the sphere grows 5 cm, its top is 0.55 m up (9.45 m
         // along), and the floor is 0.55 m further: 10 m in all, face 0.
-        let (hit, distance) = ground_hit(down, u32::MAX, |_| true, &[target]);
+        let (hit, distance) = ground_hit(down, u32::MAX, |_, _| true, &[target]);
         let hit = hit.unwrap();
         assert_eq!((hit.node, hit.face), (0, 0));
         assert!((distance - 10.0).abs() < 1e-5, "{distance}");
         assert!(hit.point.length() < 1e-5);
         // Refused: the sphere only grows 1 mm (top 0.501 m up); the floor
         // is still 10 m away.
-        let (hit, distance) = ground_hit(down, u32::MAX, |_| false, &[target]);
+        let (hit, distance) = ground_hit(down, u32::MAX, |_, _| false, &[target]);
         assert!((hit.unwrap().distance - 10.0).abs() < 1e-5);
         assert!((distance - 10.0).abs() < 1e-5);
         // 52 cm beside the node only the taken 0.55 m sphere is crossed;
@@ -802,11 +805,11 @@ mod tests {
         // ground plane below the eye: 10 m again but no hit.
         let beside = ray(Vec3::new(0.52, 10.0, 0.0), -Vec3::Y);
         assert!(
-            ground_hit(beside, u32::MAX, |_| true, &[target])
+            ground_hit(beside, u32::MAX, |_, _| true, &[target])
                 .0
                 .is_some()
         );
-        let (none, distance) = ground_hit(beside, u32::MAX, |_| false, &[target]);
+        let (none, distance) = ground_hit(beside, u32::MAX, |_, _| false, &[target]);
         assert!(none.is_none());
         assert_eq!(distance, 10.0);
         // An eye inside the grown sphere, under its top: the crossing is
@@ -814,17 +817,25 @@ mod tests {
         // with the whole reach. The floor is 0.3 m below (a crossing kept
         // negative would have given 0.05 m).
         let inside = ray(Vec3::new(0.0, 0.3, 0.0), -Vec3::Y);
-        let (hit, distance) = ground_hit(inside, u32::MAX, |_| true, &[target]);
+        let (hit, distance) = ground_hit(inside, u32::MAX, |_, _| true, &[target]);
         assert!(hit.is_some());
         assert!((distance - 0.3).abs() < 1e-6, "{distance}");
         // The layer and class filters apply as in the nearest pick.
-        assert!(ground_hit(down, 0, |_| true, &[target]).0.is_none());
+        assert!(ground_hit(down, 0, |_, _| true, &[target]).0.is_none());
         target.class = 0x09;
-        assert!(ground_hit(down, u32::MAX, |_| true, &[target]).0.is_none());
+        assert!(
+            ground_hit(down, u32::MAX, |_, _| true, &[target])
+                .0
+                .is_none()
+        );
         // A level ray gives an infinite crossing ratio, held to zero: the
         // mesh is asked from the eye itself.
         let level = ray(Vec3::new(0.0, 5.0, -2.0), Vec3::Z);
-        assert!(ground_hit(level, u32::MAX, |_| true, &[target]).0.is_none());
+        assert!(
+            ground_hit(level, u32::MAX, |_, _| true, &[target])
+                .0
+                .is_none()
+        );
         assert_eq!(floor_distance(level), f32::NEG_INFINITY);
     }
 
@@ -851,12 +862,12 @@ mod tests {
         lower.radius = 0.5;
         // High first: it answers at 4 m, the segment shortens to 4 m and
         // no longer reaches the low node's sphere, which is skipped.
-        let (hit, distance) = ground_hit(down, 1, |_| true, &[upper, lower]);
+        let (hit, distance) = ground_hit(down, 1, |_, _| true, &[upper, lower]);
         assert_eq!(hit.unwrap().node, 0);
         assert!((distance - 4.0).abs() < 1e-5, "{distance}");
         // Low first: it answers at 10 m, then the high node is still within
         // the reach, answers nearer and becomes the pick.
-        let (hit, distance) = ground_hit(down, 1, |_| true, &[lower, upper]);
+        let (hit, distance) = ground_hit(down, 1, |_, _| true, &[lower, upper]);
         let hit = hit.unwrap();
         assert_eq!(hit.node, 1);
         assert!((distance - 4.0).abs() < 1e-5, "{distance}");

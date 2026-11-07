@@ -4608,6 +4608,24 @@ impl Ragdoll {
         }
     }
 
+    /// An effect's push on part `index` with the particle weights `w` (a
+    /// force blast's contact, weighed at the chunk): each particle moves by
+    /// `delta` (m) times its weight, unclamped, and the push's length (as
+    /// the engine's vector length sums it, `(x² + z²) + y²`) counts toward
+    /// the part's strain, its edges restored past [`PUSH_STRAIN`], as the
+    /// original's push with its strain flag does. Nothing moves for a part
+    /// the body lacks.
+    pub fn push_part_weighted(&mut self, index: usize, w: [f32; 4], delta: Vec3) {
+        let Some(part) = self.parts.get_mut(index) else {
+            return;
+        };
+        part.push(&w, delta);
+        part.strain += ((delta.x * delta.x + delta.z * delta.z) + delta.y * delta.y).sqrt();
+        if part.strain > PUSH_STRAIN {
+            keep_rigid(part);
+        }
+    }
+
     /// Applies a blow to the part of `bone`. It wakes the body as a touch
     /// from a living body (countdown 256) does.
     pub fn shove(&mut self, bone: usize, velocity: Vec3, daze: f32) {

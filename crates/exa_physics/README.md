@@ -394,7 +394,9 @@ A `PickOnly` mesh (a model's `_null` group, never drawn) becomes a
 pick-only collider (`PICK_ONLY`, no collision or solver groups): only
 `Physics::fixed_pick`, the hand's cursor pick, meets it; the bodies'
 level contacts, `fixed_hit`, `fixed_pick_except`
-and `level_sweep` pass through it (`solid`).
+and `level_sweep` pass through it (`solid`); `fixed_pick_where` meets it too,
+over the colliders its filter keeps (the casts' picks: the level but the
+props' stand-ins, or the stand-ins alone).
 
 `Physics::clear` empties the world (every body, collider and joint) and
 re-applies the fixed gravity and step; `body_count` and `collider_count`
@@ -1505,6 +1507,9 @@ unclamped, and past the push strain the part's edges are restored, as the
 original's push with its strain flag does (the force barricade's shove;
 [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md)). `Balance::set_counter`
 sets the instability counter (the barricade sets it to 100).
+`Ragdoll::push_part_weighted` pushes a part at given particle weights (a
+force blast's contact, weighed at the chunk), counting the push's length
+toward the strain the same way.
 
 ## Scope
 
@@ -1608,7 +1613,9 @@ original's resets.
 
 `mesh_tree::ray_mesh` is a node mesh's ray query (first front face, through the
 tree or every triangle of a small mesh), used by the hand's pick of bodies with no
-stand-in collider. `mesh_tree` puts a body node's CPU triangles behind the tree as the
+stand-in collider; `mesh_tree::sphere_contacts` is its sphere query (each front
+face the sphere reaches hands its closest point to a callback that may move the
+sphere), which a force blast's part contact asks. `mesh_tree` puts a body node's CPU triangles behind the tree as the
 original does: a node mesh of more than 10 and fewer than 100 000 triangles
 gets one (`takes_tree`, the scene loader's queue rule), a shape builder's
 fitted mesh (a limb's or a weapon's) one at any count (`shape_tree`). Trees

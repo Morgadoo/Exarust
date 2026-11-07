@@ -939,34 +939,59 @@ pub fn hit_sampled(chunk: &mut BlastChunk, point: Vec3, scale: f32, margin: f32)
     }
 }
 
-/// A simulated object's point cloud, as the blast's object walk stirs it.
+/// A simulated object's point cloud (a cloth's particles), as the blast's
+/// object walk stirs it, with the object node's bounds the walk tests a
+/// chunk against first.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SimPoints {
     pub points: Vec<Vec3>,
-    /// The stirring the chunks left (the original's 0.0001 a point).
+    /// The object's stir (a cloth's rustle envelope): the chunks add
+    /// `(1 − d²/r²)·0.0001` a point.
     pub stir: f32,
+    /// The node's bounding sphere and box (its centre the box's).
+    pub centre: Vec3,
+    pub radius: f32,
+    pub half: Vec3,
 }
 
-/// The simulated-object walk: every live chunk's points within
-/// `reach·scale + margin + 40` of a point move it along the chunk's last
-/// move by `(1 − d²/r²)·push·0.025` and add `(1 − d²/r²)·0.0001` of stir
-/// (both in double precision). Returns whether any point was met.
-pub fn hit_sim_object(blast: &Blast, object: &mut SimPoints, scale: f32, push: f32) -> bool {
+/// The share of the setup's character push a simulated object's point
+/// takes: `push·0.025` in double precision, narrowed once.
+pub fn sim_push(push: f32) -> f32 {
+    (f64::from(push) * 0.025) as f32
+}
+
+/// The simulated-object walk: every chunk (alive or not: the walk reads no
+/// life) whose reach `reach·scale + margin + 40` meets the object's
+/// bounding sphere and then its box moves each point within that reach
+/// along its last move by `(1 − d²/r²)·k` ([`sim_push`] of the setup's
+/// character push; the product in single precision) and adds
+/// `(1 − d²/r²)·0.0001` to the stir (summed in double precision). `scale`
+/// is the reach scale the blast's last contact left (2 after a static
+/// body's, a limb's own after a limb's, 0 before any). Returns whether any
+/// point was met.
+pub fn hit_sim_object(blast: &Blast, object: &mut SimPoints, scale: f32) -> bool {
+    let k = sim_push(blast.setup.character_push);
     let mut hit = false;
-    for (index, chunk) in blast.chunks.iter().enumerate() {
-        if blast.lives[index].ticks < 1 {
-            continue;
-        }
+    for chunk in &blast.chunks {
         let reach = contact_reach(chunk, scale, blast.setup.margin, SIM_EXTRA);
         let r2 = reach * reach;
+        let span = reach + object.radius;
+        if !(dist_sq(chunk.at, object.centre) <= span * span) {
+            continue;
+        }
+        let outside = exa_physics::intersect::point_aabb_distance_squared(
+            chunk.at,
+            object.centre,
+            object.half,
+        );
+        if !(outside <= r2) {
+            continue;
+        }
         let motion = chunk.at - chunk.previous;
         for point in &mut object.points {
-            let d2 = dist_sq(chunk.at, *point);
-            if d2 <= r2 {
-                let f = 1.0 - d2 / r2;
-                let scale = (f64::from(f) * f64::from(push) * 0.025) as f32;
-                *point += motion * scale;
-                object.stir += f * 0.0001;
+            if let Some((moved, f)) = sim_point_push(chunk, *point, r2, k, motion) {
+                *point = moved;
+                object.stir = (f64::from(f) * 0.0001 + f64::from(object.stir)) as f32;
                 hit = true;
             }
         }
@@ -974,24 +999,22 @@ pub fn hit_sim_object(blast: &Blast, object: &mut SimPoints, scale: f32, push: f
     hit
 }
 
-/// A simulated object's point a chunk reaches: it moves along the chunk's
-/// last move by `(1 − d²/r²)·push·0.025` (in double precision), and the
-/// object gathers `(1 − d²/r²)·0.0001` of stir. `None` outside the reach.
+/// A simulated object's point a chunk reaches within `√r2`: it moves along
+/// the chunk's last `motion` by `f·k`, `f = 1 − d²/r²`; returns the moved
+/// point and `f` (the stir's share). `None` outside the reach.
 pub fn sim_point_push(
     chunk: &BlastChunk,
     point: Vec3,
-    reach: f32,
-    push: f32,
+    r2: f32,
+    k: f32,
+    motion: Vec3,
 ) -> Option<(Vec3, f32)> {
-    let r2 = reach * reach;
     let d2 = dist_sq(chunk.at, point);
     if !(d2 <= r2) {
         return None;
     }
     let f = 1.0 - d2 / r2;
-    let motion = chunk.at - chunk.previous;
-    let scale = (f64::from(f) * f64::from(push) * 0.025) as f32;
-    Some((point + motion * scale, f * 0.0001))
+    Some((point + motion * (f * k), f))
 }
 
 /// One frame's values outside the draw.
@@ -1714,11 +1737,19 @@ mod tests {
         );
         assert_eq!(push_out(Vec3::ZERO, 5.0, Vec3::ZERO), None);
         chunk.previous = Vec3::new(-1.0, 0.0, 0.0);
-        let (moved, stir) = sim_point_push(&chunk, Vec3::new(5.0, 0.0, 3.0), 6.0, 0.8).unwrap();
+        let motion = chunk.at - chunk.previous;
+        let (moved, share) = sim_point_push(
+            &chunk,
+            Vec3::new(5.0, 0.0, 3.0),
+            36.0,
+            sim_push(0.8),
+            motion,
+        )
+        .unwrap();
         let f = 1.0 - 9.0 / 36.0;
+        assert_eq!(share, f);
         // The chunk moved 6 along x since its last tick.
         assert!((moved.x - (5.0 + 6.0 * f * 0.8 * 0.025)).abs() < 1e-6);
-        assert!((stir - f * 0.0001).abs() < 1e-9);
         assert_eq!(contact_reach(&chunk, 2.0, 0.0, 10.0), 18.0);
     }
 
@@ -1913,19 +1944,38 @@ mod tests {
     #[test]
     fn the_simulated_object_walk_moves_points_and_stirs() {
         let mut b = trailing_blast();
+        // Every chunk is walked, spent or not: the others stand far off.
         b.lives.iter_mut().skip(1).for_each(|life| life.ticks = 0);
+        for chunk in &mut b.chunks[1..] {
+            chunk.at = Vec3::new(5000.0, 0.0, 0.0);
+            chunk.previous = chunk.at;
+        }
         b.chunks[0].at = Vec3::new(0.0, 0.0, 10.0);
         b.chunks[0].previous = Vec3::ZERO;
         b.chunks[0].reach = 1.0;
+        b.setup.character_push = 0.8;
         let mut object = SimPoints {
             points: vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 30.0)],
-            stir: 0.0,
+            centre: Vec3::new(0.0, 0.0, 15.0),
+            radius: 15.0,
+            half: Vec3::new(0.0, 0.0, 15.0),
+            ..SimPoints::default()
         };
-        assert!(hit_sim_object(&b, &mut object, 2.0, 0.8));
+        assert!(hit_sim_object(&b, &mut object, 2.0));
         // Reach 1·2 + 40 = 42: the first point at d² = 100 is inside, the
         // second at 400 too. f = 1 − 100/1764; the move is +10·f·0.8·0.025.
         let f = 1.0 - 100.0 / 1764.0;
         assert!((object.points[0].z - 10.0 * f * 0.8 * 0.025).abs() < 1e-5);
         assert!((object.stir - (f + (1.0 - 400.0 / 1764.0)) * 0.0001).abs() < 1e-9);
+        // A chunk whose reach misses the node's sphere moves nothing.
+        let mut far = object.clone();
+        far.centre = Vec3::new(0.0, 0.0, 500.0);
+        far.half = Vec3::ZERO;
+        far.radius = 1.0;
+        assert!(!hit_sim_object(&b, &mut far, 2.0));
+        // A dead chunk still stirs: the walk reads no life.
+        b.lives[0].ticks = 0;
+        let mut dead = object.clone();
+        assert!(hit_sim_object(&b, &mut dead, 2.0));
     }
 }

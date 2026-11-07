@@ -1261,7 +1261,7 @@ fn spawn_debug_effects(
         let feet = at + forward * 200.0;
         let hit = GroundHit {
             point: Vec3::new(feet.x, feet.y - 80.0, feet.z),
-            normal: Vec3::Y,
+            direction: Vec3::Y,
             exact: true,
         };
         // The original's floor cast: static meshes of floor nodes only.
