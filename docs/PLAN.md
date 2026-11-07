@@ -1681,6 +1681,8 @@ Round 129 meshrender: the PBR program vertex grime and wear now draw from the me
 
 Round 130 motiledyn: ground placements pose the body as the original pose-only sampler routes it, held weapons and shields give way twice as far unless their holder strikes or parries, and the item use counters are fed; the arena duel and exanima01 traces change on purpose.
 
+Round 138 kernel: the support pin goals are set once a tick in the carry as in the original, and the step leads gain the long branch, the exertion write and the 85/83 factor; the duel diverges by design.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
