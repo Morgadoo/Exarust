@@ -776,9 +776,11 @@ impl Part {
     /// the original's helper's `(w₀p₀ + w₁p₁) + (w₂p₂ + w₃p₃)`, and the
     /// subtraction is the reverse one (now − then), so a point moving +X by
     /// a metre a tick reads +2 in X. Mid-step this spans two ticks; between
-    /// ticks, one. The original's only readers are the character motion
-    /// code's grip and pose routines; Exarust models those without it, so
-    /// this has no caller yet.
+    /// ticks, one. The original's two readers run in the character tick,
+    /// between ticks, on the root part's own origin: the locomotion routine
+    /// (its drive damping, speed along the heading and vertical run
+    /// penalty) and the pelvis-height lift servo (its damping), both through
+    /// [`Ragdoll::root_moved`].
     pub fn two_step_point(&self, w: &[f32; 4]) -> Vec3 {
         let sum = |p: &[Vec3; 4]| (p[0] * w[0] + p[1] * w[1]) + (p[2] * w[2] + p[3] * w[3]);
         let before = sum(&self.two_ticks_ago);
@@ -1955,7 +1957,13 @@ impl Ragdoll {
     /// its surviving links. World links and every other field are copied;
     /// the original copies only the frame, flags, links, world links and the
     /// shared arrays, since its copy then re-runs its setup, so this is a
-    /// superset of its state copy.
+    /// superset of its state copy. For a template already added to the
+    /// world the original also writes each kept link's points back from
+    /// particle weights into the node's frame (the part's point over its
+    /// rest points; the other end over the parent's rest points, or the
+    /// world anchor, less the node's translation), so the copy's setup
+    /// converts them again; this copy does not re-run that setup and keeps
+    /// the weights, which is the same result.
     pub fn runtime_clone(&self) -> Self {
         self.copy(true)
     }
@@ -6248,6 +6256,29 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
         ];
         assert_eq!(body.parts[0].two_step_point(&[1.0; 4]).x, 0.0);
+    }
+
+    /// The character tick's root displacement, which the locomotion and the
+    /// lift servo read, is the root origin's two-step point: it reads the
+    /// third particle set, not the previous one, with the paired sums.
+    #[test]
+    fn the_root_displacement_is_the_root_origins_two_step_point() {
+        let mut body = two_parts(0.0);
+        let root = body.parts.iter().position(|p| p.parent.is_none()).unwrap();
+        let p = &mut body.parts[root];
+        let then = p.positions;
+        p.two_ticks_ago = then;
+        p.positions = then.map(|x| x + Vec3::new(0.01, -0.02, 0.03));
+        // The previous set is not read: a velocity set leaves the reading.
+        p.previous = p.positions;
+        let w = p.own_origin;
+        let want = p.two_step_point(&w);
+        assert_eq!(body.root_moved(), want);
+        assert!((want - Vec3::new(0.01, -0.02, 0.03)).length() < 1e-6);
+        // The muscles-off snap writes all three sets: no displacement.
+        let p = &mut body.parts[root];
+        snap_part(p, Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)));
+        assert_eq!(body.root_moved(), Vec3::ZERO);
     }
 
     /// The first tick of sleep rolls the third particle set onto where the

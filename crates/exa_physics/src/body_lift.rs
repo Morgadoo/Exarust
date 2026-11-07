@@ -420,10 +420,8 @@ impl Ragdoll {
         // Kept even when the clamped factor is none: the bend reads it.
         let scale = drive.stats.scale;
         drive.lift_raw = lift_unclamped(h, &bearing, scale);
-        let w = pelvis.own_origin;
-        let rise: f32 = (0..4)
-            .map(|k| (pelvis.positions[k].y - pelvis.previous[k].y) * w[k])
-            .sum();
+        // The root origin's two-step point, of which the servo keeps y.
+        let rise = pelvis.two_step_point(&pelvis.own_origin).y;
         let Some(f) = lift_factor(h, cm(rise), drive.energy, &bearing, scale) else {
             return;
         };

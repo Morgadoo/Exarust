@@ -871,17 +871,18 @@ impl Drive {
 }
 
 impl Ragdoll {
-    /// The root part's displacement over the last tick (m): its origin on
-    /// its particles less its origin where they were a tick before (none
-    /// without a root).
+    /// The root part's displacement over the last tick (m), as the
+    /// original's character tick reads it for its locomotion and its lift
+    /// servo: the two-step point of the root's own origin
+    /// ([`super::Part::two_step_point`]), its origin on the current
+    /// particles less its origin on the third particle set, each a paired
+    /// weighted sum. Between ticks the third set is where the last tick
+    /// started (none without a root).
     pub fn root_moved(&self) -> Vec3 {
         let Some(root) = self.parts.iter().find(|p| p.parent.is_none()) else {
             return Vec3::ZERO;
         };
-        let w = root.own_origin;
-        (0..4)
-            .map(|k| (root.positions[k] - root.previous[k]) * w[k])
-            .sum()
+        root.two_step_point(&root.own_origin)
     }
 
     /// The pelvis's forward across the ground for a character frame facing
