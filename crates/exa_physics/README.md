@@ -484,7 +484,18 @@ the other's mesh sphere query at the radius plus 2 cm, a part without triangles 
 its spheres), and a touch raises the lower of the two sleep countdowns to the higher
 (`equalise_placement`; `place_released` runs it on the simulation's world, posted by the hand).
 The release itself wakes the item to at least 128 (`RELEASE_WAKE`) and settles it 8 ticks
-(`RELEASE_SETTLE`), as the original's put-back does. Its static-collider grid (`sector::StaticGrid`: one
+(`RELEASE_SETTLE`), as the original's put-back does. While the item cursor carries an item its body is out of the
+simulation (`Ragdoll::hold_out`: asleep, disabled, countdown 0, as the
+original's lift leaves it after every placement), moved whole so its grab point lands on the
+placed point (`Ragdoll::place_grab_at`); the release's raise therefore gives it 128, and a
+neighbour woken at its old place 128 too. The original's "is the space free" query
+(`sector_lists::space_taken`) answers whether a body at given frames meets another: each part's
+bound sphere against the other's mesh sphere, the layer channels, a disabled body skipped, then,
+lower key first, the overlap-only body test (`sector::static_meet`) and the overlap pair test
+(`overlap_touch`: `sector::static_overlap_meet`, no padding, a NaN passing, then the mesh's
+boolean sphere query at the sphere's radius); the item cursor refuses a marker it would overlap
+with it. The original walks the probe's nine cells; the frame side asks every body, which the
+bound-sphere gate reduces to the same set. Its static-collider grid (`sector::StaticGrid`: one
 cell per small collider, the footprint plus a one-cell margin with the
 wide bit for a larger one, a scan of the own cell then the eight
 neighbours, shared-mask and own-parent skips) and its simulated-object

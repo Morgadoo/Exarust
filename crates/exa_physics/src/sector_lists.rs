@@ -508,6 +508,115 @@ pub fn placement_touches<'a>(
     out
 }
 
+/// Whether a sphere (metres, in a part's own frame) meets the part's mesh,
+/// as the mesh's boolean sphere query answers: the first triangle the
+/// sphere reaches (front side, within its radius), through the kd-tree when
+/// the mesh has one; a part without triangles answers with its spheres.
+fn mesh_meets(b: &crate::body::Part, at: Vec3, radius: f32) -> bool {
+    match (b.tree.as_deref(), b.triangles.as_deref()) {
+        (Some(tree), Some(triangles)) => {
+            let mut sphere = (at, radius);
+            tree.sphere(&mut sphere, |s, ids| {
+                ids.iter().any(|&id| {
+                    triangles
+                        .get(id as usize)
+                        .is_some_and(|t| crate::contact::sphere_hit(t, s.0, radius).is_some())
+                })
+            })
+        }
+        (None, Some(triangles)) => triangles
+            .iter()
+            .any(|t| crate::contact::sphere_hit(t, at, radius).is_some()),
+        _ => b
+            .spheres
+            .iter()
+            .any(|&(cb, rb)| crate::body::pairs::sphere_on_sphere(at, radius, cb, rb).is_some()),
+    }
+}
+
+/// The original's overlap pair test of its "is the space free" query, `a`
+/// the side with the lower order key: each of `a`'s collision spheres, put
+/// in `b`'s frame, passes the pre-test against `b`'s mesh bound
+/// ([`sector::static_overlap_meet`], no padding) and is asked through
+/// `b`'s mesh query at its own radius; the first touch answers.
+pub fn overlap_touch(
+    a: &crate::body::Part,
+    a_frame: Affine3A,
+    b: &crate::body::Part,
+    b_frame: Affine3A,
+) -> bool {
+    let relative = b_frame.inverse() * a_frame;
+    let mesh = b.pairing.mesh;
+    a.spheres.iter().any(|&(c, r)| {
+        let at = relative.transform_point3(c);
+        sector::static_overlap_meet(at, r, mesh.centre, mesh.half, mesh.radius)
+            && mesh_meets(b, at, r)
+    })
+}
+
+/// The original's "is the space free" query (its answer inverted): whether
+/// body `probe`, its parts at the world frames `worlds` (metres), meets any
+/// other body's part. Each part of the probe, root first, against every
+/// part of every other body that is not disabled: the probe part's bound
+/// sphere must reach the other's mesh sphere, the layer words must name no
+/// shared exclusive channel (the probe's own body is never tested), then,
+/// the lower order key first, the overlap-only body test
+/// ([`sector::static_meet`]) and the overlap pair test
+/// ([`overlap_touch`]). The original takes the other parts from the nine
+/// 600 cm cells around the probe part's mesh-box centre; Exarust's frame
+/// side asks every body, which the bound-sphere gate reduces to the same
+/// set (no part reaches past a neighbouring cell).
+pub fn space_taken<'a>(
+    probe: Entity,
+    body: &Ragdoll,
+    worlds: &[Affine3A],
+    others: impl Iterator<Item = (Entity, &'a Ragdoll)> + Clone,
+) -> bool {
+    for (p, &frame) in body.parts.iter().zip(worlds) {
+        let me = sector::Meeting {
+            sphere: p.pairing.sphere,
+            mesh: p.pairing.mesh,
+            previous: frame,
+            current: frame,
+        };
+        let centre = frame.transform_point3(p.pairing.sphere.centre);
+        for (entity, other) in others.clone() {
+            if entity == probe || other.disabled() {
+                continue;
+            }
+            for q in &other.parts {
+                let q_frame = q.transform();
+                if crate::intersect::spheres_separated(
+                    centre,
+                    p.pairing.sphere.radius,
+                    q_frame.transform_point3(q.pairing.mesh.centre),
+                    q.pairing.mesh.radius,
+                ) {
+                    continue;
+                }
+                if crate::body::pairs::layers_apart(q.pairing.layer, p.pairing.layer) {
+                    continue;
+                }
+                let them = sector::Meeting {
+                    sphere: q.pairing.sphere,
+                    mesh: q.pairing.mesh,
+                    previous: q_frame,
+                    current: q_frame,
+                };
+                let met = if q.pairing.key() < p.pairing.key() {
+                    sector::static_meet(&them, &me) && overlap_touch(q, q_frame, p, frame)
+                } else {
+                    sector::static_meet(&me, &them) && overlap_touch(p, frame, q, q_frame)
+                };
+                if met {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// The end of the original's placement test for a touching pair: the body
 /// with the lower sleep countdown has it raised to the other's (a plain
 /// raise, its contacts kept); equal countdowns change nothing.

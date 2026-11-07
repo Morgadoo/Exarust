@@ -261,3 +261,69 @@ fn placing_a_released_body_wakes_its_neighbour() {
     );
     assert_eq!(world.get::<Ragdoll>(far).unwrap().countdown(), before);
 }
+
+/// The "is the space free" query: a crate placed into another's box meets
+/// it, one placed beside it does not, a disabled one is not tested, and
+/// the probe's own body never answers.
+#[test]
+fn the_space_query_finds_an_overlapping_body() {
+    let probe = crate_at(Vec3::ZERO);
+    let other = crate_at(Vec3::new(2.0, 0.0, 0.0));
+    let into = [Affine3A::from_translation(Vec3::new(1.8, 0.0, 0.0))];
+    let beside = [Affine3A::from_translation(Vec3::new(1.5, 0.0, 0.0))];
+    let others = [(entity(1), &probe), (entity(2), &other)];
+    assert!(space_taken(
+        entity(1),
+        &probe,
+        &into,
+        others.iter().copied()
+    ));
+    assert!(!space_taken(
+        entity(1),
+        &probe,
+        &beside,
+        others.iter().copied()
+    ));
+    assert!(!space_taken(
+        entity(1),
+        &probe,
+        &into,
+        [(entity(1), &probe)].into_iter()
+    ));
+    let mut off = crate_at(Vec3::new(2.0, 0.0, 0.0));
+    off.set_disabled(true);
+    assert!(!space_taken(
+        entity(1),
+        &probe,
+        &into,
+        [(entity(2), &off)].into_iter()
+    ));
+}
+
+/// The overlap pre-test lets a NaN distance through.
+#[test]
+fn the_overlap_pre_test_passes_a_nan() {
+    let half = Vec3::splat(0.1);
+    assert!(sector::static_overlap_meet(
+        Vec3::NAN,
+        0.05,
+        Vec3::ZERO,
+        half,
+        half.length()
+    ));
+}
+
+/// A lifted body is held out of the simulation: asleep, disabled, its
+/// countdown 0; the release's raise then gives it 128 exactly.
+#[test]
+fn a_held_out_body_wakes_to_the_release_count() {
+    let mut body = crate_at(Vec3::ZERO);
+    body.wake_to(256);
+    body.hold_out();
+    assert!(body.asleep() && body.disabled());
+    assert_eq!(body.countdown(), 0);
+    body.set_disabled(false);
+    body.wake_to(RELEASE_WAKE);
+    assert_eq!(body.countdown(), 128);
+    assert!(!body.asleep());
+}

@@ -3823,8 +3823,8 @@ impl Ragdoll {
     /// in the zero-gravity environment: such a body is skipped by the
     /// body-to-body and level stages, and a grab on it breaks (a struck
     /// body that is disabled disables the link,
-    /// [`Ragdoll::pull_grab`]). Exarust has no cursor carry yet, so
-    /// nothing sets it in the game; the rule is here for that path.
+    /// [`Ragdoll::pull_grab`]). The item cursor's lift sets it
+    /// ([`Ragdoll::hold_out`]) and its release clears it.
     pub fn set_disabled(&mut self, disabled: bool) {
         self.disabled = disabled;
     }
@@ -3983,6 +3983,34 @@ impl Ragdoll {
             }
         }
         self.wake_to(count);
+    }
+
+    /// Holds the body out of the simulation while the item cursor carries
+    /// it, as the original's lift leaves its body after every placement:
+    /// asleep (nothing is stepped), disabled (no pair or level stage meets
+    /// it), its sleep countdown 0 and its world contacts dropped. The lift
+    /// moves it with [`Ragdoll::place_at`]; the release wakes it and clears
+    /// the disabled state.
+    pub fn hold_out(&mut self) {
+        self.sleep = Sleep::Deep;
+        self.countdown = 0;
+        self.disabled = true;
+        for p in &mut self.parts {
+            p.contacts.clear();
+        }
+    }
+
+    /// Moves the whole body so the last grab's point lands on `point` (m),
+    /// its parts keeping their frames relative to one another: the
+    /// original's lift puts the held node where the cursor places the point
+    /// it was taken by. Without a grab it stays.
+    pub fn place_grab_at(&mut self, point: Vec3) {
+        let Some(at) = self.grab_point() else {
+            return;
+        };
+        let shift = Affine3A::from_translation(point - at);
+        let worlds: Vec<Affine3A> = self.parts.iter().map(|p| shift * p.transform()).collect();
+        self.place_at(&worlds);
     }
 
     /// Drops every part's kept world contacts, as the original's place of a
