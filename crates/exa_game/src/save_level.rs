@@ -27,6 +27,25 @@ pub const SPAWN_PROBE_LIFT: f32 = 100.0;
 /// The floor probe's reach.
 pub const SPAWN_PROBE_REACH: f32 = 300.0;
 
+/// Where the feet of a body placed at `at` (m) stand on a loaded level: the
+/// original probes the floor from [`SPAWN_PROBE_LIFT`] over the placement,
+/// [`SPAWN_PROBE_REACH`] down, with the line cast (`cast(from, dir, reach)`),
+/// and carries the body's frame to the hit plus `108.18 − 11.1·extent` and
+/// [`SPAWN_LIFT`] ([`spawn_height`]). Exarust's character stands on its
+/// feet, so the frame's standing height is left out and the feet go
+/// [`SPAWN_LIFT`] over the hit [inf: the frame's height over the feet is the
+/// standing body's; the raised state's 13 cm is not modelled]. On a miss the
+/// placement is kept, where the original keeps the probe's lifted start.
+pub fn landing_feet(
+    at: bevy::math::Vec3,
+    cast: impl FnOnce(bevy::math::Vec3, bevy::math::Vec3, f32) -> Option<bevy::math::Vec3>,
+) -> bevy::math::Vec3 {
+    const METRES: f32 = 0.01;
+    let from = at + bevy::math::Vec3::Y * (SPAWN_PROBE_LIFT * METRES);
+    cast(from, bevy::math::Vec3::NEG_Y, SPAWN_PROBE_REACH * METRES)
+        .map_or(at, |hit| hit + bevy::math::Vec3::Y * (SPAWN_LIFT * METRES))
+}
+
 /// Where the player is put on a newly loaded level: the matrix's x and z,
 /// the floor the probe found, and the height the original lifts the body
 /// by. `extent` is the body's extent word; `raised` selects the 13 cm lift
@@ -361,6 +380,20 @@ pub fn landing_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_landing_probes_from_a_metre_up_and_stands_five_cm_over_the_hit() {
+        use bevy::math::Vec3;
+        let at = Vec3::new(1.0, 0.0, 2.0);
+        let mut asked = None;
+        let feet = landing_feet(at, |from, dir, reach| {
+            asked = Some((from, dir, reach));
+            Some(Vec3::new(1.0, 0.3, 2.0))
+        });
+        assert_eq!(asked, Some((Vec3::new(1.0, 1.0, 2.0), Vec3::NEG_Y, 3.0)));
+        assert!((feet - Vec3::new(1.0, 0.35, 2.0)).length() < 1e-6);
+        assert_eq!(landing_feet(at, |_, _, _| None), at);
+    }
 
     #[test]
     fn the_spawn_height_subtracts_eleven_point_one_per_extent() {

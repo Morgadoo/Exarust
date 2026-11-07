@@ -182,7 +182,7 @@ chunks leaves the session without tables. What Exarust has no live model
 for (the tournament's field until one is drawn and its season weeks, the
 merchant's stock type, the day's specials and daily tallies, the company's
 second string and three words) keeps the chunk the save already held, and
-the merchant's specialisation is the writer's constant −1.
+the merchant's specialisation is the writer's constant −1. `save_level::landing_feet` is the load's placement onto the line cast (from 100 cm up, 300 cm down, the feet 5 cm over the hit), which the viewer applies to the player after a save load or level change. Arena plans carry `SceneBodyPlan::snap` (opponents, hires, the Beast, company entrants): the scene command stands them 5 cm over the line cast's hit (`exa_world::start::arena_snap`); `match_layout::snaps_our_spot` marks the elimination and reserve setups, whose player spot is snapped too.
 
 The `CheckpointSave` script function's save side is
 `Slots::checkpoint_from_script`: it runs only for the player with

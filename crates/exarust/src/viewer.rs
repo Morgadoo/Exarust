@@ -971,7 +971,7 @@ fn play_level(
     // The level's own start is cast onto the floor once the collision is in
     // (the original's start of play without a player); a match layout, a
     // landing plan or `--at` place the player themselves.
-    let mut cast_start = true;
+    let mut cast_start = StartCast::Level;
     // The player's own entry is stood here; the other bodies are the scene
     // generator's (a generated opponent, the Beast, the other entrants).
     let foes = Vec::new();
@@ -985,7 +985,13 @@ fn play_level(
         for slot in &layout {
             match slot.who {
                 Fighter::Ours(index) if index == player_entry => {
-                    cast_start = false;
+                    // The elimination and reserve setups snap our spot to
+                    // the floor; the others leave it where it is.
+                    cast_start = if exa_game::match_layout::snaps_our_spot(template) {
+                        StartCast::ArenaSnap
+                    } else {
+                        StartCast::None
+                    };
                     let at = start_of(&slot.place);
                     position = at.position;
                     yaw = at.yaw;
@@ -1002,11 +1008,11 @@ fn play_level(
     if let Some((at, heading)) = landing.and_then(|landing| landing.player) {
         position = Vec3::from_array(at);
         yaw = heading;
-        cast_start = false;
+        cast_start = StartCast::None;
     }
     if let Some(at) = options.at {
         position = Vec3::from_array(at);
-        cast_start = false;
+        cast_start = StartCast::None;
     }
     info!("level {name}: player starts at {position}");
     let start = PlayStart {
@@ -1066,14 +1072,26 @@ struct LevelChangeHold {
     was_paused: bool,
 }
 
+/// How a new player's start is put on the floor once the collision is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartCast {
+    /// The level's own start: the original's start of play casts it onto
+    /// the floor ([`exa_world::start::cast_onto_floor`]).
+    Level,
+    /// An elimination or reserve match's spot: the arena's snap, 5 cm over
+    /// the floor ([`exa_world::start::arena_snap`]).
+    ArenaSnap,
+    /// A landing plan, `--at` or another match spot: kept as it is.
+    None,
+}
+
 #[derive(Resource)]
 struct PendingCollision {
     root: Entity,
     name: String,
     start: PlayStart,
-    /// Whether the start is the level's own, which the player is put on
-    /// by the line cast ([`exa_world::start::cast_onto_floor`]).
-    cast_start: bool,
+    /// How the line cast places a new player at the start.
+    cast_start: StartCast,
     since: std::time::Instant,
 }
 
@@ -1171,11 +1189,14 @@ fn finish_collision(
     commands.remove_resource::<PendingCollision>();
     // A new player at the level's own start: the original casts its start
     // onto the floor before it adds the player there.
-    if pending.cast_start && players.is_empty() {
+    if pending.cast_start != StartCast::None && players.is_empty() {
         let from = pending.start.position;
-        match exa_world::start::cast_onto_floor(from, |at, dir, reach| {
-            frame_physics.0.line_cast(at, dir, reach)
-        }) {
+        let cast = |at, dir, reach| frame_physics.0.line_cast(at, dir, reach);
+        let placed = match pending.cast_start {
+            StartCast::ArenaSnap => exa_world::start::arena_snap(from, cast),
+            _ => exa_world::start::cast_onto_floor(from, cast),
+        };
+        match placed {
             Some(at) => {
                 info!("level start: the line cast puts the player at {at} (from {from})");
                 pending.start.position = at;
@@ -1954,10 +1975,14 @@ fn log_encumbrance(who: &str, stats: &CharacterStats) {
 /// finished loading. The placement's position is already in metres (the flow
 /// gives centimetres and [`exa_game::level_change::PlayerPlacement`] converts
 /// them). The player entity keeps its record and possessions; only its root
-/// and body frame move.
+/// and body frame move. The original's placement on a loaded level probes
+/// the floor with the line cast from 100 cm over the placement, 300 cm down,
+/// and stands the body over the hit
+/// ([`exa_game::save_level::landing_feet`]).
 fn apply_player_placement(
     mut commands: Commands,
     placement: Option<Res<exa_game::level_change::PlayerPlacement>>,
+    frame_physics: Res<exa_physics::collision_share::FramePhysics>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut players: Query<(Entity, &mut Transform), With<exa_game::player::Player>>,
     mut bodies: Query<
@@ -1978,8 +2003,15 @@ fn apply_player_placement(
         // A new player (a loaded save's) is still being spawned.
         return;
     }
+    let at = exa_game::save_level::landing_feet(placement.position, |from, dir, reach| {
+        frame_physics.0.line_cast(from, dir, reach)
+    });
+    info!(
+        "level placement: the player placed at {} stands at {at} (the line cast's floor)",
+        placement.position
+    );
     for (_, mut transform) in &mut players {
-        transform.translation = placement.position;
+        transform.translation = at;
     }
     if let Ok(mut transform) = bodies.single_mut() {
         transform.rotation = Quat::from_rotation_y(placement.yaw);
