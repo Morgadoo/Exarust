@@ -1665,6 +1665,8 @@ Round 115 cutaway: roofs, awnings and overhangs between the camera and the playe
 
 Round 124 playerctl2: the orbit and Cursor Look share one capture that re-centres the pointer and warps to the aim point; the story revive resets every brain with the space-free query.
 
+Round 129 meshrender: the PBR program vertex grime and wear now draw from the meshes stored colours, as in the original.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
