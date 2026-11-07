@@ -1391,6 +1391,8 @@ Round 125 combatrules: the 24 combat-rule routines were re-audited against the a
 
 Round 126 motilepart: the attack starters aim at the foe parry, the AI side attacks take the starter pick, the two-weapon counter chains the other side and shields fight in the Ward or Synchrony style.
 
+Round 128 combatrules review fixes: a held weapon record measures its sweet spot on the side it strikes with, an off-hand factory weapon is built and rated from its own item, and the attacker recoil ends the attack at the blow into the stance by energy with both arms at 0.2, a two-weapon fighter late in a side swing countering into the other side through the shared chain (attacker recoil 70 to 95, the record builder 85 to 92, sweet spot 85 to 95, factory spawn 75 to 87). exanima01 stays identical to main; the arena duel diverges at its first recoil, whose stance starts 420 ms earlier.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
