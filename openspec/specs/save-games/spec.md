@@ -526,3 +526,10 @@ Loading a story slot SHALL keep its save file, and SHALL place the loaded player
 #### Scenario: A reloaded save
 - **WHEN** a story save made at (−4.46, 0, 69.52) m in exanima06 is continued
 - **THEN** the player stands there, does not fall, and the save file is still in the folder
+
+### Requirement: Legacy pass at start-up
+When the running game is given a save folder, making the slot managers SHALL run the legacy removal over the story manager's saves and then the arena manager's, before any slot is listed; a pass that fails SHALL be logged and SHALL not stop the start-up.
+
+#### Scenario: An old story save in the folder
+- **WHEN** the game starts with a save folder holding a current story save and one whose player-data signature is 0x6F5AEA13
+- **THEN** the old save is deleted before the menu lists the slots and the current one stays

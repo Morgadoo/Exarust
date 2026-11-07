@@ -16,10 +16,14 @@
 //! A screen that blocks the controls turns the camera the same way without
 //! the idle test (only the ten seconds since the stamp); an open window, the
 //! active view not being the game's, restamps the clock; a dialogue or the
-//! power bar makes the player busy. Exarust's in-game menu is such a window;
-//! no Exarust screen blocks the controls yet, nor is there a dialogue or a
-//! power bar. While the controls are off (the skill screen, the power tree,
-//! the arena arsenal: [`crate::controls_live`]) the watch does not run.
+//! power bar makes the player busy. Exarust's in-game menu is such a window.
+//! The controls' block (the knock-out, the death, the practice ladder's
+//! last win, the arena manager's fall:
+//! [`crate::player_controls::PlayerControl::set_blocked`]) stamps the clock
+//! and takes that branch; there is no dialogue or power bar yet. While the
+//! controls are off (the skill screen, the power tree, the arena arsenal:
+//! [`crate::controls_live`]) or second-blocked (the arena loadout form) the
+//! watch does not run.
 //!
 //! Evidence: the controls' frame and its blocked branch, read in the
 //! instructions (`context/re/player-control-hand.md`, The idle turn).
@@ -185,10 +189,21 @@ fn watch_idle(
     mut cameras: Query<&mut ChaseCamera>,
     mut watch: ResMut<IdleWatch>,
     control: Option<Res<crate::player_controls::PlayerControl>>,
+    mut was_blocked: Local<bool>,
 ) {
+    let now = time.elapsed().as_millis() as u32;
+    // The block stamps the clock when it sets its byte.
+    let blocked = crate::player_controls::PlayerControl::is_blocked(control.as_deref());
+    if blocked && !*was_blocked {
+        watch.stamp = now;
+    }
+    *was_blocked = blocked;
     // The watch is the controls' frame task's, which does not run while
-    // the controls are off.
-    if crate::player_controls::PlayerControl::is_off(control.as_deref()) {
+    // the controls are off; the second block stops it after the blocked
+    // branch.
+    if crate::player_controls::PlayerControl::is_off(control.as_deref())
+        || (!blocked && control.as_deref().is_some_and(|c| c.second_block))
+    {
         return;
     }
     let Some((condition, body)) = players.iter().next() else {
@@ -200,7 +215,7 @@ fn watch_idle(
             .map(|p| (p * w.scale_factor()).as_ivec2())
     });
     let frame = Frame {
-        now: time.elapsed().as_millis() as u32,
+        now,
         pointer,
         condition: condition.copied().unwrap_or_default(),
         stepping: body
@@ -208,10 +223,10 @@ fn watch_idle(
             .is_some_and(|d| d.stepping()),
         holding: hand.is_some_and(|h| h.holding != Holding::Nothing),
         buttons: buttons.get_pressed().next().is_some(),
-        // No Exarust screen blocks the controls yet, nor opens a dialogue or
-        // the power bar; the in-game menu's form takes the input from the
-        // game's view, which restamps the clock.
-        blocked: false,
+        // The controls' block takes the blocked turn; no Exarust screen
+        // opens a dialogue or the power bar yet; the in-game menu's form
+        // takes the input from the game's view, which restamps the clock.
+        blocked,
         modal: false,
         window_open: menu.as_ref().is_some_and(|m| m.open),
     };

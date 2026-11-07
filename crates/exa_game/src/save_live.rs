@@ -465,11 +465,37 @@ pub fn run_checkpoint_scripts(
     }
 }
 
-/// The managers are made once the folder is known; they scan lazily.
+/// The managers are made once the folder is known; they scan lazily. As
+/// the game's start-up makes each manager it runs the legacy pass over the
+/// manager's saves ([`remove_legacy_saves`]): the story's, then the arena's.
 fn make_slot_lists(mut commands: Commands, folder: Res<SaveFolder>, lists: Option<Res<SlotLists>>) {
     if lists.is_none() {
-        commands.insert_resource(SlotLists::new(&folder.0));
+        let lists = SlotLists::new(&folder.0);
+        remove_legacy_saves(&lists);
+        commands.insert_resource(lists);
     }
+}
+
+/// The start-up legacy pass of both managers, story first: every save whose
+/// player data signature is below its mode's current one is deleted
+/// ([`Slots::remove_legacy`]). A pass that fails is logged and the start-up
+/// goes on, as the original's handler reports "Error removing legacy
+/// saves." and continues. Returns how many saves each pass removed.
+pub fn remove_legacy_saves(lists: &SlotLists) -> [usize; 2] {
+    let mut removed = [0; 2];
+    for (i, list) in [&lists.story, &lists.arena].into_iter().enumerate() {
+        match list.slots().remove_legacy() {
+            Ok(count) => {
+                removed[i] = count;
+                info!(
+                    "save: legacy pass over the {} saves removed {count}",
+                    list.slots().prefix()
+                );
+            }
+            Err(error) => warn!("Error removing legacy saves. ({error})"),
+        }
+    }
+    removed
 }
 
 /// The menu's CONTINUE rows read whether each manager holds a slot: the
@@ -2003,6 +2029,35 @@ mod tests {
         let third = exa_script::story::Story::begin().advance().to_string();
         assert_eq!(story_at(&format!("{third}.rfc")).level(), third);
         assert_eq!(story_at("arena1").index(), 0);
+    }
+
+    /// The start-up pass deletes each manager's saves older than its mode's
+    /// signature, story and arena, and leaves current ones.
+    #[test]
+    fn the_start_up_legacy_pass_runs_for_both_managers() {
+        use exa_formats::save_package::PackageImage;
+        let dir = folder("legacy");
+        let story = Slots::story(&dir);
+        let arena = Slots::arena(&dir);
+        let current = story.create(&Session::story()).unwrap();
+        let old = |slots: &Slots, signature: u32| {
+            let number = slots.create(&Session::story()).unwrap();
+            let mut package = PackageImage::new();
+            package.put_section(
+                exa_formats::save_package::PLAYER_DATA,
+                &signature.to_le_bytes(),
+            );
+            std::fs::write(slots.file(number, SlotKind::Save), package.to_bytes()).unwrap();
+            number
+        };
+        let old_story = old(&story, story.signature() - 1);
+        let old_arena = old(&arena, arena.signature() - 1);
+        let lists = SlotLists::new(&dir);
+        assert_eq!(remove_legacy_saves(&lists), [1, 1]);
+        assert!(story.file(current, SlotKind::Save).exists());
+        assert!(!story.file(old_story, SlotKind::Save).exists());
+        assert!(!arena.file(old_arena, SlotKind::Save).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

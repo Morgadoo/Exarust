@@ -1129,6 +1129,7 @@ fn tick_arena_match(
     clock: Option<Res<EffectClock>>,
     mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
     mut fighters: Query<MatchFighter>,
+    mut control: Option<ResMut<crate::player_controls::PlayerControl>>,
 ) {
     let (Some(mut arena), Some(clock)) = (arena, clock) else {
         return;
@@ -1241,6 +1242,11 @@ fn tick_arena_match(
                 arena.screen = Some(crate::arena_session::Screen::after(round.state));
             }
             arena.manager_screen = Some(down.screen);
+            // The manager's fall blocks the player's controls (after the
+            // windows close and the tip shows).
+            if let Some(control) = control.as_deref_mut() {
+                crate::controls_live::block_controls(control, true, "the manager fell");
+            }
             info!(
                 "arena match: the manager fell (screen {}, fatal {})",
                 down.screen, down.fatal
