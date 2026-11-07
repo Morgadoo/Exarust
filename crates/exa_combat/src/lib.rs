@@ -938,7 +938,7 @@ fn react_to_hits(
         Option<&Swing>,
         Option<&PowerFactors>,
     )>,
-    mut attacks: Query<&mut Attacking>,
+    (mut attacks, mut attackers): (Query<&mut Attacking>, Query<&mut Attacker>),
     (slots, strikers): (Query<&Blade>, Query<&GlobalTransform>),
     (mut blades, mut scores, mut blood_list): (
         Query<&mut BladeBlood>,
@@ -1545,7 +1545,8 @@ fn react_to_hits(
         // plus 300 ms less the draw. A blow that met the fighter's own
         // shield guard (no body struck) keeps the draw and stamps nothing.
         if let Some(reaction) = reaction
-            && let Ok((_, f, .., Some(mut state), _, _)) = fighters.get_mut(hit.attacker)
+            && let Ok((_, f, _, _, mut anim, _, _, mut body, Some(mut state), swing, _)) =
+                fighters.get_mut(hit.attacker)
         {
             let striker = swing::Striker {
                 class_word: attacks
@@ -1557,7 +1558,63 @@ fn react_to_hits(
                 now_ms: now as i32,
             };
             let rung_before = state.flags & swing::flags::WEAPON_RUNG != 0;
-            let draw = strike_back(&mut state, &striker, hit, reaction, &mut roll);
+            let (draw, recoiled) =
+                strike_back(&mut state, &striker, hit, reaction, motion, &mut roll);
+            match recoiled {
+                // Two weapons late in a side swing counter at once: the
+                // other side's attack chains, as the swing's own Remise
+                // chain does (full strength, no stall, the continuation).
+                Some(r) if r.counter => {
+                    if let Ok(mut attacking) = attacks.get_mut(hit.attacker)
+                        && let Ok(mut attacker) = attackers.get_mut(hit.attacker)
+                    {
+                        let blend = swing.copied().unwrap_or(Swing::FISTS).chain_blend();
+                        let next = swing::chain_side_attack(
+                            &mut commands,
+                            hit.attacker,
+                            swing::ChainedFighter {
+                                anim: &mut anim,
+                                attacker: &mut attacker,
+                                state: &mut state,
+                                attacking: &mut attacking,
+                                fighter: &f,
+                            },
+                            blend,
+                            now,
+                        );
+                        info!(
+                            "immediate counter: {:?} chains {} after its recoil",
+                            hit.attacker,
+                            next.action()
+                        );
+                    }
+                }
+                // The recoil switches the motion at once to the stance by
+                // energy (blend 40), which ends the attack and its clock,
+                // and sets both arms' stiffness; the stall's end only gates
+                // what comes next.
+                Some(r) if r.rest.is_some() => {
+                    if let Some(rest) = state.take_recoil() {
+                        let (energy, most) = body
+                            .as_deref()
+                            .and_then(|b| b.drive.as_ref())
+                            .map_or((1.0, 1.0), |d| (d.energy, d.max_energy()));
+                        let to = stance::stance_by_energy(f.health.yellow, energy, most).action();
+                        if anim.action != to {
+                            anim.start(to, true, None, rest.blend, Ease::Smooth);
+                        }
+                        if let Some(b) = body.as_deref_mut() {
+                            b.set_arm_stiffness(rest.stiffness);
+                        }
+                        commands.entity(hit.attacker).remove::<Attacking>();
+                        debug!(
+                            "{:?} recoils at {now} ms: {to} (blend {}), stall until {} ms",
+                            hit.attacker, rest.blend, state.end_ms
+                        );
+                    }
+                }
+                _ => {}
+            }
             // The swing's first clash or block rings the striking weapon. A
             // clash rings its haft class's set or its own sound at the
             // blow's share, stamps its body's sound clock, and rumbles the
@@ -1709,12 +1766,13 @@ fn strike_back(
     striker: &swing::Striker,
     hit: &Hit,
     reaction: StrikerReaction,
+    motion: usize,
     roll: &mut Roll,
-) -> Option<u32> {
+) -> (Option<u32>, Option<swing::Recoil>) {
     let small = f64::from(striker.size) < swing::LARGE_STRIKER;
     match reaction {
         StrikerReaction::Wounded(blow) => {
-            state.after_wound(&blow, hit.weapon.recoil, striker);
+            let counter = state.after_wound(&blow, hit.weapon.recoil, striker, motion);
             debug!(
                 "{:?} wounded: strength {:.3}, stall {:.3}, flags {:#x}, stance at {} ms",
                 hit.attacker, state.strength, state.stall, state.flags, state.end_ms
@@ -1725,35 +1783,40 @@ fn strike_back(
                     hit.attacker, blow.bite
                 );
             }
-            None
+            let counter = counter.then_some(swing::Recoil {
+                strength: state.strength,
+                stall: state.stall,
+                flags: state.flags,
+                rest: None,
+                counter: true,
+            });
+            (None, counter)
         }
         StrikerReaction::Clashed {
             blow,
             turned,
             recoils,
         } => {
-            if recoils && (turned || small) {
-                state.recoil_from(blow.speed, hit.weapon.recoil, striker);
-            }
+            let r = (recoils && (turned || small))
+                .then(|| state.recoil_from(blow.speed, hit.weapon.recoil, striker, motion));
             state.flags |= swing::flags::WEAPON_RUNG;
-            None
+            (None, r)
         }
         StrikerReaction::Blocked(blow) => {
-            if small {
-                state.recoil_from(blow.speed, hit.weapon.recoil, striker);
-            }
+            let r =
+                small.then(|| state.recoil_from(blow.speed, hit.weapon.recoil, striker, motion));
             state.flags |= swing::flags::WEAPON_RUNG;
             if state.flags & swing::flags::SHIELD_RUNG == 0 {
                 state.flags |= swing::flags::SHIELD_RUNG;
-                Some(roll.below(PART_SOUND_SPREAD_MS))
+                (Some(roll.below(PART_SOUND_SPREAD_MS)), r)
             } else {
-                None
+                (None, r)
             }
         }
-        StrikerReaction::Turned(blow) => {
-            state.recoil_from(blow.speed, hit.weapon.recoil, striker);
-            None
-        }
+        StrikerReaction::Turned(blow) => (
+            None,
+            Some(state.recoil_from(blow.speed, hit.weapon.recoil, striker, motion)),
+        ),
     }
 }
 
@@ -2442,6 +2505,7 @@ mod tests {
                 slot: Slot::First,
                 now_ms: 0,
             },
+            5,
         );
         let state = app.world().get::<SwingState>(attacker).unwrap();
         assert_eq!(state.flags, expected.flags);
@@ -2975,6 +3039,7 @@ mod tests {
                 slot: Slot::First,
                 now_ms: 0,
             },
+            5,
         );
         assert!(followed.has(swing::flags::STALLING));
         assert_eq!(together.strength, followed.strength);
@@ -3012,6 +3077,7 @@ mod tests {
             &striker,
             &hit,
             StrikerReaction::Blocked(blow),
+            5,
             &mut roll,
         );
         let mut once = Roll::default();
@@ -3022,6 +3088,7 @@ mod tests {
             &striker,
             &hit,
             StrikerReaction::Blocked(blow),
+            5,
             &mut roll,
         );
         assert_eq!(roll.0, once.0);
@@ -3035,6 +3102,7 @@ mod tests {
             &striker,
             &hit,
             StrikerReaction::Blocked(blow),
+            5,
             &mut roll,
         );
         assert_eq!(roll.0, Roll::default().0);

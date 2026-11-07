@@ -1008,14 +1008,14 @@ fn swinging() -> SwingState {
 #[test]
 fn a_wound_bogs_down_or_cleaves() {
     let mut s = swinging();
-    s.after_wound(&blow(true, 1.0), 0.5, &striker(1.0));
+    s.after_wound(&blow(true, 1.0), 0.5, &striker(1.0), 5);
     assert!(close(s.strength, 0.8f32.sqrt() * 0.75), "{s:?}");
     assert!(close(s.stall, (1.0 - s.strength) * 0.05));
     assert_eq!(s.end_ms, 1300);
     assert_eq!(s.flags, flags::WINDOW_OPENED | flags::WOUNDED | 0x6);
     assert_eq!(s.open, [false, false]);
     let mut s = swinging();
-    s.after_wound(&blow(true, 2.0), 0.5, &striker(1.0));
+    s.after_wound(&blow(true, 2.0), 0.5, &striker(1.0), 5);
     assert_eq!((s.strength, s.stall), (1.0, 0.0));
     assert_eq!(s.flags, flags::WINDOW_OPENED | flags::WOUNDED);
     assert!(!s.has(flags::STALLING));
@@ -1028,20 +1028,20 @@ fn a_wound_bogs_down_or_cleaves() {
 #[test]
 fn the_edge_and_large_strikers() {
     let mut s = swinging();
-    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.0));
+    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.0), 5);
     assert!(!s.has(flags::STALLING) && s.strength == 1.0);
     let mut s = SwingState {
         flags: flags::STALLING,
         ..swinging()
     };
-    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.0));
+    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.0), 5);
     assert!(close(s.strength, 0.2 * 0.75 + 0.8), "{s:?}");
     assert_eq!(s.end_ms, 1300);
     let mut s = swinging();
-    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.5));
+    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.5), 5);
     assert!(!s.has(flags::STALLING));
     let mut s = swinging();
-    s.after_wound(&blow(true, 5.0), 0.5, &striker(1.5));
+    s.after_wound(&blow(true, 5.0), 0.5, &striker(1.5), 5);
     assert!(close(s.strength, 0.8f32.sqrt() * 0.75), "{s:?}");
 }
 
@@ -1051,7 +1051,7 @@ fn the_edge_and_large_strikers() {
 #[test]
 fn a_turned_blow_recoils_the_striker() {
     let mut s = swinging();
-    let rest = s.recoil_from(20.0, 0.5, &striker(1.0)).unwrap();
+    let rest = s.recoil_from(20.0, 0.5, &striker(1.0), 5).rest.unwrap();
     assert_eq!(rest.blend, 40);
     assert_eq!(s.end_ms, 1600);
     assert_eq!((s.strength, s.stall), (0.5, 0.5));
@@ -1061,6 +1061,70 @@ fn a_turned_blow_recoils_the_striker() {
     assert_eq!(s.recoil, Some(rest));
     assert_eq!(s.take_recoil(), Some(rest));
     assert_eq!(s.take_recoil(), None);
+}
+
+/// Two weapons (class 0x90) past 0.4 of a side swing counter instead of
+/// recoiling, unless a flag of 0xA0012 holds them back (the released bit
+/// is cleared first), the swing is not a side one (5–10), or it is a
+/// continuation (which skips the rest without a counter).
+#[test]
+fn two_weapons_late_in_a_side_swing_counter() {
+    let dual = |clock: f32| Striker {
+        class_word: 0x90,
+        clock,
+        ..striker(1.0)
+    };
+    let mut s = swinging();
+    let r = s.recoil_from(20.0, 0.5, &dual(0.5), 6);
+    assert!(r.counter && r.rest.is_none(), "{r:?}");
+    assert_eq!((s.strength, s.stall), (0.5, 0.5));
+    // The released bit is cleared before the hold-back test.
+    let mut s = SwingState {
+        flags: flags::RELEASED,
+        ..swinging()
+    };
+    assert!(s.recoil_from(20.0, 0.5, &dual(0.5), 9).counter);
+    // The clock compares in double: 0.4f is a hair above the double 0.4.
+    assert!(swinging().recoil_from(20.0, 0.5, &dual(0.4), 6).counter);
+    // Early, a stab, held back by stalling, or a continuation: no counter.
+    for (clock, motion, extra) in [(0.39, 6, 0), (0.5, 11, 0), (0.5, 6, flags::STALLING)] {
+        let mut s = SwingState {
+            flags: extra,
+            ..swinging()
+        };
+        let r = s.recoil_from(20.0, 0.5, &dual(clock), motion);
+        assert!(!r.counter && r.rest.is_some(), "{clock} {motion} {r:?}");
+    }
+    let mut s = SwingState {
+        flags: flags::CONTINUATION,
+        ..swinging()
+    };
+    let r = s.recoil_from(20.0, 0.5, &dual(0.5), 6);
+    assert!(!r.counter && r.rest.is_none(), "{r:?}");
+}
+
+/// A follow-through of two weapons late in a side swing counters and
+/// writes nothing; a continuation writes nothing and does not counter.
+#[test]
+fn a_wound_late_in_a_dual_swing_counters() {
+    let dual = Striker {
+        class_word: 0x90,
+        clock: 0.5,
+        ..striker(1.0)
+    };
+    let mut s = swinging();
+    assert!(s.after_wound(&blow(true, 1.0), 0.5, &dual, 6));
+    assert!(!s.has(flags::STALLING) && s.has(flags::WOUNDED));
+    let mut s = SwingState {
+        flags: flags::CONTINUATION,
+        ..swinging()
+    };
+    assert!(!s.after_wound(&blow(true, 1.0), 0.5, &dual, 6));
+    assert!(!s.has(flags::STALLING));
+    // A stab follows through.
+    let mut s = swinging();
+    assert!(!s.after_wound(&blow(true, 1.0), 0.5, &dual, 11));
+    assert!(s.has(flags::STALLING));
 }
 
 /// A recoil's rest starts the stance that ends its stall: the rest's blend

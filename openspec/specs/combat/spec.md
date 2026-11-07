@@ -207,6 +207,14 @@ The system SHALL build a held weapon's record as the original does: from its sec
 - **WHEN** the installed "Torch A01" and "Flail A" are measured
 - **THEN** the torch is 58.3 cm long, its flame and shadow nodes not counted, and the flail 84.4 cm, its four rigid links added to the handle
 
+#### Scenario: A flipped weapon's sweet spot
+- **WHEN** a weapon is held turned over
+- **THEN** its sweet spot is measured with the flipped side's striking part (bytes 0x3B and 0x3C), as the record's other flipped values
+
+#### Scenario: An off-hand factory weapon
+- **WHEN** a character holds a factory weapon in its off hand
+- **THEN** its model is built from the item's seeds, stored choices and condition, and its record from the recipe's stats for them with the assembled striking extents, as in the main hand
+
 #### Scenario: Length walk past a plain node
 - **WHEN** a weapon's first-child chain is a rigid 50 cm part, a plain 5 cm node and a rigid 20 cm part, striking from 0 to 1
 - **THEN** its length is 70 cm, the plain node passed over, and its sweet spot 30 cm, that walk stopping at the plain node
