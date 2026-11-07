@@ -46,6 +46,10 @@ pub struct SpectateSession {
     /// The fixed camera pose the arena's start puts the camera at: the eye
     /// and the point it looks at (m). A follow replaces it.
     pub pose: Option<(Vec3, Vec3)>,
+    /// The point whose room the room walk is forced to (m): the arena's
+    /// spawn spot, as the original's match start stores the room there.
+    /// None outside an arena match, where the walk then keeps its rooms.
+    pub forced_room_at: Option<Vec3>,
 }
 
 /// Where the original's spectated match start puts the camera: the arena's
@@ -71,6 +75,7 @@ impl SpectateSession {
             spot + Vec3::from_array(SPECTATE_CAMERA_OFFSET_CM) / 100.0,
             spot,
         ));
+        self.forced_room_at = Some(spot);
     }
 
     /// The session's end: the flag cleared, the camera's follow cleared.
@@ -80,6 +85,7 @@ impl SpectateSession {
         self.last_press = None;
         self.arena = false;
         self.pose = None;
+        self.forced_room_at = None;
     }
 
     /// Whether the controls are spectating.
@@ -204,6 +210,40 @@ pub(crate) fn spectate_focus(
         .unwrap_or(fallback)
 }
 
+/// The room walk follows the session: while it runs the view follows no
+/// player, so the walk takes its forced-room branch with the arena's spawn
+/// spot (the original's walk tests the scene's control mode each frame and
+/// its match start stores the room at the spot).
+///
+/// The point holds only in the match's own level: the original stores the
+/// room's index for the arena, and its hub load clears it, so the hub the
+/// return loads (still in Spectate until the manager stands) keeps its rooms.
+fn force_the_room_walk(
+    session: Res<SpectateSession>,
+    scene: Option<Res<crate::arena_live::ArenaScene>>,
+    mut forced: ResMut<exa_world::room_view::ForcedRoom>,
+) {
+    let want = exa_world::room_view::ForcedRoom {
+        active: session.active,
+        at: session
+            .forced_room_at
+            .filter(|_| scene.is_some())
+            .map(|p| Vec2::new(p.x, p.z)),
+    };
+    if *forced != want {
+        info!(
+            "room walk: {} (forced to the room at {:?})",
+            if want.active {
+                "the view follows no player"
+            } else {
+                "the view follows the player"
+            },
+            want.at
+        );
+        *forced = want;
+    }
+}
+
 pub struct SpectatePlugin;
 
 impl Plugin for SpectatePlugin {
@@ -214,6 +254,7 @@ impl Plugin for SpectatePlugin {
                 start_on_load.run_if(resource_exists::<SpectateOnLoad>),
                 spectate_clicks.run_if(|s: Res<SpectateSession>| s.active),
                 end_arena_session.run_if(|s: Res<SpectateSession>| s.active),
+                force_the_room_walk.run_if(resource_exists::<exa_world::room_view::ForcedRoom>),
             ),
         );
     }
@@ -251,8 +292,11 @@ mod tests {
         let (eye, at) = s.pose.unwrap();
         assert!(eye.abs_diff_eq(Vec3::new(8.0, 13.8, 14.0), 1e-5), "{eye}");
         assert_eq!(at, Vec3::new(1.0, 2.0, 3.0));
+        // The room walk is forced to the spot's room.
+        assert_eq!(s.forced_room_at, Some(Vec3::new(1.0, 2.0, 3.0)));
         s.end();
         assert!(!s.active && !s.arena && s.pose.is_none());
+        assert_eq!(s.forced_room_at, None);
     }
 
     /// A character (living or dead) is followed; a prop, the level, a

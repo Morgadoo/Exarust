@@ -797,8 +797,10 @@ is the player's to control (only hired employees entered): the bench
 (`save_live`) keeps the manager's record as the next player spawn's and
 despawns the player, the camera stands at the original's fixed pose (the
 spawn spot raised by 700, 1180 and 1100 cm, looking at it) until a double
-click follows someone, every match fighter carries a brain (with
-relations) whose target
+click follows someone, the room walk is forced to the room at the spawn
+spot while the match level lasts (`exa_world::room_view::ForcedRoom`, as
+the original's match starts store that room), every match fighter carries
+a brain (with relations) whose target
 pass picks its foe, and the hub's arrival
 rebuilds the manager and ends the session. A match's company entries are
 the board's lineup (`ArenaMatchLaunch::entrants`): entry `i` is pool slot

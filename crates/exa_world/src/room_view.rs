@@ -35,6 +35,7 @@ pub struct RoomViewPlugin;
 impl Plugin for RoomViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RoomView>()
+            .init_resource::<ForcedRoom>()
             .init_resource::<DoorToggle>()
             .add_systems(Update, toggle_nearest_door)
             .add_systems(
@@ -286,6 +287,19 @@ pub struct RoomView {
     /// Every room active, no lids, no fades (a debug view of the whole
     /// level).
     pub all: bool,
+}
+
+/// The room walk's forced-room branch. While `active` (the view follows no
+/// player: the Spectate mode an arena match enters when no entrant is the
+/// player's), the walk ignores the [`RoomAnchor`] and takes the room at
+/// `at` (metres, X/Z: the arena's spawn spot, which the original's match
+/// start turns into its stored room), alone; with no room there (or no
+/// point) nothing changes, as the original returns when its stored room is
+/// none. The game sets it from its spectate session.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct ForcedRoom {
+    pub active: bool,
+    pub at: Option<Vec2>,
 }
 
 /// The point the active rooms follow: the player, as the original follows
@@ -562,6 +576,7 @@ fn track_rooms(
     time: Res<Time<Real>>,
     view: Res<RoomView>,
     level: Option<ResMut<LevelRooms>>,
+    forced: Res<ForcedRoom>,
     anchors: Query<&GlobalTransform, With<RoomAnchor>>,
     mut members: MemberQuery,
     mut tracked: TrackedQuery,
@@ -578,6 +593,14 @@ fn track_rooms(
     let LevelRooms { rooms, tracker, .. } = &mut *level;
     if view.all {
         tracker.show_all();
+    } else if forced.active {
+        if let Some(room) = forced.at.and_then(|at| rooms.room_at(at)) {
+            tracker.update_forced(rooms, room, now);
+            if tracker.active() != last_active.as_slice() {
+                *last_active = tracker.active().to_vec();
+                debug!("active rooms {:?} (forced room {room})", tracker.active());
+            }
+        }
     } else if let Some(anchor) = anchors.iter().next() {
         let p = anchor.translation();
         tracker.update(rooms, Vec2::new(p.x, p.z), now);
