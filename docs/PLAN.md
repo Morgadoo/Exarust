@@ -285,6 +285,8 @@ Round 98 worldgap: grid cells merge their floors into one +Floor node, as the or
 
 Round 100 cellfloor: cell floors are built as the original builds them, through merge, weld and the vertex-cache reorder.
 
+Round 109 scene: placed props carry their placement's light and fire rules, as the original's importer does.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
