@@ -299,12 +299,18 @@ impl EndMenuScreen {
     }
 }
 
+/// The pad's Select for the end menu: the controls' pad routine sends it
+/// outside a dialogue, and the menu confirms its row when it shows.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndMenuConfirm;
+
 pub struct EndMenuScreenPlugin;
 
 impl Plugin for EndMenuScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EndMenuScreen>()
             .add_message::<ScriptedEnd>()
+            .add_message::<EndMenuConfirm>()
             .add_systems(
                 Update,
                 (update, draw)
@@ -324,7 +330,26 @@ fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    mut pad: MessageReader<EndMenuConfirm>,
 ) {
+    let pad_confirm = pad.read().count() > 0;
+    // The pad's Select: a menu that is not showing does nothing; one that
+    // shows confirms its selected row ([`Flow::menu_confirm`]; Exarust's
+    // end menu has no click sound to play).
+    if pad_confirm
+        && let Some(flow) = flow.as_mut()
+        && flow
+            .menu_confirm(screen.open, false, 0.0)
+            .contains(&Step::MenuConfirm)
+    {
+        info!("end menu: the pad's Select confirms {:?}", screen.selected);
+        let out = screen.confirm(flow);
+        if let Some(scripted) = screen.scripted.take() {
+            scripts.write(scripted);
+        }
+        steps.steps.extend(out);
+        return;
+    }
     if !screen.open {
         return;
     }

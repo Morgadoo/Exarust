@@ -31,6 +31,7 @@ pub mod commands;
 pub mod container_fill;
 pub mod content_requests;
 pub mod control_nodes;
+pub mod controls_live;
 pub mod create;
 pub mod creator_screen;
 pub mod creator_view;
@@ -255,6 +256,7 @@ impl Plugin for GamePlugin {
                 arsenal_view::ArsenalViewPlugin,
                 power_screen::PowerScreenPlugin,
                 skill_screen::SkillScreenPlugin,
+                controls_live::ControlsLivePlugin,
             thaum::visuals::VisualPlugin,
             ),
         ))

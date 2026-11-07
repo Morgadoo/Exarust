@@ -366,7 +366,10 @@ fn bench_the_manager(
     mut players: PlayerSaveQuery,
     roots: Query<Entity, With<crate::player::Player>>,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
-    session: Option<ResMut<crate::spectate::SpectateSession>>,
+    (session, control): (
+        Option<ResMut<crate::spectate::SpectateSession>>,
+        Option<ResMut<crate::player_controls::PlayerControl>>,
+    ),
 ) {
     let (Some(scene), Some(mut session)) = (scene, session) else {
         return;
@@ -401,6 +404,12 @@ fn bench_the_manager(
         commands.entity(root).despawn();
     }
     session.start_arena(Vec3::from_array(scene.spawn_at) / 100.0);
+    // The Character mode's end, then the Spectate mode's start: the
+    // controls end on.
+    if let Some(mut control) = control {
+        crate::controls_live::switch_controls(&mut control, true, "end of play");
+        crate::controls_live::switch_controls(&mut control, false, "spectate starts");
+    }
 }
 
 /// The level change's world sync: before the level goes, the surviving

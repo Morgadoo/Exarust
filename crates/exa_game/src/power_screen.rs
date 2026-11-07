@@ -290,8 +290,41 @@ impl Plugin for PowerScreenPlugin {
             .add_systems(Startup, (load_screen, setup_router))
             .add_systems(
                 Update,
-                (creator_tree, hotkeys, pointer, draw, ui_sounds).chain(),
+                (
+                    creator_tree,
+                    hotkeys,
+                    pointer,
+                    draw,
+                    suspend_controls,
+                    ui_sounds,
+                )
+                    .chain(),
             );
+    }
+}
+
+/// The tree's open turns the player's controls off and its close (the end
+/// of its fade-out) back on, as the original's open and close routines do.
+/// The creator's tree is left out: no controls exist before the first play.
+fn suspend_controls(
+    screen: Res<PowerScreen>,
+    mut was_open: Local<bool>,
+    control: Option<ResMut<crate::player_controls::PlayerControl>>,
+) {
+    if screen.open == *was_open {
+        return;
+    }
+    *was_open = screen.open;
+    if screen.tree.mode != TreeMode::Play {
+        return;
+    }
+    if let Some(mut control) = control {
+        let by = if screen.open {
+            "power tree opens"
+        } else {
+            "power tree closes"
+        };
+        crate::controls_live::switch_controls(&mut control, screen.open, by);
     }
 }
 
@@ -458,6 +491,7 @@ fn hotkeys(
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
     mut screen: ResMut<PowerScreen>,
+    control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
     let Some(bindings) = bindings else {
         return;
@@ -519,9 +553,12 @@ fn hotkeys(
         }
         return;
     }
-    if bindings
-        .key_code(Action::PowerTree)
-        .is_some_and(|key| keys.just_pressed(key))
+    // The tree's key is the controls' key-down handler's: it opens nothing
+    // while the controls are off.
+    if !crate::player_controls::PlayerControl::is_off(control.as_deref())
+        && bindings
+            .key_code(Action::PowerTree)
+            .is_some_and(|key| keys.just_pressed(key))
     {
         // A record that knows no power starts with the two default pairs,
         // as the tree's first opening seeds them.

@@ -2553,9 +2553,16 @@ pub(crate) fn tick_casters(
     mut moves: MessageWriter<Otherwhere>,
     mut holds: MessageWriter<super::hold_live::HoldEnd>,
     mut draws: ResMut<EffectDraws>,
-    mut arcs: Query<&mut LiveArcs>,
+    (mut arcs, control): (
+        Query<&mut LiveArcs>,
+        Option<Res<crate::player_controls::PlayerControl>>,
+    ),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+    // The controls off, a form has the mouse: the player's hooks read no
+    // button.
+    let buttons =
+        buttons.filter(|_| !crate::player_controls::PlayerControl::is_off(control.as_deref()));
     for (
         caster_entity,
         mut caster,

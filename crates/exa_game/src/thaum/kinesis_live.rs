@@ -194,6 +194,7 @@ pub(super) fn take_kinesis_picks(
 }
 
 /// The cursor's ray and the movement keys, each frame.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn read_kinesis_input(
     scripted: Option<Res<ScriptedPointer>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -202,7 +203,10 @@ pub(super) fn read_kinesis_input(
     bindings: Option<Res<Bindings>>,
     mut cursor: ResMut<KinesisCursor>,
     mut word: ResMut<KinesisKeys>,
+    control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
+    // The controls off, the key word is empty.
+    let off = crate::player_controls::PlayerControl::is_off(control.as_deref());
     let ray = scripted.as_deref().and_then(|scripted| {
         let window = windows.single().ok()?;
         let (camera, eye) = cameras.single().ok()?;
@@ -211,7 +215,8 @@ pub(super) fn read_kinesis_input(
     });
     cursor.set_if_neq(KinesisCursor(ray.map(|r| (r.origin, *r.direction))));
     let held = |action| {
-        keys.as_deref()
+        !off && keys
+            .as_deref()
             .zip(bindings.as_deref())
             .is_some_and(|(k, b)| b.pressed(k, action))
     };

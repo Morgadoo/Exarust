@@ -316,18 +316,19 @@ pub const START_ACTIVATION_RADIUS2: f32 = 16_000_000.0;
 /// 400 000 000, 200 m.
 pub const END_ACTIVATION_RADIUS2: f32 = 400_000_000.0;
 
-/// The player-control singleton's state at creation: the hotkey permission
-/// mask 31, and two flags the constructor sets to 1. Only the constructor
-/// is traced: what reads the flags, and so their names, are guesses
-/// [guess: controls and combat], and nothing in Exarust reads this
-/// resource. The running player keeps its combat state on the body
-/// (`exa_game::player::PlayerBody`), which starts out of combat.
+/// The player-control singleton: its hotkey permission mask (31 at
+/// creation), the controls' off byte and the combat flag, both 1 at
+/// creation. The running player keeps its combat state on the body
+/// (`exa_game::player::PlayerBody`), which starts out of combat; Exarust
+/// reads [`PlayerControl::off`] (see [`PlayerControl::set_off`]).
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerControl {
     /// The hotkey permission mask: 31 at creation.
     pub hotkey_mask: u32,
-    /// The constructor's first flag: 1 [guess: the controls flag].
-    pub controls: bool,
+    /// The controls are off (suspended): set at creation, cleared by the
+    /// Character and Spectate modes' starts, set by their ends, and set
+    /// while a form that suspends the controls is open.
+    pub off: bool,
     /// The constructor's second flag: 1 [guess: the combat flag].
     pub combat: bool,
 }
@@ -339,13 +340,46 @@ impl Default for PlayerControl {
 }
 
 impl PlayerControl {
-    /// The singleton as its constructor leaves it.
+    /// The singleton as its constructor leaves it: the controls off.
     pub fn new() -> Self {
         Self {
             hotkey_mask: 31,
-            controls: true,
+            off: true,
             combat: true,
         }
+    }
+
+    /// The controls' switch: turns the controls off (`true`) or back on,
+    /// and answers whether anything changed (a switch to the state they
+    /// are in does nothing).
+    ///
+    /// Off, the controls' frame task stops (the movement request, the
+    /// key-down handler's dispatch, the pad routine, the idle camera and
+    /// the timed list), the mouse hook for the orbit and Cursor Look is
+    /// dropped with its capture, the key word, the behaviour's move flag
+    /// and the locomotion flags are cleared, the click, Ctrl and
+    /// right-button handlers leave the view's cursor actions, the hand's
+    /// three per-frame bytes are cleared, the right button goes to the GUI
+    /// and the pad takes its menu action set. On, all of it comes back and
+    /// the combat toggle is re-applied with the body's combat flag.
+    ///
+    /// Its callers: the Character mode's start (on) and end (off), the
+    /// Spectate mode's start (on) and end (off), the skill screen's open
+    /// (off) and close (on), the power tree's open (off) and close (on),
+    /// the arena arsenal's open (off) and close (on). The inventory, the
+    /// character view and the menus do not call it.
+    pub fn set_off(&mut self, off: bool) -> bool {
+        if self.off == off {
+            return false;
+        }
+        self.off = off;
+        true
+    }
+
+    /// Whether the controls are off; no singleton (a test app without the
+    /// controls) counts as on.
+    pub fn is_off(control: Option<&Self>) -> bool {
+        control.is_some_and(|c| c.off)
     }
 }
 
@@ -2041,14 +2075,28 @@ mod tests {
     }
 
     /// The player-control singleton starts with the hotkey mask 31 and both
-    /// of the constructor's flags set.
+    /// of the constructor's flags set: the controls off, combat on.
     #[test]
     fn the_player_control_starts_as_its_constructor() {
         let c = PlayerControl::new();
         assert_eq!(c.hotkey_mask, 31);
-        assert!(c.controls);
+        assert!(c.off);
         assert!(c.combat);
         assert_eq!(PlayerControl::default(), c);
+    }
+
+    /// The switch changes the off byte only when it differs, and no
+    /// singleton reads as on.
+    #[test]
+    fn the_switch_answers_only_a_change() {
+        let mut c = PlayerControl::new();
+        assert!(!c.set_off(true));
+        assert!(c.set_off(false));
+        assert!(!c.off);
+        assert!(!c.set_off(false));
+        assert!(c.set_off(true));
+        assert!(PlayerControl::is_off(Some(&c)));
+        assert!(!PlayerControl::is_off(None));
     }
 
     #[allow(clippy::too_many_arguments)]
