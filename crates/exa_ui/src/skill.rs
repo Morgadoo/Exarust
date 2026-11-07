@@ -304,27 +304,37 @@ pub struct SkillHit {
     pub page: i32,
 }
 
-/// Tests the five samples around every node.
-pub fn skill_node_hit(hit: SkillHit, nodes: &[(f32, f32)]) -> i32 {
+/// Tests the five samples around every node: `nodes` are the ring's nodes
+/// in slot order, each with the 0-based group its slot shows. A pointer
+/// within 23 units of a node (an unordered compare: a NaN distance passes)
+/// takes the group's code, `(group + 1) << 8`; within 5 units of one of
+/// its five satellites (18.3 units out at a fifth of a turn each, scaled by
+/// the reveal value) it takes the level as well, `code | (sample + 1)`. A
+/// later node within reach replaces an earlier one's code. With no node the
+/// result is 0 on page 2 and −1 elsewhere.
+pub fn skill_node_hit(hit: SkillHit, nodes: &[(usize, (f32, f32))]) -> i32 {
     let unit = f64::from(hit.unit);
-    let outer = (unit * 23.0) as f32;
-    let inner = (unit * 5.0) as f32;
+    let outer = i64::from(hit.unit) * 23;
+    let outer = (outer * outer) as f32;
+    let inner = i64::from(hit.unit) * 5;
+    let inner = (inner * inner) as f32;
     let radius = unit * 18.3;
     let mut result = if hit.page == 2 { 0 } else { -1 };
-    for &(x, y) in nodes {
+    for &(group, (x, y)) in nodes {
         let dx = hit.mouse.0 as f32 - x;
         let dy = hit.mouse.1 as f32 - y;
-        if dx * dx + dy * dy > outer * outer {
+        if dy * dy + dx * dx > outer {
             continue;
         }
+        result = (group as i32 + 1) << 8;
         for j in 0..5 {
             let angle = j as f32 * std::f32::consts::TAU * 0.2;
             let (sin, cos) = sin_cos(angle);
-            let ox = ((radius * f64::from(sin)).round_ties_even() as f32) * hit.turn;
-            let oy = ((radius * f64::from(cos)).round_ties_even() as f32) * hit.turn;
-            let ddx = hit.mouse.0 as f32 - (x + ox);
+            let ox = ((f64::from(sin) * radius).round_ties_even() as f32) * hit.turn;
+            let oy = ((f64::from(cos) * radius).round_ties_even() as f32) * hit.turn;
+            let ddx = hit.mouse.0 as f32 - (ox + x);
             let ddy = hit.mouse.1 as f32 - (y - oy);
-            if ddx * ddx + ddy * ddy < inner * inner {
+            if ddy * ddy + ddx * ddx < inner {
                 result = (j | result) + 1;
                 break;
             }
@@ -376,12 +386,18 @@ pub fn skill_hover(input: SkillHoverInput<'_>) -> SkillHover {
     let Some(grid) = input.grid else {
         return out;
     };
-    let candidate = if input.index > 0 && input.index & 0x700 > 0 && input.index & 7 > 0 {
-        let at = (((input.index >> 8) & 7) * 8 + (input.index & 7) + 1) as usize;
-        if grid.get(at).is_some_and(|&byte| byte != 0) {
+    // A group's own code (no level) passes; a level passes when the record
+    // holds a technique there.
+    let candidate = if input.index > 0 && input.index & 0x700 != 0 {
+        if input.index & 7 == 0 {
             input.index
         } else {
-            0
+            let at = (((input.index >> 8) & 7) * 8 + (input.index & 7) + 1) as usize;
+            if grid.get(at).is_some_and(|&byte| byte != 0) {
+                input.index
+            } else {
+                0
+            }
         }
     } else {
         0
@@ -392,11 +408,13 @@ pub fn skill_hover(input: SkillHoverInput<'_>) -> SkillHover {
     if candidate > 0 && input.last_positive > 0 && input.last_positive != candidate {
         out.stamp = input.clock;
     } else {
-        let elapsed = input.clock - input.stamp;
+        // The elapsed time is compared unsigned: a stamp ahead of the
+        // clock restarts it.
+        let elapsed = input.clock.wrapping_sub(input.stamp) as u32;
         out.stamp = if elapsed >= 200 {
             input.clock
         } else {
-            input.clock - (200 - elapsed)
+            input.clock.wrapping_sub(200 - elapsed as i32)
         };
     }
     out.previous = candidate;
@@ -1738,6 +1756,68 @@ impl SkillScreen {
         changed
     }
 
+    /// A pointer button on the screen, as the screen's pointer method
+    /// handles it. `mask` carries the right button (bit 2) and the click
+    /// (0x2000); the code under the pointer is [`Self::hover`].
+    ///
+    /// The right button closes the ring screen at once (the open routine's
+    /// toggle) unless it is hiding; on a page it is the screen's own. With
+    /// nothing under the pointer a pending learning row or forget dialog
+    /// starts its 200 ms close. The page-2 background (code 0x10000) shows
+    /// a hidden screen again (state 1, 500 ms) or starts the hide. A locked
+    /// screen takes no other click. A click with nothing pending presses
+    /// the node ([`Self::press_node`]); with a choice pending it answers it
+    /// ([`Self::commit`]).
+    pub fn pointer(
+        &mut self,
+        data: &mut CharacterData,
+        mask: u16,
+        clock: i32,
+        rates: ExperienceRates,
+    ) -> SkillPointer {
+        if mask & 2 != 0 {
+            if self.page > 0 {
+                return SkillPointer::Handled;
+            }
+            if self.state & 2 == 0 {
+                return SkillPointer::Close;
+            }
+            return SkillPointer::Handled;
+        }
+        let index = self.hover;
+        if index < 1 {
+            if (self.learning != 0 || self.forgetting != 0) && self.popup == 0 {
+                self.popup = 2;
+                self.popup_deadline = clock.wrapping_add(200);
+            }
+            return SkillPointer::Handled;
+        }
+        if index == 0x1_0000 {
+            if mask & 0x2000 == 0 {
+                return SkillPointer::Handled;
+            }
+            if self.state == 4 {
+                self.state = 1;
+                self.reveal_deadline = clock.wrapping_add(500);
+            } else if self.state & 2 == 0 {
+                self.begin_hide(clock);
+            }
+            return SkillPointer::Handled;
+        }
+        if self.locked || mask & 0x2000 == 0 {
+            return SkillPointer::Handled;
+        }
+        if self.learning == 0 && self.forgetting == 0 {
+            self.press_node(&data.record.skills, index, clock);
+            return SkillPointer::Pressed;
+        }
+        if self.commit(data, index, clock, rates) {
+            SkillPointer::Changed
+        } else {
+            SkillPointer::Handled
+        }
+    }
+
     /// Attaches a character record (the compact screen's constructor, the
     /// character screen and the arena do): each group's committed points
     /// become the record's points of its skill, or 0 with `clear`, and the
@@ -1788,6 +1868,19 @@ impl SkillScreen {
             self.ready = false;
         }
     }
+}
+
+/// What a pointer button on the skill screen did ([`SkillScreen::pointer`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillPointer {
+    /// The screen took the button and nothing else happened.
+    Handled,
+    /// A node was pressed (the learning row or forget dialog may open).
+    Pressed,
+    /// A pending choice was answered and the record changed.
+    Changed,
+    /// The right button closed the screen.
+    Close,
 }
 
 /// A screen-space icon quad from the skill icon atlas.
@@ -2451,14 +2544,15 @@ mod tests {
 
     #[test]
     fn the_skill_ring_hits_its_satellites() {
-        let nodes = [(100.0, 100.0)];
+        let nodes = [(1, (100.0, 100.0))];
         let hit = SkillHit {
             mouse: (100, 27),
             unit: 4,
             turn: 1.0,
             page: 2,
         };
-        assert_eq!(skill_node_hit(hit, &nodes), 1);
+        // The node's slot shows group 1 (0-based): code 0x200, level 1.
+        assert_eq!(skill_node_hit(hit, &nodes), 0x201);
         assert_eq!(
             skill_node_hit(
                 SkillHit {
@@ -2467,7 +2561,7 @@ mod tests {
                 },
                 &nodes
             ),
-            2
+            0x202
         );
         assert_eq!(
             skill_node_hit(
@@ -2489,7 +2583,30 @@ mod tests {
                 },
                 &nodes
             ),
-            0
+            0x201
+        );
+        // On the node, off its satellites: the group's own code.
+        assert_eq!(
+            skill_node_hit(
+                SkillHit {
+                    mouse: (100, 100),
+                    ..hit
+                },
+                &nodes
+            ),
+            0x200
+        );
+        // A later node in reach replaces an earlier one's code.
+        let two = [(1, (100.0, 100.0)), (4, (110.0, 100.0))];
+        assert_eq!(
+            skill_node_hit(
+                SkillHit {
+                    mouse: (105, 100),
+                    ..hit
+                },
+                &two
+            ),
+            0x500
         );
     }
 
@@ -2564,6 +2681,22 @@ mod tests {
         });
         assert_eq!(miss.previous, 0);
         assert_eq!(miss.stamp, 900);
+
+        // A group's own code (no level) passes the filter without the grid.
+        let group = skill_hover(SkillHoverInput {
+            index: 0x0300,
+            current: 0,
+            grid: Some(&[0u8; 64]),
+            previous: 0,
+            last_positive: 0,
+            stamp: 1100,
+            clock: 1000,
+            base: 0,
+        });
+        assert_eq!(group.previous, 0x0300);
+        assert_eq!(group.last_positive, 0x0300);
+        // The stamp ahead of the clock reads as a long wait: it restarts.
+        assert_eq!(group.stamp, 1000);
 
         let plain = skill_hover(SkillHoverInput {
             index: 5,
@@ -3194,6 +3327,82 @@ mod tests {
         worth: |xp| xp,
         experience: |worth| worth,
     };
+
+    #[test]
+    fn the_pointer_presses_answers_dismisses_and_closes() {
+        let bounds = SkillBounds {
+            left: 0,
+            right: 800,
+            top: 0,
+            bottom: 600,
+        };
+        let mut data = CharacterData::default();
+        data.record.skills[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        let mut screen = SkillScreen::open(bounds, 4, false, 0, 0);
+        screen.attach(&mut data, false, SAME);
+        // A click on a learnt level asks to forget it.
+        screen.hover = 0x101;
+        assert_eq!(
+            screen.pointer(&mut data, 0x2000, 100, SAME),
+            SkillPointer::Pressed
+        );
+        assert_eq!(
+            (screen.forgetting, screen.popup, screen.popup_deadline),
+            (0x101, 1, 400)
+        );
+        // A press without the click flag does nothing more.
+        screen.hover = 1;
+        assert_eq!(
+            screen.pointer(&mut data, 0, 150, SAME),
+            SkillPointer::Handled
+        );
+        assert_eq!(data.record.skills[0].points, 5_000);
+        // No (2) leaves the record; the popup is still opening, so its
+        // close is not started.
+        screen.hover = 2;
+        assert_eq!(
+            screen.pointer(&mut data, 0x2000, 200, SAME),
+            SkillPointer::Handled
+        );
+        assert_eq!(screen.popup, 1);
+        // Nothing under the pointer once it is shown: the 200 ms close.
+        screen.popup = 0;
+        screen.hover = -1;
+        assert_eq!(
+            screen.pointer(&mut data, 0x2000, 500, SAME),
+            SkillPointer::Handled
+        );
+        assert_eq!((screen.popup, screen.popup_deadline), (2, 700));
+        // Yes (1) forgets the level.
+        screen.popup = 0;
+        screen.hover = 1;
+        assert_eq!(
+            screen.pointer(&mut data, 0x2000, 800, SAME),
+            SkillPointer::Changed
+        );
+        assert_eq!(data.record.skills[0], skill(0, [0; 6]));
+        // A locked screen takes no click; the right button still closes.
+        screen.forgetting = 0;
+        screen.locked = true;
+        screen.hover = 0x101;
+        assert_eq!(
+            screen.pointer(&mut data, 0x2000, 900, SAME),
+            SkillPointer::Handled
+        );
+        assert_eq!(screen.pointer(&mut data, 2, 900, SAME), SkillPointer::Close);
+        // Not while it hides, nor on a page.
+        screen.state |= 2;
+        assert_eq!(
+            screen.pointer(&mut data, 2, 900, SAME),
+            SkillPointer::Handled
+        );
+        screen.state = 0;
+        screen.page = 1;
+        assert_eq!(
+            screen.pointer(&mut data, 2, 900, SAME),
+            SkillPointer::Handled
+        );
+    }
 
     #[test]
     fn the_requirement_mask_marks_chosen_absent_and_missing_nodes() {

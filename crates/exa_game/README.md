@@ -46,7 +46,16 @@ nodes back into the record, plus the form's creation fields, the opening and
 closing fades, the 17 ms view frames whose zoom and pan blend about the
 cursor, the eased opening scale about the first node, the bar's 900 ms
 open/close animation, the tooltip and label layout, the stretched link's own
-cubic, and the caster's grant caller. The running screen (`power_screen`)
+cubic, and the caster's grant caller. The skill screen in play
+(`skill_screen`) opens on K through the hotkeys: the two skill atlases are
+cut at the interface unit, `SkillShow_01` plays and the player's record is
+attached; each frame steps the fades, the point hit test, the hover filter
+and the pointer method (`exa_ui::skill::SkillScreen::pointer`: a click
+presses a node or answers the learning row or forget dialog, the right
+button closes), keeps the story's experience copy in step, and rasterises
+`exa_ui::skill_draw`'s list (the four programs, the skin's rounded boxes,
+the GUI font's glyphs) over the HUD; closing puts the record's technique
+word on the body. The running screen (`power_screen`)
 opens the tree with P, draws the tree and the bar through
 `exa_ui::tree_draw` and the domain wheel child's own paint (backdrop, sector
 bands, choice glow, icons, ring frame and label, hovered every frame)

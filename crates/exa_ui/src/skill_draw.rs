@@ -32,7 +32,7 @@ use crate::skill::{
     NODES_PER_GROUP, STATUS_CHOSEN, STATUS_REQUIREMENTS, STATUS_UNAVAILABLE, SkillLearningRow,
     SkillScreen, SkillTipBox, forget_dialog_place, learning_row, ring_group_tooltip,
     ring_node_title, ring_node_tooltip, selection_tip_slide, skill_group_icons, skill_icon_quad,
-    skill_orbit_bars, skill_popup_fade, skill_ring_position, skill_screen_fades,
+    skill_orbit_bars, skill_popup_fade, skill_ring_position, skill_satellite, skill_screen_fades,
 };
 use crate::skill_gui::{ICON_UNITS, SINGLE_ICON_UNITS, SkillIconHandles};
 use exa_formats::characters::{SKILLS, Skill};
@@ -124,6 +124,10 @@ pub struct SkillTip {
     pub width: f32,
     pub height: f32,
     pub alpha: f32,
+    /// The batches drawn before it: the box goes in front of
+    /// `batches[..order]` and under the rest (the learning row's icons sit
+    /// on its box).
+    pub order: usize,
 }
 
 impl From<SkillTipBox> for SkillTip {
@@ -134,6 +138,7 @@ impl From<SkillTipBox> for SkillTip {
             width: tip.width,
             height: tip.height,
             alpha: tip.alpha,
+            order: 0,
         }
     }
 }
@@ -147,6 +152,8 @@ pub struct SkillLabel {
     pub text: String,
     /// The label is centred on `x` rather than left-aligned.
     pub centred: bool,
+    /// The batches drawn before it, as [`SkillTip::order`].
+    pub order: usize,
 }
 
 /// One frame's skill-screen geometry and labels.
@@ -287,7 +294,10 @@ fn plate_corners(x: f32, y: f32, half: f32) -> (Corners, Uvs) {
 }
 
 /// The icon atlas quad: `icon` (1-based) from a `cell`-pixel grid in an
-/// atlas `size` pixels across, with its top-left at `(x, y)`.
+/// atlas `size` pixels across, with its top-left at `(x, y)`. The corners
+/// go top-left, bottom-left, bottom-right, top-right as the unit's cell
+/// draw submits them; the top edge samples the cell's far row (`v + dv`),
+/// since the atlas rows run up, so the icon stands upright.
 pub fn atlas_quad(
     icon: i32,
     cell: i32,
@@ -298,11 +308,11 @@ pub fn atlas_quad(
     let quad = skill_icon_quad(icon, cell, size.0, size.1, x, y)?;
     let side = quad.size;
     Some((
-        [(x + side, y), (x, y), (x, y + side), (x + side, y + side)],
+        [(x, y), (x, y + side), (x + side, y + side), (x + side, y)],
         [
-            (quad.uv[2], quad.uv[1]),
-            (quad.uv[0], quad.uv[1]),
             (quad.uv[0], quad.uv[3]),
+            (quad.uv[0], quad.uv[1]),
+            (quad.uv[2], quad.uv[1]),
             (quad.uv[2], quad.uv[3]),
         ],
     ))
@@ -592,10 +602,12 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 opacity * scale,
             );
             draw.tips.push(SkillTip {
+                order: draw.batches.len(),
                 alpha: glow,
                 ..tip.into()
             });
             draw.labels.push(SkillLabel {
+                order: draw.batches.len(),
                 x: name_at.0,
                 y: name_at.1,
                 ink,
@@ -603,15 +615,18 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 centred: false,
             });
         } else {
+            // The level's tooltip hangs under its satellite, not the node.
+            let satellite = satellite_of(screen, code, alpha).unwrap_or((0.0, 0.0));
             let tip = ring_node_tooltip(
-                node_x(&nodes, code),
-                node_y(&nodes, code),
+                satellite.0,
+                satellite.1,
                 screen.unit,
                 input.window,
                 &input.offsets,
                 opacity * scale,
             );
             draw.tips.push(SkillTip {
+                order: draw.batches.len(),
                 alpha: glow,
                 ..tip.tip.into()
             });
@@ -619,6 +634,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 && let Some((title, chosen)) = ring_node_title(skills, code)
             {
                 draw.labels.push(SkillLabel {
+                    order: draw.batches.len(),
                     x: tip.x,
                     y: tip.title_y,
                     ink,
@@ -629,6 +645,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     let status = node_status(skills, code);
                     if !status.is_empty() {
                         draw.labels.push(SkillLabel {
+                            order: draw.batches.len(),
                             x: tip.text.0,
                             y: tip.text.1,
                             ink,
@@ -649,7 +666,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
         // the hovered clear slot the highlight's 255 times it.
         let row_alpha = popup.alpha * scale;
         let popup_ink = [0xff, 0xf8, 0xf0, low_byte(120.0 * row_alpha)];
-        let place = learning_node(&nodes, screen.learning);
+        let place = satellite_of(screen, screen.learning, alpha);
         if let Some((x, y)) = place {
             let row: SkillLearningRow = learning_row(
                 x,
@@ -663,6 +680,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 screen.hover,
             );
             draw.tips.push(SkillTip {
+                order: draw.batches.len(),
                 alpha: glow_alpha(row_alpha, scale),
                 ..row.tip.into()
             });
@@ -696,6 +714,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
             if screen.hover > 0 && screen.hover < 9 {
                 let title = crate::skill::technique_name_for(screen.learning, screen.hover as u8);
                 draw.labels.push(SkillLabel {
+                    order: draw.batches.len(),
                     x: row.x,
                     y: row.title_y,
                     ink: popup_ink,
@@ -704,6 +723,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 });
                 if let Some(status) = row.status {
                     draw.labels.push(SkillLabel {
+                        order: draw.batches.len(),
                         x: row.text.0,
                         y: row.text.1,
                         ink: popup_ink,
@@ -714,7 +734,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
             }
         }
     } else if screen.forgetting != 0 {
-        let place = learning_node(&nodes, screen.forgetting);
+        let place = satellite_of(screen, screen.forgetting, alpha);
         if let Some((x, y)) = place {
             let dialog = forget_dialog_place(
                 x,
@@ -731,11 +751,13 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
             // under the pointer, else the plain ink, at
             // `(alpha − 0.5) × (base × scale) × 2`.
             draw.tips.push(SkillTip {
+                order: draw.batches.len(),
                 alpha: glow_alpha(popup.alpha, scale),
                 ..dialog.tip.into()
             });
             let popup_ink = [0xff, 0xf8, 0xf0, low_byte(120.0 * scale * popup.alpha)];
             draw.labels.push(SkillLabel {
+                order: draw.batches.len(),
                 x: dialog.text_left,
                 y: dialog.title_y,
                 ink: popup_ink,
@@ -743,6 +765,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 centred: false,
             });
             draw.labels.push(SkillLabel {
+                order: draw.batches.len(),
                 x: dialog.text_left,
                 y: dialog.question_y,
                 ink: popup_ink,
@@ -760,6 +783,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     [base[0], base[1], base[2], low_byte(fade)]
                 };
                 draw.labels.push(SkillLabel {
+                    order: draw.batches.len(),
                     x: dialog.yes_x,
                     y: dialog.choice_y,
                     ink: choice_ink(FORGET_YES),
@@ -767,6 +791,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     centred: true,
                 });
                 draw.labels.push(SkillLabel {
+                    order: draw.batches.len(),
                     x: dialog.no_x,
                     y: dialog.choice_y,
                     ink: choice_ink(FORGET_NO),
@@ -797,12 +822,14 @@ fn node_y(nodes: &[SkillNodePlace], code: i32) -> f32 {
         .unwrap_or(0.0)
 }
 
-/// The node place a learning-row or forget-dialog code names.
-fn learning_node(nodes: &[SkillNodePlace], code: i32) -> Option<(f32, f32)> {
-    nodes
-        .iter()
-        .find(|node| node.group + 1 == ((code >> 8) & 0xff) as usize)
-        .map(|node| (node.x, node.y))
+/// The satellite a level code names: its group's ring slot (the screen's
+/// group-to-slot table) and its level's pentagon point, at the reveal value
+/// `turn`, as the screen's satellite method places it. The node tooltip,
+/// the learning row and the forget dialog hang under it.
+fn satellite_of(screen: &SkillScreen, code: i32, turn: f32) -> Option<(f32, f32)> {
+    let group = usize::try_from((code >> 8) & 0xff).ok()?.checked_sub(1)?;
+    let slot = screen.group_slot(group)?;
+    Some(skill_satellite(slot - 1, code & 0xff, &screen.ring(turn)))
 }
 
 /// The status line of a ring node the record does not hold, from the
@@ -1079,8 +1106,10 @@ mod tests {
         let (corners, uvs) = atlas_quad(6, 32, (0x300, 0x2a0), 10.0, 20.0).unwrap();
         assert_eq!(
             corners,
-            [(42.0, 20.0), (10.0, 20.0), (10.0, 52.0), (42.0, 52.0)]
+            [(10.0, 20.0), (10.0, 52.0), (42.0, 52.0), (42.0, 20.0)]
         );
+        // The top edge samples the cell's far row.
+        assert!(uvs[0].1 > uvs[1].1);
         // Icon 6: a 24-cell row (width 0x300 / 32 = 24), row 0.
         assert!((uvs[1].0 - 5.0 * (32.0 / 768.0)).abs() < 1e-6);
         assert_eq!(atlas_quad(0, 32, (0x300, 0x2a0), 0.0, 0.0), None);

@@ -142,6 +142,7 @@ pub mod shop_preview;
 pub mod shop_stock;
 pub mod shop_window;
 pub mod sim_control;
+pub mod skill_screen;
 pub mod slots;
 pub mod socket_drag;
 pub mod spectate;
@@ -253,6 +254,7 @@ impl Plugin for GamePlugin {
                 item_icon_render::ItemIconPlugin,
                 arsenal_view::ArsenalViewPlugin,
                 power_screen::PowerScreenPlugin,
+                skill_screen::SkillScreenPlugin,
             thaum::visuals::VisualPlugin,
             ),
         ))

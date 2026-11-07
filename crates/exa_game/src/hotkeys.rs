@@ -25,8 +25,8 @@
 //! journal on the window manager; C, the digits, Q and the arrows send the
 //! power bar's commands to [`crate::thaum::cast`]; Talk, the digits and
 //! the leave key send the conversation engine's messages, Talk to the
-//! character [`crate::dialogue_live`] found. The skills screen's opening is
-//! not in Exarust and the power tree has its own key reader.
+//! character [`crate::dialogue_live`] found. K opens the skill screen
+//! ([`crate::skill_screen`]) and the power tree has its own key reader.
 //!
 //! The pad's newly pressed commands go through [`pad_hotkeys`], the
 //! controls' per-frame pad routine: Powers, UsePower and the bar's steps,
@@ -315,6 +315,7 @@ impl Plugin for HotkeyPlugin {
         app.add_message::<ScreenRequest>()
             .add_message::<BarCommand>()
             .add_message::<FlipWeaponRequest>()
+            .add_message::<crate::skill_screen::OpenSkills>()
             .add_message::<exa_script::Talk>()
             .add_message::<exa_script::PickReply>()
             .add_message::<exa_script::LeaveDialogue>()
@@ -363,6 +364,7 @@ fn press_hotkeys(
     mut screens: MessageWriter<ScreenRequest>,
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
+    mut skills: MessageWriter<crate::skill_screen::OpenSkills>,
     mut dialogue: DialogueSide,
 ) {
     let pressed: Vec<u32> = keys
@@ -509,8 +511,12 @@ fn press_hotkeys(
                         None => {}
                     }
                 }
-                // No skills screen yet (the power tree has its own key
-                // reader).
+                // The skills key opens the skill screen
+                // ([`crate::skill_screen`]); the power tree has its own key
+                // reader.
+                Hotkey::Skills => {
+                    skills.write(crate::skill_screen::OpenSkills);
+                }
                 _ => {}
             }
         }
@@ -780,6 +786,7 @@ mod tests {
                 .init_resource::<Bindings>()
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
+                .add_message::<crate::skill_screen::OpenSkills>()
                 .add_message::<BarCommand>()
                 .add_message::<FlipWeaponRequest>()
                 .init_resource::<DialogueFocus>()
@@ -809,6 +816,7 @@ mod tests {
                 .init_resource::<Bindings>()
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
+                .add_message::<crate::skill_screen::OpenSkills>()
                 .add_message::<BarCommand>()
                 .add_message::<FlipWeaponRequest>()
                 .init_resource::<DialogueFocus>()

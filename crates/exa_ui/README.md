@@ -505,7 +505,12 @@ restores them. `skill_gui` holds the two shader sources, their uniforms
 and the fixed `MPrj` projection matrix with the reveal sound, and `skill_draw` builds
 the screen's vertices: the page background, the ring page's dim, the node
 plates and five spokes, the node and level icons, the orbit bars and the
-tooltip, learning-row and forget-dialog boxes and text anchors. The
+tooltip, learning-row and forget-dialog boxes and text anchors (each box
+and label ordered among the batches; the node tooltip, row and dialog at
+the level's satellite; icon cells upright). `SkillScreen::pointer` is the
+screen's pointer method, and `skill_node_hit` returns the group and level
+code the hover filter reads; `exa_game::skill_screen` runs the screen in
+play. The
 extended controls in `controls` model each class's message rules: the text
 field's and combo box's edit state and key dispatch, the drop-down
 placement, the colour drag, the spinner's commit, press, key filter, drag
