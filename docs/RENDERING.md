@@ -765,11 +765,7 @@ such names.
   specular bit (the colour times the record's level) or only the
   reflection layer (the unscaled colour). It is tripled only for programs
   whose class has bit 0 with a specular map.
-- Dirt maps only act through vertex colours. Many prop and level meshes
-  store a colour stream (859 of them draw a material with a dirt mode,
-  `exa-tool corpus colours`); Exarust keeps it in `Mesh::colors` but does
-  not upload it, as it shades no dirt mode but 4, wound blood
-  ([Blood](#blood)), whose stream the blood system makes itself.
+- Dirt maps only act through vertex colours ([Dirt](#dirt)).
 - Tangents are generated from the UVs, and the original's bitangent runs
   along −v (its tangent sign is the opposite of MikkTSpace's). Exarust's
   `exa_assets::tangents` reproduces the original's splitter: per-face
@@ -1304,6 +1300,41 @@ and occlusion passes do nothing on shipped data.
   garment that leaves the most of the slot's uncovered coverage word
   (compared as the original's 64-bit word). The body dynamics carry it per
   part; nothing plays it yet.
+
+### Dirt
+
+The original's PBR program (`shadeopt`) has two dirt modes that read the
+mesh's stored colour stream. The factory picks the mode from a record that
+has the diffuse bit and a dirt layer (texture slot `0x8000000`, loaded as a
+colour texture like the diffuse): extra flags `0x4C & 0x7000` of 0 give
+mode 1 (grime), `0x1000` mode 2 (wear), `0x2000` mode 3, which binds the
+map but has no branch in any program, and `0x4000` the blood
+([Blood](#blood)). Only a record whose shader word selects the PBR program
+shows modes 1 and 2 (`exa_render::material::DirtMode::of_record`); the
+hair, skin, translucent and legacy programs have no such branch. With α
+the vertex alpha (1 where the mesh is clean) and d the dirt map's texel:
+
+- Grime: d is read at the texture coordinates and pulled to mid grey by
+  min(α·take, 1), take = `2 − amount` (record `0x30`, `MatDrt.w`); the
+  diffuse colour takes 2·d and the roughness r becomes
+  1 − (1 − r)(1 − 2|½ − d.g|). Where the take reaches 1 a clean vertex
+  shows nothing; a larger amount lets the map show on clean vertices too.
+- Wear: d is read at the coordinates times the diffuse map's aspect
+  (`DrtUVs`: (w/h, 1) or (1, h/w), from the bound map at each draw); with
+  w = clamp(α·3|0.4 − d.r|, 0, 1) the roughness becomes 1 − (1 − r)·w,
+  F0 mix(0.04, F0, w), and the diffuse colour c mix(0.75·α·d, c, α)·α, so
+  the surface darkens to black as α falls.
+
+The mesh build (`model::group_mesh`) copies the stored stream as four bytes
+a vertex (`model::COLOUR_STREAM`, the same attribute the wound painter
+writes), and assembly keeps it only on a surface that shows a dirt mode;
+every other surface uploads no colour, as before. `exa-tool corpus colours`
+counts the coloured meshes each pack shades with grime and wear (Objlib
+1187 and 596, Resource 266 and 97, Objects 88 and 159 at 0.9.5), among them
+arenao1's main level meshes, its railings and tables. A grey (BC4) dirt map
+reads its red channel as the colour. Not done: a skinned linked-body
+member's colours (the members are built without them), and mode 3's
+colour upload (it changes nothing on screen).
 
 ### Blood
 
@@ -3831,8 +3862,7 @@ fire and electricity sounds, body contacts being driven from the physics
 step, the jittered supersampling pattern (by decision, see
 Supersampling), the sun and terrain in the GI volume,
 several resident GI blocks (and their margin copies), the GI injection's
-cube-shadow test and dynamic occupancy updates, vertex dirt (dirt modes
-1–3), glass
+cube-shadow test and dynamic occupancy updates, glass
 refraction, effect programs (smoke, powers), the hair program, terrain
 parallax and wetness, the day record table
 (a constant table in the executable, not decoded) and a driven time of day

@@ -48,6 +48,8 @@ struct ExaParams {
     gi_grid: vec4<f32>,
     gi_cells: array<vec4<i32>, 9>,
     gi_origins: array<vec4<f32>, 9>,
+    // The dirt modes' take 2 − amount (w; `DirtMode::take`).
+    dirt: vec4<f32>,
 }
 
 const DIFFUSE_MAP: u32 = 1u;
@@ -156,6 +158,12 @@ const CUT_AWAY_BLEND: u32 = 4u;
 // `flags2`: the cut-away fade settled under supersampling: drawn into half
 // of each 2 × 2 block (`exa_render::material::flags2::CUT_AWAY_HALF`).
 const CUT_AWAY_HALF: u32 = 8u;
+// `flags2`: the original's dirt modes 1 (grime) and 2 (wear) in its PBR
+// program (`exa_render::material::DirtMode`).
+const DIRT_GRIME: u32 = 16u;
+const DIRT_WORN: u32 = 32u;
+// `flags2`: the dirt map is a single-channel BC4 image (red is the colour).
+const GREY_DIRT: u32 = 64u;
 
 // The material's opacity (`MatDif.a`): the cut-away fade's own while the
 // mesh fades, as the original's faded pass writes it for the draw.
@@ -552,6 +560,31 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Both the plain and the scattered share of the skin.
         dif_col *= bld;
         scatter_col *= bld;
+    }
+    // Dirt: the mesh's vertex alpha (1 clean) shows the record's dirt map,
+    // as the original's PBR program's modes 1 and 2 do.
+    if (material.flags2 & DIRT_GRIME) != 0u {
+        var tex = textureSampleBias(dirt_map, dirt_sampler, uv, material.texture_bias).rgb;
+        if (material.flags2 & GREY_DIRT) != 0u {
+            tex = tex.rrr;
+        }
+        let d = mix(tex, vec3(0.5), min(in.color.a * material.dirt.w, 1.0));
+        s.rough = 1.0 - (1.0 - s.rough) * (1.0 - abs(0.5 - d.g) * 2.0);
+        dif_col *= d * 2.0;
+    } else if (material.flags2 & DIRT_WORN) != 0u {
+        let va = in.color.a;
+        // `DrtUVs`: the diffuse map's aspect, (w/h, 1) or (1, h/w).
+        let size = vec2<f32>(textureDimensions(diffuse_map));
+        let f = size.x / size.y;
+        let scale = select(vec2(1.0, 1.0 / f), vec2(f, 1.0), f >= 1.0);
+        var tex = textureSampleBias(dirt_map, dirt_sampler, uv * scale, material.texture_bias).rgb;
+        if (material.flags2 & GREY_DIRT) != 0u {
+            tex = tex.rrr;
+        }
+        let w = clamp(va * (abs(0.4 - tex.r) * 3.0), 0.0, 1.0);
+        s.rough = 1.0 - (1.0 - s.rough) * w;
+        s.f0 = mix(vec3(0.04), s.f0, w);
+        dif_col = mix(tex * va * 0.75, dif_col, va) * va;
     }
 }
     s.rough = clamp(s.rough, 0.02, 1.0);

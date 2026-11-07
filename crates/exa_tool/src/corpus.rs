@@ -1621,7 +1621,10 @@ pub fn floor_nodes(game: &GameData) -> Result<()> {
 /// coloured meshes draw a group whose material (the library's, else the
 /// file's own) has a dirt mode (bits 12..14 of its extra flags), the only
 /// programs that read the stream, and how many of those have mode 4 (wound
-/// blood).
+/// blood). The last columns count the coloured meshes the running game
+/// shades with dirt mode 1 (grime) or 2 (wear) (the factory's mode under
+/// the PBR program, `exa_render::material::DirtMode::of_record`), and the
+/// second line of a pack lists some of them.
 pub fn colours(game: &GameData) -> Result<()> {
     #[derive(Default)]
     struct Row {
@@ -1633,7 +1636,10 @@ pub fn colours(game: &GameData) -> Result<()> {
         low_alpha: usize,
         dirt_mode: usize,
         blood_mode: usize,
+        grime: usize,
+        worn: usize,
         examples: Vec<String>,
+        dirt_examples: Vec<String>,
     }
     let archives: Vec<exa_rpk::Archive> = game
         .project()
@@ -1682,6 +1688,29 @@ pub fn colours(game: &GameData) -> Result<()> {
                             .map(|mat| mat.extra & 0x7000)
                     })
                     .collect();
+                let shaded: Vec<exa_render::material::DirtMode> = m
+                    .groups
+                    .iter()
+                    .filter_map(|g| {
+                        let mat = library(&g.material)
+                            .or_else(|| scene.material(&g.material).cloned())?;
+                        let mode = exa_render::material::DirtMode::of_record(&mat, 5)?;
+                        mat.texture(exa_formats::material::TextureSlot::Dirt)?;
+                        Some(mode)
+                    })
+                    .collect();
+                let grime = shaded.contains(&exa_render::material::DirtMode::Grime);
+                let worn = shaded.contains(&exa_render::material::DirtMode::Worn);
+                row.grime += usize::from(grime);
+                row.worn += usize::from(worn);
+                if (grime || worn) && row.dirt_examples.len() < 12 {
+                    row.dirt_examples.push(format!(
+                        "{}:{}{}",
+                        e.name,
+                        node.name,
+                        if translucent { "" } else { " (clean)" }
+                    ));
+                }
                 row.dirt_mode += usize::from(modes.iter().any(|&mode| mode != 0));
                 row.blood_mode += usize::from(modes.contains(&0x4000));
                 if translucent && row.examples.len() < 4 {
@@ -1691,7 +1720,7 @@ pub fn colours(game: &GameData) -> Result<()> {
         }
     }
     println!(
-        "{:<12} {:>7} {:>8} {:>11} {:>7} {:>10} {:>10} {:>6} {:>6}  examples",
+        "{:<12} {:>7} {:>8} {:>11} {:>7} {:>10} {:>10} {:>6} {:>6} {:>6} {:>6}  examples",
         "pack",
         "meshes",
         "coloured",
@@ -1700,11 +1729,13 @@ pub fn colours(game: &GameData) -> Result<()> {
         "vertices",
         "alpha<255",
         "dirt",
-        "mode 4"
+        "mode 4",
+        "grime",
+        "wear"
     );
     for (pack, r) in &rows {
         println!(
-            "{pack:<12} {:>7} {:>8} {:>11} {:>7} {:>10} {:>10} {:>6} {:>6}  {}",
+            "{pack:<12} {:>7} {:>8} {:>11} {:>7} {:>10} {:>10} {:>6} {:>6} {:>6} {:>6}  {}",
             r.meshes,
             r.coloured,
             r.translucent,
@@ -1713,8 +1744,13 @@ pub fn colours(game: &GameData) -> Result<()> {
             r.low_alpha,
             r.dirt_mode,
             r.blood_mode,
+            r.grime,
+            r.worn,
             r.examples.join(", ")
         );
+        if !r.dirt_examples.is_empty() {
+            println!("{:<12} dirt: {}", "", r.dirt_examples.join(", "));
+        }
     }
     Ok(())
 }

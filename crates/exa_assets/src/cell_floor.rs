@@ -207,7 +207,7 @@ pub fn floor_group_meshes(rendered: &RfcMesh) -> Vec<(String, Mesh, bool)> {
             let indices = rendered
                 .indices
                 .get(start..start + g.index_count as usize)?;
-            let mesh = crate::model::group_mesh(rendered, indices, None)?;
+            let mesh = crate::model::group_mesh(rendered, indices, None, false)?;
             Some((g.material.clone(), mesh, start == 0))
         })
         .collect()

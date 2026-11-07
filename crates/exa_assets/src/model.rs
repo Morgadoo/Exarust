@@ -31,7 +31,7 @@ use exa_formats::material::flags as material_flags;
 use exa_formats::objdb::Appearance;
 use exa_formats::procedural::{EMBLEM_BACKGROUND_STEM, emblem_picture};
 use exa_render::material::{
-    BloodProgram, ExaMaterial, ExaParams, SPATTER, flags, linear, linear_rgb,
+    BloodProgram, DirtMode, ExaMaterial, ExaParams, SPATTER, flags, linear, linear_rgb,
 };
 
 /// A decoded model ready to spawn any number of times.
@@ -880,6 +880,13 @@ impl ModelLoader<'_> {
                                 *uv = exa_formats::material::uv_transform_point(&matrix, *uv);
                             }
                         }
+                        // The stored colours go to the GPU only for a surface
+                        // whose program reads them (the dirt modes).
+                        if !self.takes_colours(&material) {
+                            bevy_mesh.remove_attribute(COLOUR_STREAM);
+                        } else if bevy_mesh.attribute(COLOUR_STREAM).is_some() {
+                            debug!("{entry}:{}: {name} shows its dirt", node.name);
+                        }
                         parts.push((self.meshes.add(bevy_mesh), material));
                         part_materials.push(name.clone());
                         part_flags.push(Arc::from(flags));
@@ -1145,6 +1152,14 @@ impl ModelLoader<'_> {
         handle
     }
 
+    /// Whether the surface reads the mesh's stored colour stream: a dirt
+    /// mode of the PBR program ([`DirtMode`]).
+    fn takes_colours(&self, material: &Handle<ExaMaterial>) -> bool {
+        self.materials
+            .get(material)
+            .is_some_and(|m| m.dirt().is_some())
+    }
+
     /// The texture-coordinate matrix the record that shades `name` asks for
     /// (extra flags `0x40`), as the mesh build applies it to the GPU stream.
     fn uv_transform_of(&self, entry: &str, scene: &Scene, name: &str) -> Option<[f32; 12]> {
@@ -1272,7 +1287,6 @@ impl ModelLoader<'_> {
                 .texture_with_flags(t, ColorSpace::Linear, base_flags)
                 .map(|t| t.0);
         }
-        // Dirt maps only act through vertex colours, which level meshes lack.
         if maps.gloss
             && let Some(t) = m.texture(TextureSlot::Gloss)
         {
@@ -1358,6 +1372,17 @@ impl ModelLoader<'_> {
         {
             let spatter = self.spatter();
             mat = mat.with_blood(program, spatter);
+        }
+        // Dirt modes 1 and 2: the factory's shader word carries the mode
+        // when the record has the diffuse bit and a dirt layer, it binds the
+        // dirt map (a colour texture, as the diffuse), and only the PBR
+        // program shades them; the mesh build uploads the
+        // stored colour stream for these surfaces ([`takes_colours`]).
+        if let Some(mode) = DirtMode::of_record(m, SHADING_QUALITY)
+            && let Some(t) = m.texture(TextureSlot::Dirt)
+            && let Some(info) = self.texture_info(t, ColorSpace::Srgb, base_flags)
+        {
+            mat = mat.with_dirt(mode, info.image, info.grey, m.dirt_amount);
         }
         // The cube stays bound (it lights every surface outside the GI
         // volume), but only a record whose material state keeps its
@@ -2356,7 +2381,7 @@ impl ModelJob {
                     };
                 };
                 let (meshes, collision) =
-                    group_meshes(mesh, skin.as_ref().map(|(_, s)| s.as_slice()), pool);
+                    group_meshes(mesh, skin.as_ref().map(|(_, s)| s.as_slice()), pool, true);
                 let prop_skin = plans.iter().find_map(|plan| {
                     let bone = plan.bone_of(index)?;
                     // The stored stream's weights; a mesh without one keeps
@@ -2364,7 +2389,7 @@ impl ModelJob {
                     // lacks one).
                     let weights =
                         auto_skin_build(mesh, bone, &[], Seams::Body, &ParentFrame::NONE).weights;
-                    let (skinned, _) = group_meshes(mesh, Some(&weights), pool);
+                    let (skinned, _) = group_meshes(mesh, Some(&weights), pool, false);
                     Some((
                         skinned.into_iter().map(|(_, m, _)| m).collect(),
                         Arc::from(plan.joints.as_slice()),
@@ -2576,6 +2601,7 @@ fn group_meshes(
     mesh: &RfcMesh,
     skin: Option<&[VertexSkin]>,
     pool: Option<&bevy::tasks::ComputeTaskPool>,
+    colours: bool,
 ) -> (Vec<BuiltGroup>, Vec<Mesh>) {
     let is_null = |g: usize| mesh.groups[g].material.eq_ignore_ascii_case("_null");
     let groups: Vec<usize> = (0..mesh.groups.len()).filter(|&g| !is_null(g)).collect();
@@ -2590,7 +2616,7 @@ fn group_meshes(
             .unwrap_or_default();
         mesh.indices
             .get(start..start + group.index_count as usize)
-            .and_then(|indices| group_mesh(mesh, indices, skin))
+            .and_then(|indices| group_mesh(mesh, indices, skin, colours))
             .map(|m| (g, m, flags))
     };
     let built: Vec<Option<BuiltGroup>> = match pool {
@@ -3314,6 +3340,13 @@ const FALLOFF_MIN: f32 = 0.01;
 const SHADED: u32 = 0x7;
 /// Material flag (`0x48`) of the emissive layer.
 const EMISSIVE_LAYER: u32 = 0x8_0000;
+/// The mesh's stored colour stream on the GPU: four bytes a vertex, as the
+/// original uploads it (the same attribute the wound painter writes).
+pub const COLOUR_STREAM: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    format: bevy::mesh::VertexFormat::Unorm8x4,
+    ..Mesh::ATTRIBUTE_COLOR
+};
+
 /// Material extra flags (`0x4C`) choosing the dirt mode.
 const DIRT_MODE: u32 = 0x7000;
 /// The dirt mode that shows blood: the speckle texture against the vertex
@@ -3341,10 +3374,15 @@ fn group_indices(vertices: usize, local: Vec<u32>) -> Indices {
 }
 
 /// A Bevy mesh holding only the vertices one material group uses.
+///
+/// With `colours`, the mesh's stored colour stream goes along as bytes
+/// ([`COLOUR_STREAM`]); assembly keeps it only for a surface that reads it
+/// ([`takes_colours`]).
 pub(crate) fn group_mesh(
     mesh: &RfcMesh,
     indices: &[u32],
     skin: Option<&[VertexSkin]>,
+    colours: bool,
 ) -> Option<Mesh> {
     if indices.is_empty() {
         return None;
@@ -3384,12 +3422,20 @@ pub(crate) fn group_mesh(
         let uv: Vec<[f32; 2]> = used.iter().map(|&i| uvs[i]).collect();
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     }
-    // The stored colour stream (`RfcMesh::colors`) is not uploaded: only the
-    // dirt modes read it, and Exarust shades none but the blood mode, whose
-    // meshes get their own byte stream when a wound lands. Uploading it for
-    // every coloured prop would cost 16 bytes a vertex and a pipeline
-    // variant for no change in the picture (`exa-tool corpus colours` counts
-    // the meshes); the dirt modes 1-3 will need it.
+    // The stored colour stream (`RfcMesh::colors`), as the GPU build's
+    // colour branch copies it, when the caller asks: only the dirt modes
+    // read it, so assembly drops it again for every other surface (a
+    // wound's blood gives a mesh its own stream when it lands).
+    if colours && let Some(stored) = &mesh.colors {
+        let bytes: Vec<[u8; 4]> = used
+            .iter()
+            .map(|&i| stored.get(i).copied().unwrap_or([255; 4]))
+            .collect();
+        m.insert_attribute(
+            COLOUR_STREAM,
+            bevy::mesh::VertexAttributeValues::Unorm8x4(bytes),
+        );
+    }
     if let Some(tangents) = tangents {
         m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     }
@@ -5034,12 +5080,12 @@ mod tests {
         assert_eq!(group_indices(255, vec![7, 9]), Indices::U16(vec![7, 9]));
     }
 
-    /// The stored colour stream is not uploaded: only the dirt modes read a
-    /// vertex colour and Exarust shades none of them from the stream, so the
-    /// attribute would cost 16 bytes a vertex for nothing. The group's other
-    /// streams are built as before.
+    /// The stored colour stream goes along only when asked (assembly asks
+    /// for the model loader's groups and keeps it for dirt surfaces), as
+    /// four bytes a vertex in the group's vertex order. The group's other
+    /// streams are built the same either way.
     #[test]
-    fn a_group_leaves_the_stored_colours_off_the_gpu() {
+    fn a_group_carries_the_stored_colours_when_asked() {
         let mesh = RfcMesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
@@ -5060,10 +5106,22 @@ mod tests {
             position_count: 3,
             ..Default::default()
         };
-        let built = group_mesh(&mesh, &[2, 0, 1], None).expect("a group");
+        let built = group_mesh(&mesh, &[2, 0, 1], None, false).expect("a group");
         assert!(built.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
         assert_eq!(built.count_vertices(), 3);
         assert!(built.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
+        let coloured = group_mesh(&mesh, &[2, 0, 1], None, true).expect("a group");
+        match coloured.attribute(COLOUR_STREAM) {
+            Some(bevy::mesh::VertexAttributeValues::Unorm8x4(c)) => assert_eq!(
+                c,
+                &vec![[70, 80, 90, 0], [10, 20, 30, 255], [40, 50, 60, 128]]
+            ),
+            other => panic!("no byte colour stream: {other:?}"),
+        }
+        assert_eq!(
+            coloured.attribute(Mesh::ATTRIBUTE_POSITION),
+            built.attribute(Mesh::ATTRIBUTE_POSITION)
+        );
     }
 
     /// A cloth node's file data: its faces over the position elements with
@@ -5091,7 +5149,7 @@ mod tests {
         assert_eq!(cloth.faces, vec![[2, 1, 0], [0, 2, 3]]);
         assert_eq!(cloth.face_flags, vec![0x8000_0000, 0]);
         assert_eq!(cloth.part_elements, vec![vec![2, 1, 0, 0, 3]]);
-        let built = group_mesh(&mesh, &mesh.indices, None).expect("a group");
+        let built = group_mesh(&mesh, &mesh.indices, None, false).expect("a group");
         assert_eq!(built.count_vertices(), cloth.part_elements[0].len());
         // Without stored flags every face has none.
         let bare = RfcMesh {

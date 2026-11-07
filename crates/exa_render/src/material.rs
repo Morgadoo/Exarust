@@ -234,6 +234,119 @@ pub mod flags2 {
     /// scene (the block's diagonal), as the original draws a settled mesh
     /// into half of its jittered sub-frames.
     pub const CUT_AWAY_HALF: u32 = 8;
+    /// The original's dirt mode 1 (grime) in its PBR program: the dirt map
+    /// at the texture coordinates, pulled to mid grey by the vertex alpha
+    /// times [`super::ExaParams::dirt`]`.w`, doubles into the diffuse colour
+    /// and roughens the surface ([`super::DirtMode`]).
+    pub const DIRT_GRIME: u32 = 16;
+    /// The original's dirt mode 2 (wear): the dirt map at the texture
+    /// coordinates times the diffuse map's aspect
+    /// ([`super::ExaParams::dirt`]`.xy`) shows where the vertex alpha falls
+    /// and darkens the surface ([`super::DirtMode`]).
+    pub const DIRT_WORN: u32 = 32;
+    /// The dirt map is a single-channel BC4 image (the original's luminance
+    /// upload): its red channel stands for all three.
+    pub const GREY_DIRT: u32 = 64;
+}
+
+/// The original's dirt modes 1 and 2, which only its PBR program
+/// (`shadeopt`) shades: a record with a diffuse map and a dirt map whose
+/// extra flags (`0x4C & 0x7000`) are 0 (grime) or `0x1000` (wear), drawn
+/// on a mesh that stores a colour stream. The stream's alpha α (1 where the
+/// mesh is clean) chooses how much of the dirt map shows. Mode 3
+/// (`0x2000`) binds the dirt map but the program has no branch for it, and
+/// mode 4 is the blood ([`BloodProgram`]). `exa.wesl` evaluates the same
+/// formulas. Rules: `docs/RENDERING.md` (Dirt).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirtMode {
+    /// Mode 1: the dirt texel d (read at the texture coordinates) is pulled
+    /// to mid grey by min(α·take, 1); the diffuse colour takes 2·d and the
+    /// roughness r becomes 1 − (1 − r)(1 − 2|½ − d.g|).
+    Grime,
+    /// Mode 2: the dirt texel d is read at the texture coordinates times
+    /// the diffuse map's aspect; with w = clamp(α·3|0.4 − d.r|, 0, 1) the
+    /// roughness becomes 1 − (1 − r)·w and F0 mix(0.04, F0, w), and the
+    /// diffuse colour c becomes mix(0.75·α·d, c, α)·α.
+    Worn,
+}
+
+impl DirtMode {
+    /// The mode of the factory's shader-word dirt field (1 grime, 2 wear);
+    /// none for the others.
+    pub fn of_mode(mode: u32) -> Option<Self> {
+        match mode {
+            1 => Some(Self::Grime),
+            2 => Some(Self::Worn),
+            _ => None,
+        }
+    }
+
+    /// The mode a record shows at shading quality `quality`: the factory's
+    /// shader word carries mode 1 or 2 (the record has the diffuse bit and
+    /// a dirt layer, its extra flags `0x7000` are 0 or `0x1000`) and the
+    /// word selects the PBR program. The dirt map must still load.
+    pub fn of_record(record: &exa_formats::material::Material, quality: u32) -> Option<Self> {
+        use crate::shader_program::{SurfaceProgram, program_for_shader_word, shader, state_words};
+        let (_, word) = state_words(record, quality)?;
+        if program_for_shader_word(word) != SurfaceProgram::Optimized {
+            return None;
+        }
+        Self::of_mode((word & shader::DIRT_MODE_MASK) >> shader::DIRT_MODE_SHIFT)
+    }
+
+    /// The material's second-word flag that selects the mode in the shader.
+    pub fn flag(self) -> u32 {
+        match self {
+            Self::Grime => flags2::DIRT_GRIME,
+            Self::Worn => flags2::DIRT_WORN,
+        }
+    }
+
+    /// The dirt map's texture-coordinate scale (`DrtUVs`) from the diffuse
+    /// map's size: with f = w/h, (f, 1) when f ≥ 1, else (1, 1/f). The
+    /// uniform fill computes it at each draw for modes 1 to 3; `exa.wesl`
+    /// does the same from the bound map.
+    pub fn uv_scale(width: u32, height: u32) -> Vec2 {
+        let f = width as f32 / height as f32;
+        if f >= 1.0 {
+            Vec2::new(f, 1.0)
+        } else {
+            Vec2::new(1.0, 1.0 / f)
+        }
+    }
+
+    /// The take `MatDrt.w` of a record's dirt amount (`0x30`): `2 − amount`.
+    pub fn take(amount: f32) -> f32 {
+        2.0 - amount
+    }
+
+    /// One pixel: the dirt texel `dirt` (rgb), the vertex alpha `alpha`, the
+    /// take, and the surface's roughness, F0 and diffuse colour before the
+    /// dirt; returns the three after it.
+    pub fn shade(
+        self,
+        dirt: Vec3,
+        alpha: f32,
+        take: f32,
+        rough: f32,
+        f0: Vec3,
+        colour: Vec3,
+    ) -> (f32, Vec3, Vec3) {
+        match self {
+            Self::Grime => {
+                let d = dirt.lerp(Vec3::splat(0.5), (alpha * take).min(1.0));
+                let rough = 1.0 - (1.0 - rough) * (1.0 - (0.5 - d.y).abs() * 2.0);
+                (rough, f0, colour * d * 2.0)
+            }
+            Self::Worn => {
+                let w = (alpha * ((0.4 - dirt.x).abs() * 3.0)).clamp(0.0, 1.0);
+                let rough = 1.0 - (1.0 - rough) * w;
+                let f0 = Vec3::splat(0.04).lerp(f0, w);
+                let d = dirt * alpha * 0.75;
+                (rough, f0, d.lerp(colour, alpha) * alpha)
+            }
+        }
+    }
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex
@@ -390,6 +503,12 @@ pub struct ExaParams {
     pub gi_cells: [IVec4; crate::gi::RESIDENT_BLOCKS],
     /// Each resident block's sample origin (m).
     pub gi_origins: [Vec4; crate::gi::RESIDENT_BLOCKS],
+    /// The dirt modes' input ([`flags2::DIRT_GRIME`],
+    /// [`flags2::DIRT_WORN`]): the take `2 − amount` (`MatDrt.w`) in w. The
+    /// wear's coordinate scale (`DrtUVs`, [`DirtMode::uv_scale`]) is the
+    /// bound diffuse map's aspect, which the shader reads from the map at
+    /// each draw as the original's uniform fill reads the texture's size.
+    pub dirt: Vec4,
 }
 
 impl ExaParams {
@@ -427,6 +546,7 @@ impl Default for ExaParams {
             gi_grid: Vec4::ZERO,
             gi_cells: [IVec4::ZERO; crate::gi::RESIDENT_BLOCKS],
             gi_origins: [Vec4::ZERO; crate::gi::RESIDENT_BLOCKS],
+            dirt: Vec4::ZERO,
         }
     }
 }
@@ -612,6 +732,34 @@ impl ExaMaterial {
         }
         self.dirt_map = spatter;
         self.with_map_flags()
+    }
+
+    /// The surface shows dirt mode `mode` through `map` (a single-channel
+    /// image when `grey`) with the take of the record's dirt `amount`
+    /// ([`DirtMode`]). Only meshes with a colour
+    /// stream show it.
+    pub fn with_dirt(
+        mut self,
+        mode: DirtMode,
+        map: Handle<Image>,
+        grey: bool,
+        amount: f32,
+    ) -> Self {
+        self.params.flags2 &= !(flags2::DIRT_GRIME | flags2::DIRT_WORN | flags2::GREY_DIRT);
+        self.params.flags2 |= mode.flag();
+        if grey {
+            self.params.flags2 |= flags2::GREY_DIRT;
+        }
+        self.params.dirt = Vec4::new(0.0, 0.0, 0.0, DirtMode::take(amount));
+        self.dirt_map = Some(map);
+        self.with_map_flags()
+    }
+
+    /// The dirt mode the surface shows, if any.
+    pub fn dirt(&self) -> Option<DirtMode> {
+        [DirtMode::Grime, DirtMode::Worn]
+            .into_iter()
+            .find(|m| self.params.flags2 & m.flag() != 0)
     }
 
     /// The blood program the surface shows wounds with, if any.
@@ -909,6 +1057,105 @@ mod tests {
         let m = ExaMaterial::default().with_blood(BloodProgram::Cloth, None);
         assert_eq!(m.blood(), None);
         assert_eq!(m.params.flags & flags::DIRT_MAP, 0);
+    }
+
+    /// A clean vertex (α = 1) leaves grime's surface as it is whenever the
+    /// take reaches 1 (amount ≤ 1): the texel is pulled to mid grey, which
+    /// doubles to white and keeps the roughness. A dirty vertex (α = 0)
+    /// shows the texel doubled, and its green's distance from ½ smooths.
+    #[test]
+    fn grime_shows_where_the_vertex_alpha_falls() {
+        let dirt = Vec3::new(0.2, 0.3, 0.4);
+        let f0 = Vec3::splat(0.04);
+        let colour = Vec3::new(0.8, 0.6, 0.4);
+        let take = DirtMode::take(0.5);
+        assert_eq!(take, 1.5);
+        let (r, f, c) = DirtMode::Grime.shade(dirt, 1.0, take, 0.7, f0, colour);
+        assert_eq!((r, f, c), (0.7, f0, colour));
+        let (r, f, c) = DirtMode::Grime.shade(dirt, 0.0, take, 0.7, f0, colour);
+        assert!((c - colour * dirt * 2.0).abs().max_element() < 1e-6);
+        assert!((r - (1.0 - 0.3 * (1.0 - 0.4))).abs() < 1e-6);
+        assert_eq!(f, f0);
+        // A larger amount takes less: at amount 1.8 (take 0.2) a clean
+        // vertex still shows 80% of the texel.
+        let (_, _, c) = DirtMode::Grime.shade(dirt, 1.0, DirtMode::take(1.8), 0.7, f0, colour);
+        let d = dirt.lerp(Vec3::splat(0.5), 0.2);
+        assert!((c - colour * d * 2.0).abs().max_element() < 1e-6);
+    }
+
+    /// Wear: a clean vertex keeps the colour; as α falls the colour fades
+    /// to black through the dimmed dirt texel, and the surface roughens
+    /// where the texel's red sits near 0.4.
+    #[test]
+    fn wear_darkens_where_the_vertex_alpha_falls() {
+        let f0 = Vec3::splat(0.5);
+        let colour = Vec3::new(0.8, 0.6, 0.4);
+        let dirt = Vec3::new(0.9, 0.5, 0.1);
+        let (r, f, c) = DirtMode::Worn.shade(dirt, 1.0, 1.0, 0.3, f0, colour);
+        // w = clamp(1·3·0.5) = 1: the roughness and F0 stay.
+        assert_eq!((r, f), (0.3, f0));
+        assert!((c - colour).abs().max_element() < 1e-6);
+        let (r, f, c) = DirtMode::Worn.shade(dirt, 0.0, 1.0, 0.3, f0, colour);
+        assert_eq!((r, f, c), (1.0, Vec3::splat(0.04), Vec3::ZERO));
+        let near = Vec3::new(0.4, 0.5, 0.1);
+        let (r, f, _) = DirtMode::Worn.shade(near, 0.5, 1.0, 0.3, f0, colour);
+        assert_eq!((r, f), (1.0, Vec3::splat(0.04)));
+    }
+
+    /// `DrtUVs`: the diffuse map's aspect, the long side scaled.
+    #[test]
+    fn wear_scales_by_the_diffuse_aspect() {
+        assert_eq!(DirtMode::uv_scale(512, 256), Vec2::new(2.0, 1.0));
+        assert_eq!(DirtMode::uv_scale(256, 1024), Vec2::new(1.0, 4.0));
+        assert_eq!(DirtMode::uv_scale(64, 64), Vec2::ONE);
+    }
+
+    #[test]
+    fn dirt_modes_set_their_flags() {
+        assert_eq!(DirtMode::of_mode(1), Some(DirtMode::Grime));
+        assert_eq!(DirtMode::of_mode(2), Some(DirtMode::Worn));
+        assert_eq!(DirtMode::of_mode(3), None);
+        assert_eq!(DirtMode::of_mode(4), None);
+        let m = ExaMaterial::default().with_dirt(DirtMode::Worn, Handle::default(), true, 0.25);
+        assert_eq!(m.dirt(), Some(DirtMode::Worn));
+        assert_ne!(m.params.flags & flags::DIRT_MAP, 0);
+        assert_ne!(m.params.flags2 & flags2::GREY_DIRT, 0);
+        assert_eq!(m.params.dirt.w, 1.75);
+        let m = m.with_dirt(DirtMode::Grime, Handle::default(), false, 0.5);
+        assert_eq!(m.dirt(), Some(DirtMode::Grime));
+        assert_eq!(m.params.flags2 & (flags2::DIRT_WORN | flags2::GREY_DIRT), 0);
+        assert_eq!(ExaMaterial::default().dirt(), None);
+    }
+
+    /// The record's mode comes from the factory's shader word under the
+    /// PBR program only: a hair or legacy record with a dirt layer shows
+    /// none, nor does mode 3, nor blood.
+    #[test]
+    fn dirt_modes_follow_the_record() {
+        use exa_formats::material::{Material, TextureLayer, TextureSlot};
+        let mode = |extra: u32, kind: u32| {
+            let layer = |slot| TextureLayer {
+                slot,
+                texture: "t".into(),
+                parameter: 0,
+                amount: 0.0,
+            };
+            let m = Material {
+                kind,
+                flags: 3,
+                extra,
+                opacity: 1.0,
+                layers: vec![layer(TextureSlot::Diffuse), layer(TextureSlot::Dirt)],
+                ..Material::default()
+            };
+            DirtMode::of_record(&m, 5)
+        };
+        assert_eq!(mode(0, 1), Some(DirtMode::Grime));
+        assert_eq!(mode(0x1000, 1), Some(DirtMode::Worn));
+        assert_eq!(mode(0x2000, 1), None);
+        assert_eq!(mode(0x4000, 1), None);
+        assert_eq!(mode(0, 3), None);
+        assert_eq!(mode(0, 0), None);
     }
 
     #[test]

@@ -84,11 +84,15 @@ The mesh render word's `0x800` bit SHALL be read as the selector of front-face c
 - **THEN** `shadow_cull_front` reports true and no other render state changes
 
 ### Requirement: Vertex colour counts
-`exa-tool corpus colours` SHALL report, per mesh pack, the meshes with stored vertex colours, the translucent and tinted ones, the vertices with alpha below 255, and the meshes whose group materials select a dirt mode or the wound-blood mode.
+`exa-tool corpus colours` SHALL report, per mesh pack, the meshes with stored vertex colours, the translucent and tinted ones, the vertices with alpha below 255, the meshes whose group materials select a dirt mode or the wound-blood mode, and the coloured meshes the running game shades with dirt mode 1 (grime) and 2 (wear), with examples.
 
 #### Scenario: The character packs
 - **WHEN** the command runs on the installation
 - **THEN** CharExt, Characters and Components report no coloured meshes
+
+#### Scenario: Objlib dirt
+- **WHEN** the command runs on the 0.9.5 installation
+- **THEN** Objlib reports 1187 coloured meshes shaded with grime and 596 with wear
 
 ### Requirement: Normal sum order
 Each smoothing key's normal SHALL be accumulated over its position element's corners in reverse incidence order (last face first, each face's corners last first), after the element's list is split into key runs by the original's in-place swap partition, so a second key's corners can come out reordered.
@@ -128,3 +132,10 @@ The swept-sphere test SHALL measure an accepted hit from the sweep's start (`clo
 #### Scenario: A grazed wall after a floor
 - **WHEN** a 0.5 ball sweeps 5 down from 1.5 over a floor at y = 0 and then past a wall 0.3 beside it
 - **THEN** the floor hits at 1.0 and the wall, tested over the shortened travel, wins at 0.6 (4.6 when swept alone)
+
+### Requirement: Stored vertex colours on dirt surfaces
+The mesh build SHALL upload a mesh's stored colour stream, as four bytes a vertex in the group's vertex order, for every material group whose surface shows dirt mode 1 or 2, and SHALL upload no colour stream for any other group.
+
+#### Scenario: A coloured barrel
+- **WHEN** a model whose mesh stores colours draws one group with a grime material and one with a plain material
+- **THEN** only the grime group's vertex buffer carries the colours, each vertex the stored bytes of the vertex it was built from

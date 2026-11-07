@@ -484,7 +484,8 @@ impl ModelLoader<'_> {
         };
         let mut top = 0.0;
         if let Some(rendered) = rendered
-            && let Some(bevy_mesh) = crate::model::group_mesh(&rendered, &rendered.indices, None)
+            && let Some(bevy_mesh) =
+                crate::model::group_mesh(&rendered, &rendered.indices, None, false)
         {
             if let Some((centre, half, radius)) = mesh_edit::bounds(&rendered.positions) {
                 root.bounds = (Vec3::from_array(centre), radius);

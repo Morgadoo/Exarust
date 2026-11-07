@@ -208,6 +208,16 @@ then draws the block from its set. All of it is opt-in
 Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Terrain).
 
+## Dirt
+
+`material::DirtMode` is the original's dirt modes 1 (grime) and 2 (wear)
+in its PBR program: the vertex colour's alpha (255 clean) shows the
+record's dirt map, pulled to grey by the take `2 − amount` (grime) or read
+at the diffuse map's aspect and darkening the colour to black (wear), with
+the roughness and F0 changes of the original's program (`exa.wesl`,
+`flags2::DIRT_GRIME`, `DIRT_WORN`, `GREY_DIRT`, `ExaParams::dirt`). Rules:
+[`docs/RENDERING.md`](../../docs/RENDERING.md) (Dirt).
+
 ## Blood
 
 `material::BloodProgram` is the original's dirt mode 4 in its three

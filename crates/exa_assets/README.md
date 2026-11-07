@@ -493,6 +493,13 @@ dirt mode 4 with a diffuse map, and a bleeding race's body-model materials
 whose names start with `s`; each binds the speckle texture `spatter01`
 (`ModelLoader::spatter`).
 
+Materials that show vertex dirt (`docs/RENDERING.md`, Dirt): a record whose
+shader word selects the PBR program and dirt mode 1 (grime) or 2 (wear)
+binds its dirt map (`exa_render::material::DirtMode`). The mesh build
+(`model::group_mesh`) carries the stored colour stream as four bytes a
+vertex (`model::COLOUR_STREAM`), and assembly keeps it only for those
+surfaces.
+
 Painting (`paint`): every one of the original's 25 procedural materials is
 painted on the CPU from its shade map, masks and library textures, family by
 family (cloth, silk, velvet, leather, suede, wood, steel, blade, plate,
