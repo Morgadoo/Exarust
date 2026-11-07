@@ -281,6 +281,8 @@ Round 66 gridenvs: room lids close the point-light cube shadows and the shell qu
 
 Round 98 worldgap: grid cells merge their floors into one +Floor node, as the original's cell builder does.
 
+Round 100 cellfloor: cell floors are built as the original builds them, through merge, weld and the vertex-cache reorder.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
