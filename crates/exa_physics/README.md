@@ -692,10 +692,16 @@ moving, frozen while standing steady, behind dead-bands of 5 and 10 cm
 otherwise (`src/body_frame.rs`, `body::Drive::anchor`). The controller
 carries a standing body only across the ground and turns it, and follows
 the frame (`CharacterBody::follow`, a tenth of the way a step,
-at most 2 cm), leaving its follow out of the carry. In each solver
-iteration the support pins (`src/body_pins.rs`) pull the two thorax pins
-once and the pelvis pin twice horizontally toward the frame's targets, clamped near
-the feet centre. Each foot's ground is its own: the controller's floor
+at most 2 cm), leaving its follow out of the carry. Once a tick the
+carry (`Ragdoll::aim`) sets the support pins' goals as the original's body
+tick sets its pin records (`src/body_pins.rs`, `Ragdoll::set_pin_goals`):
+the posed points on the frame, a thorax goal shifted 5·scale cm forward
+without support, led toward a recovery step (`steps::lead_pose`, which also
+writes the exertion value the head tilt reads, and `pelvis_lead_pose`, both
+by the class set-up's rate factor 85/83), then clamped about the feet
+centre; the thorax goals' mean is kept for the stance score. In each solver
+iteration the support pins pull the two thorax pins once and the pelvis
+pin twice horizontally toward those goals. Each foot's ground is its own: the controller's floor
 does not raise the lift (`src/body_lift.rs`). The feet routine's two other modes run
 in `measure_balance` (`feet_mode`, kept as `Drive::feet_mode`): on a flat floor
 (the state word's splay bit 0x1000, which the original's lying spawn sets;
