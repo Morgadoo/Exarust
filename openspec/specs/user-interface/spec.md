@@ -1417,7 +1417,7 @@ For each node within 23 units of its centre (an unordered compare: a NaN distanc
 - **THEN** the result is −1
 
 ### Requirement: Skill hover
-Setting the hover SHALL store a positive index or current and return 3. The candidate SHALL be the index when bits 8–10 are set and either its low 3 bits are 0 (a group's own code) or its grid byte is set, else 0. An unchanged candidate SHALL leave the stamps; a new positive candidate with a different last positive SHALL stamp the clock, else the stamp SHALL take the elapsed time, compared unsigned, with the under-200 correction. The candidate SHALL become previous and, when positive, last positive. With both non-positive the base runs.
+Setting the hover SHALL store a positive index or current and return 3. The candidate SHALL be the index when bits 8–10 are set and it is a group or its grid byte is set, else 0. An unchanged candidate SHALL leave the stamps; a new positive candidate with a different last positive SHALL stamp the clock, else the stamp SHALL take the unsigned elapsed time with the under-200 correction. The candidate SHALL become previous and, if positive, last positive; with both non-positive the base runs.
 
 #### Scenario: Hover, miss and stamp
 - **WHEN** the index is 0, the current is 0 and the base is 7
@@ -2608,7 +2608,7 @@ A group SHALL show one icon per funded level, plus the next while a technique is
 - **THEN** the icons stand at 84, 11 and 154, 61
 
 ### Requirement: Skill popups and tooltips
-The learning row and the forget dialog SHALL open over 300 ms (alpha `t(2 − t)`, width eased again) and close over 200 ms (alpha `(remaining × 0.005)²`), clearing the pending choice after. The learning row SHALL be 82 by 28 units four units under its level's satellite with eight icons ten units apart; the forget dialog 82 by 20 units two under the satellite with Yes 12 units left and No 6 right; a ring node's tip 82 by 14 units 13 under its satellite, clamped into the window, naming the technique chosen at that level.
+The learning row and the forget dialog SHALL open over 300 ms (alpha `t(2 − t)`, width eased again) and close over 200 ms (alpha `(remaining × 0.005)²`), clearing the pending choice after. The learning row SHALL be 82 by 28 units four under its level's satellite with eight icons ten apart; the forget dialog 82 by 20 units two under the satellite with Yes 12 left and No 6 right; a ring node's tip 82 by 14 units 13 under its satellite and clamped into the window.
 
 #### Scenario: Half way open
 - **WHEN** an opening popup has 150 ms left
