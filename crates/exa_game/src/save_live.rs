@@ -313,6 +313,7 @@ impl Plugin for SaveLivePlugin {
             .add_message::<crate::world_clock::RestoreWorldClock>()
             .init_resource::<ArenaStores>()
             .init_resource::<SaveReport>()
+            .init_resource::<crate::world_characters::WorldCharacters>()
             .init_resource::<exa_assets::live_objects::LiveObjects>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_systems(
@@ -713,7 +714,27 @@ pub fn story_player_world(
     session: &mut Session,
     objects: &exa_formats::objdb::ObjectDb,
 ) -> exa_formats::Result<crate::slots::WorldExport> {
+    story_player_world_with(player, session, objects, &[])
+}
+
+/// [`story_player_world`] with the live world character database's other
+/// records (`others`, each under its world id: the followers the doors
+/// registered, [`crate::world_characters::WorldCharacters::others`]) kept
+/// in the exported store beside the player, as the original's save writes
+/// its whole world database.
+pub fn story_player_world_with(
+    player: &StoryPlayer,
+    session: &mut Session,
+    objects: &exa_formats::objdb::ObjectDb,
+    others: &[CharacterRecord],
+) -> exa_formats::Result<crate::slots::WorldExport> {
     let mut db = exa_formats::character_db::CharacterDb::new(exa_formats::character_db::WORLD_TAG);
+    for other in others {
+        let id = other.id & exa_formats::characters::ID_MASK;
+        if id != PLAYER_RECORD_ID {
+            let _ = db.add(id, other.clone());
+        }
+    }
     let mut record = player.record.clone();
     // The save's reader finds the player by the low id the placement names.
     record.id = PLAYER_RECORD_ID;
@@ -998,6 +1019,27 @@ fn promote_manager_items(
 
 /// The save's world object export, for the log.
 fn log_world_export(export: &crate::slots::WorldExport) {
+    if let Some(bytes) = &export.characters {
+        let names: Vec<String> = exa_formats::character_db::CharacterDb::load(
+            exa_formats::character_db::WORLD_TAG,
+            bytes,
+        )
+        .map(|mut db| {
+            let ids: Vec<u32> = db.ids().collect();
+            ids.into_iter()
+                .filter_map(|id| {
+                    let shared = db.get(id)?;
+                    let record = shared.record();
+                    Some(format!(
+                        "{:#x} {} (level {})",
+                        record.id, record.name, record.locale
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+        info!("save: #worldchrdb exported: {names:?}");
+    }
     match &export.objects {
         Some((objects, strings)) => info!(
             "save: #worldobjdb exported ({} record bytes, {} string bytes)",
@@ -1130,11 +1172,12 @@ fn story_save_world(
     session: &mut Session,
     player: Option<&StoryPlayer>,
     objects: &exa_formats::objdb::ObjectDb,
+    others: &[CharacterRecord],
 ) -> crate::slots::WorldExport {
     let Some(player) = player else {
         return crate::slots::WorldExport::default();
     };
-    match story_player_world(player, session, objects) {
+    match story_player_world_with(player, session, objects, others) {
         Ok(export) => export,
         Err(error) => {
             warn!("save: the player's record does not export: {error}");
@@ -1185,7 +1228,10 @@ fn save_to_new_slot(
     mut report: ResMut<SaveReport>,
     flow: Option<Res<crate::flow::Flow>>,
     experience: Option<Res<crate::experience_live::StoryExperience>>,
-    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
+    (mut live, mut world): (
+        ResMut<exa_assets::live_objects::LiveObjects>,
+        Option<ResMut<crate::world_characters::WorldCharacters>>,
+    ),
     mut scene: crate::level_save::LevelSaveScene,
 ) {
     if requests.read().count() == 0 {
@@ -1231,14 +1277,15 @@ fn save_to_new_slot(
             // fighter's record.
             let player = live_story_player(&players, created.as_deref())
                 .map(|player| arena_manager(player, career));
-            let export = story_save_world(&mut session, player.as_ref(), live.db());
+            let export = story_save_world(&mut session, player.as_ref(), live.db(), &[]);
             (Some(career.player.name.clone()), export)
         }
         Mode::Story => {
             stamp_story(&mut session, flow.as_deref());
             stamp_discovery(&mut session, experience.as_deref());
             let player = live_story_player(&players, created.as_deref());
-            let export = story_save_world(&mut session, player.as_ref(), live.db());
+            let others = world.as_mut().map(|w| w.others()).unwrap_or_default();
+            let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
             (player.map(|p| p.record.name), export)
         }
     };
@@ -1290,7 +1337,10 @@ fn run_save_steps(
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     experience: Option<Res<crate::experience_live::StoryExperience>>,
     mut report: ResMut<SaveReport>,
-    mut live: ResMut<exa_assets::live_objects::LiveObjects>,
+    (mut live, mut world): (
+        ResMut<exa_assets::live_objects::LiveObjects>,
+        Option<ResMut<crate::world_characters::WorldCharacters>>,
+    ),
     scene: crate::level_save::LevelSaveScene,
 ) {
     let steps: Vec<SaveStep> = steps.read().copied().collect();
@@ -1350,7 +1400,8 @@ fn run_save_steps(
                 stamp_discovery(&mut session, experience.as_deref());
                 sync_players(&mut live, &mut players);
                 let player = live_story_player(&players, created.as_deref());
-                let export = story_save_world(&mut session, player.as_ref(), live.db());
+                let others = world.as_mut().map(|w| w.others()).unwrap_or_default();
+                let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
                 log_world_export(&export);
                 let section = scene.section(live.db(), true);
                 let level_section = section
@@ -1396,7 +1447,8 @@ fn run_save_steps(
                     sync_players(&mut live, &mut players);
                 }
                 let player = live_story_player(&players, created.as_deref());
-                let export = story_save_world(&mut session, player.as_ref(), live.db());
+                let others = world.as_mut().map(|w| w.others()).unwrap_or_default();
+                let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
                 // The disable flag skips the save but not the copy: the
                 // old save becomes the checkpoint, as in the original.
                 let section = (!disabled)
@@ -1718,6 +1770,11 @@ pub struct StoryRestore {
     /// which the level load imports instead of the archive's file; `None`
     /// when the package holds none.
     pub level_section: Option<exa_world::SavedLevelSection>,
+    /// The save's world character database in its save form, which the
+    /// load imports as the live store
+    /// ([`crate::world_characters::WorldCharacters::from_save`]); `None`
+    /// when the package holds none.
+    pub world_characters: Option<Vec<u8>>,
 }
 
 /// The story's full load of a slot, as the saves' character screen's
@@ -1773,6 +1830,7 @@ pub fn restore_story(
                 locale: locale.clone(),
                 bytes: std::sync::Arc::from(bytes),
             });
+    let world_characters = loaded.world_characters().map(|db| db.save());
     Ok(StoryRestore {
         session,
         level,
@@ -1783,6 +1841,7 @@ pub fn restore_story(
         kind: loaded.kind,
         request,
         level_section,
+        world_characters,
     })
 }
 
@@ -1860,6 +1919,20 @@ fn load_story_slot(
     let (level, placement) = match restored {
         Ok(mut restored) => {
             import_world_tier(&mut live, game.as_deref(), restored.world.take());
+            // The save's world character database becomes the live store.
+            let characters = restored.world_characters.take().and_then(|bytes| {
+                exa_formats::character_db::CharacterDb::load(
+                    exa_formats::character_db::WORLD_TAG,
+                    &bytes,
+                )
+                .ok()
+            });
+            let mut store = crate::world_characters::WorldCharacters::from_save(characters);
+            info!(
+                "save: world character database imported ({} records)",
+                store.records().len()
+            );
+            commands.insert_resource(store);
             info!(
                 "save: story slot {} loaded from {:?}: level {}, clock {} s, player {:?}, {} world object records",
                 request.number,

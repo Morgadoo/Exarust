@@ -25,7 +25,13 @@
 //! with its live possessions and health written back, its held roles), and
 //! the host respawns it on the destination with
 //! [`crate::save_level::follower_positions`] and [`arrival_yaw`];
-//! [`restore_arrivals`] loads the carried health onto the new body. A save
+//! [`restore_arrivals`] loads the carried health onto the new body. The
+//! flush registers each follower in the live world character database
+//! ([`crate::world_characters::WorldCharacters::register`]: a level's own
+//! character moves there under a world id with its origin, and takes the
+//! level it leaves as its level), and the host's re-attach stores the
+//! destination's id on the record
+//! ([`crate::world_characters::WorldCharacters::arrive`]). A save
 //! load, a new session or an arena round (a world reset) carries nobody,
 //! as those entry points do not run the transition. [Exarust's: the body's
 //! pose, wounds, contacts and the follow's walk start afresh; the original
@@ -88,6 +94,8 @@ pub fn collect_followers(
     mut commands: Commands,
     mut live: ResMut<exa_assets::live_objects::LiveObjects>,
     followers: FollowerQuery,
+    mut world: Option<ResMut<crate::world_characters::WorldCharacters>>,
+    level: Option<Res<exa_ai::brain::RoleDatabase>>,
 ) {
     // The scene's characters in a fixed order, as the scene's list is.
     let mut scene: Vec<_> = followers.iter().collect();
@@ -147,6 +155,20 @@ pub fn collect_followers(
     // their records when the destination replaces the local tier.
     let promoted =
         crate::save_live::promote_followers(live.db_mut(), &travelling_motiles, &mut records);
+    // The flush's database part: each follower joins the world character
+    // database (a level's own character under its first free id, with its
+    // origin) and takes the level it leaves as its level.
+    let leaving = level.as_ref().map_or(0, |level| level.locale);
+    if let Some(world) = world.as_mut() {
+        for record in &mut records {
+            let local = record.id;
+            let id = world.register(record, leaving);
+            info!(
+                "Migration: {} registered in the world character database: {local:#x} -> {id:#x} (level {leaving})",
+                record.name
+            );
+        }
+    }
     let mut travellers = Vec::new();
     for (record, (roles, from)) in records.into_iter().zip(kept) {
         let ids: Vec<u32> = record
@@ -237,14 +259,15 @@ pub fn arrival_positions(
         .collect()
 }
 
-/// The re-attach pass's record part: a carried record whose id names one
-/// of the destination's own characters takes the id after them, so the
-/// two never share an id [Exarust's: the original registers the follower
-/// in the world character database and keeps its object]. `taken` holds
-/// the destination's record ids (masked).
+/// The re-attach pass's record part for a record outside the world
+/// character database (one carried without a live store): an id that
+/// names one of the destination's own characters takes the id after them,
+/// so the two never share an id. A world-tagged id, the store's (every
+/// registered follower's), is kept, as the original keeps the follower's
+/// world record. `taken` holds the destination's record ids (masked).
 pub fn arrival_id(id: u32, taken: &[u32]) -> u32 {
     let mask = exa_formats::characters::ID_MASK;
-    if !taken.contains(&(id & mask)) {
+    if id & exa_formats::character_db::WORLD_TAG != 0 || !taken.contains(&(id & mask)) {
         return id;
     }
     taken.iter().copied().max().unwrap_or(0) + 1
@@ -331,6 +354,8 @@ mod tests {
     fn a_carried_id_that_a_destination_character_holds_moves_past_them() {
         assert_eq!(arrival_id(0x2b, &[1, 2, 3]), 0x2b);
         assert_eq!(arrival_id(0x2b, &[0x2b, 0x30]), 0x31);
+        // A world record keeps its id: the tags tell the stores apart.
+        assert_eq!(arrival_id(0x4000_0002, &[2, 3]), 0x4000_0002);
     }
 
     fn brain(activity: i32) -> exa_ai::brain::Npc {

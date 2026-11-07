@@ -270,7 +270,14 @@ destination's collision is in, the viewer places them on the six offsets
 around the player's landing (the flow placement's heading as the spawn
 matrix, else the identity), each on its own floor probe, respawns them with
 the roles that keep them following, and `restore_arrivals` loads the carried
-health; an id a destination character holds moves past them.
+health. The flush registers each follower in the live world character
+database (`world_characters::WorldCharacters`: a level's own character
+joins it under its first free id, keeping its origin, and takes the level
+it leaves as its level), the re-attach stores the destination's id on the
+record, the story save writes the store's records beside the player
+(`save_live::story_player_world_with`), a story load imports the save's
+`#worldchrdb` as the store, and the host's level loads look world-tagged
+placements up in it.
 The save's writers have the pieces the original exports: the world
 databases (`slots::export_world_databases`: the character database
 flushed and saved, the object world tier and its string library, each

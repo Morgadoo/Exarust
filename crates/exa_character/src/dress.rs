@@ -765,7 +765,7 @@ mod tests {
         let items = exa_formats::objdb::items(&db);
         let locale =
             exa_formats::roles::locale_id(resource.get("locales.rdb").unwrap(), "exanima01.rfc");
-        let characters = exa_world::placed_characters(&scene, &items, locale);
+        let characters = exa_world::placed_characters(&scene, &items, locale, &[]);
         let races = exa_formats::races::parse(resource.get("races.rdb").unwrap()).unwrap();
         let Some(character) = characters.iter().find(|c| c.name == "Kade") else {
             return;

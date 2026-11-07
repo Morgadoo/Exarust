@@ -1137,7 +1137,7 @@ The rest of the record, in order (versions 5–7 alike up to the inventory):
 | roles | v7: `u32 count`, `u32 len`, len bytes | count × {u32 role, f32 weight, u8 flags (bit 0 explicit), u8 inherited count, u8 n, u8 pad, n × u32 variables}, newest first |
 | relations | v7: table, then `i32 m` × {8 bytes, table} | table = `i32 n`; if n ≥ 1: n × {character, offset}, `i32 len`, blob; none in the shipped data |
 | saved state | `i32 n`, n × {u32 tag, u32 value} | `CECC0001` heal pool (f32 red still to heal), `CECC0002` potion expiry (world clock, s) |
-| sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: f32 potential (4.0 for a new thaumaturge; the story's memory fragments and awakenings change it), ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC12`: two words; `CDEC00` loadouts: `i32 n`, n × {u32 word, four {id, flags}, `i32 count`, count × {id, flags}}; `CDEC00` and `CDEC12` never occur in the shipped data |
+| sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: f32 potential (4.0 for a new thaumaturge; the story's memory fragments and awakenings change it), ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC12` origin: u32 level id, u32 local id (tag included) of a character the door flush moved from the local database to the world one; `CDEC00` loadouts: `i32 n`, n × {u32 word, four {id, flags}, `i32 count`, count × {id, flags}}; `CDEC00` and `CDEC12` never occur in the shipped data |
 
 Versions 5 and 6 (the legacy reader) differ after the inventory: roles are
 `i32 n`, n × {u32 role, u32 ignored}, each added in turn (with its parents
@@ -1211,7 +1211,7 @@ then the loadouts). Three details of its behaviour:
   low byte 0) + 100 in a byte, wrapping.
 - the names are the 16 stored bytes; Exarust reads one character per byte
   and writes each back as its byte.
-- the powers are written only when they have an entry, the reserved pair
+- the powers are written only when they have an entry, the origin pair
   only when its first word is not 0, and the loadouts only when there is
   one; a power gets the blob flag exactly when it has a blob (one of size
   4, no bytes, keeps it).

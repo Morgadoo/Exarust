@@ -695,7 +695,7 @@ fn shipped_actors() {
     assert!(
         records
             .iter()
-            .all(|(_, r)| r.loadouts.is_empty() && r.reserved.is_none())
+            .all(|(_, r)| r.loadouts.is_empty() && r.origin.is_none())
     );
     let actor = |name: &str| &records.iter().find(|(n, _)| n == name).unwrap().1;
     let perks = |name: &str| {
@@ -891,7 +891,7 @@ fn written_records_read_back_the_same() {
             },
         ],
     });
-    r.reserved = Some([1, 2]);
+    r.origin = Some([1, 2]);
     let bytes = r.to_bytes().unwrap();
     let read = CharacterRecord::parse(9, &bytes).unwrap();
     assert_eq!(read, r);
@@ -1062,7 +1062,7 @@ fn names_write_one_byte_per_character() {
 }
 
 /// The writer's conditions for the sub-chunks: powers only with an entry,
-/// the reserved pair only when its first word is set, a power's blob
+/// the origin pair only when its first word is set, a power's blob
 /// flag exactly when it has a blob (one of no bytes keeps it).
 #[test]
 fn sub_chunks_are_written_as_the_game_decides() {
@@ -1073,9 +1073,9 @@ fn sub_chunks_are_written_as_the_game_decides() {
         slots: [0; POWER_SLOTS],
         known: Vec::new(),
     });
-    r.reserved = Some([0, 5]);
+    r.origin = Some([0, 5]);
     assert_eq!(r.to_bytes().unwrap().len(), fixed);
-    r.reserved = Some([5, 0]);
+    r.origin = Some([5, 0]);
     r.powers.as_mut().unwrap().known = vec![
         Power {
             id: 2,
@@ -1089,7 +1089,7 @@ fn sub_chunks_are_written_as_the_game_decides() {
         },
     ];
     let read = CharacterRecord::parse(0, &r.to_bytes().unwrap()).unwrap();
-    assert_eq!(read.reserved, Some([5, 0]));
+    assert_eq!(read.origin, Some([5, 0]));
     let known = read.powers.unwrap().known;
     assert_eq!((known[0].flags, known[0].blob.as_ref()), (0, None));
     assert_eq!(

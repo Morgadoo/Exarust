@@ -190,6 +190,7 @@ fn setup(
                 name,
                 mechanism_bodies(&options),
                 None,
+                Vec::new(),
             ) {
                 // The camera is there from the start, behind the loading
                 // screen; it moves to the level's view when the load ends.
@@ -359,6 +360,7 @@ fn setup(
                 name,
                 mechanism_bodies(&options),
                 None,
+                Vec::new(),
             ) {
                 let start = PlayStart {
                     position: Vec3::ZERO,
@@ -466,6 +468,7 @@ fn apply_level_change(
     options: Res<Options>,
     saved: Option<Res<exa_world::SavedLevelSection>>,
     travelling: Option<Res<exa_game::follower_travel::TravellingFollowers>>,
+    mut world: Option<ResMut<exa_game::world_characters::WorldCharacters>>,
 ) {
     let Some(ready) = ready else {
         return;
@@ -527,12 +530,16 @@ fn apply_level_change(
     if section.is_some() {
         commands.remove_resource::<exa_world::SavedLevelSection>();
     }
+    // The live world character database's records other than the
+    // player's slot (the player is spawned on its own).
+    let world_characters = world.as_mut().map(|w| w.others()).unwrap_or_default();
     let found = begin_level(
         &mut commands,
         &mut loader,
         &level,
         mechanism_bodies(&options),
         section,
+        world_characters,
     );
     // The save unit's transition flow around the change: which copy the
     // destination comes from, the spawn matrix and the abort when the
@@ -582,11 +589,15 @@ fn begin_level(
     name: &str,
     mechanism_bodies: exa_world::bodies::MechanismBodies,
     saved: Option<std::sync::Arc<[u8]>>,
+    world_characters: Vec<exa_formats::characters::CharacterRecord>,
 ) -> bool {
     let Some(mut load) = exa_world::LevelLoad::begin_from(commands, loader, name, saved) else {
         return false;
     };
     load.mechanism_bodies = mechanism_bodies;
+    // The level's world references are looked up in the live world
+    // character database.
+    load.world_characters = world_characters;
     commands.insert_resource(exa_ui::LoadingStatus {
         title: format!("Loading {name}"),
         stage: load.stage().into(),
@@ -2004,6 +2015,9 @@ fn spawn_players(
             .max()
             .unwrap_or(0)
             + 1;
+        // A story start empties the world character database and adds the
+        // new character under id 1.
+        commands.insert_resource(exa_game::world_characters::WorldCharacters::new_story());
         let companion: Vec<_> = story_companion(game, &items, next_id).into_iter().collect();
         for c in &companion {
             info!(
@@ -2027,6 +2041,19 @@ fn spawn_players(
         let mut placed = traveller.placed.clone();
         placed.record.id = exa_game::follower_travel::arrival_id(placed.record.id, &taken);
         taken.push(placed.record.id & exa_formats::characters::ID_MASK);
+        // The re-attach stores the destination's id as the follower's
+        // level, on its record and in the world character database.
+        placed.record.locale = locale;
+        let arrived = placed.record.clone();
+        commands.queue(move |world: &mut World| {
+            if let Some(mut store) =
+                world.get_resource_mut::<exa_game::world_characters::WorldCharacters>()
+            {
+                let mut record = arrived;
+                let level = record.locale;
+                store.arrive(&mut record, level);
+            }
+        });
         let mut built = Vec::new();
         spawn_placed_characters(
             commands,

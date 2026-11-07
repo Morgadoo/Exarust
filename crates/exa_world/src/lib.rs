@@ -663,12 +663,22 @@ pub fn record_look<'a>(
 
 /// Resolves a level's placed characters: records from its own database,
 /// worn items from its local object database or the game's.
+///
+/// As the importer's character reader does, a placement's reference names
+/// its database: the world bit (`0x4000_0000`) looks the low 28 bits up in
+/// the world character database (`world`, the live store's records), any
+/// other reference the level's own records (the local database the
+/// section's embedded store fills). A reference neither finds is skipped.
+/// A world character is created only when its record's level is the
+/// current one (`locale`); the level's own records always are. Without a
+/// locale nothing is filtered.
 pub fn placed_characters(
     scene: &Scene,
     global: &[Item],
     locale: Option<u32>,
+    world: &[exa_formats::characters::CharacterRecord],
 ) -> Vec<PlacedCharacter> {
-    use exa_formats::characters::{ID_MASK, LOCAL_ITEM};
+    use exa_formats::characters::{ID_MASK, LOCAL_ITEM, WORLD_DB};
     let Some(chars) = &scene.characters else {
         return Vec::new();
     };
@@ -676,13 +686,15 @@ pub fn placed_characters(
         .placements
         .iter()
         .filter_map(|p| {
-            let record = chars.record(p.id)?;
-            // A world-database character is created only in its own locale:
-            // the level's local records always are.
-            let world = p.id & 0x4000_0000 != 0 || record.id & 0x4000_0000 != 0;
-            if world && locale.is_some_and(|here| record.locale != here) {
-                return None;
-            }
+            let record = if p.id & WORLD_DB != 0 {
+                let record = world.iter().find(|r| r.id & ID_MASK == p.id & ID_MASK)?;
+                if locale.is_some_and(|here| record.locale != here) {
+                    return None;
+                }
+                record
+            } else {
+                chars.record(p.id)?
+            };
             let find = |id: u32| -> Option<&Item> {
                 let items: &[Item] = if id & LOCAL_ITEM != 0 {
                     &scene.local_items
@@ -1860,6 +1872,10 @@ pub struct LevelLoad {
     /// default nothing set them.
     pub arrival: u32,
     pub previous_level: u32,
+    /// The world character database's records, which the level's
+    /// world-referenced placements are looked up in
+    /// ([`placed_characters`]); by default none.
+    pub world_characters: Vec<exa_formats::characters::CharacterRecord>,
     /// The content stream the placed objects are built through, while the
     /// level's list is unfinished (behind a lock only so the load can live
     /// in a resource: the stream's job ring holds callbacks that are not
@@ -2021,6 +2037,7 @@ impl LevelLoad {
             mechanism_bodies: bodies::MechanismBodies::default(),
             arrival: exa_assets::content_stream::NO_ARRIVAL_WORD,
             previous_level: exa_assets::content_stream::NO_PREVIOUS_LEVEL,
+            world_characters: Vec::new(),
             stream: None,
             missing_database_objects: 0,
             player_focus: None,
@@ -2485,7 +2502,12 @@ impl LevelLoad {
                 grid: self.grid_stats,
                 terrain: self.terrain_stats.clone(),
                 lighting: scene_lighting.lighting.clone(),
-                characters: placed_characters(&self.scene, &self.global_items, self.locale),
+                characters: placed_characters(
+                    &self.scene,
+                    &self.global_items,
+                    self.locale,
+                    &self.world_characters,
+                ),
                 placed_objects: self.placed_objects,
                 missing_objects: self.missing_objects,
                 missing_database_objects: self.missing_database_objects,
@@ -2770,6 +2792,41 @@ mod tests {
     /// three arenao3 braziers that go out by day, and an exanima03 bed
     /// (also static). The lantern's and the brazier's model each have the
     /// one light or fire the rule reaches; the bed has none.
+    /// The shipped levels' placements: every one names a record of the
+    /// level's own store, none the world database, so routing world
+    /// references to the live world store changes no shipped level.
+    #[test]
+    fn shipped_placements_name_only_their_own_records() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let (mut placements, mut world, mut unresolved) = (0, Vec::new(), Vec::new());
+        for entry in resource.entries() {
+            if !entry.name.ends_with(".rfc") {
+                continue;
+            }
+            let Ok(scene) = exa_formats::rfc::Scene::parse(resource.bytes(entry)) else {
+                continue;
+            };
+            let Some(chars) = &scene.characters else {
+                continue;
+            };
+            for p in &chars.placements {
+                placements += 1;
+                if p.id & exa_formats::characters::WORLD_DB != 0 {
+                    world.push((entry.name.clone(), p.id));
+                } else if chars.record(p.id).is_none() {
+                    unresolved.push((entry.name.clone(), p.id));
+                }
+            }
+        }
+        eprintln!("{placements} placements; world {world:?}; unresolved {unresolved:?}");
+        assert!(placements > 0);
+        assert_eq!(world, []);
+    }
+
     #[test]
     fn shipped_props_with_a_visibility_rule() {
         let Some(dir) = exa_assets::locate_install(None) else {
@@ -3853,9 +3910,11 @@ mod tests {
         }
     }
 
-    /// A world-database character is created only in its own locale; a
-    /// level's local records always are. Without the level's locale nothing
-    /// is filtered.
+    /// A world reference is looked up in the world database and created
+    /// only in its own locale; a level's local records always are, even
+    /// one whose low id equals a world record's. Without the level's
+    /// locale nothing is filtered, and a world reference the world store
+    /// lacks is skipped.
     #[test]
     fn world_characters_wait_for_their_locale() {
         let mut local = record(3, Vec::new());
@@ -3864,6 +3923,8 @@ mod tests {
         elsewhere.locale = 5;
         let mut here = record(0x4000_0005, Vec::new());
         here.locale = 2;
+        let mut same_low = record(4, Vec::new());
+        same_low.name = "local four".into();
         let scene = Scene {
             version: 0,
             nodes: Vec::new(),
@@ -3872,8 +3933,14 @@ mod tests {
             props: Vec::new(),
             environment: None,
             characters: Some(LevelCharacters {
-                records: vec![local, elsewhere, here],
-                placements: vec![placement(3), placement(0x4000_0004), placement(0x4000_0005)],
+                records: vec![local, same_low],
+                placements: vec![
+                    placement(3),
+                    placement(0x4000_0004),
+                    placement(0x4000_0005),
+                    placement(4),
+                    placement(0x4000_0009),
+                ],
             }),
             local_items: Vec::new(),
             local_records: Vec::new(),
@@ -3884,15 +3951,24 @@ mod tests {
             unknown_chunks: Vec::new(),
             level_errors: Vec::new(),
         };
+        let world = [elsewhere, here];
         let ids = |locale| {
-            placed_characters(&scene, &[], locale)
+            placed_characters(&scene, &[], locale, &world)
                 .iter()
                 .map(|c| c.record.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(Some(2)), [3, 0x4000_0005]);
-        assert_eq!(ids(Some(5)), [3, 0x4000_0004]);
-        assert_eq!(ids(None).len(), 3);
+        assert_eq!(ids(Some(2)), [3, 0x4000_0005, 4]);
+        assert_eq!(ids(Some(5)), [3, 0x4000_0004, 4]);
+        assert_eq!(ids(None), [3, 0x4000_0004, 0x4000_0005, 4]);
+        // Without the world store a world reference finds nobody, never
+        // the local record with the same low id.
+        let alone = placed_characters(&scene, &[], None, &[]);
+        assert_eq!(
+            alone.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            [alone[0].name.as_str(), "local four"]
+        );
+        assert_eq!(alone.len(), 2);
     }
 
     #[test]
@@ -3927,7 +4003,7 @@ mod tests {
             unknown_chunks: Vec::new(),
             level_errors: Vec::new(),
         };
-        let placed = placed_characters(&scene, &global, None);
+        let placed = placed_characters(&scene, &global, None, &[]);
         assert_eq!(placed.len(), 2);
         assert_eq!((placed[0].encumbrance, placed[1].encumbrance), (0.025, 0.0));
         let worn: Vec<&str> = placed[0].worn.iter().map(|w| w.model.as_str()).collect();

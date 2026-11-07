@@ -509,7 +509,7 @@ mod tests {
             levels += 1;
             let before = shields + seconds;
             let locale = exa_formats::roles::locale_id(resource.get("locales.rdb").unwrap(), &name);
-            for c in exa_world::placed_characters(&scene, &items, locale) {
+            for c in exa_world::placed_characters(&scene, &items, locale, &[]) {
                 if c.dead {
                     continue;
                 }

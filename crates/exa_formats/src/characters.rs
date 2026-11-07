@@ -50,8 +50,9 @@ const POWERS_OUT: u32 = 0x00CD_EC01;
 pub const POWER_SLOTS: usize = 10;
 /// Sub-chunk of the character's saved loadouts (hands and worn items).
 const LOADOUTS: u32 = 0x00CD_EC00;
-/// Sub-chunk of two words whose meaning is not traced (never shipped).
-const RESERVED: u32 = 0x00CD_EC12;
+/// Sub-chunk of a migrated character's origin: the level it left and the
+/// local id it had there (never shipped; the door flush writes it).
+const ORIGIN: u32 = 0x00CD_EC12;
 /// Saved-state entry: red health still to heal from bandages (an `f32`).
 pub const SAVED_HEAL_POOL: u32 = 0xCECC_0001;
 /// Saved-state entry: a drunk potion's expiry on the world clock (s).
@@ -365,8 +366,12 @@ pub struct CharacterRecord {
     pub loadouts: Vec<Loadout>,
     /// A thaumaturge's powers.
     pub powers: Option<Powers>,
-    /// The two words of the reserved sub-chunk, when a record has one.
-    pub reserved: Option<[u32; 2]>,
+    /// Where a migrated character came from: the id of the level it left
+    /// and the local-database id (tag included) it had there. A follower's
+    /// flush at a door stores both as it moves the record from the local
+    /// database to the world one; the writer stores the pair only when the
+    /// level word is set.
+    pub origin: Option<[u32; 2]>,
 }
 
 /// Hand slots of a record or a loadout: two hands, then a second pair.
@@ -423,7 +428,7 @@ impl CharacterRecord {
             saved: Vec::new(),
             loadouts: Vec::new(),
             powers: None,
-            reserved: None,
+            origin: None,
         }
     }
 
@@ -457,7 +462,7 @@ impl CharacterRecord {
     /// A copy made as the game copies a record: written, read back, and
     /// given no database id. The copy has the writer's canonical voice name
     /// and loses what the writer drops (a skill without a technique, a
-    /// sixth technique, powers without an entry, a reserved pair whose first
+    /// sixth technique, powers without an entry, an origin pair whose first
     /// word is 0).
     pub fn duplicate(&self) -> Result<Self> {
         let bytes = self.to_bytes()?;
@@ -1359,7 +1364,7 @@ impl CharacterRecord {
                     rec.powers = Some(read_powers(&mut chunk, version == RECORD_VERSION)?);
                 }
                 LOADOUTS => rec.loadouts = read_loadouts(&mut chunk)?,
-                RESERVED => rec.reserved = Some([chunk.u32()?, chunk.u32()?]),
+                ORIGIN => rec.origin = Some([chunk.u32()?, chunk.u32()?]),
                 _ => {}
             }
         }
@@ -1541,9 +1546,9 @@ impl CharacterRecord {
                 Ok(())
             })?;
         }
-        // The reserved pair is written only when its first word is set.
-        if let Some([a, b]) = self.reserved.filter(|[a, _]| *a != 0) {
-            put_chunk(out, RESERVED, |c| {
+        // The origin pair is written only when its level word is set.
+        if let Some([a, b]) = self.origin.filter(|[a, _]| *a != 0) {
+            put_chunk(out, ORIGIN, |c| {
                 c.extend_from_slice(&a.to_le_bytes());
                 c.extend_from_slice(&b.to_le_bytes());
                 Ok(())

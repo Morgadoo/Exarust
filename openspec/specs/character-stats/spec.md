@@ -363,7 +363,7 @@ A dead character's body whose root falls below −50 m SHALL lose its health and
 - **THEN** the corpse is gone, the player's body stays with no health, and the living body is left alone
 
 ### Requirement: Writing a character record
-The system SHALL write a character record as the original's writer does: version 7, the fields in file order, names one byte per character, a skill only when it has a chosen technique and at most five techniques, the powers only with an entry, the reserved pair only when its first word is set and the loadouts only when there is one. Every version 7 record of the shipped level databases and `actors.rpk` SHALL write back byte for byte except the voice names that are not in the formatter's form.
+The system SHALL write a character record as the original's writer does: version 7, the fields in file order, names one byte per character, a skill only when it has a chosen technique and at most five techniques, the powers only with an entry, the origin pair only when its level word is set and the loadouts only when there is one. Every version 7 record of the shipped level databases and `actors.rpk` SHALL write back byte for byte except the voice names that are not in the formatter's form.
 
 #### Scenario: Shipped records
 - **WHEN** the 485 version 7 records of the installed levels and actors are written back

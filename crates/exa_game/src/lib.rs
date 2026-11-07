@@ -163,6 +163,7 @@ pub mod transition_screen;
 pub mod use_cursor;
 pub mod weather;
 pub mod window;
+pub mod world_characters;
 pub mod world_clock;
 pub mod zone_scripts;
 
