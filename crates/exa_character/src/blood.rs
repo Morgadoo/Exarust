@@ -549,7 +549,11 @@ fn load_stain_gradient(
 fn stain_weapons(
     mut commands: Commands,
     mut weapons: Query<(Entity, Ref<BladeBlood>, &mut WeaponStain)>,
-    parts: Query<(&Mesh3d, &GlobalTransform)>,
+    parts: Query<(
+        &Mesh3d,
+        &GlobalTransform,
+        Option<&bevy::mesh::skinning::SkinnedMesh>,
+    )>,
     gradient: Option<Res<StainGradient>>,
     mut materials: ResMut<Assets<StainMaterial>>,
 ) {
@@ -580,7 +584,7 @@ fn stain_weapons(
         let mut drawn = Vec::new();
         let mut passes = Vec::new();
         for &(part, placement) in &stain.parts {
-            let Ok((mesh, at)) = parts.get(part) else {
+            let Ok((mesh, at, skin)) = parts.get(part) else {
                 continue;
             };
             let material = materials.add(StainMaterial {
@@ -597,6 +601,10 @@ fn stain_weapons(
                     ChildOf(part),
                 ))
                 .id();
+            // A skinned part's pass bends with it.
+            if let Some(skin) = skin {
+                commands.entity(pass).insert(skin.clone());
+            }
             drawn.push(material);
             passes.push(pass);
         }
