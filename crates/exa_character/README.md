@@ -317,6 +317,11 @@ tested rules of their own.
 
 ## Held items
 
+- A held linked-body item (a flail) keeps the skin its model import built
+  (`exa_assets::prop_skin`): its meshes are skinned over the item's own node
+  entities, which the grip and the item's bodies move
+  (`exa_world::prop_skin::attach`); a stain pass over a skinned part takes
+  its skin.
 - `held::Hands` says what a body holds as the original's moveset rule reads
   it (the main item's weapon flags and whether it is a light, a second
   weapon, a shield, an off-hand light); `held::choose` turns it into a
