@@ -1855,6 +1855,60 @@ fn spawn_players(
         story,
     };
     spawn_placed_characters(commands, loader, &placing, &corpses, None);
+    // `--spawn-race`: living characters of a race, from the first actor
+    // template of that race (a fresh record of the race without one).
+    if !options.spawn_races.is_empty() {
+        let actors = exa_game::prelude::ActorTemplates::load(game);
+        let next_id = start
+            .characters
+            .iter()
+            .map(|c| c.record.id & exa_formats::characters::ID_MASK)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let spawned: Vec<exa_world::PlacedCharacter> = options
+            .spawn_races
+            .iter()
+            .enumerate()
+            .map(|(k, &(race, at))| {
+                let (template, mut record, own) = match actors.first_of_race(race) {
+                    Some((name, record, own)) => (name.to_string(), record.clone(), own.to_vec()),
+                    None => match level_record_of_race(game, race) {
+                        Some((level, record)) => (level, record, Vec::new()),
+                        None => {
+                            let mut record = exa_formats::characters::CharacterRecord::reset();
+                            record.set_profession(u32::from(race) << 8);
+                            ("a fresh record".to_string(), record, Vec::new())
+                        }
+                    },
+                };
+                record.id = next_id + k as u32;
+                let find = |id: u32| exa_game::prelude::template_item(&own, &items, id);
+                let look = exa_world::record_look(&record, find);
+                info!(
+                    "spawn race {race}: {template} ({}) at {at:?}, record {:#x}",
+                    record.name, record.id
+                );
+                exa_world::PlacedCharacter {
+                    name: record.name.clone(),
+                    position: Vec3::from_array(at),
+                    yaw: 0.0,
+                    dead: false,
+                    race: record.race,
+                    female: record.female,
+                    worn: look.worn,
+                    held: look.held,
+                    hands: look.hands,
+                    encumbrance: exa_formats::encumbrance::of_record(&record, find),
+                    specials: exa_formats::encumbrance::WornSpecials::of_record(&record, find),
+                    record,
+                    pose: exa_formats::characters::SavedPose::None,
+                    fall: false,
+                }
+            })
+            .collect();
+        spawn_placed_characters(commands, loader, &placing, &spawned, None);
+    }
     // A new story's companion: the unknown background (a new character's
     // here) starts with Derrin in the first level, where the story start's
     // companion step places him.
@@ -1900,6 +1954,44 @@ fn spawn_players(
 
 /// The level a new story starts in.
 const STORY_LEVEL: &str = "exanima01";
+
+/// The story levels `--spawn-race` looks through for a record of a race no
+/// actor template has.
+const SPAWN_RACE_LEVELS: [&str; 10] = [
+    "exanima01",
+    "exanima02",
+    "exanima03",
+    "exanima04",
+    "exanima05",
+    "exanima06",
+    "exanima07",
+    "exanima08",
+    "exanima66",
+    "exanima67",
+];
+
+/// The first record of race byte `race` a shipped story level keeps (the
+/// level's name with it), for `--spawn-race` (a debug tool). The record's
+/// level-local item ids are not resolved.
+fn level_record_of_race(
+    game: &Game,
+    race: u8,
+) -> Option<(String, exa_formats::characters::CharacterRecord)> {
+    let resource = game.0.pack(PackKind::Resource)?;
+    SPAWN_RACE_LEVELS.iter().find_map(|level| {
+        let bytes = resource.get(&format!("{level}.rfc"))?;
+        let section = exa_formats::chunk::rfc_chunks(bytes)
+            .ok()?
+            .flatten()
+            .find(|c| c.tag == exa_formats::characters::CHARACTERS)?;
+        let characters = exa_formats::characters::LevelCharacters::parse(section.data).ok()?;
+        characters
+            .records
+            .into_iter()
+            .find(|r| r.race == race)
+            .map(|r| (level.to_string(), r))
+    })
+}
 
 /// The unknown background's story companion as a placed character: its
 /// actor template's record under character id `id`, dressed from the game's items, at the story
@@ -3317,9 +3409,8 @@ fn pose_nodes(model: &exa_assets::model::Model) -> Vec<exa_character::pose::Pose
 /// — those of human frame dressed in their own items, each with the stats its
 /// record and race give it. The living carry a brain: their record's roles,
 /// their relations and their traits; those with a physical body also rate
-/// the player and duel it once their rating turns hostile. Every race but
-/// the demon is physical
-/// ([`physical_frame`]). Logs the bodies built per race. Returns how many
+/// the player and duel it once their rating turns hostile. Every race is
+/// physical ([`physical_frame`]). Logs the bodies built per race. Returns how many
 /// were spawned and how many had no body.
 fn spawn_placed_characters(
     commands: &mut Commands,
@@ -3357,8 +3448,7 @@ fn spawn_placed_characters(
             &morph.physique,
             c.record.id ^ 0x51ED_270B,
         );
-        // Every race but the demon is built physical; only the human frame
-        // is dressed.
+        // Every race is built physical; only the human frame is dressed.
         let physical = physical_frame(c.race);
         let dressed = human_frame(c.race);
         // The init, then the armour pass's encumbrance.
@@ -3371,8 +3461,7 @@ fn spawn_placed_characters(
             },
         )
         .with_encumbrance(c.encumbrance);
-        // A body without a physical frame (the demon) has no links to lie
-        // down with.
+        // A body without a physical frame has no links to lie down with.
         if c.dead && !physical {
             missing += 1;
             continue;
@@ -3396,6 +3485,31 @@ fn spawn_placed_characters(
         }
         let root = root.id();
         let (model, entities) = exa_world::spawn_model_nodes(commands, &body, None);
+        // A numbered node with its own body chunk (the demon's tail and
+        // wings) keeps it for the body builder.
+        if physical {
+            let limbs = body
+                .nodes
+                .iter()
+                .filter(|n| {
+                    exa_formats::rsq::bone_index(&n.name).is_some_and(|b| (1..=18).contains(&b))
+                })
+                .count();
+            let unit = exa_game::limp::plain_mass_unit(
+                limbs,
+                stats.size,
+                exa_formats::races::body_of_character(races, c.race).mass_divisor,
+            );
+            for (i, &entity) in entities.iter().enumerate() {
+                if let Some(rigid) = &body.nodes[i].rigid
+                    && exa_formats::rsq::bone_index(&body.nodes[i].name).is_some_and(|b| b >= 1)
+                {
+                    commands
+                        .entity(entity)
+                        .insert(exa_game::limp::own_part_body(rigid, unit));
+                }
+            }
+        }
         if let Some(placed) = &placed_pose {
             // Every body part sits on its saved world frame; the character
             // frame carries the restored root's translation, and the model

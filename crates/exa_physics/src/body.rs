@@ -453,6 +453,11 @@ pub struct Part {
     /// contact wanted to move it. The two pushes cancel, so nothing moves
     /// by this array; [`crate::body_pairs`] keeps it for the node owner.
     pub(crate) placed_offset: [Vec3; 4],
+    /// A plain rigid body hung from the character (a model node with its
+    /// own body chunk and no skeleton bone, the demon's tail and wings): it
+    /// takes the plain step's full gravity and its links stay limp links,
+    /// never muscles ([`Ragdoll::make_plain`]).
+    pub plain: bool,
 }
 
 /// A level impact: a part hit the static level hard enough for the
@@ -651,6 +656,7 @@ impl Part {
             level_travel: Vec3::ZERO,
             level_travel2: 0.0,
             placed_offset: [Vec3::ZERO; 4],
+            plain: false,
         }
         .settle()
     }
@@ -939,6 +945,20 @@ pub struct GoLimp {
     pub velocity: Option<Vec3>,
     /// Frames to wait first (a body spawned this frame is not posed yet).
     pub delay: u32,
+}
+
+/// A body model node's own body chunk, for a node the skeleton has no bone
+/// for (the demon's tail and wings): its collision spheres (centre, radius,
+/// metres, node frame), its links to its parent (point on the node, point
+/// on the parent before the node's translation, slack, and whether the
+/// link is a soft weld) and its registered mobility. The body builder
+/// takes these in place of the skeleton's and makes the part a plain body
+/// ([`Ragdoll::make_plain`]).
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct OwnPartBody {
+    pub spheres: Vec<(Vec3, f32)>,
+    pub links: Vec<(Vec3, Vec3, f32, bool)>,
+    pub mobility: f32,
 }
 
 /// Makes the body under this entity (a body model root) physical: its parts
@@ -4102,6 +4122,33 @@ impl Ragdoll {
         }
     }
 
+    /// Makes the part at `index` a plain rigid body hung from the
+    /// character, as the original keeps a model node whose own body chunk
+    /// has no skeleton counterpart (the motion binder pairs only the
+    /// skeleton's bone numbers; the part list takes only bodies of the limb
+    /// class): it moves with `inverse_mass` (its registered mobility), its
+    /// stored links flagged `welded` become soft welds, and its links' two
+    /// shares follow the new mass.
+    pub fn make_plain(&mut self, index: usize, inverse_mass: f32, welded: &[bool]) {
+        let Some(range) = self.links_of.get(index).cloned() else {
+            return;
+        };
+        let part = &mut self.parts[index];
+        part.plain = true;
+        part.inverse_mass = inverse_mass;
+        part.link_mobility = inverse_mass * LINK_MOBILITY;
+        for (k, l) in self.links[range].iter_mut().enumerate() {
+            if !l.origin && welded.get(k).copied().unwrap_or(false) {
+                l.flags |= LINK_SOFT_WELD;
+            }
+            let (m, m_parent) = (
+                LINK_MOBILITY * self.parts[l.part].inverse_mass,
+                LINK_MOBILITY * self.parts[l.parent].inverse_mass,
+            );
+            l.shares = (m / (m + m_parent), m_parent / (m + m_parent));
+        }
+    }
+
     /// The links of the part at `index`: the skeleton's, then its origin
     /// pivot.
     pub fn links_of(&self, index: usize) -> &[Link] {
@@ -4876,7 +4923,9 @@ impl Ragdoll {
         for p in &mut self.parts {
             p.start = p.positions;
             p.strain = 0.0;
+            let plain = p.plain;
             let pull = carried
+                .filter(|_| !plain)
                 .and_then(|(tone, energy, carry, scale)| {
                     let a = lift::carry_share(p.bone, tone, energy, scale)?;
                     Some(gravity * (1.0 - a) + carry * a)
@@ -4990,6 +5039,8 @@ impl Ragdoll {
                     }
                     continue;
                 }
+                // A plain body's links are never muscles.
+                let gains = gains.filter(|_| !part.plain);
                 let correction = match (gains, l.anchor) {
                     (Some(gains), Some(anchor)) if l.slack > PIVOT_SLACK => {
                         l.muscle(part, parent, anchor, gains)

@@ -186,6 +186,7 @@ impl Part {
             level_travel: Vec3::ZERO,
             level_travel2: 0.0,
             placed_offset: [Vec3::ZERO; 4],
+            plain: false,
         }
         .settle()
     }

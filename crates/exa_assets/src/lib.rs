@@ -86,6 +86,11 @@ pub struct SkinLook {
     pub tone: [u16; 2],
     /// The women's texture set instead of the men's.
     pub female: bool,
+    /// The race loads a skin texture set (its look word's men's or women's
+    /// texture bit: the human and the ancient). The original's race loader
+    /// loads no `difm`/`spcm`/`nrmm` maps for any other race, whose bodies
+    /// keep their own materials.
+    pub textures: bool,
 }
 
 impl SkinLook {
@@ -93,7 +98,12 @@ impl SkinLook {
     pub fn of_entry(entry: &str, tone: [u16; 2], female: bool) -> Self {
         let lower = entry.to_ascii_lowercase();
         let stem = lower.strip_suffix("base.rfc").unwrap_or(&lower).to_string();
-        Self { stem, tone, female }
+        Self {
+            stem,
+            tone,
+            female,
+            textures: true,
+        }
     }
 
     /// The body model entry whose skin this is.

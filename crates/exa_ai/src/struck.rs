@@ -51,20 +51,21 @@ pub struct Taught {
 }
 
 /// A fighter's reach (cm), as the threat estimate reads the attacker's:
-/// its longest armed held weapon's, else the unarmed reach.
-fn reach_cm(fighter: Entity, blades: &Query<&Blade>) -> f32 {
+/// its longest armed held weapon's, else its race's unarmed reach (a
+/// human's without a fighter).
+fn reach_cm(fighter: Entity, blades: &Query<&Blade>, unarmed: f32) -> f32 {
     blades
         .iter()
         .filter(|b| b.wielder == fighter && b.record.armed())
         .map(|b| b.record.reach_metres())
         .reduce(f32::max)
-        .unwrap_or(stance::UNARMED_REACH)
+        .unwrap_or(unarmed)
         * CM
 }
 
 /// Every blow noticed this tick, on a character with a combatant: the
 /// base's courage and mark, then the AI's concern for the attacker.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn react_to_blows(
     mut blows: MessageReader<BlowNoticed>,
     mut taught: MessageWriter<Taught>,
@@ -73,6 +74,7 @@ pub fn react_to_blows(
     mut duellists: Query<&mut Duellist>,
     bodies: Query<(&GlobalTransform, &Condition, Option<&Ragdoll>)>,
     blades: Query<&Blade>,
+    fighters: Query<&exa_combat::Fighter>,
 ) {
     for blow in blows.read() {
         let Ok((mut combatant, mut npc)) = struck.get_mut(blow.target) else {
@@ -130,7 +132,13 @@ pub fn react_to_blows(
                 blow.attacker.to_bits(),
                 at.translation() * CM,
                 at.rotation() * Vec3::Z,
-                reach_cm(blow.attacker, &blades),
+                reach_cm(
+                    blow.attacker,
+                    &blades,
+                    fighters
+                        .get(blow.attacker)
+                        .map_or(stance::UNARMED_REACH, |f| f.stats.unarmed_reach),
+                ),
                 aims,
             );
             threat_used = Some(t);
