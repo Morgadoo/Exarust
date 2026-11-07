@@ -501,6 +501,14 @@ fn leg_gains(legs: LegMode, limbs: f32, support: f32, bearing: &Bearing) -> (f32
     }
 }
 
+/// The held items' contact factor the arm setter passes: their contact
+/// mobility is their base times it. Every call passes 2 but an attack's and
+/// a parry's, which pass 1, so a held weapon or shield yields twice as far
+/// in a contact unless its holder strikes or parries.
+pub const HELD_CONTACT: f32 = 2.0;
+/// The same in an attack's and a parry's branch.
+pub const HELD_CONTACT_STRIKING: f32 = 1.0;
+
 /// A power's arms, both of them.
 const ARM_POWER: f32 = 0.3;
 /// A weapon switch's arms, both of them.
@@ -727,7 +735,11 @@ impl Ragdoll {
         // stored stiffness.
         let writes_arms = !unsteady.shocked;
         let mut hold_arms = false;
+        // Every setter call but an attack's and a parry's passes the held
+        // items' factor 2; a shock and a kick make no call.
+        drive.held_contact = None;
         if writes_arms {
+            drive.held_contact = Some(HELD_CONTACT);
             if unsteady.collapsing {
                 let x = arm_stiffness_floor(ARM_LOOSE, unsteady.turn);
                 drive.arms = (x, x);
@@ -738,6 +750,7 @@ impl Ragdoll {
                 drive.arm = x;
             } else if let Some(tune) = drive.attack_arms {
                 drive.arm_drive = tune.drive;
+                drive.held_contact = Some(HELD_CONTACT_STRIKING);
                 let right = arm_stiffness_floor(tune.stiffness.0, unsteady.turn);
                 let left = arm_stiffness_floor(tune.stiffness.1, unsteady.turn);
                 drive.arms = (right, left);
@@ -749,12 +762,14 @@ impl Ragdoll {
             } else if unsteady.kicking {
                 // A kick leaves both stored stiffnesses as they are.
                 hold_arms = true;
+                drive.held_contact = None;
                 drive.arm = drive.arms.0;
             } else if unsteady.parrying {
                 let right =
                     arm_stiffness_floor(crate::motile::parry_blend(drive.arms.0), unsteady.turn);
                 let left =
                     arm_stiffness_floor(crate::motile::parry_blend(drive.arms.1), unsteady.turn);
+                drive.held_contact = Some(HELD_CONTACT_STRIKING);
                 drive.arms = (right, left);
                 drive.arm = right;
             } else if unsteady.casting {

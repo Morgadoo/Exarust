@@ -1389,3 +1389,57 @@ fn a_golems_links_are_smoothed_at_0_995() {
             .any(|l| l.smoothing != GOLEM_LINK_SMOOTHING)
     );
 }
+
+/// The arm setter's held-items factor: 1 in an attack's and a parry's
+/// branch, 2 in every other call, none when a shock or a kick makes no
+/// call.
+#[test]
+fn the_arm_setter_passes_the_held_items_factor() {
+    use crate::body::{HELD_CONTACT, HELD_CONTACT_STRIKING};
+    let mut body = both_arms();
+    let pose = vec![Affine3A::IDENTITY; 3];
+    let factor = |b: &Ragdoll| b.drive.as_ref().unwrap().held_contact();
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(factor(&body), Some(HELD_CONTACT));
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.8, 0.2),
+        drive: (1.0, 0.0),
+    }));
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(factor(&body), Some(HELD_CONTACT_STRIKING));
+    body.set_attack_arms(None);
+    for (bearing, want) in [
+        (
+            Bearing {
+                parrying: true,
+                ..Bearing::default()
+            },
+            Some(HELD_CONTACT_STRIKING),
+        ),
+        (
+            Bearing {
+                casting: true,
+                ..Bearing::default()
+            },
+            Some(HELD_CONTACT),
+        ),
+        (
+            Bearing {
+                kicking: true,
+                ..Bearing::default()
+            },
+            None,
+        ),
+        (
+            Bearing {
+                shocked: true,
+                ..Bearing::default()
+            },
+            None,
+        ),
+    ] {
+        body.set_bearing(bearing);
+        body.aim(Affine3A::IDENTITY, pose.clone());
+        assert_eq!(factor(&body), want, "{bearing:?}");
+    }
+}

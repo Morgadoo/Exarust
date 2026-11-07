@@ -447,6 +447,74 @@ pub fn animate_grips(
     }
 }
 
+/// A held item's contact mobility under its holder's arm setter: its base
+/// times the setter's factor ([`exa_physics::body::HELD_CONTACT`], or
+/// [`exa_physics::body::HELD_CONTACT_STRIKING`] in an attack or a parry),
+/// a single-precision product as the original's. The holder's held list
+/// takes it only when armed (its first held item's class has hands bits),
+/// the shield always. `None` leaves the item as it is.
+pub fn held_contact_mobility(
+    base: f32,
+    factor: Option<f32>,
+    kind: HeldKind,
+    armed: bool,
+) -> Option<f32> {
+    let factor = factor?;
+    (kind == HeldKind::Shield || armed).then_some(base * factor)
+}
+
+/// The arm setter's tail: every tick it is called, the held items' contact
+/// mobility is put at their base (the registered mobility, standing in for
+/// the original's weapon-mass base) times the holder's factor, the shield's
+/// whatever the holder holds, the other items' only when the holder is
+/// armed ([`crate::body_words::armed`]). An item its holder let go of is
+/// left alone. Runs after the character ticks wrote the factor, before the
+/// solver reads the contact mobilities.
+pub fn scale_held_contacts(
+    held: Query<(Entity, &HeldGrip)>,
+    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    hands: Query<&crate::held::Hands>,
+) {
+    if held.is_empty() {
+        return;
+    }
+    let holders = exa_physics::body::first_by_key(
+        held.iter().map(|(_, grip)| grip.holder_key),
+        bodies.iter().map(|(entity, body)| {
+            (
+                (entity, body.drive.as_ref().and_then(|d| d.held_contact())),
+                body,
+            )
+        }),
+    );
+    for (item, grip) in &held {
+        if grip.released {
+            continue;
+        }
+        let Some(&(owner, factor)) = holders.get(&grip.holder_key) else {
+            continue;
+        };
+        let armed = crate::body_words::armed(hands.get(owner).ok());
+        let Ok((_, mut body)) = bodies.get_mut(item) else {
+            continue;
+        };
+        // The held body is the item's top part; its child bodies are not
+        // on the holder's list.
+        let Some(part) = body.parts.iter_mut().find(|p| p.parent.is_none()) else {
+            continue;
+        };
+        if let Some(m) = held_contact_mobility(part.inverse_mass, factor, grip.kind, armed)
+            && m != part.pairing.mobility
+        {
+            debug!(
+                "held contact mobility: {item:?} ({:?}) of {owner:?}: {:.4} -> {m:.4} (base {:.4})",
+                grip.kind, part.pairing.mobility, part.inverse_mass
+            );
+            part.pairing.mobility = m;
+        }
+    }
+}
+
 /// The grip runtime's systems: the flip request, then the mode and flip
 /// step before the solver copies the links for this tick.
 pub struct GripRuntimePlugin;
@@ -465,6 +533,9 @@ impl Plugin for GripRuntimePlugin {
                     // The modes the character tick wrote (its motion starts
                     // and locomotion) apply before the bodies step.
                     animate_grips
+                        .after(exa_physics::body::CharacterTicks)
+                        .before(exa_physics::body::BodySystems),
+                    scale_held_contacts
                         .after(exa_physics::body::CharacterTicks)
                         .before(exa_physics::body::BodySystems),
                     swap_on_switch,
@@ -1173,5 +1244,28 @@ mod tests {
             "{}",
             blade.record.slash
         );
+    }
+
+    /// The held items' contact mobility: the base times the setter's
+    /// factor, the shield's always, the other items' only when armed; no
+    /// call leaves the item.
+    #[test]
+    fn the_held_contact_follows_the_arm_setter() {
+        use exa_physics::body::{HELD_CONTACT, HELD_CONTACT_STRIKING};
+        let f = held_contact_mobility;
+        assert_eq!(
+            f(0.3, Some(HELD_CONTACT), HeldKind::Weapon, true),
+            Some(0.6)
+        );
+        assert_eq!(
+            f(0.3, Some(HELD_CONTACT_STRIKING), HeldKind::Weapon, true),
+            Some(0.3)
+        );
+        assert_eq!(f(0.3, Some(HELD_CONTACT), HeldKind::Torch, false), None);
+        assert_eq!(
+            f(0.3, Some(HELD_CONTACT), HeldKind::Shield, false),
+            Some(0.6)
+        );
+        assert_eq!(f(0.3, None, HeldKind::Shield, true), None);
     }
 }
