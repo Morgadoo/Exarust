@@ -1655,6 +1655,8 @@ Round 107 blended: transparent surfaces draw in the original's compile-time list
 
 Round 115 cutaway: roofs, awnings and overhangs between the camera and the player fade as in the original.
 
+Round 124 playerctl2: the orbit and Cursor Look share one capture that re-centres the pointer and warps to the aim point; the story revive resets every brain with the space-free query.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -2404,6 +2406,8 @@ Round 64 thaumtree: the power tree opens from the creator, and its texts, which 
 Round 102 thaum: Constant Displacement's veil phases blows on the running body.
 
 Round 103 thaum2: displacement tendrils draw with their own material and the AI's Long Door finds its place on the navigation grid.
+
+Round 124 forcepicks: the force blast meets struck parts in their frame and stirs the cloths; the throw, barricade, long door and summoning ask the navigation picks.
 
 ### Phase 8 — Polish and release
 
