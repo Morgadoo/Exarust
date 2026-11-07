@@ -45,12 +45,16 @@ the executor's (`attack::start_blend`)
 [`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode).
 
 A blocked striker recoils (`recoil`): strength and the stall rate become
-0.5 and the released bit clears. A class word of 0x90 that is already
-continuing, or whose clock widens past 0.4 while a counter starts, stops
-there. Any other swing sets stalling, cleaving and recoiled, blend 40 and
-both arm stiffnesses to 0.2. The stance returns after the widened drive
-times 0.1 times 400, rounded half to even (the conversion rounds, it does
-not truncate), plus 200 ms. A wound's follow-through
+0.5 and the released bit clears. A class word of 0x90 (two weapons) that
+is already continuing stops there; one whose clock widens past 0.4 in a
+side swing (motions 5–10) with none of the hold-back flags (`0xA0012`)
+counters instead: the other side's attack chains at once, as the Remise
+chain does. Any other swing sets stalling, cleaving and recoiled, and
+`react_to_hits` switches it at once to the stance by energy
+(`stance_by_energy`, blend 40), which ends the attack and its clock, and
+sets both arm stiffnesses to 0.2. The executor stays busy until the widened
+drive times 0.1 times 400, rounded half to even (the conversion rounds, it
+does not truncate), plus 200 ms. A wound's follow-through
 (`follow_through`) uses that same skip and otherwise writes nothing until
 it runs. The scale is the widened gain times recoil times speed times 0.15,
 floored at 0. A body zone at or under the epsilon sets strength 0, and a
@@ -184,12 +188,12 @@ A clash on a weapon parry takes one of the original's three branches
 locks it 600 ms unless it has Riposte and sags its stance by half the
 impact, as before; a parry that counters this very motion with a weapon
 other than its primary ends into its stance with no lock and no sag
-(`ParryState::end`); a spent parry changes nothing. A recoil keeps its
-rest on the swing (`SwingState::recoil`) until the stall ends, and the
-stance that ends it starts with the rest's blend (40 frames) and both
-arms' stiffness (0.2, `Ragdoll::set_arm_stiffness`), which the next
-standing tick eases back up, each arm on its own, instead of the
-stance's recovery blend. A wound causes no damage over time: the body
+(`ParryState::end`); a spent parry changes nothing. A recoil's rest
+(`SwingState::recoil`) is taken at the blow: the stance starts with its
+blend (40 frames) and both arms' stiffness (0.2,
+`Ragdoll::set_arm_stiffness`), which the next standing tick eases back up,
+each arm on its own; a stall's end that still finds a rest (a recoil whose
+caller left it) starts the stance the same way. A wound causes no damage over time: the body
 tick's only damage-over-time routine is burning (`burn`, fed by the
 particle body-contact pass through `Burn::add_dose`, not by a wound), and
 a wound's blood is cosmetic (`wounds`).

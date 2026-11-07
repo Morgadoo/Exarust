@@ -641,8 +641,11 @@ pub(crate) fn held_record(
     race: &RaceWeaponry,
     flipped: bool,
 ) -> WeaponRecord {
-    let start = f32::from(stats.get(at::START)) * 0.005;
-    let end = f32::from(stats.get(at::END)) * 0.005;
+    // The builder hands the sweet-spot walk the striking part of the side
+    // it strikes with (W4, W5): the flipped side's bytes when flipped.
+    let side = if flipped { at::FLIP } else { 0 };
+    let start = f32::from(stats.get(at::START + side)) * 0.005;
+    let end = f32::from(stats.get(at::END + side)) * 0.005;
     let chain = (!name.starts_with('@'))
         .then(|| game.pack(PackKind::Objects)?.get(name))
         .flatten()

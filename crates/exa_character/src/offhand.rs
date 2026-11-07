@@ -126,11 +126,23 @@ fn attach_off_hands(
         });
         holder.half_sword = half_sword;
         let race = race.copied().unwrap_or_default();
-        let Some(weapon) = model_of(&mut loader, &off.model) else {
+        let Some(weapon) = model_of(&mut loader, &off.model, off.weapon.as_ref()) else {
             warn!("{} not found: no off-hand item", off.model);
             commands.entity(body).insert(OffAttached);
             continue;
         };
+        // A factory weapon's stats are its recipe's for the item's seeds and
+        // choices at its condition, with the assembled striking extents, as
+        // the main hand's; a plain item's are its section's.
+        let off_stats = off
+            .weapon
+            .as_ref()
+            .map(|w| match off.model.strip_prefix('@') {
+                Some(factory) => loader
+                    .factory_weapon_stats(factory, Some(w))
+                    .unwrap_or(w.stats),
+                None => w.stats,
+            });
         let transform = placement(off, &race, size, holder);
         let (root, nodes) = exa_world::spawn_model_nodes(&mut commands, &weapon, Some(transform));
         commands.entity(root).insert(ChildOf(hand));
@@ -241,10 +253,14 @@ fn attach_off_hands(
         }
         // A second weapon strikes: its own blade beside the main hand's.
         if off.kind == OffKind::Weapon
-            && let Some(section) = off.weapon.as_ref().map(|w| Section {
-                flags: w.flags,
-                stats: w.stats,
-            })
+            && let Some(section) = off
+                .weapon
+                .as_ref()
+                .zip(off_stats)
+                .map(|(w, stats)| Section {
+                    flags: w.flags,
+                    stats,
+                })
         {
             // The model's own chain gives a plain weapon's lengths; a
             // factory weapon takes its assembled top (cm).
@@ -298,10 +314,15 @@ fn grip_hand(off: &OffHeld) -> exa_combat::grip::GripHand {
     }
 }
 
-/// The item model: an object library entry, or a factory recipe.
-fn model_of(loader: &mut ModelLoader, name: &str) -> Option<std::sync::Arc<model::Model>> {
+/// The item model: an object library entry, or a factory recipe built from
+/// the item's weapon section (its seeds, stored choices and condition).
+fn model_of(
+    loader: &mut ModelLoader,
+    name: &str,
+    weapon: Option<&exa_formats::objdb::Weapon>,
+) -> Option<std::sync::Arc<model::Model>> {
     match name.strip_prefix('@') {
-        Some(factory) => loader.factory_weapon(factory, None),
+        Some(factory) => loader.factory_weapon(factory, weapon),
         None => loader.model(PackKind::Objects, name),
     }
 }
