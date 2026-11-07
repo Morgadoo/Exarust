@@ -41,6 +41,7 @@ pub mod barrier_live;
 pub mod blast_live;
 pub mod bubble_live;
 pub mod cast;
+pub mod cast_pick;
 pub mod casting;
 pub mod debug_cast;
 pub mod displacement;

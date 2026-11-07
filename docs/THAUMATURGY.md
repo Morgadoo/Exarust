@@ -369,8 +369,8 @@ contacts.
 takes what a charging kinesis holds, or a loose body (a character only
 dead, a prop of mobility 0.01 or more) under the cursor; strikes need a
 weapon in hand and cast motion 0x25. The barricade stands at the cursor's
-ground point, 100 cm up from the floor 210 cm below, facing away from the
-caster; the barrier and the bubble are domes 100 cm above the caster,
+ground pick, 100 cm up from the floor 210 cm below, facing away from the
+caster (see Cast picks); the barrier and the bubble are domes 100 cm above the caster,
 radius 100 and 120. The AI casts blast (focus, facing within 1, 6 m),
 barrier (facing 1 or more, 3 m), shell and strikes (cost within half the
 focus, facing within 0.5, a free slot). Each creator's material
@@ -603,10 +603,22 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   0.08; the living gain is 0.08 and recovers 0.001 a tick), its
   instability counter raised by one, hostility 1 at
   0.01 toward the caster and a landing momentum weight of 5 (its
-  balance point led by the chest's slow velocity, fading 0.05 a tick). A
-  simulated object's point
-  moves along the chunk's move by `(1 − d²/r²)·push·0.025` and stirs it by
-  `(1 − d²/r²)·0.0001`.
+  balance point led by the chest's slow velocity, fading 0.05 a tick),
+  each part's contact on its own: a chunk is taken into the struck part's
+  frame, tested against its node's sphere and box at
+  `reach·scale + margin + 10`, pushed out of each face of the node mesh it
+  reaches to that reach (a part without a mesh: its collision spheres), and
+  the pushed chunk takes the limb push, the part's velocity read at the
+  chunk's barycentric weights over its particles and the impulse pushed
+  there with the strain (`thaum::blast_live::strike_part`); a part met wakes
+  its body to 256 ticks. A simulated object's (a cloth's) point within
+  `reach·scale + margin + 40` of any chunk, spent or not, moves along the
+  chunk's move by `(1 − d²/r²)·(push·0.025)` (the share narrowed once, the
+  push the setup's character push) and stirs the cloth's rustle envelope
+  by `(1 − d²/r²)·0.0001` in double; the scale is the one the blast's last
+  contact left, and the cloth wakes to 256 ticks
+  (`thaum::blast_live::stir_cloth`). The contacts run in the sector's
+  order: the level, the cloths, the bodies' parts.
 - **Torrent**: sixteen streams of sixteen points (up to 24 streams), born
   at the same directions 16 cm out (height 1.5 times less 30); a point
   lives 66 ticks. The start puts each stream's first points 18 and 9 cm
@@ -663,6 +675,37 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   (0.12, 0.06, 1) (`effects::emissive`); their box's middle is moved by
   the effect node's place.
 
+## Cast picks
+
+`exa_game::thaum::cast_pick`. The casts that read the scene under the
+cursor ask the navigation unit's picks (`exa_game::nav_pick`) from the
+cursor's ray:
+
+- **Ground pick**: the throw (its accept test grows the nodes with an
+  object, a prop or a character, 5 cm and the rest 0.1 cm), the
+  barricade's placement (it grows the nodes without one) and the long
+  door's and the summoning's destination (every node). The nearest node
+  met is the pick: the throw takes the body met when it may be thrown and
+  nothing when the level is met; the barricade, the long door and the
+  summoning take the hit as it stands on a floor mesh (its scene node's
+  floor bit) and 15 cm back along the ray otherwise; a barricade cast with
+  nothing met places nothing. Without a cursor ray (`--debug-cast` without
+  `--cursor`) the long door, the summoning and the barricade take the aim
+  plane's point as it stands.
+- **Nearest-mesh pick**: a barricade cast while one runs ends that
+  barricade (answer 2) when the segment from the eye to the pick's point
+  (the ground plane's point when nothing is met) meets the running wall's
+  node sphere and then its box.
+
+Exarust's nodes: the level (the fixed colliders but the props' stand-ins,
+pick-only meshes included), the props (their stand-ins) and each character
+(its limb meshes, else its collision spheres), each bounded by the whole
+pick segment. `RUST_LOG=exa_game::thaum=debug` logs `cast picks: …` on each
+cast and `throw pick: …` when the throw's pick changes. E.g. `play arena
+--powers 0x604 --cursor 800,520 --press Q@200` summons the demon on the
+floor under the cursor; `play arena --powers 0x20206 --cursor 640,560
+--press Q@120,Q@400` raises a barricade and ends it with the second cast.
+
 ## Energy
 
 `exa_game::thaum::energy`. Shock 0x401 (0.10) starts cast motion 0x27;
@@ -675,7 +718,7 @@ The AI shocks within 5 m.
 ## Displacement
 
 `exa_game::thaum::displacement`. Vanish 0x10601 (0.10 a second), the long
-door 0x602 (0.20, to the cursor's point), constant displacement 0x20603
+door 0x602 (0.20, to the cursor's ground pick, see Cast picks), constant displacement 0x20603
 (0.35, persistent), the summoning 0x604 (0.35, cast motion 0x28, spent at
 once). Vanish pressed while it runs answers released, starts nothing and
 asks the body's hook event 0x10 (its answer ignored), which the vanish's
@@ -788,7 +831,7 @@ caster's way (or the place's line), links it to the caster both ways with
 familiarity 75 and topic 0x1c, gives it role 0x21, and grows, fades and
 clears its vanish effect around it (`thaum::summon_live`):
 
-- **Place.** The player's is the cursor's; the AI's is the Long Door's grid
+- **Place.** The player's is the cursor's ground pick; the AI's is the Long Door's grid
   query (behind its target). The demon faces the caster along the level
   line from its place (the caster's own way when that line is 1 cm or
   shorter).

@@ -61,6 +61,9 @@ pub const MAX_STEPS_BEHIND: f64 = 4.0;
 // environment, −980.665 cm/s².
 use body::GRAVITY;
 
+/// A collider's handle in the physics world, as the picks report it.
+pub use rapier3d::prelude::ColliderHandle;
+
 pub struct PhysicsPlugin;
 
 impl Plugin for PhysicsPlugin {
@@ -270,6 +273,22 @@ impl Physics {
     ) -> Option<(ColliderHandle, f32)> {
         let ray = Ray::new(origin, direction);
         let keep = |h: ColliderHandle, c: &Collider| solid(h, c) && !skip(h);
+        let filter = QueryFilter::only_fixed().predicate(&keep);
+        self.0.cast_ray(&ray, max, true, filter)
+    }
+
+    /// [`Self::fixed_pick`] meeting only the colliders `keep` takes, pick-only
+    /// geometry included: a cursor pick over one kind of node (the level's
+    /// meshes, or the props' stand-ins).
+    pub fn fixed_pick_where(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        keep: &dyn Fn(ColliderHandle) -> bool,
+    ) -> Option<(ColliderHandle, f32)> {
+        let ray = Ray::new(origin, direction);
+        let keep = |h: ColliderHandle, _: &Collider| keep(h);
         let filter = QueryFilter::only_fixed().predicate(&keep);
         self.0.cast_ray(&ray, max, true, filter)
     }
