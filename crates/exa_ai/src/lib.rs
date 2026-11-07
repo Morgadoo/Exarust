@@ -2098,10 +2098,11 @@ fn duellist(
                     info!(
                         "chase-trace {entity:?} end {:?} planned {:?} mark {} reached {}",
                         outcome.end,
-                        outcome
-                            .planned
-                            .as_ref()
-                            .map(|p| (p.following, p.route.points.len(), p.route.points.last().copied())),
+                        outcome.planned.as_ref().map(|p| (
+                            p.following,
+                            p.route.points.len(),
+                            p.route.points.last().copied()
+                        )),
                         outcome.mark.is_some(),
                         outcome.reached.is_some()
                     );

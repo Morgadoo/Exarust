@@ -126,7 +126,6 @@ pub(crate) struct DemonMind<'w, 's> {
     db: Option<Res<'w, RoleDatabase>>,
 }
 
-
 /// Each body step, before the casters' walk: a summon waiting for its body
 /// takes the demon built for it once the body exists (the arrival).
 #[allow(clippy::too_many_arguments)]
@@ -159,7 +158,8 @@ pub(crate) fn arrive_demons(
         };
         commands.entity(demon).insert(SummonArrived);
         // The tendril image on the demon's body, then the vanish over it.
-        let wisps = super::cast::spawn_body_wisps(&mut commands, demon, body, &mut draws, &mut roll);
+        let wisps =
+            super::cast::spawn_body_wisps(&mut commands, demon, body, &mut draws, &mut roll);
         let tex_pos = [roll.0.unit(), roll.0.unit()];
         let size = mind
             .sizes

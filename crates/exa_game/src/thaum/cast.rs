@@ -2758,7 +2758,11 @@ pub(crate) fn tick_casters(
                             info!(
                                 "summon by {caster_entity:?}: phase {:#x} at {now} ms{}",
                                 step.phase,
-                                if step.release { ", the demon is let go" } else { ", the shell opens" }
+                                if step.release {
+                                    ", the demon is let go"
+                                } else {
+                                    ", the shell opens"
+                                }
                             );
                         }
                         result = step.result;

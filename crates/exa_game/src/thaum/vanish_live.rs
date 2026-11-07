@@ -50,8 +50,7 @@ use exa_render::force_effects::{
 use super::cast::{ActiveClass, PowerCaster};
 use super::power::displacement::{AI_PICK, FADING_IN, FADING_OUT, TAIL, VanishBase};
 use crate::effects::shell::{
-    DEPTH_PASS, FADE_PASS, PLANE_SCALE, PlaneBounds, Shell, ShellState,
-    fade_plane,
+    DEPTH_PASS, FADE_PASS, PLANE_SCALE, PlaneBounds, Shell, ShellState, fade_plane,
 };
 use crate::effects::vanish::{Vanish as VanishTable, VanishBody};
 use crate::effects::{EffectClock, Frame};
