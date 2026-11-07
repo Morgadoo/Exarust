@@ -22,7 +22,8 @@ the muscles-off lane (that sampler's bracket, overlay, height target and queued 
 capture of the current targets), and after the feet-modes lane (the down body's probe and the feet
 routine's flat-floor and hovering modes wired), and after the reach-and-jolt lane (the get-up legs' reach,
 the flat-floor setter, the player's jolt and rumble, the swing's first clash ring, the dead fall probe
-checked unreachable).
+checked unreachable), and after the kernel carry lane (the support pins' goals set once a tick, the
+thorax lead's long branch and exertion, the leads' rate factor, the attack and engage block audited).
 
 ## Totals
 
@@ -34,7 +35,7 @@ checked unreachable).
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **99,110 of 122,823 needed bytes (81 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 77,561 of their 100,371 bytes). Counting only what the running game calls, about **85,000 bytes (69 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below; earlier lanes' additions are in the paragraphs that follow.)
+Weighted by the partial shares, about **100,150 of 122,823 needed bytes (82 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 78,601 of their 100,371 bytes). Counting only what the running game calls, about **86,040 bytes (70 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below plus the kernel carry lane of round 138; earlier lanes' additions are in the paragraphs that follow.)
 The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live (about 80,400 B). The kernel lane then added about 1,670 B reproduced (the pain sounds and player jolt of #8, the feet modes of #50, the leg order of #73: tested only) and about 360 B live (the standing body's drive reset in #49, the golem link smoothing of #73, and the init's foot-mask union, which was live but not credited).
 The sampler lane added about 3,070 B reproduced, tested only: the pose-only sampler's key pick, root source and height tail (#76, about 890 B), the living sampler's height tail and queued-clip switch (#81, about 880 B), the down body's probe (#49, about 150 B) and the placement routines' part, anchor, pin and mean arithmetic (#62 about 715 B, #58 about 440 B). Its one live change, the living hunch moved onto the thorax's own placement (#81), corrects code that was already credited, so the live total stays.
 The muscles-off lane added about 900 B reproduced, tested only (the sampler is not scheduled): in #82 the bracket's branch order (the lead-in divides by the first key alone unless the blend is positive, no guard between the keys, a NaN clock between the keys), the progress (raw clock over the last key), the gait overlay by √run (from the capture's turn while it leads in) and the normalisation, the height target ((2·run + 2)·scale while walking, the −500 cm floor, the original's sum order) and the queued-clip switch (about 765 B); #84, the capture of the current targets, as `Animator::capture_targets` (about 140 B). Nothing live changed; #84's earlier live credit (about 70 B) was the living sampler's rebase, which is not this routine, so the live count drops to about 80,690 B (66 %).
@@ -123,11 +124,42 @@ end (the original's end checks follow the add in the body tick; the jolt's and t
 earlier in Exarust's balance pass, add nothing that tick). None of the scripted scenes has a body
 with a golem suit or gauntlets effect, so nothing visible changed there; about 260 B newly live.
 
+The kernel carry lane (round 138) audited routine #49's carry block and its attack and engage block
+against the assembly. Read in the carry: once a tick, after the character frame and before the
+balance routine, each part with a pin record has its target set: the pelvis pin's from the frame
+and its local point, led while the step episode runs and the chest is not out of balance (the
+pelvis rule), then clamped to 60·scale cm of the feet centre; each thorax pin's the same way, but
+shifted 5·scale cm along the frame's forward axis without support, led by the thorax rule, and
+clamped to (60 − 60·x or, stepping, 60 − 30·x) × 0.6 (double) × scale cm, a clamped target put at the
+centre's height; the thorax targets' mean is stored for the stance score (the frame's origin
+without any). The solver's pin pass then pulls toward the stored target. Exarust led and clamped
+in every iteration from the pin's moving point and the moving feet centre, rounded an unclamped
+target through the centre, and gave the stance score the posed points' mean; now the carry sets
+the goals once (`Ragdoll::set_pin_goals` in `aim` and `hold`), the pass pulls toward them, and the
+balance reads the kept mean. The thorax lead has a second branch, for the long step (kind 2): the
+speed term grows by (2500 − h²)·0.0004 + 1 under 2500 cm², m = 1 − forward·e/h, the direction is
+m − (2 − m)·s·2, and the exertion value (the run lean the head tilt reads) is written,
+(1 − m)·h·−0.002 while m < 1; the plain branch writes c·h·−0.004 for a forward cosine c above 0.
+Both leads multiply by a class set-up constant, 85 over the tick rate (its .data 85.0 has no
+writer; routine #1), which Exarust had as 1; and the direction's 1/60 is the single-precision
+constant and its 0.36 a double. About 650 B newly reproduced and live in #49 and 20 B in #1.
+The attack and engage block was audited item by item (block table); every item but the full tone
+reset's call (#21) is live, so its share rises from 65 % to 85 % (about 370 B credited, nothing
+ported). GPU grid (r137 beside this lane): exanima01 is identical tick for tick over 52,111
+body-ticks (no exanima01 body pulls its pins in 900 frames: the standing ones are dormant,
+condition 0, and so off their feet, the movers walk, and none steps); the arena duel first differs
+at tick 8 in the opponent's pelvis particles by about 1e-5 cm, where Exarust's old unclamped
+target was rounded through the feet centre (centre + (posed − centre)) and is now the posed point
+as the original's; the player first differs at tick 251, inside its first sidestep, where the
+step lead now runs once a tick with the rate factor; the fight then drifts (neither side is ever
+down or under balance 0.6 in either build; stepping ticks 645 and 491 before, 592 and 515 after;
+mean distance 134 to 158 cm). Evidence: `context/artifacts/2026-10-30-kernel/`.
+
 ## Largest remaining work
 
 | routine | size | left (est.) | role | missing |
 |---|---|---|---|---|
-| #49 | 20,293 | 5,375 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | some state flags; the sampler call's tail and carry propagation; the look point's smoothing is data only (its readers are the AI's and the camera's) |
+| #49 | 20,293 | 4,355 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | some state flags; the sampler call's tail (the parts' matrices and foot contacts put on the frame: Exarust's carry and aim stand in); the posture block's remaining writes; the look point's smoothing is data only (its readers are the AI's and the camera's) |
 | #8 | 13,157 | 1,845 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; script hook and callbacks; the struck item's own sound (#4) in the clash branch not called |
 | #18 | 8,061 | 1,209 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | wet step (no water surface); nav calls; parity unverified block by block |
 | #76 | 3,562 | 530 | Pose-only sampler (spawn and placement) | the walking target and the leg reach not called; the render nodes' locals |
@@ -142,7 +174,7 @@ with a golem suit or gauntlets effect, so nothing visible changed there; about 2
 
 | # | bytes | role | Rust | status | missing | live |
 |---|---|---|---|---|---|---|
-| 1 | 355 | Class set-up: per-tick constants from the 83 Hz rate and the motile environment (default retentions × 0.6) | `exa_physics body.rs DRIVE_SCALE, MOTILE_ENVIRONMENT` | partial (45 %) | the other per-tick constants (1200/rate, 4π/3/rate, 80/rate, rate·0.0125); the environment is data no body uses | yes |
+| 1 | 355 | Class set-up: per-tick constants from the 83 Hz rate and the motile environment (default retentions × 0.6) | `exa_physics body.rs DRIVE_SCALE, MOTILE_ENVIRONMENT`; `body_steps.rs LEAD_RATE` (85/rate) | partial (50 %) | the other per-tick constants (1200/rate, 4π/3/rate, 80/rate, rate·0.0125); the environment is data no body uses | yes |
 | 2 | 779 | Placement probe: 10 cm sphere cast down through collidable static meshes, skipping the character's own bodies | (stand-in: exa_physics contact.rs height_below) | missing | the mesh and body sweep with the own-body filter | no |
 | 3 | 536 | Post-step: queued weapon impact into the damage routine, travel phase, looping voices follow the body, position history shift | `exa_physics body.rs Ragdoll::post_step, travel_phase` | partial (60 %) | voice follow and volume, history shift (damage arrives by message instead) | yes |
 | 4 | 503 | Struck-item hit sound: cooldown, class set or item sound by where the point falls along the item, pitch ×1.2 | `exa_combat sounds.rs struck_item_sound` | done | NaN-projection branch picks the other set; no caller: its call is the clash branch of #8 (after the striking weapon's ring, now live), and Exarust has no struck item record split or length there; its clock is `ring_clock` and its three shared sets `HAFT_SETS` | no |
@@ -190,7 +222,7 @@ with a golem suit or gauntlets effect, so nothing visible changed there; about 2
 | 46 | 472 | Femur posture (thigh turn about the femur axis) | `exa_physics body.rs femur_posture_turn`; `exa_game stages/sampler.rs femur_posture` | done | - | yes |
 | 47 | 147 | Can-locomote gate | `exa_physics body_locomotion.rs gates`; `motile.rs action_ready` | done | - | yes |
 | 48 | 41 | String release thunk (runtime library cleanup) | - | n.a. | - | n.a. |
-| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs, grip.rs HeldGrip::relax, flip_step, body_gait.rs stand, body_feet.rs down_probe_origin, down_probe_ground`; `exa_character grip_runtime.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen (ShieldStamina), condition, swing, parry, collapse` | partial (72 %) | some state flags (the dead falling body's 5 cm probe before the fall-death call is unreachable: credited as equivalent) | yes |
+| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs, grip.rs HeldGrip::relax, flip_step, body_gait.rs stand, body_feet.rs down_probe_origin, down_probe_ground`; `exa_character grip_runtime.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen (ShieldStamina), condition, swing, parry, collapse`; `exa_physics body_pins.rs Ragdoll::pin_goals, set_pin_goals, clamp_goal, body_steps.rs lead_pose, pelvis_lead_pose` | partial (78 %) | some state flags (the dead falling body's 5 cm probe before the fall-death call is unreachable: credited as equivalent) | yes |
 | 50 | 7,185 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | `exa_physics body_balance.rs measure_balance`; `body_feet.rs` (and `feet_mode, flat_floor_leg, flat_floor_target, HoverProbe`, run by `measure_balance`; `Drive::feet_mode` read by the lift and `bend_legs`); `body_lift.rs`; `body_bend.rs`; `body_steps.rs`; `body_muscle.rs relax_legs, reach_relax_target, relax_leg` (the lower leg's reach `Leg::reach2`) | partial (88 %) | the flat-floor bit is set only by the play flag `--flat-floor` (the level spawn's lying bit is untraced); the leg relaxation runs in the muscle setter gated on support, not per leg in reach; the modes aim Exarust's carry target (over the floor at 0, or over the hover ground) where the original sets its sampler's standing height; some thresholds unverified | yes (flat floor by flag only) |
 | 51 | 712 | Pelvis-height lift servo | `exa_physics body_lift.rs lift_unclamped, lift_factor, Ragdoll::lift` | done | - | yes |
 | 52 | 46 | Create the shared motions object once | `exa_anim lib.rs Motions` | done | - | yes |
@@ -255,14 +287,14 @@ Byte counts are estimated from block landmarks in the research notes.
 | Link-iteration target, jolt, grip relax and weapon flip, chest velocity, standing anchor, look target | 1,700 | 80 % | grip relax and flip: `exa_physics grip.rs`, run by `exa_character grip_runtime.rs` |
 | Behaviour call, waking, collapse branch | 520 | 80 % |  |
 | Posture block: falls, get-ups, weak, stance switch, clinch trigger | 4,370 | 80 % | not every state flag written |
-| Attack and engage, muscles-off snap, focus tick, item effects, health bookkeeping | 1,860 | 65 % | block stamina: `exa_combat regen.rs ShieldStamina::tick`, live |
+| Attack and engage, muscles-off snap, focus tick, item effects, health bookkeeping | 1,860 | 85 % | block stamina: `exa_combat regen.rs ShieldStamina::tick`, live. Audited item by item (kernel carry lane): the posture wait's countdown, the held voices' fade, the stance's clip-rate reset and the parry counter's drift while not parrying, the parry routine every parrying tick, the focus tick, the once-a-second item effects (both use counters cleared with no effect), the heal pool, second wind, yellow regeneration and clamps are live; the full tone reset's call (#21) on a muscles-off tick is not called |
 | Move and stop branches | 735 | 90 % |  |
 | Movement decision | 490 | 80 % |  |
 | Turn | 1,150 | 90 % |  |
 | Alignment and stop | 600 | 95 % | drive cleared before the locomotion call (`stand`); the muscles-off clock counter has no writer (dead); the down body's ground probe runs in `measure_balance` before the feet (live) |
 | Locomotion call and clock | 930 | 75 % |  |
 | Torso twist and head look | 670 | 90 % |  |
-| Sampler call, carry reset, jump phase, character frame, drive into the carry, part matrices, chest pins, balance and feet calls, carry propagation | 4,500 | 60 % | jump phase is dead code (its flag and timer have no writer; kept as `Locomotor::jump`); the character's place is the frame (no capsule since the charmove lane), kept at the feet's ground as Exarust's model root is at the feet |
+| Sampler call, carry reset, jump phase, character frame, drive into the carry, part matrices, chest pins, balance and feet calls, carry propagation | 4,500 | 75 % | the pin records' goals are set once a tick (`Ragdoll::set_pin_goals`, kernel carry lane): posed on the frame, the thorax shifted forward without support, led (both branches, the exertion, the rate factor), clamped about the feet centre, their mean kept; the parts' matrices and foot contacts on the frame are Exarust's carry and aim (structurally different, not ported);  jump phase is dead code (its flag and timer have no writer; kept as `Locomotor::jump`); the character's place is the frame (no capsule since the charmove lane), kept at the feet's ground as Exarust's model root is at the feet |
 
 ## Corrections made by the audit
 
@@ -295,6 +327,9 @@ Byte counts are estimated from block landmarks in the research notes.
   tick's fade walks the held items' voices while the condition is not 2 (attacking). The
   character's swing loudness and sound gain are 1.0 from the constructor; only the force
   swing (loudness 3) and scripted fades change them.
+- The support pin leads (routine #49's carry) multiply by the class set-up's 85/rate (1.024), not 1;
+  the pins' targets are set once a tick in the carry, not led and clamped again in every solver
+  iteration; an unclamped target is the posed point itself.
 - The body tick's alignment tail (routine #49), read from the assembly: after the alignment it
   zeroes the locomotion drive every tick before the locomotion call, so a body that does not
   locomote has no drive. Exarust kept the last walking tick's drive, which the carry still

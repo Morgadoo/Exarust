@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Support pin pull
-In each iteration a supported living body SHALL pull its two thorax pins and its pelvis origin in order, each reading the pushes before it, then the pelvis origin again, toward the goals its tick's carry set (one set a tick, not led or clamped again in the iterations). One pull, in cm: 0.2·e·|e|/60 under 60, else 12 along e, less this tick's horizontal displacement, capped at 8, times S²·(G·(P·F)), G the pin-gain (from 0.08), F the pin factor. A gap under 1.19e-7 cm², walking, or off its feet (down, getting up, dormant or dead) pulls nothing.
+In each iteration a supported living body SHALL pull its two thorax pins and its pelvis origin in order, each reading the pushes before it, then the pelvis origin again, toward the carry's goals. One pull, in cm: 0.2·e·|e|/60 under 60, else 12 along e, less this tick's horizontal displacement, capped at 8, times S²·(G·(P·F)), G the pin-gain (from 0.08), F the pin factor. A gap under 1.19e-7 cm², walking, or off its feet (down, getting up, dormant or dead) pulls nothing.
 
 #### Scenario: Pelvis origin twice
 - **WHEN** a supported pelvis origin and a thorax pin are each 10 cm from their clamped targets and have not moved this tick
@@ -36,7 +36,7 @@ In each iteration a supported living body SHALL pull its two thorax pins and its
 - **THEN** the pulls move it toward the goals the carry led, and the goals do not change between iterations
 
 ### Requirement: Support pin targets
-Each tick the carry SHALL set each support pin's goal from its posed point on the character frame, led while a step leads, then clamp it across the ground about the feet centre: a thorax goal to (60 − 60·crouch)·0.6·scale cm, or (60 − 30·crouch)·0.6·scale cm while the body's step episode runs (the 0.6 taken in double, the reach not floored), the pelvis goal to 60·scale cm. A clamped goal SHALL sit at the feet centre's height; one inside the reach keeps its own. The thorax goals' mean SHALL be kept for the stance score (the frame's origin without thorax pins). Crouch is 0 until a crouch exists, so a standing thorax reach is 36·scale cm.
+Each tick the carry SHALL set each support pin's goal once, from its posed point on the character frame, led while a step leads, then clamped across the ground about the feet centre: a thorax goal to (60 − 60·crouch)·0.6·scale cm, or (60 − 30·crouch)·0.6·scale cm while the step episode runs (0.6 in double, not floored), the pelvis goal to 60·scale cm. A clamped goal SHALL sit at the centre's height; one inside the reach keeps its own. The thorax goals' mean SHALL be kept.
 
 #### Scenario: Standing reach
 - **WHEN** a supported body of scale 1 is not crouching and runs no step episode, and a thorax target lies 40 cm from the feet centre
@@ -65,7 +65,7 @@ The stance score's chest reference SHALL be the chest, or, while a recovery step
 - **THEN** the reference is the chest plus 10 cm along that velocity
 
 ### Requirement: Thorax lead
-A stepping chest inside the trigger SHALL shift each thorax pin goal, before the feet-centre clamp, by the horizontal error e from the pin's world point to the posed goal plus the step offset (h = |e| in cm). Past the epsilon (h² over 1.19e-7): s is the fast velocity along e over h², 0 when ordered below 0; for a plain step the direction is (h²·(1/60) + 0.25)·0.36 (double) × (1 − |side·e/h|) and the exertion value becomes c·h·−0.004 for c = forward·e/h above 0, else 0; for a long (knockback) step s grows by (2500 − h²)·0.0004 + 1 under 2500 cm², m = 1 − forward·e/h, the direction is m − (2 − m)·s·2 and the exertion becomes (1 − m)·h·−0.002 while m is under 1, else 0. At or under the epsilon s and the direction are 0 and the exertion is left. The goal moves by e × (0.4 if Idle else 0.7) × (0.5 + direction) × 85/83 × (2 − 25·s) × kind (1.2, a long step 1) × √(body scale) × stance level. The offset SHALL be taken from the frame's origin. The character's exertion value SHALL take the last thorax pin's write after its locomotion this tick.
+A stepping chest inside the trigger SHALL shift each thorax pin goal, before the clamp, by the horizontal error e from the pin's world point to the posed goal plus the step offset (taken from the frame's origin), times (0.4 if Idle else 0.7) × (0.5 + direction) × 85/83 × (2 − 25·s) × kind (1.2, long 1) × √scale × stance level. s is the fast velocity along e over h² (h = |e| cm), 0 when below 0; at h² ≤ 1.19e-7 s and the direction are 0.
 
 #### Scenario: Sideways
 - **WHEN** the pin sits on its posed target, the step offset is 40 cm along the character's side, the chest is still, body scale is 1 and the stance level is 1
@@ -101,3 +101,16 @@ While a step leads, the pelvis pin's posed goal SHALL shift, before the feet-cen
 #### Scenario: A held step backwards
 - **WHEN** footwork steps 50 cm behind the chest are laid whenever none runs, for three seconds on level ground
 - **THEN** the body never loses its support and moves more than 50 cm back
+
+## ADDED Requirements
+
+### Requirement: Thorax lead direction and exertion
+Past the epsilon a plain step's thorax lead direction SHALL be (h²·(1/60) + 0.25)·0.36 (double) × (1 − |side·e/h|), and it SHALL write the exertion value c·h·−0.004 for c = forward·e/h above 0, else 0. A long (knockback) step SHALL grow s by (2500 − h²)·0.0004 + 1 under 2500 cm², take m = 1 − forward·e/h and the direction m − (2 − m)·s·2, and write (1 − m)·h·−0.002 while m is under 1, else 0. The character's exertion SHALL take the last write after its locomotion this tick.
+
+#### Scenario: Plain exertion
+- **WHEN** a plain step's offset is 40 cm straight ahead with a still chest
+- **THEN** the exertion becomes −0.16, and 0 for the same offset to the side
+
+#### Scenario: Long exertion
+- **WHEN** a long step's offset is 40 cm straight ahead, then straight back, with a still chest
+- **THEN** the exertion becomes −0.08, then 0

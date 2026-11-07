@@ -196,6 +196,26 @@ fn side_axis(drive: &Drive) -> Vec3 {
         .unwrap_or(Vec3::X)
 }
 
+/// A debug aid: `EXA_PIN_GOALS=1` logs every pin goal the carry clamps or
+/// leads (the part, its posed and final goal, the reach and the step).
+fn trace_goals() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("EXA_PIN_GOALS").is_ok_and(|v| v == "1"))
+}
+
+/// Logs one goal when [`trace_goals`] is on and the goal was led or
+/// clamped.
+fn note_goal(part: usize, posed: Vec3, led: Vec3, goal: Vec3, reach: f32) {
+    if trace_goals() && (led != posed || goal != led) {
+        info!(
+            "pin goal: part {part} posed {:?} led {:?} goal {:?} reach {reach:.3} cm",
+            cm(posed),
+            cm(led),
+            cm(goal)
+        );
+    }
+}
+
 /// One support pin's goal for the tick: the part, the pin's weights on
 /// it, the goal (world, m) and whether it is a thorax pin (else the
 /// pelvis's).
@@ -272,14 +292,17 @@ impl Ragdoll {
         if let Some(i) = self.parts.iter().position(|p| p.bone == 1) {
             let part = &self.parts[i];
             let w = part.own_origin;
-            let mut goal = drive.targets[i].transform_point3(part.rest_point(&w));
+            let posed = drive.targets[i].transform_point3(part.rest_point(&w));
+            let mut led = posed;
             if let Some((step_at, standing, chest)) = &lead {
-                goal = steps::pelvis_lead_pose(goal, *step_at, *standing, part.point(&w), chest);
+                led = steps::pelvis_lead_pose(posed, *step_at, *standing, part.point(&w), chest);
             }
+            let goal = clamp_goal(led, centre, pelvis_reach(scale));
+            note_goal(i, posed, led, goal, pelvis_reach(scale));
             pins.push(PinGoal {
                 part: i,
                 weights: w,
-                goal: clamp_goal(goal, centre, pelvis_reach(scale)),
+                goal,
                 thorax: false,
             });
         }
@@ -294,17 +317,19 @@ impl Ragdoll {
                 continue;
             }
             let part = &self.parts[i];
-            let mut goal = drive.targets[i].transform_point3(part.rest_point(&w));
+            let mut posed = drive.targets[i].transform_point3(part.rest_point(&w));
             if !has_support {
-                goal = unsupported_shift(goal, forward, scale);
+                posed = unsupported_shift(posed, forward, scale);
             }
+            let mut led = posed;
             if let Some((step_at, standing, chest)) = &lead {
-                let (led, wrote) =
-                    steps::lead_pose(goal, *step_at, *standing, part.point(&w), chest);
-                goal = led;
+                let (goal, wrote) =
+                    steps::lead_pose(posed, *step_at, *standing, part.point(&w), chest);
+                led = goal;
                 exertion = wrote.or(exertion);
             }
-            let goal = clamp_goal(goal, centre, reach);
+            let goal = clamp_goal(led, centre, reach);
+            note_goal(i, posed, led, goal, reach);
             sum += goal;
             count += 1;
             pins.push(PinGoal {
