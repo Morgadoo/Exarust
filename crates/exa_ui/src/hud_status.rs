@@ -43,14 +43,13 @@ use crate::scale::GuiScale;
 use crate::skill_gui::{FIRST_ICON, ICON_CELL, ICON_FORMAT, ICON_UNITS, SKILL_ICON_ATLAS};
 use crate::skin::{GuiRect, SkinBatch, SkinPalette, rounded_grow};
 
-/// The first cell of the skill-icon atlas image, sized for the atlas: the
-/// 96-pixel square at [`FIRST_ICON`] of the stored (bottom-up) rows,
-/// resampled to `8 · unit` pixels by the engine's resample-to-size path
-/// with the atlas's pixel format. `None` for an image too small to hold
-/// the cell or a non-positive unit. The atlas's sharpening of a reduced
-/// icon is not applied (no port of that pass exists yet).
+/// The first cell of the skill-icon atlas image: the 96-pixel square at
+/// [`FIRST_ICON`] of the stored (bottom-up) rows, as the original cuts it
+/// before handing it to the status atlas (which resizes it, see
+/// [`StatusIcon::new`]). `None` for an image too small to hold the cell or
+/// a non-positive unit.
 pub fn first_skill_icon(width: u16, height: u16, rgba: &[u8], unit: i32) -> Option<IconImage> {
-    let side = ICON_UNITS
+    ICON_UNITS
         .checked_mul(unit)
         .filter(|&s| s > 0 && s <= 0xffff)?;
     let (x, y) = FIRST_ICON;
@@ -64,25 +63,7 @@ pub fn first_skill_icon(width: u16, height: u16, rgba: &[u8], unit: i32) -> Opti
         channels: 4,
         pixels: rgba.get(..count)?.to_vec(),
     };
-    let cell = image.region(x, y, ICON_CELL as u16, ICON_CELL as u16);
-    if side == ICON_CELL {
-        return Some(cell);
-    }
-    let pixels = exa_render::mipmap::resample_rgba8_to_size(
-        &cell.pixels,
-        ICON_CELL as usize,
-        ICON_CELL as usize,
-        side as usize,
-        side as usize,
-        ICON_FORMAT,
-        0,
-    );
-    (pixels.len() == (side * side * 4) as usize).then_some(IconImage {
-        width: side as u16,
-        height: side as u16,
-        channels: 4,
-        pixels,
-    })
+    Some(image.region(x, y, ICON_CELL as u16, ICON_CELL as u16))
 }
 
 /// The status icon's atlas, its handle and the texture it uploads.
@@ -96,11 +77,14 @@ pub struct StatusIcon {
 }
 
 impl StatusIcon {
-    /// The 8-unit atlas holding `icon` as its first cell.
+    /// The 8-unit atlas holding `icon` as its first cell: the atlas resizes
+    /// the cell to `8 · unit` pixels by the engine's resample to an
+    /// arbitrary size in the atlas's pixel format, and sharpens it when
+    /// that shrinks it ([`IconAtlas::add_resized`]).
     pub fn new(icon: &IconImage, unit: i32) -> Option<Self> {
         let mut atlas = IconAtlas::new(ICON_UNITS * unit, 4);
         atlas.sharpen = crate::skill_gui::icon_sharpened(unit);
-        let handle = atlas.add(icon, 0);
+        let handle = atlas.add_resized(icon, ICON_FORMAT, 0, 0);
         if handle == 0 {
             return None;
         }
@@ -472,11 +456,14 @@ mod tests {
         let icon = first_skill_icon(192, 192, &rgba, 12).unwrap();
         assert_eq!((icon.width, icon.height), (96, 96));
         assert!(icon.pixels.chunks(4).all(|p| p == [255, 0, 0, 255]));
-        // At four pixels a unit it is resampled to 32 pixels and stays red.
-        let icon = first_skill_icon(192, 192, &rgba, 4).unwrap();
-        assert_eq!((icon.width, icon.height), (32, 32));
+        // At four pixels a unit the atlas resizes it to 32 pixels (and
+        // sharpens it); the flat cell stays red.
+        let status = StatusIcon::new(&icon, 4).unwrap();
+        assert_eq!(status.atlas.cell, 32);
+        assert!(status.atlas.sharpen);
+        let cell = status.atlas.image.region(0, 0, 32, 32);
         let centre = (16 * 32 + 16) * 4;
-        assert_eq!(&icon.pixels[centre..centre + 4], &[255, 0, 0, 255]);
+        assert_eq!(&cell.pixels[centre..centre + 4], &[255, 0, 0, 255]);
         // An image short of the cell, a short buffer or a bad unit: none.
         assert!(first_skill_icon(95, 192, &rgba, 4).is_none());
         assert!(first_skill_icon(192, 192, &rgba[..100], 4).is_none());
@@ -595,8 +582,10 @@ mod tests {
         let rgba = rfi.decode_rgba8().unwrap();
         let (w, h) = (rfi.header.width as u16, rfi.header.height as u16);
         let icon = first_skill_icon(w, h, &rgba, 4).unwrap();
-        assert_eq!((icon.width, icon.height), (32, 32));
+        assert_eq!((icon.width, icon.height), (96, 96));
         assert!(icon.pixels.chunks(4).any(|p| p[3] > 0));
-        assert!(StatusIcon::new(&icon, 4).is_some());
+        let status = StatusIcon::new(&icon, 4).unwrap();
+        assert_eq!(status.atlas.cell, 32);
+        assert!(status.atlas.image.pixels.chunks(4).any(|p| p[3] > 0));
     }
 }

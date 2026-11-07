@@ -112,7 +112,9 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   for a power-of-two ratio, else the phase-shifted window), normal-map
   renormalisation for three- and four-channel images flagged
   `0x0400_0000`, the sharpen kernel and the image sharpen at the image's
-  own size (`sharpen_rgba8`, the menu cursor's), kernel normalisation, bytes-per-pixel,
+  own size (`sharpen_rgba8`, the menu cursor's and the icon atlas's; a
+  one-texel axis is copied), the six layouts the float filters take
+  (`filters_word`), kernel normalisation, bytes-per-pixel,
   the sub-image blits and the canvas placement of the icon atlas
   ([`docs/formats/RFI.md`](../../docs/formats/RFI.md), Generated mip levels).
 - `geometry`: the original's planar vertex streams (format-word flags, per-stream sizes and buffer offsets, attribute locations, index-size encoding and CPU index batches) as tested pure rules; not called by the running renderer, where Bevy's mesh allocator takes their place.

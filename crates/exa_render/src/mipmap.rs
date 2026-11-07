@@ -1079,7 +1079,9 @@ pub fn resample_conversion(format_word: u32, src_texels: u64, dst_texels: u64) -
 /// ([`power_of_two_level`], [`ChainOptions::for_image`]); otherwise both
 /// axes go through the phase-shifted window, in the space
 /// [`resample_conversion`] picks, wrapping or clamping by the image flags'
-/// `0x10000` and `0x20000`, and renormalised under `0x4000000`.
+/// `0x10000` and `0x20000`, and renormalised under `0x4000000`. The
+/// windowed path returns an empty image for a word the float filters do
+/// not take ([`filters_word`]), as the original refuses it.
 #[allow(clippy::too_many_arguments)]
 pub fn resample_rgba8_to_size(
     base: &[u8],
@@ -1100,6 +1102,11 @@ pub fn resample_rgba8_to_size(
     if let Some(level) = power_of_two_level(width, height, dst_width, dst_height) {
         let options = ChainOptions::for_image(format_word, image_flags, level, level);
         return build_mip_chain_rgba8_with(base, width, height, &options).0;
+    }
+    // The windowed path converts only the six layouts the float filters
+    // know; the original refuses the rest (after the chain's own test).
+    if !filters_word(format_word) {
+        return Vec::new();
     }
     let conversion = resample_conversion(
         format_word,
@@ -1144,14 +1151,30 @@ pub fn resample_rgba8_to_size(
     out
 }
 
+/// Whether the unit's float filters take an image of this format word: the
+/// word masked by `0x800C_FFFF` is one of the six layouts they convert
+/// (`0x2008` and `0x4200` one channel, `0x6208` and `0x8400` two, `0xC600`
+/// three, `0xE608` four). The resample to an arbitrary size and the image
+/// sharpen refuse every other word and leave the image as it was; a
+/// compressed word (bit 31) never matches.
+pub fn filters_word(format_word: u32) -> bool {
+    matches!(
+        format_word & 0x800C_FFFF,
+        0x2008 | 0x4200 | 0x6208 | 0x8400 | 0xC600 | 0xE608
+    )
+}
+
 /// Sharpens an RGBA8 image in place of its own size, as the original's image
 /// sharpen does for icons and the menu cursor: the [`sharpen_kernel`] of
 /// `amount` and `radius` run as the engine's separable axis filter at one
 /// source texel per output texel (first tap [`mip_axis_start`]), across
 /// every row and then down every column, in the filtering space
 /// [`resample_conversion`] picks for equal texel counts, wrapping or
-/// clamping by the image flags' `0x10000` and `0x20000`. Returns an empty
-/// image when the input is shorter than its size.
+/// clamping by the image flags' `0x10000` and `0x20000`. An axis one texel
+/// long is copied, not filtered (the original's convolution skips it). A
+/// format word the filters do not take ([`filters_word`]) leaves the image
+/// unchanged. Returns an empty image when the input is shorter than its
+/// size.
 pub fn sharpen_rgba8(
     base: &[u8],
     width: usize,
@@ -1167,6 +1190,9 @@ pub fn sharpen_rgba8(
     if usable == 0 || base.len() < usable {
         return Vec::new();
     }
+    if !filters_word(format_word) {
+        return base[..usable].to_vec();
+    }
     let weights = sharpen_kernel(amount, radius);
     let texels = (width * height) as u64;
     let conversion = resample_conversion(format_word, texels, texels);
@@ -1174,29 +1200,40 @@ pub fn sharpen_rgba8(
     let wrap_y = image_flags & 0x0002_0000 != 0;
     let mut floats = vec![0.0f32; usable];
     to_floats(&base[..usable], conversion, &mut floats);
-    let mut horizontal = vec![0.0f32; usable];
-    for y in 0..height {
-        let row = y * width * 4..(y + 1) * width * 4;
-        resample_axis(
-            &floats[row.clone()],
-            width,
-            width,
-            &weights,
-            wrap_x,
-            &mut horizontal[row],
-        );
-    }
-    let mut column = vec![0.0f32; height * 4];
-    let mut output = vec![0.0f32; height * 4];
-    for x in 0..width {
+    // The original copies an axis one texel long instead of filtering it,
+    // so the kernel's f32 sum never touches it.
+    let horizontal = if width < 2 {
+        floats.clone()
+    } else {
+        let mut horizontal = vec![0.0f32; usable];
         for y in 0..height {
-            let source = (y * width + x) * 4;
-            column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+            let row = y * width * 4..(y + 1) * width * 4;
+            resample_axis(
+                &floats[row.clone()],
+                width,
+                width,
+                &weights,
+                wrap_x,
+                &mut horizontal[row],
+            );
         }
-        resample_axis(&column, height, height, &weights, wrap_y, &mut output);
-        for y in 0..height {
-            let destination = (y * width + x) * 4;
-            floats[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+        horizontal
+    };
+    if height < 2 {
+        floats = horizontal;
+    } else {
+        let mut column = vec![0.0f32; height * 4];
+        let mut output = vec![0.0f32; height * 4];
+        for x in 0..width {
+            for y in 0..height {
+                let source = (y * width + x) * 4;
+                column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+            }
+            resample_axis(&column, height, height, &weights, wrap_y, &mut output);
+            for y in 0..height {
+                let destination = (y * width + x) * 4;
+                floats[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+            }
         }
     }
     let mut out = vec![0u8; usable];
@@ -1540,5 +1577,51 @@ mod rgba_chain_tests {
         let wrapped = sharpen_rgba8(&row, 4, 1, 0.1, 1.0, id::RGBA8, 0x0001_0000);
         assert_eq!(wrapped[3], 90);
         assert!(sharpen_rgba8(&row, 5, 1, 0.1, 1.0, id::RGBA8, 0).is_empty());
+    }
+
+    /// A single-row image keeps its column pass out: the original copies an
+    /// axis one texel long. A column of one texel likewise skips the row
+    /// pass, so a 1 × n image is only filtered down its column.
+    #[test]
+    fn a_one_texel_axis_is_copied_not_filtered() {
+        use exa_formats::pixel::id;
+        // Odd values whose squares are not exact keep the copy observable:
+        // a filtered pass would sum the kernel's f32 taps on them.
+        let column: Vec<u8> = [13u8, 77, 201, 255]
+            .iter()
+            .flat_map(|&v| [v, v / 2, 255 - v, v])
+            .collect();
+        let tall = sharpen_rgba8(&column, 1, 4, 0.1, 1.0, id::RGBA8, 0);
+        let wide = sharpen_rgba8(&column, 4, 1, 0.1, 1.0, id::RGBA8, 0);
+        // Both run one pass with the same kernel over the same texels.
+        assert_eq!(tall, wide);
+        // A 1 × 1 image is copied through the conversion and back.
+        let one = sharpen_rgba8(&[200, 100, 50, 25], 1, 1, 0.5, 2.0, id::RGBA8, 0);
+        assert_eq!(one, [200, 100, 50, 25]);
+    }
+
+    /// The float filters take six layouts; any other word is refused: the
+    /// sharpen leaves the image as it was and the windowed resample gives
+    /// nothing, while a power-of-two resample still takes the chain.
+    #[test]
+    fn unsupported_words_are_refused_by_the_float_filters() {
+        use exa_formats::pixel::id;
+        for word in [id::LUM8, id::LUMA8, id::RGB8, id::RGBA8, id::XY8, id::XYZ8] {
+            assert!(filters_word(word), "{word:#x}");
+        }
+        // A compressed word and a float word are refused.
+        assert!(!filters_word(0x817B_E608));
+        assert!(!filters_word(id::RGBAF));
+        let row: Vec<u8> = [100u8, 100, 200, 200]
+            .iter()
+            .flat_map(|&a| [0, 0, 0, a])
+            .collect();
+        assert_eq!(sharpen_rgba8(&row, 4, 1, 0.1, 1.0, id::RGBAF, 0), row);
+        let base = vec![200u8; 8 * 8 * 4];
+        assert!(resample_rgba8_to_size(&base, 8, 8, 5, 3, id::RGBAF, 0).is_empty());
+        assert_eq!(
+            resample_rgba8_to_size(&base, 8, 8, 4, 4, id::RGBAF, 0).len(),
+            64
+        );
     }
 }

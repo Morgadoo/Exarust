@@ -2047,7 +2047,11 @@ byte, 1-based) and its first byte.
 The interface keeps two icon atlases (`exa_ui::icon_atlas`), one texture
 each, `Icon_Manager`: a colour one for items and portraits (its resized
 icons sharpened) and a single-channel one for the built-in glyphs, with
-the level's cells. An icon goes in the first free cell; the first opens a
+the level's cells. An icon that is not the cell's square first loses its
+wrap flags (`0x70000`) and is resized to the cell by the resample to an
+arbitrary size (`exa_render::mipmap`), then, in an atlas that sharpens,
+sharpened with amount 0.1 and radius 1 (`IconAtlas::add_resized`; the HUD
+status icon goes this way). An icon goes in the first free cell; the first opens a
 square the next power of two of the cell; a full atlas doubles its
 shorter side, its height first, and a wider one repacks its cells in
 order. A handle is the cell's index plus one; freeing a cell keeps its

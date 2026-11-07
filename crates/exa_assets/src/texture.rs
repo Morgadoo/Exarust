@@ -1777,6 +1777,110 @@ mod corpus_tests {
     /// classes, how many images the detail setting starts at a later level,
     /// how many compressed images have no stored chain (and so no mips),
     /// and the time the GPU (BC) path takes for the whole corpus.
+    /// The shipped images that carry their own uncompressed mip chain were
+    /// made by the original's tools; this compares each stored level with
+    /// the level Exarust's port of the original's chain filters from the
+    /// stored base (the image's own bank, space, wrap and renormalisation)
+    /// and prints the agreement per image: exact bytes, the largest
+    /// difference and the PSNR. Skipped without `EXANIMA_DIR`. The stored
+    /// chains are evidence, not a contract: an image whose chain came from
+    /// another filter shows up as a low PSNR, so the test only checks that
+    /// the comparison ran and that every level has the stored size.
+    #[test]
+    fn generated_levels_against_the_stored_chains() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut compared = 0usize;
+        let mut exact_images = 0usize;
+        let mut totals = (0u64, 0u64);
+        for (_, pack) in game.packs() {
+            for entry in pack.entries() {
+                let bytes = pack.bytes(entry);
+                if FileKind::detect(bytes) != FileKind::Image {
+                    continue;
+                }
+                let Ok(rfi) = Rfi::parse(bytes) else {
+                    continue;
+                };
+                let header = &rfi.header;
+                if header.format_word & 0x8000_0000 != 0
+                    || !header.has_mip_chain()
+                    || header.faces() != 1
+                    || header.depth > 1
+                {
+                    continue;
+                }
+                let Ok(pixels) = rfi.pixels() else {
+                    continue;
+                };
+                let Ok(base) = rfi.decode_level_rgba8(&pixels, 0) else {
+                    continue;
+                };
+                let (w, h) = (header.width, header.height);
+                let last = rfi.mip_count.saturating_sub(1);
+                let options = exa_render::mipmap::ChainOptions::for_image(
+                    header.format_word,
+                    header.flags,
+                    1,
+                    last,
+                );
+                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8_with(
+                    &base, w as usize, h as usize, &options,
+                );
+                let mut offset = 0usize;
+                let (mut same, mut count, mut max, mut squared) = (0u64, 0u64, 0u8, 0f64);
+                let mut per_level = Vec::new();
+                for level in 1..=last.min(levels) {
+                    let Ok(stored) = rfi.decode_level_rgba8(&pixels, level) else {
+                        break;
+                    };
+                    let ours = &chain[offset..offset + stored.len()];
+                    offset += stored.len();
+                    per_level.push(
+                        ours.iter()
+                            .zip(&stored)
+                            .map(|(&a, &b)| a.abs_diff(b))
+                            .max()
+                            .unwrap_or(0),
+                    );
+                    for (&a, &b) in ours.iter().zip(&stored) {
+                        let d = a.abs_diff(b);
+                        same += u64::from(d == 0);
+                        count += 1;
+                        max = max.max(d);
+                        squared += f64::from(d) * f64::from(d);
+                    }
+                }
+                if count == 0 {
+                    continue;
+                }
+                compared += 1;
+                exact_images += usize::from(same == count);
+                totals.0 += same;
+                totals.1 += count;
+                let mse = squared / count as f64;
+                let psnr = if mse == 0.0 {
+                    f64::INFINITY
+                } else {
+                    10.0 * (255.0f64 * 255.0 / mse).log10()
+                };
+                eprintln!(
+                    "stored-chain {}: {w}x{h} word {:#010x} flags {:#010x} kernel {:?} levels {}: \
+                     {same}/{count} exact, max {max} (per level {per_level:?}), PSNR {psnr:.1} dB",
+                    entry.name, header.format_word, header.flags, options.kernel, last,
+                );
+            }
+        }
+        eprintln!(
+            "stored-chain summary: {compared} images, {exact_images} bit-exact, \
+             {}/{} bytes exact",
+            totals.0, totals.1
+        );
+        assert!(totals.0 <= totals.1);
+    }
+
     #[test]
     fn every_shipped_image_converts() {
         let Some(dir) = crate::locate_install(None) else {

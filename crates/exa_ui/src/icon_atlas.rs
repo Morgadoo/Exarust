@@ -27,6 +27,11 @@ pub const TEXTURE_FLAGS: u32 = 3 | 0x300;
 /// radius 1.
 pub const SHARPEN: (f32, f32) = (0.1, 1.0);
 
+/// The image flags an icon loses before it is resized for a cell: both
+/// wrap bits and bit 18, so the resample and the sharpen clamp at the
+/// icon's edges.
+pub const RESIZE_CLEARED_FLAGS: u32 = 0x0007_0000;
+
 /// A free cell.
 const FREE: i32 = -1;
 
@@ -258,6 +263,66 @@ impl IconAtlas {
         self.dirty = true;
         self.ids[index as usize] = id;
         index + 1
+    }
+
+    /// Adds an icon of any size the way the original's add does: an icon
+    /// that is not the cell's square loses its wrap flags
+    /// ([`RESIZE_CLEARED_FLAGS`]), is resized to the cell by the engine's
+    /// resample to an arbitrary size (in the space its `format_word` picks)
+    /// and, in an atlas that sharpens, sharpened by [`SHARPEN`]; then it
+    /// goes in as [`IconAtlas::add`] puts it. An icon already the cell's
+    /// size is added as it is, unsharpened. Only four-channel icons are
+    /// resized here (Exarust's decoded images); returns 0 when the icon
+    /// cannot be resized or added.
+    pub fn add_resized(
+        &mut self,
+        icon: &IconImage,
+        format_word: u32,
+        image_flags: u32,
+        id: i32,
+    ) -> i32 {
+        let cell = self.cell;
+        if i32::from(icon.width) == cell && i32::from(icon.height) == cell {
+            return self.add(icon, id);
+        }
+        if icon.channels != 4 || cell <= 0 || cell > i32::from(u16::MAX) {
+            return 0;
+        }
+        let flags = image_flags & !RESIZE_CLEARED_FLAGS;
+        let side = cell as usize;
+        let mut pixels = exa_render::mipmap::resample_rgba8_to_size(
+            &icon.pixels,
+            usize::from(icon.width),
+            usize::from(icon.height),
+            side,
+            side,
+            format_word,
+            flags,
+        );
+        if pixels.len() != side * side * 4 {
+            return 0;
+        }
+        if self.sharpen {
+            let (amount, radius) = SHARPEN;
+            pixels = exa_render::mipmap::sharpen_rgba8(
+                &pixels,
+                side,
+                side,
+                amount,
+                radius,
+                format_word,
+                flags,
+            );
+        }
+        self.add(
+            &IconImage {
+                width: cell as u16,
+                height: cell as u16,
+                channels: 4,
+                pixels,
+            },
+            id,
+        )
     }
 
     /// Writes an icon of the cell's size over the icon at `handle` (no
@@ -739,5 +804,50 @@ mod tests {
             image.pixels,
             vec![7, 8, 9, 255, 10, 11, 12, 255, 1, 2, 3, 255, 4, 5, 6, 255]
         );
+    }
+
+    /// An icon of another size is resized to the cell (its wrap flags
+    /// dropped, so the edges clamp) and, in a sharpening atlas, sharpened
+    /// by amount 0.1 and radius 1; a cell-sized icon goes in untouched.
+    #[test]
+    fn a_resized_icon_is_resampled_then_sharpened() {
+        const RGBA8: u32 = 0x0100_E608;
+        // A 6 x 6 icon: a soft vertical edge in alpha, opaque grey colour.
+        let mut pixels = Vec::new();
+        for _ in 0..6 {
+            for x in 0..6u8 {
+                pixels.extend([128, 128, 128, 40 * x]);
+            }
+        }
+        let icon = IconImage {
+            width: 6,
+            height: 6,
+            channels: 4,
+            pixels: pixels.clone(),
+        };
+        let resampled = exa_render::mipmap::resample_rgba8_to_size(&pixels, 6, 6, 4, 4, RGBA8, 0);
+        let sharpened = exa_render::mipmap::sharpen_rgba8(&resampled, 4, 4, 0.1, 1.0, RGBA8, 0);
+        assert_ne!(resampled, sharpened);
+
+        let mut plain = IconAtlas::new(4, 4);
+        assert_eq!(plain.add_resized(&icon, RGBA8, 0x0003_0000, 1), 1);
+        assert_eq!(plain.image.region(0, 0, 4, 4).pixels, resampled);
+
+        let mut sharp = IconAtlas::new(4, 4);
+        sharp.sharpen = true;
+        assert_eq!(sharp.add_resized(&icon, RGBA8, 0x0003_0000, 1), 1);
+        assert_eq!(sharp.image.region(0, 0, 4, 4).pixels, sharpened);
+
+        // The cell's own size is added as it is, even when sharpening.
+        let exact = IconImage {
+            width: 4,
+            height: 4,
+            channels: 4,
+            pixels: resampled.clone(),
+        };
+        assert_eq!(sharp.add_resized(&exact, RGBA8, 0, 2), 2);
+        assert_eq!(sharp.image.region(0, 4, 4, 4).pixels, resampled);
+        // A word the float filters refuse cannot be resized.
+        assert_eq!(sharp.add_resized(&icon, 0x0108_F820, 0, 3), 0);
     }
 }

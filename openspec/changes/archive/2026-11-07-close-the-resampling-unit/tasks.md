@@ -1,0 +1,6 @@
+- [x] List the unit's 34 routines and their callers (REA).
+- [x] Refuse the unsupported layouts in the resample and the sharpen.
+- [x] Copy one-texel axes in the sharpen.
+- [x] Resize and sharpen icons in the atlas's add; route the HUD status icon through it.
+- [x] Compare the generated chains with the shipped stored chains.
+- [x] Document the unreachable threaded convolution.

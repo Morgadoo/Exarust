@@ -288,6 +288,25 @@ space of its own: signed words centred, data words and magnified images
 linear, other words squared, with RGBA8 and LUMA8 colour words squared
 (linear alpha) whatever the sizes.
 
+The resample's windowed path and the image sharpen take only six layouts
+(the word masked by `0x800C_FFFF` equal to `0x2008`, `0x4200`, `0x6208`,
+`0x8400`, `0xC600` or `0xE608`) and refuse every other word, leaving the
+image as it was; a power-of-two resample still takes the chain, whose test
+comes first. The sharpen copies an axis one texel long instead of
+filtering it. The unit also holds a convolution that splits rows and
+columns over a 12-thread pool, but its only caller, the sharpen, always
+asks for the single-threaded one, so it never runs in 0.9.5.
+
+The shipped data has 65 uncompressed images that carry a chain of their
+own, made by the original's tools. Compared with the chain Exarust
+generates from their base (`exa_assets` test
+`generated_levels_against_the_stored_chains`), 15 match bit for bit and 29
+within one step on every byte (the normal maps' renormalisation uses the
+CPU's reciprocal square root estimate, which differs between processors).
+Several others match exactly on every level but the one or two an artist
+replaced (`uw01psco06s` differs only at level 1, `dclsoot01` only at
+level 2); the rest, such as the beard alpha maps, were filtered by hand.
+
 So a 0/255 checker halves to about 180, not 128, in a plain RGB8 or RGBA8
 texture. A test for an exact `ALPHA8` word, which would select the linear
 pair, can never match (the mask drops the bit it tests), so alpha-only
