@@ -134,6 +134,8 @@ Round 57 contentstream (S5): the stream thread runs; the original never streams 
 
 Round 105 os: the original's pointer warp hold and full-screen confinement act on the window, and the clipboard is ported.
 
+Round 139 osgui: the hub shows the original message box (hire refusals, company name), the GUI pointer starts unknown, and the viewport action removal keys on the handler code.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
