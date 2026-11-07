@@ -1441,6 +1441,9 @@ pub struct Recoil {
     pub stall: f32,
     pub flags: u32,
     pub rest: Option<RecoilRest>,
+    /// Two weapons late in a side swing counter at once instead: the
+    /// caller chains the other side's attack.
+    pub counter: bool,
 }
 
 /// A blocked striker recoils. Strength and the stall rate become 0.5 and
@@ -1462,6 +1465,8 @@ pub fn recoil(strike: &RecoilStrike) -> Recoil {
             stall: 0.5,
             flags: cleared,
             rest: None,
+            // The continuation skip takes no counter; the late clock's does.
+            counter: strike.flags & flags::CONTINUATION == 0,
         };
     }
     let scaled = (f64::from(strike.drive) * DRIVE_SHARE) as f32;
@@ -1475,6 +1480,7 @@ pub fn recoil(strike: &RecoilStrike) -> Recoil {
             stiffness: ARM_STIFFNESS,
             held: HELD_SCALE,
         }),
+        counter: false,
     }
 }
 
@@ -1587,8 +1593,17 @@ impl SwingState {
     /// with gain 1 − I/2 (cleaving on from an impact of 2), and an edge
     /// blow at 0.5 when it is held back ([`flags::HOLDS_BACK`]), else
     /// cleaves on; a larger one follows a body hit through at 0.5 and
-    /// cleaves on from the edge ([`follow_through`]).
-    pub fn after_wound(&mut self, blow: &Outcome, recoil: f32, striker: &Striker) {
+    /// cleaves on from the edge ([`follow_through`]). Two weapons past 0.4
+    /// of a side swing (`motion` 5–10) with none of [`flags::HOLDS_BACK`]
+    /// counter instead and write nothing: true, and the caller chains the
+    /// other side's attack, as for a recoil ([`SwingState::recoil_from`]).
+    pub fn after_wound(
+        &mut self,
+        blow: &Outcome,
+        recoil: f32,
+        striker: &Striker,
+        motion: usize,
+    ) -> bool {
         self.flags = (self.flags & !flags::RELEASED) | flags::WOUNDED;
         self.open[striker.slot.index()] = false;
         let gain = if f64::from(striker.size) < LARGE_STRIKER {
@@ -1602,13 +1617,14 @@ impl SwingState {
         };
         let Some(gain) = gain else {
             self.flags |= flags::CLEAVING;
-            return;
+            return false;
         };
+        let counter = exa_physics::part::immediate_counter(self.flags, motion as i32).is_some();
         if let Some(f) = follow_through(&FollowStrike {
             class_word: striker.class_word,
             flags: self.flags,
             clock: striker.clock,
-            counter: false,
+            counter,
             gain,
             recoil,
             speed: blow.speed,
@@ -1620,25 +1636,36 @@ impl SwingState {
             self.stall = f.stall;
             self.flags = f.flags;
             self.end_ms = f.end_ms.max(0) as u64;
+            return false;
         }
+        // Held: a continuation writes nothing, a late clock counters.
+        dual_wield_holds(striker.class_word, self.flags, striker.clock, counter)
+            && self.flags & flags::CONTINUATION == 0
     }
 
     /// The striker's swing recoiling from a blow at `speed` (cm a tick)
-    /// with a weapon of recoil W17 `weapon_recoil`: its window shut, then
-    /// [`recoil`] with the drive speed·W17. Returns the recoil's rest (its
-    /// stance blend and arm stiffness) when it takes one.
+    /// with a weapon of recoil W17 `weapon_recoil`, in attack `motion` (the
+    /// original's motion number): its window shut, then [`recoil`] with the
+    /// drive speed·W17. Two weapons past 0.4 of a side swing (5–10) whose
+    /// flags hold none of [`flags::HOLDS_BACK`] (after the released bit
+    /// clears) counter instead: [`Recoil::counter`], and the caller chains
+    /// the other side's attack. Otherwise the recoil's rest (its stance
+    /// blend and arm stiffness) is kept for the caller, which starts the
+    /// stance at once as the original's recoil does.
     pub fn recoil_from(
         &mut self,
         speed: f32,
         weapon_recoil: f32,
         striker: &Striker,
-    ) -> Option<RecoilRest> {
+        motion: usize,
+    ) -> Recoil {
         self.open[striker.slot.index()] = false;
+        let cleared = self.flags & !flags::RELEASED;
         let r = recoil(&RecoilStrike {
             class_word: striker.class_word,
             flags: self.flags,
             clock: striker.clock,
-            counter: false,
+            counter: exa_physics::part::immediate_counter(cleared, motion as i32).is_some(),
             drive: speed * weapon_recoil,
             now_ms: striker.now_ms,
         });
@@ -1649,7 +1676,7 @@ impl SwingState {
         if let Some(rest) = r.rest {
             self.end_ms = rest.end_ms.max(0) as u64;
         }
-        r.rest
+        r
     }
 
     /// Takes the recoil's rest, leaving none: the stance that a stall's end
