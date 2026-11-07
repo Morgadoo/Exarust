@@ -953,6 +953,8 @@ Round 94 polearm: polearm and two-hander holders no longer topple.
 
 Round 95 reentry: walkers that leave the range keep walking and come back standing.
 
+Round 96 motilepart2: the ground query drops a floor mesh's first triangle as the original does, and the line cast stands the player on the start floor.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
