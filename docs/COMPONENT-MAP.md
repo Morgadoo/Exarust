@@ -17,7 +17,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Core, math & threading | 282 | 37 | 11 | 80% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 82% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 80% | 1% |  |
-| World, levels & terrain | 454 | 174 | 31 | 77% | 0% |  |
+| World, levels & terrain | 454 | 174 | 31 | 78% | 0% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 90% | 0% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 83% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
@@ -69,7 +69,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | XA_Arena | Game modes, arena & session | 71 | 93% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 98% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | TMotilePart | Characters, motion & animation | 53 | 79% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
-| SG_PlayerControls | AI & behaviour | 47 | 86% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
+| SG_PlayerControls | AI & behaviour | 47 | 87% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TThaumTree | Thaumaturgy & effects | 38 | 89% | exa_game/src/thaum/tree.rs; exa_game/src/power_screen.rs |
 | TGUIDrawSkin | UI | 35 | 91% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
@@ -83,7 +83,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TGUIItemContainer | Items, materials & crafting | 26 | 88% | exa_game/src/item_container.rs; exa_items/src/card.rs |
 | TGSLines | UI | 24 | 88% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
 | TMesh | Rendering & GPU | 25 | 84% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
-| RF_SceneNodes | World, levels & terrain | 24 | 82% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
+| RF_SceneNodes | World, levels & terrain | 24 | 84% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
 | SG_Thaum_Mind | Thaumaturgy & effects | 21 | 91% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
 
 ## Combat rules
