@@ -4,7 +4,7 @@
 //! The original builds a golem's body with the same character builder as
 //! any other race's (its race model, the shared skeleton's links, the
 //! character init's golem presets), so Exarust gives the golem races the
-//! physical body of the human frame ([`crate::scene_bodies::physical_frame`]).
+//! physical body every race takes ([`crate::scene_bodies::physical_frame`]).
 //! A placed golem starts in Stand 2 ([`exa_ai::golem::start_motion`]).
 //!
 //! Each body tick, in the brains' chain (`exa_ai::BrainChain`), a brain in

@@ -880,19 +880,27 @@ pub fn human_frame(race: u8) -> bool {
     race <= 2
 }
 
-/// Races Exarust builds a physical body for: those of the human frame, the
-/// golems (race bytes with bit 0x10 other than the skeleton and the
-/// wraith: the Golem Guard, Boss, Suit, BAM and BAF) and the wraith. The
-/// golems' models carry the shared skeleton's eighteen bones, and the
-/// original builds every race's body with the one character builder, so a
-/// golem's parts take the skeleton's links, its race's stature and the
-/// character init's golem presets ([`character_muscles`]). The wraith's
-/// model has only the twelve upper parts (pelvis to head, no legs): its
-/// race hovers, so its feet routine holds it up with no feet. Only the
-/// human frame wears apparel.
+/// The demon's race byte: its model carries 27 bones, nine more than the
+/// template body's eighteen.
+pub const DEMON: u8 = 11;
+
+/// Races Exarust builds a physical body for: every race but the demon.
+///
+/// The original builds every character's body with one builder, whatever
+/// its race: the race model's parts, each bone taking the one template
+/// body that ships (`humanoid.rsq`'s eighteen bones with their links,
+/// thorax pins and foot contacts), then the character init, whose race
+/// branches (the ancient, the ogre, Sir, the Fael, the two ghouls, the
+/// gobbler, the manipulator, the wraith, the golems) only re-tune that
+/// body's factors ([`character_muscles`], [`body_stats`]). Every race
+/// model carries the template's eighteen bone numbers, the wraith only the
+/// twelve upper ones (its race hovers, so its feet routine holds it up
+/// with no legs). The demon's model has 27 bones the template does not
+/// cover and no shipped level or arena spawn builds one, so Exarust leaves
+/// it without a body rather than guess its extra parts' links. Only the
+/// human frame wears apparel ([`human_frame`]).
 pub fn physical_frame(race: u8) -> bool {
-    use exa_formats::character_stats::{WRAITH, golem_byte};
-    human_frame(race) || golem_byte(race) || race == WRAITH
+    race != DEMON
 }
 
 /// The factors a race gives its bodies' muscles.
@@ -1264,19 +1272,19 @@ mod tests {
         assert_eq!(plan.damage, -100.0);
     }
 
-    /// The human frame (bytes 0–2), the golems (16 Guard, 17 Boss,
-    /// 18 Suit, 19 BAM, 20 BAF) and the hovering wraith (14) are
-    /// physical; the ogre (3), the gobbler (8) and the beasts are not.
+    /// Every race the shipped game spawns is physical: the human frame
+    /// (bytes 0–2), the ogre (3), Sir (4), the Fael (5), the ghouls (6, 7),
+    /// the gobbler (8), the manipulator (9), the harvester (10), the
+    /// hovering wraith (14) and the golems (16–20); the demon (11) is not.
     #[test]
-    fn the_golems_take_physical_bodies() {
-        for race in [0, 1, 2, 14, 16, 17, 18, 19, 20] {
+    fn every_race_but_the_demon_takes_a_physical_body() {
+        for race in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 16, 17, 18, 19, 20] {
             assert!(physical_frame(race), "{race}");
         }
-        for race in [3, 4, 8, 9, 15] {
-            assert!(!physical_frame(race), "{race}");
-        }
-        // Golems wear no human apparel.
+        assert!(!physical_frame(DEMON));
+        // Only the human frame wears human apparel.
         assert!(!human_frame(16));
+        assert!(!human_frame(6));
     }
 
     #[test]

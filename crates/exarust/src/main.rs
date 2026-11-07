@@ -255,6 +255,8 @@
 //!                                     exanima06 gate's key token)
 //!          --fell-player <frame>      play mode: the player collapses at this frame after the load, as a blow that
 //!                                     empties its yellow health starts it (its red health is kept; a debug tool)
+//!          --fell-nearest <frame>     play mode: the living character body nearest the player collapses at this
+//!                                     frame after the load as --fell-player's does, then dies (a debug tool)
 //!          --sync-content             debug: no content stream thread; the item icons' models and a loaded save's
 //!                                     player body are built on the main thread where they are needed (timings)
 //!          --story-session            play mode: the level runs as a story-mode session (the story hook's knock-out,
@@ -612,6 +614,9 @@ pub struct Options {
     /// `--fell-player <frame>`: the player collapses at this frame after
     /// the load (a debug tool for the story knock-out and revive).
     pub fell_player: Option<u32>,
+    /// `--fell-nearest <frame>`: the living character body nearest the
+    /// player collapses at this frame after the load (a debug tool).
+    pub fell_nearest: Option<u32>,
     /// `--arena-auto`: the auto-match switch (continue and rematch alone).
     pub arena_auto: bool,
     /// `--open-hub-window <name>`: open a hub window once the hub is
@@ -1221,6 +1226,9 @@ fn main() -> AppExit {
                 options.undead_opponent = args.next().and_then(|v| v.parse().ok());
             }
             "--fell-player" => options.fell_player = args.next().and_then(|v| v.parse().ok()),
+            "--fell-nearest" => {
+                options.fell_nearest = args.next().and_then(|v| v.parse().ok());
+            }
             "--arena-auto" => options.arena_auto = true,
             "--shop-buy" => {
                 let value = args.next().unwrap_or_default();
