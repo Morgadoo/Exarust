@@ -341,6 +341,209 @@ impl<L: Level + ?Sized> Level for MeshLevel<'_, L> {
     }
 }
 
+/// How long the item the cursor lets go of stays awake at least (ticks),
+/// when it is put back into the world with the frames the lift saved: half
+/// the full wake count, raised to only if lower. (A drop the original hands
+/// to another view, without saved frames, raises it to 31 instead and asks
+/// the query at the current pose; Exarust's windows take no world item, so
+/// that path is not made.)
+pub const RELEASE_WAKE: i32 = crate::body::WAKE_COUNT >> 1;
+
+/// How many ticks a released item settles (the placed state: gravity
+/// without inertia, and a contact with an unplaced body moves only the
+/// item).
+pub const RELEASE_SETTLE: i32 = 8;
+
+/// A part as the placement overlap query reads it, in world centimetres
+/// ([`sector::PlacementBody`]): its sphere bound at `frame`, its mesh
+/// bound in its own space (cm), the frame with its translation in cm, its
+/// body as the root, its two filter words and its order key.
+fn placement_body(
+    body: Entity,
+    part: &crate::body::Part,
+    frame: Affine3A,
+    disabled: bool,
+) -> sector::PlacementBody {
+    let pairing = &part.pairing;
+    let mesh = pairing.mesh;
+    sector::PlacementBody {
+        sphere: (
+            frame.transform_point3(pairing.sphere.centre) * 100.0,
+            pairing.sphere.radius * 100.0,
+        ),
+        mesh: sector::Bounds {
+            centre: mesh.centre * 100.0,
+            half: mesh.half * 100.0,
+            radius: mesh.radius * 100.0,
+        },
+        frame: Affine3A {
+            matrix3: frame.matrix3,
+            translation: frame.translation * 100.0,
+        },
+        root: body.index().index(),
+        words: (pairing.group, pairing.layer),
+        key: pairing.key(),
+        disabled,
+    }
+}
+
+/// The original's placement overlap test for one pair, `a` the side with
+/// the lower order key: each of `a`'s collision spheres, put in `b`'s frame
+/// (`a_frame`, `b_frame` world frames, metres), passes the pre-test
+/// against `b`'s mesh bound ([`sector::placement_meet`], 2 cm of padding)
+/// and is then asked through `b`'s mesh query at its radius plus 2 cm; any
+/// triangle the query reports counts (the original's callback only marks
+/// the hit). A mesh with a kd-tree is walked by its sphere query, a
+/// smaller one triangle by triangle. A part without triangles stands in
+/// with its stored spheres, as the pair stage's fallback does.
+pub fn placement_touch(
+    a: &crate::body::Part,
+    a_frame: Affine3A,
+    b: &crate::body::Part,
+    b_frame: Affine3A,
+) -> bool {
+    let relative = b_frame.inverse() * a_frame;
+    let mesh = b.pairing.mesh;
+    for &(c, r) in a.spheres.iter() {
+        let at = relative.transform_point3(c);
+        if !sector::placement_meet(
+            at * 100.0,
+            r * 100.0,
+            mesh.centre * 100.0,
+            mesh.half * 100.0,
+            mesh.radius * 100.0,
+        ) {
+            continue;
+        }
+        let grown = (r * 100.0 + sector::PLACEMENT_PADDING_CM) / 100.0;
+        let hit = match (b.tree.as_deref(), b.triangles.as_deref()) {
+            (Some(tree), Some(triangles)) => {
+                let mut sphere = (at, grown);
+                tree.sphere(&mut sphere, |s, ids| {
+                    ids.iter().any(|&id| {
+                        triangles
+                            .get(id as usize)
+                            .is_some_and(|t| crate::contact::sphere_hit(t, s.0, grown).is_some())
+                    })
+                })
+            }
+            (None, Some(triangles)) => triangles
+                .iter()
+                .any(|t| crate::contact::sphere_hit(t, at, grown).is_some()),
+            _ => b
+                .spheres
+                .iter()
+                .any(|&(cb, rb)| crate::body::pairs::sphere_on_sphere(at, grown, cb, rb).is_some()),
+        };
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
+/// The original's placement overlap query, run when the item cursor puts a
+/// body back into the world: part `part` of body `probe`, at the world
+/// frame `frame` (metres), against every part the body grid lists in the
+/// nine cells around the cell of its mesh box's centre there (own cell
+/// first). Each candidate goes through the query's gates in the
+/// original's order ([`sector::placement_offered`]: the bounds, the
+/// oriented boxes both ways, the same-body group words or the layer
+/// channels, a disabled body refused) and then the pair test
+/// ([`placement_touch`]), the side with the lower order key bringing its
+/// spheres. Returns, in scan order, the bodies a touch was found with: the
+/// original then raises the lower of the two sleep countdowns to the
+/// higher (see [`equalise_placement`]).
+pub fn placement_touches<'a>(
+    grid: &SectorBodies,
+    probe: Entity,
+    part: usize,
+    frame: Affine3A,
+    body: impl Fn(Entity) -> Option<&'a Ragdoll>,
+) -> Vec<Entity> {
+    let mut out = Vec::new();
+    let Some(ragdoll) = body(probe) else {
+        return out;
+    };
+    let Some(p) = ragdoll.parts.get(part) else {
+        return out;
+    };
+    let me = placement_body(probe, p, frame, ragdoll.disabled());
+    let cell = world_cell(frame.transform_point3(p.pairing.mesh.centre) * 100.0);
+    for entry in grid.near(cell) {
+        // The probe meets itself in the original too, which changes
+        // nothing (its countdown against its own).
+        if entry.body == probe && entry.part == part {
+            continue;
+        }
+        let Some(other) = body(entry.body) else {
+            continue;
+        };
+        let Some(q) = other.parts.get(entry.part) else {
+            continue;
+        };
+        let q_frame = q.transform();
+        let them = placement_body(entry.body, q, q_frame, other.disabled());
+        if !sector::placement_offered(&me, &them) {
+            continue;
+        }
+        let touched = if them.key < me.key {
+            placement_touch(q, q_frame, p, frame)
+        } else {
+            placement_touch(p, frame, q, q_frame)
+        };
+        if touched {
+            out.push(entry.body);
+        }
+    }
+    out
+}
+
+/// The end of the original's placement test for a touching pair: the body
+/// with the lower sleep countdown has it raised to the other's (a plain
+/// raise, its contacts kept); equal countdowns change nothing.
+pub fn equalise_placement(a: &mut Ragdoll, b: &mut Ragdoll) {
+    let (ca, cb) = (a.countdown(), b.countdown());
+    if ca < cb {
+        a.wake_to(cb);
+    } else if cb < ca {
+        b.wake_to(ca);
+    }
+}
+
+/// Runs the placement overlap query for part `part` of `probe` at `frame`
+/// on the simulation's world and equalises the countdowns of every body
+/// it touched with the probe's, in the query's order.
+pub fn place_released(world: &mut World, probe: Entity, part: usize, frame: Affine3A) {
+    let touched = {
+        let mut bodies = world.query::<&Ragdoll>();
+        let Some(grid) = world.get_resource::<SectorBodies>() else {
+            return;
+        };
+        let bodies = bodies.query(world);
+        placement_touches(grid, probe, part, frame, |e| bodies.get(e).ok())
+    };
+    info!(
+        "placement query: {} part(s) touch the released body's saved place",
+        touched.len()
+    );
+    let mut bodies = world.query::<&mut Ragdoll>();
+    for other in touched {
+        if other == probe {
+            continue;
+        }
+        if let Ok([mut a, mut b]) = bodies.get_many_mut(world, [probe, other]) {
+            let before = b.countdown();
+            equalise_placement(&mut a, &mut b);
+            info!(
+                "placement query: {other} countdown {before} -> {} (released body {})",
+                b.countdown(),
+                a.countdown()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "sector_lists_test.rs"]
 mod tests;

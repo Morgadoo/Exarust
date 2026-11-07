@@ -459,7 +459,7 @@ fn shove(p: &mut Part, w: &[f32; 4], push: Vec3) {
 /// Sphere `e` of radius `r` (the sphere side's, in the other part's space)
 /// against the other's sphere `c`, `rc`: the point on the other sphere's
 /// surface toward `e` and the push that takes `e` off it.
-fn sphere_on_sphere(e: Vec3, r: f32, c: Vec3, rc: f32) -> Option<(Vec3, Vec3)> {
+pub(crate) fn sphere_on_sphere(e: Vec3, r: f32, c: Vec3, rc: f32) -> Option<(Vec3, Vec3)> {
     let reach = r + rc;
     let d = e - c;
     let d2 = d.length_squared();

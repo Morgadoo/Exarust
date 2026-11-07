@@ -553,8 +553,12 @@ pub fn static_meet(first: &Meeting, second: &Meeting) -> bool {
 
 /// The original's placement overlap pre-test for one sphere (cm, in the
 /// other body's frame): the sphere, grown by 2 cm, must be within the
-/// other's bounding radius of its mesh centre and touch its mesh box. The
-/// scene's mesh query follows in the original, with the grown radius.
+/// other's bounding radius of its mesh centre (`(r + 2) + R`, summed in
+/// that order) and touch its mesh box. Each test skips only when the
+/// squared reach is below the distance², an ordered compare, so a NaN
+/// distance passes both, as the original's unordered branch does. The
+/// scene's mesh query follows in the original, with the grown radius
+/// ([`crate::sector_lists::placement_touches`]).
 pub fn placement_meet(
     sphere_centre: Vec3,
     sphere_radius: f32,
@@ -563,11 +567,11 @@ pub fn placement_meet(
     mesh_radius: f32,
 ) -> bool {
     let reach = sphere_radius + PLACEMENT_PADDING_CM + mesh_radius;
-    if !(sphere_centre.distance_squared(mesh_centre) <= reach * reach) {
+    if reach * reach < sphere_centre.distance_squared(mesh_centre) {
         return false;
     }
     let grown = sphere_radius + PLACEMENT_PADDING_CM;
-    intersect::point_aabb_distance_squared(sphere_centre, mesh_centre, mesh_half) <= grown * grown
+    !(grown * grown < intersect::point_aabb_distance_squared(sphere_centre, mesh_centre, mesh_half))
 }
 
 /// The original's static-collider overlap pre-test for one sphere (cm, in
