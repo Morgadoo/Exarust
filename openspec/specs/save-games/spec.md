@@ -519,3 +519,10 @@ The next practice fight SHALL prepare the player's own items into the kit's temp
 #### Scenario: The carry around the load
 - **WHEN** the next practice fight's steps are built
 - **THEN** the preparation comes before the level load and the equip after the practice filter
+
+### Requirement: Loaded player placement
+Loading a story slot SHALL keep its save file, and SHALL place the loaded player's root and every part of its body at the saved place, in the running simulation as well as in the drawn world.
+
+#### Scenario: A reloaded save
+- **WHEN** a story save made at (−4.46, 0, 69.52) m in exanima06 is continued
+- **THEN** the player stands there, does not fall, and the save file is still in the folder
