@@ -122,6 +122,9 @@ enum Cmd {
     /// Every race of `races.rdb` with its flags, body parameters, stats and
     /// gait table.
     Races,
+    /// Every role of `charroles.rdb`: its parent, weight and flags, and its
+    /// attitude entries (target role or character, attitude, tolerance)
+    Roles,
     /// Every character record of a level (`exanima01`), with where it
     /// places them, or of the arena's actors (`actors`): looks, feral level,
     /// saved pools, skills with their techniques, perks, roles and powers.
@@ -444,6 +447,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Races => races(&game),
+        Cmd::Roles => roles(&game),
         Cmd::Characters { source } => characters::characters(&game, &source),
         Cmd::Saves { .. } => unreachable!("handled before the installation is opened"),
         Cmd::Bodies { pack, entry } => bodies::bodies(&game, &pack, &entry),
@@ -507,6 +511,38 @@ fn main() -> Result<()> {
             extract(a, &out, filter.as_deref())
         }),
     }
+}
+
+fn roles(game: &GameData) -> Result<()> {
+    let db = exa_formats::roles::RoleDb::parse(entry_bytes(game, "Resource", "charroles.rdb")?)?;
+    println!("{} roles", db.roles.len());
+    for r in &db.roles {
+        println!(
+            "{:>3} {:<16} parent {:>3}  weight {:>3}  flags {:#x}",
+            r.id,
+            r.name.text(),
+            r.parent,
+            r.weight,
+            r.flags
+        );
+        for e in r.entries.iter().filter(|e| e.has_attitude()) {
+            let target = match e.locale() {
+                Some(locale) => format!("character {:#x} in locale {locale}", e.target),
+                None if e.target == 0 => "anyone".to_string(),
+                None => format!(
+                    "role {} {}",
+                    e.target,
+                    db.get(e.target).map_or_else(String::new, |t| t.name.text())
+                ),
+            };
+            println!(
+                "      attitude {:>4} tolerance {:>3} toward {target}",
+                e.attitude(),
+                e.tolerance()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn races(game: &GameData) -> Result<()> {
