@@ -1094,6 +1094,12 @@ impl RoomLights {
     /// doorway further. Only a room that owns at least one light of its own
     /// passes anything on (the original searches its list from the end for
     /// an entry it owns); a room lit only through its doors passes nothing.
+    ///
+    /// The original runs it at the end of a level load, once every node is
+    /// in the scene and the rooms have their sectors. The room manager's
+    /// hook also runs it when the grid chunk is read, but then every room
+    /// still names the scene itself as its sector, so each list is passed
+    /// into itself and nothing is added.
     pub fn propagate(&mut self, rooms: &Rooms) {
         for room in 0..self.per_room.len() {
             let owns_one = self.per_room[room]

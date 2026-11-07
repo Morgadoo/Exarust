@@ -1352,6 +1352,13 @@ struct Strips {
 /// per 6 m cell aligned to its borders: `u = x/600 + ½`, `v = ½ − z/600` in
 /// cell-local centimetres (the stored UVs are discarded). Other materials
 /// keep their own UVs and tangents.
+///
+/// The original then converts the merged mesh to render form with its
+/// vertex-cache triangle reorder (the `+Floor` node does not set the
+/// opt-out bit), so the merged mesh's triangle 0, the one the Ground Query
+/// ignores, is the reorder's first pick over the welded mesh, not the first
+/// triangle appended. Exarust does not run that conversion here, so no run
+/// is marked [`exa_physics::FirstFloorPart`].
 struct FloorMerge<'a> {
     meshes: &'a mut Assets<Mesh>,
     groups: Vec<FloorGroup>,
