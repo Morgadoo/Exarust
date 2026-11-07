@@ -293,6 +293,8 @@ Round 112 heldskin: a flail in hand keeps its import-built skin, as in the origi
 
 Round 117 rooms: the room walk and fade follow the original's numbers, and story walks explore the active rooms' cells.
 
+Round 119 explore: the story explores every frame, and items are not placed through a wall's hollow.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
