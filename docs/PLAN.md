@@ -279,6 +279,8 @@ Round 65 terrain: the original's tile bake replaces a per-vertex stand-in; plain
 
 Round 66 gridenvs: room lids close the point-light cube shadows and the shell query serves the hand and kinesis.
 
+Round 98 worldgap: grid cells merge their floors into one +Floor node, as the original's cell builder does.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
