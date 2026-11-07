@@ -898,8 +898,10 @@ Exarust match the original look).
 - A node or character is sorted into the room of the cell it stands in,
   `floor(x / 600) + w/2` (the conversion's rounding mode is set towards
   −∞), clamped to the grid for nodes.
-- Floors are merged into a `+Floor` mesh per cell in the original; walls
-  stay separate objects. The ceiling strips also make a per-cell
+- Floors are merged into a `+Floor` mesh per cell (Exarust too: one mesh
+  per material run, in order of first use, at the cell centre); walls
+  stay separate objects. After the cells the builder resets the room
+  states (every room hidden; the debug view of every room shows them). The ceiling strips also make a per-cell
   `+Ceiling` mesh that is never drawn (its node is marked externally drawn;
   its purpose is not known); what shows of the ceilings is the room's lid
   below.
