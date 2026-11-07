@@ -5,6 +5,7 @@
 //! ([`model`]), each cached by name.
 
 pub mod atlas;
+pub mod cell_floor;
 pub mod content_stream;
 pub mod decomp;
 pub mod hair;
