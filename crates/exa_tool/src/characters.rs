@@ -224,7 +224,7 @@ fn print_record(
         })
         .collect();
     println!(
-        "    roles [{}]  hands [{}]  worn {}  inventory {}  relations {} ({} levels)  loadouts {}  saved [{}]  powers {}",
+        "    roles [{}]  hands [{}]  worn {}  inventory {}  relations {} ({} levels)  loadouts {}  saved [{}]  powers {} [{}]",
         roles.join(" "),
         hands.join(" "),
         r.worn.len(),
@@ -233,7 +233,13 @@ fn print_record(
         r.level_relations.len(),
         r.loadouts.len(),
         saved.join(", "),
-        r.powers.as_ref().map_or(0, |p| p.known.len())
+        r.powers.as_ref().map_or(0, |p| p.known.len()),
+        r.powers.as_ref().map_or_else(String::new, |p| p
+            .known
+            .iter()
+            .map(|power| format!("{:#x}", power.id))
+            .collect::<Vec<_>>()
+            .join(" "))
     );
     for p in placed {
         println!(

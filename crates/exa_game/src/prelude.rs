@@ -344,6 +344,15 @@ impl ActorTemplates {
             .map(|(_, record, _)| record)
     }
 
+    /// The first template (in archive order) whose record is of race byte
+    /// `race`, with its name and its own items.
+    pub fn first_of_race(&self, race: u8) -> Option<(&str, &CharacterRecord, &[Item])> {
+        self.entries
+            .iter()
+            .find(|(_, record, _)| record.race == race)
+            .map(|(name, record, items)| (name.as_str(), record, items.as_slice()))
+    }
+
     /// The items of the template named `name`'s own database (empty when
     /// it has none or there is no such template).
     pub fn own_items(&self, name: &str) -> &[Item] {

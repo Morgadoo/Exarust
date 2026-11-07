@@ -358,6 +358,11 @@ pub struct CharacterStats {
     /// them at half the character size ([`Self::size`] × 0.5); every other
     /// race keeps the pins as stored (1).
     pub chest_pin_scale: f32,
+    /// The race's unarmed reach, metres (`races.rdb`, the reach while the
+    /// character holds no weapon): the equip refresh makes it the
+    /// character's reach when it is unarmed (human 0.5, the ghouls 1, the
+    /// harvester 1.5; the built-in record's 1).
+    pub unarmed_reach: f32,
 }
 
 impl Default for CharacterStats {
@@ -478,6 +483,7 @@ impl CharacterStats {
             } else {
                 1.0
             },
+            unarmed_reach: stats.unarmed_reach,
         }
     }
 

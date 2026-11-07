@@ -119,6 +119,7 @@ fn build_bodies(
     animators: Query<(&Animator, Option<&Stature>)>,
     globals: Query<&GlobalTransform>,
     skinned: Query<&SkinnedPart>,
+    own_bodies: Query<&exa_physics::body::OwnPartBody>,
     meshes: Res<Assets<Mesh>>,
     mut limb_meshes: Local<LimbMeshes>,
     (loading, undressed, merged_runs): (
@@ -194,16 +195,41 @@ fn build_bodies(
                 });
                 let (_, turn, origin) = rest.to_scale_rotation_translation();
                 rest_turns.push(turn);
-                part_setup(
+                let skeleton = motions.1.get(&bone);
+                let mut part = part_setup(
                     bone,
                     entity,
                     parent,
                     world.affine(),
                     (centre, half),
                     origin,
-                    motions.1.get(&bone),
-                )
+                    skeleton,
+                );
+                // A node the skeleton has no bone for keeps its model's own
+                // body chunk: its spheres and its links to its parent.
+                if skeleton.is_none()
+                    && let Ok(own) = own_bodies.get(entity)
+                {
+                    if !own.spheres.is_empty() {
+                        part.spheres = Some(own.spheres.clone());
+                    }
+                    if parent.is_some() {
+                        part.links = own
+                            .links
+                            .iter()
+                            .map(|l| (l.on_part, l.on_parent, l.slack))
+                            .collect();
+                    }
+                }
+                part
             })
+            .collect();
+        // The parts made plain bodies, with their mobility and welds.
+        let plain: Vec<(usize, exa_physics::body::OwnPartBody)> = found
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, bone, _))| motions.1.get(bone).is_none())
+            .filter_map(|(i, (entity, _, _))| Some((i, own_bodies.get(*entity).ok()?.clone())))
             .collect();
         let mut body = if corpse {
             // A level's dead are already in their saved pose: limp, no
@@ -250,18 +276,46 @@ fn build_bodies(
         // mesh's triangles answer one by one.
         let mut limb_triangles = 0;
         let mut limb_volume = 0.0;
+        let mut volumes = vec![0.0f32; found.len()];
         let mut trees = Vec::new();
         let pool = bevy::tasks::AsyncComputeTaskPool::get();
         for (i, &(entity, bone, _)) in found.iter().enumerate() {
             if let Some(mesh) = limb_meshes.of(entity, bone, &children, &skinned, &meshes) {
                 limb_triangles += mesh.len();
-                limb_volume += exa_physics::mesh_tree::signed_volume(&mesh);
+                volumes[i] = exa_physics::mesh_tree::signed_volume(&mesh);
+                limb_volume += volumes[i];
                 body.parts[i].triangles = Some(mesh.clone());
                 trees.push((
                     i,
                     pool.spawn(async move { exa_physics::mesh_tree::shape_tree(&mesh) }),
                 ));
             }
+        }
+        // The plain parts' masses in the limbs' units: the init's limb mass
+        // factor from every part, the skeleton parts' volume mobilities
+        // (10⁴ / cm³) and the character's size and race mass divisor.
+        if !plain.is_empty() {
+            let skeletal: f32 = volumes
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| plain.iter().all(|(j, ..)| j != i))
+                .map(|(_, v)| v * 1e6 / VOLUME_MOBILITY)
+                .sum();
+            for (i, own) in &plain {
+                let factor = plain_mass_factor(found.len(), stats.size, skeletal, own.mass_divisor);
+                body.make_plain(*i, own.mobility / factor, &own.links);
+            }
+            info!(
+                "plain parts: {root:?} {} of {} parts hung from the body (limb mass factor {:.3})",
+                plain.len(),
+                found.len(),
+                plain_mass_factor(
+                    found.len(),
+                    stats.size,
+                    skeletal,
+                    plain.first().map_or(1.0, |(_, own)| own.mass_divisor)
+                )
+            );
         }
         debug!(
             "limb meshes: {root:?} {} parts, {limb_triangles} triangles (signed volume {:.0} cm³), {} trees queued",
@@ -658,6 +712,55 @@ fn watch_spawns(
 /// skeleton stores them (the parent's points still measured from the part's
 /// origin, which `origin` places in the parent), its foot contact point if
 /// it carries one, and its pins.
+/// A part's volume mobility is this over its volume in cm³.
+const VOLUME_MOBILITY: f32 = 10_000.0;
+
+/// The character init's limb mass factor: each limb's mass value is its
+/// bone's table value times `n / ((20·s³ + Σ) · d)`, with `n` the parts, `s`
+/// the character's size, Σ the skeleton parts' inverse masses as the
+/// volume pass leaves them (`skeletal`, volume / 10⁴ each) and `d` the race's
+/// mass divisor. Exarust keeps the limbs at their table values, so a plain
+/// part's registered mobility is divided by this factor to stand in the
+/// same units (single precision, as the init sums).
+pub fn plain_mass_factor(parts: usize, size: f32, skeletal: f32, divisor: f32) -> f32 {
+    let n = parts as f32;
+    let weighed = 20.0 * size * size * size;
+    n / ((weighed + skeletal) * divisor)
+}
+
+/// A body model node's own body chunk as the body builder takes it
+/// ([`exa_physics::body::OwnPartBody`]): its spheres, its links (with
+/// their strength and smoothing, soft welds by the link flag), its
+/// registered mobility and the race's mass divisor the builder's limb mass
+/// factor takes ([`plain_mass_factor`]).
+pub fn own_part_body(
+    rigid: &exa_assets::NodeRigidBody,
+    mass_divisor: f32,
+) -> exa_physics::body::OwnPartBody {
+    let body = &rigid.body;
+    exa_physics::body::OwnPartBody {
+        spheres: body
+            .spheres
+            .iter()
+            .map(|s| (Vec3::from_array(s.centre), s.radius))
+            .collect(),
+        links: body
+            .links
+            .iter()
+            .map(|l| exa_physics::body::OwnLink {
+                on_part: Vec3::from_array(l.on_body),
+                on_parent: Vec3::from_array(l.on_parent),
+                slack: l.slack,
+                strength: l.strength,
+                smoothing: l.smoothing,
+                welded: l.flags & exa_physics::body::LINK_SOFT_WELD != 0,
+            })
+            .collect(),
+        mobility: rigid.mobility(),
+        mass_divisor,
+    }
+}
+
 pub(crate) fn part_setup(
     bone: usize,
     entity: Entity,

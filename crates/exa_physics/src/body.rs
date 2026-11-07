@@ -453,6 +453,11 @@ pub struct Part {
     /// contact wanted to move it. The two pushes cancel, so nothing moves
     /// by this array; [`crate::body_pairs`] keeps it for the node owner.
     pub(crate) placed_offset: [Vec3; 4],
+    /// A part hung from the character from a model node with its own body
+    /// chunk and no skeleton bone (the demon's tail and wings): a member of
+    /// the part list at a tone of 0.01, so its links stay limp links,
+    /// never muscles ([`Ragdoll::make_plain`]).
+    pub plain: bool,
 }
 
 /// A level impact: a part hit the static level hard enough for the
@@ -651,6 +656,7 @@ impl Part {
             level_travel: Vec3::ZERO,
             level_travel2: 0.0,
             placed_offset: [Vec3::ZERO; 4],
+            plain: false,
         }
         .settle()
     }
@@ -939,6 +945,36 @@ pub struct GoLimp {
     pub velocity: Option<Vec3>,
     /// Frames to wait first (a body spawned this frame is not posed yet).
     pub delay: u32,
+}
+
+/// A body model node's own body chunk, for a node the skeleton has no bone
+/// for (the demon's tail and wings): its collision spheres (centre, radius,
+/// metres, node frame), its links to its parent (point on the node, point
+/// on the parent before the node's translation, slack, and whether the
+/// link is a soft weld) and its registered mobility. The body builder
+/// takes these in place of the skeleton's and makes the part a plain body
+/// ([`Ragdoll::make_plain`]).
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct OwnPartBody {
+    pub spheres: Vec<(Vec3, f32)>,
+    pub links: Vec<OwnLink>,
+    pub mobility: f32,
+    /// The character's race mass divisor, for the limb mass factor.
+    pub mass_divisor: f32,
+}
+
+/// A link of a node's own body chunk, as stored: the point on the node, the
+/// point on the parent (before the node's translation), its slack, its
+/// strength and smoothing (kept, unlike the skeleton's, which the reader
+/// forces to strength 1), and whether it is a soft weld.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OwnLink {
+    pub on_part: Vec3,
+    pub on_parent: Vec3,
+    pub slack: f32,
+    pub strength: f32,
+    pub smoothing: f32,
+    pub welded: bool,
 }
 
 /// Makes the body under this entity (a body model root) physical: its parts
@@ -4102,6 +4138,39 @@ impl Ragdoll {
         }
     }
 
+    /// Makes the part at `index` a plain part hung from the character, as
+    /// the original keeps a model node whose own body chunk has no skeleton
+    /// counterpart (the motion binder copies the skeleton's chunk only onto
+    /// nodes of a skeleton bone number; the init gives a part-list member
+    /// without a bone index the hittable class and a tone of 0.01): it
+    /// moves with `inverse_mass` (its registered mobility in the limbs'
+    /// units), its stored links take their own strength and smoothing and
+    /// become soft welds where flagged, they are never muscles, and its
+    /// links' two shares follow the new mass.
+    pub fn make_plain(&mut self, index: usize, inverse_mass: f32, own: &[OwnLink]) {
+        let Some(range) = self.links_of.get(index).cloned() else {
+            return;
+        };
+        let part = &mut self.parts[index];
+        part.plain = true;
+        part.inverse_mass = inverse_mass;
+        part.link_mobility = inverse_mass * LINK_MOBILITY;
+        for (k, l) in self.links[range].iter_mut().enumerate() {
+            if let Some(stored) = own.get(k).filter(|_| !l.origin) {
+                l.strength = stored.strength;
+                l.smoothing = stored.smoothing;
+                if stored.welded {
+                    l.flags |= LINK_SOFT_WELD;
+                }
+            }
+            let (m, m_parent) = (
+                LINK_MOBILITY * self.parts[l.part].inverse_mass,
+                LINK_MOBILITY * self.parts[l.parent].inverse_mass,
+            );
+            l.shares = (m / (m + m_parent), m_parent / (m + m_parent));
+        }
+    }
+
     /// The links of the part at `index`: the skeleton's, then its origin
     /// pivot.
     pub fn links_of(&self, index: usize) -> &[Link] {
@@ -4990,6 +5059,8 @@ impl Ragdoll {
                     }
                     continue;
                 }
+                // A plain body's links are never muscles.
+                let gains = gains.filter(|_| !part.plain);
                 let correction = match (gains, l.anchor) {
                     (Some(gains), Some(anchor)) if l.slack > PIVOT_SLACK => {
                         l.muscle(part, parent, anchor, gains)

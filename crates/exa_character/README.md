@@ -257,7 +257,9 @@ tested rules of their own.
   seed's offsets move only the decomposition pass). The feral level is the job's
   decomposition amount: above zero, `composite_job` carries it with the
   seed's offsets and the composite draws the `chardecomp` passes; a body whose race texture set does not decode keeps the
-  race maps plus tone.
+  race maps plus tone. A race whose look word has no texture bit (every race but the
+  human and the ancient, `SkinLook::textures` false) is not re-skinned at
+  all and looks no race maps up: the original's race loader loads none.
 - `rebuild` keeps the look rebuild's own steps (job reset and first
   apparel, frame save, dynamics rebuild, frame restore, the root lift by
   the new standing height, the double-precision body scale), the

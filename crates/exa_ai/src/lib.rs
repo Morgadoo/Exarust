@@ -481,13 +481,20 @@ fn foe_lesson(
     crate::estimate::fighting_estimate_with_base(base, weapon, scale)
 }
 
-fn reach_of(fighter: Entity, blades: &Query<&Blade>) -> f32 {
+fn reach_of(fighter: Entity, blades: &Query<&Blade>, unarmed: f32) -> f32 {
     blades
         .iter()
         .filter(|b| b.wielder == fighter && b.record.armed())
         .map(|b| b.record.reach_metres())
         .reduce(f32::max)
-        .unwrap_or(stance::UNARMED_REACH)
+        .unwrap_or(unarmed)
+}
+
+/// A fighter's unarmed reach (metres): its race's, as the equip refresh
+/// makes it the character's reach while it holds no weapon; a body without
+/// a fighter keeps a human's.
+fn unarmed_reach(fighter: Option<&Fighter>) -> f32 {
+    fighter.map_or(stance::UNARMED_REACH, |f| f.stats.unarmed_reach)
 }
 
 /// A fighter's weapon class as its strikers make it: a held weapon's hands
@@ -887,7 +894,7 @@ fn measure_contact(
     Some(ContactMeasure {
         origin,
         forward,
-        reach_cm: reach_of(fighter_entity, blades) * CM,
+        reach_cm: reach_of(fighter_entity, blades, unarmed_reach(fighter)) * CM,
         size: fighter.map_or(1.0, |f| f.stats.size),
         large: fighter.is_some_and(|f| f.stats.rules.has(1)),
         skill,
@@ -895,7 +902,7 @@ fn measure_contact(
         dead: condition.is_dead(),
         posture: combat::Posture {
             condition: condition.0,
-            reach_cm: reach_of(fighter_entity, blades) * CM,
+            reach_cm: reach_of(fighter_entity, blades, unarmed_reach(fighter)) * CM,
             running: locomotor.is_some_and(|l| l.moving()),
             crouch: body
                 .and_then(|(_, _, rag, ..)| rag)
@@ -1266,7 +1273,7 @@ fn duellist(
             // from the record's skills and combat skill, the held weapon's
             // stat bytes and reach, and the body's scale, and the body's
             // reach.
-            let reach_cm = reach_of(entity, &blades) * 100.0;
+            let reach_cm = reach_of(entity, &blades, fighter.stats.unarmed_reach) * 100.0;
             let base = brains.get(entity).map_or(0.0, |brain| brain.fighting_base);
             let weapon = attacker
                 .primary_record(entity, blades.iter())
@@ -1474,7 +1481,7 @@ fn duellist(
         ai.last_tick = tick_now;
         let feet = root_gt.translation();
         let chest = stance::chest_point(gt, ragdoll) * CM;
-        let reach = reach_of(entity, &blades);
+        let reach = reach_of(entity, &blades, fighter.stats.unarmed_reach);
         let class = weapon_class_of(entity, &blades);
         let (energy, most) = ragdoll
             .and_then(|r| r.drive.as_ref())
@@ -1536,7 +1543,7 @@ fn duellist(
         let foe = combat::Foe {
             condition: target_condition.0,
             dead: target_condition.is_dead(),
-            reach_cm: reach_of(foe_key, &blades) * CM,
+            reach_cm: reach_of(foe_key, &blades, unarmed_reach(target_fighter)) * CM,
             chest: foe_chest,
             step_goal: foe_step_cm,
             stepping: foe_stepping,
@@ -1552,7 +1559,12 @@ fn duellist(
                 blades
                     .iter()
                     .find(|b| b.wielder == foe_key && b.record.armed())
-                    .map(|b| (&b.record.stats, reach_of(foe_key, &blades) * CM)),
+                    .map(|b| {
+                        (
+                            &b.record.stats,
+                            reach_of(foe_key, &blades, unarmed_reach(target_fighter)) * CM,
+                        )
+                    }),
                 target_fighter.map_or(1.0, |f| f.stats.scale),
             ),
             crouch: target_body
@@ -2409,6 +2421,13 @@ mod tests {
         }
     }
 
+    /// A fighter of a human's unarmed reach (the built-in record's is 1 m).
+    fn human() -> Fighter {
+        let mut fighter = Fighter::default();
+        fighter.stats.unarmed_reach = stance::UNARMED_REACH;
+        fighter
+    }
+
     /// An unarmed duellist on a root at the origin, its target `distance` m
     /// away along +Z.
     fn duel(distance: f32, holds_ground: bool) -> (App, Entity, Entity) {
@@ -2423,7 +2442,7 @@ mod tests {
             .world_mut()
             .spawn((
                 GlobalTransform::from_translation(Vec3::new(0.0, 0.0, distance)),
-                Fighter::default(),
+                human(),
             ))
             .id();
         let root = app
@@ -2439,7 +2458,7 @@ mod tests {
                 Transform::default(),
                 GlobalTransform::IDENTITY,
                 Animator::new("Default", "Idle"),
-                Fighter::default(),
+                human(),
                 ChildOf(root),
             ))
             .id();
@@ -3777,7 +3796,7 @@ mod tests {
 
     fn person_at(app: &mut App, at: Vec3) -> Entity {
         app.world_mut()
-            .spawn((GlobalTransform::from_translation(at), Fighter::default()))
+            .spawn((GlobalTransform::from_translation(at), human()))
             .id()
     }
 

@@ -19,6 +19,8 @@
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --at x,y,z                 play mode: start here (metres)
 //!          --corpse x,y,z             play mode: a dead human lies here (metres); repeatable
+//!          --spawn-race n@x,y,z       play mode: a living character of race byte n stands here (metres), the first
+//!                                     actor template of that race (a fresh record of the race without one); repeatable
 //!          --torch x,y,z              a burning torch fire here (metres), e.g. to stand in for a held one
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
@@ -363,6 +365,9 @@ pub struct Options {
     pub torch: Option<[f32; 3]>,
     /// Play mode: dead humans lying at these points (metres).
     pub corpses: Vec<[f32; 3]>,
+    /// `--spawn-race n@x,y,z`: living characters of race byte n placed
+    /// at these points (a debug tool).
+    pub spawn_races: Vec<(u8, [f32; 3])>,
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
     /// Camera exposure; dungeon interiors need far less than daylight.
@@ -1639,6 +1644,21 @@ fn main() -> AppExit {
             }
             "--searcher-shots" => {
                 options.searcher_shots = args.next().map(std::path::PathBuf::from);
+            }
+            "--spawn-race" => {
+                let v = args.next().unwrap_or_default();
+                let parsed = v.split_once('@').and_then(|(race, at)| {
+                    let race: u8 = race.trim().parse().ok()?;
+                    let at: Vec<f32> = at
+                        .split(',')
+                        .filter_map(|x| x.trim().parse().ok())
+                        .collect();
+                    Some((race, <[f32; 3]>::try_from(at.as_slice()).ok()?))
+                });
+                match parsed {
+                    Some(spawn) => options.spawn_races.push(spawn),
+                    None => eprintln!("--spawn-race: cannot read {v:?} (n@x,y,z)"),
+                }
             }
             "--corpse" => {
                 let v: Vec<f32> = args

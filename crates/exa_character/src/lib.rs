@@ -370,6 +370,10 @@ fn apply_skin_looks(
         bc_supported: model::bc_supported(support.as_deref()),
     };
     for (root, look, job) in &looks {
+        // A race without a skin texture set keeps its model's materials.
+        if !look.textures {
+            continue;
+        }
         // A body that will merge its skin gets the composited material from
         // the merge itself; resolving it here would composite every
         // character of a level in the frame it is spawned.
@@ -400,6 +404,9 @@ fn apply_skin_looks(
         let Ok((look, job)) = look_of.get(root) else {
             continue;
         };
+        if !look.textures {
+            continue;
+        }
         let material = skin_material_of_look(&mut loader, look, job);
         if let Ok(mut bound) = parts.get_mut(part) {
             bound.0 = material;
@@ -1284,6 +1291,8 @@ fn spawn_merged_character(
     // else the race maps plus tone until its generation (started here, off
     // the main thread) finishes.
     let mut awaiting = None;
+    // A race without a skin texture set keeps its model's materials.
+    let skin_look = skin_look.filter(|look| look.textures);
     let skin = match (skin_look, skin_job) {
         (Some(look), Some(job)) => {
             let race = |loader: &mut ModelLoader| {
