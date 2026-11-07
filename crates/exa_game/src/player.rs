@@ -2257,6 +2257,21 @@ pub struct ChaseCamera {
     /// The yaw was set by an alignment (Cursor Look's) and the shown yaw
     /// has not yet come within [`ALIGNED`] of it; an orbit drag ends it.
     pub(crate) aligning: bool,
+    /// The looked-at point of a camera that follows nothing (the original's
+    /// centimetres), which the free branch of each tick pans, lifts over
+    /// the terrain and holds in height; `None` while the camera follows a
+    /// body.
+    free: Option<crate::nav_camera::FreeFocus>,
+}
+
+/// What the free branch of a tick reads: the movement keys, the camera's
+/// drawn right and forward axes, and the terrain's height under a point
+/// (both in the original's centimetres; `None` where it has no ground).
+pub(crate) struct FreeInput<'a> {
+    pub keys: crate::nav_camera::PanKeys,
+    pub right: Vec3,
+    pub forward: Vec3,
+    pub ground: &'a dyn Fn(Vec3) -> Option<f32>,
 }
 
 /// An alignment is over once the shown yaw is this near its target (rad,
@@ -2295,6 +2310,7 @@ impl Default for ChaseCamera {
             wall_tilt: 0.0,
             wall_before: 0.0,
             controller,
+            free: None,
         };
         cam.settle_back();
         cam
@@ -2538,7 +2554,7 @@ impl ChaseCamera {
     /// (the target turning a whole turn with it across ±π), an alignment
     /// ends within 0.01 rad, and the vector springs toward the camera node's
     /// axis at the target yaw, led at most π/4 ahead of the heading.
-    fn tick(&mut self) {
+    fn tick(&mut self, free: Option<&FreeInput>) {
         use crate::nav_camera as nav;
         if nav::zoom_settles(self.shown_zoom, self.zoom) {
             self.shown_zoom = self.zoom;
@@ -2546,6 +2562,7 @@ impl ChaseCamera {
             self.zoom_spring.target = self.zoom;
             self.zoom_spring.step();
         }
+        self.free_tick(free);
         let change = self.shake - self.shake_before;
         if change.length_squared() > SHAKE_STILL_CHANGE || self.shake.length_squared() > SHAKE_STILL
         {
@@ -2577,21 +2594,105 @@ impl ChaseCamera {
         );
     }
 
+    /// The free branch of a tick, for a camera that follows nothing: the
+    /// movement keys make the pan vector along the drawn right and forward
+    /// axes (the preset's `0x800` reads them, its `0x20000` flattens and
+    /// normalises the vector), and the looked-at point is lifted over the
+    /// terrain, pulled along the pan by the zoom's pull and moved by the
+    /// preset's rate within its height limits
+    /// ([`crate::nav_camera::FreeFocus::tick`]).
+    fn free_tick(&mut self, input: Option<&FreeInput>) {
+        use crate::nav_camera as nav;
+        let (Some(free), Some(input)) = (self.free.as_mut(), input) else {
+            return;
+        };
+        let preset = &self.controller.preset;
+        let keys = if preset.flags & 0x800 != 0 {
+            input.keys
+        } else {
+            nav::PanKeys::default()
+        };
+        let pan = nav::pan_input(
+            input.right,
+            input.forward,
+            keys,
+            Vec3::ZERO,
+            preset.flags & 0x2_0000 != 0,
+        );
+        let pull = nav::free_pull(self.shown_zoom, preset.max_distance, preset.extent);
+        let limits = nav::HeightLimits {
+            min: preset.min_height,
+            max: preset.max_height,
+        };
+        let ground = (input.ground)(free.focus);
+        free.tick(
+            ground,
+            pan,
+            pull,
+            preset.rate,
+            preset.flags & 0x2000 != 0,
+            limits,
+        );
+    }
+
+    /// Frees the camera at `at` (m): it follows nothing and its looked-at
+    /// point starts there, standing still. A camera already free keeps its
+    /// point.
+    pub(crate) fn free_at(&mut self, at: Vec3) {
+        if self.free.is_none() {
+            self.free = Some(crate::nav_camera::FreeFocus::at(at / CM));
+        }
+    }
+
+    /// The camera follows a body again: its free point is dropped.
+    pub(crate) fn follow(&mut self) {
+        self.free = None;
+    }
+
+    /// Whether the camera follows nothing.
+    pub(crate) fn is_free(&self) -> bool {
+        self.free.is_some()
+    }
+
+    /// The looked-at point of a free camera a frame draws `t` of the way
+    /// into the last tick (m).
+    pub(crate) fn free_focus(&self, t: f32) -> Option<Vec3> {
+        self.free.map(|f| f.shown(t) * CM)
+    }
+
+    /// Places a free camera for a shot from `eye` looking at `at` (m), as
+    /// the original's placement routine does: the backward vector and yaw
+    /// as [`Self::face_shot`] sets them, and the looked-at point at `at`
+    /// with its height held within the preset's limits.
+    pub(crate) fn place_free(&mut self, eye: Vec3, at: Vec3) {
+        self.face_shot(eye, at, None);
+        let preset = self.controller.preset;
+        let limits = crate::nav_camera::HeightLimits {
+            min: preset.min_height,
+            max: preset.max_height,
+        };
+        self.free = Some(crate::nav_camera::FreeFocus::at(limits.apply(at / CM)));
+    }
+
     /// Runs the ticks whose start the frame has reached, `dt` (s) after the
     /// last frame: at most nine, the rest of a backlog dropped. Returns how
     /// far the frame is into the last tick (0–1). No wall probe answers.
     #[cfg(test)]
     fn advance(&mut self, dt: f32) -> f32 {
-        self.advance_probing(dt, Vec3::ZERO, &mut |_, _, _, _| false)
+        self.advance_probing(dt, Some(Vec3::ZERO), &mut |_, _, _, _| false, None)
     }
 
     /// [`Self::advance`] with each tick's wall probe asked of
-    /// `obstructed` from `focus`.
+    /// `obstructed` from `probe_from` (the followed body's hip point; a
+    /// camera that follows nothing runs no probe, as the original's wall
+    /// routine returns without a follow object), and the free branch fed
+    /// by `free`.
     fn advance_probing(
         &mut self,
         dt: f32,
-        focus: Vec3,
+        probe_from: Option<Vec3>,
         obstructed: &mut impl FnMut(Vec3, Vec3, f32, f32) -> bool,
+        free: Option<&FreeInput>,
     ) -> f32 {
         // The original compares the frame's millisecond stamp with the
         // tick clock; the elapsed real time is kept unrounded so the
@@ -2600,8 +2701,10 @@ impl ChaseCamera {
         // The stamp wraps at 2³² ms as the original's tick count does.
         let (ran, t) = self.frame.step(self.elapsed_ms.round() as u64 as u32);
         for _ in 0..ran {
-            self.tick();
-            self.probe_wall(focus, obstructed);
+            self.tick(free);
+            if let Some(from) = probe_from {
+                self.probe_wall(from, obstructed);
+            }
         }
         t
     }
@@ -2657,13 +2760,20 @@ pub(crate) fn chase_camera(
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
     mut cameras: Query<(&mut ChaseCamera, &mut Transform, &mut Projection)>,
-    (mut spectate, every_body, mut cut_away, look, obstacles, views): (
+    (mut spectate, every_body, mut cut_away, look, obstacles, views, keys, terrain, mut logged): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
         Option<ResMut<crate::cut_away_live::CutAwayCamera>>,
         Res<CursorLook>,
-        Query<(&exa_world::cut_away::WallObstacle, &GlobalTransform)>,
+        Query<(
+            &exa_world::cut_away::WallObstacle,
+            &GlobalTransform,
+            Option<&exa_world::cut_away::CutAway>,
+        )>,
         Query<&ViewVisibility>,
+        Res<ButtonInput<KeyCode>>,
+        Option<Res<exa_world::terrain::ground::TerrainGround>>,
+        Local<Option<Vec3>>,
     ),
 ) {
     let player_focus = players.iter().next().map(|target| {
@@ -2673,39 +2783,28 @@ pub(crate) fn chase_camera(
             fixed.overstep_fraction(),
         )
     });
-    // Spectating, the camera looks at the body it follows, else where it
-    // last looked (`crate::spectate`).
-    // The arena's spectated start puts the camera at its fixed pose (the
-    // spawn spot raised by the original's offset, looking at the spot)
-    // until a follow is picked.
-    if let Some((eye, at)) = spectate
-        .as_deref()
-        .filter(|s| s.active)
-        .and_then(|s| s.pose)
-    {
-        for (_, mut t, _) in &mut cameras {
-            t.translation = eye;
-            t.look_at(at, Vec3::Y);
-        }
-        return;
-    }
-    let focus = match spectate.as_deref_mut().filter(|s| s.active) {
+    // Spectating, the camera follows the body the session picked (its
+    // hip, drawn as its mesh is), else it is free: its own tick pans and
+    // lifts the point it looks at, from where it last looked
+    // (`crate::spectate`). The arena's spectated start places the camera
+    // once at the original's pose (the spawn spot raised by its offset,
+    // looking at the spot) and frees it there.
+    let (followed, free_from, pose) = match spectate.as_deref_mut().filter(|s| s.active) {
         Some(session) => {
-            let fallback = player_focus.unwrap_or(Vec3::ZERO);
-            let focus = crate::spectate::spectate_focus(
-                session,
-                &every_body,
-                fixed.overstep_fraction(),
-                fallback,
-            );
-            session.focus = Some(focus);
-            focus
+            let hip =
+                crate::spectate::followed_hip(session, &every_body, fixed.overstep_fraction());
+            (
+                hip,
+                session.focus.or(player_focus).unwrap_or(Vec3::ZERO),
+                session.pose.take(),
+            )
         }
         None => match player_focus {
-            Some(focus) => focus,
+            Some(focus) => (Some(focus), focus, None),
             None => return,
         },
     };
+    let mut looked = None;
     let (width, aspect) = windows.single().map_or((1600.0, 1.6), |w| {
         (
             w.width().max(1.0),
@@ -2773,21 +2872,79 @@ pub(crate) fn chase_camera(
         // The wall probe at the end of each tick asks the meshes the
         // original's scene walk asks: those marked as its obstacles (the
         // outdoor levels' walls, trees and buildings) that a view drew last
-        // frame, in spawn order; the first that meets the probe answers.
+        // frame, in spawn order; the first that meets the probe answers. A
+        // mesh the cut-away fade has marked (the node's mark bit the walk
+        // reads) is skipped.
         let mut seen: Vec<_> = obstacles
             .iter()
-            .filter(|(o, _)| o.parts.iter().any(|&p| views.get(p).is_ok_and(|v| v.get())))
+            .filter(|(o, _, cut)| {
+                !cut.is_some_and(|c| c.cut)
+                    && o.parts.iter().any(|&p| views.get(p).is_ok_and(|v| v.get()))
+            })
+            .map(|(o, frame, _)| (o, frame))
             .collect();
         seen.sort_unstable_by_key(|(o, _)| o.parts.first().copied());
+        if let Some((eye, at)) = pose {
+            cam.place_free(eye, at);
+        }
+        let was_free = cam.is_free();
+        match followed {
+            Some(_) => cam.follow(),
+            None => cam.free_at(free_from),
+        }
+        if cam.is_free() != was_free {
+            match cam.free_focus(1.0) {
+                Some(at) => info!("camera: free, looking at {at:.2}"),
+                None => info!("camera: follows a body"),
+            }
+        }
+        // The free branch's keys (A/D along the drawn right axis, S/W
+        // along the forward one) and the terrain's height query, in the
+        // original's centimetres.
+        let ground = |at: Vec3| {
+            terrain
+                .as_deref()
+                .and_then(|g| g.height(at.x * CM, at.z * CM))
+                .map(|h| h / CM)
+        };
+        let free_input = FreeInput {
+            keys: crate::nav_camera::PanKeys {
+                left: keys.pressed(KeyCode::KeyA),
+                right: keys.pressed(KeyCode::KeyD),
+                back: keys.pressed(KeyCode::KeyS),
+                forward: keys.pressed(KeyCode::KeyW),
+            },
+            right: *t.right(),
+            forward: *t.forward(),
+            ground: &ground,
+        };
         let steps_before = cam.wall_steps;
         let along = cam.advance_probing(
             time.delta_secs(),
-            focus,
+            followed,
             &mut |start, direction, radius, length| {
                 seen.iter()
                     .any(|(o, frame)| o.meets(frame, start, direction, length, radius))
             },
+            Some(&free_input),
         );
+        // A followed camera looks at the hip; a free one at its own point
+        // drawn into the last tick.
+        let focus = cam.free_focus(along).or(followed).unwrap_or(free_from);
+        looked = Some(focus);
+        // A free camera's point is logged each time it has moved half a
+        // metre from the last logged place.
+        if cam.is_free() {
+            if logged.is_none_or(|was| was.distance(focus) > 0.5 || !focus.is_finite()) {
+                info!(
+                    "camera: free point {focus:.2}, backward {:.2}",
+                    cam.backward()
+                );
+                *logged = Some(focus);
+            }
+        } else {
+            *logged = None;
+        }
         if cam.wall_steps != steps_before {
             info!(
                 "camera wall probe: {} step(s), tilt {:.3} rad ({} obstacle(s) drawn)",
@@ -2816,6 +2973,11 @@ pub(crate) fn chase_camera(
         if let Projection::Perspective(p) = projection.as_mut() {
             p.fov = zoom_fov(zoom, aspect);
         }
+    }
+    if let Some(session) = spectate.as_deref_mut().filter(|s| s.active)
+        && looked.is_some()
+    {
+        session.focus = looked;
     }
 }
 
@@ -4264,7 +4426,7 @@ mod tests {
         nine.zoom_spring = cam.zoom_spring;
         assert_eq!(cam.advance(1.0), 1.0);
         for _ in 0..9 {
-            nine.tick();
+            nine.tick(None);
         }
         assert_eq!(cam.zoom_spring, nine.zoom_spring);
         assert_eq!(cam.frame.clock, cam.frame.frame);
@@ -4277,7 +4439,7 @@ mod tests {
         // was without the probe.
         let mut cam = ChaseCamera::behind(0.3);
         for _ in 0..5 {
-            cam.tick();
+            cam.tick(None);
             cam.probe_wall(focus, &mut |_, _, _, _| false);
         }
         assert_eq!((cam.wall_steps, cam.wall_tilt), (0, 0.0));
@@ -4316,7 +4478,7 @@ mod tests {
         assert!(cam.node_axis(cam.yaw).y > plain.y);
         let mut lifted = cam.clone();
         for _ in 0..60 {
-            lifted.tick();
+            lifted.tick(None);
         }
         assert!(lifted.backward().y > plain.y);
         steps.clear();
@@ -4328,11 +4490,73 @@ mod tests {
         // Each tick probes once.
         let mut cam = ChaseCamera::behind(0.0);
         let mut probes = 0;
-        cam.advance_probing(0.05, focus, &mut |_, _, _, _| {
-            probes += 1;
-            false
-        });
+        cam.advance_probing(
+            0.05,
+            Some(focus),
+            &mut |_, _, _, _| {
+                probes += 1;
+                false
+            },
+            None,
+        );
         assert_eq!(probes, 3);
+        // A camera that follows nothing runs no probe.
+        let mut free = ChaseCamera::behind(0.0);
+        free.free_at(focus);
+        let mut asked = 0;
+        free.advance_probing(
+            0.05,
+            None,
+            &mut |_, _, _, _| {
+                asked += 1;
+                true
+            },
+            None,
+        );
+        assert_eq!(asked, 0);
+    }
+
+    /// A free camera pans its looked-at point with W along the drawn
+    /// forward axis, flattened, and it coasts to a stop once the key is
+    /// let go; a followed camera has no free point.
+    #[test]
+    fn a_free_camera_pans_with_the_keys() {
+        let mut cam = ChaseCamera::behind(0.0);
+        assert!(!cam.is_free());
+        cam.free_at(Vec3::new(1.0, 1.0, 1.0));
+        assert!(cam.is_free());
+        let no_ground = |_: Vec3| None;
+        let input = |w: bool| FreeInput {
+            keys: crate::nav_camera::PanKeys {
+                forward: w,
+                ..Default::default()
+            },
+            right: Vec3::X,
+            // A forward axis tilted down: the pan is flattened.
+            forward: Vec3::new(0.0, -0.7, -0.7),
+            ground: &no_ground,
+        };
+        let held = input(true);
+        for _ in 0..30 {
+            cam.tick(Some(&held));
+        }
+        let at = cam.free_focus(1.0).unwrap();
+        assert!(
+            at.z < 0.0 && (at.x - 1.0).abs() < 1e-6 && (at.y - 1.0).abs() < 1e-6,
+            "{at}"
+        );
+        let still = input(false);
+        let mut last = at;
+        for _ in 0..400 {
+            cam.tick(Some(&still));
+        }
+        let rest = cam.free_focus(1.0).unwrap();
+        assert!(rest.z < last.z);
+        last = rest;
+        cam.tick(Some(&still));
+        assert_eq!(cam.free_focus(1.0).unwrap(), last);
+        cam.follow();
+        assert!(cam.free_focus(0.5).is_none());
     }
 
     /// The backward vector springs toward the node's axis: a turn the
@@ -4351,7 +4575,7 @@ mod tests {
         let mut first = None;
         for _ in 0..200 {
             let before = cam.shown_yaw;
-            cam.tick();
+            cam.tick(None);
             first.get_or_insert(cam.back);
             if cam.shown_yaw < 0.0 && before > 0.0 {
                 crossed = true;
@@ -4390,7 +4614,7 @@ mod tests {
         let mut moves = Vec::new();
         for _ in 0..4 {
             let was = cam.zoom_spring.motion;
-            cam.tick();
+            cam.tick(None);
             moves.push(cam.zoom_spring.motion - was);
         }
         // The pull (700 × 5/59 ≈ 59) is held to 5 more than the last move,
@@ -4407,7 +4631,7 @@ mod tests {
             drawn
         );
         for _ in 0..400 {
-            cam.tick();
+            cam.tick(None);
         }
         assert_eq!(cam.zoom_spring.motion, 2000.0);
     }
@@ -4511,13 +4735,13 @@ mod tests {
         // stopped for good by 6 s.
         let mut crossed = false;
         for _ in 1..240 {
-            cam.tick();
+            cam.tick(None);
             crossed |= cam.shake.x < 0.0;
         }
         assert!(crossed);
         assert_ne!(cam.shake, Vec3::ZERO);
         for _ in 240..360 {
-            cam.tick();
+            cam.tick(None);
         }
         assert_eq!((cam.shake, cam.shake_before), (Vec3::ZERO, Vec3::ZERO));
         // Under the 1e-5 cm² floor a kick is not shown; one too small to
@@ -4527,7 +4751,7 @@ mod tests {
         assert_eq!(cam.shown(1.0).2, Vec3::ZERO);
         let mut still = ChaseCamera::behind(0.0);
         still.kick(Vec3::new(1e-6, 0.0, 0.0));
-        still.tick();
+        still.tick(None);
         assert_eq!((still.shake, still.shake_before), (Vec3::ZERO, Vec3::ZERO));
     }
 
@@ -4628,7 +4852,7 @@ mod tests {
         cam.align(std::f32::consts::TAU - 0.5);
         assert!((cam.yaw + 0.5).abs() < 1e-6, "{}", cam.yaw);
         for _ in 0..400 {
-            cam.tick();
+            cam.tick(None);
         }
         assert!(!cam.aligning);
         assert!((cam.yaw - cam.shown_yaw).abs() < 0.01);

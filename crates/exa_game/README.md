@@ -791,13 +791,15 @@ shows, as the original's load holds its pause counter).
 The controls' spectate session (`spectate`, the original's Spectate game
 mode): its start sets the spectate flag and frees the camera, the player is
 not steered while it runs, a double click makes the chase camera follow the
-picked character (anything else frees it, the camera keeping its last
-point), and its end clears both. The arena starts it when no participant
+picked character (anything else frees it: the camera runs the controller's
+free branch from its last point, `nav_camera::FreeFocus`, W/A/S/D panning
+the point, the terrain lifting it toward a metre over the ground, its
+height held to 0–2 m), and its end clears both. The arena starts it when no participant
 is the player's to control (only hired employees entered): the bench
 (`save_live`) keeps the manager's record as the next player spawn's and
-despawns the player, the camera stands at the original's fixed pose (the
-spawn spot raised by 700, 1180 and 1100 cm, looking at it) until a double
-click follows someone, the room walk is forced to the room at the spawn
+despawns the player, the camera is placed at the original's pose (the
+spawn spot raised by 700, 1180 and 1100 cm, looking at it) and runs free
+from there until a double click follows someone, the room walk is forced to the room at the spawn
 spot while the match level lasts (`exa_world::room_view::ForcedRoom`, as
 the original's match starts store that room), every match fighter carries
 a brain (with relations) whose target
@@ -1313,7 +1315,12 @@ off the backward vector (the target turning a whole turn when it crosses
 ±π, `wrap_target_yaw`), turns the node to the target yaw led at most 45°
 (`lead_yaw`) and springs the vector to the node's axis (`spring_back`); a
 frame draws the vector, the zoom spring's last two values (`frame_zoom`)
-and the shake between ticks. Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),
+and the shake between ticks. A camera that follows nothing (spectating)
+also runs the free branch each tick (`FreeFocus::tick`: the pan keys, the
+terrain lift, the zoom's pull `free_pull`, the rate and the height limits)
+and draws its own point between ticks; it runs no wall probe, which starts
+at the followed body's hip and skips meshes the cut-away fade marked.
+Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),
 a fast shot's distance starting the zoom again at 1300.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds

@@ -540,6 +540,97 @@ pub fn pan_input(right: Vec3, forward: Vec3, keys: PanKeys, bias: Vec3, normalis
     vector
 }
 
+/// A pan vector this short (squared, single precision) is no pan: the free
+/// tick then leaves the drift alone (or brakes it).
+pub const PAN_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+/// A drift this short (squared, compared in double precision) does not
+/// move the looked-at point.
+pub const FOCUS_STILL: f64 = 1e-5;
+
+/// The free camera's pull a tick (engine units a tick²): the stored shown
+/// zoom over the largest distance, plus a quarter, times the preset's
+/// extent (its size over 59²), in single precision. Zoomed out the
+/// looked-at point pans faster.
+pub fn free_pull(shown_zoom: f32, max_distance: f32, extent: f32) -> f32 {
+    (shown_zoom / max_distance + 0.25) * extent
+}
+
+/// The looked-at point of a camera that follows nothing, as one tick
+/// moves it (engine units): the point and where it stood a tick before.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FreeFocus {
+    pub focus: Vec3,
+    pub before: Vec3,
+}
+
+impl FreeFocus {
+    /// A point standing still at `at`.
+    pub fn at(at: Vec3) -> Self {
+        Self {
+            focus: at,
+            before: at,
+        }
+    }
+
+    /// One tick of the free branch of the controller's tick, in its order:
+    /// the terrain's height under the point (`ground`, when the scene has a
+    /// terrain and it answers) lifts it toward a metre over the ground
+    /// ([`terrain_focus_lift`]); the drift is the point's move since the
+    /// last tick; a pan past [`PAN_EPSILON`] adds `pull` along it (`pan`
+    /// scaled by `pull / |pan|`); without one, a braking camera (`brake`,
+    /// the preset's `0x2000`, which the game's records leave clear) takes
+    /// `pull` off the drift and stops it when the drift is no longer than
+    /// `pull`. A drift past [`FOCUS_STILL`] then moves the point by
+    /// `rate` (the preset's per-tick retention) of it and holds its height
+    /// within `limits`. Returns whether the point moved. Squared lengths
+    /// sum `(x² + y²) + z²`; the compares are ordered.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick(
+        &mut self,
+        ground: Option<f32>,
+        pan: Vec3,
+        pull: f32,
+        rate: f32,
+        brake: bool,
+        limits: HeightLimits,
+    ) -> bool {
+        let squared = |v: Vec3| (v.x * v.x + v.y * v.y) + v.z * v.z;
+        if let Some(ground) = ground {
+            self.focus.y = terrain_focus_lift(self.focus.y, ground);
+        }
+        let mut drift = self.focus - self.before;
+        self.before = self.focus;
+        let pan_squared = squared(pan);
+        if pan_squared > PAN_EPSILON {
+            drift += pan * (pull / pan_squared.sqrt());
+        } else if brake {
+            let drift_squared = squared(drift);
+            if pull * pull < drift_squared {
+                drift += drift * (-pull / drift_squared.sqrt());
+            } else {
+                drift = Vec3::ZERO;
+            }
+        }
+        if f64::from(squared(drift)) > FOCUS_STILL {
+            self.focus += drift * rate;
+            if self.focus.y < limits.min {
+                self.focus.y = limits.min;
+            } else if self.focus.y > limits.max {
+                self.focus.y = limits.max;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The point a frame draws `t` of the way into the last tick:
+    /// `before + (focus − before)·t` per axis, single precision.
+    pub fn shown(&self, t: f32) -> Vec3 {
+        self.before + (self.focus - self.before) * t
+    }
+}
+
 /// The zoom spring's stored state: the spring value, its value the tick
 /// before, the target, the largest change per tick, the pull rate and the
 /// range the spring may not fall under half of.
@@ -745,7 +836,9 @@ pub struct ProbeMesh {
     pub feature_flags: u32,
     /// The node's owner pointer is set.
     pub owned: bool,
-    /// The node's blocking word (bit 0 skips it in the wall probe).
+    /// The node's cut-away mark word: bit 0 is the cut-away detector's mark
+    /// (the visible pass fades a marked mesh out), and the wall probe skips
+    /// a marked mesh.
     pub blocking: u32,
     /// The mesh frame's origin in sector space.
     pub offset: Vec3,
@@ -2716,5 +2809,72 @@ mod tests {
             terrain_focus_lift(-100.0, 0.0),
             (200.0f64 * 0.006 - 100.0) as f32
         );
+    }
+
+    /// The game camera's pull: 6000/59² at a quarter past the zoom over
+    /// the largest distance.
+    #[test]
+    fn the_free_pull_grows_with_the_zoom() {
+        let preset = apply_preset(GAME_CAMERA_PRESET);
+        let pull = free_pull(1300.0, preset.max_distance, preset.extent);
+        assert_eq!(pull, (1300.0f32 / 2000.0 + 0.25) * (6000.0f32 / 3481.0));
+        assert!(free_pull(2000.0, 2000.0, preset.extent) > pull);
+    }
+
+    /// A held pan accelerates the point by the pull a tick, carried at the
+    /// rate; let go, the drift keeps the point coasting at the rate (no
+    /// brake in the game's records) until it is under the still floor; the
+    /// height stays within the limits.
+    #[test]
+    fn the_free_focus_pans_coasts_and_stops() {
+        let preset = apply_preset(GAME_CAMERA_PRESET);
+        let limits = HeightLimits {
+            min: preset.min_height,
+            max: preset.max_height,
+        };
+        let mut f = FreeFocus::at(Vec3::new(0.0, 100.0, 0.0));
+        let pull = 2.0;
+        // One tick of a pan along +x: the drift is the pull, moved by the
+        // rate.
+        assert!(f.tick(None, Vec3::X, pull, preset.rate, false, limits));
+        assert_eq!(f.focus.x, pull * preset.rate);
+        // Held: the drift grows by the pull each tick.
+        f.tick(None, Vec3::X, pull, preset.rate, false, limits);
+        let second = f.focus.x - f.before.x;
+        assert!(second > pull * preset.rate, "{second}");
+        // Let go: it coasts, each move the last times the rate.
+        let mut last = f.focus.x - f.before.x;
+        for _ in 0..3 {
+            assert!(f.tick(None, Vec3::ZERO, pull, preset.rate, false, limits));
+            let moved = f.focus.x - f.before.x;
+            assert!((moved - last * preset.rate).abs() < 1e-4, "{moved} {last}");
+            last = moved;
+        }
+        // It comes to rest.
+        let mut ticks = 0;
+        while f.tick(None, Vec3::ZERO, pull, preset.rate, false, limits) {
+            ticks += 1;
+            assert!(ticks < 1000);
+        }
+        // A braking camera stops at once once the drift is under the pull.
+        let mut b = FreeFocus::at(Vec3::new(0.0, 100.0, 0.0));
+        b.tick(None, Vec3::X, pull, 1.0, true, limits);
+        assert!(!b.tick(None, Vec3::ZERO, pull, 1.0, true, limits));
+        // The height clamps: a pan up past 200 cm stops there.
+        let mut h = FreeFocus::at(Vec3::new(0.0, 199.0, 0.0));
+        for _ in 0..10 {
+            h.tick(None, Vec3::Y, 50.0, 1.0, false, limits);
+        }
+        assert_eq!(h.focus.y, 200.0);
+        // The terrain lifts a still point toward a metre over the ground.
+        let mut t = FreeFocus::at(Vec3::new(0.0, 30.0, 0.0));
+        t.tick(Some(0.0), Vec3::ZERO, pull, preset.rate, false, limits);
+        assert_eq!(t.before.y, terrain_focus_lift(30.0, 0.0));
+        // A frame draws between the two.
+        let s = FreeFocus {
+            focus: Vec3::new(10.0, 0.0, 0.0),
+            before: Vec3::ZERO,
+        };
+        assert_eq!(s.shown(0.25), Vec3::new(2.5, 0.0, 0.0));
     }
 }
