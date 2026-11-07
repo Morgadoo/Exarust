@@ -53,7 +53,8 @@ second flag word carries the cut-away bits keeps them as the mesh loader
 leaves them (`flags2 & 0x7B000000`; the parent carry dropped when the parent
 is not a mesh; only the fade-all-the-way bit on a mesh that is no
 candidate), and the segment and overhead kinds keep the mesh's triangles
-for their callbacks. An instance node takes its own word over its owner's
+for their callbacks, as does a mesh the camera's wall probe meets
+(`CutAwayMesh::probe`: `flags2` holds `0x10000000` and `0x200000`). An instance node takes its own word over its owner's
 mesh. Rules: `docs/RENDERING.md` (Cut-away fade).
 `model::underscore_skinned_child` and `model::skinned_mesh_under` are the
 wound and effect lookups (the `_`-named child; and a skinned child in

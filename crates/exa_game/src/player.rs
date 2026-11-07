@@ -2209,31 +2209,34 @@ const CM: f32 = 0.01;
 /// The stepped camera's extent in the original's units: its eye distance
 /// and the zoom that is 45°.
 const CAMERA_EXTENT: f32 = 2000.0;
-/// The rate the wall tilt's ease scales its change by. [guess: the
-/// preset's rate, 1 by default; the game's preset value is not traced]
-const WALL_RATE: f32 = 1.0;
 
 #[derive(Component, Debug, Clone)]
 pub struct ChaseCamera {
-    /// The orbit's target yaw and the shown yaw (rad).
+    /// The orbit's target yaw, and the shown yaw: the heading of the
+    /// backward vector as the last tick read it (rad).
     pub yaw: f32,
     shown_yaw: f32,
-    yaw_speed: f32,
     /// The pitch asked for by the orbit drag, and the shown pitch (rad
     /// below the horizon).
     user_pitch: f32,
     pitch: f32,
-    /// Zoom: the target and the shown value (800–2000).
+    /// Zoom: the target (800–2000) and the stored shown value, which a
+    /// frame moves to the zoom it draws once they lie 0.01 apart.
     zoom: f32,
     shown_zoom: f32,
+    /// The zoom spring a frame draws between its last two values.
+    zoom_spring: crate::nav_camera::ZoomSpring,
     /// The real time since the camera started (ms), rounded once to the
     /// frame stamp the tick driver compares against.
     elapsed_ms: f64,
     /// The original's integer tick clock.
     frame: crate::nav_camera::FrameDriver,
-    /// The backward unit vector and zoom the tick before the last left: a
-    /// frame shows them between these and the last tick's.
-    before: (Vec3, f32),
+    /// The backward unit vector from the focus to the eye, and the one the
+    /// last tick started from: each tick springs it toward the axis of the
+    /// camera node turned to the pitch and yaw, and a frame shows it
+    /// between the two.
+    back: Vec3,
+    back_before: Vec3,
     /// The eye's shake offset (m) and the tick before's: `kick` moves them
     /// apart, each tick carries the offset on, and a frame adds it between
     /// the two.
@@ -2248,8 +2251,8 @@ pub struct ChaseCamera {
     wall_tilt: f32,
     wall_before: f32,
     /// The camera controller the level's view builds from the game camera
-    /// preset: the yaw spring's stiffness (the preset's view) and
-    /// retention, and the zoom's ease, are its numbers.
+    /// preset: the backward vector's stiffness (the preset's view) and
+    /// retention, and the zoom spring's rate and step, are its numbers.
     controller: crate::nav_camera::NavController,
     /// The yaw was set by an alignment (Cursor Look's) and the shown yaw
     /// has not yet come within [`ALIGNED`] of it; an orbit drag ends it.
@@ -2264,17 +2267,26 @@ impl Default for ChaseCamera {
     fn default() -> Self {
         let controller =
             crate::nav_camera::NavController::new(crate::nav_camera::GAME_CAMERA_PRESET, 0, false);
+        let preset = controller.preset;
         let mut cam = Self {
             yaw: 0.0,
             shown_yaw: 0.0,
-            yaw_speed: 0.0,
             user_pitch: 0.0,
             pitch: min_pitch(ZOOM_START),
             zoom: ZOOM_START,
             shown_zoom: ZOOM_START,
+            zoom_spring: crate::nav_camera::ZoomSpring {
+                motion: ZOOM_START,
+                previous: ZOOM_START,
+                target: ZOOM_START,
+                step: preset.zoom_step,
+                rate: preset.zoom_speed,
+                half_range: preset.min_distance,
+            },
             elapsed_ms: 0.0,
             frame: crate::nav_camera::FrameDriver::default(),
-            before: (Vec3::Z, ZOOM_START),
+            back: Vec3::Z,
+            back_before: Vec3::Z,
             shake: Vec3::ZERO,
             shake_before: Vec3::ZERO,
             aligning: false,
@@ -2284,7 +2296,7 @@ impl Default for ChaseCamera {
             wall_before: 0.0,
             controller,
         };
-        cam.before = (cam.backward(), cam.shown_zoom);
+        cam.settle_back();
         cam
     }
 }
@@ -2385,8 +2397,22 @@ impl ChaseCamera {
             shown_yaw: yaw,
             ..default()
         };
-        cam.before = (cam.backward(), cam.shown_zoom);
+        cam.settle_back();
         cam
+    }
+
+    /// The axis of the camera node turned to the present pitch with the
+    /// wall tilt (held to 1.54 rad) and `yaw`: the backward vector the
+    /// spring pulls toward.
+    fn node_axis(&self, yaw: f32) -> Vec3 {
+        let pitch = crate::nav_camera::tilted_pitch(-self.pitch, self.wall_tilt);
+        crate::nav_camera::camera_axis(pitch, yaw)
+    }
+
+    /// Puts the backward vector on the node's axis at the target yaw, still.
+    fn settle_back(&mut self) {
+        self.back = self.node_axis(self.yaw);
+        self.back_before = self.back;
     }
 
     /// The zoom the camera eases to (800–2000).
@@ -2404,8 +2430,10 @@ impl ChaseCamera {
     /// stepped one, lowered to the largest. A shot without one keeps the
     /// zoom [guess: the original passes the controller's own last placed
     /// distance, which Exarust does not keep apart from the wheel's zoom].
-    /// The pitch stays the camera's own rules'. A shot with no horizontal
-    /// offset leaves the camera.
+    /// The backward vector takes the shot's and stops, and the wall
+    /// avoidance starts over (no step, no tilt); the pitch stays the
+    /// camera's own rules', toward which the next ticks spring the vector.
+    /// A shot with no horizontal offset leaves the camera.
     pub fn face_shot(&mut self, eye: Vec3, focus: Vec3, distance: Option<f32>) {
         let back = eye - focus;
         if back.x == 0.0 && back.z == 0.0 || !back.is_finite() {
@@ -2419,24 +2447,29 @@ impl ChaseCamera {
         let placed = crate::nav_camera::place(focus, eye, None, limits);
         self.yaw = placed.yaw;
         self.shown_yaw = placed.yaw;
-        self.yaw_speed = 0.0;
+        self.back = placed.back;
+        self.back_before = placed.back;
+        self.wall_steps = 0;
+        self.wall_climb = false;
+        self.wall_tilt = 0.0;
+        self.wall_before = 0.0;
         if let Some(distance) = distance {
             self.zoom = crate::nav_camera::clamp_distance(
                 distance,
                 preset.min_distance,
                 preset.max_distance,
             );
+            // The shown zoom and both spring values take the distance as
+            // it is.
             self.shown_zoom = distance;
+            self.zoom_spring.motion = distance;
+            self.zoom_spring.previous = distance;
         }
-        self.before = (self.backward(), self.shown_zoom);
     }
 
-    /// The unit vector from the focus to the eye the last tick left: the
-    /// shown yaw and the pitch with the wall tilt, which the original adds
-    /// to its (negated) pitch and holds to 1.54 rad.
+    /// The unit vector from the focus to the eye the last tick left.
     fn backward(&self) -> Vec3 {
-        let pitch = -crate::nav_camera::tilted_pitch(-self.pitch, self.wall_tilt);
-        Quat::from_euler(EulerRot::YXZ, self.shown_yaw, -pitch, 0.0) * Vec3::Z
+        self.back
     }
 
     /// Shakes the camera: the eye's offset moves by `by` (m) and the tick
@@ -2484,7 +2517,9 @@ impl ChaseCamera {
         let hit = obstructed(start, direction, probe.radius * CM, length);
         self.wall_steps = nav::wall_steps(self.wall_steps, probe.climb, hit);
         let target = nav::wall_tilt(self.wall_steps);
-        let tilt = nav::wall_tilt_ease(self.wall_tilt, self.wall_before, target, WALL_RATE);
+        // The ease scales by the controller's zoom-spring rate.
+        let rate = self.controller.preset.zoom_speed;
+        let tilt = nav::wall_tilt_ease(self.wall_tilt, self.wall_before, target, rate);
         self.wall_before = self.wall_tilt;
         self.wall_tilt = tilt;
     }
@@ -2497,10 +2532,20 @@ impl ChaseCamera {
         self.aligning = true;
     }
 
-    /// One 17 ms tick: the shake, the orbit spring, the pitch and the zoom
-    /// ease.
+    /// One 17 ms tick, in the controller's order: the zoom spring (or the
+    /// shown zoom's snap to its target), the shake, the pitch ease, then
+    /// the heading: the shown yaw becomes the backward vector's heading
+    /// (the target turning a whole turn with it across ±π), an alignment
+    /// ends within 0.01 rad, and the vector springs toward the camera node's
+    /// axis at the target yaw, led at most π/4 ahead of the heading.
     fn tick(&mut self) {
-        self.before = (self.backward(), self.shown_zoom);
+        use crate::nav_camera as nav;
+        if nav::zoom_settles(self.shown_zoom, self.zoom) {
+            self.shown_zoom = self.zoom;
+        } else {
+            self.zoom_spring.target = self.zoom;
+            self.zoom_spring.step();
+        }
         let change = self.shake - self.shake_before;
         if change.length_squared() > SHAKE_STILL_CHANGE || self.shake.length_squared() > SHAKE_STILL
         {
@@ -2510,23 +2555,32 @@ impl ChaseCamera {
             self.shake = Vec3::ZERO;
             self.shake_before = Vec3::ZERO;
         }
+        let target_pitch = pitch_held(self.user_pitch, pitch_floor(self.shown_zoom));
+        self.pitch = nav::ease_pitch(self.pitch, target_pitch);
+        let heading = nav::planar_yaw(self.back);
+        self.yaw = nav::wrap_target_yaw(self.yaw, self.shown_yaw, heading);
+        self.shown_yaw = heading;
         // The controller's update ends an alignment once the shown yaw is
         // within 0.01 rad of the target, before the spring's step.
         if self.aligning && f64::from((self.yaw - self.shown_yaw).abs()) < ALIGNED {
             self.aligning = false;
         }
-        let lead = turn_between(self.shown_yaw, self.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
+        let yaw = nav::lead_yaw(self.yaw, heading, MAX_YAW_LEAD);
+        let target = self.node_axis(yaw);
         let preset = &self.controller.preset;
-        self.yaw_speed = preset.retention * (self.yaw_speed + preset.view * lead);
-        self.shown_yaw += self.yaw_speed;
-        let target_pitch = pitch_held(self.user_pitch, pitch_floor(self.shown_zoom));
-        self.pitch = crate::nav_camera::ease_pitch(self.pitch, target_pitch);
-        self.shown_zoom += (self.zoom - self.shown_zoom) * self.controller.preset.zoom_speed;
+        (self.back, self.back_before) = nav::spring_back(
+            self.back,
+            self.back_before,
+            target,
+            preset.view,
+            preset.retention,
+        );
     }
 
     /// Runs the ticks whose start the frame has reached, `dt` (s) after the
     /// last frame: at most nine, the rest of a backlog dropped. Returns how
     /// far the frame is into the last tick (0–1). No wall probe answers.
+    #[cfg(test)]
     fn advance(&mut self, dt: f32) -> f32 {
         self.advance_probing(dt, Vec3::ZERO, &mut |_, _, _, _| false)
     }
@@ -2555,8 +2609,11 @@ impl ChaseCamera {
     /// The backward vector, zoom and eye offset to show `t` of the way from
     /// the tick before the last to the last.
     fn shown(&self, t: f32) -> (Vec3, f32, Vec3) {
-        let (backward, zoom) =
-            crate::nav_camera::interpolate_eye(self.before, (self.backward(), self.shown_zoom), t);
+        // The zoom is the spring's two values blended; the vectors' blend
+        // is normalised (the zoom `interpolate_eye` gives is not used).
+        let (backward, _) =
+            crate::nav_camera::interpolate_eye((self.back_before, 0.0), (self.back, 0.0), t);
+        let zoom = crate::nav_camera::frame_zoom(&self.zoom_spring, t);
         // The present offset decides whether there is a shake at all, as the
         // original tests it: one ending drops out at once.
         let shake = if self.shake.length_squared() > SHAKE_FLOOR {
@@ -2600,11 +2657,13 @@ pub(crate) fn chase_camera(
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
     mut cameras: Query<(&mut ChaseCamera, &mut Transform, &mut Projection)>,
-    (mut spectate, every_body, mut cut_away, look): (
+    (mut spectate, every_body, mut cut_away, look, obstacles, views): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
         Option<ResMut<crate::cut_away_live::CutAwayCamera>>,
         Res<CursorLook>,
+        Query<(&exa_world::cut_away::WallObstacle, &GlobalTransform)>,
+        Query<&ViewVisibility>,
     ),
 ) {
     let player_focus = players.iter().next().map(|target| {
@@ -2711,14 +2770,36 @@ pub(crate) fn chase_camera(
         }
         let floor = pitch_floor(cam.shown_zoom);
         cam.user_pitch = clamp_pitch(cam.user_pitch, floor, MAX_PITCH);
-        // The wall probe runs at the end of each tick but nothing answers
-        // it: the original sweeps only level meshes with particular flag
-        // bits (what they mark is not traced), while Exarust's level
-        // colliders hold every static mesh, ceilings included, which a
-        // 38.5 m probe up and back would meet in any room and hold the
-        // view steep. Until the scene keeps those bits the tilt stays 0.
-        let along = cam.advance(time.delta_secs());
+        // The wall probe at the end of each tick asks the meshes the
+        // original's scene walk asks: those marked as its obstacles (the
+        // outdoor levels' walls, trees and buildings) that a view drew last
+        // frame, in spawn order; the first that meets the probe answers.
+        let mut seen: Vec<_> = obstacles
+            .iter()
+            .filter(|(o, _)| o.parts.iter().any(|&p| views.get(p).is_ok_and(|v| v.get())))
+            .collect();
+        seen.sort_unstable_by_key(|(o, _)| o.parts.first().copied());
+        let steps_before = cam.wall_steps;
+        let along = cam.advance_probing(
+            time.delta_secs(),
+            focus,
+            &mut |start, direction, radius, length| {
+                seen.iter()
+                    .any(|(o, frame)| o.meets(frame, start, direction, length, radius))
+            },
+        );
+        if cam.wall_steps != steps_before {
+            info!(
+                "camera wall probe: {} step(s), tilt {:.3} rad ({} obstacle(s) drawn)",
+                cam.wall_steps,
+                cam.wall_tilt,
+                seen.len()
+            );
+        }
         let (backward, zoom, shake) = cam.shown(along);
+        // The stored shown zoom (the pitch floor's) follows the drawn one
+        // once they lie 0.01 apart.
+        cam.shown_zoom = crate::nav_camera::frame_zoom_kept(cam.shown_zoom, zoom);
         // The cut-away driver casts from the looked-at point back along the
         // camera's backward vector, by the camera's distance.
         if let Some(probe) = cut_away.as_deref_mut() {
@@ -4131,7 +4212,9 @@ mod tests {
         let mut cam = ChaseCamera {
             zoom: 1900.0,
             shown_zoom: 1850.0,
-            yaw_speed: 0.3,
+            back_before: Vec3::X,
+            wall_steps: 3,
+            wall_tilt: -0.2,
             ..default()
         };
         // The story shot: the eye 600, 600, 1300 cm off the player.
@@ -4141,8 +4224,17 @@ mod tests {
         assert!((cam.yaw - yaw).abs() < 1e-6, "{} {yaw}", cam.yaw);
         // The engine's arc cosine, not atan2: about 5e-4 rad apart here.
         assert!((cam.yaw - 600f32.atan2(1300.0)).abs() < 2e-3);
-        assert_eq!((cam.shown_yaw, cam.yaw_speed), (cam.yaw, 0.0));
+        // The vector takes the shot's and stops; the wall avoidance starts
+        // over.
+        let back = Vec3::new(600.0, 600.0, 1300.0).normalize();
+        assert!((cam.back - back).length() < 1e-6);
+        assert_eq!((cam.shown_yaw, cam.back_before), (cam.yaw, cam.back));
+        assert_eq!((cam.wall_steps, cam.wall_tilt), (0, 0.0));
         assert_eq!((cam.zoom, cam.shown_zoom), (1300.0, 1300.0));
+        assert_eq!(
+            (cam.zoom_spring.motion, cam.zoom_spring.previous),
+            (1300.0, 1300.0)
+        );
         // A distance outside the stops is held to them; the shown zoom
         // takes it as it is.
         cam.face_shot(focus + Vec3::X, focus, Some(5000.0));
@@ -4163,18 +4255,18 @@ mod tests {
         assert!((t - 0.010 / 0.017).abs() < 1e-5);
         assert_eq!((cam.frame.clock, cam.frame.frame), (17, 10));
         // 7 ms more reach its end: no new tick, all the way in.
-        let zoom = cam.shown_zoom;
+        let zoom = cam.zoom_spring;
         assert!((cam.advance(0.007) - 1.0).abs() < 1e-4);
-        assert_eq!(cam.shown_zoom, zoom);
+        assert_eq!(cam.zoom_spring, zoom);
         // A second's stall runs nine ticks and drops the rest.
         let mut nine = ChaseCamera::behind(0.0);
         nine.zoom = 2000.0;
-        nine.shown_zoom = cam.shown_zoom;
+        nine.zoom_spring = cam.zoom_spring;
         assert_eq!(cam.advance(1.0), 1.0);
         for _ in 0..9 {
             nine.tick();
         }
-        assert!((cam.shown_zoom - nine.shown_zoom).abs() < 1e-3);
+        assert_eq!(cam.zoom_spring, nine.zoom_spring);
         assert_eq!(cam.frame.clock, cam.frame.frame);
     }
 
@@ -4189,8 +4281,8 @@ mod tests {
             cam.probe_wall(focus, &mut |_, _, _, _| false);
         }
         assert_eq!((cam.wall_steps, cam.wall_tilt), (0, 0.0));
-        let plain = Quat::from_euler(EulerRot::YXZ, cam.shown_yaw, -cam.pitch, 0.0) * Vec3::Z;
-        assert_eq!(cam.backward(), plain);
+        let plain = cam.node_axis(cam.yaw);
+        assert!((cam.backward() - plain).length() < 1e-6);
         // The first probe tests the present step: 30 cm, from 50 cm under
         // the focus, 38.5 m long, looking 0.05 rad higher than the view.
         let mut cam = ChaseCamera::behind(0.3);
@@ -4217,10 +4309,16 @@ mod tests {
             steps.push(cam.wall_steps);
         }
         assert_eq!(steps, [1, 2, 2, 3, 3, 4, 4, 4, 4]);
-        // The tilt has eased upward and lifts the eye over the plain view.
+        // The tilt has eased upward and the node's axis it springs the
+        // vector toward lifts the eye over the plain view.
         assert!(cam.wall_tilt < 0.0);
-        let plain = Quat::from_euler(EulerRot::YXZ, cam.shown_yaw, -cam.pitch, 0.0) * Vec3::Z;
-        assert!(cam.backward().y > plain.y);
+        let plain = crate::nav_camera::camera_axis(-cam.pitch, cam.yaw);
+        assert!(cam.node_axis(cam.yaw).y > plain.y);
+        let mut lifted = cam.clone();
+        for _ in 0..60 {
+            lifted.tick();
+        }
+        assert!(lifted.backward().y > plain.y);
         steps.clear();
         for _ in 0..9 {
             cam.probe_wall(focus, &mut |_, _, _, _| false);
@@ -4237,14 +4335,94 @@ mod tests {
         assert_eq!(probes, 3);
     }
 
+    /// The backward vector springs toward the node's axis: a turn the
+    /// short way across ±π carries the target a whole turn with the shown
+    /// yaw, the node leads the heading by at most π/4, and the vector comes
+    /// to rest on the axis.
+    #[test]
+    fn the_backward_vector_springs_across_the_seam_to_the_node_axis() {
+        use std::f32::consts::PI;
+        let mut cam = ChaseCamera::behind(PI - 0.1 - PI);
+        assert!((cam.shown_yaw - (PI - 0.1)).abs() < 1e-6);
+        // Turn 0.3 rad past π: the shown yaw crosses to −π and the target
+        // follows a whole turn down.
+        cam.yaw = PI + 0.2;
+        let mut crossed = false;
+        let mut first = None;
+        for _ in 0..200 {
+            let before = cam.shown_yaw;
+            cam.tick();
+            first.get_or_insert(cam.back);
+            if cam.shown_yaw < 0.0 && before > 0.0 {
+                crossed = true;
+            }
+        }
+        assert!(crossed);
+        assert!(
+            (cam.yaw - (PI + 0.2 - std::f32::consts::TAU)).abs() < 1e-5,
+            "{}",
+            cam.yaw
+        );
+        assert!(
+            (cam.shown_yaw - cam.yaw).abs() < 1e-3,
+            "{} {}",
+            cam.shown_yaw,
+            cam.yaw
+        );
+        assert!((cam.back - cam.node_axis(cam.yaw)).length() < 1e-3);
+        // The first tick pulls by the stiffness times the retention.
+        let start = crate::nav_camera::camera_axis(-cam.pitch, PI - 0.1);
+        let preset = cam.controller.preset;
+        let target = crate::nav_camera::camera_axis(-min_pitch(ZOOM_START), PI + 0.2);
+        let expect = crate::thaum::engine::normalize(
+            start + (target - start) * preset.view * preset.retention,
+        );
+        assert!((first.unwrap() - expect).length() < 1e-5);
+    }
+
+    /// A zoom step eases on the original's spring: its pull grows by at
+    /// most 5 a tick, and a frame draws between its last two values; the
+    /// stored shown zoom follows once 0.01 away.
+    #[test]
+    fn the_zoom_eases_on_its_capped_spring() {
+        let mut cam = ChaseCamera::behind(0.0);
+        cam.zoom = 2000.0;
+        let mut moves = Vec::new();
+        for _ in 0..4 {
+            let was = cam.zoom_spring.motion;
+            cam.tick();
+            moves.push(cam.zoom_spring.motion - was);
+        }
+        // The pull (700 × 5/59 ≈ 59) is held to 5 more than the last move,
+        // and the move carried at 0.998.
+        let expect = [4.99, 9.97, 14.94, 19.9];
+        for (got, want) in moves.iter().zip(expect) {
+            assert!((got - want).abs() < 0.01, "{moves:?}");
+        }
+        // Nothing moved the stored shown zoom: frames do.
+        assert_eq!(cam.shown_zoom, ZOOM_START);
+        let drawn = cam.shown(0.5).1;
+        assert_eq!(
+            crate::nav_camera::frame_zoom_kept(cam.shown_zoom, drawn),
+            drawn
+        );
+        for _ in 0..400 {
+            cam.tick();
+        }
+        assert_eq!(cam.zoom_spring.motion, 2000.0);
+    }
+
     #[test]
     fn the_camera_shows_its_last_two_ticks_blended() {
         let mut cam = ChaseCamera::behind(0.0);
         cam.zoom = 2000.0;
+        cam.yaw += 0.5;
         cam.advance(0.017);
-        let (b0, z0) = cam.before;
-        let (b1, z1) = (cam.backward(), cam.shown_zoom);
+        cam.advance(0.017);
+        let (b0, z0) = (cam.back_before, cam.zoom_spring.previous);
+        let (b1, z1) = (cam.backward(), cam.zoom_spring.motion);
         assert!(z1 > z0);
+        assert!(b1 != b0);
         let (b, z, _) = cam.shown(0.5);
         assert!((z - (z0 + z1) / 2.0).abs() < 1e-3);
         assert!((b - (b0 + b1).normalize()).length() < 1e-5);

@@ -315,7 +315,8 @@ pub fn sphere_cast(
     found
 }
 
-/// Inserts the cut-away records of a spawned model on its node entities.
+/// Inserts the cut-away records of a spawned model on its node entities,
+/// and the camera wall probe's obstacles.
 pub fn attach(
     commands: &mut Commands,
     model: &Model,
@@ -325,6 +326,81 @@ pub fn attach(
     for (i, record) in records(model, entities, parts_of) {
         commands.entity(entities[i]).insert(record);
     }
+    for (i, node) in model.nodes.iter().enumerate() {
+        let parts = parts_of.get(i).cloned().unwrap_or_default();
+        if let Some(obstacle) = wall_obstacle(node, parts) {
+            commands.entity(entities[i]).insert(obstacle);
+        }
+    }
+}
+
+/// A mesh the camera's wall probe meets ([`CutAwayMesh::probe`]): its
+/// kind (`word & 0x7000_0000`), its triangles and its bounding sphere in
+/// the node's space (metres), and its drawn parts. The probe asks a mesh
+/// of kind `0x5…` its swept-sphere callback ([`sphere_cast`]) and any
+/// other its ray callback ([`ray_cast`]). Rules: `docs/PLAYER.md`
+/// (Camera).
+#[derive(Component, Debug, Clone)]
+pub struct WallObstacle {
+    pub kind: u32,
+    pub triangles: Arc<Vec<[Vec3; 3]>>,
+    pub centre: Vec3,
+    pub radius: f32,
+    pub parts: Vec<Entity>,
+}
+
+/// The kind the wall probe asks with the swept sphere.
+pub const WALL_SPHERE_KIND: u32 = 0x5000_0000;
+
+impl WallObstacle {
+    /// Whether the probe meets the mesh: the segment from `start` along
+    /// the unit `direction` for `length` (world space) must meet the
+    /// bounding sphere, then the callback in the node's space (`frame` its
+    /// world frame): a kind `0x5…` mesh is swept by a ball of `radius` from
+    /// the segment's far end back toward the start, any other kind is
+    /// asked the one-sided ray from the start (the ball's radius unused).
+    pub fn meets(
+        &self,
+        frame: &GlobalTransform,
+        start: Vec3,
+        direction: Vec3,
+        length: f32,
+        radius: f32,
+    ) -> bool {
+        let segment = direction * length;
+        let centre = frame.transform_point(self.centre);
+        if !exa_physics::intersect::segment_sphere(start, segment, centre, self.radius) {
+            return false;
+        }
+        let inverse = frame.affine().inverse();
+        let turn = frame.rotation().inverse();
+        if self.kind == WALL_SPHERE_KIND {
+            let from = inverse.transform_point3(start + segment);
+            sphere_cast(&self.triangles, from, turn * -direction, length, radius).is_some()
+        } else {
+            let from = inverse.transform_point3(start);
+            ray_cast(&self.triangles, from, turn * direction, length).is_some()
+        }
+    }
+}
+
+/// The wall probe's obstacle of a model node: a mesh whose record asks for
+/// the probe and keeps its triangles, that is not a placeholder and that
+/// no simulated body owns (the original skips a mesh with an owner).
+pub fn wall_obstacle(node: &exa_assets::ModelNode, parts: Vec<Entity>) -> Option<WallObstacle> {
+    let cut: &CutAwayMesh = node.cut_away.as_deref()?;
+    if !cut.probe || node.placeholder || node.rigid.is_some() {
+        return None;
+    }
+    let triangles = cut.triangles.clone()?;
+    let half = node.half_extents;
+    Some(WallObstacle {
+        kind: cut.word & Node::CUT_AWAY_KIND,
+        triangles,
+        centre: node.bounds.0,
+        radius: (half.x * half.x + half.z * half.z + half.y * half.y).sqrt(),
+        parts,
+    })
 }
 
 /// A grid set piece's cut-away record when its node is a candidate: the
@@ -504,5 +580,115 @@ mod tests {
             .sum();
         assert_eq!(objlib, 142);
         assert_eq!(levels.len(), 38);
+    }
+
+    /// A ray-kind obstacle meets the probe on the faces turned to its start;
+    /// a sphere-kind one is swept from the far end back and meets the faces
+    /// turned to that end; a segment that misses the bounding sphere asks
+    /// nothing.
+    #[test]
+    fn the_wall_probe_asks_the_ray_or_the_swept_sphere_by_kind() {
+        // A square 5 m out along +z, wound to face +z (toward the far end)
+        // or -z (toward the start).
+        let square = |toward_start: bool| {
+            let (a, b, c, d) = (
+                Vec3::new(-1.0, -1.0, 5.0),
+                Vec3::new(1.0, -1.0, 5.0),
+                Vec3::new(1.0, 1.0, 5.0),
+                Vec3::new(-1.0, 1.0, 5.0),
+            );
+            let tris = if toward_start {
+                vec![[a, c, b], [a, d, c]]
+            } else {
+                vec![[a, b, c], [a, c, d]]
+            };
+            Arc::new(tris)
+        };
+        let obstacle = |kind, toward_start| WallObstacle {
+            kind,
+            triangles: square(toward_start),
+            centre: Vec3::new(0.0, 0.0, 5.0),
+            radius: 1.5,
+            parts: Vec::new(),
+        };
+        let frame = GlobalTransform::IDENTITY;
+        let ask = |o: &WallObstacle, start: Vec3| o.meets(&frame, start, Vec3::Z, 38.5, 0.3);
+        assert!(ask(&obstacle(0x1000_0000, true), Vec3::ZERO));
+        assert!(!ask(&obstacle(0x1000_0000, false), Vec3::ZERO));
+        assert!(ask(&obstacle(WALL_SPHERE_KIND, false), Vec3::ZERO));
+        assert!(!ask(&obstacle(WALL_SPHERE_KIND, true), Vec3::ZERO));
+        // Wide of the bounding sphere: nothing.
+        assert!(!ask(&obstacle(0x1000_0000, true), Vec3::new(5.0, 0.0, 0.0)));
+        // A moved node: the callbacks run in its space.
+        let moved = GlobalTransform::from(Transform::from_xyz(3.0, 0.0, 0.0));
+        let o = obstacle(0x1000_0000, true);
+        assert!(o.meets(&moved, Vec3::new(3.0, 0.0, 0.0), Vec3::Z, 38.5, 0.3));
+        assert!(!o.meets(&moved, Vec3::ZERO, Vec3::Z, 38.5, 0.3));
+    }
+
+    /// The camera wall probe's obstacles in the shipped packs: mesh nodes
+    /// whose second flag word holds the probe's kind bit and the scene
+    /// walks' mesh bit, by pack and kind (`0x1…` asked by the ray
+    /// callback, `0x5…` by the swept sphere), and the levels that hold
+    /// them.
+    #[test]
+    fn shipped_wall_probe_obstacles() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let mut found = std::collections::BTreeMap::<(String, u32), usize>::new();
+        let mut levels = std::collections::BTreeMap::<String, usize>::new();
+        for kind in [exa_assets::PackKind::Objlib, exa_assets::PackKind::Resource] {
+            let Some(pack) = game.pack(kind) else {
+                continue;
+            };
+            for entry in pack.entries() {
+                let Ok(scene) = exa_formats::rfc::Scene::parse(pack.bytes(entry)) else {
+                    continue;
+                };
+                for node in &scene.nodes {
+                    if node.kind != exa_formats::rfc::NODE_MESH || !CutAwayMesh::probes(node.flags2)
+                    {
+                        continue;
+                    }
+                    *found
+                        .entry((format!("{kind:?}"), node.flags2 & Node::CUT_AWAY_KIND))
+                        .or_default() += 1;
+                    if kind == exa_assets::PackKind::Resource {
+                        *levels.entry(entry.name.clone()).or_default() += 1;
+                        {
+                            let mut frame = Mat4::IDENTITY;
+                            let mut at = Some(node);
+                            for _ in 0..scene.nodes.len() {
+                                let Some(n) = at else { break };
+                                frame = exa_assets::transform_from_rows(&n.transform).to_matrix()
+                                    * frame;
+                                at = n
+                                    .parent
+                                    .and_then(|p| p.checked_sub(1))
+                                    .and_then(|p| scene.nodes.get(p));
+                            }
+                            let centre = frame.transform_point3(Vec3::from(node.bounds_centre));
+                            eprintln!(
+                                "obstacle {}:{} {:#x} at {centre:.1} half {:?}",
+                                entry.name, node.name, node.flags2, node.bounds_half_extents
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("wall probe obstacles {found:?}; levels {levels:?}");
+        let count = |pack: &str| -> usize {
+            found
+                .iter()
+                .filter(|((p, _), _)| p == pack)
+                .map(|(_, n)| n)
+                .sum()
+        };
+        assert_eq!(count("Resource"), 171);
+        assert!(levels.contains_key("arena7.rfc") && levels.contains_key("exanima08.rfc"));
+        assert!(count("Objlib") > 0);
     }
 }
