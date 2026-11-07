@@ -6,7 +6,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **80.5% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 72.1% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by function count (zero-byte imported names left out): 72.2% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **87.0%** reproduced.
 
 ## By section
@@ -27,7 +27,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Audio | 59 | 18 | 4 | 90% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 89% | 0% |  |
-| UI | 959 | 312 | 63 | 85% | 0% | RF_GUI_3DViewport, TMessageBox |
+| UI | 959 | 312 | 63 | 85% | 0% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -55,9 +55,6 @@ Ordered by code size; these are where most of the original still has no counterp
 |---|---|---:|---:|---:|
 | Shading-mask GLSL snippets | Rendering & GPU | 6 | 2 | 10% |
 | Steam API glue | Runtime & platform | 16 | 1 | 7% |
-| RF_GUI_3DViewport | UI | 6 | 0 | 0% |
-| TMessageBox | UI | 2 | 0 | 0% |
-| TCursor | UI | 1 | 0 | 15% |
 | TArsenalContFrame | Items, materials & crafting | 1 | 0 | 0% |
 | Win32 imports misc | Runtime & platform | 25 | 0 | 14% |
 
