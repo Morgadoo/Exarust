@@ -57,13 +57,30 @@ impl HeldItem {
     }
 }
 
-/// Which shield moveset a character with a shield fights with. Two
-/// character flags pick Shield C1 or C2; what sets them is not known yet.
+/// Which shield moveset a character with a shield fights with: its
+/// shield techniques pick it. The original's technique pass sets one
+/// character flag per Shields technique learnt (Counter … Mobility, in
+/// order), and the moveset choice takes Shield C2 for Ward, else Shield C1
+/// for Synchrony, else the plain shield moveset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShieldStyle {
     Plain,
     C1,
     C2,
+}
+
+impl ShieldStyle {
+    /// The style a character with `perks` fights with.
+    pub fn of_perks(perks: exa_formats::characters::Perks) -> Self {
+        use exa_formats::characters::Perk;
+        if perks.has(Perk::Ward) {
+            Self::C2
+        } else if perks.has(Perk::Synchrony) {
+            Self::C1
+        } else {
+            Self::Plain
+        }
+    }
 }
 
 /// What a character holds in its hands. Empty hands are the fists. On a
@@ -232,7 +249,8 @@ pub struct BurningGrip(pub bool);
 /// Picks the moveset config of every body whose hands (or held item
 /// modifier) changed, and switches its clips to it: the body keeps its
 /// race's own moveset as the base, and the clip playing goes on in the new
-/// table. The stance class is copied onto the attacker, which the swing
+/// table. A shield's style is the holder's shield techniques'
+/// ([`ShieldStyle::of_perks`]). The stance class is copied onto the attacker, which the swing
 /// reads when it sets the arms. A choice made because the hands changed
 /// drops the held item's overlay and clears the lit-blade byte, as the
 /// original's moveset choice does when it runs without them.
@@ -246,13 +264,30 @@ pub(crate) fn choose_held_movesets(
             Option<&mut Attacker>,
             Option<&mut HeldModifier>,
             Option<&mut BurningGrip>,
+            Option<&exa_combat::Fighter>,
         ),
-        Or<(Changed<Hands>, Changed<HeldModifier>)>,
+        Or<(
+            Changed<Hands>,
+            Changed<HeldModifier>,
+            Added<exa_combat::Fighter>,
+        )>,
     >,
 ) {
-    for (hands, mut held, anim, attacker, modifier, burning) in &mut bodies {
+    for (hands, mut held, anim, attacker, modifier, burning, fighter) in &mut bodies {
         let redressed = hands.is_changed() && !hands.is_added();
-        let mut chosen = choose(&hands, false);
+        // A shield's style is the holder's techniques'.
+        let styled = Hands {
+            shield: hands
+                .shield
+                .map(|_| ShieldStyle::of_perks(fighter.map(|f| f.perks).unwrap_or_default())),
+            ..*hands
+        };
+        if let Some(style) = styled.shield.filter(|s| *s != ShieldStyle::Plain)
+            && hands.shield != styled.shield
+        {
+            info!("shield moveset {style:?} from the holder's shield techniques");
+        }
+        let mut chosen = choose(&styled, false);
         if let Some(mut modifier) = modifier {
             if redressed {
                 modifier.set_if_neq(HeldModifier(0));
@@ -335,6 +370,19 @@ mod tests {
         assert_eq!(names(0x21), Some("2H Light"));
         assert_eq!(names(0x22), Some("Two Handed"));
         assert_eq!(names(0x31), Some("Polearm"));
+    }
+
+    /// Ward picks Shield C2 before Synchrony's C1; neither, the plain one.
+    #[test]
+    fn the_shield_techniques_pick_the_shield_style() {
+        use exa_formats::characters::{Perk, Perks};
+        let mut perks = Perks::default();
+        assert_eq!(ShieldStyle::of_perks(perks), ShieldStyle::Plain);
+        perks.insert(Perk::Counter);
+        perks.insert(Perk::Synchrony);
+        assert_eq!(ShieldStyle::of_perks(perks), ShieldStyle::C1);
+        perks.insert(Perk::Ward);
+        assert_eq!(ShieldStyle::of_perks(perks), ShieldStyle::C2);
     }
 
     #[test]
