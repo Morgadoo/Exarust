@@ -2096,6 +2096,17 @@ pub struct Drive {
     pub posture_wait: i32,
     /// Its recovery step, if the chest has left the feet.
     steps: steps::Steps,
+    /// The support pins' goals, set once a tick by the body tick's carry
+    /// (`Ragdoll::set_pin_goals`): the two thorax pins', then the
+    /// pelvis's, which the solver's pin pulls read every iteration.
+    pin_goals: Vec<pins::PinGoal>,
+    /// The thorax pin goals' mean (the frame's origin without thorax
+    /// pins), which the stance score reads while stepping. None until the
+    /// first carry.
+    pin_mean: Option<Vec3>,
+    /// The exertion value the last carry's thorax lead wrote, for the
+    /// character's locomotion state to take.
+    lead_exertion: Option<f32>,
     /// The clip rate the posture block last wrote. A weak tick, and a walk
     /// or a run, leave it; the clock reads it. It starts at the human base.
     pub posture_rate: f32,
@@ -2272,6 +2283,9 @@ impl Default for Drive {
             hunch: 0.0,
             posture_wait: 0,
             steps: steps::Steps::default(),
+            pin_goals: Vec::new(),
+            pin_mean: None,
+            lead_exertion: None,
             posture_rate: RaceMuscles::HUMAN.clip_rate,
             timers: BodyTimers::default(),
             dormant: false,
@@ -4088,6 +4102,8 @@ impl Ragdoll {
         // (`Ragdoll::fold_leg_ik`); its clip record goes in the world here,
         // after the carry (a pose given without a sample is folded here).
         self.pose_leg_bend(root);
+        // The pin goals on the new frame, before the balance and the feet.
+        self.set_pin_goals();
         self.tune_muscles();
         self.lift();
     }
@@ -4101,6 +4117,7 @@ impl Ragdoll {
         }
         let base = self.drive.as_ref().and_then(|d| d.frame).unwrap_or(root);
         self.anchor_frame(base);
+        self.set_pin_goals();
         self.tune_muscles();
         self.lift();
     }

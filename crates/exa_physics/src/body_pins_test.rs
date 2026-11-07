@@ -1,7 +1,9 @@
 //! The support pins, pinned to the law (`docs/formats/RSQ.md`, Physical body).
 //! (Included from body.rs: `#[cfg(test)] #[path = "body_pins_test.rs"] mod pins_test;`)
 use super::floor_test::standing_at;
-use super::pins::{Factors, pelvis_reach, pin_scale, power, pull, target, thorax_reach};
+use super::pins::{
+    Factors, clamp_goal, pelvis_reach, pin_scale, power, pull, thorax_reach, unsupported_shift,
+};
 use super::tests::floor_quad;
 use super::*;
 
@@ -148,39 +150,42 @@ fn a_tiny_gap_skips_the_damper() {
     assert!(got.x < -0.04, "{got}");
 }
 
-/// Thorax targets stay within 36·scale cm of the feet centre standing
+/// Thorax goals stay within 36·scale cm of the feet centre standing
 /// (crouch 0), 18 cm at a full crouch while stepping, and the pelvis pin
-/// within 60·scale cm. With no support the target only shifts 5·scale cm
-/// forward.
+/// within 60·scale cm; a clamped goal is put at the centre's height, one
+/// inside the reach keeps its own. With no support a thorax goal shifts
+/// 5·scale cm forward first.
 #[test]
-fn targets_stay_near_the_feet_and_shift_forward_without_support() {
+fn goals_stay_near_the_feet_and_shift_forward_without_support() {
     let centre = Vec3::new(1.0, 0.2, -2.0);
     let posed = centre + Vec3::new(0.40, 1.2, 0.0);
     let standing = thorax_reach(0.0, false, 1.0);
     assert!((standing - 36.0).abs() < 1e-5, "{standing}");
-    let t = target(posed, centre, standing, true, Vec3::Z, 1.0);
+    let t = clamp_goal(posed, centre, standing);
     assert!((t.x - (centre.x + 0.36)).abs() < 1e-5, "{t}");
-    assert_eq!(t.y, posed.y);
+    assert_eq!(t.y, centre.y);
+    let near = centre + Vec3::new(0.10, 1.2, 0.0);
+    assert_eq!(clamp_goal(near, centre, standing), near);
 
-    let pelvis = target(
+    let pelvis = clamp_goal(
         centre + Vec3::new(0.0, 1.1, 0.80),
         centre,
         pelvis_reach(1.0),
-        true,
-        Vec3::Z,
-        1.0,
     );
     assert!((pelvis.z - (centre.z + 0.60)).abs() < 1e-5, "{pelvis}");
 
     let stepping = thorax_reach(1.0, true, 1.0);
     assert!((stepping - 18.0).abs() < 1e-5, "{stepping}");
     let wide = centre + Vec3::X * 0.40;
-    let t = target(wide, centre, stepping, true, Vec3::Z, 1.0);
+    let t = clamp_goal(wide, centre, stepping);
     assert!((t.x - (centre.x + 0.18)).abs() < 1e-5, "{t}");
+    // A full crouch standing leaves no reach: the goal is the centre.
+    let none = clamp_goal(wide, centre, thorax_reach(1.0, false, 1.0));
+    assert!(none.abs_diff_eq(centre, 1e-6), "{none}");
 
-    let ahead = target(posed, centre, standing, false, Vec3::Z, 1.0);
+    let ahead = unsupported_shift(posed, Vec3::Z, 1.0);
     assert!(ahead.abs_diff_eq(posed + Vec3::Z * 0.05, 1e-6), "{ahead}");
-    let tall = target(posed, centre, standing, false, Vec3::Z, 2.0);
+    let tall = unsupported_shift(posed, Vec3::Z, 2.0);
     assert!(tall.abs_diff_eq(posed + Vec3::Z * 0.10, 1e-6), "{tall}");
 }
 

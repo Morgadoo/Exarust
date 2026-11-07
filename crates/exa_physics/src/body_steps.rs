@@ -96,20 +96,31 @@ pub(super) const LEAD_GAIN: f32 = 0.7;
 pub(super) const LEAD_KIND: f32 = 1.2;
 /// A knockback step's kind factor.
 pub(super) const KNOCKBACK_KIND: f32 = 1.0;
-/// Direction: (h²/60 + 0.25) · 0.36 · how forward the error is.
-const LEAD_DIR_OVER: f32 = 60.0;
+/// Direction: (h²·(1/60) + 0.25) · 0.36 (double) · how forward the error
+/// is; the 1/60 is the single-precision constant the original multiplies by.
+const LEAD_DIR_RECIP: f32 = 0.016_666_668;
 const LEAD_DIR_BIAS: f32 = 0.25;
-const LEAD_DIR_WEIGHT: f32 = 0.36;
+const LEAD_DIR_WEIGHT: f64 = 0.36;
 /// The direction term is lifted by this before it scales the error.
 const LEAD_DIR_LIFT: f32 = 0.5;
 /// Speed along the error: the lead is multiplied by (2 − 25·s).
 const LEAD_SPEED: f32 = 25.0;
 const LEAD_SPEED_BASE: f32 = 2.0;
-/// This pin pair's pool factor.
-const LEAD_POOL: f32 = 1.0;
-/// Below this squared length (cm²) the speed term is 0. The binary skips
-/// it under a tiny epsilon; this guard is that role.
-const LEAD_TINY: f32 = 1e-4;
+/// The leads' rate factor: the class set-up's per-tick constant, 85 over
+/// the 83 Hz tick rate (a single-precision division), which both the
+/// thorax and the pelvis lead multiply by.
+pub(super) const LEAD_RATE: f32 = 85.0 / 83.0;
+/// Under this squared horizontal error (cm²) a lead takes no direction
+/// and no speed term: the original's general epsilon, just under 2⁻²³.
+const LEAD_TINY: f32 = f32::from_bits(0x33ff_ffd7);
+/// A long (knockback) step's thorax lead: under this squared error (cm²)
+/// the speed term grows by (2500 − h²)·0.0004 + 1.
+const LONG_NEAR2: f32 = 2500.0;
+const LONG_NEAR_GAIN: f32 = f32::from_bits(0x39d1_b717);
+/// The exertion a lead writes: (1 − m)·h·−0.002 for a long step, c·h·−0.004
+/// for a plain one (both in double).
+const LONG_EXERTION: f64 = -0.002;
+const PLAIN_EXERTION: f64 = -0.004;
 /// The score's chest reference leads the fast velocity by this many ticks,
 /// and a crouch by this many centimetres along the facing.
 const SCORE_LEAD: f32 = 10.0;
@@ -804,40 +815,70 @@ pub(super) struct ChestLead {
     pub length_cm: f32,
 }
 
-/// A thorax pin's posed target while a step leads it. The shift is the
-/// horizontal error from the pin's world point to the posed target plus
-/// the step offset, times the clip share, the direction term, the speed
-/// term, the recovery kind, the square root of body scale and the stance
-/// level.
+/// A thorax pin's goal while a step leads it, as the body tick moves the
+/// pin record's target once a tick (read in the assembly), and the
+/// exertion value it writes. The error is the horizontal gap from the
+/// pin's world point `at` to the posed target plus the step offset, in
+/// centimetres; past the epsilon:
+///
+/// - the speed term s = fast·e / h², 0 when it is ordered below 0;
+/// - a plain step: c = forward·e / h; the exertion is c·h·−0.004 when c is
+///   above 0, else 0; the direction is (h²·(1/60) + 0.25)·0.36 times
+///   1 − |side·e / h|;
+/// - a long (knockback) step: s grows by (2500 − h²)·0.0004 + 1 under
+///   2500 cm²; m = 1 − forward·e / h; the exertion is (1 − m)·h·−0.002
+///   while m is under 1, else 0; the direction is m − (2 − m)·s·2.
+///
+/// At or under the epsilon the direction and speed terms are 0 and no
+/// exertion is written. The target then moves by the error × the clip
+/// share (0.4 idle, else 0.7) × (0.5 + direction) × the rate factor ×
+/// (2 − 25·s) × kind × √scale × the stance level, in that order.
 pub(super) fn lead_pose(
     posed: Vec3,
     target: Vec3,
     standing: Vec3,
     at: Vec3,
     lead: &ChestLead,
-) -> Vec3 {
+) -> (Vec3, Option<f32>) {
     let error = (posed + (target - standing) - at).with_y(0.0);
-    let error_cm = cm(error);
-    let h2 = error_cm.length_squared();
-    if h2 == 0.0 {
-        return posed;
+    let e = cm(error);
+    let h2 = e.length_squared();
+    let mut s = 0.0f32;
+    let mut direction = 0.0f32;
+    let mut exertion = None;
+    if h2 > LEAD_TINY {
+        s = cm(lead.fast).dot(e) / h2;
+        if 0.0 > s {
+            s = 0.0;
+        }
+        if lead.long {
+            if LONG_NEAR2 > h2 {
+                s *= (LONG_NEAR2 - h2) * LONG_NEAR_GAIN + 1.0;
+            }
+            let h = h2.sqrt();
+            let m = 1.0 - lead.forward.dot(e) / h;
+            exertion = Some(if 1.0 > m {
+                (f64::from(1.0 - m) * (f64::from(h) * LONG_EXERTION)) as f32
+            } else {
+                0.0
+            });
+            direction = m - (2.0 - m) * s * 2.0;
+        } else {
+            let base = (f64::from(h2 * LEAD_DIR_RECIP + LEAD_DIR_BIAS) * LEAD_DIR_WEIGHT) as f32;
+            let h = h2.sqrt();
+            let c = lead.forward.dot(e) / h;
+            exertion = Some(if 0.0 < c {
+                (f64::from(c) * (f64::from(h) * PLAIN_EXERTION)) as f32
+            } else {
+                0.0
+            });
+            direction = base * (1.0 - (lead.side.dot(e) / h).abs());
+        }
     }
     let g = if lead.idle { LEAD_IDLE } else { LEAD_GAIN };
-    let s = if h2 < LEAD_TINY {
-        0.0
-    } else {
-        (cm(lead.fast).dot(error_cm) / h2).max(0.0)
-    };
-    let forwardness = 1.0 - lead.side.dot(error_cm / h2.sqrt()).abs();
-    let direction = (h2 / LEAD_DIR_OVER + LEAD_DIR_BIAS) * LEAD_DIR_WEIGHT * forwardness;
-    let factor = g
-        * (direction + LEAD_DIR_LIFT)
-        * (LEAD_SPEED_BASE - LEAD_SPEED * s)
-        * lead.kind
-        * LEAD_POOL
-        * lead.scale.max(0.0).sqrt()
-        * lead.level;
-    posed + error * factor
+    let k = (LEAD_SPEED_BASE - s * LEAD_SPEED) * lead.kind * lead.scale.sqrt() * lead.level;
+    let t = (LEAD_DIR_LIFT + direction) * LEAD_RATE * k;
+    (posed + error * g * t, exertion)
 }
 
 /// The pelvis pin lead's direction share (one tick's error, against the
@@ -859,7 +900,7 @@ const PELVIS_TINY: f32 = f32::from_bits(0x33ff_ffd7);
 /// squared share of the error in the step length when it points ahead,
 /// halved when it points back (0 for a long step, a tiny error or no step
 /// length); the target moves by the error × the clip share (0.4 idle,
-/// else 0.7) × (0.75·s + 1) × 1.2·scale × level.
+/// else 0.7) × (0.75·s + 1) × the rate factor × 1.2·scale × level.
 pub(super) fn pelvis_lead_pose(
     posed: Vec3,
     target: Vec3,
@@ -889,7 +930,7 @@ pub(super) fn pelvis_lead_pose(
     }
     let g = if lead.idle { LEAD_IDLE } else { LEAD_GAIN };
     let gain = (f64::from(lead.scale) * PELVIS_GAIN) as f32 * lead.level;
-    posed + error * g * ((s * PELVIS_SHARE + 1.0) * gain)
+    posed + error * g * ((s * PELVIS_SHARE + 1.0) * LEAD_RATE * gain)
 }
 
 fn foot_score(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx) -> f32 {

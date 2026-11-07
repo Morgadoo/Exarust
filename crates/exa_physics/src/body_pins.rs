@@ -1,8 +1,10 @@
 //! The support pins. In each solver iteration a living body with support
 //! pulls its two thorax pins once, and its pelvis pin twice, horizontally
-//! toward targets on the character frame, clamped near the feet centre.
-//! The second pelvis pull sees the first push. With no support the pull
-//! is zero and the targets only shift forward.
+//! toward goals the body tick's carry sets once a tick, as the original's
+//! sets its pin records' targets: the posed points on the character frame,
+//! shifted forward without support (the thorax pins), led toward a
+//! recovery step, then clamped about the feet centre. The second pelvis
+//! pull sees the first push. With no support the pull is zero.
 //!
 //! One application, in the original's centimetres ([`cm`]): after the
 //! clamp, raw is 0.2·e·|e|/60 when |e| < 60 cm and 12 cm along the error
@@ -15,7 +17,6 @@
 //! Evidence: `docs/formats/RSQ.md` (Physical body).
 //! (Included from body.rs: `#[path = "body_pins.rs"] mod pins;`)
 
-use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::balance::{Leg, cm};
@@ -39,23 +40,25 @@ const PELVIS_REACH: f32 = 60.0;
 /// A thorax target's reach (cm) before crouch and scale: 60 · 0.6, and the
 /// crouch takes the whole of it off standing, half of it while stepping.
 const THORAX_SPAN: f32 = 60.0;
-const THORAX_SHARE: f32 = 0.6;
+const THORAX_SHARE: f64 = 0.6;
 const CROUCH_OFF: f32 = 60.0;
 const STEP_CROUCH_OFF: f32 = 30.0;
 
-/// How far (cm) a thorax target may sit from the feet centre.
+/// How far (cm) a thorax target may sit from the feet centre: (60 − 60·x),
+/// or (60 − 30·x) while the body's step episode runs, times 0.6 in double,
+/// times scale (x the crouch). Not floored: the clamp squares it.
 pub(super) fn thorax_reach(crouch: f32, stepping: bool, scale: f32) -> f32 {
-    let off = if stepping {
-        STEP_CROUCH_OFF
+    let span = if stepping {
+        THORAX_SPAN - crouch * STEP_CROUCH_OFF
     } else {
-        CROUCH_OFF
+        THORAX_SPAN - crouch * CROUCH_OFF
     };
-    ((THORAX_SPAN - off * crouch) * THORAX_SHARE * scale).max(0.0)
+    (f64::from(span) * THORAX_SHARE) as f32 * scale
 }
 
 /// How far (cm) the pelvis pin may sit from the feet centre.
 pub(super) fn pelvis_reach(scale: f32) -> f32 {
-    (PELVIS_REACH * scale).max(0.0)
+    PELVIS_REACH * scale
 }
 
 /// P = √E · T · E⁴, E the energy and T the tone target, unless
@@ -127,29 +130,24 @@ pub(super) fn pin_scale(gain: Factors) -> f32 {
     squared * (gain.pin_gain * (gain.power * gain.pin_factor))
 }
 
-/// The target a pin is pulled toward. With support, `posed` clamped
-/// horizontally to `radius_cm` of the feet `centre`. Without it, `posed`
-/// shifted 5·scale cm along `forward`, and the pull itself is zero.
-pub(super) fn target(
-    posed: Vec3,
-    centre: Vec3,
-    radius_cm: f32,
-    has_support: bool,
-    forward: Vec3,
-    scale: f32,
-) -> Vec3 {
-    if !has_support {
-        let ahead = forward.with_y(0.0).normalize_or(Vec3::Z);
-        return posed + ahead * (UNSUPPORTED_AHEAD * scale / CM);
+/// A thorax goal without support (or while jumping, which 0.9.5 never
+/// does): `posed` shifted 5·scale cm along the frame's `forward` axis.
+pub(super) fn unsupported_shift(posed: Vec3, forward: Vec3, scale: f32) -> Vec3 {
+    posed + forward * (UNSUPPORTED_AHEAD * scale / CM)
+}
+
+/// A goal clamped across the ground to `reach_cm` of the feet `centre`:
+/// past it (the squared reach ordered below the squared horizontal
+/// distance) the goal is the centre plus the horizontal offset scaled to
+/// the reach, at the centre's height; otherwise it stays as it is.
+pub(super) fn clamp_goal(goal: Vec3, centre: Vec3, reach_cm: f32) -> Vec3 {
+    let d = cm((goal - centre).with_y(0.0));
+    let d2 = d.length_squared();
+    if reach_cm * reach_cm < d2 {
+        centre + d * (reach_cm / d2.sqrt()) / CM
+    } else {
+        goal
     }
-    let mut d = (posed - centre).with_y(0.0);
-    let len = cm(d).length();
-    if radius_cm <= 0.0 {
-        d = Vec3::ZERO;
-    } else if len > radius_cm && len.is_finite() {
-        d *= radius_cm / len;
-    }
-    Vec3::new(centre.x + d.x, posed.y, centre.z + d.z)
 }
 
 /// The feet centre: the mean of the ankle contacts.
@@ -198,42 +196,51 @@ fn side_axis(drive: &Drive) -> Vec3 {
         .unwrap_or(Vec3::X)
 }
 
+/// One support pin's goal for the tick: the part, the pin's weights on
+/// it, the goal (world, m) and whether it is a thorax pin (else the
+/// pelvis's).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PinGoal {
+    pub part: usize,
+    pub weights: [f32; 4],
+    pub goal: Vec3,
+    pub thorax: bool,
+}
+
+/// The goals of one carry: the pins' goals, the thorax goals' mean and the
+/// exertion the last thorax lead wrote.
+pub(super) struct Goals {
+    pub pins: Vec<PinGoal>,
+    pub mean: Vec3,
+    pub exertion: Option<f32>,
+}
+
 impl Ragdoll {
-    /// One pass of the support pins: the two thorax pins once and the
-    /// pelvis pin twice, each by [`pull`] toward [`target`]. The second
-    /// pelvis pull is read after the first push.
-    pub(super) fn pull_support_pins(&mut self) {
-        let Some(drive) = self.drive.as_ref() else {
-            return;
-        };
-        // Walking, or off its feet (down, getting up, dormant or dead), the
-        // pin loops do not run. A shock stagger does not reopen them.
-        if drive.bearing.walking || drive.bearing.off_feet {
-            return;
-        }
+    /// The support pins' goals, as the body tick's carry sets the pin
+    /// records' targets once a tick (read in the assembly), in its order:
+    /// the pelvis pin and then the thorax pins. Each starts at its posed
+    /// point on the character frame. A thorax goal without support moves
+    /// 5·scale cm along the frame's forward axis. While a step leads (the
+    /// episode runs and the chest is not out of balance) a goal is led
+    /// toward the step from the pin's world point ([`steps::lead_pose`],
+    /// [`steps::pelvis_lead_pose`]), the thorax leads writing the exertion
+    /// value. Then each is clamped about the feet centre: the thorax
+    /// goals to [`thorax_reach`], the pelvis's to [`pelvis_reach`]. The
+    /// thorax goals' mean is kept (the frame's origin without any).
+    pub(super) fn pin_goals(&self) -> Option<Goals> {
+        let drive = self.drive.as_ref()?;
         if drive.targets.len() != self.parts.len() {
-            return;
+            return None;
         }
-        // The feet centre; a body with fewer than two legs (the hovering
-        // wraith) clamps around the one its balance routine left, its
-        // pelvis.
+        // The feet centre: the mean of the contacts the balance routine
+        // averages; a body with fewer than two legs (the hovering wraith)
+        // has the one its balance routine left, its pelvis.
         let centre = if self.legs.len() < 2 && drive.race.hovers {
             drive.balance.feet_centre()
         } else {
-            let Some(centre) = feet_centre(&self.legs, &self.parts) else {
-                return;
-            };
-            centre
+            feet_centre(&self.legs, &self.parts)?
         };
         let has_support = drive.balance.has_support();
-        let support = drive.support;
-        let pin_gain = drive.pin_gain;
-        let power = power(
-            drive.energy,
-            drive.tone_target(),
-            drive.bearing.shock_stagger,
-        );
-        let factor = drive.stats.pin_factor;
         let scale = drive.stats.scale;
         let lead = (drive.steps.stepping && !drive.steps.out_of_balance).then(|| {
             // The step's offset is the target less the standing point the
@@ -260,97 +267,146 @@ impl Ragdoll {
                 },
             )
         });
+        let forward = facing(drive);
+        let mut pins = Vec::with_capacity(self.chest.len() + 1);
+        if let Some(i) = self.parts.iter().position(|p| p.bone == 1) {
+            let part = &self.parts[i];
+            let w = part.own_origin;
+            let mut goal = drive.targets[i].transform_point3(part.rest_point(&w));
+            if let Some((step_at, standing, chest)) = &lead {
+                goal = steps::pelvis_lead_pose(goal, *step_at, *standing, part.point(&w), chest);
+            }
+            pins.push(PinGoal {
+                part: i,
+                weights: w,
+                goal: clamp_goal(goal, centre, pelvis_reach(scale)),
+                thorax: false,
+            });
+        }
         // The thorax reach narrows by the crouch less while the body's
         // step episode runs.
         let reach = thorax_reach(drive.bearing.crouch, drive.steps.stepping, scale);
-        let pelvis = pelvis_reach(scale);
-        let forward = facing(drive);
-        let targets = drive.targets.clone();
-        let mut pins: Vec<(usize, [f32; 4], f32, bool)> = self
-            .chest
-            .iter()
-            .copied()
-            .map(|(i, w)| (i, w, reach, true))
-            .collect();
-        if let Some(i) = self.parts.iter().position(|p| p.bone == 1) {
-            pins.push((i, self.parts[i].own_origin, pelvis, false));
+        let mut sum = Vec3::ZERO;
+        let mut count = 0;
+        let mut exertion = None;
+        for &(i, w) in &self.chest {
+            if i >= self.parts.len() {
+                continue;
+            }
+            let part = &self.parts[i];
+            let mut goal = drive.targets[i].transform_point3(part.rest_point(&w));
+            if !has_support {
+                goal = unsupported_shift(goal, forward, scale);
+            }
+            if let Some((step_at, standing, chest)) = &lead {
+                let (led, wrote) =
+                    steps::lead_pose(goal, *step_at, *standing, part.point(&w), chest);
+                goal = led;
+                exertion = wrote.or(exertion);
+            }
+            let goal = clamp_goal(goal, centre, reach);
+            sum += goal;
+            count += 1;
+            pins.push(PinGoal {
+                part: i,
+                weights: w,
+                goal,
+                thorax: true,
+            });
         }
-        let pass = Pass {
-            centre,
-            forward,
-            scale,
+        let mean = if count > 0 {
+            sum * (1.0 / count as f32)
+        } else {
+            drive
+                .frame
+                .map_or(Vec3::from(drive.targets[0].translation), |f| {
+                    Vec3::from(f.translation)
+                })
+        };
+        Some(Goals {
+            pins,
+            mean,
+            exertion,
+        })
+    }
+
+    /// The body tick's carry of the pin goals: [`Ragdoll::pin_goals`] kept
+    /// for the solver's pulls, the mean for the stance score, the exertion
+    /// for the character's locomotion state.
+    pub(super) fn set_pin_goals(&mut self) {
+        let goals = self.pin_goals();
+        let Some(drive) = self.drive.as_mut() else {
+            return;
+        };
+        match goals {
+            Some(g) => {
+                drive.pin_goals = g.pins;
+                drive.pin_mean = Some(g.mean);
+                if g.exertion.is_some() {
+                    drive.lead_exertion = g.exertion;
+                }
+            }
+            None => drive.pin_goals.clear(),
+        }
+    }
+
+    /// The exertion value the last carry's thorax lead wrote, taken once.
+    pub fn take_lead_exertion(&mut self) -> Option<f32> {
+        self.drive.as_mut().and_then(|d| d.lead_exertion.take())
+    }
+
+    /// One pass of the support pins: the two thorax pins once and the
+    /// pelvis pin twice, each by [`pull`] toward its goal of the tick
+    /// ([`Ragdoll::set_pin_goals`]; a body not carried this tick takes
+    /// them afresh). The second pelvis pull is read after the first push.
+    pub(super) fn pull_support_pins(&mut self) {
+        let Some(drive) = self.drive.as_ref() else {
+            return;
+        };
+        // Walking, or off its feet (down, getting up, dormant or dead), the
+        // pin loops do not run. A shock stagger does not reopen them.
+        if drive.bearing.walking || drive.bearing.off_feet {
+            return;
+        }
+        if drive.targets.len() != self.parts.len() {
+            return;
+        }
+        let has_support = drive.balance.has_support();
+        let gain = Factors {
             has_support,
-            gain: Factors {
-                has_support,
-                support,
-                pin_gain,
-                power,
-                pin_factor: factor,
-            },
-            lead: lead.as_ref(),
+            support: drive.support,
+            pin_gain: drive.pin_gain,
+            power: power(
+                drive.energy,
+                drive.tone_target(),
+                drive.bearing.shock_stagger,
+            ),
+            pin_factor: drive.stats.pin_factor,
+        };
+        let goals = if drive.pin_goals.is_empty() {
+            match self.pin_goals() {
+                Some(g) => g.pins,
+                None => return,
+            }
+        } else {
+            drive.pin_goals.clone()
         };
         // The pin records are applied in sequence, so each pull reads the
         // pushes before it: the second thorax pin sees the first's push.
         // The pelvis origin is then pulled a second time, after its first.
-        for (i, w, radius, thorax) in pins.iter().copied() {
-            if i >= targets.len() {
-                continue;
-            }
-            let corr = pin_correction(&self.parts[i], &targets[i], w, radius, thorax, &pass);
+        let order = goals
+            .iter()
+            .filter(|g| g.thorax)
+            .chain(goals.iter().filter(|g| !g.thorax))
+            .chain(goals.iter().filter(|g| !g.thorax));
+        for g in order {
+            let part = &self.parts[g.part];
+            let at = part.point(&g.weights);
+            let disp = part.slip(&g.weights);
+            let corr = pull(cm((g.goal - at).with_y(0.0)), cm(disp.with_y(0.0)), gain);
             if corr.is_finite() && corr.length_squared() > 0.0 {
-                self.parts[i].push(&w, corr / CM);
-            }
-        }
-        let pelvis = pins.iter().copied().find(|(_, _, _, thorax)| !thorax);
-        if let Some((i, w, radius, _)) = pelvis
-            && i < targets.len()
-        {
-            let corr = pin_correction(&self.parts[i], &targets[i], w, radius, false, &pass);
-            if corr.is_finite() && corr.length_squared() > 0.0 {
-                self.parts[i].push(&w, corr / CM);
+                self.parts[g.part].push(&g.weights, corr / CM);
             }
         }
     }
-}
-
-/// What one iteration's pin pulls share. While a step leads, a thorax pin
-/// reads `lead` by the thorax rule and the pelvis pin by its own
-/// ([`steps::pelvis_lead_pose`]).
-struct Pass<'a> {
-    centre: Vec3,
-    forward: Vec3,
-    scale: f32,
-    has_support: bool,
-    gain: Factors,
-    lead: Option<&'a (Vec3, Vec3, steps::ChestLead)>,
-}
-
-/// One pin's horizontal correction, in centimetres.
-fn pin_correction(
-    part: &Part,
-    pose: &Affine3A,
-    weights: [f32; 4],
-    radius: f32,
-    thorax: bool,
-    pass: &Pass<'_>,
-) -> Vec3 {
-    let at = part.point(&weights);
-    let mut posed = pose.transform_point3(part.rest_point(&weights));
-    if let Some((step_at, standing, chest)) = pass.lead {
-        posed = if thorax {
-            steps::lead_pose(posed, *step_at, *standing, at, chest)
-        } else {
-            steps::pelvis_lead_pose(posed, *step_at, *standing, at, chest)
-        };
-    }
-    let goal = target(
-        posed,
-        pass.centre,
-        radius,
-        pass.has_support,
-        pass.forward,
-        pass.scale,
-    );
-    let disp = part.slip(&weights);
-    pull(cm((goal - at).with_y(0.0)), cm(disp.with_y(0.0)), pass.gain)
 }

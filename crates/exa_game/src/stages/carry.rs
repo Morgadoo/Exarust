@@ -8,7 +8,8 @@
 //! the frame, as the original's character position is its frame: its feet
 //! go where the frame's origin puts the body root, at the character's
 //! ground the body measured (without support, no lower than its pelvis
-//! sank this tick).
+//! sank this tick). The carry also sets the support pins' goals for the
+//! tick and, while a recovery step leads them, the exertion value.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -48,6 +49,13 @@ pub(crate) fn aim_body(
             body.aim(root_world, targets);
         }
         None => body.hold(root_world),
+    }
+    // A recovery step's thorax lead writes the exertion value the head
+    // tilt reads next tick (after this tick's locomotion has eased it).
+    if let Some(exertion) = body.take_lead_exertion()
+        && let Ok(mut l) = locomotors.get_mut(root)
+    {
+        l.exertion = exertion;
     }
     // A start that replaced Walk or Run plants the trailing foot after this
     // tick's sample; the request stays at 1 until its 500 ms deadline.

@@ -841,11 +841,7 @@ impl Ragdoll {
             .collect();
         let sole = self.sole;
         let Ragdoll {
-            parts,
-            legs,
-            drive,
-            chest: chest_pins,
-            ..
+            parts, legs, drive, ..
         } = self;
         let Some(drive) = drive.as_mut() else {
             return;
@@ -1041,14 +1037,8 @@ impl Ragdoll {
                     *spot = Vec3::new(origin.x + local.x, spot.y, origin.z + local.z);
                 }
             }
-            let pin_mean = (posed && !chest_pins.is_empty()).then(|| {
-                let n = chest_pins.len() as f32;
-                chest_pins
-                    .iter()
-                    .map(|(i, w)| drive.targets[*i].transform_point3(parts[*i].rest_point(w)))
-                    .sum::<Vec3>()
-                    / n
-            });
+            // The thorax pin goals' mean the last carry kept.
+            let pin_mean = drive.pin_mean;
             let stance_origin = origin.unwrap_or(frame);
             let side = drive
                 .frame

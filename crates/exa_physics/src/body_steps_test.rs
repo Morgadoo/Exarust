@@ -272,13 +272,14 @@ fn still_lead(idle: bool, side: Vec3) -> ChestLead {
 }
 
 /// The pelvis lead, a 40 cm error with the pin on its posed target, scale
-/// and level 1, not idle (0.7): straight ahead its cosine 1 is scaled by
-/// (40/80)², so the target moves 40 · 0.7 · (0.75·0.25 + 1) · 1.2 =
-/// 39.9 cm; straight back the cosine −1 is halved, 40 · 0.7 · 0.625 · 1.2
-/// = 21 cm; across, 40 · 0.7 · 1.2 = 33.6 cm; a long step takes no
-/// direction term (33.6 cm ahead too).
+/// and level 1, not idle (0.7), and the rate factor 85/83: straight ahead
+/// its cosine 1 is scaled by (40/80)², so the target moves
+/// 40 · 0.7 · (0.75·0.25 + 1) · R · 1.2; straight back the cosine −1 is
+/// halved, 40 · 0.7 · 0.625 · R · 1.2; across, 40 · 0.7 · R · 1.2; a long
+/// step takes no direction term (the across value ahead too).
 #[test]
 fn the_pelvis_leads_by_its_own_rule() {
+    let r = 85.0f32 / 83.0;
     let posed = Vec3::Y;
     let lead = still_lead(false, Vec3::X);
     let moved = |target: Vec3, lead: &ChestLead| {
@@ -286,60 +287,89 @@ fn the_pelvis_leads_by_its_own_rule() {
     };
     let ahead = moved(Vec3::Z * 0.4, &lead);
     assert!(
-        (ahead - 40.0 * 0.7 * (0.75 * 0.25 + 1.0) * 1.2).abs() < 1e-3,
+        (ahead - 40.0 * 0.7 * (0.75 * 0.25 + 1.0) * r * 1.2).abs() < 1e-3,
         "{ahead}"
     );
     let back = moved(-Vec3::Z * 0.4, &lead);
-    assert!((back - 21.0).abs() < 1e-3, "{back}");
+    assert!((back - 21.0 * r).abs() < 1e-3, "{back}");
     let across = moved(Vec3::X * 0.4, &lead);
-    assert!((across - 33.6).abs() < 1e-3, "{across}");
+    assert!((across - 33.6 * r).abs() < 1e-3, "{across}");
     let long = ChestLead { long: true, ..lead };
-    assert!((moved(Vec3::Z * 0.4, &long) - 33.6).abs() < 1e-3);
+    assert!((moved(Vec3::Z * 0.4, &long) - 33.6 * r).abs() < 1e-3);
     // No step length: no direction term.
     let none = ChestLead {
         length_cm: 0.0,
         ..lead
     };
-    assert!((moved(Vec3::Z * 0.4, &none) - 33.6).abs() < 1e-3);
+    assert!((moved(Vec3::Z * 0.4, &none) - 33.6 * r).abs() < 1e-3);
 }
 
-/// A 40 cm error with the pin on its posed target, a still chest, scale 1
-/// and stance level 1. Sideways: 33.6 cm, or 19.2 cm while Idle. The same
-/// error straight ahead: 684.768 cm. One centimetre a tick along the
-/// sideways error: 23.1 cm. A pin already 10 cm along that error leaves
-/// 30 cm, which moves the target 25.2 cm.
+/// A 40 cm error with the pin on its posed target, a still chest, scale 1,
+/// stance level 1 and the rate factor R = 85/83. Sideways: 33.6·R cm, or
+/// 19.2·R cm while Idle, and no exertion (the error is not ahead). The same
+/// error straight ahead: 684.768·R cm, and the exertion 1·40·−0.004. One
+/// centimetre a tick along the sideways error: 23.1·R cm. A pin already
+/// 10 cm along that error leaves 30 cm, which moves the target 25.2·R cm.
 #[test]
 fn the_thorax_leads_by_the_gain() {
+    let r = 85.0f32 / 83.0;
     let posed = Vec3::Y;
     let standing = Vec3::ZERO;
     let side = Vec3::X;
     let target = Vec3::X * 0.4;
-    let led = lead_pose(posed, target, standing, posed, &still_lead(false, side));
-    assert!(close(led.x, 0.336), "{}", led.x);
+    let (led, wrote) = lead_pose(posed, target, standing, posed, &still_lead(false, side));
+    assert!(close(led.x, 0.336 * r), "{}", led.x);
     assert!(close(led.y, 1.0));
-    let idle = lead_pose(posed, target, standing, posed, &still_lead(true, side));
-    assert!(close(idle.x, 0.192), "{}", idle.x);
-    let ahead = lead_pose(
+    assert_eq!(wrote, Some(0.0));
+    let (idle, _) = lead_pose(posed, target, standing, posed, &still_lead(true, side));
+    assert!(close(idle.x, 0.192 * r), "{}", idle.x);
+    let (ahead, wrote) = lead_pose(
         posed,
         Vec3::Z * 0.4,
         standing,
         posed,
         &still_lead(false, side),
     );
-    assert!(close(ahead.z, 6.84768), "{}", ahead.z);
+    assert!(close(ahead.z, 6.84768 * r), "{}", ahead.z);
     assert!(close(ahead.y, 1.0));
+    assert_eq!(wrote, Some((1.0f64 * (40.0f64 * -0.004)) as f32));
     let mut closing = still_lead(false, side);
     closing.fast = Vec3::X * 0.01;
-    let moved = lead_pose(posed, target, standing, posed, &closing);
-    assert!(close(moved.x, 0.231), "{}", moved.x);
-    let off = lead_pose(
+    let (moved, _) = lead_pose(posed, target, standing, posed, &closing);
+    assert!(close(moved.x, 0.231 * r), "{}", moved.x);
+    let (off, _) = lead_pose(
         posed,
         target,
         standing,
         posed + Vec3::X * 0.1,
         &still_lead(false, side),
     );
-    assert!(close(off.x, 0.252), "{}", off.x);
+    assert!(close(off.x, 0.252 * r), "{}", off.x);
+    // No error: no lead and no exertion written.
+    let (still, wrote) = lead_pose(posed, Vec3::ZERO, standing, posed, &still_lead(false, side));
+    assert_eq!((still, wrote), (posed, None));
+}
+
+/// A long (knockback) step's thorax lead: a still chest, a 40 cm error
+/// straight ahead (h² = 1600, under 2500): m = 0, so the direction is 0
+/// (the speed term is 0), the exertion 1·40·−0.002, and the target moves
+/// 40 · 0.7 · 0.5 · R · 2 · 1 cm (kind 1). Straight back, m = 2: no
+/// exertion (0) and the direction 2.
+#[test]
+fn a_long_step_leads_the_thorax_by_its_own_rule() {
+    let r = 85.0f32 / 83.0;
+    let posed = Vec3::Y;
+    let lead = ChestLead {
+        long: true,
+        kind: KNOCKBACK_KIND,
+        ..still_lead(false, Vec3::X)
+    };
+    let (ahead, wrote) = lead_pose(posed, Vec3::Z * 0.4, Vec3::ZERO, posed, &lead);
+    assert!(close(ahead.z, 0.4 * 0.7 * 0.5 * r * 2.0), "{}", ahead.z);
+    assert_eq!(wrote, Some((1.0f64 * (40.0f64 * -0.002)) as f32));
+    let (back, wrote) = lead_pose(posed, -Vec3::Z * 0.4, Vec3::ZERO, posed, &lead);
+    assert!(close(back.z, -0.4 * 0.7 * 2.5 * r * 2.0), "{}", back.z);
+    assert_eq!(wrote, Some(0.0));
 }
 
 fn stand(body: &mut Ragdoll, pose: &[Affine3A], level: &[[Vec3; 3]]) {
@@ -417,7 +447,8 @@ fn a_chest_past_the_trigger_takes_one_step() {
 }
 
 /// The real pin pass leads the thorax while a step runs and the chest is
-/// not out of balance, and does not while it is.
+/// not out of balance, and does not while it is: the carry's goals lead,
+/// and the pass pulls toward them.
 #[test]
 fn the_pin_pass_leads_the_thorax() {
     let (_, pose) = standing_at(Vec3::ZERO);
@@ -435,6 +466,8 @@ fn the_pin_pass_leads_the_thorax() {
         drive.steps.standing = Vec3::ZERO;
         drive.steps.target = Vec3::X * 0.4;
         drive.bearing.idle = false;
+        // The carry sets the goals once a tick; set them again armed.
+        body.set_pin_goals();
     };
     arm(&mut led, false);
     arm(&mut out, true);
@@ -450,6 +483,35 @@ fn the_pin_pass_leads_the_thorax() {
         (out_dx - still_dx).abs() < 0.0005,
         "out of balance moved {out_dx}, still {still_dx}"
     );
+}
+
+/// The carry's goals: the thorax goals' mean is kept for the stance score,
+/// and a step led straight ahead writes a negative exertion value, taken
+/// once; a body that is not stepping writes none.
+#[test]
+fn the_carry_keeps_the_pin_mean_and_the_lead_exertion() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.take_lead_exertion(), None);
+    let drive = body.drive.as_ref().unwrap();
+    let thorax: Vec<Vec3> = drive
+        .pin_goals
+        .iter()
+        .filter(|g| g.thorax)
+        .map(|g| g.goal)
+        .collect();
+    assert_eq!(thorax.len(), body.chest.len());
+    let mean = thorax.iter().copied().sum::<Vec3>() * (1.0 / thorax.len() as f32);
+    assert_eq!(drive.pin_mean, Some(mean));
+    let drive = body.drive.as_mut().unwrap();
+    drive.steps.stepping = true;
+    drive.steps.placed = true;
+    drive.steps.standing = Vec3::ZERO;
+    drive.steps.target = Vec3::Z * 0.4;
+    body.aim(Affine3A::IDENTITY, pose);
+    let wrote = body.take_lead_exertion();
+    assert!(wrote.is_some_and(|x| x < 0.0), "{wrote:?}");
+    assert_eq!(body.take_lead_exertion(), None);
 }
 
 /// Crouched deeper than half, the footwork's steps are 0.7 of the step
