@@ -74,7 +74,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TVCCloth | Physics, bodies & cloth | 30 | 96% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
 | TVXGIManager | Rendering & GPU | 29 | 97% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
 | TSimSector | Physics, bodies & cloth | 28 | 90% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
-| XA_SaveGames | Game modes, arena & session | 27 | 90% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
+| XA_SaveGames | Game modes, arena & session | 27 | 92% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
 | TGUIItemContainer | Items, materials & crafting | 26 | 90% | exa_game/src/item_container.rs; exa_items/src/card.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
 | TMesh | Rendering & GPU | 25 | 91% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
