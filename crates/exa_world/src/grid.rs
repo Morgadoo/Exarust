@@ -647,8 +647,8 @@ impl GridBuild {
             }
             Some(
                 loader
-                    .model(PackKind::Resource, &set_entry(name))
-                    .or_else(|| loader.model(PackKind::Resource, &set_entry(fallback))),
+                    .tileset_model(PackKind::Resource, &set_entry(name))
+                    .or_else(|| loader.tileset_model(PackKind::Resource, &set_entry(fallback))),
             )
         };
         while self.walls.len() < grid.wall_sets.len() {
@@ -1736,6 +1736,11 @@ fn spawn_node(
             }
             parts.push(part);
         }
+        // The tileset loader's mark makes the set's pieces the camera wall
+        // probe's obstacles.
+        if let Some(obstacle) = crate::cut_away::wall_obstacle(n, parts.clone()) {
+            commands.entity(e).insert(obstacle);
+        }
         if let Some(record) = crate::cut_away::grid_record(n, parts) {
             commands.entity(e).insert(record);
         }
@@ -1946,6 +1951,57 @@ mod tests {
         let (shell, spawned, _) = build_cell(CELL_OPEN | 0x7, 0xF);
         assert_eq!(spawned, 0);
         assert!(shell.lid.indices.is_empty());
+    }
+
+    /// The tileset loader's mark on the shipped sets: every mesh node but
+    /// the `0xE4`-named ones becomes a wall probe obstacle when it carries
+    /// the scene walks' mesh bit, as nearly all do; the sets' own kinds stay
+    /// clear of the cut-away candidates, so the mark makes them ray-asked
+    /// obstacles (kind `0x1…`) and one sphere-asked (`0x5…`) (skipped
+    /// without the game).
+    #[test]
+    fn shipped_tileset_probe_marks() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let (mut marked, mut unmarked, mut bare) = (0, 0, 0);
+        let mut kinds = std::collections::BTreeMap::<u32, usize>::new();
+        for entry in pack.entries() {
+            let n = entry.name.to_ascii_lowercase();
+            if !(n.starts_with("gews_") || n.starts_with("gefs_")) {
+                continue;
+            }
+            let mut scene = exa_formats::rfc::Scene::parse(pack.bytes(entry)).unwrap();
+            let before: Vec<u32> = scene.nodes.iter().map(|n| n.flags2).collect();
+            exa_assets::mark_tileset(&mut scene);
+            for (node, was) in scene.nodes.iter().zip(before) {
+                if node.kind != exa_formats::rfc::NODE_MESH {
+                    continue;
+                }
+                assert_eq!(
+                    was & exa_formats::rfc::Node::CUT_AWAY,
+                    0,
+                    "{n} {}",
+                    node.name
+                );
+                if node.name.starts_with(exa_assets::model::TILESET_UNMARKED) {
+                    assert_eq!(node.flags2, was);
+                    unmarked += 1;
+                } else if exa_assets::CutAwayMesh::probes(node.flags2) {
+                    marked += 1;
+                    *kinds
+                        .entry(node.flags2 & exa_formats::rfc::Node::CUT_AWAY_KIND)
+                        .or_default() += 1;
+                } else {
+                    bare += 1;
+                }
+            }
+        }
+        eprintln!("tileset obstacles {marked} {kinds:x?}; 0xE4 {unmarked}; no mesh bit {bare}");
+        assert_eq!((marked, unmarked, bare), (8_393, 280, 37));
+        assert_eq!(kinds.get(&0x5000_0000), Some(&1));
     }
 
     /// In the arena hub's and the dungeons' wall sets every `[…` occluder
