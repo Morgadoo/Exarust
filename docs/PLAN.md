@@ -991,6 +991,8 @@ Round 118 sector: a released item wakes the bodies at its old place, as the sect
 
 Round 121 pick: dropped items can be lifted again.
 
+Round 123 lift: the lift takes the item out of the simulation as the original does, items stack, and the space-free query is ported.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
