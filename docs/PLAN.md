@@ -973,6 +973,8 @@ Round 101 racebodies: ghouls, Fael and every other placed race get the physical 
 
 Round 104 demon: the demon gets its full body with tail and wings; unarmed AI reach and skin-map loading follow the race as in the original.
 
+Round 111 chase: NPC chases walk their route and end on the original's 1 m arrival.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
