@@ -733,11 +733,44 @@ from the body's mesh and skin nodes and ordered by its subobjects' `0x40`
 flags (its strand records start at the anchors the body's bone kinds fill
 and run to that count plus eight spare), and the visibility bits (`0x10` shown, `0x20` hidden, `0x4` fading,
 `0x8000_0000` dead) that hide a part with subobjects by setting its low
-hidden flag. The hit veto plays `thmdsp_phs` at pitch `0.9 + 0.2·r`, sets
-`0xC000` on the struck node and every part below it, lists it for 500 ms and
-leaves a wisp at the contact; each returned weapon ends the shell. A shell's timed segments show
+hidden flag. A shell's timed segments show
 `clamp((elapsed − start) / (end − start), 0, 1)`, inverted unless the
 segment is reversed; a segment draws on its side of one half.
+
+### On a running body
+
+`exa_game::thaum::veil_live` and `exa_combat::veto`. A Constant
+Displacement cast puts its start on the caster's running body: every part
+gains collision bit `0x4000`, the body's hit veto becomes the power's
+phasing (a fresh streak) with the restore hook, the body wisps hang on it
+as the tendril image, and the `thmdsp_cns01` hum starts silent at pitch 1,
+looping, `(length · 0.8) · r` seconds in (in double; `r` the engine
+generator's draw after the image's). Each control tick the hum moves to
+the body and rises 0.002 while under 0.12; the power's end marks it
+fading and freed (`0x300`) and ends the tendril image (strands frozen,
+fade from 0, fade-out started), so the wisps trail away.
+
+The damage routine asks the struck body's veto about a weapon contact on a
+living limb that lands short of the weapon's tip, after the regeneration
+ramp's reset; a veto ends the routine (nothing dealt, no striker
+reaction). The phasing lets a blow through when the generator's
+percentage is at most `100 >> (s + 1)` for streak `s ≥ 0`, or
+`100 − (100 >> (1 − s))` for `s < 0`; a pass raises a non-negative streak
+(a negative one restarts at 0), a refusal lowers a non-positive one (a
+positive one restarts at 0). A pass plays `thmdsp_phs` at the body at
+volume 0.6 and pitch `0.9 + 0.2·r` (in double), gives the striker and its
+descendants bits `0xC000` (so the striker's parts and the body's, both in
+the `0x4000` channel with the striker exclusive, skip each other in the
+pair stage), hangs a one-strand tendril from the striker at the contact
+and lists it. The restore hook gives a listed striker its bits back once
+`stamp + 500 < now`, the list closing up behind it, and ends the last
+tendril hanging from it. The power never takes the veto, the bit or the
+hook back: once a body has run Constant Displacement, blows keep being
+asked [the original then reads the ended power's freed record; Exarust
+keeps the streak on the body]. A fist's blade has no body of its own in
+Exarust: the attacker's part nearest the contact stands for it.
+`play arena --opponent --undying --powers 0x20603 --press Tab@100,C@120,Q@140`
+logs each pass (`a blow on … phases through`) and each restore.
 
 ## The power tree
 
@@ -1019,8 +1052,7 @@ capacity. The bearing measure (1 less the
 cosine between the facing and the line to the target) is Exarust's. The
 tree screen and the caster share one record:
 the screen owns it while the tree is open and the caster takes it back when
-the tree closes. The constant displacement's veil and the grant routine are
-not wired; the tree's key handler is wired for the arrows' bar cycle while
+the tree closes. The grant routine is not wired; the tree's key handler is wired for the arrows' bar cycle while
 the tree is open. The
 `--debug-arcs`, `--debug-barricade` and `--debug-wisps` flags still put
 those effects on the player ([DEBUGGING.md](DEBUGGING.md)).
@@ -1142,7 +1174,12 @@ its height above the body's lowest part). The constant displacement's
 restore tick ends its tendril image (each strand record marked 0x8, the
 fade zeroed, event 0x10), and its start records the silent looping
 hum, the dead shell and tendril image, the body's hit and restore callbacks
-and the shell's fade hook. The vanish's show and hide are still the effect
+and the shell's fade hook; the hum, the image, the collision bit, the veto
+and the restore hook run on the caster's body ([On a running
+body](#on-a-running-body)). The fade hook the shell appends to the body's
+deferred list is the shell's mesh build (a triangle list from the body
+mesh's flagged sub-meshes), which the skinned copies of the vanish draw
+stand in for. The vanish's show and hide are still the effect
 class's own, not applied to Exarust's drawn body.
 
 The arcs', wisps' and barricade's meshes come from their own builders but

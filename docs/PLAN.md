@@ -2361,6 +2361,8 @@ Round 63 creatorfix: the black creator was the surviving player falling through 
 
 Round 64 thaumtree: the power tree opens from the creator, and its texts, which were never visible in the running game, now draw.
 
+Round 102 thaum: Constant Displacement's veil phases blows on the running body.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller

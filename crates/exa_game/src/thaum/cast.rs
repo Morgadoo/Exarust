@@ -416,7 +416,24 @@ pub struct CastPlugin;
 impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         exa_physics::sim_app::add_frame_commands(app);
+        super::veil_live::bridge_veil_types(app);
         app.add_message::<BarCommand>()
+            .add_message::<exa_combat::veto::BlowPhased>()
+            .add_message::<super::veil_live::VeilSounded>()
+            .add_systems(PostUpdate, super::veil_live::sound_veils)
+            // The constant displacement's veil: the start's collision bit,
+            // then the restore hook and the phased blows of this step.
+            .add_systems(
+                FixedUpdate,
+                (
+                    super::veil_live::displace_bodies,
+                    super::veil_live::restore_phased,
+                    super::veil_live::phase_blows,
+                )
+                    .chain()
+                    .after(tick_casters)
+                    .after(exa_combat::CombatSystems),
+            )
             .add_message::<super::live::ArcShocked>()
             .add_message::<Otherwhere>()
             .add_message::<exa_ai::presence::Entered>()
@@ -1836,14 +1853,27 @@ fn create_displacement(
             let entity =
                 ragdoll.map(|body| spawn_body_wisps(commands, caster_entity, body, draws, roll));
             if let Some(entity) = entity {
+                // The hum's start draw, after the tendril image's.
+                let hum_roll = roll.0.unit();
                 let node = spawn_visual(
                     commands,
                     creator(
                         EffectKind::Constant,
-                        &visual_input(context, ragdoll, roll.0.unit()),
+                        &visual_input(context, ragdoll, hum_roll),
                     ),
                 );
                 commands.entity(entity).add_child(node);
+                // The start puts the phasing veto (a fresh streak) and the
+                // restore hook on the running body, and its collision bit
+                // ([`super::veil_live`]); none of them is taken away when
+                // the power ends.
+                commands.entity(caster_entity).insert((
+                    exa_combat::veto::PhaseVeto::default(),
+                    super::veil_live::LiveVeil {
+                        hum_roll,
+                        ..Default::default()
+                    },
+                ));
             }
             push_active(
                 caster,
@@ -1854,7 +1884,7 @@ fn create_displacement(
                 0.0,
                 entity,
             );
-            debug!("constant displacement: wisps on the body, the veil is not ported");
+            debug!("constant displacement: wisps on the body, the veil on {caster_entity:?}");
             entity
         }
         DisplacementStart::Summon { .. } => {
@@ -2714,7 +2744,16 @@ pub(crate) fn tick_casters(
                     {
                         end_bubble(&mut bubble);
                     }
+                    // Constant displacement's end ends its tendril image:
+                    // the wisps trail away and leave once faded.
                     if let Some(entity) = entry.entity
+                        && matches!(entry.class, ActiveClass::Constant(_))
+                    {
+                        commands
+                            .entity(entity)
+                            .entry::<super::live::LiveWisps>()
+                            .and_modify(|mut live| live.wisps.end());
+                    } else if let Some(entity) = entry.entity
                         && !matches!(entry.class, ActiveClass::Remote(_))
                         && !matches!(entry.class, ActiveClass::Shell(_))
                     {

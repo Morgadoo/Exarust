@@ -62,7 +62,11 @@ constantly displaced body
 (`thaum::veil`) gets its shell effect (starting dead, fading the body's mesh and skin
 parts), its displaced collision bit, its hum start point, its tendril
 image, its visibility bits and the hit veto with the 500 ms collision
-restore; none of it is wired into a running game yet. The running screen (`power_screen`) opens the tree with P, and in its creation mode for the creator (while it is
+restore; a cast puts it on the running body (`thaum::veil_live`): the
+parts' collision bit `0x4000`, the phasing veto (`exa_combat::veto`) whose
+passes play `thmdsp_phs`, phase the striker (bits `0xC000`) for 500 ms and
+hang a tendril from it, the looping `thmdsp_cns01` hum at the power's
+volume, and the power's end ending the body wisps so they trail away. The running screen (`power_screen`) opens the tree with P, and in its creation mode for the creator (while it is
 shown its form has the keys: the arrows step the bar, any other key closes
 it after the opening fade's first 50 ms) and draws the
 tree and the bar through `exa_ui::tree_draw` into a kept canvas that redraws

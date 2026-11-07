@@ -46,8 +46,9 @@
 //! [`super::visuals::tendril_parts`], the shell's and the tendrils' draw
 //! passes, the audio instance, the delayed wisp event, and the global list
 //! being shared by every displaced body (each [`ConstantVeil`] keeps its
-//! own). The module is not wired into the running game yet: no power
-//! class calls it.
+//! own). These are the rules as plain data; the running game applies them
+//! to a cast's body in [`super::veil_live`] (the collision bits, the veto
+//! through `exa_combat::veto`, the restore, the hum and the image's end).
 //!
 //! Evidence: the constant-displacement start, its hit veto and restore
 //! tick, the shell's creator, end and timeline, the visibility setter, the

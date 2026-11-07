@@ -47,6 +47,7 @@ pub mod stance;
 pub mod strike_body;
 pub mod swing;
 pub mod swing_voice;
+pub mod veto;
 pub mod voice;
 pub mod weapon;
 pub mod weapon_blood;
@@ -118,6 +119,7 @@ impl Plugin for CombatPlugin {
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
             .add_message::<swing_voice::SwingVoiceCue>()
+            .add_message::<veto::BlowPhased>()
             // The attack branch of each character's tick: its attack stage,
             // after its posture stage (this tick's posture decision), before
             // its health bookkeeping and its clip's advance.
@@ -217,6 +219,8 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_message::<crate::impact::WeaponSounded>()
         .bridge_message::<crate::pain::PainSounded>()
         .bridge_message::<crate::swing_voice::SwingVoiceCue>()
+        .bridge_message::<crate::veto::BlowPhased>()
+        .bridge_copy::<crate::veto::PhaseVeto>()
         .bridge_copy::<crate::PowerFactors>()
         .bridge_copy::<crate::block::ShieldHold>()
         .bridge_copy::<crate::burn::Burn>()
@@ -902,9 +906,11 @@ fn react_to_hits(
         Query<&mut CombatScore>,
         Option<ResMut<WeaponBlood>>,
     ),
-    (mut holds, mut items): (
+    (mut holds, mut items, mut vetoes, mut phased): (
         Query<&mut block::ShieldHold>,
         Query<&mut Ragdoll, Without<Fighter>>,
+        Query<&mut veto::PhaseVeto>,
+        MessageWriter<veto::BlowPhased>,
     ),
     ticks: Option<Res<BodyTicks>>,
     story: Option<Res<StoryMode>>,
@@ -955,6 +961,27 @@ fn react_to_hits(
             // Every weapon contact on a fighter starts its regeneration's ramp
             // again, whatever it deals.
             f.health.rate = 0.0;
+            // The struck body's veto is asked about a blow on a living limb
+            // that lands short of the weapon's tip (a veto ends the routine
+            // here: nothing is dealt and the striker's swing goes on).
+            if hit.struck == Struck::Limb
+                && veto::short_of_tip(hit.strike.along / hit.weapon.length)
+                && let Ok(mut veto) = vetoes.get_mut(hit.target)
+                && let Some(pitch) = veto.ask(&mut roll)
+            {
+                debug!(
+                    "blow on {:?} by {:?} phased through (streak {})",
+                    hit.target, hit.striker, veto.streak
+                );
+                phased.write(veto::BlowPhased {
+                    target: hit.target,
+                    attacker: hit.attacker,
+                    striker: hit.striker,
+                    point: hit.point,
+                    pitch,
+                });
+                break 'struck None;
+            }
             // A clash or a block notifies the struck body's behaviour first
             // in its branch, before any other rule: a parrying body scores
             // one ([`CombatScore::note_guard`]).
@@ -1755,6 +1782,7 @@ mod tests {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<StrikeHooked>()
+            .add_message::<veto::BlowPhased>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
@@ -2429,6 +2457,35 @@ mod tests {
         let state = app.world().get::<SwingState>(attacker).unwrap();
         assert!(state.has(swing::flags::RECOILED));
         assert_eq!(state.strength, 0.5);
+    }
+
+    /// A struck body with a phasing veto: a blow it lets through deals
+    /// nothing (no shove, no wound), and the pass is announced; the streak
+    /// moves on.
+    #[test]
+    fn a_vetoed_blow_deals_nothing() {
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                veto::PhaseVeto::default(),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        let f = app.world().get::<Fighter>(victim).unwrap();
+        assert_eq!(f.health.yellow, Fighter::default().health.yellow);
+        assert!(shoves(&app).is_empty());
+        let messages = app.world().resource::<Messages<veto::BlowPhased>>();
+        let phased: Vec<_> = messages.get_cursor().read(messages).copied().collect();
+        assert_eq!(phased.len(), 1);
+        assert_eq!((phased[0].target, phased[0].striker), (victim, blade));
+        assert_eq!(
+            app.world().get::<veto::PhaseVeto>(victim).unwrap().streak,
+            1
+        );
     }
 
     fn winds(app: &App) -> Vec<SecondWindFired> {
@@ -3361,6 +3418,7 @@ mod tests {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<StrikeHooked>()
+            .add_message::<veto::BlowPhased>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
