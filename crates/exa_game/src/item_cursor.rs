@@ -52,8 +52,14 @@
 //!
 //! **The release** ([`release`]). A release in reach leaves the item where
 //! the cursor put it: the original's release hands the saved rest points to
-//! the deferred restore only to move the body out of its old sector, and
-//! the body keeps its current points. A cancelled lift (the point out of
+//! the deferred restore, which asks the sector's placement overlap query
+//! with the body at those saved points (a body still touching the item's
+//! old place has the lower of the two sleep countdowns raised to the
+//! higher, `exa_physics::sector_lists::placement_touches`), and the body
+//! keeps its current points. Every release but the lock then keeps the
+//! item awake at least 128 ticks (half the full count, raised only if
+//! lower) and places it for 8 ticks (gravity without inertia; a contact
+//! with an unplaced body moves only the item). A cancelled lift (the point out of
 //! reach) with the free word is placed again at the last placement that
 //! held and put down when it still fits; with a marker's word it stays on
 //! the marker, frozen for the lock word; otherwise it goes back to the

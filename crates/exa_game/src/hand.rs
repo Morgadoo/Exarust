@@ -2480,17 +2480,35 @@ fn end_lift(
         held.shown.position * 100.0
     );
     let saved = held.saved.clone();
+    let probe = saved.get(held.part).copied();
     fixed.write(held.body, &mut ragdoll, move |ragdoll| {
         ragdoll.release_grab();
         match outcome {
-            Release::Drop | Release::LastFit | Release::OnMarker => ragdoll.wake(),
             Release::Lock => ragdoll.freeze(true),
-            Release::PutBack => {
-                ragdoll.place_at(&saved);
-                ragdoll.wake();
+            Release::Drop | Release::LastFit | Release::OnMarker | Release::PutBack => {
+                if outcome == Release::PutBack {
+                    ragdoll.place_at(&saved);
+                }
+                // The original's put-back with the saved frames: awake for
+                // at least half the full count, then (after the placement
+                // query) placed for eight ticks.
+                ragdoll.wake_to(exa_physics::sector_lists::RELEASE_WAKE);
+                ragdoll.settle_for(exa_physics::sector_lists::RELEASE_SETTLE);
             }
         }
     });
+    // The placement overlap query at the frame the lift saved: a body still
+    // touching the item's old place wakes with it (the lower of the two
+    // sleep countdowns raised to the higher), as the original's put-back
+    // asks the sector before it places the item.
+    if outcome != Release::Lock
+        && let Some(frame) = probe
+    {
+        let (body, part) = (held.body, held.part);
+        fixed.post(move |world| {
+            exa_physics::sector_lists::place_released(world, body, part, frame);
+        });
+    }
 }
 
 /// The lift's navigation region: with no room grid the test does not apply.

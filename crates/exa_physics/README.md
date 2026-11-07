@@ -467,7 +467,16 @@ sphere centre within its own radius of the probe's
 group words share no bit for a body of the same root and the layer words
 name no shared exclusive channel for another root, and the body is not
 disabled (0x800, an item on the cursor); each pair says which side goes first (the lower pair key, as
-the original orders the two). Its static-collider grid (`sector::StaticGrid`: one
+the original orders the two). In the game the query runs on the live body grid
+(`sector_lists::placement_touches`) when the item cursor lets go of an item: the item at the
+frame the lift saved, each offered part through the pair test (`sector_lists::placement_touch`:
+the lower-key side's collision spheres in the other's frame, the pre-test `sector::placement_meet`
+with 2 cm of padding, where a NaN distance passes as the original's unordered compare does, then
+the other's mesh sphere query at the radius plus 2 cm, a part without triangles standing in with
+its spheres), and a touch raises the lower of the two sleep countdowns to the higher
+(`equalise_placement`; `place_released` runs it on the simulation's world, posted by the hand).
+The release itself wakes the item to at least 128 (`RELEASE_WAKE`) and settles it 8 ticks
+(`RELEASE_SETTLE`), as the original's put-back does. Its static-collider grid (`sector::StaticGrid`: one
 cell per small collider, the footprint plus a one-cell margin with the
 wide bit for a larger one, a scan of the own cell then the eight
 neighbours, shared-mask and own-parent skips) and its simulated-object
