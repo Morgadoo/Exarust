@@ -106,3 +106,10 @@ The level start SHALL put the technique word the player's skills name on the pla
 #### Scenario: A body takes its word
 - **WHEN** a body whose record funds close combat's first technique takes its technique word
 - **THEN** its caster's technique bits equal the word and its fighter has the record's perks
+
+### Requirement: Discovery pass cadence
+The story's discovery pass SHALL run every frame the story hook reaches it, after the wake-up branches and the once-a-second gate, which gates only the pending level tasks; a dying player's frames SHALL not run it.
+
+#### Scenario: Two frames in one second
+- **WHEN** the story hook runs at 100 ms and again at 116 ms for a living player
+- **THEN** both frames run the discovery pass

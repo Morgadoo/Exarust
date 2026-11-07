@@ -715,7 +715,9 @@ the cursor on the plane across its axle, or across its arm at 30 cm while
 the view lies across the axle, clamped to the swing; let go out of 300 cm),
 the reach test's room check (the hip's room or its open door, and no active
 room's occluder on the cursor ray up to the picked point, through
-`exa_world::room_view::LevelRooms::shell_ray`; doors are exempt),
+`exa_world::room_view::LevelRooms::shell_ray`; doors are exempt; the held
+item's placement pick asks the same query and places nothing for a hit behind
+an occluder),
 the double-click interaction pushing a clickable push surface
 (`PlateBody::push`), the sliding-door drag's record until the release, a cloth
 vertex's grab and its per-frame target (the pick near the vertex, else the
