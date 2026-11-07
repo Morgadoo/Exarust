@@ -91,3 +91,52 @@ movement key, the stick) sets the dialogue unit's end flag, which ends the
 narrator's conversations; now `dialogue_live::narration_input`. The
 cast/use callback the ladder calls with 1, 2 or 8 (the cast and use paths'
 own hooks) is left to those paths.
+
+## The playerctl2 lane (after round 123): the mouse capture, the cast hooks, the AI's space test
+
+The orbit and Cursor Look are one routine of the controls' frame, with
+three helpers. Exarust had the capture's lock, the turn and a warp back to
+the saved point.
+
+| routine | bytes | before | after | evidence |
+|---|---|---|---|---|
+| Mouse capture (orbit and Cursor Look) | 1,310 | partial: Cursor Look only, the pointer centred once, the body's yaw turned, the warp always to the saved point; the orbit read the raw button with no capture | live (`player::cursor_look`): one capture for both keys, its kind fixed at the start; the pointer re-centred every held frame; Cursor Look turns the cursor follower's target (the behaviour turns the body) and aligns the camera behind the drawn cursor direction every frame; the orbit drags from the next frame; the GUI pointer is the aim point's screen point; the release sends the drag's close message for both kinds and warps to the aim point's screen point (the saved one when it began over the GUI); spectating, the look's direction and distance from the camera's look-at point | unit tests (player, steering) |
+| Aim point's screen point | 381 | missing | live (`player::aim_point`, `window_point`): the standing point at the ground plus 80 cm, along the drawn cursor direction at the cursor's last distance; spectating, from the camera's look-at point | unit test |
+| End-of-frame view snapshot | 143 | missing | live (`CursorLook::last`): the view and the reference point (the player's feet, or the look-at point) | unit test |
+| Pointer pin while the camera aligns | 855 | missing | live: neither key held and the camera still aligning (the align routine's flag, cleared within 0.01 rad, compared in double, or by a drag), the pointer's point on the aim plane under the frame before's view keeps its flat offset from the player | unit tests (`ChaseCamera::align`) |
+| Pad aim's screen cursor reset, pad aim warp | 65 + 72 | n/a | n/a: Exarust's pad aim eases a world point that starts from the mouse's point each time a stick asks (`player::pad_aim_cursor`) | — |
+
+The behaviour tick's side (its cursor routine, 1,515 B, already live): while
+the controls hold the mouse the cursor's point is not read and its distance
+is kept; while Cursor Look holds, the raw cursor direction is the look's
+target, written after the follower's tick (`steering::Capture`).
+
+The capture's return value (whether the frame's mouse was taken) is not
+used by Exarust's frame. The pad's look keeps its own branch (it ends a
+capture). A cursor follower reset by a down body while Cursor Look holds
+takes the look's target again on the next tick (the original's next turn
+starts from the heading); Exarust keeps the look's own target.
+
+TPlayerBehaviour: the ladder's callback is the caster body's cast hook,
+which only the force powers install (blast, wave, torrent, barrier,
+bubble, barricade, shell, kinesis, throw, strikes). The behaviour tick asks
+it with 1 while the left button is down (after the key poll), with 8 each
+tick outside combat mode, and in the casting condition with 2 (the right
+button, or the pad's sprinted move) else 1 (the left); a negative answer
+ends the cast. It is ported as `thaum::casting::player_hooks`, live from
+the casters' tick (`thaum::cast`). One gate differs: the original's tick
+returns before the asks while the body's shock-stagger state flag (0x100)
+or the behaviour's own disable byte is set, and Exarust asks unless the
+body is dying; left for the thaumaturgy lanes.
+
+TMotileAI: the "is the space free" query has one AI caller, the
+behaviour's method slot 26, which only the story revive's world pass calls
+(over every scene character; the player's slot is empty). It is the reset
+`exa_ai::presence::reenter` already modelled as a level-leave reset (that
+premise was wrong): healed, contacts cleared, and a roaming AI moved along
+two rounds of wander and home-side plans, each planned from where the last
+ended; then placed, asked the space query, and moved to the grid's nearest
+walkable point when it meets another body; it leaves combat, stops
+following and returns to idle. Now live (`exa_game::revive_pass`, the
+flow's `ReviveBrains` step after the alarm return). No AI routine asks the
+query to place items, choose a stand spot or step.
