@@ -1623,6 +1623,8 @@ Round 85 determinism: story levels repeat for every body from the first tick; th
 
 Round 106 mipmaps: the resampling unit's icon path and format refusals follow the original; generated mip chains match the shipped ones closely.
 
+Round 107 blended: transparent surfaces draw in the original's compile-time list order.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
