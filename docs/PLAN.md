@@ -289,6 +289,8 @@ Round 109 scene: placed props carry their placement's light and fire rules, as t
 
 Round 110 propskin: sacks, mattresses and hanging growths bend as one skinned surface over their linked bodies, as in the original.
 
+Round 112 heldskin: a flail in hand keeps its import-built skin, as in the original.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
