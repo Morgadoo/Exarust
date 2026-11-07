@@ -10,6 +10,8 @@ pub mod carry;
 pub mod catalogue;
 pub mod char_loot;
 pub mod desc_phrase;
+#[cfg(test)]
+mod desc_phrase_corpus;
 pub mod doll;
 pub mod icon_cache;
 pub mod instance;

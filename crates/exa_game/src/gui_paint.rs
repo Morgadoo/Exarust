@@ -843,6 +843,138 @@ pub(crate) fn caption_origin(
     (draw.x, draw.y)
 }
 
+/// A combo box's words its front draw reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComboWords<'a> {
+    pub style: u32,
+    pub state: u32,
+    /// The control's pad (its margin word).
+    pub pad: i32,
+    pub text: &'a [u8],
+}
+
+/// The skin palette's ink at a byte slot of the text group (slots `0xcc`
+/// to `0xf8`, four bytes each), as the control draws bind it.
+fn text_slot(palette: &SkinPalette, slot: u8) -> [u8; 4] {
+    let index = usize::from(slot.saturating_sub(0xcc) / 4).min(11);
+    palette.text[index]
+}
+
+/// The small atlas's built-in glyphs as a texture: white with each texel's
+/// coverage as alpha, rows turned top-down.
+fn glyph_texture(atlas: &exa_ui::icon_atlas::IconAtlas) -> Option<exa_ui::gui_draw::GuiTexture> {
+    let image = &atlas.image;
+    let channels = usize::from(image.channels.max(1));
+    let rgba: Vec<u8> = image
+        .pixels
+        .chunks(channels)
+        .flat_map(|texel| [0xff, 0xff, 0xff, texel[channels - 1]])
+        .collect();
+    exa_ui::gui_draw::GuiTexture::from_bottom_up(
+        u32::from(image.width),
+        u32::from(image.height),
+        &rgba,
+    )
+}
+
+/// Paints a combo box's front as its draw message does
+/// ([`exa_ui::controls::combo_draw`]): the down chevron from the small
+/// atlas (the plain draw in slot `0xd4` or `0xe0`, or the outlined draw in
+/// the edit state), then the text. The drawn run is the one the box's
+/// creation fits into its span (the edit unit's run fit from the start,
+/// [`exa_ui::text_edit::scroll_view`]); the text sits at the label origin
+/// ([`exa_ui::controls::combo_text_origin`]) and goes through the edit
+/// unit's run draw in slot `0xe4` (the whole-run draw's `0xd8` for state
+/// bit 0x10, the selection only with state bit 0x400). The frame behind it
+/// is the skin's, which the caller draws. Without the glyph atlas the
+/// arrow is left out.
+pub(crate) fn paint_combo_front(
+    rect: GuiRect,
+    words: ComboWords<'_>,
+    unit: i32,
+    palette: &SkinPalette,
+    font: &GuiFont,
+    font_texture: Option<(u16, u16)>,
+    glyphs: Option<&exa_ui::GuiLevelState>,
+) -> Painted {
+    use exa_ui::controls::{COMBO_ARROW_GLYPH, combo_draw, combo_text_origin, run_width};
+    use exa_ui::text_edit::{EditInk, EditView, draw_edit, scroll_view};
+    let mut painted = Painted::default();
+    let place = (rect.left, rect.top, rect.width(), rect.height());
+    let draw = combo_draw(place, unit, words.style, words.state);
+    if let (Some((x, y)), Some(level)) = (draw.arrow, glyphs)
+        && let Some(texture) = glyph_texture(&level.small)
+    {
+        let handle = level.glyphs[COMBO_ARROW_GLYPH];
+        let (quads, ink) = if draw.arrow_textured {
+            let inks = exa_ui::hud_status::status_inks(palette);
+            (
+                level.small.draw_outlined(handle, x, y, 1.0, &inks),
+                inks.face,
+            )
+        } else {
+            (
+                level.small.draw(handle, x as f32, y as f32),
+                text_slot(palette, draw.arrow_ink),
+            )
+        };
+        if !quads.is_empty() {
+            painted.push(GuiLayer::new(
+                exa_ui::gui_draw::icon_batch(&quads, ink),
+                LayerTexture::Owned(texture),
+            ));
+        }
+    }
+    let Some(font_texture) = font_texture else {
+        return painted;
+    };
+    let span = exa_ui::controls::combo_text_span(place.2, words.pad, unit);
+    let mut view = EditView::default();
+    scroll_view(font, words.text, &mut view, span);
+    let run_w = run_width(words.text, view.first, view.length, &font.advances);
+    let at = combo_text_origin(
+        place,
+        words.pad,
+        unit,
+        words.style,
+        run_w,
+        font.ascent,
+        font.glyph.1,
+    );
+    let whole = words.state & 0x10 != 0;
+    let show_selection = words.state & 0x400 != 0;
+    let edit = draw_edit(
+        font,
+        words.text,
+        &view,
+        at.x,
+        at.y,
+        show_selection,
+        whole,
+        6,
+        palette.highlight[4],
+    );
+    if let Some(([x, y, w, h], ink)) = edit.selection {
+        painted.push(exa_ui::loadout::solid_layer([x, y, w, h], ink));
+    }
+    for run in &edit.runs {
+        let ink = match run.ink {
+            EditInk::Current => text_slot(palette, draw.text_ink),
+            EditInk::Text(index) => text_slot(palette, 0xcc + (index as u8) * 4),
+            EditInk::Selected => text_slot(palette, 0xf4),
+            EditInk::Whole => text_slot(palette, 0xd8),
+        };
+        if run.quads.is_empty() {
+            continue;
+        }
+        painted.push(GuiLayer::new(
+            text_batch(font, &run.quads, ink, font_texture),
+            LayerTexture::Named(font.texture),
+        ));
+    }
+    painted
+}
+
 pub(crate) fn caption_layer(
     font: &GuiFont,
     font_texture: (u16, u16),

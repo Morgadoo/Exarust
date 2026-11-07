@@ -2049,12 +2049,16 @@ pub fn scroll_caption_runs(
 /// A combo box's draw: its arrow (when shown) and which text path runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComboDraw {
+    /// The arrow's top-left: the small atlas's down chevron (the fifth
+    /// built-in glyph, [`COMBO_ARROW_GLYPH`]).
     pub arrow: Option<(i32, i32)>,
-    /// The arrow's colour slot: `0xd4` when the style bit 0x10 is set,
-    /// `0xe0` otherwise.
+    /// The arrow's colour slot for the plain draw: `0xd4` when the state
+    /// bit 0x10 is set, `0xe0` otherwise. The outlined draw reads none.
     pub arrow_ink: u8,
-    /// The arrow was drawn through the texture path (`0xe0` method) rather
-    /// than the flat one (`0xd0`).
+    /// The arrow goes through the atlas's outlined draw at full strength
+    /// (at whole pixels) rather than its plain draw (at the float place in
+    /// the bound colour). Only an edit state without the 0x10 bit takes it:
+    /// the 0x10 test comes first.
     pub arrow_textured: bool,
     /// The text goes through the text-edit draw (edit state `0x10000`)
     /// rather than the plain draw-through.
@@ -2063,17 +2067,56 @@ pub struct ComboDraw {
     pub text_ink: u8,
 }
 
-/// Lays out a combo box's draw from its style and state words.
+/// The built-in glyph a combo box draws as its arrow: the small atlas's
+/// fifth glyph (handle 5), the down chevron.
+pub const COMBO_ARROW_GLYPH: usize = 4;
+
+/// Lays out a combo box's draw from its style and state words, as its
+/// front draw does: the arrow first (skipped with style `0x8000000`), at
+/// [`combo_arrow`]; with state bit 0x10 the plain glyph in slot `0xd4`,
+/// else in the edit state (`state & 0xf0000 == 0x10000`) the outlined
+/// glyph, else the plain glyph in slot `0xe0`. Then the main font, and the
+/// text: in the edit state through the text-edit draw at the label origin
+/// over [`combo_text_span`], otherwise in slot `0xe4` through the
+/// draw-through ([`combo_text_origin`] and the edit unit's run draw).
 pub fn combo_draw(rect: (i32, i32, i32, i32), unit: i32, style: u32, state: u32) -> ComboDraw {
     let arrow = combo_arrow(rect, unit, style);
     let editing = state & 0xf_0000 == 0x1_0000;
+    let disabled = state & 0x10 == 0x10;
     ComboDraw {
         arrow,
-        arrow_ink: if state & 0x10 != 0 { 0xd4 } else { 0xe0 },
-        arrow_textured: editing,
+        arrow_ink: if disabled { 0xd4 } else { 0xe0 },
+        arrow_textured: editing && !disabled,
         editing,
         text_ink: 0xe4,
     }
+}
+
+/// The width of a text control's drawn run (bytes `start + 1` to `end`,
+/// 1-based), as the label alignment measures it before placing the text.
+pub fn run_width(text: &[u8], start: u8, end: u8, advances: &[i16]) -> i32 {
+    (usize::from(start) + 1..=usize::from(end))
+        .filter_map(|index| text.get(index - 1))
+        .map(|&byte| i32::from(advances.get(usize::from(byte)).copied().unwrap_or(0)))
+        .sum()
+}
+
+/// A combo box's text origin: the label alignment ([`align_label`]) over
+/// its span ([`combo_text_span`]) with the drawn run's width, the main
+/// font's ascent as the centring height and its glyph height as the base.
+#[allow(clippy::too_many_arguments)]
+pub fn combo_text_origin(
+    rect: (i32, i32, i32, i32),
+    pad: i32,
+    unit: i32,
+    style: u32,
+    run_w: i32,
+    ascent: i32,
+    glyph_h: i32,
+) -> LabelAt {
+    let (x, y, w, h) = rect;
+    let span = combo_text_span(w, pad, unit);
+    align_label(x, y, h, pad, unit, run_w, span, ascent, glyph_h, style)
 }
 
 /// A trackbar's draw: its track and thumb rectangles and the knob's travel.
@@ -2785,10 +2828,37 @@ mod extended_tests {
         assert_eq!(draw.arrow, Some((74, 25)));
         assert_eq!(draw.arrow_ink, 0xe0);
         assert!(!draw.arrow_textured && !draw.editing);
-        let editing = combo_draw((0, 0, 80, 24), 4, 0, 0x1_0010);
+        // The 0x10 test comes first: an edit state with it draws the plain
+        // arrow in 0xd4.
+        let disabled = combo_draw((0, 0, 80, 24), 4, 0, 0x1_0010);
+        assert!(disabled.editing && !disabled.arrow_textured);
+        assert_eq!(disabled.arrow_ink, 0xd4);
+        let editing = combo_draw((0, 0, 80, 24), 4, 0, 0x1_0000);
         assert!(editing.editing && editing.arrow_textured);
-        assert_eq!(editing.arrow_ink, 0xd4);
+        assert_eq!(editing.arrow_ink, 0xe0);
         assert_eq!(combo_draw((0, 0, 80, 24), 4, 0x800_0000, 0).arrow, None);
+    }
+
+    #[test]
+    fn a_combo_box_places_its_run_over_its_span() {
+        let mut advances = [0i16; 256];
+        advances[usize::from(b'a')] = 7;
+        advances[usize::from(b'b')] = 9;
+        // The run is bytes start + 1 to end, 1-based.
+        assert_eq!(run_width(b"abab", 0, 4, &advances), 32);
+        assert_eq!(run_width(b"abab", 1, 3, &advances), 16);
+        assert_eq!(run_width(b"ab", 0, 9, &advances), 16);
+        // Down, 0x300 centres by the ascent; across, no bits keep the
+        // default left: x + pad + (unit + 1) / 2.
+        let at = combo_text_origin((100, 50, 220, 24), 1, 4, 0x300, 30, 14, 16);
+        assert_eq!(at, LabelAt { x: 103, y: 70 });
+        // The loadout list's style 0x8403320 centres both ways: across,
+        // half the span less the run and one, past the pad and a unit.
+        let span = combo_text_span(220, 1, 4);
+        assert_eq!(span, 220 - 17 - 2 - 4);
+        let at = combo_text_origin((100, 50, 220, 24), 1, 4, 0x840_3320, 30, 14, 16);
+        assert_eq!(at, LabelAt { x: 188, y: 70 });
+        assert_eq!(at.x, (span - 1 - 30) / 2 + 1 + 100 + 4);
     }
 
     #[test]

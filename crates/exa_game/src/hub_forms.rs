@@ -772,7 +772,7 @@ pub fn apply_staff_changes(
 /// the words the show commits to a top-level form (its constructor's
 /// attribute word, its placement word in the style), then its records
 /// (the coin controls' amounts, the image buttons' frames and the combo
-/// box's panel and text beside the basic classes). The shadow and backdrop
+/// box's panel and its own front draw beside the basic classes). The shadow and backdrop
 /// are pushed first; the title and frame layers come back for the caller
 /// to push after the form's other children, with the committed words its
 /// child views are held by.
@@ -827,15 +827,24 @@ pub(crate) fn paint_form(
                 }
             }
             0x12 => {
+                // The panel stands for the skin's frame behind the box; the
+                // front is the combo box's own draw.
                 crate::hub_windows::paint_panel(painted, rect, look);
-                let caption = String::from_utf8_lossy(&c.text);
-                let inner = GuiRect::new(
-                    rect.left + unit,
-                    rect.top,
-                    rect.width() - 2 * unit,
-                    rect.height(),
+                let front = gui_paint::paint_combo_front(
+                    rect,
+                    gui_paint::ComboWords {
+                        style: c.style,
+                        state: c.state,
+                        pad: c.margin,
+                        text: &c.text,
+                    },
+                    unit,
+                    &look.palette,
+                    &font,
+                    size,
+                    look.glyphs,
                 );
-                crate::hub_windows::paint_text(painted, inner, &caption, look);
+                painted.layers.extend(front.layers);
             }
             0xac03 => {
                 let amount = form.amounts.get(i).copied().unwrap_or(0);

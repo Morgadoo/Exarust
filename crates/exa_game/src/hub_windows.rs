@@ -1275,15 +1275,24 @@ pub(crate) struct Look<'a> {
     pub(crate) fade: f32,
     pub(crate) unit: i32,
     pub(crate) textures: &'a GuiTextures,
+    /// The interface level's small atlas of built-in glyphs (a combo box's
+    /// arrow), when the GUI has one.
+    pub(crate) glyphs: Option<&'a exa_ui::GuiLevelState>,
 }
 
 impl<'a> Look<'a> {
-    fn new(fade: f32, unit: i32, textures: &'a GuiTextures) -> Self {
+    fn new(
+        fade: f32,
+        unit: i32,
+        textures: &'a GuiTextures,
+        glyphs: Option<&'a exa_ui::GuiLevelState>,
+    ) -> Self {
         Self {
             palette: shown_palette(fade),
             fade,
             unit,
             textures,
+            glyphs,
         }
     }
 }
@@ -1908,11 +1917,12 @@ pub fn add_hub_draw(app: &mut App) {
 }
 
 /// The hub draw's optional resources: the loadout kit's views, the item
-/// icons and the scripted pointer.
+/// icons, the scripted pointer and the interface level's glyph atlas.
 type HubDrawExtras<'w> = (
     Option<Res<'w, crate::loadout_kit::KitPanels>>,
     Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
     Option<Res<'w, exa_ui::ScriptedPointer>>,
+    Option<Res<'w, exa_ui::GuiLevelState>>,
 );
 
 /// Draws the open hub window into the GUI's queue. The in-game screens'
@@ -1927,7 +1937,7 @@ pub fn draw_hub_windows(
     time: Option<Res<Time>>,
     game_screens: Option<Res<crate::gui_screens::GameScreens>>,
     mut fade: Local<HubFade>,
-    (kit, mut icons, scripted): HubDrawExtras,
+    (kit, mut icons, scripted, glyphs): HubDrawExtras,
 ) {
     let Some(windows) = windows else {
         return;
@@ -1962,7 +1972,7 @@ pub fn draw_hub_windows(
     let alpha = windows
         .form
         .map_or(1.0, |form| fade.alpha(form, windows.kind, now));
-    let look = Look::new(alpha, unit, textures);
+    let look = Look::new(alpha, unit, textures, glyphs.as_deref());
     let painted = match windows.kind {
         HubWindowKind::Board => windows
             .board
@@ -1986,7 +1996,7 @@ pub fn draw_hub_windows(
         return;
     };
     // The windows stacked over it, bottom to top, drawn shown.
-    let shown = Look::new(1.0, unit, textures);
+    let shown = Look::new(1.0, unit, textures, glyphs.as_deref());
     for open in &windows.forms.forms {
         if open.window == crate::hub_forms::FormWindow::Loadout {
             // The loadout form's paint fills it black before the base
