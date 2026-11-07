@@ -27,7 +27,9 @@ re-upload loop) and the speed of a write into a fresh upload buffer
 ([`patches/gpu-allocator/EXARUST.md`](../../patches/gpu-allocator/EXARUST.md))
 so those buffers stay out of a small BAR window: several games sharing the
 GPU no longer leave one of them writing its uploads at 0.5 GB/s. It grows into
-the full game as `exa_game` gains modes (see `docs/PLAN.md`). The debug
+the full game as `exa_game` gains modes (see `docs/PLAN.md`). `--frames n`
+without `--screenshot` ends a run after n frames from the end of the load
+(a grid quadrant's game then exits). The debug
 flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--fixed-frames`, `--sim-speed`, `--pause-at-tick`, `--pause-on-stretch`,
 `--pause-on-hit`, `--pause-after-jet`, `--pause-after-collapse`, `--press`,

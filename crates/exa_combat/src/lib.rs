@@ -174,6 +174,7 @@ impl Plugin for CombatPlugin {
                         .after(BodySystems)
                         .before(block::strike_held)
                         .before(impact::strike_limbs),
+                    block::trace_held_weapons.after(track_blades),
                     (detect_hits, react_to_hits, bite::open_bites)
                         .chain()
                         .in_set(CombatSystems)
@@ -1745,7 +1746,7 @@ fn answer_low(
 /// An armed blow that bites in deeper sticks the weapon in the part.
 const BITES_FROM: f32 = 0.1;
 
-fn closest_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
+pub(crate) fn closest_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_squared().max(f32::EPSILON)).clamp(0.0, 1.0);
     a + ab * t

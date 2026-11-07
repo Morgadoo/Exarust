@@ -105,7 +105,9 @@ attach's permanent weapon bit and mark (0x20001,
 also carries the strike-chain bit (0x10000, `impact::sync_held_striking`,
 written only when the window opens or shuts), so its pair contacts with
 hittable bodies take the pair stage's hit event instead of the impact
-path. A resting held weapon is therefore a clash for another's striker,
+path (debug aid: `EXA_HELD_TRACE` logs each attacking holder's held weapon,
+its blade's tip, words and nearest foe part, `block::trace_held_weapons`).
+A resting held weapon is therefore a clash for another's striker,
 and its own impacts ring its weapon set (the plain collision sound is a
 shield's or torch's, with the item's own material set). `block::strike_held`
 classifies each side of each hit event as the original's striking part

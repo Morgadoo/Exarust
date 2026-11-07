@@ -413,7 +413,6 @@ The grid host SHALL open no audio output (its games play the sound), and SHALL l
 - **WHEN** the grid host's frame stalls while its games load
 - **THEN** its log gains no `alsa::poll()` lines
 
-
 ### Requirement: The load holds the game
 While the loading screen shows, game time SHALL stand still, and a pause the load made SHALL be released when it ends while a pause the game set stays. Behind the loading screen a body SHALL be built only once it is dressed, and a `--fixed-frames` run SHALL wait for every character to be dressed and every body and limb tree to be built before its first tick.
 
@@ -427,3 +426,10 @@ An arena match the player enters SHALL stand its first round behind the loading 
 #### Scenario: Two runs of an arena duel
 - **WHEN** `play arena1 --opponent --weapon ub05ssworda --fixed-frames` runs twice with the same scripted input
 - **THEN** both bodies' traces agree from the first tick
+
+### Requirement: A scripted run ends after its frames
+With `--frames n` and no `--screenshot`, a run SHALL end after n frames counted from the end of the load, as the screenshot's frames are counted.
+
+#### Scenario: A grid scene
+- **WHEN** a grid quadrant runs `play arena --opponent --fixed-frames --frames 1800`
+- **THEN** its game logs that 1800 frames were played and exits with code 0

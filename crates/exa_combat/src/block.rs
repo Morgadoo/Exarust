@@ -506,6 +506,70 @@ pub fn refill_hold(hold: &mut ShieldHold) {
     }
 }
 
+/// Debug aid: with `EXA_HELD_TRACE` set, every 12 body ticks each held
+/// weapon whose holder is attacking logs where its first part is, its
+/// part state, layer and group words, whether it sleeps, and the nearest
+/// part of another fighter's body (distance between part origins, and that
+/// part's layer), to see why a swing meets nothing (`held-trace`).
+#[allow(clippy::type_complexity)]
+pub fn trace_held_weapons(
+    mut tick: Local<u32>,
+    held: Query<(Entity, &Ragdoll, &HeldGrip, Option<&Blade>)>,
+    fighters: Query<(Entity, &Ragdoll, Has<Attacking>), With<Fighter>>,
+) {
+    if std::env::var_os("EXA_HELD_TRACE").is_none() {
+        return;
+    }
+    *tick = tick.wrapping_add(1);
+    if !(*tick).is_multiple_of(12) {
+        return;
+    }
+    for (item, body, grip, blade) in &held {
+        if grip.kind != HeldKind::Weapon {
+            continue;
+        }
+        let Some((holder, _, _)) = fighters.iter().find(|(_, b, attacking)| {
+            *attacking && b.parts.first().map(|p| p.entity) == Some(grip.holder_key)
+        }) else {
+            continue;
+        };
+        let Some(first) = body.parts.first() else {
+            continue;
+        };
+        let at = Vec3::from(first.transform().translation);
+        // The blade as the sweep draws it: from the item's origin along its
+        // y axis by the blade's length.
+        let length = blade.map_or(0.0, |b| b.length);
+        let tip = first.transform().transform_point3(Vec3::Y * length);
+        let mut nearest: Option<(Entity, f32, u32, Vec3)> = None;
+        for (other, other_body, _) in &fighters {
+            if other == holder {
+                continue;
+            }
+            let root = other_body
+                .parts
+                .first()
+                .map_or(Vec3::ZERO, |p| Vec3::from(p.transform().translation));
+            for q in &other_body.parts {
+                let c = Vec3::from(q.transform().translation);
+                let d = crate::closest_on_segment(at, tip, c).distance(c) * 100.0;
+                if nearest.is_none_or(|n| d < n.1) {
+                    nearest = Some((other, d, q.pairing.layer, root));
+                }
+            }
+        }
+        info!(
+            "held-trace {holder:?} item {item:?} at {at:.2} tip {tip:.2} state {:#x} layer {:#x} \
+             group {:#x} asleep {} nearest {:?}",
+            first.state.bits(),
+            first.pairing.layer,
+            first.pairing.group,
+            body.asleep(),
+            nearest.map(|(e, d, l, r)| (e, d.round(), format!("{l:#x} root {r:.2}")))
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

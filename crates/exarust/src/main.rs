@@ -39,7 +39,8 @@
 //!          --offscreen <file>         a grid quadrant's game: no window, the cameras draw into an image of --size
 //!                                     (default 1280x720) published to this shared-memory file each frame, input
 //!                                     read from stdin, exit when stdin closes
-//!          --frames <n>               frames to wait before the screenshot, after loading (default 90)
+//!          --frames <n>               frames to wait before the screenshot, after loading (default 90);
+//!                                     without --screenshot, exit after n frames
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --all-rooms                tile-grid levels: show every room (no black for rooms the player cannot see)
 //!          --limp                     character view: the body goes limp and falls
@@ -373,6 +374,8 @@ pub struct Options {
     pub spawn_races: Vec<(u8, [f32; 3])>,
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
+    /// `--frames` was given: without a screenshot the run ends after them.
+    pub frames_given: bool,
     /// Camera exposure; dungeon interiors need far less than daylight.
     pub ev100: f32,
     /// Show every room of a tile-grid level, as if all were active.
@@ -1628,7 +1631,10 @@ fn main() -> AppExit {
                 }
             }
             "--ev" => options.ev100 = args.next().and_then(|v| v.parse().ok()).unwrap_or(6.0),
-            "--frames" => options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90),
+            "--frames" => {
+                options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90);
+                options.frames_given = true;
+            }
             "--camera" => {
                 let v: Vec<f32> = args
                     .next()

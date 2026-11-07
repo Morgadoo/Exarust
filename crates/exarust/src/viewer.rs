@@ -2411,6 +2411,7 @@ const SCREENSHOT_TEXTURE_WAIT_FRAMES: u32 = 1800;
 /// armed, frames before the simulation pauses, nor, up to
 /// [`SCREENSHOT_TEXTURE_WAIT_FRAMES`], frames while textures are still
 /// streaming in, so the picture does not show placeholders), then exits.
+/// With `--frames` and no screenshot the run ends after the same count.
 #[allow(clippy::too_many_arguments)]
 fn screenshot_after_frames(
     mut commands: Commands,
@@ -2424,9 +2425,9 @@ fn screenshot_after_frames(
     mut exit: MessageWriter<AppExit>,
     offscreen: Option<Res<exa_game::debug_shot::OffscreenImage>>,
 ) {
-    let Some(path) = &options.screenshot else {
+    if options.screenshot.is_none() && !options.frames_given {
         return;
-    };
+    }
     if loading.is_some() || (control.waits_for_pause() && !time.is_paused()) {
         return;
     }
@@ -2437,6 +2438,13 @@ fn screenshot_after_frames(
         return;
     }
     *frames += 1;
+    let Some(path) = &options.screenshot else {
+        if *frames == options.frames {
+            info!("--frames: {} frames played, exiting", options.frames);
+            exit.write(AppExit::Success);
+        }
+        return;
+    };
     if *frames == options.frames {
         // Offscreen (a grid quadrant), the image the window's cameras
         // draw into.
