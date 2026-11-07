@@ -1288,6 +1288,14 @@ reach through `exa_physics::intersect`, then each mesh's contacts through
 sectors, the flag words, `exa_physics::intersect::segment_sphere`, the
 blocking word, then each face).
 
+The chase camera builds its controller with `nav_camera::NavController::new`
+from `nav_camera::GAME_CAMERA_PRESET` (the game camera's record: view 250,
+size 6000, rate 0.01, distances 1300 in 800 to 2000, heights 0 to 200; the
+controls' second record differs only in handler bits) and takes the yaw
+spring's stiffness and retention and the zoom's ease from the applied
+preset. Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),
+a fast shot's distance starting the zoom again at 1300.
+
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
 six of the record's own loadouts (hands and worn items); the editor takes
 the rank's kit, that rank's point limit (`arena::point_limit`) and the

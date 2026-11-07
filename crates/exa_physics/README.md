@@ -17,6 +17,14 @@ one millisecond short of the next step, at most 100 ms. The frame-coupled
 fixed loop does not use it yet: it is the clock of the simulation thread the
 fixed step is moving to (design: OpenSpec `plan-the-simulation-thread`).
 
+`float_mode` is the engine's floating-point mode: `enter` ORs `0x8FC0` into
+MXCSR (flush-to-zero, denormals-are-zero, exception masks; rounding left at
+nearest), as every thread of the original does first. The binary's main
+thread, both `exa-sim` thread kinds (`enter_logged`) and every task-pool
+thread (`task_pool_options`) enter it. The original's simulation thread is
+time-critical (priority 15); Exarust's keeps the default priority (raising
+it needs privileges on Linux, and the step's own clock paces it).
+
 `sim_app` is the simulation's own world, the shell the fixed step moves
 into: `SimShell` owns a Bevy `SubApp` with the `SimStep` schedule, run on a
 thread named `exa-sim` (or inline, `--sim-inline`). `SimInbox` queues the

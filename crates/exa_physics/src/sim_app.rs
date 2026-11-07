@@ -33,6 +33,14 @@
 //! stamped packet ([`FreeStamp`]) sent after it; the frame exchanges
 //! packets once a frame without waiting ([`exchange_free`]) and draws at
 //! the original's render fraction.
+//!
+//! The original creates its simulation thread at the time-critical priority
+//! (15) and enters the engine's floating-point mode on it, flushing
+//! denormals ([`crate::float_mode`]). Exarust's `exa-sim` thread enters the
+//! same mode. It keeps the default priority: a real-time or raised priority
+//! needs privileges a desktop user does not have on Linux, and the step is
+//! paced by its own clock, so the priority changes when a step runs, not
+//! what it computes.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -1217,7 +1225,12 @@ impl SimShell {
                 let published = snapshots.clone();
                 let thread = std::thread::Builder::new()
                     .name("exa-sim".into())
-                    .spawn(move || run_free(sub_app, inbox, outbox, epoch, published))
+                    .spawn(move || {
+                        // The original's simulation thread enters the
+                        // engine's floating-point mode first.
+                        crate::float_mode::enter_logged("exa-sim");
+                        run_free(sub_app, inbox, outbox, epoch, published)
+                    })
                     .expect("the simulation thread starts");
                 Runner::Free {
                     requests,
@@ -1232,6 +1245,7 @@ impl SimShell {
                 let thread = std::thread::Builder::new()
                     .name("exa-sim".into())
                     .spawn(move || {
+                        crate::float_mode::enter_logged("exa-sim");
                         let mut sub_app = sub_app;
                         // The frame drops its sender when it closes.
                         while let Ok(request) = inbox.recv() {

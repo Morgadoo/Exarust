@@ -1038,6 +1038,37 @@ impl Default for PresetFields {
     }
 }
 
+/// The game camera's preset record: the one the player controls hand the
+/// camera switch when the level's view is made (read from the shipped
+/// record). The stepped camera with the wheel's stops (`0x200`,
+/// `0x200000`), the free press drag (`1`), view 250 (the yaw spring's
+/// 250/59² stiffness), the default retention (its 59th root is the spring's
+/// 0.616 retention), size 6000, rate 0.01, the first distance 1300 between
+/// 800 and 2000 (the zoom's start and stops) and the looked-at height
+/// between 0 and 200 cm. The controls' other record differs only in its
+/// handler bits ([`GAME_CAMERA_FLAGS_ALT`]).
+pub const GAME_CAMERA_PRESET: PresetFields = PresetFields {
+    flags: 0x0022_0b01,
+    view: 250.0,
+    retention: 0.0,
+    sensitivity: 0.0,
+    pitch_low: 0.0,
+    pitch_high: 0.0,
+    size: 6000.0,
+    rate: 0.01,
+    distance: 1300.0,
+    min_distance: 800.0,
+    max_distance: 2000.0,
+    min_height: 0.0,
+    max_height: 200.0,
+    extra: 0.0,
+};
+
+/// The flags of the player controls' second game camera record, whose
+/// numbers are [`GAME_CAMERA_PRESET`]'s: the stepped camera and the wheel,
+/// without the free press drag.
+pub const GAME_CAMERA_FLAGS_ALT: u32 = 0x0020_0300;
+
 /// What a preset puts on the camera controller, with the defaults filled
 /// in and the divisions done.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1723,6 +1754,38 @@ mod tests {
         };
         let (ran, _) = driver.step(8);
         assert_eq!((ran, driver.clock), (0, u32::MAX - 8));
+    }
+
+    #[test]
+    fn the_game_camera_preset_gives_the_chase_cameras_numbers() {
+        let preset = apply_preset(GAME_CAMERA_PRESET);
+        // The yaw spring: 250/59² stiffness and the default retention's
+        // 59th root, both single precision.
+        assert_eq!(preset.view.to_bits(), (250.0f32 / 3481.0f32).to_bits());
+        assert!((preset.view - 0.071_818_44).abs() < 1e-8, "{}", preset.view);
+        assert!((preset.retention - 0.616_246_1).abs() < 1e-6);
+        // The zoom: the start and the stops, and the stepped ease of 5/59.
+        assert_eq!(
+            (preset.distance, preset.min_distance, preset.max_distance),
+            (1300.0, 800.0, 2000.0)
+        );
+        assert_eq!(preset.zoom_speed.to_bits(), (5.0f32 / 59.0f32).to_bits());
+        assert_eq!((preset.pitch_low, preset.pitch_high), (-1.5, 1.5));
+        assert!(!preset.derive_distance);
+        let handlers = preset.handlers;
+        assert!(handlers.wheel && handlers.free_press && handlers.free_move);
+        assert!(!handlers.editor_press);
+        // The second record installs no press drag; its numbers are the same.
+        let alt = apply_preset(PresetFields {
+            flags: GAME_CAMERA_FLAGS_ALT,
+            ..GAME_CAMERA_PRESET
+        });
+        assert!(alt.handlers.wheel && !alt.handlers.free_press);
+        assert_eq!((alt.view, alt.retention), (preset.view, preset.retention));
+        // The controller the camera builds keeps that preset.
+        let controller = NavController::new(GAME_CAMERA_PRESET, 0, false);
+        assert_eq!(controller.preset, preset);
+        assert_eq!(controller.frame, FrameDriver::default());
     }
 
     #[test]
