@@ -1,6 +1,6 @@
 ## Why
 
-PLAN Phase 4 (interface). The component gap lane for `TThaumTree` and
+PLAN Phase 7 (game modes and content). The component gap lane for `TThaumTree` and
 `TSkillUI` listed both components routine by routine. Every power-tree
 routine the shipped game reaches is ported and called; the skill screen's
 29 routines were ported as tested functions, but no form mounted them: the
