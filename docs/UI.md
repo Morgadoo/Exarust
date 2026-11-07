@@ -1320,7 +1320,10 @@ the task's state. A control value of `i32::MIN` means none.
   coordinates. Otherwise a point off the screen hits nothing (no form,
   control 1, cursor 0), and the root's test descends to the deepest visible
   form, the last child first. The cursor shape is set only when it changes.
-- **Pointer.** An update reads the system pointer and does nothing unless it
+- **Pointer.** The pointer object starts with its position unknown
+  (`0x80000000` on both axes, `POINTER_UNKNOWN`), a drag distance of 2 and
+  then its shape hidden, so the first read is always a move. An update
+  reads the system pointer and does nothing unless it
   moved (a forced update re-reads it). With a button held, a move past the
   threshold — `(200 − elapsed) / 20` times the drag distance during the
   first 191 units, then the distance itself; the distance is one pixel per
@@ -1349,6 +1352,20 @@ the task's state. A control value of `i32::MIN` means none.
   places are `gui_rescale::message_box_layout`. The buttons' callbacks
   (`MESSAGE_OK`, `MESSAGE_CANCEL`) store the parent's result and close it;
   the close mark (`MESSAGE_CLOSE`) stores 0 and destroys through the parent.
+  The box shows on the arena hub's form stack
+  (`exa_ui::modal_screens::open_message_box`): its form is the line skin's
+  border (2) twice plus the width, the base form's border and attribute
+  word with the upper-layer bit (the close bit cleared with 0x20), the title
+  as its caption, centred across and placed down at its design-pixel top
+  rescaled to the unit, again after a resize. Enter and Space close it,
+  Escape with −1; Ok stores 1. Its live callers are a refused hire ("Hire":
+  "Insufficient funds", "You do not have room for any more fighters.", or a
+  merchant, physician or trainer already employed; flags 0x41) and the
+  company dialog's NEXT with an empty name ("Company Name", "Please name
+  your company", 0xc1). The creator's "Character Name" box is the creator's;
+  the recruitment's "Insufficient funds" follows the creator, which the hub
+  does not run; the first-run benchmark's "Configuration" box has no
+  counterpart.
 - **Factories.** The form factory table counts its registrations from one
   and clears on shutdown.
 - **Double click.** The clock and the press stamp widen to 64 bits before
@@ -1416,6 +1433,13 @@ begins it, and a result with bits 1 and 4 makes the press a view drag; a
 running action ends on 0x80, and a release answered 0x40 keeps it. A point
 converts to view space as `(x − w/2) · z / (scale · w · 0.5)` and back, a
 point at or behind the eye going to the edge its signs point to.
+The action list (`exa_ui::view_helpers::CursorActions`) stores each
+registration as its mask (0x1000 added when the top nibble is clear) and
+the handler's method pointer, code first; a removal compares only the code,
+so every registration of that handler goes, whatever object it was made
+for (assembly of the list's remove). Exarust's player controls, navigation,
+character view and inventory read the pointer in their own systems and
+register nothing, so the list has no live caller.
 
 ### The form base class
 

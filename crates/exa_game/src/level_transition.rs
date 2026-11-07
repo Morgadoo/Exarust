@@ -472,10 +472,16 @@ impl LiveTransition {
 /// save package is open (the destination comes from the archive), the
 /// archive's `<locale>.rfc` was or was not found, a found level imports
 /// (Exarust's loader builds what it finds), a non-zero spawn names a
-/// portal, and no follower travels or respawn is pending yet. A missing
+/// portal, `followers` characters travel (the door's migration list,
+/// [`crate::follower_travel`]) and no respawn is pending. A missing
 /// destination gives the original's abort: nothing after the locale lookup
 /// runs.
-pub fn live_transition(level: &str, spawn: u32, archive_found: bool) -> LiveTransition {
+pub fn live_transition(
+    level: &str,
+    spawn: u32,
+    archive_found: bool,
+    followers: usize,
+) -> LiveTransition {
     LiveTransition {
         level: level.to_string(),
         spawn,
@@ -486,7 +492,7 @@ pub fn live_transition(level: &str, spawn: u32, archive_found: bool) -> LiveTran
             spawn != 0,
             false,
             false,
-            0,
+            followers,
         ),
     }
 }
@@ -868,7 +874,7 @@ mod tests {
 
     #[test]
     fn a_live_change_reads_the_archive_and_aborts_when_the_level_is_missing() {
-        let found = live_transition("exanima02", 3, true);
+        let found = live_transition("exanima02", 3, true, 0);
         assert!(!found.flow.aborted && !found.saves_disabled());
         assert!(!found.flow.from_save);
         assert_eq!(found.flow.matrix, SpawnMatrix::Portal);
@@ -879,11 +885,18 @@ mod tests {
         assert!(!steps.contains(&TransitionStep::SpawnFollowers));
         assert_eq!(steps.last(), Some(&TransitionStep::PostLoad));
         assert_eq!(
-            live_transition("exanima01", 0, true).flow.matrix,
+            live_transition("exanima01", 0, true, 0).flow.matrix,
             SpawnMatrix::Default
         );
-        let missing = live_transition("nowhere", 0, false);
+        let missing = live_transition("nowhere", 0, false, 0);
         assert!(missing.flow.aborted && !missing.saves_disabled());
         assert_eq!(missing.flow.steps.last(), Some(&TransitionStep::OpenSave));
+        // A follower on the door's list is spawned.
+        assert!(
+            live_transition("exanima02", 0, true, 1)
+                .flow
+                .steps
+                .contains(&TransitionStep::SpawnFollowers)
+        );
     }
 }

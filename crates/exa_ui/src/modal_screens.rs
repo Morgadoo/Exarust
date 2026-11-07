@@ -71,6 +71,136 @@ impl MessageBox {
     }
 }
 
+/// The message box's form, as the original's message-box routine builds it
+/// (`TMessageBox`, a base form): the text's width in the small font plus
+/// 64, at least 320, plus twice the line skin's border (2), 104 tall; its
+/// style word 0x808 (centred across), 0x3000 more with the frame flag; its
+/// attribute word the base form's 0x30022 with the upper-layer bit, less
+/// the close bit 2 with the no-close flag; its caption the title; a label
+/// at 12, 4 over the width less 24 (style 0x33300) carrying the text; then
+/// "Ok" and "Cancel" buttons, 80 wide at grid row 13
+/// ([`crate::gui_rescale::message_box_layout`]).
+///
+/// The record array is built once for each text and flag word the game
+/// shows (they are all literals) and kept for the run.
+pub fn message_box_spec(
+    title: &'static str,
+    text: &'static str,
+    flags: u32,
+) -> crate::record_form::FormSpec {
+    use crate::arena_forms::{BASE_ATTRIBUTES, BASE_BORDER, UPPER_LAYER};
+    let text_width = message_box_text_width(text);
+    let layout =
+        crate::gui_rescale::message_box_layout(text_width, flags, 0, MESSAGE_BOX_SKIN_BORDER, 4);
+    let mut attributes = BASE_ATTRIBUTES | UPPER_LAYER;
+    if flags & crate::gui_core::MESSAGE_NO_CLOSE != 0 {
+        attributes &= !2;
+    }
+    crate::record_form::FormSpec {
+        size: layout.size,
+        border: BASE_BORDER,
+        placement: MESSAGE_BOX_STYLE
+            | if flags & crate::gui_core::MESSAGE_FRAME != 0 {
+                MESSAGE_BOX_FRAME_STYLE
+            } else {
+                0
+            },
+        attributes,
+        title,
+        records: message_box_records(text, flags, &layout),
+        children: &[],
+    }
+}
+
+/// The line skin's border the message box's width adds twice.
+pub const MESSAGE_BOX_SKIN_BORDER: i32 = 2;
+/// The message box's style word: centred across, with bit 8.
+pub const MESSAGE_BOX_STYLE: u32 = 0x808;
+/// The style bits the frame flag (0x40) adds.
+pub const MESSAGE_BOX_FRAME_STYLE: u32 = 0x3000;
+/// The label's record in a message box's form; its buttons follow.
+pub const MESSAGE_LABEL: usize = 0;
+
+/// The width of a message box's text: the small font's advances (the
+/// original measures it with its second font, Rayform08R).
+pub fn message_box_text_width(text: &str) -> i32 {
+    measure(&crate::gui_font::RAYFORM_08, text.as_bytes())
+}
+
+fn message_box_records(
+    text: &'static str,
+    flags: u32,
+    layout: &crate::gui_rescale::MessageBoxLayout,
+) -> &'static [crate::creation_forms::FormRecord] {
+    use crate::creation_forms::{FormRecord, record};
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Key = (&'static str, u32);
+    static BUILT: OnceLock<Mutex<HashMap<Key, &'static [FormRecord]>>> = OnceLock::new();
+    let mut built = BUILT
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    built.entry((text, flags)).or_insert_with(|| {
+        let (x, y, w) = layout.label;
+        let mut records = vec![FormRecord {
+            text: Some(text),
+            style: 0x0003_3300,
+            ..record(5, 0, x, y, w, 0)
+        }];
+        for &(name, x, y, w) in &layout.buttons {
+            records.push(FormRecord {
+                text: Some(name),
+                reports: true,
+                ..record(1, 0, x, y, w, 0)
+            });
+        }
+        Box::leak(records.into_boxed_slice())
+    })
+}
+
+/// Opens a message box over a `screen` at the GUI `unit` ([`message_box_spec`])
+/// and places it ([`place_message_box`]).
+pub fn open_message_box(
+    title: &'static str,
+    text: &'static str,
+    flags: u32,
+    screen: (i32, i32),
+    unit: i32,
+) -> crate::record_form::RecordForm {
+    let spec = message_box_spec(title, text, flags);
+    let mut form = crate::record_form::RecordForm::open(&spec, screen, unit);
+    place_message_box(&mut form, flags);
+    form
+}
+
+/// Places an open message box: centred across by its style word, and down
+/// where the original's routine puts it in design pixels (half the spare
+/// height less half the box, or a quarter of the spare height with the
+/// 0x10 flag, over the unit and times 4), rescaled to the unit as the GUI
+/// shows a form. Run again after a resize.
+pub fn place_message_box(form: &mut crate::record_form::RecordForm, flags: u32) {
+    let unit = form.unit();
+    let screen = form.screen;
+    let text = form.spec.records[MESSAGE_LABEL].text.unwrap_or("");
+    let layout = crate::gui_rescale::message_box_layout(
+        message_box_text_width(text),
+        flags,
+        screen.1,
+        MESSAGE_BOX_SKIN_BORDER,
+        unit,
+    );
+    let design = crate::settings::Rect {
+        x: 0,
+        y: layout.y,
+        w: layout.size.0,
+        h: layout.size.1,
+    };
+    let y = crate::record_form::pane_at(design, unit).y;
+    let r = form.rect();
+    form.place_at((screen.0 - r.w) / 2, y);
+}
+
 /// The clock units from `start` to `now`, signed so that a clock behind its
 /// start gives a negative span (the original subtracts in 64 bits and
 /// converts the result as a signed number).
@@ -574,6 +704,60 @@ mod tests {
         assert_eq!(m.result, 0);
         assert!(m.click(0x400));
         assert_eq!(m.result, -1);
+    }
+
+    #[test]
+    fn a_message_box_form_follows_the_original_layout() {
+        let text = "Insufficient funds";
+        let width = (message_box_text_width(text) + 0x40).max(0x140);
+        let spec = message_box_spec("Hire", text, 0x41);
+        assert_eq!(spec.size, (width + 4, 0x68));
+        assert_eq!(spec.placement, 0x808 | 0x3000);
+        assert_eq!(spec.attributes, 0x3_1022);
+        assert_eq!(spec.title, "Hire");
+        let label = &spec.records[MESSAGE_LABEL];
+        assert_eq!(
+            (label.class, label.x, label.y, label.w),
+            (5, 12, 4, width - 24)
+        );
+        assert_eq!(label.style, 0x33300);
+        assert_eq!(label.text, Some(text));
+        assert_eq!(spec.records.len(), 2);
+        let ok = &spec.records[1];
+        assert_eq!(ok.text, Some("Ok"));
+        assert_eq!((ok.class, ok.y, ok.w), (1, 13, 80));
+        assert_eq!(ok.x, (width - 80) / 2);
+        assert!(ok.reports);
+        // The same text and flags reuse one record array.
+        let again = message_box_spec("Hire", text, 0x41);
+        assert!(std::ptr::eq(spec.records, again.records));
+        // Ok and Cancel, no close bit, no frame.
+        let both = message_box_spec("Q", "Sure?", 0x23);
+        assert_eq!(both.placement, 0x808);
+        assert_eq!(both.attributes, 0x3_1020);
+        assert_eq!(both.records[1].text, Some("Ok"));
+        assert_eq!(both.records[2].text, Some("Cancel"));
+        assert_eq!(both.records[2].x - both.records[1].x, 96);
+    }
+
+    #[test]
+    fn a_message_box_is_placed_above_the_centre_or_a_quarter_down() {
+        let form = open_message_box("Hire", "Insufficient funds", 0x41, (1280, 720), 4);
+        let r = form.rect();
+        assert_eq!(r.h, 0x68);
+        assert_eq!(r.x, (1280 - r.w) / 2);
+        // Half the spare height less half the box: 308 - 52.
+        assert_eq!(r.y, 256);
+        let high = open_message_box("Hire", "Insufficient funds", 0x51, (1280, 720), 4);
+        // A quarter of the spare height, 616 / 4 = 154, turned into design
+        // pixels (over the unit 4, truncated, times 4): 152.
+        assert_eq!(high.rect().y, 152);
+        // At unit 8 the design top (616 / 8 · 4 = 308) shows at twice that.
+        let big = open_message_box("Hire", "Insufficient funds", 0x41, (2560, 1440), 8);
+        // (The GUI's rescale gives 204: the border is kept, not doubled.)
+        assert_eq!(big.rect().h, 204);
+        assert_eq!(big.rect().x, (2560 - big.rect().w) / 2);
+        assert_eq!(big.rect().y, ((((1440 - 0x68) >> 1) - 0x34) / 8 * 4) * 2);
     }
 
     #[test]

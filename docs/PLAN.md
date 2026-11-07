@@ -134,6 +134,8 @@ Round 57 contentstream (S5): the stream thread runs; the original never streams 
 
 Round 105 os: the original's pointer warp hold and full-screen confinement act on the window, and the clipboard is ported.
 
+Round 139 osgui: the hub shows the original message box (hire refusals, company name), the GUI pointer starts unknown, and the viewport action removal keys on the handler code.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
@@ -2438,6 +2440,8 @@ Round 124 forcepicks: the force blast meets struck parts in their frame and stir
 Round 132 trees: the skill screen opens in play on K with learn, forget and close, and four port bugs in it are fixed; the power tree has nothing missing.
 
 Round 136 saves: the save unit start-up legacy pass runs where the original runs it.
+
+Round 140 followers: a recruited companion follows the player through a door into the next level, as the original transition carries followers.
 
 ### Phase 8 — Polish and release
 

@@ -665,9 +665,13 @@ pub struct DropState {
     pub image: bool,
 }
 
-/// The pointer's state in the task.
+/// The pointer's state in the task (the original's cursor object, built
+/// once with the task: its position unknown, its drag distance 2, no
+/// buttons and its shape then set to hidden, see [`GuiTask::new`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointerState {
+    /// The last position read, [`POINTER_UNKNOWN`] on both axes until the
+    /// first read, so that read always counts as a move.
     pub x: i32,
     pub y: i32,
     /// Where the press (or the capture) started; the drag threshold and the
@@ -700,11 +704,15 @@ pub struct PointerState {
     pub os_captured: bool,
 }
 
+/// The cursor constructor's position on each axis: "unknown"
+/// (`0x80000000`), which no pointer read gives.
+pub const POINTER_UNKNOWN: i32 = i32::MIN;
+
 impl Default for PointerState {
     fn default() -> Self {
         Self {
-            x: 0,
-            y: 0,
+            x: POINTER_UNKNOWN,
+            y: POINTER_UNKNOWN,
             press_x: 0,
             press_y: 0,
             click_x: 0,
@@ -1711,6 +1719,17 @@ mod tests {
         assert!(!r.contains(110, 69));
         assert!(!r.contains(10, 70));
         assert_eq!((r.width(), r.height()), (100, 50));
+    }
+
+    #[test]
+    fn the_first_pointer_read_is_a_move() {
+        let mut task = GuiTask::new((800, 600));
+        assert_eq!(task.pointer.x, POINTER_UNKNOWN);
+        assert_eq!(task.pointer.limit, 2);
+        assert_eq!(task.cursor, -1);
+        assert!(task.update(false, (0, 0)));
+        assert_eq!((task.pointer.x, task.pointer.y), (0, 0));
+        assert!(!task.update(false, (0, 0)));
     }
 
     #[test]

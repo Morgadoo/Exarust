@@ -508,7 +508,13 @@ only.
   flush empties the migration list after flushing its characters.
   Re-attaching one frees its UID manager, re-creates its player controls,
   clears its carry word, stores 1 as its body controller and raises a minimum distance under 5 cm to 5 (a NaN is
-  kept, as the unordered compare does not branch).
+  kept, as the unordered compare does not branch). The controller word the
+  migration tests is the AI's activity word (4 is the follow), and only the
+  door and portal transition runs the pass; a save load, a new session and
+  the arena's loads carry nobody. Exarust runs it just before a door's
+  teardown (`exa_game::follower_travel`), takes each follower down into its
+  record (live possessions, health, item ids promoted) and held roles, and
+  respawns it on the offsets once the destination's collision is in.
 ### Loading a level
 
 Three entry points open a level; all store the current locale's sixteen-byte
