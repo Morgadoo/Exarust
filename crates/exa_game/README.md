@@ -382,10 +382,12 @@ its record (the record on the player's body; a story player always has
 one), the body takes the `TechniqueWord` component at the level start and on
 a rise, `apply_technique_word` puts it on the body's caster and adds the
 record's perks to its fighter, and play's end writes a changed account
-experience back through a `SettingsEntry`. The explored cells still need the level's
-sector grid, which the running game does not hand the system yet, and no
-pickup or kill calls `discover_item`/`discover_kill`, so the pool only
-holds the carried experience. The shop (`trade`): a
+experience back through a `SettingsEntry`. Each pass first explores in a
+grid level (`StoryExperience::explore` over `RoomCells`, the level's rooms):
+the 5 × 5 cells around the player whose plane A open flag is set and whose
+room is active in the room tracker (faded in) earn their points, in the
+level's map found by its locale name or entered at the grid's size. No
+pickup or kill calls `discover_item`/`discover_kill` yet. The shop (`trade`): a
 first stock of 18 to 20, the
 rotation by size, candidates by kind, listing, model and rank weighed by
 rarity through the original's quick logarithm and exponential (duplicates
