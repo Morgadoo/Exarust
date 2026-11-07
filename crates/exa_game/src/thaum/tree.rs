@@ -837,7 +837,9 @@ pub struct TreeScreen {
     pub pointer: [f32; 2],
     /// The point a pan drag started from.
     pub press_point: [f32; 2],
-    /// A link's turn while it is dragged.
+    /// The edited link's turn (in turns) while a link's turn is moved;
+    /// while a new link is dragged out, its angle in radians, as the
+    /// original keeps the one word for both.
     pub link_turn: f32,
     /// The node the screen must look at.
     pub hovered: i32,
@@ -1692,17 +1694,22 @@ impl TreeScreen {
                 };
                 let dx = x - centre[0];
                 let dy = y - centre[1];
-                // The reach is squared in double against the single sum.
+                // The reach is squared in double against the single sum;
+                // only a reach strictly beyond the distance keeps the hover
+                // (`COMISD` with `JP`/`JBE` to the link: a not-a-number
+                // drags the link).
                 let reach = f64::from(self.zoom_fixed) * 0.55;
-                if reach * reach <= f64::from(dy * dy + dx * dx) {
+                let distance = f64::from(dy * dy + dx * dx);
+                if reach * reach > distance {
+                    self.drag = DragState::LinkHover;
+                } else {
+                    // The angle is kept in radians while the link is
+                    // dragged (no division by 2π here).
                     if self.drag != DragState::Link {
                         self.drag = DragState::Link;
-                        self.link_turn =
-                            link_angle(centre[0], centre[1], x, y) / std::f32::consts::TAU;
+                        self.link_turn = link_angle(centre[0], centre[1], x, y);
                     }
                     self.pointer = [x, y];
-                } else {
-                    self.drag = DragState::LinkHover;
                 }
                 3
             }
@@ -1715,8 +1722,9 @@ impl TreeScreen {
     /// placed node's edge to the pointer, its start along the drag's turn by
     /// `(0.508 − zoom·0.003)·zoom_fixed` (0.29 when the power is framed),
     /// and both tangents scaled by the distance, held to 400, times the
-    /// zoom. The tangent convention (the far one pointing back at the node)
-    /// is inferred from the engine's vector calls: a labelled guess. Like
+    /// zoom. The far tangent runs from the start toward the pointer: the
+    /// original takes the start less the pointer, normalises it and scales
+    /// it by the negated reach (its vector subtract is `a − b`). Like
     /// the tree's own links, the spline's two end handles (a fifteenth of
     /// each tangent beyond the ends, for the ribbon's end directions) are
     /// not points of the curve and are not kept.
@@ -1724,9 +1732,7 @@ impl TreeScreen {
         self.drag_link_spline().map(|spline| spline.0)
     }
 
-    /// The drag link's curve and its two tangent handles. A labelled guess
-    /// at the far tangent: the engine's vector calls imply the handle points
-    /// back along the drag direction.
+    /// The drag link's curve and its two tangent handles.
     fn drag_link_spline(&self) -> Option<DragSpline> {
         if self.drag != DragState::Link {
             return None;
@@ -1734,7 +1740,8 @@ impl TreeScreen {
         let index = self.node_under.checked_sub(1)? as usize;
         let node = self.nodes.get(index)?;
         let at = *self.placed.get(index)?;
-        let (sine, cosine) = (self.link_turn * std::f32::consts::TAU).sin_cos();
+        // The engine's sine and cosine of the angle in radians.
+        let (sine, cosine) = exa_physics::engine_math::sin_cos(self.link_turn);
         let base = if node.power & word::FRAME == 0 {
             0.508
         } else {
@@ -1780,10 +1787,14 @@ impl TreeScreen {
     }
 
     /// Ends a drag: a link dropped on a node is added to the focused node.
-    /// Returns the released pointer and whether a link was added.
-    pub fn release_drag(&mut self, x: f32, y: f32) -> bool {
+    /// The drop is taken where the drag last moved the link to (the
+    /// original reads its stored pointer, not the release's), and the
+    /// dragged angle is turned into turns (over 2π in single). Returns
+    /// whether a link was added.
+    pub fn release_drag(&mut self, _x: f32, _y: f32) -> bool {
         let mut added = false;
         if self.drag == DragState::Link {
+            let [x, y] = self.pointer;
             let end = self.node_at(x, y);
             if end > 0
                 && let Some(node) = self.node_under.checked_sub(1)
@@ -1793,7 +1804,7 @@ impl TreeScreen {
                     let turn = link_angle(self.placed[end - 1][0], self.placed[end - 1][1], x, y)
                         / std::f32::consts::TAU;
                     let link = NodeLink {
-                        out_turn: self.link_turn,
+                        out_turn: self.link_turn / std::f32::consts::TAU,
                         in_turn: turn,
                         end: end as u32,
                     };
@@ -4918,11 +4929,45 @@ mod tests {
         screen.nodes[1].y = 0.0;
         screen.base[1] = [100.0, 0.0];
         screen.refresh_placement();
-        let added = screen.release_drag(100.0, 0.0);
+        // The drop is where the drag last moved the link, not the release.
+        screen.pointer = [100.0, 0.0];
+        screen.link_turn = std::f32::consts::FRAC_PI_2;
+        let added = screen.release_drag(-500.0, -500.0);
         assert!(added);
         assert_eq!(screen.nodes[0].links.len(), 1);
         assert_eq!(screen.links[0].len(), 1);
         assert_eq!(screen.links[0][0].end, 2);
+        // The dragged angle is kept in radians and stored in turns.
+        assert_eq!(
+            screen.links[0][0].out_turn,
+            std::f32::consts::FRAC_PI_2 / std::f32::consts::TAU
+        );
+    }
+
+    /// The link drag's reach: a pointer strictly inside 0.55 of the fixed
+    /// zoom (squared in double) keeps the hover, at or beyond it (or a
+    /// not-a-number) drags the link, whose angle is kept in radians.
+    #[test]
+    fn the_dragged_link_leaves_its_node_at_the_reach() {
+        let mut screen =
+            TreeScreen::from_nodes(DOMAIN_MIND, TreeMode::Play, vec![node(0x101, vec![])]);
+        screen.zoom_fixed = 100.0;
+        screen.placed[0] = [0.0, 0.0];
+        screen.node_under = 1;
+        screen.drag = DragState::LinkHover;
+        assert_eq!(screen.drag_move(54.0, 0.0, 0), 3);
+        assert_eq!(screen.drag, DragState::LinkHover);
+        // 0.55 · 100 in double is a hair over 55, so 55 itself still
+        // hovers.
+        assert_eq!(screen.drag_move(55.0, 0.0, 0), 3);
+        assert_eq!(screen.drag, DragState::LinkHover);
+        assert_eq!(screen.drag_move(56.0, 0.0, 0), 3);
+        assert_eq!(screen.drag, DragState::Link);
+        assert_eq!(screen.link_turn, link_angle(0.0, 0.0, 56.0, 0.0));
+        assert_eq!(screen.pointer, [56.0, 0.0]);
+        screen.drag = DragState::LinkHover;
+        assert_eq!(screen.drag_move(f32::NAN, 0.0, 0), 3);
+        assert_eq!(screen.drag, DragState::Link);
     }
 
     #[test]

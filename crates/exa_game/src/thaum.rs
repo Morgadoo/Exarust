@@ -63,6 +63,7 @@ pub mod tree;
 pub mod user_stamp;
 pub mod vanish_live;
 pub mod veil;
+pub mod veil_live;
 pub mod visuals;
 pub mod wave_live;
 pub mod wisps;
