@@ -9,6 +9,8 @@
 //! rotated by a quarter turn per side. The ceiling pieces and the pieces'
 //! `+R…` strips are not spawned: they are merged per room into the room's
 //! lid, and the pieces' `[…` boxes into its occluder ([`crate::room_view`]).
+//! A cell's floor pieces are merged into one `+Floor` node per cell, as the
+//! original's builder merges them ([`FloorMerge`]).
 //! Rules and data layout: `docs/formats/RFC.md`.
 
 use std::collections::HashMap;
@@ -440,6 +442,8 @@ fn set_entry(name: &str) -> String {
 pub struct GridStats {
     pub cells: usize,
     pub pieces: usize,
+    /// Material runs of the cells' merged `+Floor` meshes.
+    pub floor_parts: usize,
     /// Rooms given black shells.
     pub shelled_rooms: usize,
 }
@@ -512,7 +516,6 @@ pub struct GridBuild {
     /// The next row of cells (starting inside the border).
     row: i64,
     stats: GridStats,
-    uvs: HashMap<(AssetId<Mesh>, [i32; 7]), Handle<Mesh>>,
     /// Each set model's node children, by the model's address (the sets
     /// hold the models for the whole build).
     children: HashMap<usize, Arc<Vec<Vec<usize>>>>,
@@ -535,7 +538,6 @@ impl GridBuild {
             floors_by_set: HashMap::new(),
             row: 1,
             stats: GridStats::default(),
-            uvs: HashMap::new(),
             children: HashMap::new(),
         }
     }
@@ -648,9 +650,9 @@ impl GridBuild {
                 return false;
             }
         }
-        let mut uvs = FloorUvs {
+        let mut uvs = FloorMerge {
             meshes: &mut *loader.meshes,
-            cache: std::mem::take(&mut self.uvs),
+            groups: Vec::new(),
         };
         let (w, h) = (grid.width as i64, grid.height as i64);
         while self.row < h - 1 {
@@ -678,17 +680,20 @@ impl GridBuild {
                 break;
             }
         }
-        self.uvs = uvs.cache;
         let done = self.row >= h - 1;
         if done && !self.shells_spawned {
             self.shells_spawned = true;
             self.stats.shelled_rooms = spawn_shells(commands, loader.meshes, &self.shells);
             // The level's rooms keep the strips for the room manager's ray
-            // queries ([`ray_blocks`]).
+            // queries ([`ray_blocks`]). The build ends with the room
+            // manager's reset: every room hidden, none fading (its debug
+            // view of every room is [`crate::room_view::RoomView::all`],
+            // which shows them all again each frame).
             let shells = Arc::new(std::mem::take(&mut self.shells));
             commands.queue(move |world: &mut World| {
                 if let Some(mut level) = world.get_resource_mut::<crate::room_view::LevelRooms>() {
                     level.shells = shells;
+                    level.tracker.hide_all();
                 }
             });
         }
@@ -975,7 +980,7 @@ struct Placer<'a, 'm, 'c, 'w, 's> {
     centre: Vec3,
     stats: &'a mut GridStats,
     children: &'a mut HashMap<usize, Arc<Vec<Vec<usize>>>>,
-    uvs: &'a mut FloorUvs<'m>,
+    uvs: &'a mut FloorMerge<'m>,
     rules: PieceRules,
     /// The cell's room, and its shell strips.
     room: Option<u16>,
@@ -1032,6 +1037,13 @@ impl Placer<'_, '_, '_, '_, '_> {
             self.room,
             self.shell.as_deref_mut(),
         )
+    }
+
+    /// Spawns the cell's merged `+Floor` from what its pieces gave
+    /// ([`spawn_cell_floor`]).
+    fn flush_floor(&mut self) {
+        self.stats.floor_parts +=
+            spawn_cell_floor(self.commands, self.uvs, self.parent, self.centre, self.room);
     }
 
     /// Adds ceiling slot piece `node` of `model` on `side` to the room's
@@ -1250,6 +1262,7 @@ fn spawn_cell(
             }
         }
     }
+    placer.flush_floor();
 }
 
 /// Centre (metres) of the open, floored cell nearest the grid centre: a
@@ -1329,65 +1342,217 @@ struct Strips {
     ceiling: bool,
 }
 
-/// Floor meshes re-mapped the way the original maps a cell's merged floor:
-/// `+`-material triangles get planar UVs, one square repeat per 6 m cell
-/// aligned to its borders (u = x/6 + ½, v = ½ − z/6 in cell-local metres,
-/// after the piece's rotation). Cached per mesh and cell-local placement.
-struct FloorUvs<'a> {
+/// A cell's floor as the original merges it into its `+Floor` mesh: every
+/// mesh of the floor set's pieces and of the pieces' `+F…` strips, placed in
+/// the cell's own space (origin at the cell centre, after the piece's side
+/// rotation), appended in the order the builder places them and grouped by
+/// material in order of first use, as the merge regroups its faces.
+///
+/// `+`-material triangles take the original's planar UVs, one square repeat
+/// per 6 m cell aligned to its borders: `u = x/600 + ½`, `v = ½ − z/600` in
+/// cell-local centimetres (the stored UVs are discarded). Other materials
+/// keep their own UVs and tangents.
+struct FloorMerge<'a> {
     meshes: &'a mut Assets<Mesh>,
-    cache: HashMap<(AssetId<Mesh>, [i32; 7]), Handle<Mesh>>,
+    groups: Vec<FloorGroup>,
 }
 
-impl FloorUvs<'_> {
-    fn remap(&mut self, mesh: &Handle<Mesh>, local: Affine3A) -> Handle<Mesh> {
-        let (_, rotation, translation) = local.to_scale_rotation_translation();
-        let q = |v: f32| (v * 1000.0).round() as i32;
-        let key = (
-            mesh.id(),
-            [
-                q(rotation.x),
-                q(rotation.y),
-                q(rotation.z),
-                q(rotation.w),
-                q(translation.x),
-                q(translation.y),
-                q(translation.z),
-            ],
-        );
-        if let Some(h) = self.cache.get(&key) {
-            return h.clone();
-        }
+/// One material's run of a merged cell floor.
+struct FloorGroup {
+    material: Handle<exa_render::material::ExaMaterial>,
+    /// The triangles take the planar UVs (the material came from a `+`
+    /// material).
+    planar: bool,
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Option<Vec<[f32; 2]>>,
+    tangents: Option<Vec<[f32; 4]>>,
+    indices: Vec<u32>,
+}
+
+/// The planar UV of a cell-local point (metres): the original's mapping in
+/// its own units and order, the position in centimetres times 1/600, then
+/// half a cell.
+fn planar_uv(c: Vec3) -> [f32; 2] {
+    let x = (c.x * 100.0) * INV_CELL_CM;
+    let z = (c.z * 100.0) * INV_CELL_CM;
+    [x + 0.5, 0.5 - z]
+}
+
+impl FloorMerge<'_> {
+    /// Appends `mesh` placed at `local` in the cell, drawn with `material`;
+    /// `planar` gives it the planar UVs.
+    fn add(
+        &mut self,
+        mesh: &Handle<Mesh>,
+        material: &Handle<exa_render::material::ExaMaterial>,
+        planar: bool,
+        local: Affine3A,
+    ) {
         let Some(source) = self.meshes.get(mesh) else {
-            return mesh.clone();
+            return;
         };
-        let mut m = source.clone();
-        let uv: Option<Vec<[f32; 2]>> = m
+        let Some(positions) = source
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .and_then(|a| a.as_float3())
-            .map(|ps| {
-                ps.iter()
-                    .map(|&p| {
-                        let c = local.transform_point3(Vec3::from(p));
-                        // The original's planar mapping, in its own units
-                        // and order: the cell-local position in
-                        // centimetres times 1/600, then half a cell.
-                        let x = (c.x * 100.0) * INV_CELL_CM;
-                        let z = (c.z * 100.0) * INV_CELL_CM;
-                        [x + 0.5, 0.5 - z]
-                    })
-                    .collect()
-            });
-        let handle = match uv {
-            Some(uv) => {
-                m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-                let _ = m.generate_tangents();
-                self.meshes.add(m)
-            }
-            None => mesh.clone(),
+        else {
+            return;
         };
-        self.cache.insert(key, handle.clone());
-        handle
+        let normals = source
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .and_then(|a| a.as_float3());
+        let uvs = if planar {
+            None
+        } else {
+            source
+                .attribute(Mesh::ATTRIBUTE_UV_0)
+                .and_then(|a| match a {
+                    bevy::mesh::VertexAttributeValues::Float32x2(v) => Some(v),
+                    _ => None,
+                })
+        };
+        let tangents = if planar {
+            None
+        } else {
+            source
+                .attribute(Mesh::ATTRIBUTE_TANGENT)
+                .and_then(|a| match a {
+                    bevy::mesh::VertexAttributeValues::Float32x4(v) => Some(v),
+                    _ => None,
+                })
+        };
+        let Some(indices) = source.indices() else {
+            return;
+        };
+        let (has_uv, has_tangent) = (planar || uvs.is_some(), !planar && tangents.is_some());
+        let at = match self.groups.iter().position(|g| {
+            g.material == *material
+                && g.planar == planar
+                && g.uvs.is_some() == has_uv
+                && g.tangents.is_some() == has_tangent
+        }) {
+            Some(i) => i,
+            None => {
+                self.groups.push(FloorGroup {
+                    material: material.clone(),
+                    planar,
+                    positions: Vec::new(),
+                    normals: Vec::new(),
+                    uvs: has_uv.then(Vec::new),
+                    tangents: has_tangent.then(Vec::new),
+                    indices: Vec::new(),
+                });
+                self.groups.len() - 1
+            }
+        };
+        let g = &mut self.groups[at];
+        let base = g.positions.len() as u32;
+        let normal_matrix = local.matrix3.inverse().transpose();
+        for (i, &p) in positions.iter().enumerate() {
+            let c = local.transform_point3(Vec3::from(p));
+            g.positions.push(c.to_array());
+            let n = normals
+                .and_then(|n| n.get(i))
+                .map_or(Vec3::Y, |&n| Vec3::from(n));
+            g.normals.push(
+                (normal_matrix * Vec3A::from(n))
+                    .normalize_or_zero()
+                    .to_array(),
+            );
+            if let Some(out) = &mut g.uvs {
+                out.push(if planar {
+                    planar_uv(c)
+                } else {
+                    uvs.and_then(|u| u.get(i)).copied().unwrap_or_default()
+                });
+            }
+            if let Some(out) = &mut g.tangents {
+                let t = tangents
+                    .and_then(|t| t.get(i))
+                    .copied()
+                    .unwrap_or([1.0, 0.0, 0.0, 1.0]);
+                let d = (local.matrix3 * Vec3A::new(t[0], t[1], t[2])).normalize_or_zero();
+                out.push([d.x, d.y, d.z, t[3]]);
+            }
+        }
+        g.indices.extend(indices.iter().map(|i| base + i as u32));
     }
+
+    /// The merged meshes, one per material run; the merge is emptied.
+    fn take(&mut self) -> Vec<(Mesh, Handle<exa_render::material::ExaMaterial>)> {
+        std::mem::take(&mut self.groups)
+            .into_iter()
+            .filter(|g| g.indices.len() >= 3)
+            .map(|g| {
+                let indices = if g.positions.len() <= u16::MAX as usize {
+                    bevy::mesh::Indices::U16(g.indices.iter().map(|&i| i as u16).collect())
+                } else {
+                    bevy::mesh::Indices::U32(g.indices)
+                };
+                let mut m = Mesh::new(
+                    bevy::mesh::PrimitiveTopology::TriangleList,
+                    bevy::asset::RenderAssetUsages::default(),
+                )
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, g.positions)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, g.normals)
+                .with_inserted_indices(indices);
+                if let Some(uvs) = g.uvs {
+                    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+                }
+                if let Some(tangents) = g.tangents {
+                    m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+                } else if g.planar {
+                    let _ = m.generate_tangents();
+                }
+                (m, g.material)
+            })
+            .collect()
+    }
+}
+
+/// Spawns a cell's merged floor: one `+Floor` node at the cell centre with
+/// a part per material run, each a floor for the ground query, the GI's
+/// floor points and the room view. Nothing when the cell has no floor.
+fn spawn_cell_floor(
+    commands: &mut Commands,
+    merge: &mut FloorMerge,
+    parent: Entity,
+    centre: Vec3,
+    room: Option<u16>,
+) -> usize {
+    let parts = merge.take();
+    if parts.is_empty() {
+        return 0;
+    }
+    let cell = (centre.xz() * 100.0).round().as_ivec2();
+    let node = commands
+        .spawn((
+            Name::new(MERGED_FLOOR_NAME),
+            Transform::from_translation(centre),
+            Visibility::default(),
+            ChildOf(parent),
+        ))
+        .id();
+    let count = parts.len();
+    for (mesh, material) in parts {
+        let part = commands
+            .spawn((
+                Mesh3d(merge.meshes.add(mesh)),
+                MeshMaterial3d(material),
+                exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
+                crate::gi_volume::GiFloor {
+                    cell,
+                    to_cell: Affine3A::IDENTITY,
+                },
+                exa_physics::FloorMesh,
+                ChildOf(node),
+            ))
+            .id();
+        if let Some(room) = room {
+            commands.entity(part).insert(InRoom(room));
+        }
+    }
+    count
 }
 
 /// Spawns `node` (with the given transform in place of its own) and its
@@ -1405,7 +1570,7 @@ fn spawn_piece(
     transform: Transform,
     parent: Entity,
     rules: &PieceRules,
-    uvs: &mut FloorUvs,
+    uvs: &mut FloorMerge,
     room: Option<u16>,
     mut shell: Option<&mut ShellStrips>,
 ) -> Strips {
@@ -1416,8 +1581,6 @@ fn spawn_piece(
         .is_some_and(|f| std::ptr::eq(f.as_ref(), model));
     // The piece in its cell: the side rotation, about the cell centre.
     let cell_local = Affine3A::from_quat(transform.rotation);
-    // The cell, by its centre on the grid in whole centimetres.
-    let cell = (transform.translation.xz() * 100.0).round().as_ivec2();
     let world = transform.compute_affine();
     let root = spawn_node(
         commands,
@@ -1428,7 +1591,6 @@ fn spawn_piece(
         None,
         whole_floor.then_some((cell_local, &mut *uvs)),
         room,
-        cell,
     );
     let mut stack: Vec<(
         usize,
@@ -1472,7 +1634,6 @@ fn spawn_piece(
             surface,
             floor.then_some((local, &mut *uvs)),
             room,
-            cell,
         );
         stack.extend(kids[n].iter().map(|&k| (k, e, surface, local)));
     }
@@ -1487,55 +1648,43 @@ fn spawn_node(
     transform: Transform,
     parent: Entity,
     surface: Option<&Handle<exa_render::material::ExaMaterial>>,
-    mut floor: Option<(Affine3A, &mut FloorUvs)>,
+    floor: Option<(Affine3A, &mut FloorMerge)>,
     room: Option<u16>,
-    cell: IVec2,
 ) -> Entity {
     let n = &model.nodes[node];
     let e = commands
         .spawn((transform, Visibility::default(), ChildOf(parent)))
         .id();
-    for (i, (mesh, material)) in n.parts.iter().enumerate() {
-        let surfaced = n.part_materials[i].starts_with('+');
-        let material = match surface {
-            Some(s) if surfaced => s,
-            _ => material,
-        };
-        let mesh = match &mut floor {
-            Some((local, uvs)) if surfaced => uvs.remap(mesh, *local),
-            _ => mesh.clone(),
-        };
-        // Floors keep their own shadow off themselves as terrain does; the
-        // rest of a set piece less so.
-        let bias = if floor.is_some() {
-            exa_render::shadow_bias::FLOOR
-        } else {
-            exa_render::shadow_bias::GRID_PIECE
-        };
-        let part = commands
-            .spawn((
-                Mesh3d(mesh),
-                MeshMaterial3d(material.clone()),
-                exa_render::lights::ShadowBias(bias),
-                ChildOf(e),
-            ))
-            .id();
-        if let Some((local, _)) = &floor {
-            commands.entity(part).insert(crate::gi_volume::GiFloor {
-                cell,
-                to_cell: *local,
-            });
+    if let Some((local, merge)) = floor {
+        // A floor node's meshes go into the cell's merged `+Floor` mesh
+        // ([`FloorMerge`]); the node itself stays for its light and GI
+        // points.
+        for (i, (mesh, material)) in n.parts.iter().enumerate() {
+            let surfaced = n.part_materials[i].starts_with('+');
+            let material = match surface {
+                Some(s) if surfaced => s,
+                _ => material,
+            };
+            merge.add(mesh, material, surfaced, local);
         }
-        // The original merges a cell's floor (the floor set's pieces and the
-        // wall pieces' `+F` strips) into one `+Floor` node whose second flag
-        // word gains the floor bit ([`MERGED_FLOOR_FLAGS`]); a set piece's
-        // own floor nodes (stairs, steps) carry it in the file. The Ground
-        // Query meets only these.
-        if floor.is_some() || n.floor {
-            commands.entity(part).insert(exa_physics::FloorMesh);
-        }
-        if let Some(room) = room {
-            commands.entity(part).insert(InRoom(room));
+    } else {
+        for (mesh, material) in &n.parts {
+            let part = commands
+                .spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(material.clone()),
+                    exa_render::lights::ShadowBias(exa_render::shadow_bias::GRID_PIECE),
+                    ChildOf(e),
+                ))
+                .id();
+            // A set piece's own floor nodes (stairs, steps) carry the floor
+            // bit in the file; the Ground Query meets only floors.
+            if n.floor {
+                commands.entity(part).insert(exa_physics::FloorMesh);
+            }
+            if let Some(room) = room {
+                commands.entity(part).insert(InRoom(room));
+            }
         }
     }
     if let Some(light) = &n.light {
@@ -1663,9 +1812,9 @@ mod tests {
         let mut shell = ShellStrips::default();
         {
             let mut commands = Commands::new(&mut queue, &world);
-            let mut uvs = FloorUvs {
+            let mut uvs = FloorMerge {
                 meshes: &mut meshes,
-                cache: HashMap::new(),
+                groups: Vec::new(),
             };
             let mut stats = GridStats::default();
             let mut children = HashMap::new();
@@ -2023,6 +2172,57 @@ mod tests {
         let six = (6.0f32 * 100.0) * INV_CELL_CM;
         assert_eq!(six, 1.0);
         assert_eq!(0.5 - six, -0.5);
+        assert_eq!(planar_uv(Vec3::new(1.0, 0.0, 1.0)), [x + 0.5, 0.5 - x]);
+    }
+
+    #[test]
+    fn a_cells_floor_merges_into_one_run_per_material() {
+        use bevy::asset::uuid_handle;
+        use exa_render::material::ExaMaterial;
+        const SURFACE: Handle<ExaMaterial> = uuid_handle!("2b7e0f4c-6d1a-4c39-9e5b-3f8a1c2d4e01");
+        const STONE: Handle<ExaMaterial> = uuid_handle!("2b7e0f4c-6d1a-4c39-9e5b-3f8a1c2d4e02");
+        let mut meshes = Assets::<Mesh>::default();
+        let a = quad(&mut meshes, [0.0, 1.0], 0.0, [0.0, 1.0]);
+        let b = quad(&mut meshes, [-1.0, 0.0], 0.0, [-1.0, 0.0]);
+        let mut merge = FloorMerge {
+            meshes: &mut meshes,
+            groups: Vec::new(),
+        };
+        // The second piece turned a quarter, as on side 1.
+        let turn = Affine3A::from_quat(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        merge.add(&a, &SURFACE, true, Affine3A::IDENTITY);
+        merge.add(&b, &STONE, false, Affine3A::IDENTITY);
+        merge.add(&b, &SURFACE, true, turn);
+        let runs = merge.take();
+        assert!(merge.groups.is_empty());
+        // Two runs in order of first use; the surface's holds both quads,
+        // the second's indices offset past the first's vertices.
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].1, SURFACE);
+        assert_eq!(runs[1].1, STONE);
+        let m = &runs[0].0;
+        let idx: Vec<usize> = m.indices().unwrap().iter().collect();
+        assert_eq!(idx, vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+        let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) =
+            m.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("planar UVs")
+        };
+        let Some(ps) = m
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .and_then(|a| a.as_float3())
+        else {
+            panic!("positions")
+        };
+        // Every corner maps by its cell-local position, after the turn.
+        for (p, uv) in ps.iter().zip(uv) {
+            assert_eq!(*uv, planar_uv(Vec3::from(*p)));
+        }
+        assert!(
+            (Vec3::from(ps[4]) - turn.transform_point3(Vec3::new(-1.0, 0.0, -1.0))).length() < 1e-6
+        );
+        // The stone run has no stored UVs and gets none.
+        assert!(runs[1].0.attribute(Mesh::ATTRIBUTE_UV_0).is_none());
     }
 
     #[test]
