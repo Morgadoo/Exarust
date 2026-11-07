@@ -375,7 +375,7 @@ practice lesson), and the arena's lesson goes through the same skill lump.
 The running story (`experience_live`) now drives them: the launch's
 settings store fills `AccountExperience`, the first frame of play seeds the
 pool and both clocks from the player's record (`StoryExperience::begin`),
-each of the flow's once-a-second `Step::Discovery` passes (`DiscoveryTick`,
+each of the flow's per-frame `Step::Discovery` passes (`DiscoveryTick`,
 game clock) converts the account, the player and the companions
 (`advance`) and writes the player's experience, skills and powers back to
 its record (the record on the player's body; a story player always has

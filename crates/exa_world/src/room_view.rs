@@ -164,6 +164,10 @@ pub const DOOR_LOG_FRAMES: u32 = 60;
 struct ToggleState {
     frames: u32,
     leaf: Option<Entity>,
+    /// The frame the toggle landed on.
+    toggled_at: u32,
+    /// "No leaf yet" was logged.
+    waiting: bool,
 }
 
 fn toggle_nearest_door(
@@ -183,7 +187,10 @@ fn toggle_nearest_door(
     state.frames += 1;
     let feet = anchor.translation();
     let rooms = &level.rooms;
-    if state.frames == at_frame {
+    // From the asked frame on, the first frame a bound hinged leaf exists
+    // (door bodies register with the level's other bodies, which can be
+    // well after the rooms exist).
+    if state.frames >= at_frame && state.leaf.is_none() {
         // The leaf whose link's door point (1.5 m inside its cell) is
         // nearest the anchor.
         let nearest = leaves
@@ -201,21 +208,27 @@ fn toggle_nearest_door(
             // of the next fixed step.
             fixed.run(toggle_door, leaf);
             state.leaf = Some(leaf);
+            state.toggled_at = state.frames;
             info!(
-                "door toggle: leaf {leaf}, door point {:.2} m away, link {}->{}, open {}",
+                "door toggle at frame {}: leaf {leaf}, door point {:.2} m away, link {}->{}, open {}",
+                state.frames,
                 d2.sqrt(),
                 link.from,
                 link.to,
                 level.tracker.is_open(*link)
             );
-        } else {
-            info!("door toggle: no bound hinged leaf");
+        } else if !state.waiting {
+            state.waiting = true;
+            info!("door toggle: no bound hinged leaf yet; waiting for one");
         }
     }
     let Some(leaf) = state.leaf else {
         return;
     };
-    if state.frames.saturating_sub(at_frame) % DOOR_LOG_FRAMES == 0
+    if state
+        .frames
+        .saturating_sub(state.toggled_at)
+        .is_multiple_of(DOOR_LOG_FRAMES)
         && let Ok((_, BoundDoor(link), glue)) = leaves.get(leaf)
     {
         info!(
