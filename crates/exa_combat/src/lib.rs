@@ -590,7 +590,8 @@ pub fn write_countered(commands: &mut Commands, fighter: Entity, countered: Opti
 /// ([`attack::start_blend`]: none on the main side, round((20 − W19) × 0.6)
 /// on the other, the executor's for a stab or an overhead). The swing
 /// starts at full strength with its window shut ([`SwingState::start`]); a
-/// side attack stamps its start.
+/// side attack stamps its start. A parry under way, or the hold an attack
+/// it leaves kept, ends first ([`parry::attack_parry_end`]).
 #[allow(clippy::too_many_arguments)]
 pub fn start_attack<'a>(
     commands: &mut Commands,
@@ -603,6 +604,16 @@ pub fn start_attack<'a>(
     stance: &str,
 ) {
     let motion = start.motion;
+    // The starter's end of the fighter's parry, before its countered
+    // motion is written: the clip it leaves, read before the start.
+    let from_attack = attack::AttackMotion::of_action(&anim.action).is_some();
+    parry::end_parry_for_attack(
+        commands,
+        fighter,
+        from_attack,
+        motion,
+        start.countered.is_some(),
+    );
     attacker.primary = Some(attack::primary_slot(start.weapon_class, motion));
     let primary_blend = attacker.primary_record(fighter, blades).map(|r| r.blend);
     anim.play_once(motion.action(), stance);

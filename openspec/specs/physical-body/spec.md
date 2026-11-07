@@ -1221,11 +1221,15 @@ With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v 
 - **THEN** its anchors sit 24.5 and 9.5 cm up and its level settles at 0.60, where on level ground it is 1
 
 ### Requirement: Support pin pull
-In each iteration a supported living body SHALL pull its two thorax pins and its pelvis origin in order, each reading the pushes before it, then the pelvis origin again, toward the carry's goals. One pull, in cm: 0.2·e·|e|/60 under 60, else 12 along e, less this tick's horizontal displacement, capped at 8, times S²·(G·(P·F)), G the pin-gain (from 0.08), F the pin factor. A gap under 1.19e-7 cm², walking, or off its feet (down, getting up, dormant or dead) pulls nothing.
+Each iteration a supported living body SHALL pull each part's support pins after its links, children first (the thorax's two, last the pelvis origin twice), each reading the pushes before it, toward the carry's goals. One pull, in cm: 0.2·e·|e|/60 under 60, else 12 along e, less this tick's horizontal displacement, capped at 8, times S²·(G·(P·F)), G the pin-gain (from 0.08), F the pin factor. A gap under 1.19e-7 cm², walking, or off its feet (down, getting up, dormant or dead) pulls nothing.
 
 #### Scenario: Pelvis origin twice
 - **WHEN** a supported pelvis origin and a thorax pin are each 10 cm from their clamped targets and have not moved this tick
 - **THEN** the thorax pin takes one application and the pelvis origin takes a second after the first push has moved it
+
+#### Scenario: Pins after the part's links
+- **WHEN** a supported body's thorax link to the spine and its thorax pin both correct the thorax in one iteration
+- **THEN** the pin's pull reads the thorax as its link left it, and the pelvis pins come after every other part
 
 #### Scenario: One application inside 60 cm
 - **WHEN** a supported pin is 10 cm from its clamped target, its horizontal displacement this tick is 1 cm along that error, and the body is an alert human (S = 1, pin-gain 0.08, T = 0.5, E = 1, pin factor 1.25) that is not getting up
@@ -1496,6 +1500,7 @@ For a recoil or a follow-through of class word 0x90 without the continuation bit
 #### Scenario: Two weapons counter late in a side swing
 - **WHEN** a striker of class word 0x90 is recoiled at clock 0.5 in motion 6, then in motion 11, then with the stalling bit
 - **THEN** the first counters with no rest, and the other two recoil with a rest
+
 ### Requirement: Follow-through
 A class word of 0x90 continuing, or a clock widened past 0.4 with a counter, SHALL write nothing. The scale SHALL be gain times recoil times speed times 0.15, floored at 0. A body zone at or under the epsilon SHALL set strength 0, else the square root times the scale. An edge SHALL use one minus the zone times the scale plus the zone. Strength SHALL cap at 1. Stall SHALL be one minus strength times 0.05, widened. Flags SHALL gain 6. The end SHALL be the truncated scale times 400 plus now.
 

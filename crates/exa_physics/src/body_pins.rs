@@ -4,7 +4,10 @@
 //! sets its pin records' targets: the posed points on the character frame,
 //! shifted forward without support (the thorax pins), led toward a
 //! recovery step, then clamped about the feet centre. The second pelvis
-//! pull sees the first push. With no support the pull is zero.
+//! pull sees the first push. With no support the pull is zero. Each part's
+//! pins are pulled right after its own links, children first (the thorax's
+//! before the spine's links, the pelvis's last), as the original's living
+//! link iteration does.
 //!
 //! One application, in the original's centimetres ([`cm`]): after the
 //! clamp, raw is 0.2·e·|e|/60 when |e| < 60 cm and 12 cm along the error
@@ -227,6 +230,13 @@ pub(super) struct PinGoal {
     pub thorax: bool,
 }
 
+/// One solver iteration's support pin pulls: the gains and the tick's
+/// goals.
+pub(super) struct SupportPulls {
+    gain: Factors,
+    goals: Vec<PinGoal>,
+}
+
 /// The goals of one carry: the pins' goals, the thorax goals' mean and the
 /// exertion the last thorax lead wrote.
 pub(super) struct Goals {
@@ -380,21 +390,35 @@ impl Ragdoll {
         self.drive.as_mut().and_then(|d| d.lead_exertion.take())
     }
 
-    /// One pass of the support pins: the two thorax pins once and the
-    /// pelvis pin twice, each by [`pull`] toward its goal of the tick
-    /// ([`Ragdoll::set_pin_goals`]; a body not carried this tick takes
-    /// them afresh). The second pelvis pull is read after the first push.
+    /// One pass of the support pins over the whole body, in the order the
+    /// living link iteration reaches them: the thorax's two pins once,
+    /// then the pelvis pin twice ([`Ragdoll::pull_part_pins`] for each
+    /// part, children first). The iteration itself pulls each part's
+    /// pins right after that part's links.
+    #[cfg(test)]
     pub(super) fn pull_support_pins(&mut self) {
-        let Some(drive) = self.drive.as_ref() else {
+        let Some(pulls) = self.support_pulls() else {
             return;
         };
+        for k in 0..self.inward.len() {
+            let i = self.inward[k];
+            self.pull_part_pins(i, &pulls);
+        }
+    }
+
+    /// The support pins' pulls for one solver iteration: the gains and the
+    /// goals of the tick ([`Ragdoll::set_pin_goals`]; a body not carried
+    /// this tick takes them afresh). None while the body walks or is off
+    /// its feet, or has no muscles.
+    pub(super) fn support_pulls(&self) -> Option<SupportPulls> {
+        let drive = self.drive.as_ref()?;
         // Walking, or off its feet (down, getting up, dormant or dead), the
         // pin loops do not run. A shock stagger does not reopen them.
         if drive.bearing.walking || drive.bearing.off_feet {
-            return;
+            return None;
         }
         if drive.targets.len() != self.parts.len() {
-            return;
+            return None;
         }
         let has_support = drive.balance.has_support();
         let gain = Factors {
@@ -409,26 +433,34 @@ impl Ragdoll {
             pin_factor: drive.stats.pin_factor,
         };
         let goals = if drive.pin_goals.is_empty() {
-            match self.pin_goals() {
-                Some(g) => g.pins,
-                None => return,
-            }
+            self.pin_goals()?.pins
         } else {
             drive.pin_goals.clone()
         };
-        // The pin records are applied in sequence, so each pull reads the
-        // pushes before it: the second thorax pin sees the first's push.
-        // The pelvis origin is then pulled a second time, after its first.
-        let order = goals
-            .iter()
+        Some(SupportPulls { gain, goals })
+    }
+
+    /// The support pins of part `i`, as the original's living link
+    /// iteration pulls them after the part's own links (read in the
+    /// assembly): the part's pin list in order (the thorax's two pins),
+    /// then its extra pin record twice (the pelvis's), each pull reading
+    /// the pushes before it.
+    pub(super) fn pull_part_pins(&mut self, i: usize, pulls: &SupportPulls) {
+        let own = pulls.goals.iter().filter(|g| g.part == i);
+        let order = own
+            .clone()
             .filter(|g| g.thorax)
-            .chain(goals.iter().filter(|g| !g.thorax))
-            .chain(goals.iter().filter(|g| !g.thorax));
+            .chain(own.clone().filter(|g| !g.thorax))
+            .chain(own.filter(|g| !g.thorax));
         for g in order {
             let part = &self.parts[g.part];
             let at = part.point(&g.weights);
             let disp = part.slip(&g.weights);
-            let corr = pull(cm((g.goal - at).with_y(0.0)), cm(disp.with_y(0.0)), gain);
+            let corr = pull(
+                cm((g.goal - at).with_y(0.0)),
+                cm(disp.with_y(0.0)),
+                pulls.gain,
+            );
             if corr.is_finite() && corr.length_squared() > 0.0 {
                 self.parts[g.part].push(&g.weights, corr / CM);
             }

@@ -776,6 +776,9 @@ pub(crate) fn chain_side_attack(
     let aim = f.attacker.aim(Some(f.fighter), false, true, now);
     let (pick, countered) = f.attacker.pick_aimed(side, &aim);
     let motion = side.motion(pick);
+    // The chain leaves an attack: its motion start releases what that
+    // attack kept, then the countered motion is written.
+    crate::parry::end_parry_for_attack(commands, entity, true, motion, countered.is_some());
     crate::write_countered(commands, entity, countered);
     let stance = crate::stance_of(f.anim);
     f.anim.play_once(motion.action(), &stance);

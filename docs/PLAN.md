@@ -1407,6 +1407,8 @@ Round 135 itemtext: a repair refreshes an open item card in place, and one appar
 
 Round 136 blocked: the player controls block on knock-out, death and the arena forms as in the original; only the second block and the off switch refuse the hotkeys.
 
+Round 141 motilepart2: support pins are pulled per part after its links, and the attack starters end an ongoing parry as the original does.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -2440,6 +2442,8 @@ Round 124 forcepicks: the force blast meets struck parts in their frame and stir
 Round 132 trees: the skill screen opens in play on K with learn, forget and close, and four port bugs in it are fixed; the power tree has nothing missing.
 
 Round 136 saves: the save unit start-up legacy pass runs where the original runs it.
+
+Round 140 followers: a recruited companion follows the player through a door into the next level, as the original transition carries followers.
 
 ### Phase 8 — Polish and release
 
