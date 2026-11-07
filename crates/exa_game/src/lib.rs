@@ -105,6 +105,8 @@ pub mod nav_drag;
 pub mod nav_pick;
 pub mod npc_search;
 pub mod object_click;
+pub mod os_clipboard;
+pub mod os_pointer;
 pub mod pair_trace;
 pub mod panel_live;
 pub mod parchment;
@@ -194,6 +196,7 @@ impl Plugin for GamePlugin {
             character_use::CharacterUsePlugin,
         ))
         .init_resource::<prelude::Tips>()
+        .init_resource::<os_clipboard::SystemClipboard>()
         .add_systems(Update, prelude::sync_tips_setting)
         .add_plugins(prelude::TipsScreenPlugin)
         .add_plugins((
@@ -233,7 +236,7 @@ impl Plugin for GamePlugin {
                 item_ability::ItemAbilityPlugin,
                 socket_drag::SocketDragPlugin,
             ),
-            hw_config::HardwareConfigPlugin,
+            (hw_config::HardwareConfigPlugin, os_pointer::OsPointerPlugin),
             destination::DestinationPlugin,
             (
                 menu_screen::MenuScreenPlugin,

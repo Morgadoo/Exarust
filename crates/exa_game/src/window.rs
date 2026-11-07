@@ -472,6 +472,42 @@ impl PointerClip {
     }
 }
 
+/// The original's confinement of the pointer to a full-screen window.
+///
+/// Whenever a GUI capture ends (its drag clip is cleared), the original
+/// confines the pointer to the window's client rectangle if the window is
+/// full screen and has the keyboard focus; losing the focus frees it, and
+/// gaining the focus back does not confine it again until the next capture
+/// ends. Exarust takes a mouse button's release inside the focused window as
+/// the end of a capture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FocusConfinement {
+    /// A capture has ended since the window last gained the focus.
+    pub armed: bool,
+}
+
+impl FocusConfinement {
+    /// A focus change: losing the focus frees the pointer and disarms.
+    pub fn focus(&mut self, focused: bool) {
+        if !focused {
+            self.armed = false;
+        }
+    }
+
+    /// A capture ended (a button let go) while the window has the focus.
+    pub fn capture_ended(&mut self, focused: bool) {
+        if focused {
+            self.armed = true;
+        }
+    }
+
+    /// Whether the pointer is kept inside the window: armed, focused and
+    /// full screen (borderless or exclusive).
+    pub fn confines(&self, full_screen: bool, focused: bool) -> bool {
+        self.armed && full_screen && focused
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +523,27 @@ mod tests {
         assert!(display_mode_refused((-5, 768), desktop, &modes));
         assert!(!display_mode_refused((1024, 768), None, &modes));
         assert_eq!(DISPLAY_MODE_REFUSED.1, "Display mode not supported.");
+    }
+
+    #[test]
+    fn a_full_screen_window_confines_the_pointer_after_a_capture_ends() {
+        let mut clip = FocusConfinement::default();
+        // Not before the first capture ends.
+        assert!(!clip.confines(true, true));
+        // A release without the focus does not arm it.
+        clip.capture_ended(false);
+        assert!(!clip.confines(true, true));
+        clip.capture_ended(true);
+        assert!(clip.confines(true, true));
+        // Only full screen and only while focused.
+        assert!(!clip.confines(false, true));
+        assert!(!clip.confines(true, false));
+        // Losing the focus disarms; regaining it does not re-arm.
+        clip.focus(false);
+        clip.focus(true);
+        assert!(!clip.confines(true, true));
+        clip.capture_ended(true);
+        assert!(clip.confines(true, true));
     }
 
     #[test]

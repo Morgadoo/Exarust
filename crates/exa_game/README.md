@@ -108,8 +108,13 @@ interval's present mode (immediate, or with vertical sync the adaptive
 `AutoVsync` while Exarust's frames are slower than the display, where the
 original uses plain Fifo: `ADAPTIVE_VSYNC`), the Alt+Enter toggle, the
 full-screen window's minimise on losing the activation, the pointer warp's
-four-move hold (`WarpHold`) and the GUI drag's pointer clip with its
-endless edge wrap (`PointerClip`). `frame` also holds the logger's message
+four-move hold (`WarpHold`), the GUI drag's pointer clip with its
+endless edge wrap (`PointerClip`) and the full-screen confinement
+(`FocusConfinement`). `os_pointer` applies the warp hold (Cursor Look's
+release) and the confinement (winit's confined grab) to the window, and
+`os_clipboard` is the system clipboard for the text controls, through
+Windows-1252 as the original's ANSI text (`SystemClipboard`, opened on
+first use). `frame` also holds the logger's message
 box (`MessageBox`: level 6 the error icon, 7 the warning, style words
 0x42010 and 0x42030), the "minimum requirements" text and the
 operating-system error report (level 5, "Windows Error"), which the save
