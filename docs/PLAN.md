@@ -1401,6 +1401,8 @@ Round 134 gamemain: the player controls turn off under the skill screen, power t
 
 Round 135 itemtext: a repair refreshes an open item card in place, and one apparel condition routine serves the migration, the shop and the repair.
 
+Round 136 blocked: the player controls block on knock-out, death and the arena forms as in the original; only the second block and the off switch refuse the hotkeys.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -2430,6 +2432,8 @@ Round 103 thaum2: displacement tendrils draw with their own material and the AI'
 Round 124 forcepicks: the force blast meets struck parts in their frame and stirs the cloths; the throw, barricade, long door and summoning ask the navigation picks.
 
 Round 132 trees: the skill screen opens in play on K with learn, forget and close, and four port bugs in it are fixed; the power tree has nothing missing.
+
+Round 136 saves: the save unit start-up legacy pass runs where the original runs it.
 
 ### Phase 8 — Polish and release
 
