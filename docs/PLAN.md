@@ -965,6 +965,8 @@ Round 99 motilepart3: the status-effect broadcast is live and the ghouls' chest 
 
 Round 101 racebodies: ghouls, Fael and every other placed race get the physical body the original gives them.
 
+Round 104 demon: the demon gets its full body with tail and wings; unarmed AI reach and skin-map loading follow the race as in the original.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
