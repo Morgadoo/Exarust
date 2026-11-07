@@ -68,8 +68,8 @@ pub const EMBLEMS_EXTENSION: &str = ".rpk";
 /// The new-career dialog's message-box title and prompt.
 pub const COMPANY_NAME_TITLE: &str = "Company Name";
 pub const COMPANY_NAME_PROMPT: &str = "Please name your company";
-/// The word the prompt passes to the message box after the two texts (its
-/// role is not traced).
+/// The flag word the prompt passes to the message box after the two texts:
+/// Ok (1), the frame (0x40) and the modal form (0x80).
 pub const COMPANY_NAME_BOX_WORD: u32 = 0xc1;
 /// The company-create form's colour (opaque black).
 pub const COMPANY_FORM_COLOUR: [u8; 4] = [0, 0, 0, 255];
