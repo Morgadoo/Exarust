@@ -67,7 +67,7 @@ Ordered by code size; these are where most of the original still has no counterp
 |---|---|---:|---:|---|
 | TMotileDynamics | Physics, bodies & cloth | 121 | 92% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
 | XA_Arena | Game modes, arena & session | 71 | 93% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
-| TMotileAI | AI & behaviour | 60 | 97% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
+| TMotileAI | AI & behaviour | 60 | 98% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | TMotilePart | Characters, motion & animation | 53 | 79% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 86% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | exa_character/src/layers.rs; exa_character/src/look.rs |
