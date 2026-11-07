@@ -19,18 +19,25 @@
 //! ([`apply_technique_word`]); the level start puts the starting word there
 //! the same way.
 //!
-//! The explored-cell half of the tick needs the level's sector grid; the
-//! running game does not hand one to the experience system yet, so the live
-//! tick only converts. [`crate::experience::Experience::explore`] and its
-//! [`crate::experience::ExploreGrid`] stay the tested rule for it. The
+//! Each pass first explores, as the original's tick does: in a grid level
+//! the 5 × 5 cells around the player's cell are walked
+//! ([`crate::experience::Experience::explore`]) over the level's rooms
+//! ([`RoomCells`]): a cell counts once it is open (plane A's open flag) and
+//! its room is active in the room manager's tracker (the room's working
+//! state low bit, [`exa_world::rooms::RoomTracker::is_active`]), so a room
+//! is explored only once it has faded in. The level's map of explored
+//! cells is found by its locale name, or added empty at the grid's size,
+//! before the first walk in it (the original's level-enter hook). The
 //! item-kind and kill hooks have no caller yet (see the module README).
 
 use bevy::prelude::*;
 use exa_formats::characters::CharacterRecord;
 
+use exa_world::rooms::{RoomTracker, Rooms};
+
 use crate::experience::{
-    Conversion, Experience, GLOBAL_XP_KEY, Learner, convert_companion, global_xp_from_setting,
-    global_xp_to_setting, technique_bits,
+    Conversion, Experience, ExploreGrid, GLOBAL_XP_KEY, Learner, convert_companion,
+    global_xp_from_setting, global_xp_to_setting, technique_bits,
 };
 use crate::flow::SettingsEntry;
 use crate::player::PlayerBody;
@@ -108,10 +115,33 @@ impl StoryExperience {
         self.started = true;
     }
 
+    /// The exploring half of a discovery pass, before [`Self::advance`]: in
+    /// the level named `locale` (its map entered first when it is not the
+    /// current one), the cells around `x`, `z` (centimetres) that `grid`
+    /// shows open and active earn their points for the account pool, the
+    /// player and each companion. Returns the cells newly found.
+    pub fn explore(&mut self, grid: &impl ExploreGrid, locale: &str, x: f32, z: f32) -> u32 {
+        if !self.started {
+            return 0;
+        }
+        let name = locale_name(locale);
+        let entered = self
+            .state
+            .current
+            .and_then(|i| self.state.maps.get(i))
+            .is_some_and(|map| map.name == name);
+        if !entered {
+            let (width, height) = grid.size();
+            self.state.enter_level(name, width, height);
+        }
+        self.state
+            .explore(grid, x, z, &mut self.player, &mut self.party)
+    }
+
     /// One discovery pass (the flow gates it to once a second): the account
     /// pool, then the player, then each companion in list order. Returns
-    /// whether the body's technique word changed. The explored cells are
-    /// not walked: no level grid is handed to the system yet.
+    /// whether the body's technique word changed. [`Self::explore`] runs
+    /// before it.
     pub fn advance(&mut self, now: u32) -> bool {
         if !self.started {
             return false;
@@ -198,11 +228,70 @@ fn begin_story_experience(
         .insert(TechniqueWord(live.technique_word));
 }
 
-/// The flow's discovery pass: convert, write the player's record back and
-/// put the technique word on the body when it changed.
+/// A level's name as the explored-cell maps key it: the locale's bytes,
+/// zero padded (or cut) to 16.
+pub fn locale_name(locale: &str) -> [u8; 16] {
+    let mut name = [0; 16];
+    for (to, from) in name.iter_mut().zip(locale.bytes()) {
+        *to = from;
+    }
+    name
+}
+
+/// The level's rooms as the exploration reads the grid: the grid's size,
+/// each cell's room word (room + 1, 0 for none) from the room manager's
+/// cell table, a room's active flag from its tracker and each cell's plane A
+/// word.
+pub struct RoomCells<'a> {
+    pub rooms: &'a Rooms,
+    pub tracker: &'a RoomTracker,
+}
+
+impl ExploreGrid for RoomCells<'_> {
+    fn tracks(&self) -> bool {
+        true
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (self.rooms.width() as i32, self.rooms.height() as i32)
+    }
+
+    fn sector_word(&self, cell: u32) -> Option<i32> {
+        Some(
+            self.rooms
+                .room_of_index(cell)
+                .map_or(0, |room| i32::from(room) + 1),
+        )
+    }
+
+    fn sector_open(&self, sector: i32) -> bool {
+        u16::try_from(sector).is_ok_and(|room| self.tracker.is_active(room))
+    }
+
+    fn cell_width(&self) -> i32 {
+        self.rooms.width() as i32
+    }
+
+    fn cell_flags(&self, cell: u32) -> u32 {
+        self.rooms.cell_word(cell)
+    }
+}
+
+/// The flow's discovery pass: explore around the player in a grid level,
+/// convert, write the player's record back and put the technique word on
+/// the body when it changed.
 fn tick_story_experience(
     mut passes: MessageReader<DiscoveryTick>,
-    mut players: Query<(Entity, &mut exa_character::record::CharacterData), With<PlayerBody>>,
+    mut players: Query<
+        (
+            Entity,
+            &GlobalTransform,
+            &mut exa_character::record::CharacterData,
+        ),
+        With<PlayerBody>,
+    >,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
+    source: Option<Res<exa_world::LevelSource>>,
     mut commands: Commands,
     mut live: ResMut<StoryExperience>,
 ) {
@@ -210,8 +299,26 @@ fn tick_story_experience(
         if !live.started {
             continue;
         }
+        if let (Some(level), Some(source), Ok((_, at, _))) =
+            (level.as_deref(), source.as_deref(), players.single())
+        {
+            let p = at.translation() * 100.0;
+            let grid = RoomCells {
+                rooms: &level.rooms,
+                tracker: &level.tracker,
+            };
+            let found = live.explore(&grid, source.locale(), p.x, p.z);
+            if found > 0 {
+                info!(
+                    "experience: explored {found} cells of {} at {} ms (pool {})",
+                    source.locale(),
+                    pass.now,
+                    live.state.pool
+                );
+            }
+        }
         let changed = live.advance(pass.now);
-        if let Ok((player, mut data)) = players.single_mut() {
+        if let Ok((player, _, mut data)) = players.single_mut() {
             live.write_player(&mut data.record);
             if changed {
                 info!(
@@ -433,5 +540,73 @@ mod tests {
     fn the_technique_word_component_carries_the_word() {
         assert_eq!(TechniqueWord(0x102).0, 0x102);
         let _ = Skill::default();
+    }
+
+    /// A 64 × 6 grid whose cells 1..=10 of rows 1..=4 are open and joined
+    /// into one room.
+    fn one_room() -> Rooms {
+        let (w, h) = (64u32, 6u32);
+        let mut grid = exa_formats::level::LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: w,
+            height: h,
+            edges: vec![0; (w * h) as usize],
+            plane_b: vec![0; (w * h) as usize],
+            plane_c: vec![0; (w * h) as usize],
+        };
+        for y in 1..=4 {
+            for x in 1..=10 {
+                grid.edges[(y * w + x) as usize] = exa_world::rooms::CELL_OPEN;
+            }
+        }
+        Rooms::flood(&grid)
+    }
+
+    /// The pass explores the open cells of active rooms around the player
+    /// once, in the level's own map; a room not yet faded in counts nothing.
+    #[test]
+    fn the_pass_explores_the_open_cells_of_active_rooms() {
+        let rooms = one_room();
+        // Cell (5, 2): x −159 m, z −3 m.
+        let (x, z) = (-15_900.0, -300.0);
+        let at = bevy::math::Vec2::new(x / 100.0, z / 100.0);
+        let mut tracker = RoomTracker::new(rooms.len());
+        let mut live = StoryExperience::default();
+        live.begin(&record(0), 0);
+        let pool = live.state.pool;
+        // Entering: not active yet, nothing found, but the map is entered.
+        tracker.update(&rooms, at, 0);
+        let grid = RoomCells {
+            rooms: &rooms,
+            tracker: &tracker,
+        };
+        assert_eq!(live.explore(&grid, "exanima01", x, z), 0);
+        assert_eq!(live.state.maps.len(), 1);
+        assert_eq!(live.state.maps[0].name, locale_name("exanima01"));
+        assert_eq!(
+            (live.state.maps[0].width, live.state.maps[0].height),
+            (64, 6)
+        );
+        tracker.update(&rooms, at, 2_000);
+        let grid = RoomCells {
+            rooms: &rooms,
+            tracker: &tracker,
+        };
+        // Columns 3..=7, rows 1..=4 (row 0 is under the border clamp).
+        assert_eq!(live.explore(&grid, "exanima01", x, z), 20);
+        assert!(live.state.pool > pool);
+        assert_eq!(live.explore(&grid, "exanima01", x, z), 0);
+        // Another level gets its own map; coming back finds the first.
+        assert_eq!(live.explore(&grid, "exanima02", x, z), 20);
+        assert_eq!(live.state.maps.len(), 2);
+        assert_eq!(live.explore(&grid, "exanima01", x, z), 0);
+        assert_eq!(live.state.maps.len(), 2);
+    }
+
+    #[test]
+    fn a_locale_name_is_zero_padded_to_sixteen_bytes() {
+        assert_eq!(&locale_name("exanima01"), b"exanima01\0\0\0\0\0\0\0");
+        assert_eq!(locale_name("abcdefghijklmnopqrs")[15], b'p');
     }
 }
