@@ -291,6 +291,8 @@ Round 110 propskin: sacks, mattresses and hanging growths bend as one skinned su
 
 Round 112 heldskin: a flail in hand keeps its import-built skin, as in the original.
 
+Round 117 rooms: the room walk and fade follow the original's numbers, and story walks explore the active rooms' cells.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
