@@ -298,6 +298,14 @@ pub struct SaveLivePlugin;
 
 impl Plugin for SaveLivePlugin {
     fn build(&self, app: &mut App) {
+        // The transition's migration pass runs just before a door's
+        // teardown, while the followers' bodies still exist.
+        let migrate = app.register_system(crate::follower_travel::collect_followers);
+        app.init_resource::<exa_world::level_lifecycle::BeforeDoorTeardown>();
+        app.world_mut()
+            .resource_mut::<exa_world::level_lifecycle::BeforeDoorTeardown>()
+            .0
+            .push(migrate);
         app.add_message::<SaveToNewSlot>()
             .add_message::<StorySlotLoad>()
             .add_message::<SaveStep>()
@@ -333,6 +341,7 @@ impl Plugin for SaveLivePlugin {
                 sync_before_level_change
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             )
+            .add_systems(Update, crate::follower_travel::restore_arrivals)
             .add_systems(
                 Update,
                 bench_the_manager.before(crate::arena_live::stand_first_round),
@@ -836,8 +845,9 @@ pub fn promote_player_items(
 /// ([`exa_formats::objdb::ObjectDb::promote_carried`]). `records` holds the
 /// scene characters' records in the motiles' order. Returns how many
 /// followers were promoted. [Exarust's: the window is the followers' own,
-/// since the player's promotion closes its window itself; the running game
-/// has no travelling follower yet, so the live sync passes none.]
+/// since the player's promotion closes its window itself.] A door's level
+/// change calls it from the migration pass
+/// ([`crate::follower_travel::collect_followers`]).
 pub fn promote_followers(
     db: &mut exa_formats::objdb::ObjectDb,
     motiles: &[crate::save_level::SceneMotile<'_>],
@@ -1019,7 +1029,7 @@ type PlayerHealthParts = (
 );
 
 /// The focus a record holds, for a body without a caster.
-fn record_focus(record: &CharacterRecord) -> f32 {
+pub(crate) fn record_focus(record: &CharacterRecord) -> f32 {
     exa_formats::characters::Pools::restore_focus(record.pools.focus)
 }
 
@@ -2829,6 +2839,7 @@ mod tests {
             "exanima01",
             0,
             true,
+            0,
         ));
         app.world_mut().write_message(SaveToNewSlot);
         app.update();

@@ -679,8 +679,12 @@ pub fn load_level_search_items(
 }
 
 /// Gives the debug searcher the recruitment's role edits and the Explorer
-/// role, its Activity variable set to the follow, once.
+/// role, its Activity variable set to the follow, once: the recruitment is
+/// then spent, so a later level's character with the same record id is not
+/// recruited too (the recruited one travels with the player,
+/// [`crate::follower_travel`]).
 pub fn make_debug_searcher(
+    mut commands: Commands,
     searcher: Option<Res<DebugSearcher>>,
     db: Option<Res<RoleDatabase>>,
     mut characters: Query<(&CharacterId, &mut Roles, Option<&Name>)>,
@@ -707,6 +711,8 @@ pub fn make_debug_searcher(
             "search: {} takes the Explorer role and follows",
             name.map_or("character", |n| n.as_str())
         );
+        commands.remove_resource::<DebugSearcher>();
+        break;
     }
 }
 

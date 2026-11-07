@@ -365,6 +365,7 @@ fn setup(
                     yaw: 0.0,
                     characters: Vec::new(),
                     foes: Vec::new(),
+                    arrivals: Vec::new(),
                 };
                 place_chase_camera(&mut commands, camera, &start, &options);
                 spawn_players(
@@ -464,6 +465,7 @@ fn apply_level_change(
     hold: Option<Res<LevelChangeHold>>,
     options: Res<Options>,
     saved: Option<Res<exa_world::SavedLevelSection>>,
+    travelling: Option<Res<exa_game::follower_travel::TravellingFollowers>>,
 ) {
     let Some(ready) = ready else {
         return;
@@ -535,7 +537,12 @@ fn apply_level_change(
     // The save unit's transition flow around the change: which copy the
     // destination comes from, the spawn matrix and the abort when the
     // archive lacks the level. Kept for the save path's disable flag.
-    let transition = exa_game::level_transition::live_transition(&level, spawn, found);
+    let transition = exa_game::level_transition::live_transition(
+        &level,
+        spawn,
+        found,
+        travelling.map_or(0, |t| t.travellers.len()),
+    );
     debug!(
         "level change: transition flow {:?} (aborted {}, saves disabled {})",
         transition.flow.steps,
@@ -545,6 +552,9 @@ fn apply_level_change(
     commands.insert_resource(transition);
     if !found {
         warn!("level change: {level} is not in the resource pack");
+        // The original's transition returns before the import, with the
+        // followers out of the old scene and nowhere to land.
+        commands.remove_resource::<exa_game::follower_travel::TravellingFollowers>();
         // Nothing will build: give the game time back.
         if !was_paused {
             time.unpause();
@@ -781,6 +791,9 @@ struct PlayStart {
     /// An arena match's opponent places (`--arena-match`); empty for the
     /// one duellist of `--opponent`.
     foes: Vec<exa_world::start::Start>,
+    /// The followers a door's change carried, already placed around the
+    /// player ([`exa_game::follower_travel`]); empty otherwise.
+    arrivals: Vec<exa_game::follower_travel::Traveller>,
 }
 
 /// Play mode around a loaded level: its music, the player's start and the
@@ -1027,6 +1040,7 @@ fn play_level(
         yaw,
         characters: info.characters,
         foes,
+        arrivals: Vec::new(),
     };
     if let Some(camera) = camera {
         place_chase_camera(commands, camera, &start, options);
@@ -1112,6 +1126,14 @@ type SpawnSources<'w> = (
     Option<Res<'w, exa_game::content_requests::ContentRequests>>,
 );
 
+/// What a door's change carries into the destination's spawn: the
+/// migration list and the flow's placement of the player, which the
+/// followers are placed around.
+type ArrivalSources<'w> = (
+    Option<Res<'w, exa_game::follower_travel::TravellingFollowers>>,
+    Option<Res<'w, exa_game::level_change::PlayerPlacement>>,
+);
+
 /// How long the player spawn waits on the loaded player's character
 /// request before it builds the body itself.
 const STREAM_PLAYER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -1143,7 +1165,7 @@ fn finish_collision(
             Without<exa_game::player::Player>,
         ),
     >,
-    mut time: ResMut<Time<Virtual>>,
+    (mut time, (travelling, placement)): (ResMut<Time<Virtual>>, ArrivalSources),
     (hold, created, saved, streamed, requests): SpawnSources,
 ) {
     if building.contains(pending.root) {
@@ -1216,6 +1238,48 @@ fn finish_collision(
             time.unpause();
         }
         commands.remove_resource::<LevelChangeHold>();
+    }
+    // The followers a door's change carried land around the player: on
+    // the flow's placement (its probed feet and the portal's heading) when
+    // there is one, else at the level's start with the identity frame.
+    if let Some(travelling) = travelling.as_deref() {
+        let cast = |at, dir, reach| frame_physics.0.line_cast(at, dir, reach);
+        let (player, heading) = match placement.as_deref() {
+            Some(placement) => (
+                exa_game::save_level::landing_feet(placement.position, cast),
+                Some(placement.yaw),
+            ),
+            None => (pending.start.position, None),
+        };
+        let at = exa_game::follower_travel::arrival_positions(
+            player,
+            exa_game::follower_travel::spawn_frame(heading),
+            travelling.travellers.len(),
+            cast,
+        );
+        pending.start.arrivals = travelling
+            .travellers
+            .iter()
+            .zip(at)
+            .map(|(traveller, at)| {
+                let mut traveller = traveller.clone();
+                traveller.placed.position = at;
+                traveller.placed.yaw = exa_game::follower_travel::arrival_yaw(heading);
+                traveller
+            })
+            .collect();
+        // The transition spawns the player at the matrix before its
+        // followers. With no flow placement (the debug `--level-change`)
+        // the level's start is that matrix's position; the placement posts
+        // it to the simulation too, which otherwise keeps the surviving
+        // player where it stood in the old level.
+        if placement.is_none() && !players.is_empty() {
+            commands.insert_resource(exa_game::level_change::PlayerPlacement {
+                position: pending.start.position,
+                yaw: pending.start.yaw,
+            });
+        }
+        commands.remove_resource::<exa_game::follower_travel::TravellingFollowers>();
     }
     let existing = players.iter().next().map(|(entity, _)| entity);
     if let Some((_, mut transform)) = players.into_iter().next() {
@@ -1951,6 +2015,37 @@ fn spawn_players(
     }
     let (spawned, missing) =
         spawn_placed_characters(commands, loader, &placing, &start.characters, None);
+    // The re-attach pass: each carried follower joins the new scene with
+    // the roles it held (so its brain follows again) and its carried
+    // health; an id one of the level's characters holds moves past them.
+    let mut taken: Vec<u32> = start
+        .characters
+        .iter()
+        .map(|c| c.record.id & exa_formats::characters::ID_MASK)
+        .collect();
+    for traveller in &start.arrivals {
+        let mut placed = traveller.placed.clone();
+        placed.record.id = exa_game::follower_travel::arrival_id(placed.record.id, &taken);
+        taken.push(placed.record.id & exa_formats::characters::ID_MASK);
+        let mut built = Vec::new();
+        spawn_placed_characters(
+            commands,
+            loader,
+            &placing,
+            std::slice::from_ref(&placed),
+            Some(&mut built),
+        );
+        for entity in built {
+            commands.entity(entity).insert((
+                traveller.roles.clone(),
+                exa_game::follower_travel::ArrivedFollower,
+            ));
+            info!(
+                "Migration: {} (record {:#x}) placed at {} facing {:.3}",
+                placed.name, placed.record.id, placed.position, placed.yaw
+            );
+        }
+    }
     commands.insert_resource(exa_ai::brain::RoleDatabase {
         book,
         locale,

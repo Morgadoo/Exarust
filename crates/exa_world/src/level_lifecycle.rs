@@ -84,6 +84,16 @@ pub struct LevelChangeReady {
     pub changes: u64,
 }
 
+/// One-shot systems a door's change runs just before its teardown despawns
+/// the level: the save unit's migration pass, which takes the travelling
+/// followers down while their bodies still exist. They run for a change to
+/// a level that no [`WorldReset`] came with (the original's transition, not
+/// a session start, a save load or an arena round), queued ahead of the
+/// teardown's despawns so they see the old level whole, whichever system
+/// wrote the request.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct BeforeDoorTeardown(pub Vec<bevy::ecs::system::SystemId>);
+
 /// Which system set does the teardown. A host that starts a level load must
 /// schedule it after [`LevelChangeSystems::Teardown`].
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -100,6 +110,7 @@ impl Plugin for LevelChangePlugin {
         app.add_message::<LevelChangeRequest>()
             .add_message::<WorldReset>()
             .init_resource::<LevelChangeState>()
+            .init_resource::<BeforeDoorTeardown>()
             .add_systems(Update, apply_requests.in_set(LevelChangeSystems::Teardown));
     }
 }
@@ -114,6 +125,8 @@ pub struct LevelChangeState {
 fn apply_requests(
     mut commands: Commands,
     mut requests: MessageReader<LevelChangeRequest>,
+    mut resets: MessageReader<WorldReset>,
+    hooks: Res<BeforeDoorTeardown>,
     mut state: ResMut<LevelChangeState>,
     (mut physics, mut fixed): (
         ResMut<exa_physics::collision_share::FramePhysics>,
@@ -128,11 +141,18 @@ fn apply_requests(
     // behind it) see the same level roots: only the first tears them down,
     // so nothing is despawned twice.
     let mut torn_down = false;
+    let reset = resets.read().count() > 0;
     for request in requests.read() {
         if request.teardown && !torn_down {
             // The simulation is held and its queued steps applied before
             // anything of the level goes (a step in flight would name it).
             commands.queue(exa_physics::sim_app::hold_and_drain);
+            // A door's change: the hooks see the old level before it goes.
+            if request.level.is_some() && !reset {
+                for &hook in &hooks.0 {
+                    commands.run_system(hook);
+                }
+            }
         }
         if request.teardown && torn_down {
             state.changes = state.changes.wrapping_add(1);
@@ -233,6 +253,58 @@ mod tests {
                 .iter(app.world())
                 .count(),
             0
+        );
+    }
+
+    #[derive(Resource, Default)]
+    struct Seen(Vec<usize>);
+
+    fn count_roots(levels: Query<(), With<LevelEntity>>, mut seen: ResMut<Seen>) {
+        seen.0.push(levels.iter().count());
+    }
+
+    /// The door hooks run before the teardown despawns the level, and only
+    /// for a change to a level that no world reset came with.
+    #[test]
+    fn door_hooks_see_the_old_level_and_skip_resets() {
+        let run = |messages: &dyn Fn(&mut World)| {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_plugins(LevelChangePlugin)
+                .insert_resource(exa_physics::Physics::default())
+                .init_resource::<exa_physics::collision_share::FramePhysics>()
+                .insert_resource(gi_volume::GiState::Off)
+                .insert_resource(nav::NavState::None)
+                .insert_resource(nav::InstalledPathfinder::default())
+                .init_resource::<Seen>();
+            let hook = app.register_system(count_roots);
+            app.world_mut()
+                .resource_mut::<BeforeDoorTeardown>()
+                .0
+                .push(hook);
+            app.world_mut().spawn((LevelEntity, Transform::default()));
+            messages(app.world_mut());
+            app.update();
+            app.world().resource::<Seen>().0.clone()
+        };
+        assert_eq!(
+            run(&|w| {
+                w.write_message(LevelChangeRequest::change("exanima02", 0));
+            }),
+            vec![1]
+        );
+        assert!(
+            run(&|w| {
+                w.write_message(WorldReset);
+                w.write_message(LevelChangeRequest::change("exanima02", 0));
+            })
+            .is_empty()
+        );
+        assert!(
+            run(&|w| {
+                w.write_message(LevelChangeRequest::teardown());
+            })
+            .is_empty()
         );
     }
 

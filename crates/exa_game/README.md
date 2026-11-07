@@ -259,6 +259,18 @@ viewer stores `level_transition::LiveTransition` (the archive copy, the
 portal or default matrix, the abort for a level the pack lacks, and the
 save-disable flag a save passes to `WorldExport::save_world`). The import
 and spawn steps themselves still go through `exa_world`'s own loader.
+Followers travel with the player through a door's change
+(`follower_travel`): the migration pass runs just before the teardown
+(`exa_world::level_lifecycle::BeforeDoorTeardown`, never behind a world
+reset) and takes every scene character whose applied activity is the follow
+(4) down into `TravellingFollowers`, each once: its record with its live
+possessions and health, its local items promoted to the world tier
+(`save_live::promote_followers`), and its held roles. Once the
+destination's collision is in, the viewer places them on the six offsets
+around the player's landing (the flow placement's heading as the spawn
+matrix, else the identity), each on its own floor probe, respawns them with
+the roles that keep them following, and `restore_arrivals` loads the carried
+health; an id a destination character holds moves past them.
 The save's writers have the pieces the original exports: the world
 databases (`slots::export_world_databases`: the character database
 flushed and saved, the object world tier and its string library, each

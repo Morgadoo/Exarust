@@ -54,6 +54,7 @@ pub mod fall;
 pub mod figure_pick;
 pub mod fire_sound;
 pub mod flow;
+pub mod follower_travel;
 pub mod footprints;
 pub mod footwork;
 pub mod form_input;
