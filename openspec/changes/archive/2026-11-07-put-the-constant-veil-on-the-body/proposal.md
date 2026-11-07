@@ -1,6 +1,6 @@
 ## Why
 
-Phase 5 in docs/PLAN.md, component-gap lane thaumgap (round 101): SG_Thaum_DIsp (unit
+Phase 7 in docs/PLAN.md (thaumaturgy in play), component-gap lane thaumgap (round 101): SG_Thaum_DIsp (unit
 routines) had Constant Displacement's body-side rules (`thaum::veil`) with no caller, and
 TThaumTree's dragged link kept a guessed tangent and differed from the original at its reach.
 
