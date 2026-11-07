@@ -596,6 +596,83 @@ pub fn zoom_snap(shown: f32, target: f32) -> f32 {
     }
 }
 
+/// Whether a tick leaves the zoom spring alone and snaps the shown zoom to
+/// the target: the gap is within 0.001 (in single, compared in double), or
+/// unordered.
+pub fn zoom_settles(shown: f32, target: f32) -> bool {
+    f64::from((target - shown).abs()) <= 0.001 || (target - shown).is_nan()
+}
+
+/// The shown zoom a frame draws `t` of the way into the last tick: the
+/// spring's value the tick before and its present value blended
+/// `(now − before)·t + before`, in single precision.
+pub fn frame_zoom(spring: &ZoomSpring, t: f32) -> f32 {
+    (spring.motion - spring.previous) * t + spring.previous
+}
+
+/// The stored shown zoom after a frame: it takes the frame's zoom when the
+/// two lie more than 0.01 apart (in single, compared in double); otherwise
+/// it stays.
+pub fn frame_zoom_kept(stored: f32, drawn: f32) -> f32 {
+    if f64::from((drawn - stored).abs()) > 0.01 {
+        drawn
+    } else {
+        stored
+    }
+}
+
+/// The target yaw after a tick read the backward vector's heading: when
+/// the heading lies more than half a turn from the shown yaw of the tick
+/// before (the gap in single, compared in double), the shown yaw has
+/// crossed ±π and the target turns a whole turn the same way, `2n·π`
+/// subtracted in double with `n` −1 for a heading at or above zero (a NaN
+/// too) and 1 below it.
+pub fn wrap_target_yaw(target: f32, shown: f32, heading: f32) -> f32 {
+    if f64::from((heading - shown).abs()) > std::f64::consts::PI {
+        let turn: i64 = if 0.0 > heading { 1 } else { -1 };
+        (f64::from(target) - (turn << 1) as f64 * std::f64::consts::PI) as f32
+    } else {
+        target
+    }
+}
+
+/// The yaw the camera's node is turned to: the target, but at most `lead`
+/// ahead of the heading either way (the gap in single; an unordered gap
+/// takes the target).
+pub fn lead_yaw(target: f32, heading: f32, lead: f32) -> f32 {
+    let ahead = target - heading;
+    if lead < ahead {
+        heading + lead
+    } else if -lead > ahead {
+        heading - lead
+    } else {
+        target
+    }
+}
+
+/// One tick of the backward vector's spring toward the node's backward
+/// axis `target`: the velocity is the vector's last move plus
+/// `stiffness·(target − back)`, and when its squared length (`(x² + y²) +
+/// z²`, compared in double) passes 1e-8 the vector moves by
+/// `retention·velocity` and is normalised by the engine's reciprocal root.
+/// Returns the new vector and the one the tick started from (the next
+/// tick's last).
+pub fn spring_back(
+    back: Vec3,
+    before: Vec3,
+    target: Vec3,
+    stiffness: f32,
+    retention: f32,
+) -> (Vec3, Vec3) {
+    let velocity = (back - before) + (target - back) * stiffness;
+    let squared = (velocity.x * velocity.x + velocity.y * velocity.y) + velocity.z * velocity.z;
+    if f64::from(squared) > 1e-8 {
+        (normalize(back + velocity * retention), back)
+    } else {
+        (back, back)
+    }
+}
+
 /// The follow tether of the free camera: the looked-at point is held near
 /// its anchor, the offset's height ignored. Without the radial flag an axis
 /// whose offset is past its limit is held at `sign(offset)·limit + anchor`
@@ -1094,8 +1171,9 @@ pub struct Preset {
     pub min_height: f32,
     pub max_height: f32,
     pub extra: f32,
-    /// The pitch speed and the zoom ease per tick the preset sets.
-    pub pitch_speed: f32,
+    /// The zoom spring's largest change per tick and its pull rate
+    /// ([`ZoomSpring`]'s `step` and `rate`), as the preset sets them.
+    pub zoom_step: f32,
     pub zoom_speed: f32,
     /// The viewport callbacks the flags install.
     pub handlers: Handlers,
@@ -1178,7 +1256,7 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
     } else {
         fields.distance
     };
-    let pitch_speed = if stepped {
+    let zoom_step = if stepped {
         5.0
     } else {
         max_distance * 15.0 / PRESET_SCALE
@@ -1225,7 +1303,7 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         min_height: fields.min_height,
         max_height: fields.max_height,
         extra: fields.extra,
-        pitch_speed,
+        zoom_step,
         zoom_speed,
         handlers: preset_handlers(fields.flags),
     }
@@ -1816,14 +1894,14 @@ mod tests {
         // but the placement still derives its own distance.
         assert_eq!(preset.distance, 10.0);
         assert!(preset.derive_distance);
-        assert!((preset.pitch_speed - 43.091_064).abs() < 1e-4);
+        assert!((preset.zoom_step - 43.091_064).abs() < 1e-4);
         assert!((preset.zoom_speed - 0.111_864_41).abs() < 1e-6);
         // The stepped camera swaps in its own speeds.
         let fixed = apply_preset(PresetFields {
             flags: 0x20_0000,
             ..PresetFields::default()
         });
-        assert_eq!(fixed.pitch_speed, 5.0);
+        assert_eq!(fixed.zoom_step, 5.0);
         assert!((fixed.zoom_speed - 5.0 / 59.0).abs() < 1e-6);
         // The stepped record installs no wheel handler (its 0x200 is not
         // set) but takes the free press only with the plain-camera bit.
@@ -1954,6 +2032,64 @@ mod tests {
         assert_eq!(tilted_pitch(-0.5, -0.3), -0.8);
         assert_eq!(tilted_pitch(-1.4, -0.6), -1.54);
         assert_eq!(tilted_pitch(-0.5, 0.0), -0.5);
+    }
+
+    #[test]
+    fn the_target_turns_a_whole_turn_when_the_heading_crosses_the_seam() {
+        // From 3.1 to −3.1: the heading is below zero, so the target turns
+        // down by 2π; from −3.1 to 3.1 it turns up.
+        let down = wrap_target_yaw(3.2, 3.1, -3.1);
+        assert_eq!(down, (3.2f64 - 2.0 * std::f64::consts::PI) as f32);
+        let up = wrap_target_yaw(-3.2, -3.1, 3.1);
+        assert_eq!(up, (-3.2f64 + 2.0 * std::f64::consts::PI) as f32);
+        // Within half a turn nothing turns; a NaN heading is not past it.
+        assert_eq!(wrap_target_yaw(1.0, 0.5, 2.0), 1.0);
+        assert_eq!(wrap_target_yaw(1.0, 0.5, f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn the_node_leads_the_heading_by_at_most_its_lead() {
+        let lead = std::f32::consts::FRAC_PI_4;
+        assert_eq!(lead_yaw(0.5, 0.2, lead), 0.5);
+        assert_eq!(lead_yaw(2.0, 0.2, lead), 0.2 + lead);
+        assert_eq!(lead_yaw(-2.0, 0.2, lead), 0.2 - lead);
+        assert!(lead_yaw(f32::NAN, 0.2, lead).is_nan());
+    }
+
+    #[test]
+    fn the_backward_vector_springs_and_rests() {
+        let back = Vec3::Z;
+        let target = Vec3::X;
+        // Still at the start: the pull alone, times the retention, then
+        // normalised by the engine's reciprocal root.
+        let (moved, before) = spring_back(back, back, target, 0.1, 0.5);
+        assert_eq!(before, back);
+        let expect = normalize(Vec3::new(0.05, 0.0, 0.95));
+        assert_eq!(moved, expect);
+        // Its last move carries on.
+        let (again, _) = spring_back(moved, back, target, 0.1, 0.5);
+        let velocity = (moved - back) + (target - moved) * 0.1;
+        assert_eq!(again, normalize(moved + velocity * 0.5));
+        // A move under 1e-4 (squared 1e-8) leaves the vector, but the tick
+        // still makes it the last.
+        let near = Vec3::new(0.0, 0.0, 1.0);
+        let (kept, last) = spring_back(near, near, near + Vec3::X * 1e-5, 0.5, 0.5);
+        assert_eq!((kept, last), (near, near));
+    }
+
+    #[test]
+    fn the_shown_zoom_snaps_within_a_thousandth_and_follows_frames_past_a_hundredth() {
+        assert!(zoom_settles(1300.0, 1300.0009));
+        assert!(!zoom_settles(1300.0, 1300.01));
+        assert!(zoom_settles(1300.0, f32::NAN));
+        let spring = ZoomSpring {
+            motion: 1310.0,
+            previous: 1300.0,
+            ..Default::default()
+        };
+        assert_eq!(frame_zoom(&spring, 0.25), 1302.5);
+        assert_eq!(frame_zoom_kept(1300.0, 1300.005), 1300.0);
+        assert_eq!(frame_zoom_kept(1300.0, 1302.5), 1302.5);
     }
 
     #[test]

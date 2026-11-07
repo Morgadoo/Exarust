@@ -1305,9 +1305,15 @@ blocking word, then each face).
 The chase camera builds its controller with `nav_camera::NavController::new`
 from `nav_camera::GAME_CAMERA_PRESET` (the game camera's record: view 250,
 size 6000, rate 0.01, distances 1300 in 800 to 2000, heights 0 to 200; the
-controls' second record differs only in handler bits) and takes the yaw
-spring's stiffness and retention and the zoom's ease from the applied
-preset. Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),
+controls' second record differs only in handler bits) and takes the
+backward vector's spring (stiffness and retention) and the zoom spring's
+rate and step from the applied preset. Each tick runs the zoom spring (or
+the shown zoom's snap), the shake, the pitch ease, then reads the shown yaw
+off the backward vector (the target turning a whole turn when it crosses
+±π, `wrap_target_yaw`), turns the node to the target yaw led at most 45°
+(`lead_yaw`) and springs the vector to the node's axis (`spring_back`); a
+frame draws the vector, the zoom spring's last two values (`frame_zoom`)
+and the shake between ticks. Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),
 a fast shot's distance starting the zoom again at 1300.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
@@ -1998,10 +2004,10 @@ read].
 the followed point along the camera's yaw, alternately a 30 cm probe at the
 present step (a hit climbs, to four) and a 20 cm one at the step below (a
 miss comes down), over 38.5 m, the tilt eased in double toward −0.15 rad per
-step and added to the axis pitch, held to −1.54. `ChaseCamera` runs it every
-tick, but nothing answers it in the live game: Exarust's level colliders
-include ceilings, which the original's mesh filter leaves out, so the tilt
-stays 0. The pitch ease (in double, only over a gap above 2e-6), the eye
+step (scaled by the zoom-spring rate) and added to the axis pitch, held to
+−1.54. `ChaseCamera` runs it every tick and the chase camera answers it
+from the drawn `exa_world::cut_away::WallObstacle` meshes (the outdoor
+levels' walls, trees and buildings). The pitch ease (in double, only over a gap above 2e-6), the eye
 blend and the field of view are the original's.
 
 `scene_editor` is a model of the scene runner's task (`RF_SceneEditor`,
