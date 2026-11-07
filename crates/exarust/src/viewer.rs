@@ -78,7 +78,12 @@ impl Plugin for ViewerPlugin {
                 (
                     fly_camera,
                     screenshot_after_frames,
-                    (fell_arena_opponents, fell_undead_opponent, fell_player),
+                    (
+                        fell_arena_opponents,
+                        fell_undead_opponent,
+                        fell_player,
+                        fell_nearest,
+                    ),
                     give_items,
                     equip_debug_shields,
                     shove_at_frame,
@@ -3026,14 +3031,59 @@ fn fell_player(
     // The collapse is a write to simulation data: it lands at the start of
     // the next fixed step, wherever the step runs.
     for entity in &players {
-        fixed.run(collapse_player, (entity, at));
+        fixed.run(collapse_player, (entity, at, "fell player"));
     }
 }
 
-/// `--fell-player`'s collapse of `entity` (run at the start of a fixed
-/// step).
+/// `--fell-nearest <frame>`: at that frame after the load the living
+/// character body nearest the player collapses as `--fell-player`'s does
+/// (its yellow health emptied, the collapse clip, its dying tick, then
+/// death), whatever its race. A debug tool for the bodies' collapse and
+/// death.
+#[allow(clippy::type_complexity)]
+fn fell_nearest(
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    players: Query<&GlobalTransform, With<exa_game::player::PlayerBody>>,
+    bodies: Query<
+        (Entity, &GlobalTransform, &exa_combat::Condition),
+        (
+            With<exa_physics::body::Ragdoll>,
+            With<exa_combat::Fighter>,
+            Without<exa_game::player::PlayerBody>,
+        ),
+    >,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
+) {
+    let Some(at) = options.fell_nearest else {
+        return;
+    };
+    if loading.is_some() || *frames > at {
+        return;
+    }
+    *frames += 1;
+    if *frames != at {
+        return;
+    }
+    let Some(player) = players.iter().next().map(|g| g.translation()) else {
+        return;
+    };
+    let nearest = bodies
+        .iter()
+        .filter(|(_, _, condition)| **condition != exa_combat::Condition::DEAD)
+        .map(|(entity, g, _)| (entity, g.translation().distance(player)))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((entity, distance)) = nearest {
+        info!("fell nearest: {entity:?}, {distance:.2} m from the player");
+        fixed.run(collapse_player, (entity, at, "fell nearest"));
+    }
+}
+
+/// `--fell-player`'s (and `--fell-nearest`'s, named by `who`) collapse of
+/// `entity` (run at the start of a fixed step).
 fn collapse_player(
-    In((entity, at)): In<(Entity, u32)>,
+    In((entity, at, who)): In<(Entity, u32, &'static str)>,
     mut commands: Commands,
     mut players: Query<(
         &mut exa_combat::Condition,
@@ -3072,7 +3122,7 @@ fn collapse_player(
         .entity(entity)
         .insert(exa_combat::collapse::Collapse::default());
     info!(
-        "fell player: {entity:?} collapses at frame {at}, red {:.3}",
+        "{who}: {entity:?} collapses at frame {at}, red {:.3}",
         fighter.health.red
     );
 }
