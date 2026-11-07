@@ -581,9 +581,12 @@ impl StoryLight {
 pub struct Companion {
     pub template: &'static str,
     pub position: Vec3,
-    /// The facing, in degrees.
+    /// The spawn record's facing word. The record takes radians (the
+    /// hub's placements convert their degrees); the story start passes
+    /// -90 unconverted, so the companion faces -90 rad. The level load
+    /// places the companion (`exarust`'s viewer).
     pub facing: f32,
-    /// The record's item flag word.
+    /// The spawn record's flag word.
     pub flags: u32,
 }
 

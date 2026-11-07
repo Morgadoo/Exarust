@@ -117,11 +117,15 @@ fn start_on_load(
     mut commands: Commands,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut session: ResMut<SpectateSession>,
+    control: Option<ResMut<crate::player_controls::PlayerControl>>,
 ) {
     if loading.is_some() {
         return;
     }
     session.start();
+    if let Some(mut control) = control {
+        crate::controls_live::switch_controls(&mut control, false, "spectate starts");
+    }
     commands.remove_resource::<SpectateOnLoad>();
     info!("spectate: session started");
 }
@@ -187,11 +191,18 @@ fn end_arena_session(
     mut session: ResMut<SpectateSession>,
     scene: Option<Res<crate::arena_live::ArenaScene>>,
     players: Query<(), With<crate::player::Player>>,
+    control: Option<ResMut<crate::player_controls::PlayerControl>>,
 ) {
     if !session.arena || scene.is_some() || players.is_empty() {
         return;
     }
     session.end();
+    // The Spectate mode's end turns the controls off, then the Character
+    // mode's start turns them on.
+    if let Some(mut control) = control {
+        crate::controls_live::switch_controls(&mut control, true, "spectate ends");
+        crate::controls_live::switch_controls(&mut control, false, "start of play");
+    }
     commands.remove_resource::<crate::save_live::SavedPlayer>();
     info!("spectate: session ended; the manager is back in Character mode");
 }

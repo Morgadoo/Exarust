@@ -332,6 +332,25 @@ and leaves a drag's link in place (Exarust's lift moves the item on the
 item cursor; entering combat lets go of the drag rather than leave a link
 no release would end); the flag that keeps a player out of combat mode.
 
+### Controls off
+
+The controls can be switched off. They are off when created, turned on by
+the Character or Spectate mode's start and off by its end, and off while
+the skill screen, the power tree or the arena arsenal is open: their open
+routines turn them off before building the form and their close routines
+turn them back on. The inventory, the character view and the menus
+leave it alone. While the controls are off the key handler and the
+controls' frame task return at once, so no hotkey, pad command, movement
+request, idle camera turn or deferred hotkey slot runs; the mouse hook for
+the orbit and Cursor Look is dropped with its capture; the key word, the
+behaviour's move flag and the locomotion flags are cleared once; the click,
+Ctrl and right-button handlers leave the view; the right button goes to the
+GUI and the pad takes its menu set. Turning them back on restores all of it
+and re-applies the combat toggle. Exarust also leaves the casting and
+kinesis inputs empty while they are off (the original's key poll reads
+nothing while a form has the focus), and counts the skill screen and the
+power tree, which hit-test the whole window, as the pointer over the GUI.
+
 ## Gamepad
 
 The original's gamepad is Steam Input: three action sets whose actions the
@@ -559,6 +578,11 @@ with no gate of its own. Exarust's default puts it on R3, the button that
 shares nothing with the emulated left button; `Look` (Cursor Look, a held
 bit nothing reads on a pad) shares R3. The aim stick sets the combat
 aim, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` turns it.
+`Select` outside a dialogue confirms the end-of-session menu's selected
+row while that menu shows, as the pad routine's call into the end menu
+does (its random-pitch click sound is not played: Exarust's end menu has
+none); in a dialogue it picks the reply. While the controls are off (see
+Controls off) the pad routine does not run.
 
 The command bits for inventory, skills, powers, the power tree, use power,
 select/use, talk, pause and camera mode reach the word, but Exarust has no

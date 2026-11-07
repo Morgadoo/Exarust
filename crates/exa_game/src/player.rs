@@ -212,6 +212,9 @@ pub struct PlayerBody {
     head: HeadTrack,
     /// The body's race hovers (the spirit's wraith): combat mode stays off.
     hovers: bool,
+    /// The player's controls were off at its last behaviour tick: their
+    /// switch off clears the move request once.
+    controls_off: bool,
 }
 
 impl PlayerBody {
@@ -238,6 +241,7 @@ impl PlayerBody {
             crouch: 0.0,
             head: HeadTrack { yaw, pitch: 0.0 },
             hovers: false,
+            controls_off: false,
         }
     }
 
@@ -420,7 +424,12 @@ fn latch_attack_button(
     pad: Option<ResMut<crate::gamepad::PlayPad>>,
     mut latch: ResMut<AttackButton>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
+    // The controls off, a press is the open form's.
+    if crate::player_controls::PlayerControl::is_off(control.as_deref()) {
+        return;
+    }
     let mut pressed = bindings.mouse_just_pressed(&buttons, Action::Primary);
     if status.as_ref().is_some_and(|s| s.active())
         && let Some(mut pad) = pad
@@ -703,6 +712,7 @@ fn bridge_player_types(app: &mut App) {
         .bridge_snapshot_resource::<crate::player::AttackButton>()
         .bridge_copy_in::<crate::player::ChaseCamera>()
         .bridge_copy_in_resource::<crate::player_controls::PlaySession>()
+        .bridge_copy_in_resource::<crate::player_controls::PlayerControl>()
         .bridge_copy::<crate::player_practice::PlayerPractice>();
 }
 
@@ -853,7 +863,7 @@ fn player_aim(players: &LookPlayers, bodies: &LookBodies) -> Option<(Vec3, f32, 
 /// - Neither held nor captured, while the camera still turns to an
 ///   alignment: the pointer is moved so it stays over the same flat offset
 ///   from the player as on the view of the frame before.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn cursor_look(
     mut look: ResMut<CursorLook>,
     mut sim_capture: ResMut<LookCapture>,
@@ -868,9 +878,10 @@ fn cursor_look(
     mut cameras: LookCamera,
     mut capture: ResMut<CursorCapture>,
     mut warp: Option<ResMut<crate::os_pointer::PointerWarp>>,
-    (over_gui, spectate): (
+    (over_gui, spectate, control): (
         Option<Res<crate::panel_live::PointerOverGui>>,
         Option<Res<crate::spectate::SpectateSession>>,
+        Option<Res<crate::player_controls::PlayerControl>>,
     ),
 ) {
     look.began = false;
@@ -901,7 +912,9 @@ fn cursor_look(
     }
     // The original drops the capture without a release while its GUI's
     // focus is off the game view; Exarust's nearest is the window's focus.
-    if !window.focused {
+    // The controls off, their mouse hook is dropped with its capture (the
+    // same drop, with no release).
+    if !window.focused || crate::player_controls::PlayerControl::is_off(control.as_deref()) {
         if look.active {
             look.active = false;
             look.target = None;
@@ -1065,6 +1078,7 @@ fn cursor_look(
 /// (compared in double precision) clears it, so the wake can finish and
 /// the body get up. The original's behaviour tick tests them in that order
 /// every tick, whatever the body does.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn release_held_wake(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -1073,7 +1087,12 @@ pub(crate) fn release_held_wake(
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
     players: Query<&Children, With<Player>>,
     mut flags: Query<&mut exa_combat::StateFlags, With<PlayerBody>>,
+    control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
+    // The controls off, the behaviour reads no key, button or stick.
+    if crate::player_controls::PlayerControl::is_off(control.as_deref()) {
+        return;
+    }
     let held = |action| bindings.pressed(&keys, action);
     let pressed = buttons.pressed(MouseButton::Left)
         || buttons.pressed(MouseButton::Right)
@@ -1146,27 +1165,32 @@ pub(crate) fn steer_player(
         Option<&mut Ragdoll>,
         Has<Attacking>,
     )>,
-    (targets, spectate, look): (
+    (targets, spectate, look, control): (
         Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
         Option<Res<crate::spectate::SpectateSession>>,
         Option<Res<LookCapture>>,
+        Option<Res<crate::player_controls::PlayerControl>>,
     ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
     let capture = look.map_or_else(Default::default, |l| l.0);
     // Spectating, the controls' frame does nothing: no key steers.
     let spectating = crate::spectate::SpectateSession::spectating(spectate.as_deref());
-    let held = |action| bindings.pressed(&keys, action);
+    // The controls off, a form has the keyboard and the mouse: the movement
+    // request does not run and the behaviour reads no key, no button and no
+    // pad ([`crate::controls_live`]).
+    let off = crate::player_controls::PlayerControl::is_off(control.as_deref());
+    let held = |action| !off && bindings.pressed(&keys, action);
     let input = Keys {
         w: held(Action::Forward),
         a: held(Action::Left),
         s: held(Action::Back),
         d: held(Action::Right),
         shift: held(Action::Run),
-        mouse: buttons.pressed(MouseButton::Right) && cursor.0.is_some(),
+        mouse: !off && buttons.pressed(MouseButton::Right) && cursor.0.is_some(),
     };
     let gamepad = match (pad_status.as_deref(), pad.as_deref()) {
-        (Some(status), Some(pad)) if status.active() => Some(*pad.frame()),
+        (Some(status), Some(pad)) if status.active() && !off => Some(*pad.frame()),
         _ => None,
     };
     let nearest = |at: Vec3| {
@@ -1192,6 +1216,13 @@ pub(crate) fn steer_player(
             };
             let ragdoll = body_mut.as_deref();
             let state = condition.copied().unwrap_or_default();
+            // The controls' switch off clears the behaviour's move request
+            // and the locomotion flags, once.
+            if off && !pb.controls_off {
+                pb.steering.requested = false;
+                req.flags = 0;
+            }
+            pb.controls_off = off;
             // Where its feet are in the simulation, as its next step starts
             // from.
             let mut standing = capsule.feet(&at);
@@ -1247,7 +1278,7 @@ pub(crate) fn steer_player(
             let down = fallen || state.off_feet();
             pb.crouch = crouch_tick(
                 pb.crouch,
-                bindings.pressed(&keys, Action::Crouch) || pad_crouch,
+                held(Action::Crouch) || pad_crouch,
                 body.moving(),
                 down,
             );
@@ -1960,13 +1991,19 @@ fn request_attacks(
         Option<&Attacking>,
         (Has<Fallen>, Option<&exa_combat::AttackHook>),
     )>,
-    mut asked: MessageWriter<exa_combat::AttackAskedHook>,
+    (mut asked, control): (
+        MessageWriter<exa_combat::AttackAskedHook>,
+        Option<Res<crate::player_controls::PlayerControl>>,
+    ),
 ) {
     let now = ticks.map_or(0, |t| t.millis());
+    // The controls off, the behaviour's button word is empty.
+    let off = crate::player_controls::PlayerControl::is_off(control.as_deref());
     let pad_active = pad_status.as_ref().is_some_and(|s| s.active()) && pad.is_some();
-    let down = bindings.mouse_pressed(&buttons, Action::Primary)
-        || latch.pressed_since_tick
-        || (pad_active && pad.as_deref().is_some_and(|p| p.attack_held()));
+    let down = !off
+        && (bindings.mouse_pressed(&buttons, Action::Primary)
+            || latch.pressed_since_tick
+            || (pad_active && pad.as_deref().is_some_and(|p| p.attack_held())));
     latch.pressed_since_tick = false;
     for (
         entity,
@@ -2020,6 +2057,7 @@ fn request_attacks(
             continue;
         }
         pb.attack.thrust = attack::may_thrust(weapon_class)
+            && !off
             && (bindings.pressed(&keys, Action::Alternate)
                 || (pad_active && pad.as_deref().is_some_and(|p| p.frame().alternate)));
         req.heading = pb.aim;

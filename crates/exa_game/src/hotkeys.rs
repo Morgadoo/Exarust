@@ -40,6 +40,8 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+
+use crate::player_controls::PlayerControl;
 use exa_character::grip_runtime::FlipWeaponRequest;
 use exa_character::held::Hands;
 use exa_combat::Condition;
@@ -129,6 +131,8 @@ pub enum Hotkey {
     Journal,
     PowerTree,
     PowerBar,
+    /// The pad's Select: the end-of-session menu confirms its row.
+    ConfirmEndMenu,
 }
 
 /// What the key handler reads besides the key.
@@ -261,6 +265,11 @@ pub fn pad_hotkeys(bits: u32, c: Context) -> Vec<Hotkey> {
     if bits & command::POWER_BAR != 0 && c.powers > 0 {
         out.push(Hotkey::PowerBar);
     }
+    // Select outside a dialogue confirms the end menu's row (the menu's
+    // own test: only while it shows).
+    if bits & command::USE != 0 && !c.dialogue {
+        out.push(Hotkey::ConfirmEndMenu);
+    }
     if !c.power_bar {
         if bits & command::USE_POWER != 0 && allowed(allow::POWERS) {
             out.push(Hotkey::Power(-1));
@@ -313,6 +322,7 @@ impl Plugin for HotkeyPlugin {
     fn build(&self, app: &mut App) {
         exa_physics::sim_app::add_fixed_commands(app);
         app.add_message::<ScreenRequest>()
+            .add_message::<crate::end_menu_screen::EndMenuConfirm>()
             .add_message::<BarCommand>()
             .add_message::<FlipWeaponRequest>()
             .add_message::<crate::skill_screen::OpenSkills>()
@@ -365,8 +375,17 @@ fn press_hotkeys(
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
     mut skills: MessageWriter<crate::skill_screen::OpenSkills>,
-    mut dialogue: DialogueSide,
+    (mut dialogue, control, mut confirms): (
+        DialogueSide,
+        Option<Res<PlayerControl>>,
+        MessageWriter<crate::end_menu_screen::EndMenuConfirm>,
+    ),
 ) {
+    // The controls off, the key-down handler and the pad routine (the
+    // controls' frame task) dispatch nothing.
+    if PlayerControl::is_off(control.as_deref()) {
+        return;
+    }
     let pressed: Vec<u32> = keys
         .get_just_pressed()
         .filter_map(|&k| virtual_key(k))
@@ -517,6 +536,9 @@ fn press_hotkeys(
                 Hotkey::Skills => {
                     skills.write(crate::skill_screen::OpenSkills);
                 }
+                Hotkey::ConfirmEndMenu => {
+                    confirms.write(crate::end_menu_screen::EndMenuConfirm);
+                }
                 _ => {}
             }
         }
@@ -656,6 +678,16 @@ mod tests {
             ..Context::default()
         };
         assert!(pad_hotkeys(c::POWER_BAR | c::POWER_TREE, companion).is_empty());
+        // Select confirms the end menu after the bar, not in a dialogue.
+        assert_eq!(
+            pad_hotkeys(c::USE | c::POWER_BAR, play),
+            vec![Hotkey::PowerBar, Hotkey::ConfirmEndMenu]
+        );
+        let talking = Context {
+            dialogue: true,
+            ..play
+        };
+        assert!(pad_hotkeys(c::USE, talking).is_empty());
         let bar = Context {
             power_bar: true,
             allowed: 0,
@@ -694,10 +726,11 @@ mod tests {
             ..hidden
         };
         assert_eq!(pad_hotkeys(c::INVENTORY, falling), vec![Hotkey::Inventory]);
-        // No death test; Talk, Select and the pause are other systems'.
+        // No death test; Talk, the dialogue's Select and the pause are
+        // other systems'.
         let dead = Context { dead: true, ..play };
         assert_eq!(pad_hotkeys(c::INVENTORY, dead), vec![Hotkey::Inventory]);
-        assert!(pad_hotkeys(c::TALK | c::USE | c::PAUSE | c::LOOK, play).is_empty());
+        assert!(pad_hotkeys(c::TALK | c::PAUSE | c::LOOK, play).is_empty());
         // Combat toggles combat mode with no gate, after the power tree and
         // before the swap.
         assert_eq!(
@@ -786,6 +819,7 @@ mod tests {
                 .init_resource::<Bindings>()
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
+                .add_message::<crate::end_menu_screen::EndMenuConfirm>()
                 .add_message::<crate::skill_screen::OpenSkills>()
                 .add_message::<BarCommand>()
                 .add_message::<FlipWeaponRequest>()
@@ -816,6 +850,7 @@ mod tests {
                 .init_resource::<Bindings>()
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
+                .add_message::<crate::end_menu_screen::EndMenuConfirm>()
                 .add_message::<crate::skill_screen::OpenSkills>()
                 .add_message::<BarCommand>()
                 .add_message::<FlipWeaponRequest>()
