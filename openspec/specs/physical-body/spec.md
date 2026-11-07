@@ -519,6 +519,17 @@ Each tick, unless shocked (which leaves the arms as they are), the arms' stiffne
 - **WHEN** a shocked body's arms were 0.6 the tick before
 - **THEN** their stiffness, cap and saturation stay as they were
 
+### Requirement: Placement pose routing
+A placement on the ground SHALL pose each part as the pose-only sampler routes it: the thighs' clip turns carrying the femur posture before the chain, the torso's midline parts but the head turned by the twist (the part under the root half way), the head on the untwisted chain, and the part with the support pins taking the thorax hunch when the feral level is over 0.1. No leg IK, look or foot pitch SHALL run there. A first spawn SHALL take the plain clip chain.
+
+#### Scenario: A feral body re-enters
+- **WHEN** a feral body with a hunch is placed on the ground on re-entering the scene
+- **THEN** its thorax is placed with the hunch and its head and arms on their clip chain
+
+#### Scenario: A body in combat
+- **WHEN** a body whose behaviour is in combat and which stands is placed on the ground
+- **THEN** its thighs take the combat femur turn
+
 ### Requirement: Held items' contact mobility
 Every tick the arm setter is called, the system SHALL put each held item's contact mobility at the item's base times the setter's held factor: 1 in an attack's or a parry's branch, 2 in every other branch that sets the arms. A shock or a kick SHALL leave the items as they are. The shield SHALL take it whatever its holder holds; the other held items only while the holder is armed (its first held item's class has a hands bit).
 

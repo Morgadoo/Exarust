@@ -382,14 +382,18 @@ fn posed_parts(
     animators: &Query<(&Animator, Option<&Stature>)>,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
+    routing: Option<(&Ragdoll, PlacementRouting)>,
 ) -> Option<(Vec<Affine3A>, usize, exa_anim::Bracket, bool)> {
     let (anim, stature) = animators.get(root).ok()?;
     let clip = motions.clip(anim, &anim.action)?;
     let action = motions.0.action_index(&anim.action);
     let (pose, b) = placement_pose(anim, clip, action)?;
-    let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
+    let mut pose = pose.scaled(stature.map_or(1.0, |s| s.0));
+    if let Some((body, r)) = routing {
+        pose = crate::stages::sampler::femur_posture(pose, body, r.posture);
+    }
     let mut pelvis = None;
-    let posed: Vec<Affine3A> = entities
+    let mut posed: Vec<Affine3A> = entities
         .enumerate()
         .map(|(i, (entity, bone))| {
             if bone == 1 && pelvis.is_none() {
@@ -398,7 +402,65 @@ fn posed_parts(
             clip_pose(entity, root, &pose, parents, nodes)
         })
         .collect();
+    if let Some((body, r)) = routing {
+        route_placement(&mut posed, body, r, nodes);
+    }
     Some((posed, pelvis?, b, action == Some(UNCONSCIOUS_1)))
+}
+
+/// What the pose-only sampler routes each part's placement by, besides the
+/// clip: the thighs' femur turn, the torso twist and the feral level that
+/// lets the thorax hunch. A first spawn has none of them (every turn is
+/// the identity and the hunch 0), so the spawn passes no routing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlacementRouting {
+    pub(crate) posture: exa_physics::body::FemurPosture,
+    pub(crate) twist: Quat,
+    pub(crate) feral: f32,
+}
+
+impl PlacementRouting {
+    /// The routing of a living body re-placed in the middle of its life:
+    /// the femur posture its tick asks (`thigh_posture`), its locomotion's
+    /// twist and its character's feral level.
+    pub(crate) fn of(
+        body: &Ragdoll,
+        condition: Option<&Condition>,
+        motor: Option<&Locomotor>,
+        fighter: Option<&exa_combat::Fighter>,
+    ) -> Self {
+        let in_combat = body.drive.as_ref().is_some_and(|d| d.bearing.in_combat);
+        let splay = body.drive.as_ref().is_some_and(|d| d.bearing.splay);
+        Self {
+            posture: crate::stages::sampler::thigh_posture(
+                in_combat,
+                condition.copied().unwrap_or_default(),
+                splay,
+                fighter.map_or(0.0, |f| f.stats.height),
+            ),
+            twist: motor.map_or(Quat::IDENTITY, |m| m.twist),
+            feral: fighter.map_or(0.0, |f| f.stats.feral),
+        }
+    }
+}
+
+/// The pose-only sampler's per-part routing in one pass, as its loop over
+/// the parts runs it (REA, read in the assembly): every part's world
+/// placement is its clip chain (the thighs' turns already carrying the
+/// femur posture); a part on the torso's midline (the twist flag, the head
+/// excepted) is turned by the twist, the lumbar only half way; the head
+/// stays on the untwisted chain; the part with the support pins takes the
+/// thorax hunch when the feral level is over 0.1. No leg IK, look or foot
+/// pitch runs there, unlike the living sampler.
+fn route_placement(
+    posed: &mut [Affine3A],
+    body: &Ragdoll,
+    routing: PlacementRouting,
+    nodes: &Query<(&Transform, Option<&BodyPart>)>,
+) {
+    let spine = crate::stages::sampler::spine(body, nodes);
+    exa_physics::body::locomotion::twist_spine(posed, &spine, routing.twist);
+    crate::stages::sampler::pitch_thorax(posed, body, routing.feral);
 }
 
 /// The spawn's placement at a matrix, as the original's living builder
@@ -421,7 +483,7 @@ fn spawn_pose(
 ) {
     let entities = found.iter().map(|&(e, bone, _)| (e, bone));
     let Some((posed, pelvis, b, unconscious)) =
-        posed_parts(root, entities, motions, animators, parents, nodes)
+        posed_parts(root, entities, motions, animators, parents, nodes, None)
     else {
         return;
     };
@@ -565,6 +627,11 @@ fn place_on_ground(
     physics: Option<Res<exa_physics::Physics>>,
     sector_bodies: Option<Res<exa_physics::sector_lists::SectorBodies>>,
     others: Query<(&Ragdoll, Option<&Condition>), Without<GroundPlacement>>,
+    states: Query<(
+        Option<&Condition>,
+        Option<&Locomotor>,
+        Option<&exa_combat::Fighter>,
+    )>,
 ) {
     for (root, placement, mut body, at) in &mut asked {
         commands.entity(root).remove::<GroundPlacement>();
@@ -573,6 +640,20 @@ fn place_on_ground(
         };
         let entities: Vec<(Entity, usize)> =
             body.parts.iter().map(|p| (p.entity, p.bone)).collect();
+        // A body re-placed in the middle of its life is routed by its
+        // femur posture, twist and hunch as they stand.
+        let routing = states
+            .get(root)
+            .ok()
+            .map(|(c, m, f)| PlacementRouting::of(&body, c, m, f));
+        if let Some(r) = routing {
+            info!(
+                "ground placement {root:?}: routed by femur posture {:?}, twist {:.1} deg, feral {:.2}",
+                r.posture,
+                r.twist.angle_between(Quat::IDENTITY).to_degrees(),
+                r.feral
+            );
+        }
         let Some((posed, pelvis, _, _)) = posed_parts(
             root,
             entities.into_iter(),
@@ -580,6 +661,7 @@ fn place_on_ground(
             &animators,
             &parents,
             &nodes,
+            routing.map(|r| (&*body, r)),
         ) else {
             continue;
         };

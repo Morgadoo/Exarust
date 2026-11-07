@@ -34,7 +34,7 @@ checked unreachable).
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **98,140 of 122,823 needed bytes (80 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 76,591 of their 100,371 bytes). Counting only what the running game calls, about **84,030 bytes (68 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below; earlier lanes' additions are in the paragraphs that follow.)
+Weighted by the partial shares, about **98,850 of 122,823 needed bytes (80 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 77,301 of their 100,371 bytes). Counting only what the running game calls, about **84,740 bytes (69 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below; earlier lanes' additions are in the paragraphs that follow.)
 The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live (about 80,400 B). The kernel lane then added about 1,670 B reproduced (the pain sounds and player jolt of #8, the feet modes of #50, the leg order of #73: tested only) and about 360 B live (the standing body's drive reset in #49, the golem link smoothing of #73, and the init's foot-mask union, which was live but not credited).
 The sampler lane added about 3,070 B reproduced, tested only: the pose-only sampler's key pick, root source and height tail (#76, about 890 B), the living sampler's height tail and queued-clip switch (#81, about 880 B), the down body's probe (#49, about 150 B) and the placement routines' part, anchor, pin and mean arithmetic (#62 about 715 B, #58 about 440 B). Its one live change, the living hunch moved onto the thorax's own placement (#81), corrects code that was already credited, so the live total stays.
 The muscles-off lane added about 900 B reproduced, tested only (the sampler is not scheduled): in #82 the bracket's branch order (the lead-in divides by the first key alone unless the blend is positive, no guard between the keys, a NaN clock between the keys), the progress (raw clock over the last key), the gait overlay by √run (from the capture's turn while it leads in) and the normalisation, the height target ((2·run + 2)·scale while walking, the −500 cm floor, the original's sum order) and the queued-clip switch (about 765 B); #84, the capture of the current targets, as `Animator::capture_targets` (about 140 B). Nothing live changed; #84's earlier live credit (about 70 B) was the living sampler's rebase, which is not this routine, so the live count drops to about 80,690 B (66 %).
@@ -92,6 +92,23 @@ the factor is live (a guard's weapon 9.77 → 19.55 and back in each swing, the 
 tick-identical to main: the scripted contacts are the striker's weapon (factor 1, unchanged) and
 held contacts the pair stage refuses.
 
+Then the pose-only sampler's per-part routing (#76), read in the pseudo-code and checked in the
+assembly's part loop: each part's world placement is its clip chain, the thighs' local turns
+already multiplied by the femur posture's turn (the part flag the femur posture sets); a part with
+the twist flag (the midline, not the head) takes the chain times the twist, the one under the
+root half way (forward axis midway, up squared to it, side their cross); the head clears that flag
+and its node local is measured from its parent's untwisted chain; the part with the support pins
+takes the thorax hunch when the feral level is over 0.1; the pins are placed on the untwisted
+chain, the foot contacts on the clip chain. Its helper that the earlier notes read as a compose is
+the relative transform (Aᵀ·(B − t)), so the twist does not run down to the children. Exarust's
+placement posed every part on the plain clip chain; now `limp::route_placement` applies the
+living sampler's own femur posture, twist and hunch steps (without its IK, look and foot pitch)
+at every placement on the ground (the player's third tick, the AI's re-entry). A first spawn
+passes no routing (every input is the identity there). GPU: the player's placement in the arena
+takes the combat femur posture and a 0.9° twist (anchors 1–2 cm apart from main), and the duel
+diverges from tick 3; exanima01's first re-entered feral body takes the hunch, and the trace
+diverges at tick 347 in that body alone (about 700 B newly live).
+
 ## Largest remaining work
 
 | routine | size | left (est.) | role | missing |
@@ -99,7 +116,7 @@ held contacts the pair stage refuses.
 | #49 | 20,293 | 5,635 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | some state flags; the sampler call's tail and carry propagation |
 | #8 | 13,157 | 1,845 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; script hook and callbacks; the struck item's own sound (#4) in the clash branch not called |
 | #18 | 8,061 | 1,209 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | wet step (no water surface); nav calls; parity unverified block by block |
-| #76 | 3,562 | 1,250 | Pose-only sampler (spawn and placement) | the per-part routing (femur posture, half twist, head on the untwisted chain, hunch on the thorax alone) and the anchors as one pass; the walking target and the leg reach ported but not called |
+| #76 | 3,562 | 530 | Pose-only sampler (spawn and placement) | the walking target and the leg reach not called; the render nodes' locals |
 | #82 | 4,499 | 585 | Muscles-off sampler | every part's contacts in the height (legs only); not scheduled |
 | #50 | 7,185 | 835 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | the flat-floor bit only set by `--flat-floor`; the original's pelvis target (the carry's stands in); the leg relaxation runs in the muscle setter, gated on support, not per leg in reach; some thresholds unverified |
 | #73 | 5,423 | 1,247 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | leg swap ported but not called; ghoul head-part set-up; gait scale check |
@@ -186,7 +203,7 @@ held contacts the pair stage refuses.
 | 73 | 5,423 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | `exa_formats character_stats.rs CharacterStats::derive (RACE_PRESETS), BodyRules`; `exa_game scene_bodies.rs character_muscles`; `exa_combat sounds.rs`; `exa_physics body.rs Ragdoll::smooth_golem_links, legs_swap`; `body_pairs.rs register_legs` (foot-mask union) | partial (77 %) | the leg swap is not called: every shipped race model's first thigh sits at negative x (checked on all 17 exported race models, human −9.07 cm to the ogre's −20.2 cm), so part order is the original's leg order for every body the game builds (equivalent live; the mirrored test fixtures would swap); the ghouls' half-scale head-part set-up; a word set to 4 for creatures with no reader found; gait scale check | yes (leg swap equivalent) |
 | 74 | 1,218 | Part classification: legs, side arms, hand chains | `exa_physics body.rs (fixed human bone order)` | partial (40 %) | data-driven walk, ankle offset, factors, roles | yes |
 | 75 | 434 | Part list from model nodes | `exa_physics body.rs`; `exa_anim attach_body_parts`; `exa_combat sounds.rs` | partial (60 %) | boneless parts, per-part foley | yes |
-| 76 | 3,562 | Pose-only sampler (spawn and placement) | `exa_game limp.rs spawn_pose, posed_parts`; `exa_anim sample, ClipPose::at, placement_bracket, placement_root_from_key`; `exa_physics body_pose_heights.rs stand_heights, placement_pelvis_target` (via `Ragdoll::placement_target`) | partial (65 %) | the per-part routing as one pass (femur posture, half twist, head on the untwisted chain, hunch on the thorax alone; at a first spawn all are identity) and the anchors; the walking target and the leg reach are not called | yes (key pick, stand height and the not-walking target at spawn) |
+| 76 | 3,562 | Pose-only sampler (spawn and placement) | `exa_game limp.rs spawn_pose, posed_parts, route_placement, PlacementRouting`; `exa_anim sample, ClipPose::at, placement_bracket, placement_root_from_key`; `exa_physics body_pose_heights.rs stand_heights, placement_pelvis_target` (via `Ragdoll::placement_target`) | partial (85 %) | the anchors' and pins' writes (equivalent: the placements take both anew) and the render nodes' locals; the walking target and the leg reach are not called. The per-part routing is one pass now (round 127): the thighs' femur posture in the clip chain, the midline parts turned by the twist (the lumbar half way), the head on the untwisted chain, the hunch on the pinned part when feral; no IK, look or foot pitch | yes (key pick, stand height, the not-walking target at spawn; the routing at every ground placement) |
 | 77 | 494 | Head look | `exa_physics body_twist.rs head_look`; `exa_game stages/sampler.rs` | partial (85 %) | head tilt, helpless decay | yes |
 | 78 | 36 | Smooth ease | `exa_anim clock.rs Ease::apply` | done | - | yes |
 | 79 | 60 | Fast ease | `exa_anim clock.rs Ease::apply` | done | - | yes |

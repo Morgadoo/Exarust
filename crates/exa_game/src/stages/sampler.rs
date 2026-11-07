@@ -419,7 +419,7 @@ fn overlay(pose: &mut ClipPose, gait: Option<(&Clip, f32)>, bracket: &Bracket) {
 /// Step 4, the femur posture: each thigh's clip turn is multiplied by a
 /// small turn about the femur axis (`exa_physics::body::femur_posture_turn`,
 /// the legs in the body's order); the turn stays in the clip chain.
-fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPosture) -> ClipPose {
+pub(crate) fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPosture) -> ClipPose {
     for (leg, joint) in body.legs().iter().enumerate() {
         let Some(thigh) = body.parts.get(joint.shin).and_then(|p| p.parent) else {
             continue;
@@ -443,7 +443,7 @@ fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPosture) -> C
 /// into the pinned part's posed placement alone, so the head and the arms
 /// keep their poses (their anchors are measured from it). A hunch of 0
 /// leaves the placement.
-fn pitch_thorax(parts: &mut [Affine3A], body: &Ragdoll, feral: f32) {
+pub(crate) fn pitch_thorax(parts: &mut [Affine3A], body: &Ragdoll, feral: f32) {
     let Some(hunch) = body.drive.as_ref().map(|d| d.hunch) else {
         return;
     };
@@ -509,7 +509,10 @@ const HEAD: usize = 10;
 /// its first child within 3 cm of the midline, that child's first, and so
 /// on (the original's midline chain), but the head; the one under the
 /// root (the lumbar) takes half of the twist.
-fn spine(body: &Ragdoll, nodes: &Query<(&Transform, Option<&BodyPart>)>) -> Vec<(usize, bool)> {
+pub(crate) fn spine(
+    body: &Ragdoll,
+    nodes: &Query<(&Transform, Option<&BodyPart>)>,
+) -> Vec<(usize, bool)> {
     let parts = &body.parts;
     let Some(root) = parts.iter().position(|p| p.parent.is_none()) else {
         return Vec::new();
