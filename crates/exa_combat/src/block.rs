@@ -528,7 +528,7 @@ pub fn trace_held_weapons(
         if grip.kind != HeldKind::Weapon {
             continue;
         }
-        let Some((holder, _, _)) = fighters.iter().find(|(_, b, attacking)| {
+        let Some((holder, holder_body, _)) = fighters.iter().find(|(_, b, attacking)| {
             *attacking && b.parts.first().map(|p| p.entity) == Some(grip.holder_key)
         }) else {
             continue;
@@ -558,9 +558,21 @@ pub fn trace_held_weapons(
                 }
             }
         }
+        // The holder's frame forward against the way to that foe's root
+        // and the blade's way, as yaws (degrees) across the ground.
+        let yaw = |v: Vec3| v.x.atan2(v.z).to_degrees().round();
+        let forward = holder_body
+            .drive
+            .as_ref()
+            .and_then(|d| d.frame())
+            .map(|f| Vec3::from(f.matrix3.z_axis));
+        let facing = forward.map(yaw);
+        let to_foe = nearest.map(|n| yaw(n.3 - at));
+        let blade_way = yaw(tip - at);
         info!(
-            "held-trace {holder:?} item {item:?} at {at:.2} tip {tip:.2} state {:#x} layer {:#x} \
-             group {:#x} asleep {} nearest {:?}",
+            "held-trace {holder:?} item {item:?} at {at:.2} tip {tip:.2} facing {facing:?} \
+             to_foe {to_foe:?} blade {blade_way} state {:#x} layer {:#x} group {:#x} asleep {} \
+             nearest {:?}",
             first.state.bits(),
             first.pairing.layer,
             first.pairing.group,
