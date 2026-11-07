@@ -1470,6 +1470,7 @@ fn create_force(
                         target: context.target,
                         hooked,
                         generation,
+                        contact_scale: 0.0,
                     },
                     hazard,
                 ))

@@ -181,6 +181,47 @@ pub fn ray_mesh(
     best
 }
 
+/// A node mesh's sphere query (metres, in the mesh's own frame), as an
+/// effect's contact asks it: every front face the sphere reaches gives its
+/// closest point to `on_point`, which may move the sphere (the next face
+/// sees the moved sphere). Through the mesh's kd-tree when it has one (the
+/// leaves the sphere's box reaches, in the tree's order), else every
+/// triangle in the file's order. The face test is the pair stage's
+/// (the sphere's centre in front of the face, within its radius). Returns
+/// whether a face was met.
+pub fn sphere_contacts(
+    triangles: &[[Vec3; 3]],
+    tree: Option<&MeshTree>,
+    sphere: &mut (Vec3, f32),
+    mut on_point: impl FnMut(&mut (Vec3, f32), Vec3),
+) -> bool {
+    let mut face = |s: &mut (Vec3, f32), t: &[Vec3; 3]| -> bool {
+        match crate::contact::sphere_hit(t, s.0, s.1) {
+            Some((q, _)) => {
+                on_point(s, q);
+                true
+            }
+            None => false,
+        }
+    };
+    if let Some(tree) = tree {
+        return tree.sphere(sphere, |s, ids| {
+            let mut hit = false;
+            for &id in ids {
+                if let Some(t) = triangles.get(id as usize) {
+                    hit |= face(s, t);
+                }
+            }
+            hit
+        });
+    }
+    let mut hit = false;
+    for t in triangles {
+        hit |= face(sphere, t);
+    }
+    hit
+}
+
 /// The signed volume a closed mesh encloses (in its units cubed): positive
 /// when its fronts ((b − a) × (c − a)) face out, as the mesh queries need
 /// (a debug check of a mesh's winding).
