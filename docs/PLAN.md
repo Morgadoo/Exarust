@@ -297,6 +297,8 @@ Round 119 explore: the story explores every frame, and items are not placed thro
 
 Round 120 loadplace: a loaded story puts its player where it was saved, so a reload no longer falls and loses its save.
 
+Round 122 navsys: every thread runs in the engine's float mode, and the chase camera is built from the game's camera preset.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
