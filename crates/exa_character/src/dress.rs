@@ -676,6 +676,7 @@ mod tests {
             mesh: bool,
         ) -> exa_assets::ModelNode {
             exa_assets::ModelNode {
+                prop_skin: None,
                 name: name.into(),
                 parent,
                 transform: Transform::from_translation(translation.into()),

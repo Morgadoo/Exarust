@@ -1773,6 +1773,7 @@ mod tests {
 
     fn node(name: &str, parent: Option<usize>, mesh: Handle<Mesh>) -> exa_assets::ModelNode {
         exa_assets::ModelNode {
+            prop_skin: None,
             name: name.into(),
             parent,
             transform: Transform::IDENTITY,

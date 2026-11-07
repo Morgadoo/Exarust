@@ -54,6 +54,16 @@ impl Model {
     }
 }
 
+/// A mesh of a skinned linked-body object ([`crate::prop_skin`]): its
+/// parts' skinned meshes (in the order of [`ModelNode::parts`]), the node
+/// of each joint (joint `b` is bone `b`) and each joint's inverse bind.
+#[derive(Debug, Clone)]
+pub struct PropSkin {
+    pub parts: Vec<Handle<Mesh>>,
+    pub joints: Arc<[usize]>,
+    pub inverse_binds: Arc<[Mat4]>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelNode {
     pub name: String,
@@ -75,6 +85,10 @@ pub struct ModelNode {
     /// Bone whose space the parts are in, when their meshes carry skin
     /// weights (joint indices are bone numbers).
     pub skin_bone: Option<u16>,
+    /// The node's part meshes skinned to the bones of its object, when it
+    /// is a mesh of a skinned linked-body object ([`crate::prop_skin`]);
+    /// `parts` keep the rigid meshes for the spawners that do not skin.
+    pub prop_skin: Option<Arc<PropSkin>>,
     pub light: Option<exa_formats::rfc::Light>,
     /// A voxel light: light the node adds into the GI volume only.
     pub voxel_light: Option<exa_formats::rfc::VoxelLight>,
@@ -741,6 +755,13 @@ impl ModelLoader<'_> {
                 self.warn_once(format!("{}:{}: mesh has no faces", entry, node.name));
             }
             let skin_bone = built.skin.as_ref().map(|(bone, _)| *bone);
+            let prop_skin = built.prop_skin.map(|(meshes, joints, binds)| {
+                Arc::new(PropSkin {
+                    parts: meshes.into_iter().map(|m| self.meshes.add(m)).collect(),
+                    joints,
+                    inverse_binds: Arc::from(binds),
+                })
+            });
             // A node marked as level geometry never registers its body.
             let rigid = node.rigid().filter(|_| !node.is_static()).map(|body| {
                 let (mobility_divisor, collision_sound) = mesh
@@ -826,6 +847,7 @@ impl ModelLoader<'_> {
                 part_flags,
                 collision,
                 skin_bone,
+                prop_skin,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 half_extents: Vec3::from(node.bounds_half_extents),
                 gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, floor_set[i])),
@@ -2147,10 +2169,17 @@ pub struct BuiltModel {
     morph: Option<BuiltMorph>,
 }
 
+/// A skinned object member's built meshes, joint nodes and inverse binds.
+type BuiltPropSkin = (Vec<Mesh>, Arc<[usize]>, Vec<Mat4>);
+
 /// A node's skin weights (with the bone whose space they are in) and its
 /// drawn mesh groups' meshes, by group index.
 struct BuiltNode {
     skin: Option<(u16, Vec<VertexSkin>)>,
+    /// A skinned linked-body object's member: its groups' skinned meshes
+    /// (in the order of `meshes`), its object's joint nodes and its
+    /// inverse binds.
+    prop_skin: Option<BuiltPropSkin>,
     meshes: Vec<BuiltGroup>,
     /// The node's `_null` groups' bare meshes, never drawn.
     collision: Vec<Mesh>,
@@ -2216,22 +2245,47 @@ impl ModelJob {
             m.built(parts)
         });
         let skins = unmorphed.unwrap_or_else(|| skins_of(&scene));
+        // A skinned linked-body object's meshes (the importer's finalise
+        // pass hands such a root to the skin builder); a character model
+        // has its own skin.
+        let plans = if skinned {
+            Vec::new()
+        } else {
+            crate::prop_skin::plan(&scene)
+        };
         let nodes = scene
             .nodes
             .iter()
+            .enumerate()
             .zip(skins)
-            .map(|(node, skin)| {
+            .map(|((index, node), skin)| {
                 let NodeBody::Mesh(mesh) = &node.body else {
                     return BuiltNode {
                         skin: None,
+                        prop_skin: None,
                         meshes: Vec::new(),
                         collision: Vec::new(),
                     };
                 };
                 let (meshes, collision) =
                     group_meshes(mesh, skin.as_ref().map(|(_, s)| s.as_slice()), pool);
+                let prop_skin = plans.iter().find_map(|plan| {
+                    let bone = plan.bone_of(index)?;
+                    // The stored stream's weights; a mesh without one keeps
+                    // every vertex on its own bone (no shipped member
+                    // lacks one).
+                    let weights =
+                        auto_skin_build(mesh, bone, &[], Seams::Body, &ParentFrame::NONE).weights;
+                    let (skinned, _) = group_meshes(mesh, Some(&weights), pool);
+                    Some((
+                        skinned.into_iter().map(|(_, m, _)| m).collect(),
+                        Arc::from(plan.joints.as_slice()),
+                        crate::prop_skin::inverse_binds(&scene, plan, index),
+                    ))
+                });
                 BuiltNode {
                     skin,
+                    prop_skin,
                     meshes,
                     collision,
                 }
@@ -3873,6 +3927,7 @@ mod tests {
 
     fn material_node(materials: &[&str]) -> ModelNode {
         ModelNode {
+            prop_skin: None,
             name: "part".into(),
             parent: None,
             transform: Transform::IDENTITY,

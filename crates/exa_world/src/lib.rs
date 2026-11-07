@@ -28,6 +28,7 @@ pub mod nav;
 pub mod node_parts;
 pub mod particles;
 pub mod presets;
+pub mod prop_skin;
 pub mod published_light;
 pub mod room_view;
 pub mod rooms;
@@ -60,6 +61,7 @@ impl Plugin for WorldPlugin {
             nav::NavPlugin,
             shadow_links::ShadowLinksPlugin,
             light_source::LightSourcePlugin,
+            prop_skin::PropSkinPlugin,
             room_view::RoomViewPlugin,
             sun_shadow::SunShadowPlugin,
             cloth::ClothPlugin,
@@ -1496,13 +1498,19 @@ pub fn spawn_model_nodes_at(
                 let part = commands
                     .spawn((MeshMaterial3d(material.clone()), ChildOf(e)))
                     .id();
-                match node.skin_bone {
-                    Some(bone) => commands.entity(part).insert(exa_assets::SkinnedPart {
-                        bone,
-                        mesh: mesh.clone(),
-                    }),
-                    None => commands.entity(part).insert(Mesh3d(mesh.clone())),
-                };
+                match (node.skin_bone, &node.prop_skin) {
+                    (Some(bone), _) => {
+                        commands.entity(part).insert(exa_assets::SkinnedPart {
+                            bone,
+                            mesh: mesh.clone(),
+                        });
+                    }
+                    // Bound to its object's nodes once they all exist (below).
+                    (None, Some(_)) => {}
+                    (None, None) => {
+                        commands.entity(part).insert(Mesh3d(mesh.clone()));
+                    }
+                }
                 if node.is_skin {
                     commands.entity(part).insert(exa_assets::RaceSkinPart);
                 }
@@ -1601,6 +1609,12 @@ pub fn spawn_model_nodes_at(
     for (i, node) in model.nodes.iter().enumerate() {
         let parent = node.parent.map_or(root, |p| entities[p]);
         commands.entity(entities[i]).insert(ChildOf(parent));
+    }
+    // A skinned linked-body object's meshes follow its nodes' frames.
+    for (i, node) in model.nodes.iter().enumerate() {
+        if let Some(skin) = &node.prop_skin {
+            prop_skin::attach(commands, skin, &parts_of[i], &entities);
+        }
     }
     // A fire marker suppresses its host mesh's own emissive: remember the
     // host's first part so the fire can drive it.
@@ -3379,6 +3393,7 @@ mod tests {
         intensity: Option<f32>,
     ) -> exa_assets::ModelNode {
         exa_assets::ModelNode {
+            prop_skin: None,
             name: name.into(),
             parent,
             transform: Transform::IDENTITY,

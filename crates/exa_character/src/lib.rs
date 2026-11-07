@@ -2514,6 +2514,7 @@ mod tests {
     fn rigid_node(name: &str, parent: Option<usize>, at: Vec3) -> model::ModelNode {
         use exa_formats::rigid_body::RigidBody;
         model::ModelNode {
+            prop_skin: None,
             name: name.into(),
             parent,
             transform: Transform::from_translation(at),

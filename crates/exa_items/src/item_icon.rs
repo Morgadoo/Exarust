@@ -778,6 +778,7 @@ mod tests {
         let painted = colour(&mut materials, 0.2);
         let model = Model {
             nodes: vec![exa_assets::ModelNode {
+                prop_skin: None,
                 name: "shirt".into(),
                 parent: None,
                 transform: Transform::IDENTITY,

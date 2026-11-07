@@ -449,6 +449,7 @@ impl ModelLoader<'_> {
 
         let material = self.factory_material(name, &factory, &built, &placed, &loaded, condition);
         let mut root = ModelNode {
+            prop_skin: None,
             name: name.to_string(),
             parent: None,
             transform: Transform::IDENTITY,

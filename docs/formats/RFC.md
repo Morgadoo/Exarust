@@ -227,6 +227,20 @@ level 0, 378 level 1, 2 761 level 2, 174 level 3 and 3 level 4; one mesh
 (the shadow pass's cull-front bit); 38 set `0x1000`. Counted by
 `exa-tool corpus render-words`.
 
+Render bit `0x400000` marks a skinned linked-body object (REA on the
+importer's finalise pass and the skin builder). A root mesh with it that owns
+its data is built into a `_SKIN` mesh: the builder sets `0x800000` on the
+root, numbers the bones in its walk (the root 1; at each node its class
+`0x89` children with `0x400000` but not `0x800000`, in child order, before
+entering them), gives each member `flags2` `0xC0008` over its `0x30000` bits
+(its own draw skipped, its parts' cast cleared), appends every member into
+the new mesh and runs the vertex-cache conversion on it. A member's weights
+are its stored skin stream (`0x02A41000`), whose bone numbers are the walk's;
+a member without one gets the automatic seam weights. The skin follows the
+members' node frames, which their linked bodies move. Shipped: 22 objects
+with 105 members (Objlib 20: the sack, four mattresses, fifteen hanging
+growths; Objects: `flail a01`, `flailogrea01`), every member with a stream.
+
 | stream id | format word | content | count |
 |---|---|---|---:|
 | `0x00000001` | `0x00F30001` | positions | 23 065 |

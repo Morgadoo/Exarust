@@ -26,7 +26,7 @@
 //!   nibble is set, and `0x80000` when the class is zero;
 //! - the part's mode word starts at 1 and follows the material's extra
 //!   flags (`2` → `2`, `0x10` → `0x10`, `4` → `8`, `0x100` → `4`), plus
-//!   `0x40` when the node word has `0x8000`;
+//!   `0x40` when the node word has `0x8000` (the vertex-delta stream);
 //! - the part culls back faces unless the material is two-sided (`0x10`).
 //!
 //! The per-part bits whose draw-side meaning is not established are kept
@@ -53,8 +53,12 @@ pub const CASTS_SHADOW: u32 = 0x0001_0000;
 pub const NODE_CLASS_MASK: u32 = 0x0003_0000;
 /// The node word's bit that selects the alpha threshold 1 (else 0.5).
 pub const THRESHOLD_FULL: u32 = 0x0800_0000;
-/// The node word's bit a part's mode word copies as `0x40`.
-pub const SHADOW_ALL: u32 = 0x0000_8000;
+/// The node word's vertex-delta bit: a part's mode word copies it as
+/// `0x40`, and the mesh's GPU build then keeps a delta stream (rest
+/// positions copied, deltas zeroed) that the node's modifiers write. In
+/// the shipped data only the 17 cloth meshes carry it (the cloth
+/// controller's delta stream); Exarust moves cloth vertices on the CPU.
+pub const VERTEX_DELTAS: u32 = 0x0000_8000;
 /// The node word's bit activation drops under a non-geometry parent when
 /// any of [`DROP_GROUP`] is set.
 pub const PARENT_GEOMETRY_ONLY: u32 = 0x0100_0000;
@@ -144,7 +148,7 @@ impl PartFlags {
         if extra & 0x100 != 0 {
             word |= 4;
         }
-        if node_word & SHADOW_ALL != 0 {
+        if node_word & VERTEX_DELTAS != 0 {
             word |= 0x40;
         }
         let mut material_word = 0;

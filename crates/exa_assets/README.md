@@ -38,6 +38,16 @@ each child its parent's frame (`skin::ParentFrame`), so a garment child's
 nearest-joint match carries its group centres through its node transform
 and compares them with the parent part's centres as the stack's reader
 does (a parent centre only lowers the bar and is never taken).
+Skinned linked-body objects (`prop_skin`): a model root mesh with render
+word `0x400000` (22 shipped objects, 105 meshes: sacks, mattresses, the two
+flails and the hanging growths) is the original's `_SKIN` build. Its bones
+are its mesh nodes in the builder's walk order (the root 1, then at each
+node its marked mesh children, numbered before the walk enters them), which
+are the bone numbers of the stored skin streams every member ships; each
+member's inverse binds turn the bone's file frame back and apply its own.
+The model build gives each member `ModelNode::prop_skin` (its parts skinned
+to those bones, binds and joint nodes); `parts` keep the rigid meshes for
+spawners that do not skin (a weapon in a hand).
 `model::underscore_skinned_child` and `model::skinned_mesh_under` are the
 wound and effect lookups (the `_`-named child; and a skinned child in
 reverse child order, else the first found in the subtrees in forward

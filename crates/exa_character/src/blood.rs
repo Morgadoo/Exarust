@@ -1290,6 +1290,7 @@ mod tests {
         parts: &[Handle<Mesh>],
     ) -> exa_assets::ModelNode {
         exa_assets::ModelNode {
+            prop_skin: None,
             name: String::new(),
             parent,
             transform,
