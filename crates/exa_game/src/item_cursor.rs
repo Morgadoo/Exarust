@@ -4,9 +4,12 @@
 //!
 //! **The lift.** Without Ctrl the left press on a prop the hand can move
 //! lifts it: the item leaves the world's hands and rides the cursor, held by
-//! the item cursor (Exarust holds it with a plain grab of strength 1, its
-//! stand-in for the original moving the node itself), while the item GUI
-//! shows its icon (`window`). Its rest points at the lift are saved. The
+//! the item cursor, while the item GUI shows its icon (`window`). The body
+//! is taken out of the simulation as the original's lift leaves it after
+//! every placement: asleep, disabled, its sleep countdown 0
+//! (`Ragdoll::hold_out`); each placement moves it whole so its grab point
+//! lands on the placed point (`Ragdoll::place_grab_at`), so the release's
+//! raise to 128 gives it exactly 128. Its rest points at the lift are saved. The
 //! item cursor's own frame turns with the movement inputs, which the lift
 //! leaves to it: the pad's raw move stick, or the move keys when the stick's
 //! squared length is not over 0.1 (double precision; a NaN uses the keys).
@@ -23,7 +26,9 @@
 //!
 //! **Where it may go.** Each frame the cursor's ray is picked against the
 //! level; a hit strictly over the height the player stands at places the
-//! item there. Otherwise (a hit at or under it, a NaN height, or no hit) the
+//! item there (the ray meets the level, the props' stand-ins and the props
+//! with no stand-in by their meshes, the held item left out). Otherwise (a
+//! hit at or under it, a NaN height, or no hit) the
 //! item goes where the ray crosses that height; a ray that climbs (its
 //! height component over −1.19209e−7) refuses the placement whether or not
 //! it hit ([`lift_point`]). (A GUI drop uses the far placement limit

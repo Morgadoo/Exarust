@@ -1326,9 +1326,26 @@ pub(crate) fn pick_with(
         (Some(c), false) => Some((e, r, *c)),
         _ => None,
     });
-    // A prop a hand holds is not on the scene's own list in the original
-    // (it hangs under its holder), so the cursor's pick does not meet it.
-    let loose = bodies
+    let loose = loose_props(bodies, stand_ins);
+    pick_along(
+        ray?,
+        physics,
+        stand_ins,
+        collider_nodes,
+        loose,
+        others.chain(player),
+    )
+}
+
+/// The prop bodies the cursor's pick asks by their meshes: those with no
+/// stand-in collider (put into the scene after the level was built). A prop
+/// a hand holds is not on the scene's own list in the original (it hangs
+/// under its holder), so the pick does not meet it.
+pub(crate) fn loose_props<'a>(
+    bodies: &'a Query<OtherBodies, Without<PlayerBody>>,
+    stand_ins: &'a StandIns,
+) -> impl Iterator<Item = (Entity, &'a Ragdoll)> + 'a {
+    bodies
         .iter()
         .filter(|(e, r, _, prop)| {
             *prop
@@ -1338,15 +1355,7 @@ pub(crate) fn pick_with(
                     .iter()
                     .any(|p| p.state.has(exa_physics::part::PartState::HELD))
         })
-        .map(|(e, r, ..)| (e, r));
-    pick_along(
-        ray?,
-        physics,
-        stand_ins,
-        collider_nodes,
-        loose,
-        others.chain(player),
-    )
+        .map(|(e, r, ..)| (e, r))
 }
 
 /// The player's body entity (the child of the player's root carrying its
@@ -1428,6 +1437,9 @@ fn lift(
     if !ragdoll.grab(part, at, item_cursor::LIFT_STRENGTH, None) {
         return None;
     }
+    // The original takes the lifted body out of the simulation: asleep,
+    // disabled, its countdown 0 (each placement then moves it).
+    ragdoll.hold_out();
     let saved: Vec<bevy::math::Affine3A> = ragdoll.parts.iter().map(|p| p.transform()).collect();
     let (centre, half) = ragdoll
         .parts
@@ -2193,7 +2205,10 @@ fn hold_hand(
                         .map(|p| Vec3::from(p.transform().translation))
                         .unwrap_or(Vec3::ZERO);
                     let turn = item_cursor::turn_delta(right, delta);
-                    fixed.write(body, &mut ragdoll, move |r| r.turn_about(centre, turn));
+                    fixed.write(body, &mut ragdoll, move |r| {
+                        r.turn_about(centre, turn);
+                        r.hold_out();
+                    });
                 }
                 // The cursor's ray places the item against the level, the
                 // held item itself left out of the pick (as the original
@@ -2210,7 +2225,7 @@ fn hold_hand(
                 let ray = cursor_ray(&scripted, &windows, &cameras);
                 if let Some(ray) = ray {
                     let (origin, dir) = (ray.origin, *ray.direction);
-                    let hit = sources
+                    let level = sources
                         .physics
                         .fixed_pick_except(origin, dir, PICK_RANGE, &|h| {
                             sources
@@ -2218,6 +2233,28 @@ fn hold_hand(
                                 .owner_of(h)
                                 .is_some_and(|(owner, _)| owner == body)
                         });
+                    // The props with no stand-in (dropped items) by their
+                    // meshes too, as the press's pick asks them, the held
+                    // item itself left out: an item can be set on another.
+                    let reach = level.map_or(PICK_RANGE, |(_, t)| t);
+                    let loose = loose_prop_hit(
+                        origin,
+                        dir,
+                        reach,
+                        loose_props(&bodies, &sources.stand_ins).filter(|(e, _)| *e != body),
+                    );
+                    if let Some((t, found)) = loose {
+                        debug!(
+                            "hand: lift ray meets {found:?} at {:.1} cm (level {:?})",
+                            t * CM,
+                            level.map(|(_, t)| t * CM)
+                        );
+                    }
+                    let hit = match (level, loose) {
+                        (_, Some((t, _))) => Some(((), t)),
+                        (Some((_, t)), None) => Some(((), t)),
+                        (None, None) => None,
+                    };
                     // The spheres of every part, in world space, each with
                     // the part it belongs to, taken relative to the point
                     // the cursor places (the body's grab point): the sweep
@@ -2298,60 +2335,27 @@ fn hold_hand(
                     // into it. A marker the item would overlap there is
                     // refused: the original asks the scene whether the
                     // item's body (or a child) meets another body at that
-                    // frame. Exarust tests the item's own spheres against
-                    // the other bodies' part spheres, its stand-in for the
-                    // original's sphere-against-mesh narrow phase.
+                    // frame, its "is the space free" query
+                    // (`exa_physics::sector_lists::space_taken`).
                     let length = hit.map_or(item_cursor::MARKER_RAY_CM / CM, |(_, t)| t);
-                    // The spheres are gathered only when a marker named
-                    // for the item is met, once per frame.
-                    type Spheres = Vec<(Vec3, f32)>;
-                    let mut gathered: Option<(Vec<(Affine3A, std::sync::Arc<Spheres>)>, Spheres)> =
-                        None;
                     let bodies_ref = &bodies;
                     let held_part = items.held.as_ref().map(|held| held.part);
                     let overlaps = |frame: Frame| {
                         let Some(held_part) = held_part else {
                             return false;
                         };
-                        let (held_frames, others) = gathered.get_or_insert_with(|| {
-                            let held_frames = bodies_ref
-                                .get(body)
-                                .map(|(_, ragdoll, ..)| {
-                                    ragdoll
-                                        .parts
-                                        .iter()
-                                        .map(|p| (p.transform(), p.spheres.clone()))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let others = bodies_ref
-                                .iter()
-                                .filter(|(entity, ..)| *entity != body)
-                                .flat_map(|(_, ragdoll, ..)| {
-                                    ragdoll.parts.iter().flat_map(|p| {
-                                        let frame = p.transform();
-                                        p.spheres.iter().map(move |(centre, radius)| {
-                                            (frame.transform_point(*centre), *radius)
-                                        })
-                                    })
-                                })
-                                .collect();
-                            (held_frames, others)
-                        });
-                        let parts: Vec<Affine3A> = held_frames.iter().map(|(f, _)| *f).collect();
+                        let Ok((_, held_body, ..)) = bodies_ref.get(body) else {
+                            return false;
+                        };
+                        let parts: Vec<Affine3A> =
+                            held_body.parts.iter().map(|p| p.transform()).collect();
                         let placed = item_cursor::snapped_parts(&parts, held_part, frame);
-                        placed
-                            .iter()
-                            .zip(held_frames.iter())
-                            .any(|(at, (_, spheres))| {
-                                spheres.iter().any(|(centre, radius)| {
-                                    let world = at.transform_point(*centre);
-                                    others.iter().any(|(other, other_radius)| {
-                                        world.distance_squared(*other)
-                                            <= (*radius + *other_radius) * (*radius + *other_radius)
-                                    })
-                                })
-                            })
+                        exa_physics::sector_lists::space_taken(
+                            body,
+                            held_body,
+                            &placed,
+                            bodies_ref.iter().map(|(e, r, ..)| (e, r)),
+                        )
                     };
                     let snapped = if behind_occluder {
                         None
@@ -2421,9 +2425,13 @@ fn hold_hand(
                                                 ),
                                             );
                                         }
+                                        // The held node goes where the
+                                        // placement puts its grab point, and
+                                        // stays out of the simulation.
                                         fixed.write(body, &mut ragdoll, move |r| {
+                                            r.place_grab_at(point);
                                             r.pull_grab_to(point);
-                                            r.wake_to(DRAG_WAKE);
+                                            r.hold_out();
                                         });
                                     }
                                     // A marker's frame is copied into the
@@ -2441,6 +2449,7 @@ fn hold_hand(
                                         fixed.write(body, &mut ragdoll, move |r| {
                                             r.place_at(&worlds);
                                             r.hold_grab_still();
+                                            r.hold_out();
                                         });
                                     }
                                 }
@@ -2472,11 +2481,14 @@ fn hold_hand(
                                         fixed.write(body, &mut ragdoll, move |r| {
                                             r.place_at(&worlds);
                                             r.hold_grab_still();
+                                            r.hold_out();
                                         });
                                     }
                                     None => {
                                         fixed.write(body, &mut ragdoll, move |r| {
-                                            r.pull_grab_to(held_target)
+                                            r.place_grab_at(held_target);
+                                            r.pull_grab_to(held_target);
+                                            r.hold_out();
                                         });
                                     }
                                 }
@@ -2570,7 +2582,10 @@ fn end_lift(
     fixed.write(held.body, &mut ragdoll, move |ragdoll| {
         ragdoll.release_grab();
         match outcome {
-            Release::Lock => ragdoll.freeze(true),
+            Release::Lock => {
+                ragdoll.set_disabled(false);
+                ragdoll.freeze(true);
+            }
             Release::Drop | Release::LastFit | Release::OnMarker | Release::PutBack => {
                 if outcome == Release::PutBack {
                     ragdoll.place_at(&saved);
@@ -2579,6 +2594,7 @@ fn end_lift(
                 // at least half the full count, then (after the placement
                 // query) placed for eight ticks with its world contacts
                 // dropped.
+                ragdoll.set_disabled(false);
                 ragdoll.wake_to(exa_physics::sector_lists::RELEASE_WAKE);
                 ragdoll.settle_for(exa_physics::sector_lists::RELEASE_SETTLE);
                 ragdoll.clear_world_contacts();
