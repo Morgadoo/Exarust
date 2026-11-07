@@ -375,7 +375,7 @@ practice lesson), and the arena's lesson goes through the same skill lump.
 The running story (`experience_live`) now drives them: the launch's
 settings store fills `AccountExperience`, the first frame of play seeds the
 pool and both clocks from the player's record (`StoryExperience::begin`),
-each of the flow's once-a-second `Step::Discovery` passes (`DiscoveryTick`,
+each of the flow's per-frame `Step::Discovery` passes (`DiscoveryTick`,
 game clock) converts the account, the player and the companions
 (`advance`) and writes the player's experience, skills and powers back to
 its record (the record on the player's body; a story player always has
@@ -715,7 +715,9 @@ the cursor on the plane across its axle, or across its arm at 30 cm while
 the view lies across the axle, clamped to the swing; let go out of 300 cm),
 the reach test's room check (the hip's room or its open door, and no active
 room's occluder on the cursor ray up to the picked point, through
-`exa_world::room_view::LevelRooms::shell_ray`; doors are exempt),
+`exa_world::room_view::LevelRooms::shell_ray`; doors are exempt; the held
+item's placement pick asks the same query and places nothing for a hit behind
+an occluder),
 the double-click interaction pushing a clickable push surface
 (`PlateBody::push`), the sliding-door drag's record until the release, a cloth
 vertex's grab and its per-frame target (the pick near the vertex, else the

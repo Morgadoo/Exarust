@@ -2187,8 +2187,19 @@ fn hold_hand(
                         let at = origin + dir * t;
                         (at, at.y * CM)
                     });
-                    let point =
-                        item_cursor::lift_point(origin, dir, hit_at, limit).and_then(|base| {
+                    // In a grid level a hit seen across an active room's
+                    // occluder places nothing this frame (no point and no
+                    // marker), as the original asks the room manager's
+                    // occluder query with the pick's ray and distance
+                    // before it places.
+                    let behind_occluder = hit.is_some_and(|(_, t)| {
+                        rooms
+                            .as_deref()
+                            .is_some_and(|rooms| rooms.shell_ray(origin, dir, t, false))
+                    });
+                    let point = item_cursor::lift_point(origin, dir, hit_at, limit)
+                        .filter(|_| !behind_occluder)
+                        .and_then(|base| {
                             // The sweep starts 600 cm before the placed point
                             // (Exarust never starts it behind the eye).
                             let distance_cm = ((base - origin).dot(dir) * CM).max(0.0);
@@ -2271,7 +2282,11 @@ fn hold_hand(
                                 })
                             })
                     };
-                    let snapped = items.snap(origin, dir, length, overlaps);
+                    let snapped = if behind_occluder {
+                        None
+                    } else {
+                        items.snap(origin, dir, length, overlaps)
+                    };
                     // Each placement holds only within reach of the hip
                     // (and a free one only when its box fitted): the
                     // item's new place is measured as the walk-to point.

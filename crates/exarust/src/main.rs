@@ -190,7 +190,8 @@
 //!                                     frame (30 frames later by default) and let go on the frame after (an
 //!                                     item panel's drag)
 //!          --toggle-door FRAME        debug: toggle the bound hinged door nearest the player (a shut one is driven
-//!                                     open) that many frames after the level's rooms exist, logging its angle
+//!                                     open) that many frames after the level's rooms exist, or at the first frame
+//!                                     after that its body is bound; logs its angle
 //!          --object-click F[d][l][#id],...  debug: click the placed container nearest the player at frames
 //!                                     after loading (d: the double click, l: as a hit on level geometry, #id: the
 //!                                     placed object with this hexadecimal id instead, e.g. 200#587)

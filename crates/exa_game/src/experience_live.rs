@@ -5,7 +5,7 @@
 //! levels and the technique word. This module runs them: it reads the
 //! account-wide experience from the launch's settings store, seeds the pool
 //! from the player's carried experience when play starts (the original's
-//! level-start hook), converts at each of the flow's once-a-second
+//! level-start hook), converts at each of the flow's per-frame
 //! [`crate::flow::Step::Discovery`] passes ([`DiscoveryTick`], on the game
 //! clock), writes the player's converted experience, skills and powers back
 //! to the body's record (the original converts the body's own record), puts
@@ -67,7 +67,7 @@ impl AccountExperience {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TechniqueWord(pub u32);
 
-/// The flow's once-a-second discovery pass ran at `now`, on the game clock
+/// The flow's discovery pass (every story frame) ran at `now`, on the game clock
 /// (ms). [`crate::flow`]'s step application sends it.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiscoveryTick {
@@ -138,7 +138,7 @@ impl StoryExperience {
             .explore(grid, x, z, &mut self.player, &mut self.party)
     }
 
-    /// One discovery pass (the flow gates it to once a second): the account
+    /// One discovery pass (the flow runs it every story frame): the account
     /// pool, then the player, then each companion in list order. Returns
     /// whether the body's technique word changed. [`Self::explore`] runs
     /// before it.
@@ -294,6 +294,7 @@ fn tick_story_experience(
     source: Option<Res<exa_world::LevelSource>>,
     mut commands: Commands,
     mut live: ResMut<StoryExperience>,
+    mut last_cell: Local<Option<(i64, i64)>>,
 ) {
     for pass in passes.read() {
         if !live.started {
@@ -308,6 +309,22 @@ fn tick_story_experience(
                 tracker: &level.tracker,
             };
             let found = live.explore(&grid, source.locale(), p.x, p.z);
+            let cell = level
+                .rooms
+                .cell_of(bevy::math::Vec2::new(p.x / 100.0, p.z / 100.0));
+            if *last_cell != Some(cell) {
+                *last_cell = Some(cell);
+                let explored: u32 = live
+                    .state
+                    .current
+                    .and_then(|i| live.state.maps.get(i))
+                    .map_or(0, |map| map.bits.iter().map(|w| w.count_ones()).sum());
+                debug!(
+                    "experience: the player enters cell {cell:?} of {} at {} ms ({explored} cells explored)",
+                    source.locale(),
+                    pass.now
+                );
+            }
             if found > 0 {
                 info!(
                     "experience: explored {found} cells of {} at {} ms (pool {})",

@@ -965,7 +965,9 @@ impl WakePose {
 /// The story session's per-frame state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StoryState {
-    /// The last whole second the discovery system ran at.
+    /// The last whole second the story's once-a-second task list ran at
+    /// (the pending level tasks; not modelled). The discovery system's
+    /// pass is not gated by it: it runs every story frame.
     pub last_discovery_s: u32,
     pub wake: Wake,
     /// The knock-out start time; `u32::MAX - 5000` until a knock-out.
@@ -1277,7 +1279,8 @@ pub enum Step {
     },
     /// Tick the dialogue engine.
     Dialogue,
-    /// Run the discovery system's once-a-second pass.
+    /// Run the discovery system's pass (every story frame; its conversions
+    /// keep their own clocks).
     Discovery,
     /// Show one of the help tips.
     Tip(u32),
@@ -2563,11 +2566,13 @@ impl Flow {
             steps.push(Step::RequestAction(0x20));
             wake.delayed = false;
         }
+        // The once-a-second gate runs the pending task list only; the
+        // discovery hook after it runs every frame the hook gets this far.
         let second = now / 1000;
         if second > self.story.last_discovery_s {
             self.story.last_discovery_s = second;
-            steps.push(Step::Discovery);
         }
+        steps.push(Step::Discovery);
         if self.custom_hook {
             steps.push(Step::CustomHook);
         }
@@ -5511,8 +5516,9 @@ mod tests {
             animator: 0,
             health: 0.2,
         };
+        // The discovery pass runs every frame; the second gate only moves.
         let steps = flow.story_tick(100, Some(alive));
-        assert!(!steps.contains(&Step::Discovery));
+        assert!(steps.contains(&Step::Discovery));
         assert_eq!(flow.story.last_discovery_s, 0);
         let steps = flow.story_tick(1000, Some(alive));
         assert!(steps.contains(&Step::Discovery));

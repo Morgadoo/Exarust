@@ -2093,8 +2093,17 @@ fn log_encumbrance(who: &str, stats: &CharacterStats) {
 /// the floor with the line cast from 100 cm over the placement, 300 cm down,
 /// and stands the body over the hit
 /// ([`exa_game::save_level::landing_feet`]).
+///
+/// The player's root and body are simulation data: behind the bridge a
+/// frame write to their transforms is replaced by the simulation's newer
+/// copy, so the move is also posted to the next fixed step
+/// ([`place_player_in_step`]), which moves the root, turns the body and
+/// carries the body's parts by the same offset. Without it a loaded save's
+/// player stayed at the level's start in the simulation while the frame
+/// drew it at the saved place, and fell to its death there.
 fn apply_player_placement(
     mut commands: Commands,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
     placement: Option<Res<exa_game::level_change::PlayerPlacement>>,
     frame_physics: Res<exa_physics::collision_share::FramePhysics>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
@@ -2124,13 +2133,59 @@ fn apply_player_placement(
         "level placement: the player placed at {} stands at {at} (the line cast's floor)",
         placement.position
     );
+    let mut by = Vec3::ZERO;
     for (_, mut transform) in &mut players {
+        by = at - transform.translation;
         transform.translation = at;
     }
     if let Ok(mut transform) = bodies.single_mut() {
         transform.rotation = Quat::from_rotation_y(placement.yaw);
     }
+    fixed.run(place_player_in_step, (at, by, placement.yaw));
     commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
+}
+
+/// The level placement on the simulation's side: the player's root goes to
+/// `at`, its body turns to `yaw`, and the body's parts move by `by` (the
+/// root's offset as the frame saw it), keeping their pose; the body wakes.
+/// In one world the root already stands at `at` and only the parts move.
+#[allow(clippy::type_complexity)]
+fn place_player_in_step(
+    In((at, by, yaw)): In<(Vec3, Vec3, f32)>,
+    mut roots: Query<
+        &mut Transform,
+        (
+            With<exa_game::player::Player>,
+            Without<exa_game::player::PlayerBody>,
+        ),
+    >,
+    mut bodies: Query<
+        (&mut Transform, Option<&mut exa_physics::body::Ragdoll>),
+        (
+            With<exa_game::player::PlayerBody>,
+            Without<exa_game::player::Player>,
+        ),
+    >,
+) {
+    for mut root in &mut roots {
+        root.translation = at;
+    }
+    for (mut transform, ragdoll) in &mut bodies {
+        transform.rotation = Quat::from_rotation_y(yaw);
+        if let Some(mut ragdoll) = ragdoll
+            && by != Vec3::ZERO
+        {
+            let shift = bevy::math::Affine3A::from_translation(by);
+            let worlds: Vec<bevy::math::Affine3A> = ragdoll
+                .parts
+                .iter()
+                .map(|p| shift * p.transform())
+                .collect();
+            ragdoll.place_at(&worlds);
+            ragdoll.wake();
+        }
+    }
+    info!("level placement: the simulation's player root at {at}, its body's parts moved by {by}");
 }
 
 /// Frames after a level is in before `--level-change` counts it again, so
