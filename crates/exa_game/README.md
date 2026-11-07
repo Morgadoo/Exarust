@@ -1947,6 +1947,8 @@ transaction settle; the panels then hand the bought items to the pack and
 the sold ones to the stock [guess: the Trade button's callback is not
 read].
 
+`nav_camera::terrain_focus_lift` is the free camera's pull of its looked-at point towards a metre above the terrain (the static terrain's height query, eased in double precision): the only caller of that query in the shipped game, reached when the camera has no node to follow or the movement keys pan it. Exarust does not run that tick, so it has no caller yet.
+
 `nav_camera` has the stepped camera's per-tick wall probe: from 50 cm under
 the followed point along the camera's yaw, alternately a 30 cm probe at the
 present step (a hit climbs, to four) and a 20 cm one at the step below (a

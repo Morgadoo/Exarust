@@ -458,6 +458,28 @@ pub fn mesh_in_reach(radius: f32, distance_squared: f32) -> bool {
     reach >= distance_squared || reach.is_nan() || distance_squared.is_nan()
 }
 
+/// The free camera's pull of its looked-at point towards a metre above the
+/// terrain, after a tick that moved it (centimetres): the static terrain's
+/// height query at the point (`ground`, when it answers) gives the offset
+/// `d = (ground + 100) − y`; under a metre it is eased to `(d/200)²·100`
+/// with its sign, in double precision; past 1 cm the point rises or sinks
+/// by `0.006·d`, summed in double. This is the only caller of the terrain's
+/// height query in the shipped game: the camera reaches it when it has no
+/// node to follow or the movement keys pan it, a tick Exarust does not run.
+pub fn terrain_focus_lift(focus_y: f32, ground: f32) -> f32 {
+    let mut d = (ground + 100.0) - focus_y;
+    if d.abs() < 100.0 {
+        let sign = f64::from(sign_or_zero(d));
+        let t = f64::from(d) * 0.005;
+        d = (t * t * 100.0 * sign) as f32;
+    }
+    if d.abs() > 1.0 {
+        (f64::from(d) * 0.006 + f64::from(focus_y)) as f32
+    } else {
+        focus_y
+    }
+}
+
 /// Lifts a ball out of nearby geometry: each contact the meshes report, in
 /// order, moves the centre to `radius` from it ([`hit_offset`]). The
 /// original walks the scene's sectors and their flagged meshes in each
@@ -2479,5 +2501,21 @@ mod tests {
         ));
         // A segment that misses the bounding sphere never asks the faces.
         assert!(!probe(mesh, Vec3::new(100.0, 0.0, 0.0), true));
+    }
+    #[test]
+    fn the_free_focus_eases_towards_a_metre_over_the_terrain() {
+        // 50 cm under the target: eased to (50/200)²·100 = 6.25, then
+        // 0.006 of it added.
+        let y = terrain_focus_lift(50.0, 0.0);
+        assert_eq!(y, (6.25f64 * 0.006 + 50.0) as f32);
+        // Above it the point sinks.
+        assert!(terrain_focus_lift(150.0, 0.0) < 150.0);
+        // Within 20 cm the eased offset is at most 1 cm: no change.
+        assert_eq!(terrain_focus_lift(80.0, 0.0), 80.0);
+        // A metre or more away the offset is not eased.
+        assert_eq!(
+            terrain_focus_lift(-100.0, 0.0),
+            (200.0f64 * 0.006 - 100.0) as f32
+        );
     }
 }

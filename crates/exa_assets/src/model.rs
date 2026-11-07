@@ -426,6 +426,9 @@ pub struct ModelCache {
     /// Factory components' first mesh node as loaded and its groups' split
     /// flags, by lower-case name (`None` when the component has no mesh).
     pub(crate) components: HashMap<String, Option<Arc<crate::weapon::FactoryComponent>>>,
+    /// Model files' node meshes as loaded, by pack and lower-case entry
+    /// ([`ModelLoader::mesh_nodes`]).
+    pub(crate) mesh_nodes: HashMap<String, Option<Arc<crate::cell_floor::MeshNodes>>>,
     /// The environment cubes by name, once looked for.
     environment: HashMap<&'static str, Option<Handle<Image>>>,
     /// A material's own environment-cube override, by folded texture name

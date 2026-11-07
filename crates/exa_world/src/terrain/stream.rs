@@ -426,7 +426,13 @@ impl TileStream {
         }
     }
 
-    /// The frame hook inserted the tile's nodes.
+    /// The frame hook inserted the tile's nodes. In room mode the original
+    /// puts them into the room sectors, and into the scene root as well
+    /// unless both the scene word's bit `0x10` (every game scene writes
+    /// `0x73`, so it is set) and the terrain's loading-wait bit are set;
+    /// tiles inserted during the load wait therefore go to their rooms
+    /// only, as Exarust's do. Only a tile inserted after the load would also
+    /// join the scene root, and Exarust inserts none then.
     pub fn mark_inserted(&mut self) {
         self.state = (self.state & !tile_flags::READY) | tile_flags::INSERTED;
     }

@@ -898,9 +898,18 @@ Exarust match the original look).
 - A node or character is sorted into the room of the cell it stands in,
   `floor(x / 600) + w/2` (the conversion's rounding mode is set towards
   −∞), clamped to the grid for nodes.
-- Floors are merged into a `+Floor` mesh per cell (Exarust too: one mesh
-  per material run, in order of first use, at the cell centre); walls
-  stay separate objects. After the cells the builder resets the room
+- Floors are merged into a `+Floor` mesh per cell (Exarust too); walls
+  stay separate objects. Each floor entry (centre variant, edge strip or a
+  piece's `+F…` strip) is placed by its side's rotation alone, at the cell
+  centre: the entry node's stored transform is not used. The merged mesh
+  is regrouped by material, given the planar UVs below, welded and
+  converted to render form with the vertex-cache reorder (its render flags
+  gain `0x30000`), so its triangle 0, which the Ground Query ignores, is
+  the reorder's first. The centre variant's children are cloned into the
+  cell as nodes of their own, at the cell centre with their stored
+  rotation; an edge strip's children are not used. A set piece's own
+  floor nodes keep the file's triangle order: the model import converts
+  only meshes with modifiers. After the cells the builder resets the room
   states (every room hidden; the debug view of every room shows them). The ceiling strips also make a per-cell
   `+Ceiling` mesh that is never drawn (its node is marked externally drawn;
   its purpose is not known); what shows of the ceilings is the room's lid
