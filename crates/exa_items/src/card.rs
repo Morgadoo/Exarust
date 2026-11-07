@@ -1008,6 +1008,26 @@ pub fn refresh_row(rows: &mut [CardRow], control: u32, value: f32) -> bool {
     }
 }
 
+/// Writes a refresh's values ([`weapon_refresh`], [`apparel_refresh`]) into
+/// a built card: each row with the control id takes its value (a control
+/// the card does not have is skipped), and the value control sets the
+/// card's value and its value row. The page, title tint and the other rows
+/// are left as they were built.
+pub fn apply_refresh(card: &mut BuiltCard, values: &[(u32, f32)]) {
+    for &(control, value) in values {
+        if control == VALUE_CONTROL {
+            card.value = value as u32;
+            if let Some(content) = card.content.as_mut()
+                && content.value.is_some()
+            {
+                content.value = Some(value as u32);
+            }
+        } else if let Some(content) = card.content.as_mut() {
+            refresh_row(&mut content.rows, control, value);
+        }
+    }
+}
+
 /// One description phrase and the inclusive byte range that may use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Phrase<'a> {
@@ -1098,6 +1118,26 @@ pub fn item_sentence(
     condition: u8,
     tables: &PhraseTables<'_>,
 ) -> ItemSentence {
+    item_sentence_with(state, name, fixed, quality, condition, tables, false)
+}
+
+/// [`item_sentence`] with the register the builder leaves unset on a `c]`
+/// (crafted) name: when `crafted_great` is set that name's condition phrase
+/// comes from the great table alone (as a dashed name's), else from the
+/// flawless table and then the perfect one. The card builder calls the
+/// builder with that register zero; the card refresh after a repair calls
+/// it holding the weapon section's address there, whose low byte is zero
+/// only on a 256-byte boundary. [guess: the refresh is taken to hold a
+/// non-zero low byte]
+pub fn item_sentence_with(
+    state: u32,
+    name: &str,
+    fixed: bool,
+    quality: u8,
+    condition: u8,
+    tables: &PhraseTables<'_>,
+    crafted_great: bool,
+) -> ItemSentence {
     if name.len() < 3 {
         return ItemSentence {
             state,
@@ -1155,7 +1195,7 @@ pub fn item_sentence(
     } else {
         format!("{quality_text} {name}")
     };
-    let picked = if dashed {
+    let picked = if dashed || (crafted && crafted_great) {
         pick_phrase(
             state,
             condition_mark,
@@ -2483,5 +2523,25 @@ mod tests {
         assert_eq!(rows[0].value, 1.5);
         assert!(!refresh_row(&mut rows, 0x106, 3.0));
         assert_eq!(VALUE_CONTROL, 0xa01);
+        let mut card = BuiltCard {
+            page: CardPage::Apparel,
+            value: 1,
+            title_colour: None,
+            content: Some(CardContent {
+                rows,
+                material: false,
+                sockets: false,
+                rank: None,
+                points: None,
+                value: Some(1),
+                extra_height: 0,
+            }),
+            description: String::new(),
+        };
+        apply_refresh(&mut card, &apparel_refresh(20, 5, 11, 0, 100, 3, 4));
+        let content = card.content.as_ref().unwrap();
+        assert_eq!((card.value, content.value), (4, Some(4)));
+        assert_eq!(content.rows.len(), 1);
+        assert!((content.rows[0].value - 0.55).abs() < 1e-6);
     }
 }

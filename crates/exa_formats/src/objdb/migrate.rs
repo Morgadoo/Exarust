@@ -3,11 +3,11 @@
 //! Layout and evidence: `docs/formats/OTHER.md` (Object database,
 //! Instancing, promotion and migration).
 
-use super::packed::{amount_compact, amount_expand, round_f32, round_f64};
 use super::record::{copy_bytes, section_range, set_u16, set_u32, u16_at, u32_at};
 use super::{
     BODY, CONTAINER, DOOR, ID_MASK, INHERIT, LOCAL, MODEL, NAME, ObjectDb, TAG_MASK, Tier, WORLD,
 };
+use crate::item_condition::{Protection, apparel_condition, condition_price};
 
 /// The materials of each procedural material set (`Layer::random_set`),
 /// from the original's set table: a layer that names a set keeps its
@@ -362,39 +362,12 @@ fn migrate_appearance(body: &mut [u8], template: &[u8]) {
     }
 }
 
-/// The armour variants 1–8 an apparel copy can be rolled with (body byte
-/// `0x1AA`), as the original's per-variant handlers apply them after the
-/// condition refresh: each scales the padding, slash, crush and pierce
-/// bytes and the encumbrance (the bytes wrap; no cap). Variants 7 and 8
-/// change nothing.
-pub fn variant_scales(variant: u8) -> Option<([f64; 4], f64)> {
-    match variant {
-        1 => Some(([0.9; 4], 0.8)),
-        2 => Some(([1.1; 4], 1.16)),
-        3 => Some(([1.2; 4], 1.1)),
-        4 => Some(([1.0, 1.35, 1.0, 1.35], 1.06)),
-        5 => Some(([1.4, 1.0, 1.2, 1.0], 1.06)),
-        6 => Some(([1.3, 1.1, 1.3, 1.1], 1.16)),
-        7 | 8 => Some(([1.0; 4], 1.0)),
-        _ => None,
-    }
-}
-
 /// Recomputes an instance body's protection bytes from its template's by
-/// its condition, and scales the model's value, as the original's
-/// condition refresh does. With quality q and damage d the body's bytes at
-/// `0x1B0`/`0x1B1` and the condition factor k = (1 − d·0.4/255)·(q/510 +
-/// 0.8) ([`crate::weapon_stats::condition_factor`]):
-///
-/// - `0x1A0`–`0x1A3` = round(template · k), capped at 160;
-/// - `0x1A4` = round((0.3·k + 0.7) · template);
-/// - `0x1A5` = round(template / ((1 − d·(0.15/255)) · (q·(0.3/255) + 0.85)));
-/// - the armour variant at `0x1AA` then scales them ([`variant_scales`]);
-/// - the model's value word `0x1E` (compact amount) becomes
-///   value / (2·tq² + 0.5) · (2·q'² + 0.5) · (2·(1 − d')² + 0.5) · 0.5,
-///   with tq the template's quality and q', d' the instance's, all /255.
-///
-/// The precision of each step follows the original (single or double).
+/// its condition (body `0x1B0`/`0x1B1`) and armour variant (`0x1AA`), and
+/// scales the model's value word `0x1E` on the template's quality, as the
+/// original's apparel condition routine does
+/// ([`crate::item_condition::apparel_condition`],
+/// [`crate::item_condition::condition_price`]).
 fn refresh_condition(
     payload: &mut [u8],
     body: std::ops::Range<usize>,
@@ -405,59 +378,33 @@ fn refresh_condition(
     if b.len() < 0x1B2 || template.len() < 0x1B1 {
         return;
     }
-    let q = b[0x1B0];
-    let d = b[0x1B1];
-    let k = crate::weapon_stats::condition_factor(q, d);
-    b[0x1A4] = round_f64((f64::from(k) * 0.3 + 0.7) * f64::from(template[0x1A4])) as u8;
-    for at in 0x1A0..0x1A4 {
-        b[at] = round_f32(f32::from(template[at]) * k) as u8;
-    }
-    for byte in &mut b[0x1A0..0x1A4] {
-        *byte = (*byte).min(0xA0);
-    }
-    let quality_step = f64::from_bits(0x3F53_4679_ACE0_1346); // 0.3 / 255
-    let damage_step = f64::from_bits(0x3F43_4679_ACE0_1346); // 0.15 / 255
-    let k2 = ((f64::from(q) * quality_step + 0.85) * (1.0 - f64::from(d) * damage_step)) as f32;
-    let inverse = 1.0f32 / k2;
-    b[0x1A5] = round_f32(f32::from(template[0x1A5]) * inverse) as u8;
-    if let Some((scales, encumbrance)) = variant_scales(b[0x1AA]) {
-        b[0x1A5] = round_f64(f64::from(b[0x1A5]) * encumbrance) as u8;
-        for (at, scale) in (0x1A0..0x1A4).zip(scales) {
-            if scale != 1.0 {
-                b[at] = round_f64(f64::from(b[at]) * scale) as u8;
-            }
-        }
-    }
+    let (q, d) = (b[0x1B0], b[0x1B1]);
+    let Some(t) = Protection::of_body(template) else {
+        return;
+    };
+    apparel_condition(&t, q, d, b[0x1AA]).write_to(b);
     if let Some(model) = model {
         rescale_value(&mut payload[model], template[0x1B0], q, d);
     }
 }
 
 /// Scales a model section's value word `0x1E` (compact amount) by
-/// condition, as both of the original's condition refreshes do: value /
-/// (2·tq² + 0.5) · (2·q² + 0.5) · (2·(1 − d)² + 0.5) · 0.5, with `tq` the
-/// base quality, `q` and `d` the item's own, all /255 in double and the
-/// curve in float. The weapon refresh passes its own quality as the base.
+/// condition, as both of the original's condition routines do
+/// ([`condition_price`]). The weapon routine passes its own quality as the
+/// base.
 fn rescale_value(model: &mut [u8], base_quality: u8, quality: u8, damage: u8) {
     if model.len() < 0x20 {
         return;
     }
-    let curve = |x: f32| x * x * 2.0 + 0.5;
-    let base = curve((f64::from(base_quality) / 255.0) as f32);
-    let made = curve((f64::from(quality) / 255.0) as f32);
-    let wear = curve((1.0 - f64::from(damage) / 255.0) as f32);
-    // The weapon refresh multiplies made · (wear · 0.5), the body refresh
-    // (made · wear) · 0.5; halving is exact, so the two agree.
-    let scale = made * (wear * 0.5);
-    let value = amount_expand(u16_at(model, 0x1E));
-    let scaled = round_f32(value as f32 / base * scale);
-    set_u16(model, 0x1E, amount_compact(scaled as u32));
+    let price = condition_price(u16_at(model, 0x1E), base_quality, quality, damage);
+    set_u16(model, 0x1E, price);
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::record::test_util::*;
     use super::*;
+    use crate::objdb::packed::amount_expand;
     use crate::objdb::{Record, Store, WEAPON};
 
     fn store(records: &[(u32, u32, Vec<u8>)]) -> Store {

@@ -12,11 +12,9 @@
 //! variant, its price based on the template's quality. Evidence: the
 //! item-instance notes (`context/re/item-gui-lane.md`).
 
-use crate::instance::{
-    MadeCondition, Protection, Spreads, WeaponStats, apparel_condition, condition_price,
-    weapon_condition,
-};
+use crate::instance::{MadeCondition, Protection, Spreads, apparel_condition, condition_price};
 use crate::palette::{ApparelBlock, Palette};
+use crate::randomise::section_range;
 use exa_formats::factory::{Choices, DEFAULT_METAL, Factory, STORED};
 use exa_formats::weapon_stats::{self, StatBytes};
 
@@ -130,17 +128,6 @@ pub(crate) fn write_condition(body: &mut [u8], c: &MadeCondition) {
     body[0xF] = c.spreads.0;
 }
 
-fn weapon_stats(body: &[u8]) -> WeaponStats {
-    WeaponStats {
-        impact: body[0x32],
-        thrust: body[0x33],
-        sides: [
-            [body[0x37], body[0x38], body[0x39]],
-            [body[0x3D], body[0x3E], body[0x3F]],
-        ],
-    }
-}
-
 /// Refreshes a weapon copy's section body. `factory` says its model is a
 /// factory's; `stats` is the factory's stat pass over the body; `price` is
 /// the copy's model price word, already the template's. Returns false when
@@ -182,27 +169,15 @@ pub fn weapon_condition_pass(copy: &mut [u8], price: Option<&mut u16>) -> bool {
     let Some(c) = made_condition(copy) else {
         return false;
     };
-    if copy.len() < 0x40 {
+    let Some(stats) = StatBytes::from_section(copy) else {
         return false;
-    }
-    let s = weapon_condition(&weapon_stats(copy), copy[0x32], c.quality, c.damage);
-    copy[0x32] = s.impact;
-    copy[0x33] = s.thrust;
-    for (side, at) in [(0, 0x37), (1, 0x3D)] {
-        copy[at..at + 3].copy_from_slice(&s.sides[side]);
-    }
+    };
+    let scaled = weapon_stats::condition(stats, c.quality, c.damage);
+    copy[weapon_stats::OFFSET..weapon_stats::OFFSET + scaled.0.len()].copy_from_slice(&scaled.0);
     if let Some(price) = price {
         *price = condition_price(*price, c.quality, c.quality, c.damage);
     }
     true
-}
-
-fn protection(body: &[u8]) -> Protection {
-    Protection {
-        resist: [body[0x1A0], body[0x1A1], body[0x1A2], body[0x1A3]],
-        coverage: body[0x1A4],
-        encumbrance: body[0x1A5],
-    }
 }
 
 /// Refreshes an apparel copy's body from its template's: the seed, the
@@ -243,15 +218,10 @@ pub fn apparel_condition_pass(copy: &mut [u8], template: &[u8], price: Option<&m
         return false;
     }
     let (quality, damage) = (copy[APPAREL_QUALITY], copy[APPAREL_DAMAGE]);
-    let p = apparel_condition(
-        &protection(template),
-        quality,
-        damage,
-        copy[APPAREL_VARIANT],
-    );
-    copy[0x1A0..0x1A4].copy_from_slice(&p.resist);
-    copy[0x1A4] = p.coverage;
-    copy[0x1A5] = p.encumbrance;
+    let Some(t) = Protection::of_body(template) else {
+        return false;
+    };
+    apparel_condition(&t, quality, damage, copy[APPAREL_VARIANT]).write_to(copy);
     if let Some(price) = price {
         *price = condition_price(*price, template[APPAREL_QUALITY], quality, damage);
     }
@@ -300,17 +270,17 @@ pub const WEAPON_COPY_TAKES: (usize, usize) = (0x30, 0x40);
 
 /// Refreshes a made weapon copy after a repair's timed write, as the timer
 /// list does: the template's model price word is taken, the template's
-/// weapon bytes [`WEAPON_COPY_TAKES`] are copied, then the weapon condition
-/// pass ([`weapon_condition_pass`]) scales the copy's stats and price by its
-/// own condition. [The original runs the factory's stat pass between the
-/// copy and the condition; Exarust leaves it to the caller with a factory.]
-/// False when the template has no model word while the copy has one, or a
-/// body is too short.
+/// weapon bytes [`WEAPON_COPY_TAKES`] are copied, `stats` runs the item
+/// factory's stat pass over the body, then the weapon condition pass
+/// ([`weapon_condition_pass`]) scales the copy's stats and price by its own
+/// condition. False when the template has no model word while the copy has
+/// one, or a body is too short.
 pub fn copy_weapon(
     copy: &mut [u8],
     template: &[u8],
     price: Option<&mut u16>,
     template_price: Option<u16>,
+    stats: impl FnOnce(&mut [u8]),
 ) -> bool {
     let Some(price) = take_price(price, template_price) else {
         return false;
@@ -320,7 +290,93 @@ pub fn copy_weapon(
         return false;
     }
     copy[from..to].copy_from_slice(&template[from..to]);
+    stats(copy);
     weapon_condition_pass(copy, price)
+}
+
+/// The model section tag; its body holds the price word at `0x1E`.
+const MODEL: u32 = 0x10_0000;
+/// The apparel body section tag.
+const APPAREL_BODY: u32 = 0x1000;
+/// The weapon section tag.
+const WEAPON: u32 = 0x4000;
+/// The price word's offset in the model section's body.
+const PRICE: usize = 0x1E;
+
+/// Which section a repair's timed write changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repaired {
+    Apparel,
+    Weapon,
+}
+
+fn word_at(b: &[u8], at: usize) -> Option<u16> {
+    b.get(at..at + 2).map(|w| u16::from_le_bytes([w[0], w[1]]))
+}
+
+/// A repaired copy brought up to date with its template, as the timer list
+/// does after each write of a repair's wear byte, over whole record
+/// payloads: [`copy_apparel`] for an apparel body, [`copy_weapon`] for a
+/// weapon section. `factory` is the item factory's stat pass for the model
+/// name less its first letter (the original looks the factory up that way
+/// whatever the letter is; only an `@` name finds one). The caller keeps
+/// this to copies (a tagged id) whose template resolves. False when the
+/// copy was left as it was.
+pub fn repair_copy(
+    payload: &mut [u8],
+    template: &[u8],
+    repaired: Repaired,
+    factory: impl FnOnce(&str, &mut [u8]),
+) -> bool {
+    let model = section_range(payload, MODEL);
+    let price = model.clone().and_then(|m| word_at(&payload[m], PRICE));
+    let template_price = section_range(template, MODEL).and_then(|m| word_at(&template[m], PRICE));
+    let name = model.clone().map(|m| {
+        let body = &payload[m];
+        let end = body
+            .iter()
+            .take(16)
+            .position(|&c| c == 0)
+            .unwrap_or(body.len().min(16));
+        String::from_utf8_lossy(&body[..end]).into_owned()
+    });
+    let mut price_word = price;
+    let tag = match repaired {
+        Repaired::Apparel => APPAREL_BODY,
+        Repaired::Weapon => WEAPON,
+    };
+    let (Some(own), Some(theirs)) = (section_range(payload, tag), section_range(template, tag))
+    else {
+        // The price word is still taken when the section is missing.
+        if let (Some(m), Some(_), Some(word)) = (model, price, template_price) {
+            payload[m.start + PRICE..m.start + PRICE + 2].copy_from_slice(&word.to_le_bytes());
+        }
+        return false;
+    };
+    let template_body = &template[theirs];
+    let done = match repaired {
+        Repaired::Apparel => copy_apparel(
+            &mut payload[own],
+            template_body,
+            price_word.as_mut(),
+            template_price,
+        ),
+        Repaired::Weapon => copy_weapon(
+            &mut payload[own],
+            template_body,
+            price_word.as_mut(),
+            template_price,
+            |body| {
+                if let Some(rest) = name.as_deref().and_then(|n| n.get(1..)) {
+                    factory(rest, body);
+                }
+            },
+        ),
+    };
+    if let (Some(m), Some(word)) = (model, price_word) {
+        payload[m.start + PRICE..m.start + PRICE + 2].copy_from_slice(&word.to_le_bytes());
+    }
+    done
 }
 
 #[cfg(test)]
@@ -347,7 +403,7 @@ mod tests {
             Some(&mut price),
             Some(0xC001)
         ));
-        let p = apparel_condition(&protection(&template), 128, 64, 2);
+        let p = apparel_condition(&Protection::of_body(&template).unwrap(), 128, 64, 2);
         assert_eq!(&copy[0x1A0..0x1A4], &p.resist);
         assert_eq!((copy[0x1A4], copy[0x1A5]), (p.coverage, p.encumbrance));
         assert_eq!(price, condition_price(0xC001, 255, 128, 64));
@@ -385,7 +441,8 @@ mod tests {
             &mut copy,
             &template,
             Some(&mut price),
-            Some(0x4064)
+            Some(0x4064),
+            |_| {}
         ));
         assert_eq!((copy[0x30], copy[0x31]), (100, 100));
         assert_eq!(copy[0x32], crate::instance::STAT_CAP);
@@ -399,9 +456,91 @@ mod tests {
         assert_eq!((copy[0x40], copy[0x42]), (0x11, 0x22));
         assert_eq!(price, condition_price(0x4064, 255, 255, 0));
         let mut price = 7u16;
-        assert!(!copy_weapon(&mut copy, &template, Some(&mut price), None));
+        assert!(!copy_weapon(
+            &mut copy,
+            &template,
+            Some(&mut price),
+            None,
+            |_| {}
+        ));
         assert_eq!(price, 7);
-        assert!(!copy_weapon(&mut [0u8; 0x20], &template, None, None));
+        assert!(!copy_weapon(
+            &mut [0u8; 0x20],
+            &template,
+            None,
+            None,
+            |_| {}
+        ));
+    }
+
+    fn section(tag: u32, body: &[u8]) -> Vec<u8> {
+        let mut out = tag.to_le_bytes().to_vec();
+        out.extend_from_slice(&(body.len() as u32 + 8).to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn model(name: &str, price: u16) -> Vec<u8> {
+        let mut m = vec![0u8; 0x28];
+        m[..name.len()].copy_from_slice(name.as_bytes());
+        m[PRICE..PRICE + 2].copy_from_slice(&price.to_le_bytes());
+        section(MODEL, &m)
+    }
+
+    /// The repair over whole payloads: the model's price word comes from
+    /// the template and is scaled; a weapon runs the factory pass under the
+    /// model name less its first letter between the copy and the condition.
+    #[test]
+    fn a_repair_copies_whole_records() {
+        let mut body = vec![0u8; 0x1C0];
+        body[APPAREL_QUALITY] = 128;
+        body[APPAREL_DAMAGE] = 64;
+        let mut tbody = vec![0u8; 0x1C0];
+        tbody[APPAREL_QUALITY] = 255;
+        tbody[0x1A0..0x1A6].copy_from_slice(&[100, 80, 60, 40, 200, 50]);
+        let mut copy = [model("Trousers", 9), section(APPAREL_BODY, &body)].concat();
+        let template = [model("Trousers", 0xC001), section(APPAREL_BODY, &tbody)].concat();
+        assert!(repair_copy(
+            &mut copy,
+            &template,
+            Repaired::Apparel,
+            |_, _| { panic!("no factory for apparel") }
+        ));
+        let m = section_range(&copy, MODEL).unwrap();
+        let price = word_at(&copy[m], PRICE).unwrap();
+        assert_eq!(price, condition_price(0xC001, 255, 128, 64));
+        let b = section_range(&copy, APPAREL_BODY).unwrap();
+        let p = apparel_condition(&Protection::of_body(&tbody).unwrap(), 128, 64, 0);
+        assert_eq!(&copy[b][0x1A0..0x1A4], &p.resist);
+
+        let mut wcopy = [model("@Sword", 9), section(WEAPON, &weapon_body())].concat();
+        let mut wt = weapon_body();
+        wt[0x30..0x40].fill(100);
+        let wtemplate = [model("@Sword", 0x4064), section(WEAPON, &wt)].concat();
+        let mut asked = String::new();
+        assert!(repair_copy(
+            &mut wcopy,
+            &wtemplate,
+            Repaired::Weapon,
+            |name, body| {
+                asked = name.to_string();
+                body[0x37] = 50;
+            }
+        ));
+        assert_eq!(asked, "Sword");
+        let w = section_range(&wcopy, WEAPON).unwrap();
+        // The factory's 50 is scaled by 1.3 after it.
+        assert_eq!(wcopy[w][0x37], 65);
+        // An apparel repair on a weapon record only takes the price word.
+        let mut other = [model("@Sword", 9), section(WEAPON, &weapon_body())].concat();
+        assert!(!repair_copy(
+            &mut other,
+            &wtemplate,
+            Repaired::Apparel,
+            |_, _| {}
+        ));
+        let m = section_range(&other, MODEL).unwrap();
+        assert_eq!(word_at(&other[m], PRICE), Some(0x4064));
     }
 
     fn weapon_body() -> Vec<u8> {

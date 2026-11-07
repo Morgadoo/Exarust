@@ -24,11 +24,15 @@ A copy's condition factor SHALL be (1 − d·0.4/255)·(q·0.5/255 + 0.8) in the
 - **THEN** its pierce is 4, the low byte of 260, and the cap leaves it there
 
 ### Requirement: Apparel condition
-Apparel SHALL scale its resistances by the factor (capped at 160), its coverage by 0.3c + 0.7, divide its encumbrance by (1 − d·0.15/255)(q·0.3/255 + 0.85), then apply its armour variant's uncapped scales.
+Apparel SHALL scale its resistances by the factor (each rounded product stored as a byte, so a product past 255 wraps, then capped at 160), its coverage by 0.3c + 0.7 (stored as a byte), divide its encumbrance by (1 − d·0.15/255)(q·0.3/255 + 0.85), then apply its armour variant's uncapped scales. The copies, the shop's copies, a repair's copy and the template migration SHALL use this one routine.
 
 #### Scenario: Variant 4
 - **WHEN** a pristine coat of slash 80 rolled variant 4
 - **THEN** its slash is 140: 80 × 1.3 is 104, then × 1.35
+
+#### Scenario: A byte past 255
+- **WHEN** a pristine copy's template has padding 250 and coverage 240
+- **THEN** its padding is 69, the low byte of 325, under the cap, and its coverage 6, the low byte of 262
 
 ### Requirement: Copy price
 A copy's price SHALL be its template's divided by 2q₀² + 0.5 and multiplied by (2q² + 0.5)(2(1 − d)² + 0.5)/2, stored back in the compact price word.
@@ -94,11 +98,15 @@ The protection figure SHALL add, for each of the twenty bones with a nonzero cov
 - **THEN** the figure is √2·0.005 rounded to single
 
 ### Requirement: Repaired copy refresh
-After a repair's timed write the system SHALL refresh a made copy from its template: the copy SHALL take the template's model price word (doing nothing when only the copy has a model section); an apparel copy's protection, coverage and encumbrance SHALL be the template's at the copy's quality, damage and variant, its price based on the template's quality; a weapon copy SHALL take the template's weapon bytes 0x30 to 0x3F and be scaled by its own condition, its price based on its own quality.
+After each write of a repair's timed wear byte the system SHALL refresh the live record when its id has a tier tag and its parent word names a record: it SHALL take the template's model price word; an apparel copy SHALL take the apparel condition from the template, priced on the template's quality; a weapon copy SHALL take the template's bytes 0x30 to 0x3F, run the factory stat pass (model name less its first letter) and its own condition, priced on its own quality.
 
 #### Scenario: A repaired weapon copy
 - **WHEN** a quality 255, damage 0 weapon copy is refreshed from a template whose side and thrust bytes are 100
 - **THEN** its slash, pierce and thrust are 130 and its crush 121, and its adjust and skill bytes stay its own
+
+#### Scenario: A factory weapon's repair
+- **WHEN** a quality 255 copy of "@Sword" is repaired and the factory's stat pass writes slash 50
+- **THEN** the pass is asked for "Sword" and the slash becomes 65
 
 ### Requirement: World-load palette and container walk
 For an item-body record whose armour type byte is not zero, the world-load walk SHALL hand the palette generator the palette byte's signed variance (bits 2–6 over 31 in double, negated by bit 7) plus its wealth (bits 0–1) before the refresh. A record with neither an item body nor a weapon section SHALL add each child of its container section whose item has a random table as a slot of that table, with the container's item limit.

@@ -150,6 +150,17 @@ impl LiveObjects {
         written
     }
 
+    /// A whole payload stored as the record `id` names (a copy the item
+    /// code rewrote), logged as an in-place write. Returns whether the
+    /// record was there.
+    pub fn set_payload(&mut self, id: u32, payload: &[u8]) -> bool {
+        let written = self.db.set_payload(id, payload);
+        if written {
+            self.touched(id);
+        }
+        written
+    }
+
     /// One byte of the record `id` names, at `offset` in the body of its
     /// first section with `tag` (a socket's charge, …), logged as an
     /// in-place write. Returns whether the record and its section were

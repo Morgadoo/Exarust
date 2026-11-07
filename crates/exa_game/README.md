@@ -985,6 +985,11 @@ records leave free, and the copy takes its template's place in the panel
 and in the player's pack; `DollItems` and the item catalogue read the
 tagged records back from the database whenever it changes
 (`--kit-use clean|repair:ID@FRAME,...` scripts a release on a pack entry).
+Each write of a repair's wear byte then brings the copy up to its
+template (`use_cursor::repair_record`: the price word, the apparel or
+weapon condition, a factory weapon's stat pass through the shop's factory
+cache) and refreshes an open card of the item in place
+(`item_card::CardRefresh`, `item_card::refresh_card`).
 `save_live` runs the original's world sync before a story save, its
 checkpoint and a level change (the player's local items promoted to the
 world tier with the link remap table on, `promote_player_items`; the arena

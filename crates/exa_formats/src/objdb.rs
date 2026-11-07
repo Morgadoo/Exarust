@@ -1105,7 +1105,7 @@ pub fn experience_for_level(level: u32) -> u32 {
 
 mod editor;
 mod migrate;
-mod packed;
+pub(crate) mod packed;
 mod record;
 #[cfg(test)]
 mod shipped;
@@ -1114,8 +1114,9 @@ mod tiers;
 mod upgrade;
 mod world_sync;
 
+pub use crate::item_condition::variant_scales;
 pub use editor::{LookRoll, look_roll};
-pub use migrate::{material_set, variant_scales};
+pub use migrate::material_set;
 pub use packed::{
     FractionWord, Quantised, amount_add, amount_bytes, amount_compact, amount_expand, amount_sub,
     amount_total, amount_units,

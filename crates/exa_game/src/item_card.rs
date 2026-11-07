@@ -45,8 +45,9 @@ use bevy::window::PrimaryWindow;
 
 use exa_items::card::{BuiltCard, CardBuildInput, CardGates, CardItem, build_card};
 use exa_items::card::{CARD_SOCKET_HEIGHT, CardContent, CardPage};
+use exa_items::card::{apparel_refresh, apply_refresh, weapon_refresh};
 use exa_items::catalogue::ItemCatalogue;
-use exa_items::desc_phrase::{PhraseBook, describe};
+use exa_items::desc_phrase::{PhraseBook, SentenceSource, describe, describe_refresh};
 use exa_items::item_gui::{SPRITE_SHEETS, SocketIcons, Sockets, load_sheet, popup_place};
 use exa_ui::ScriptedPointer;
 use exa_ui::gui_controls::{self, Control};
@@ -181,6 +182,13 @@ pub struct FigureCard {
     pub pointer: (i32, i32),
 }
 
+/// A repair's timed write changed the record `item` names: an open card of
+/// that item is refreshed in place ([`refresh_card`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardRefresh {
+    pub item: u32,
+}
+
 /// `--item-card ID@FRAME`: the item's card opened at the pointer at that
 /// frame after the load, as a world object's immediate card request.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -304,6 +312,114 @@ pub fn build_for(
     })?;
     *roll = next_roll;
     Some((title, built))
+}
+
+/// The apparel body, weapon and model section tags the refresh reads.
+const BODY: u32 = 0x1000;
+const WEAPON: u32 = 0x4000;
+const MODEL: u32 = 0x10_0000;
+
+/// Refreshes an open card from the item's record after a repair, as the
+/// original's card refresh does: the name and description are read again
+/// and rewritten by the sentence the refresh picks
+/// ([`SentenceSource::refreshed`], [`describe_refresh`]: an apparel body,
+/// else a weapon section, with no factory test), then the description is
+/// put in the card's text as it stands (the refresh does not run the
+/// builder's condition blocks and pronoun markers); an apparel card's
+/// coverage, impact, striking, encumbrance and value controls, or a weapon
+/// card's striking side 0, thrust and value controls, take the record's
+/// bytes ([`apparel_refresh`], [`weapon_refresh`]). A record whose name does
+/// not resolve, or with neither section, leaves the card as it was. The
+/// weapon card's flip state is not kept by Exarust's card, so its side 0
+/// is read. Returns whether the card changed.
+pub fn refresh_card(
+    card: &mut ShownCard,
+    roll: &mut u32,
+    db: &exa_formats::objdb::ObjectDb,
+    phrases: &PhraseBook,
+) -> bool {
+    let id = card.item;
+    let Some(name) = db.name(id) else {
+        return false;
+    };
+    let description = db.description(id).unwrap_or_default();
+    let body = db.section(id, BODY);
+    let weapon = db.section(id, WEAPON);
+    let Some(source) = SentenceSource::refreshed(body, weapon) else {
+        return false;
+    };
+    let (title, description) = match &phrases.0 {
+        Some(book) => {
+            let described = describe_refresh(book, *roll, source, &name, &description);
+            *roll = described.state;
+            (described.title, described.description)
+        }
+        None => (name, description),
+    };
+    let byte = |section: &[u8], at: usize| section.get(at).copied().unwrap_or(0);
+    let value = db
+        .section(id, MODEL)
+        .and_then(|model| model.get(0x1E..0x20))
+        .map_or(0, |w| {
+            exa_formats::containers::coins_of(u16::from_le_bytes([w[0], w[1]]))
+        });
+    let values = match (body, weapon) {
+        (Some(b), _) => apparel_refresh(
+            byte(b, 0x1A4),
+            byte(b, 0x1A0),
+            byte(b, 0x1A1),
+            byte(b, 0x1A2),
+            byte(b, 0x1A3),
+            byte(b, 0x1A5),
+            value,
+        ),
+        (None, Some(w)) => weapon_refresh(
+            byte(w, 0x37),
+            byte(w, 0x38),
+            byte(w, 0x39),
+            byte(w, 0x33),
+            value,
+        ),
+        (None, None) => return false,
+    };
+    card.name = title;
+    card.built.description = description;
+    apply_refresh(&mut card.built, &values);
+    true
+}
+
+/// The repairs' card refreshes: an open card of a repaired item is
+/// refreshed in place.
+fn refresh_cards(
+    mut refreshes: MessageReader<CardRefresh>,
+    live: Option<Res<exa_assets::live_objects::LiveObjects>>,
+    phrases: Option<Res<PhraseBook>>,
+    mut view: ResMut<CardView>,
+) {
+    for refresh in refreshes.read() {
+        let Some(live) = live.as_deref() else {
+            continue;
+        };
+        let CardView { shown, roll, .. } = &mut *view;
+        let Some(card) = shown.as_mut().filter(|card| card.item == refresh.item) else {
+            debug!(
+                "item card: {:#x} repaired, no open card of it",
+                refresh.item
+            );
+            continue;
+        };
+        if refresh_card(
+            card,
+            roll,
+            live.db(),
+            phrases.as_deref().unwrap_or(&PhraseBook::default()),
+        ) {
+            info!(
+                "item card: {:#x} refreshed: {:?} value {}",
+                card.item, card.built.description, card.built.value
+            );
+        }
+    }
 }
 
 /// The card's least width and height at a unit.
@@ -1721,9 +1837,11 @@ impl Plugin for ItemCardPlugin {
             .init_resource::<crate::parchment::ParchmentView>()
             .add_message::<WorldCard>()
             .add_message::<FigureCard>()
+            .add_message::<CardRefresh>()
             .add_systems(
                 Update,
                 (
+                    refresh_cards,
                     crate::parchment::parchment_press,
                     card_press,
                     request_card,

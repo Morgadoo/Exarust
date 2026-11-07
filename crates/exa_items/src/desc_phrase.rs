@@ -3,7 +3,7 @@
 //!
 //! The card builder rewrites the item's description through
 //! [`apparel_sentence`] when the item has an apparel body and no weapon page,
-//! and through [`item_sentence`] when its model is a factory model (name
+//! and through [`crate::card::item_sentence`] when its model is a factory model (name
 //! starting with `@`) and it shows a weapon page; with neither a weapon page
 //! nor an apparel body, the weapon rule reads the shield section's bytes in
 //! the same places, as the original does. The apparel rule also puts the
@@ -20,10 +20,12 @@
 //!
 //! The weapon builder picks a `c]` (crafted) name's condition table from a
 //! register it never sets. The card builder reaches it with that register
-//! zero, so the flawless and perfect tables are read, as here. The card
-//! refresh after a timed wear change (a caller outside this unit) reaches
-//! it holding a section pointer there, which makes the choice depend on an
-//! address; Exarust has no such refresh and keeps the card builder's.
+//! zero, so the flawless and perfect tables are read ([`describe`]). The
+//! card refresh after a repair's timed write reaches it holding the weapon
+//! section's address there, which makes the choice depend on an address;
+//! [`describe_refresh`] takes the great table, as a non-zero low byte
+//! does. That refresh picks its rule with [`SentenceSource::refreshed`]:
+//! an apparel body first, else a weapon section, with no factory test.
 //!
 //! Evidence: the card builder's sentence branch and the two sentence
 //! builders of the item description unit (REA, checked against the
@@ -34,7 +36,7 @@ use bevy::prelude::*;
 use exa_assets::Game;
 use exa_formats::desc_phrases::{DescPhrases, PhraseRow};
 
-use crate::card::{ApparelLine, Phrase, PhraseTables, apparel_sentence, item_sentence};
+use crate::card::{ApparelLine, Phrase, PhraseTables, apparel_sentence, item_sentence_with};
 
 /// A seed word of -1: the item keeps its template's fixed name.
 pub const FIXED_SEED: u32 = 0xFFFF_FFFF;
@@ -111,6 +113,17 @@ impl SentenceSource {
             shield.filter(|_| factory).map(Self::weapon)
         }
     }
+
+    /// The card refresh's choice after a repair: an apparel body uses the
+    /// apparel rule, else a weapon section the weapon rule, whatever the
+    /// model's name (the refresh does not test it for `@`).
+    pub fn refreshed(body: Option<&[u8]>, weapon: Option<&[u8]>) -> Option<Self> {
+        match (body, weapon) {
+            (Some(body), _) => Some(Self::apparel(body)),
+            (None, Some(weapon)) => Some(Self::weapon(weapon)),
+            (None, None) => None,
+        }
+    }
 }
 
 /// A card's title and description after the sentence, and the roll.
@@ -151,6 +164,30 @@ pub fn describe(
     title: &str,
     description: &str,
 ) -> Described {
+    describe_with(book, state, source, title, description, false)
+}
+
+/// [`describe`] as the card refresh after a repair calls the builders: the
+/// weapon builder's crafted-name register is not zero there
+/// ([`item_sentence_with`]).
+pub fn describe_refresh(
+    book: &DescPhrases,
+    state: u32,
+    source: SentenceSource,
+    title: &str,
+    description: &str,
+) -> Described {
+    describe_with(book, state, source, title, description, true)
+}
+
+fn describe_with(
+    book: &DescPhrases,
+    state: u32,
+    source: SentenceSource,
+    title: &str,
+    description: &str,
+    crafted_great: bool,
+) -> Described {
     let (made, high, flawless, perfect, great) = (
         phrases(&book.made),
         phrases(&book.high),
@@ -171,13 +208,14 @@ pub fn describe(
             quality,
             damage,
         } => {
-            let sentence = item_sentence(
+            let sentence = item_sentence_with(
                 state,
                 description,
                 seed == FIXED_SEED,
                 quality,
                 damage,
                 &tables,
+                crafted_great,
             );
             Described {
                 state: sentence.state,
@@ -305,6 +343,42 @@ mod tests {
                 damage: 0
             }
         );
+    }
+
+    #[test]
+    fn the_refresh_picks_apparel_then_weapon_without_a_factory_test() {
+        let weapon = [0u8; 0x10];
+        let body = [0u8; 0x1B2];
+        assert!(matches!(
+            SentenceSource::refreshed(Some(&body), Some(&weapon)),
+            Some(SentenceSource::Apparel { .. })
+        ));
+        assert!(matches!(
+            SentenceSource::refreshed(None, Some(&weapon)),
+            Some(SentenceSource::Weapon { .. })
+        ));
+        assert_eq!(SentenceSource::refreshed(None, None), None);
+    }
+
+    /// A crafted (`c]`) name takes the flawless table from the card builder
+    /// and the great table from the refresh.
+    #[test]
+    fn a_crafted_name_reads_the_great_table_on_refresh() {
+        let source = SentenceSource::Weapon {
+            seed: 1,
+            quality: 255,
+            damage: 0,
+        };
+        let built = describe(&book(), 0, source, "Mace", "A mace. [sc]");
+        assert!(built.description.contains("in mint shape"), "{built:?}");
+        let refreshed = describe_refresh(&book(), 0, source, "Mace", "A mace. [sc]");
+        assert!(
+            refreshed.description.contains("in grand shape"),
+            "{refreshed:?}"
+        );
+        // Any other name is the same either way.
+        let plain = describe(&book(), 0, source, "Mace", "mace");
+        assert_eq!(describe_refresh(&book(), 0, source, "Mace", "mace"), plain);
     }
 
     #[test]

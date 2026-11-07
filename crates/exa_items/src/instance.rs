@@ -4,17 +4,13 @@
 //! weigh it by its desirability and protection.
 //!
 //! The condition factor is `(1 − d·0.4/255)·(q·0.5/255 + 0.8)` in the
-//! original's mix of float and double. A weapon's slash and pierce take the
-//! factor, its crush `0.7c + 0.3`, its thrust the factor, and each is
-//! capped at 160 (the byte wraps before the cap, as the original stores
-//! it). Apparel's protection takes the factor, its coverage `0.3c + 0.7`,
-//! and its encumbrance is divided by `(1 − d·0.15/255)(q·0.3/255 + 0.85)`.
-//! The price is the template's divided by `2q₀² + 0.5` and multiplied by
-//! `(2q² + 0.5)(2(1 − d)² + 0.5)/2`. A roll keeps a byte within its spread
+//! original's mix of float and double. A weapon's stats are scaled by
+//! `exa_formats::weapon_stats::condition`; apparel's protection, its
+//! armour variant and the price by `exa_formats::item_condition`, the one
+//! routine the template migration also runs (each rounded byte is stored
+//! before its cap, so a product past 255 wraps). A roll keeps a byte within its spread
 //! of the stored value, leaning toward it. Evidence: the item-instance notes
 //! (`context/re/item-gui-lane.md`).
-
-use exa_formats::containers::{coins_of, price_of};
 
 /// Spreads below this keep the stored byte.
 pub const NO_SPREAD: f32 = 1.192_092_9e-7;
@@ -28,9 +24,6 @@ pub const UNSKILLED_WEAPON: f32 = -10.0;
 /// Stats a condition never raises above.
 pub const STAT_CAP: u8 = 0xA0;
 
-const COVER_QUALITY: f64 = 0.0011764705882352942;
-const COVER_DAMAGE: f64 = 0.0005882352941176471;
-
 /// The engine's random generator: one step, then the state as a float in
 /// `[0, 1]`.
 pub fn random_unit(state: &mut u32) -> f32 {
@@ -43,112 +36,16 @@ fn nearest(x: f32) -> i64 {
     x.round_ties_even() as i64
 }
 
-fn nearest_f64(x: f64) -> i64 {
-    x.round_ties_even() as i64
-}
-
 /// The condition factor of a made item, shared with the factory weapons'
 /// stat pass.
 pub use exa_formats::weapon_stats::condition_factor;
 
-/// The stat bytes a weapon's condition scales, at their weapon-section
-/// offsets: slash, crush and pierce for each of the two striking sides at
-/// `0x37 + 6s`, thrust at `0x33` and impact at `0x32`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct WeaponStats {
-    pub impact: u8,
-    pub thrust: u8,
-    pub sides: [[u8; 3]; 2],
-}
-
-/// A weapon's stats from its template's at the copy's condition. The
-/// copy's own impact byte (`impact`) is only capped.
-pub fn weapon_condition(
-    template: &WeaponStats,
-    impact: u8,
-    quality: u8,
-    damage: u8,
-) -> WeaponStats {
-    let c = condition_factor(quality, damage);
-    let mut out = WeaponStats {
-        impact: impact.min(STAT_CAP),
-        ..*template
-    };
-    for s in 0..2 {
-        let t = template.sides[s];
-        let slash = nearest(f32::from(t[0]) * c) as u8;
-        let crush = nearest_f64((f64::from(c) * 0.7 + 0.3) * f64::from(t[1])) as u8;
-        let pierce = nearest(f32::from(t[2]) * c) as u8;
-        out.sides[s] = [
-            slash.min(STAT_CAP),
-            crush.min(STAT_CAP),
-            pierce.min(STAT_CAP),
-        ];
-    }
-    out.thrust = (nearest(f32::from(template.thrust) * c) as u8).min(STAT_CAP);
-    out
-}
-
-/// Apparel protection bytes: padding, slash, crush and pierce, the coverage
-/// display and the encumbrance (item body `0x1A0..=0x1A5`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Protection {
-    pub resist: [u8; 4],
-    pub coverage: u8,
-    pub encumbrance: u8,
-}
-
-/// Apparel's protection from its template's at the copy's condition, then
-/// its armour variant's adjustment ([`variant_scales`]).
-pub fn apparel_condition(
-    template: &Protection,
-    quality: u8,
-    damage: u8,
-    variant: u8,
-) -> Protection {
-    let c = condition_factor(quality, damage);
-    let coverage = nearest_f64((f64::from(c) * 0.3 + 0.7) * f64::from(template.coverage)) as u8;
-    let resist = template
-        .resist
-        .map(|r| (nearest(f32::from(r) * c) as u8).min(STAT_CAP));
-    let wear = ((1.0 - f64::from(damage) * COVER_DAMAGE)
-        * (f64::from(quality) * COVER_QUALITY + 0.85)) as f32;
-    let encumbrance = nearest(f32::from(template.encumbrance) * (1.0 / wear)) as u8;
-    let mut p = Protection {
-        resist,
-        coverage,
-        encumbrance,
-    };
-    if let Some((scales, enc)) = variant_scales(variant) {
-        p.encumbrance = nearest_f64(f64::from(p.encumbrance) * enc) as u8;
-        for (r, k) in p.resist.iter_mut().zip(scales) {
-            if k != 1.0 {
-                *r = nearest_f64(f64::from(*r) * k) as u8;
-            }
-        }
-    }
-    p
-}
-
-/// The armour variants 1–8 an apparel copy can be rolled with: each scales
-/// the padding, slash, crush and pierce bytes and the encumbrance after the
-/// condition (the bytes wrap; no cap). Variants 7 and 8 change nothing. The
-/// object database's condition refresh applies the same table.
-pub use exa_formats::objdb::variant_scales;
-
-/// The compact price word of a copy at quality `quality` and damage
-/// `damage`, from the template's price word and quality.
-pub fn condition_price(price: u16, template_quality: u8, quality: u8, damage: u8) -> u16 {
-    let coins = coins_of(price) as f32;
-    let share = |byte: u8| (f64::from(byte) / 255.0) as f32;
-    let curve = |x: f32| x * x * 2.0 + 0.5;
-    let base = curve(share(template_quality));
-    let made = curve(share(quality));
-    let kept = (1.0 - f64::from(damage) / 255.0) as f32;
-    let wear = kept * kept * 2.0 + 0.5;
-    let scaled = coins / base * (made * (wear * 0.5));
-    price_of(nearest(scaled) as u32)
-}
+/// Apparel's protection bytes, the apparel condition, the armour variants
+/// and the condition price: one routine in the original, shared with the
+/// template migration (`exa_formats::item_condition`).
+pub use exa_formats::item_condition::{
+    Protection, apparel_condition, condition_price, variant_scales,
+};
 
 /// What the AI and the doll weigh a weapon by: its thrust over 140 plus its
 /// skill points times `(0.5q² + 0.5)(1 − 0.3d)`; a one-handed weapon keeps
@@ -346,25 +243,6 @@ mod tests {
         assert_eq!(condition_factor(255, 0), 1.3);
         assert!((condition_factor(0, 255) - 0.48).abs() < 1e-6);
         assert!((condition_factor(128, 64) - 0.945_470_2).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_weapon_takes_its_template_at_its_condition() {
-        let t = WeaponStats {
-            impact: 0,
-            thrust: 100,
-            sides: [[100, 100, 200], [0, 50, 0]],
-        };
-        let s = weapon_condition(&t, 200, 255, 0);
-        // 100 × 1.3 = 130; crush 100 × (0.7·1.3 + 0.3) = 121; pierce 260
-        // wraps to 4 before the cap.
-        assert_eq!(s.sides[0], [130, 121, 4]);
-        assert_eq!(s.sides[1], [0, 60, 0]);
-        assert_eq!(s.thrust, 130);
-        assert_eq!(s.impact, STAT_CAP);
-        let worn = weapon_condition(&t, 10, 0, 255);
-        assert_eq!(worn.sides[0][0], 48);
-        assert_eq!(worn.impact, 10);
     }
 
     #[test]

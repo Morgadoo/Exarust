@@ -1263,11 +1263,15 @@ fn apply_kit(
 /// into the live database's record; the item records the panels and the
 /// worn figure read ([`DollItems`]) and the card's sentence (which reads
 /// the wear byte) are read again from it.
+#[allow(clippy::too_many_arguments)]
 fn tick_kits(
     time: Option<Res<Time<Virtual>>>,
     mut kits: ResMut<KitConditions>,
     mut live: ResMut<LiveObjects>,
     mut items: ResMut<DollItems>,
+    game: Option<Res<Game>>,
+    mut factories: Option<ResMut<crate::shop_stock::ShopFactories>>,
+    mut refreshed: MessageWriter<crate::item_card::CardRefresh>,
 ) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
     let writes = settle_kits(&mut kits, now_ms);
@@ -1283,8 +1287,65 @@ fn tick_kits(
             if apparel { "apparel" } else { "weapon" },
             if dirt { "dirt" } else { "wear" }
         );
+        // A repair's write brings the copy up to its template at its new
+        // wear, then refreshes an open card of the item.
+        if written && !dirt {
+            let copied = repair_record(
+                &mut live,
+                id,
+                apparel,
+                game.as_deref(),
+                factories.as_deref_mut(),
+            );
+            debug!("kit repair: item {id:#x} copied from its template: {copied}");
+            refreshed.write(crate::item_card::CardRefresh { item: id });
+        }
     }
     items.sync(&live);
+}
+
+/// The repair's copy pass over the live record `id` names
+/// ([`exa_items::refresh::repair_copy`]): only a copy (an id with a tier
+/// tag) whose template, its header's parent word, resolves. A weapon's
+/// factory stat pass reads `Factories.rpk` through the shop's factory
+/// cache. Returns whether the record was rewritten.
+fn repair_record(
+    live: &mut LiveObjects,
+    id: u32,
+    apparel: bool,
+    game: Option<&Game>,
+    factories: Option<&mut crate::shop_stock::ShopFactories>,
+) -> bool {
+    use exa_items::refresh::{Repaired, repair_copy};
+    if id & 0xF000_0000 == 0 {
+        return false;
+    }
+    let db = live.db();
+    let Some(record) = db.find(id) else {
+        return false;
+    };
+    let parent = record.parent_word();
+    let Some(template) = db.find(parent) else {
+        debug!("kit repair: item {id:#x} names template {parent:#x}, which is not there");
+        return false;
+    };
+    let template = template.payload().to_vec();
+    let mut payload = record.payload().to_vec();
+    let repaired = if apparel {
+        Repaired::Apparel
+    } else {
+        Repaired::Weapon
+    };
+    let copied = repair_copy(&mut payload, &template, repaired, |name, body| {
+        if let Some(factories) = factories {
+            factories.pass(game, name, body);
+        }
+    });
+    debug!("kit repair: item {id:#x} from template {parent:#x}: copy pass {copied}");
+    if payload.as_slice() == live.db().find(id).map_or(&[][..], |r| r.payload()) {
+        return false;
+    }
+    live.set_payload(id, &payload)
 }
 
 fn settle_kits(kits: &mut KitConditions, now_ms: u32) -> Vec<(u32, u8, u8, u8)> {
@@ -1324,6 +1385,8 @@ impl Plugin for UseCursorPlugin {
             .init_resource::<KitScript>()
             .init_resource::<DollItems>()
             .init_resource::<KitConditions>()
+            .init_resource::<crate::shop_stock::ShopFactories>()
+            .add_message::<crate::item_card::CardRefresh>()
             .init_resource::<LiveObjects>()
             .init_resource::<GuiItemLift>()
             .add_message::<UseHook>()
