@@ -1399,6 +1399,8 @@ Round 128 combatrules review fixes: a held weapon record measures its sweet spot
 
 Round 134 gamemain: the player controls turn off under the skill screen, power tree and arsenal and outside the Character and Spectate modes as in the original, so open forms no longer leak input to the world.
 
+Round 135 itemtext: a repair refreshes an open item card in place, and one apparel condition routine serves the migration, the shop and the repair.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
