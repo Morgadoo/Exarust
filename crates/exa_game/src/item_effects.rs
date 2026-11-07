@@ -618,13 +618,34 @@ pub fn run_worn_effects(
         &mut WornEffects,
         &mut exa_combat::Fighter,
         bevy::prelude::Has<crate::player::PlayerBody>,
+        Option<&mut exa_physics::body::Ragdoll>,
     )>,
 ) {
     let now_ms = ticks.as_ref().map_or(0, |t| t.millis() as u32);
-    for (mut effects, mut fighter, is_player) in &mut bodies {
+    for (mut effects, mut fighter, is_player, mut body) in &mut bodies {
         let max = fighter.health.max;
         let mut red = fighter.health.red;
+        // The two use counters are the body's: its tick feeds them
+        // (`exa_physics::body::Drive::item_use`), the run spends them.
+        let drive = body.as_mut().and_then(|b| b.drive.as_mut());
+        if let Some(d) = drive.as_ref() {
+            effects.list.impacts = d.item_use();
+        }
+        let fed = effects.list.impacts;
         let run = effects.run(now_ms, &mut red, max, is_player);
+        if run.ran {
+            bevy::log::debug!(
+                "worn effects ran: use counters {:?} -> {:?}, {} entries",
+                fed,
+                effects.list.impacts,
+                effects.list.entries.len()
+            );
+        }
+        if let Some(d) = body.as_mut().and_then(|b| b.drive.as_mut())
+            && d.item_use() != effects.list.impacts
+        {
+            d.set_item_use(effects.list.impacts);
+        }
         if run.ran && red.to_bits() != fighter.health.red.to_bits() {
             fighter.health.red = red;
         }

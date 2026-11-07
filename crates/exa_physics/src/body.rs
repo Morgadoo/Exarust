@@ -49,7 +49,8 @@ pub use sound::{ImpactEvent, ScrapeEvent, ScrapeSource, impact_sound};
 #[path = "body_muscle.rs"]
 mod muscle;
 pub use muscle::{
-    AttackArmTune, Bearing, BodyStats, GOLEM_LINK_SMOOTHING, RaceMuscles, attack_arms,
+    AttackArmTune, Bearing, BodyStats, GOLEM_LINK_SMOOTHING, HELD_CONTACT, HELD_CONTACT_STRIKING,
+    RaceMuscles, attack_arms,
 };
 
 #[path = "body_balance.rs"]
@@ -2113,6 +2114,18 @@ pub struct Drive {
     /// an attack's branch. Each arm's saturation is 0.1 − 0.08·drive, so
     /// every tick that is not an attack saturates at 0.1.
     arm_drive: (f32, f32),
+    /// The held items' contact factor the arm setter wrote this tick: 2
+    /// for every branch that calls it but an attack and a parry, which
+    /// pass 1; none when a shock or a kick leaves the arms alone (the
+    /// items keep what the last call wrote). The grip runtime puts each
+    /// held item's contact mobility at its base times this
+    /// ([`Drive::held_contact`]).
+    held_contact: Option<f32>,
+    /// The two use counters the body tick feeds and its item effects'
+    /// run reads once a second ([`Drive::item_use`]): the movement's
+    /// (0.0005 × the speed a striding tick, 0.0025 a stepping tick, 0.005
+    /// in a long step) and the attack's (0.005 a tick of an attack clip).
+    item_use: [f32; 2],
     /// Each target's rotation, taken once when the targets are installed
     /// (the solver's sole turns read it every iteration).
     turns: Vec<Quat>,
@@ -2264,6 +2277,8 @@ impl Default for Drive {
             dormant: false,
             attack_arms: None,
             arm_drive: (0.0, 0.0),
+            held_contact: None,
+            item_use: [0.0; 2],
             turns: Vec::new(),
             gait_progress: 0.0,
             gait_speed: 0.0,
@@ -2365,6 +2380,31 @@ impl Drive {
     /// footwork pass without one writes it here.
     pub fn set_frame(&mut self, frame: Affine3A) {
         self.frame = Some(frame);
+    }
+
+    /// The held items' contact factor the arm setter wrote on this tick's
+    /// muscle tune: 2.0, or 1.0 in an attack's or a parry's branch; `None`
+    /// when no setter call was made (a shock, a kick, a body not tuned).
+    pub fn held_contact(&self) -> Option<f32> {
+        self.held_contact
+    }
+
+    /// The movement's and the attack's use counters ([`Drive::feed_use`]),
+    /// which the character's item effects read and spend once a second.
+    pub fn item_use(&self) -> [f32; 2] {
+        self.item_use
+    }
+
+    /// Writes the use counters back after the item effects spent them.
+    pub fn set_item_use(&mut self, counters: [f32; 2]) {
+        self.item_use = counters;
+    }
+
+    /// Adds `amount` to use counter `which` (0 the movement's, 1 the
+    /// attack's), the sum taken in double and narrowed, as the original's.
+    pub(crate) fn feed_use(&mut self, which: usize, amount: f64) {
+        let c = &mut self.item_use[which];
+        *c = (f64::from(*c) + amount) as f32;
     }
 
     /// The pose drive's strength this tick, which its gains are scaled by:

@@ -1389,3 +1389,89 @@ fn a_golems_links_are_smoothed_at_0_995() {
             .any(|l| l.smoothing != GOLEM_LINK_SMOOTHING)
     );
 }
+
+/// The arm setter's held-items factor: 1 in an attack's and a parry's
+/// branch, 2 in every other call, none when a shock or a kick makes no
+/// call.
+#[test]
+fn the_arm_setter_passes_the_held_items_factor() {
+    use crate::body::{HELD_CONTACT, HELD_CONTACT_STRIKING};
+    let mut body = both_arms();
+    let pose = vec![Affine3A::IDENTITY; 3];
+    let factor = |b: &Ragdoll| b.drive.as_ref().unwrap().held_contact();
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(factor(&body), Some(HELD_CONTACT));
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.8, 0.2),
+        drive: (1.0, 0.0),
+    }));
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(factor(&body), Some(HELD_CONTACT_STRIKING));
+    body.set_attack_arms(None);
+    for (bearing, want) in [
+        (
+            Bearing {
+                parrying: true,
+                ..Bearing::default()
+            },
+            Some(HELD_CONTACT_STRIKING),
+        ),
+        (
+            Bearing {
+                casting: true,
+                ..Bearing::default()
+            },
+            Some(HELD_CONTACT),
+        ),
+        (
+            Bearing {
+                kicking: true,
+                ..Bearing::default()
+            },
+            None,
+        ),
+        (
+            Bearing {
+                shocked: true,
+                ..Bearing::default()
+            },
+            None,
+        ),
+    ] {
+        body.set_bearing(bearing);
+        body.aim(Affine3A::IDENTITY, pose.clone());
+        assert_eq!(factor(&body), want, "{bearing:?}");
+    }
+}
+
+/// The body tick's use counters: a striding tick adds 0.0005 × the speed
+/// to the movement's, an attack tick 0.005 to the attack's, each sum in
+/// double; a shocked tick adds nothing.
+#[test]
+fn the_body_tick_feeds_the_use_counters() {
+    let mut body = both_arms();
+    let pose = vec![Affine3A::IDENTITY; 3];
+    let used = |b: &Ragdoll| b.drive.as_ref().unwrap().item_use();
+    body.set_bearing(Bearing {
+        striding: true,
+        speed: 10.0,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(used(&body), [(10.0f64 * 0.0005) as f32, 0.0]);
+    body.set_bearing(Bearing::default());
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.8, 0.2),
+        drive: (1.0, 0.0),
+    }));
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(used(&body)[1], ((0.005f64 as f32 as f64) + 0.005) as f32);
+    body.set_bearing(Bearing {
+        shocked: true,
+        ..Bearing::default()
+    });
+    let before = used(&body);
+    body.aim(Affine3A::IDENTITY, pose);
+    assert_eq!(used(&body), before);
+}

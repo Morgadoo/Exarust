@@ -501,6 +501,22 @@ fn leg_gains(legs: LegMode, limbs: f32, support: f32, bearing: &Bearing) -> (f32
     }
 }
 
+/// The held items' contact factor the arm setter passes: their contact
+/// mobility is their base times it. Every call passes 2 but an attack's and
+/// a parry's, which pass 1, so a held weapon or shield yields twice as far
+/// in a contact unless its holder strikes or parries.
+pub const HELD_CONTACT: f32 = 2.0;
+/// The same in an attack's and a parry's branch.
+pub const HELD_CONTACT_STRIKING: f32 = 1.0;
+
+/// The attack's use counter rises this much a tick of an attack clip.
+pub const ATTACK_USE: f64 = 0.005;
+/// The movement's use counter rises this times the speed (cm a tick) a
+/// tick of the walk or the run.
+pub const STRIDE_USE: f64 = 0.0005;
+/// It rises this much a tick of a step, [`ATTACK_USE`] in a long step.
+pub const STEP_USE: f64 = 0.0025;
+
 /// A power's arms, both of them.
 const ARM_POWER: f32 = 0.3;
 /// A weapon switch's arms, both of them.
@@ -727,7 +743,21 @@ impl Ragdoll {
         // stored stiffness.
         let writes_arms = !unsteady.shocked;
         let mut hold_arms = false;
+        // Every setter call but an attack's and a parry's passes the held
+        // items' factor 2; a shock and a kick make no call.
+        drive.held_contact = None;
+        // The attack's use counter rises every tick an attack clip plays
+        // in the branch the attack takes (on its feet, not collapsing),
+        // whether or not its slot calls the setter.
+        if writes_arms
+            && !unsteady.collapsing
+            && !unsteady.off_balance
+            && (drive.attack_arms.is_some() || unsteady.attacking)
+        {
+            drive.feed_use(1, ATTACK_USE);
+        }
         if writes_arms {
+            drive.held_contact = Some(HELD_CONTACT);
             if unsteady.collapsing {
                 let x = arm_stiffness_floor(ARM_LOOSE, unsteady.turn);
                 drive.arms = (x, x);
@@ -738,6 +768,7 @@ impl Ragdoll {
                 drive.arm = x;
             } else if let Some(tune) = drive.attack_arms {
                 drive.arm_drive = tune.drive;
+                drive.held_contact = Some(HELD_CONTACT_STRIKING);
                 let right = arm_stiffness_floor(tune.stiffness.0, unsteady.turn);
                 let left = arm_stiffness_floor(tune.stiffness.1, unsteady.turn);
                 drive.arms = (right, left);
@@ -749,12 +780,14 @@ impl Ragdoll {
             } else if unsteady.kicking {
                 // A kick leaves both stored stiffnesses as they are.
                 hold_arms = true;
+                drive.held_contact = None;
                 drive.arm = drive.arms.0;
             } else if unsteady.parrying {
                 let right =
                     arm_stiffness_floor(crate::motile::parry_blend(drive.arms.0), unsteady.turn);
                 let left =
                     arm_stiffness_floor(crate::motile::parry_blend(drive.arms.1), unsteady.turn);
+                drive.held_contact = Some(HELD_CONTACT_STRIKING);
                 drive.arms = (right, left);
                 drive.arm = right;
             } else if unsteady.casting {
@@ -762,6 +795,7 @@ impl Ragdoll {
                 drive.arms = (x, x);
                 drive.arm = x;
             } else if unsteady.striding {
+                drive.feed_use(0, f64::from(unsteady.speed) * STRIDE_USE);
                 let right = arm_stiffness_floor(drive.stats.walking_arms, unsteady.turn);
                 let left = if unsteady.shield {
                     arm_stiffness_floor(drive.stats.walking_arms * 2.0, unsteady.turn)

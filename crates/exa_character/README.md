@@ -385,7 +385,13 @@ tested rules of their own.
   above it, mobility 0.653 (logged at debug at the equip). A weapon a level
   places is still a static model. The physics grip stage builds the links once both
   bodies exist and pulls the item to the hand; the item never meets its
-  holder's body. The grip runtime (`grip_runtime`) reads the holder's clip
+  holder's body. Each tick the holder's arm setter is called, the held
+  items' contact mobility is put at their base times its held factor
+  (`grip_runtime::scale_held_contacts`, from `Drive::held_contact`: 2, or 1
+  in an attack or a parry, nothing in a shock or a kick); the shield always,
+  the other items only while the holder is armed. The base is the item's
+  registered mobility, standing in for the original's weapon-mass base.
+  The grip runtime (`grip_runtime`) reads the holder's clip
   and its locomotion every tick (after the character ticks, before the
   bodies step), takes the mode a motion start derives from the clip or the
   one the locomotion routine wrote (1 running or in combat, else 2; the
