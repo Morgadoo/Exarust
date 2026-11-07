@@ -3266,10 +3266,11 @@ fn pose_nodes(model: &exa_assets::model::Model) -> Vec<exa_character::pose::Pose
 /// the level puts them — or, for the dead, lying on the pose the level saved
 /// — those of human frame dressed in their own items, each with the stats its
 /// record and race give it. The living carry a brain: their record's roles,
-/// their relations and their traits; those with a physical body (the human
-/// frame and the golems) also rate the player and duel it once their rating
-/// turns hostile. Returns how many were
-/// spawned and how many had no body.
+/// their relations and their traits; those with a physical body also rate
+/// the player and duel it once their rating turns hostile. Every race but
+/// the demon is physical
+/// ([`physical_frame`]). Logs the bodies built per race. Returns how many
+/// were spawned and how many had no body.
 fn spawn_placed_characters(
     commands: &mut Commands,
     loader: &mut ModelLoader,
@@ -3282,6 +3283,8 @@ fn spawn_placed_characters(
     // The brains' jitter draws (the engine's shared generator is not kept).
     let mut roll = 0u32;
     let started = std::time::Instant::now();
+    // Per race byte: bodies built, and how many of them physical.
+    let mut by_race: std::collections::BTreeMap<u8, (usize, usize)> = Default::default();
     for c in placed {
         let race = exa_formats::races::of_character(races, c.race);
         let model_name = race.map_or_else(|| model::BODY_MODEL.to_string(), |r| r.model());
@@ -3304,8 +3307,8 @@ fn spawn_placed_characters(
             &morph.physique,
             c.record.id ^ 0x51ED_270B,
         );
-        // The human frame and the golems are built physical; only the
-        // human frame is dressed.
+        // Every race but the demon is built physical; only the human frame
+        // is dressed.
         let physical = physical_frame(c.race);
         let dressed = human_frame(c.race);
         // The init, then the armour pass's encumbrance.
@@ -3318,7 +3321,8 @@ fn spawn_placed_characters(
             },
         )
         .with_encumbrance(c.encumbrance);
-        // Bodies of other frames have no physical links to lie down with.
+        // A body without a physical frame (the demon) has no links to lie
+        // down with.
         if c.dead && !physical {
             missing += 1;
             continue;
@@ -3522,12 +3526,26 @@ fn spawn_placed_characters(
         if let Some(built) = built.as_deref_mut() {
             built.push(model);
         }
+        let count = by_race.entry(c.race).or_default();
+        count.0 += 1;
+        count.1 += usize::from(physical);
         spawned += 1;
     }
     info!(
         "{spawned} characters' bodies built in {:.0} ms",
         started.elapsed().as_secs_f32() * 1000.0
     );
+    if !by_race.is_empty() {
+        let line: Vec<String> = by_race
+            .iter()
+            .map(|(&byte, &(built, physical))| {
+                let name = exa_formats::races::of_character(races, byte)
+                    .map_or_else(|| format!("race {byte}"), |r| r.name.clone());
+                format!("{name} {built} ({physical} physical)")
+            })
+            .collect();
+        info!("bodies built per race: {}", line.join(", "));
+    }
     (spawned, missing)
 }
 

@@ -123,15 +123,19 @@ An entered alarm zone SHALL end the check while the player's state flags carry `
 - **THEN** no golem wakes and the alarm stays disarmed
 
 ### Requirement: Golem bodies
-The game SHALL build a simulated body for a placed character whose race byte is of the human frame (0 to 2) or a golem's (bit `0x10`, not the skeleton or the wraith), from its race model's bones and the shared skeleton's links, with its race's stature and the character init's muscles; a golem SHALL get a mind and a duellist like a human and SHALL wear no human apparel.
+The game SHALL build a simulated body for a placed character of every race but the demon (race byte 11), from its race model's bones and the template body's links, with its race's stature and the character init's muscles; such a character SHALL get a mind and a duellist like a human, and only the human frame (race bytes 0 to 2) SHALL wear human apparel.
 
 #### Scenario: The golem races are physical
 - **WHEN** the race bytes 16 to 20 are tested
 - **THEN** each is built physical, and none is dressed
 
+#### Scenario: The ghouls and the other races are physical
+- **WHEN** the ogre (3), Sir (4), the Fael (5), the ghouls (6, 7), the gobbler (8), the manipulator (9), the harvester (10) or the wraith (14) is tested
+- **THEN** each is built physical
+
 #### Scenario: Other races stay static
-- **WHEN** the ogre (byte 3) or the gobbler (byte 8) is tested
-- **THEN** neither is built physical
+- **WHEN** the demon (byte 11) is tested
+- **THEN** it is not built physical
 
 ### Requirement: Guardian start motion
 A placed character without a saved motion SHALL start in Stand 2 (motion 0x19) when its record's race word carries the AI bit `0x1000`, and in Idle (motion 0x13) otherwise.
