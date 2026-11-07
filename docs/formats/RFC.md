@@ -133,11 +133,15 @@ u32  ?
 Two `flags` bits ask the importer's finalise pass to hide a node's tree:
 `0x100000` hides every light node (class `flags & 0x5f == 5`) under it, and
 `0x200000` hides light and fire (`0x3DD0E002`) nodes once the level's
-darkness is above the engine's stored f32 `0.12` (strict; exactly `0.12`
-and NaN leave them shown). The hidden state is bit `2` of `flags2`. Every
-other `flags & 0x300000` value matches neither rule. Exarust keeps this as
-`Scene::apply_visibility_flags`; a whole level load has no darkness value
-to pass it yet.
+daylight scale is above the engine's stored f32 `0.12` (strict; exactly
+`0.12` and NaN leave them shown). The hidden state is bit `2` of `flags2`.
+Every other `flags & 0x300000` value matches neither rule. The pass reads
+only the roots of the load's node list (a parent index below 1 or past the
+count); a rule on a node under another is not read. No shipped model node
+carries either bit; they reach a node from a prop's placement flags (below).
+Exarust resolves the rules when it spawns a model (each node's root's
+flags); `Scene::apply_visibility_flags` is the same walk over a parsed
+file.
 
 The box is the mesh's vertex bounds: for every one of the 103 plain weapon
 models of `Objects.rpk`, centre.y + extent.y is the highest vertex to
@@ -908,8 +912,9 @@ Exarust match the original look).
   the reorder's first. The centre variant's children are cloned into the
   cell as nodes of their own, at the cell centre with their stored
   rotation; an edge strip's children are not used. A set piece's own
-  floor nodes keep the file's triangle order: the model import converts
-  only meshes with modifiers. After the cells the builder resets the room
+  floor nodes keep the file's triangle order: the model import converts a
+  mesh with the reorder only when it has modifiers and its `flags2` has
+  `0x100000`, which no shipped mesh node has (0 of 24 365). After the cells the builder resets the room
   states (every room hidden; the debug view of every room shows them). The ceiling strips also make a per-cell
   `+Ceiling` mesh that is never drawn (its node is marked externally drawn;
   its purpose is not known); what shows of the ceilings is the room's lid
@@ -1446,12 +1451,17 @@ registers none.
 
 All 79 935 props in the 29 retail levels name existing Objlib objects.
 
-**Flags** (REA on the original's prop reader): `flags & 0xB80000` is copied
-onto the object's root node. **`0x80000` places the prop static**: every
-node under it is marked too, so none of its rigid bodies registers and its
-meshes are level collision (`Prop::STATIC`). Shipped: 0 ×76 045, `0x80000`
-×3 883, `0x100000` ×2, `0x180000` ×1, `0x200000` ×4 (lanterns; meaning not
-traced); never `0x800000`. `0x3DE0EC00` holds, per child node, a name and
+**Flags** (REA on the original's prop reader): `flags & 0xB80000` replaces
+those bits of the object's root node (`Prop::NODE_FLAGS`). **`0x80000`
+places the prop static**: every node under it is marked too, so none of its
+rigid bodies registers and its meshes are level collision (`Prop::STATIC`).
+`0x100000` and `0x200000` are the node visibility rules above, applied to
+the object when it is a root of the level's list. Shipped: 0 ×76 045,
+`0x80000` ×3 883, `0x100000` ×2 (arenao1's lanterns `lantern a01 mb`: their
+light is off), `0x180000` ×1 (exanima03's `beddouble`, which has no light),
+`0x200000` ×4 (an arenao1 lantern and arenao3's three `brazier xaa02 01`:
+the light or fire is off by day); never `0x800000`. All seven are roots
+with no prop under them. `0x3DE0EC00` holds, per child node, a name and
 a matrix that replaces the child's local transform (an articulated prop
 posed in the editor); no shipped prop or level carries one.
 

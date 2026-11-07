@@ -167,12 +167,12 @@ pub struct Node {
 pub const VISIBILITY_MASK: u32 = 0x30_0000;
 /// Visibility rule: hide every light node in the tree.
 pub const VISIBILITY_HIDE: u32 = 0x10_0000;
-/// Visibility rule: hide light and fire nodes once the level's darkness is
-/// above [`DARKNESS_LIMIT`].
+/// Visibility rule: hide light and fire nodes once the level's daylight
+/// scale is above [`DAYLIGHT_LIMIT`].
 pub const VISIBILITY_FADE: u32 = 0x20_0000;
 /// The fade value above which [`VISIBILITY_FADE`] hides a node, the
 /// original's stored f32 `0.12` (strict).
-pub const DARKNESS_LIMIT: f32 = f32::from_bits(0x3df5_c28f);
+pub const DAYLIGHT_LIMIT: f32 = f32::from_bits(0x3df5_c28f);
 
 impl Node {
     /// `flags2` bit: the node is hidden (the original's visibility state
@@ -241,7 +241,7 @@ fn apply_hidden(
     children: &[Vec<usize>],
     at: usize,
     hide_lights: bool,
-    darkness: f32,
+    daylight: f32,
     remaining: usize,
 ) {
     let Some(node) = nodes.get_mut(at) else {
@@ -255,14 +255,14 @@ fn apply_hidden(
     } else {
         // A NaN or exactly 0.12 leaves the node shown (the original's
         // `comiss` against the constant).
-        (node.is_light_node() || node.is_fire_node()) && darkness > DARKNESS_LIMIT
+        (node.is_light_node() || node.is_fire_node()) && daylight > DAYLIGHT_LIMIT
     };
     if hides {
         node.flags2 |= Node::HIDDEN;
     }
     if let Some(kids) = children.get(at) {
         for &child in kids {
-            apply_hidden(nodes, children, child, hide_lights, darkness, remaining - 1);
+            apply_hidden(nodes, children, child, hide_lights, daylight, remaining - 1);
         }
     }
 }
@@ -1272,14 +1272,15 @@ impl Scene {
     }
 
     /// Applies the importer's node visibility flags as its finalise pass
-    /// does when it walks a node whose flags ask for them: `0x100000` hides
+    /// does when it walks a root whose flags ask for them: `0x100000` hides
     /// every light node in the tree, and `0x200000` hides light and fire
-    /// nodes once the level's darkness is above `0.12` (a NaN or exactly
-    /// `0.12` leaves them shown). The hidden bit is
+    /// nodes once the level's daylight scale is above `0.12` (a NaN or
+    /// exactly `0.12` leaves them shown). Only roots (no parent, or a parent
+    /// index out of range) are read. The hidden bit is
     /// [`Node::HIDDEN`] of `flags2`; the walk reaches children from any
     /// depth. A level's importer calls this with the fade value it is
     /// loading at; Exarust loads a level whole, so nothing calls it yet.
-    pub fn apply_visibility_flags(&mut self, darkness: f32) {
+    pub fn apply_visibility_flags(&mut self, daylight: f32) {
         let mut children = vec![Vec::new(); self.nodes.len()];
         for (i, node) in self.nodes.iter().enumerate() {
             if let Some(parent) = node.parent
@@ -1294,6 +1295,7 @@ impl Scene {
             .nodes
             .iter()
             .enumerate()
+            .filter(|(_, node)| !node.parent.is_some_and(|p| p > 0 && p <= self.nodes.len()))
             .filter_map(|(i, node)| match node.flags & VISIBILITY_MASK {
                 VISIBILITY_HIDE => Some((i, true)),
                 VISIBILITY_FADE => Some((i, false)),
@@ -1307,7 +1309,7 @@ impl Scene {
                 &children,
                 root,
                 hide_lights,
-                darkness,
+                daylight,
                 depth,
             );
         }
@@ -4071,7 +4073,7 @@ mod tests {
     }
 
     #[test]
-    fn the_visibility_rules_hide_lights_and_fires_by_darkness() {
+    fn the_visibility_rules_hide_lights_and_fires_by_daylight() {
         let light = light_body();
         let nodes = [
             (NODE_LIGHT, node_flags("A", 0x20_0005, 0, 0, 0, &light)),
@@ -4087,6 +4089,8 @@ mod tests {
                 b.extend(f32s(&[20.0]));
                 node_flags("Fire", 0x20_0000, 0, 0, 0, &b)
             }),
+            // A rule on a node under another is not read: only roots are.
+            (NODE_LIGHT, node_flags("G", 0x10_0005, 0, 0, 5, &light)),
         ];
         let file = |tag: u16| {
             let mut list = u32s(&[nodes.len() as u32]);
@@ -4100,21 +4104,21 @@ mod tests {
         };
         let mut scene = Scene::parse(&file(0x3D23)).unwrap();
         // Exactly 0.12 leaves the fade nodes shown; C's hide rule still
-        // applies at any darkness.
+        // applies at any daylight.
         scene.apply_visibility_flags(0.12);
         let hidden: Vec<bool> = scene.nodes.iter().map(Node::is_hidden).collect();
-        assert_eq!(hidden, [false, false, true, false, false, false]);
+        assert_eq!(hidden, [false, false, true, false, false, false, false]);
         // Above it: A and its child B join C; D's both bits match no rule
         // and E has none.
         scene.apply_visibility_flags(0.13);
         let hidden: Vec<bool> = scene.nodes.iter().map(Node::is_hidden).collect();
-        assert_eq!(hidden, [true, true, true, false, false, true]);
-        // The hide rule needs no darkness at all.
+        assert_eq!(hidden, [true, true, true, false, false, true, false]);
+        // The hide rule needs no daylight at all.
         let mut scene = Scene::parse(&file(0x3D23)).unwrap();
         scene.apply_visibility_flags(0.0);
         let hidden: Vec<bool> = scene.nodes.iter().map(Node::is_hidden).collect();
-        assert_eq!(hidden, [false, false, true, false, false, false]);
-        // A NaN darkness leaves the fade nodes shown.
+        assert_eq!(hidden, [false, false, true, false, false, false, false]);
+        // A NaN daylight leaves the fade nodes shown.
         let mut scene = Scene::parse(&file(0x3D23)).unwrap();
         scene.apply_visibility_flags(f32::NAN);
         assert!(!scene.nodes[0].is_hidden() && !scene.nodes[1].is_hidden());
