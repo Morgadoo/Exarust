@@ -2498,6 +2498,7 @@ dependencies = [
 name = "exa_game"
 version = "0.0.1"
 dependencies = [
+ "arboard",
  "bevy",
  "exa_ai",
  "exa_anim",

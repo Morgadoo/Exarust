@@ -2018,7 +2018,12 @@ byte, 1-based) and its first byte.
   with nothing selected both take the whole text — and V pastes the
   system clipboard over the selection (the caret moves past it, wrapping as
   an 8-bit field; the text is cut to the maximum with the caret clamped),
-  scrolling even when the clipboard had no text. The navigation handler
+  scrolling even when the clipboard had no text. The clipboard holds
+  the bytes as Windows-1252 text: a copy offers them as ANSI and as
+  Unicode text, a paste reads the ANSI text up to its first zero, a
+  character the code page lacks becoming `?`
+  (`exa_game::os_clipboard::SystemClipboard`, which implements the text
+  box's `Clipboard`). The navigation handler
   does Home, End, Left, Right and Ctrl+C, nothing at or below 0x22.
 - **Draw.** `caret_position` sums the visible advances to the caret and
   backs off half the gap. `draw_edit` has three paths: the whole-run draw

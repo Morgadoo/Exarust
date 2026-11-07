@@ -20,6 +20,9 @@ exa_script.workspace = true
 exa_ui.workspace = true
 exa_assets.workspace = true
 exa_formats.workspace = true
+# The system clipboard for the text controls' copy and paste (X11, and
+# Wayland through the data-control protocol), opened on first use.
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 
 [dev-dependencies]
 # Real-data checks read the installed packs and skip without them.

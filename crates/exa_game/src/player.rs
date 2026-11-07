@@ -729,7 +729,7 @@ pub(crate) fn window_point(
 /// Whether the session is a Wayland one, where the pointer can be moved
 /// only while it is locked.
 fn wayland() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some()
+    crate::os_pointer::wayland()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -744,6 +744,7 @@ fn cursor_look(
     mut players: Query<(&mut PlayerBody, &mut Locomotion, &mut Locomotor)>,
     mut cameras: Query<&mut ChaseCamera>,
     mut capture: ResMut<CursorCapture>,
+    mut warp: Option<ResMut<crate::os_pointer::PointerWarp>>,
 ) {
     let Ok((mut window, mut options)) = windows.single_mut() else {
         return;
@@ -809,8 +810,13 @@ fn cursor_look(
         options.visible = true;
         // The window's position is applied before the grab is released, so
         // Wayland takes it as the lock's hint and leaves the pointer there.
+        // Elsewhere the pointer is warped back with the original's hold
+        // (`os_pointer`), which puts back the moves still on their way.
         if let Some(saved) = look.saved.take() {
-            window.set_cursor_position(Some(saved));
+            match warp.as_deref_mut().filter(|_| !wayland()) {
+                Some(warp) => warp.warp(&mut window, saved),
+                None => window.set_cursor_position(Some(saved)),
+            }
         }
     }
     capture.0 = look.active;

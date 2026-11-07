@@ -112,8 +112,32 @@ event-driven winit loop.
   and a pointer that reaches the screen's edge is moved to the other side
   (two pixels short of the right or bottom edge, or to 1) while a virtual
   offset of whole screen sizes keeps the position the drag sees growing.
-  Both are modelled in `exa_game::window` (`WarpHold`, `PointerClip`);
-  Exarust's Cursor Look uses winit's locked grab instead.
+  Both are modelled in `exa_game::window` (`WarpHold`, `PointerClip`).
+  The warp's caller in play is the player controls' look routine, which
+  serves both the middle-button orbit and Cursor Look (V): it recentres
+  the pointer every frame while either is held and warps it back with the
+  hold on release. Exarust's Cursor Look locks the pointer through winit
+  instead of recentring it, and on release warps it back with the hold
+  (`exa_game::os_pointer`; on Wayland the pointer moves only while locked,
+  so there the position is the lock's hint and no hold is kept). The
+  drag clip's callers are GUI drags (the spinner's value drag, the
+  editor's manipulators and the camera's free drag); none of them is
+  reached by Exarust's play, so `PointerClip` stays a model.
+- **Full-screen confinement.** Whenever a GUI capture ends, the original
+  confines the pointer to the window if it is full screen and focused;
+  losing the focus frees it, and regaining the focus does not confine it
+  again until the next capture ends. Exarust arms it on a mouse button let
+  go in the focused window and applies winit's confined grab
+  (`exa_game::os_pointer`); Cursor Look's lock wins while it is held.
+- **Work area, screen saver, Alt key.** A framed window is fitted to the
+  desktop's work area (`fit_window`); winit exposes no work area and
+  Wayland lets the compositor place windows, so Exarust leaves placement
+  to the platform. The original refuses the screen saver while it has the
+  focus and its menu-depth counter is zero, closes Alt-key menu lookups
+  (no beep) and keeps Alt+Space from opening the system menu. On Windows
+  winit closes the menu lookup the same way and refuses the screen saver
+  in full screen only; on Linux there is no Alt menu or beep, and the
+  screen-saver refusal is not reproduced (winit has no idle inhibition).
 
 ## Frame profiler
 

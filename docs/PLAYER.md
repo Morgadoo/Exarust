@@ -72,7 +72,12 @@ decides from it each tick (below). Outside combat:
   cursor are hidden, horizontal mouse motion turns the facing (the body's
   yaw and the request's heading) by 3.6 × Δx / window width radians per
   pixel (no drag needed), and the camera target turns behind the new
-  facing. Releasing restores the pointer where it was. The settings
+  facing. Releasing restores the pointer where it was, with the OS
+  layer's four-move warp hold (`exa_game::os_pointer`). The original's
+  release puts it on the screen point of the player's aim point instead
+  when the look began over the game view, and where it was only when it
+  began over the GUI; its middle-button orbit is the same routine
+  (recentred pointer, the same warp on release). The settings
   screen's binding template shows SPACE, but the shipped table's slot is V.
 - **Crouch (X)** sets the crouch amount to 1 while the body is not
   moving (by its last movement decision), or while it is down (condition
