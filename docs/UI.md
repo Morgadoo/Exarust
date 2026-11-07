@@ -2612,12 +2612,14 @@ result reads as 0. Their rules:
   by the line height (halved by a shift) or the font base. A 2 is the
   default.
 - **Users.** The executable's static control records name the extended
-  classes in these forms: the colour picker (seven colour swatches, six
-  spinners and its 164 × 164 colour image), the Settings form (separators),
+  classes in these forms: the colour picker (two colour swatches, six
+  trackbars with six spinners and its 164 × 164 colour image; only the
+  dormant editor's lighting panel's swatches open it), the Settings form (separators),
   the character creator (the name field and a combo box), the saves'
   journal (an editable `New Entry` combo box), the arena loadout form (the
-  fighter list), the arena hire form (`Look for:` and `Rank:` combo
-  boxes), the emblem form (text fields) and the dormant object editor and
+  fighter list), the trade window's merchant options (`Look for:` and
+  `Rank:` combo boxes), the emblem form (text fields and colour swatches)
+  and the dormant object editor and
   its open/save dialog (combo boxes, spinners, swatches, text fields). No
   static record names a progress bar, texture view, trackbar, caption or
   scroll bar; a form that builds one in code was not found.
@@ -3740,6 +3742,73 @@ game ([PLAYER.md](PLAYER.md), Gamepad); Steam's own binding screen and
 prompts are not, since Exarust does not link Steam. The aim speed is stored
 and shown but acts nowhere yet: in the original it eases the screen cursor
 toward the gamepad's aim point, which Exarust does not reproduce.
+
+## Arena option forms
+
+`exa_game::option_forms` puts three more record-built forms on the hub's
+form stack (`exa_ui::arena_forms`, `exa_ui::emblem_form`,
+`exa_ui::colour_picker`).
+
+- **Merchant options.** When the trade window trades with the merchant its
+  opener adds a form of four records, 0x104 × 0x44 at (0x12c, 0x190) in the
+  window's client, its attributes the base word less 0x20 and 0x20000:
+  `Look for:` (style 0x1300, its text right-aligned to the left of x) with a
+  combo box over Anything, Clothing & Armour and Weapons, and `Rank:` with
+  a combo box over Any, Inept, Aspirant, Novice, Adept, Expert and Master
+  (both style 0x8403320, 0xa8 wide). The constructor writes the
+  selection words: the first row whose stock-type word (0, 0x1000, 0xc000)
+  is the merchant's stock type (none matching leaves the static record's
+  last value), and the specialisation plus two. A press on a box opens its
+  drop-down list under it; the pick writes the row back and the callback
+  stores the list's word before the row as the stock type, or the row less
+  two as the specialisation. The nightly restock reads both.
+- **Company dialog and emblem form.** New Career's dialog is a black,
+  borderless form (attribute word 0x20) with BACK at the bottom left and
+  NEXT at the bottom right (styles 0x483300 and 0x4a3300), holding the
+  emblem form (0x268 × 0x258, centred by 0x8800). The emblem form's 23
+  records: `COMPANY NAME` and its name field (20 bytes; style 0x3c03b2d,
+  every edit tells the owner), `COMPANY EMBLEM`, and for the background
+  (and the design 0x1b0 to the right) its label, the step-down image
+  button (word −1), the number field (two digits, style 0x400330d, Enter
+  tells the owner), the step-up button (word 1), the `Mirror` box (its word
+  the layer bit 0x10 or 0x100) and two `Colour` labels each with a colour
+  swatch (its slot 0–3); then Randomise and Previous. The constructor sets
+  background and design 1 and the palette bytes 0xd3, 0x72, 0x5a and 0x4e.
+  The apply step gives each swatch its slot's palette colour on the lifted
+  ramp with the index in the alpha byte, and each mirror box the word of
+  the label after it with the on and lit bits set or cleared by the layer
+  bit. The refresh fills the record's colours from the linear ramp, the
+  index kept, which the preview takes. The background and design setters
+  clamp: at or under 1 the number is 1 and the step-down button is
+  disabled (the step-up button untouched); at or over 50 (80) it is the
+  maximum and the step-up button disabled; otherwise both are enabled; the
+  number is written into the field. A step adds its word, a number field
+  reads its text. A swatch opens the palette swatch popup with its index,
+  placed so that the index's cell is under the pointer; a hovered or
+  pressed cell is told to the form, which stores it in the slot's palette
+  byte. Randomise keeps the record (four at most), enables Previous, rolls,
+  applies and runs both setters; Previous takes the newest kept record
+  back (applied, the setters not run) and disables itself when none is
+  left. The name `klean` (once the field changed) gives the colours the
+  palette bytes 7, 0, 0 and 6, clears the layer word, applies, and stores
+  background 52 and design 81 directly. NEXT with an empty name shows the
+  "Please name your company" message box; otherwise it stores the name and
+  record and starts the creator. In Exarust the dialog opens through
+  `--open-hub-window company` (New Career's route belongs to the creator);
+  the message box and the creator that follows are not run from it.
+- **Colour picker.** `TColourPicker` is 0x192 × 0x11a, titled with the
+  swatch's caption ("Colour" by default), border 1, the upper-layer bit and
+  centred across. Its 17 records: for R, G, B, H, S and V a trackbar (style
+  0x10021320, its group word the channel) and a spinner over 0–255 in steps
+  of 1; `Old colour` (reverts) and `New colour` (no callback; its owner
+  word takes dropped bytes) swatches; Reset (reverts) and Close; and the
+  164 × 164 image at (8, 3), whose point is hue across and saturation
+  down. The trackbars send their value, the spinners their value over 255.
+  The R, G and B trackbars show the channel's two ends, H the six-step
+  rainbow, S and V the refresh's two pairs. No constructor or refresh gives
+  the image a picture, so it draws its shade. In the original only the
+  dormant editor's lighting panel opens it; `--open-hub-window picker`
+  opens it on a white swatch.
 
 ## Layers, pickers and the remaining original widgets
 

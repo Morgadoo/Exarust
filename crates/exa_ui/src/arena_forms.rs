@@ -704,6 +704,100 @@ pub const YES_NO_FORM: FormSpec = FormSpec {
     children: &[],
 };
 
+/// The merchant's options form, which the trade window adds over its
+/// bottom right when it trades with the company's merchant: `Look for:`
+/// and `Rank:`, each with a combo box over its list. A pick sets what the
+/// merchant restocks: the stock type from [`LOOK_FOR_KINDS`] and the
+/// specialisation (the rank, −1 for any) from the rank list.
+pub const MERCHANT_RECORDS: [FormRecord; 4] = [
+    FormRecord {
+        text: Some("Look for:"),
+        style: 0x1300,
+        ..record(0x5, 0x0, 0x48, 0x2, 0x80, 0x0)
+    },
+    FormRecord {
+        style: 0x840_3320,
+        reports: true,
+        icon: 1,
+        items: &LOOK_FOR_ITEMS,
+        ..record(0x12, 0x0, 0x50, 0x8000, 0xa8, 0x0)
+    },
+    FormRecord {
+        text: Some("Rank:"),
+        style: 0x1300,
+        ..record(0x5, 0x0, 0x48, 0x8008, 0x80, 0x0)
+    },
+    FormRecord {
+        style: 0x840_3320,
+        reports: true,
+        icon: 1,
+        items: &RANK_ITEMS,
+        ..record(0x12, 0x0, 0x50, 0x8000, 0xa8, 0x0)
+    },
+];
+
+/// The `Look for:` list.
+pub const LOOK_FOR_ITEMS: [&str; 3] = ["Anything", "Clothing & Armour", "Weapons"];
+/// The stock type each `Look for:` item stands for, by item.
+pub const LOOK_FOR_KINDS: [u32; 3] = [0, 0x1000, 0xc000];
+/// The `Rank:` list: any rank, then the six ranks.
+pub const RANK_ITEMS: [&str; 7] = [
+    "Any", "Inept", "Aspirant", "Novice", "Adept", "Expert", "Master",
+];
+
+/// The merchant options form's records by role.
+pub mod merchant {
+    pub const LOOK_FOR: usize = 1;
+    pub const RANK: usize = 3;
+}
+
+/// The merchant options form's place in the trade window and its size,
+/// as its constructor stores them (pixels at unit 4).
+pub const MERCHANT_PLACE: (i32, i32) = (0x12c, 0x190);
+
+/// The merchant options form: 0x104 × 0x44, the base border, its
+/// attributes the base word less 0x20 and 0x20000.
+pub const MERCHANT_FORM: FormSpec = FormSpec {
+    size: (0x104, 0x44),
+    border: BASE_BORDER,
+    placement: 0,
+    attributes: BASE_ATTRIBUTES & !0x2_0020,
+    title: "",
+    records: &MERCHANT_RECORDS,
+    children: &[],
+};
+
+/// The `Look for:` selection the constructor writes back into its record
+/// (1-based) for a stock type: the first item whose kinds match, in the
+/// list's order. A stock type outside the list leaves the record's word
+/// as it was (the record array is static, so the last value stays).
+pub fn look_for_selection(kinds: u32) -> Option<u32> {
+    LOOK_FOR_KINDS
+        .iter()
+        .position(|&k| k == kinds)
+        .map(|i| i as u32 + 1)
+}
+
+/// The `Rank:` selection for a specialisation: the rank plus two (−1, any,
+/// is the first item).
+pub fn rank_selection(rank: i32) -> u32 {
+    rank.wrapping_add(2) as u32
+}
+
+/// The `Look for:` pick's stock type: the list's word before the
+/// 1-based selection (no bounds test, as the original's).
+pub fn look_for_kinds(selection: u32) -> u32 {
+    LOOK_FOR_KINDS
+        .get((selection as usize).wrapping_sub(1))
+        .copied()
+        .unwrap_or(0)
+}
+
+/// The `Rank:` pick's specialisation: the selection less two.
+pub fn rank_of(selection: u32) -> i32 {
+    (selection as i32).wrapping_sub(2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,5 +919,30 @@ mod tests {
         );
         // HIRE and its fee stay hidden on the roster page.
         assert_eq!(form.controls()[loadout::HIRE].state, 0x110);
+    }
+
+    #[test]
+    fn the_merchant_options_map_their_lists() {
+        assert_eq!(look_for_selection(0), Some(1));
+        assert_eq!(look_for_selection(0x1000), Some(2));
+        assert_eq!(look_for_selection(0xc000), Some(3));
+        assert_eq!(look_for_selection(0xd000), None);
+        assert_eq!(rank_selection(-1), 1);
+        assert_eq!(rank_selection(3), 5);
+        assert_eq!(look_for_kinds(3), 0xc000);
+        assert_eq!(rank_of(1), -1);
+        assert_eq!(rank_of(7), 5);
+        let mut records = MERCHANT_RECORDS;
+        records[merchant::LOOK_FOR].amount = 2;
+        let c = crate::creation_forms::control(&records[merchant::LOOK_FOR]);
+        assert_eq!(c.text, b"Clothing & Armour");
+        let form = RecordForm::open(&MERCHANT_FORM, (1280, 720), 4);
+        // Rank sits one row (8 units) under Look for, its combo beside it.
+        let (look, rank) = (
+            &form.controls()[merchant::LOOK_FOR],
+            &form.controls()[merchant::RANK],
+        );
+        assert_eq!(look.x, rank.x);
+        assert!(rank.y > look.y);
     }
 }

@@ -1,13 +1,13 @@
 //! A company emblem chosen by name.
 //!
-//! The name `klean` selects background 52 and design 81, and stores the four
-//! layer bytes 7, 0, 0 and 6. A picture name keeps a leading 0 and writes the
+//! The name `klean` selects background 52 and design 81, gives the four
+//! colours the palette indices 7, 0, 0 and 6 and clears the mirror bits. A picture name keeps a leading 0 and writes the
 //! index's tens and ones after it, so 52 is `emblembkg052` and 81 is
 //! `emblemdes081`. Any other name selects nothing. A candidate's listed price
 //! was not read.
 //!
-//! Evidence: the name compare, the two picture loaders, and the four bytes
-//! stored with that name. The editor itself is [`exa_ui::EmblemEditor`].
+//! Evidence: the name compare, the two picture loaders, and the name
+//! callback's stores (each colour's palette byte, the layer word cleared). The editor itself is [`exa_ui::EmblemEditor`].
 
 /// Which picture an index names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,13 +16,13 @@ pub enum EmblemKind {
     Design,
 }
 
-/// The pictures and layer bytes a name selected.
+/// The pictures and colours a name selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Emblem {
     pub background: u32,
     pub design: u32,
-    /// Four bytes stored with the preset. What each byte selects was not read.
-    pub layers: [u8; 4],
+    /// The four colours' palette indices (each colour word's high byte).
+    pub palettes: [u8; 4],
 }
 
 /// The emblem for `name`, if that name is a preset.
@@ -31,7 +31,7 @@ pub fn preset_emblem(name: &str) -> Option<Emblem> {
         Some(Emblem {
             background: 52,
             design: 81,
-            layers: [7, 0, 0, 6],
+            palettes: KLEAN_PALETTES,
         })
     } else {
         None
@@ -222,8 +222,8 @@ pub fn company_paint(width: i32, height: i32) -> [[f32; 2]; 4] {
     ]
 }
 
-/// The four layer bytes the "klean" preset stores, and its pictures.
-pub const KLEAN_LAYERS: [u8; 4] = [7, 0, 0, 6];
+/// The four palette indices the "klean" preset gives the colours.
+pub const KLEAN_PALETTES: [u8; 4] = [7, 0, 0, 6];
 
 /// Applies the preset to an editor when the typed name is exactly `klean`.
 /// The original also needs the entry's changed flag to be set before it
@@ -232,11 +232,14 @@ pub fn apply_klean(name: &str, editor: &mut exa_ui::EmblemEditor) -> bool {
     let Some(preset) = preset_emblem(name) else {
         return false;
     };
-    // The preset stores the two pictures directly; the selector's clamps
-    // do not apply to it.
+    // Each colour's palette byte, the layer word cleared; then the two
+    // pictures stored directly (the selector's clamps do not apply).
+    for (colour, palette) in editor.record.colours.iter_mut().zip(preset.palettes) {
+        *colour = (*colour & 0x00ff_ffff) | (u32::from(palette) << 24);
+    }
+    editor.record.layers = 0;
     editor.record.background = preset.background;
     editor.record.design = preset.design;
-    editor.record.layers = u32::from_le_bytes(preset.layers);
     true
 }
 
@@ -250,11 +253,9 @@ pub fn preview_layer(
     textures: &exa_ui::gui_draw::GuiTextures,
     unit: i32,
 ) -> Option<exa_ui::gui_draw::GuiLayer> {
-    let preview = editor.preview(|index| {
-        // The palette table is outside the pack; the index is used as a
-        // grey ramp until the palette file is read [guess].
-        [index, index, index]
-    });
+    // The form's refresh fills each colour's bytes from its palette index
+    // on the dye palette's linear ramp before the preview takes them.
+    let preview = editor.preview(exa_ui::emblem_form::preview_palette);
     let names = &preview.textures;
     let layers = [
         textures.get(&names[0])?,
@@ -329,7 +330,7 @@ mod tests {
         let emblem = preset_emblem("klean").unwrap();
         assert_eq!(emblem.background, 52);
         assert_eq!(emblem.design, 81);
-        assert_eq!(emblem.layers, [7, 0, 0, 6]);
+        assert_eq!(emblem.palettes, [7, 0, 0, 6]);
         assert_eq!(
             emblem_texture(EmblemKind::Background, emblem.background),
             "emblembkg052"
@@ -359,7 +360,9 @@ mod tests {
         assert!(apply_klean("klean", &mut editor));
         assert_eq!(editor.record().background, 52);
         assert_eq!(editor.record().design, 81);
-        assert_eq!(editor.record().layers, u32::from_le_bytes(KLEAN_LAYERS));
+        assert_eq!(editor.record().layers, 0);
+        assert_eq!(editor.record().palette(0), 7);
+        assert_eq!(editor.record().palette(3), 6);
         assert!(!apply_klean("other", &mut editor));
         assert_eq!(confirm_company("", &editor), CompanyConfirm::MissingName);
         assert_eq!(

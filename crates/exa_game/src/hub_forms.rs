@@ -48,6 +48,14 @@ pub enum FormWindow {
     Loadout,
     Dismiss,
     YesNo(YesHook),
+    /// The merchant's options in the trade window.
+    Merchant,
+    /// The new career's company dialog (BACK and NEXT).
+    Company,
+    /// The emblem form on the company dialog.
+    Emblem,
+    /// The colour picker form.
+    Picker,
 }
 
 /// An open table-built window.
@@ -70,6 +78,9 @@ pub struct HubForms {
     pub left: Vec<usize>,
     /// Employees a form took on, for the staff list's matching entry.
     pub joined: Vec<crate::staff::Employee>,
+    /// The extended-control forms' popup, focus and models
+    /// ([`crate::option_forms`]).
+    pub options: crate::option_forms::OptionForms,
 }
 
 impl HubForms {
@@ -116,11 +127,30 @@ impl HubForms {
         if window == FormWindow::Loadout {
             self.arsenal = None;
         }
+        let options = &mut self.options;
+        if options.focus.is_some_and(|(w, _)| w == window) {
+            options.focus = None;
+        }
+        match &options.popup {
+            Some(crate::option_forms::Popup::List { window: w, .. }) if *w == window => {
+                options.popup = None;
+            }
+            Some(crate::option_forms::Popup::Palette { .. }) if window == FormWindow::Emblem => {
+                options.popup = None;
+            }
+            _ => {}
+        }
+        match window {
+            FormWindow::Emblem => options.emblem = None,
+            FormWindow::Picker => options.picker = None,
+            _ => {}
+        }
     }
 
     pub fn clear(&mut self) {
         self.forms.clear();
         self.arsenal = None;
+        self.options.clear();
     }
 
     /// Rebuilds every form for another screen or unit.
@@ -139,9 +169,21 @@ impl HubForms {
         pressed: bool,
         released: bool,
     ) -> Vec<(FormWindow, usize, bool)> {
-        let Some(top) = self.forms.last_mut() else {
-            return Vec::new();
+        self.options.last_at = at;
+        // The emblem form is the company dialog's child: off the emblem
+        // form, the dialog under it (BACK and NEXT) takes the pointer.
+        let target = match self.forms.len().checked_sub(1) {
+            Some(top)
+                if self.forms[top].window == FormWindow::Emblem
+                    && !self.forms[top].form.contains(at.0, at.1)
+                    && self.forms[top].form.held().is_none() =>
+            {
+                self.find(FormWindow::Company).unwrap_or(top)
+            }
+            Some(top) => top,
+            None => return Vec::new(),
         };
+        let top = &mut self.forms[target];
         let window = top.window;
         let mut out: Vec<(FormWindow, usize, bool)> = top
             .form
@@ -520,6 +562,9 @@ impl HubWindows {
                     self.forms.remove(window);
                 }
             }
+            w if crate::option_forms::is_option_window(w) => {
+                self.answer_options(career, w, record);
+            }
             _ => {}
         }
         FormAnswer::None
@@ -782,6 +827,25 @@ pub(crate) fn paint_form(
     form: &RecordForm,
     look: &Look,
 ) -> (Vec<exa_ui::gui_draw::GuiLayer>, gui_paint::LineFormWords) {
+    paint_form_with(painted, form, look, &FormExtras::default())
+}
+
+/// What the extended forms add to a form's paint: the focused text field
+/// and a trackbar's gradient under its track.
+#[derive(Default)]
+pub(crate) struct FormExtras<'a> {
+    pub focus: Option<usize>,
+    pub picker: Option<&'a exa_ui::colour_picker::ColourPicker>,
+}
+
+/// [`paint_form`] with the extended forms' extras.
+#[must_use]
+pub(crate) fn paint_form_with(
+    painted: &mut gui_paint::Painted,
+    form: &RecordForm,
+    look: &Look,
+    extras: &FormExtras,
+) -> (Vec<exa_ui::gui_draw::GuiLayer>, gui_paint::LineFormWords) {
     let r = form.rect();
     let bounds = GuiRect::new(r.x, r.y, r.w, r.h);
     let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
@@ -862,6 +926,37 @@ pub(crate) fn paint_form(
                 }
             }
             0xac01 => {}
+            4 if extras.picker.is_some() => {
+                if let Some(stops) = extras
+                    .picker
+                    .and_then(|picker| crate::option_forms::picker_gradient(picker, i))
+                {
+                    // The gradient under the track, inset as the track is.
+                    let track = GuiRect::new(
+                        rect.left + 2 * unit,
+                        rect.top + rect.height() / 2 - unit,
+                        (rect.width() - 4 * unit).max(1),
+                        2 * unit,
+                    );
+                    painted.push(crate::option_forms::gradient_layer(track, &stops));
+                }
+                crate::settings_form::paint_control(
+                    c,
+                    origin,
+                    unit,
+                    &look.palette,
+                    &text,
+                    None,
+                    painted,
+                );
+            }
+            _ if crate::option_forms::paint_extended(
+                painted,
+                c,
+                rect,
+                look,
+                extras.focus == Some(i),
+            ) => {}
             _ => crate::settings_form::paint_control(
                 c,
                 origin,
@@ -887,9 +982,9 @@ pub struct OpenHubWindow {
 /// The names `--open-hub-window` takes. `dismiss` may name the roster row
 /// to dismiss (`dismiss:1`, the first employee; the manager's row 0 by
 /// default); `arsenal` opens the arsenal as Manage Company's Arsenal does.
-pub const HUB_WINDOW_NAMES: [&str; 10] = [
+pub const HUB_WINDOW_NAMES: [&str; 13] = [
     "board", "shop", "manage", "records", "status", "loadout", "hire", "dismiss", "yesno",
-    "arsenal",
+    "arsenal", "merchant", "company", "picker",
 ];
 
 /// Whether `--open-hub-window` takes `name`: one of [`HUB_WINDOW_NAMES`],
@@ -935,11 +1030,19 @@ pub fn open_hub_window_on_load(
         }
         // The shop opens as the hub's click on it does: its first stock is
         // made when the shelf is empty.
-        "shop" => {
-            open_shop.write(crate::arena_hub_live::OpenHubShop);
-            info!("hub window shop asked");
+        "shop" | "merchant" => {
+            open_shop.write(crate::arena_hub_live::OpenHubShop {
+                merchant: name == "merchant",
+            });
+            info!("hub window {name} asked");
             return;
         }
+        // The new career's company dialog and emblem form; the hub has no
+        // front end, so a debug opener stands in for New Career.
+        "company" => windows.open_company(),
+        // The colour picker on a white swatch, as the editor's lighting
+        // panel's swatches open it.
+        "picker" => windows.open_picker([0xff, 0xff, 0xff, 0xff], "Global Tint"),
         "manage" => manage_first(&mut windows),
         "records" => {
             manage_first(&mut windows);
@@ -1172,6 +1275,16 @@ pub fn hub_form_input(
             let released = mouse.just_released(MouseButton::Left);
             if (pressed || released) && windows.forms.contains(at.0, at.1) {
                 windows.took_pointer = true;
+            }
+            if windows.popup_input(&mut career, at, pressed, released) {
+                if pressed || released {
+                    windows.took_pointer = true;
+                }
+                return;
+            }
+            // A press elsewhere takes the focus from a text field.
+            if pressed {
+                windows.forms.options.focus = None;
             }
             let answered = windows.forms.input(at, pressed, released);
             for (form, record, finished) in answered {

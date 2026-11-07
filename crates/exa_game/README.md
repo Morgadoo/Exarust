@@ -1106,7 +1106,14 @@ palette and line skin (a combo box through its own front draw,
 callbacks run the arena's rules (the manage refresh and End Day, the arsenal
 form's rows, steps, slider, shelves and dismissal, the tourney forfeit).
 `--open-hub-window <name>` opens one for a scripted screenshot. Escape or a
-right-button release closes the top window. A
+right-button release closes the top window. The extended-control forms
+(`option_forms`) stand on the same stack: the merchant's options in the
+merchant's trade (`Look for:` and `Rank:` combo boxes whose drop-down lists
+set the merchant's stock type and specialisation), the new career's company
+dialog with the emblem form (the name field, the picture steps and number
+fields, the mirror boxes, the colour swatches through the palette swatch
+popup, Randomise, Previous, BACK and NEXT, and the emblem preview), and the
+colour picker form; `--open-hub-window merchant|company|picker` opens them. A
 board Enter, Begin or Continue takes the event's entry fee from the purse
 (a short purse stops at 0; nothing refuses the match), warns once when the
 board's Begin enters the manager, drops the first unhealthy specialist,

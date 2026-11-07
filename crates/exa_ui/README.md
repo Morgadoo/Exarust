@@ -18,7 +18,8 @@ their layout and the story backgrounds' names and descriptions
 (`creation_forms`), the arena company windows' six control-record tables
 (Manage Company 18, Company Records 27, Company Status 12, the loadout form
 28, the dismiss and yes/no dialogs 3 each) and their forms' words
-(`arena_forms`), a form built from one record array, laid out, rescaled,
+(`arena_forms`, with the merchant's options form and its two lists), a
+form built from one record array, laid out, rescaled,
 placed and answering the pointer through the control messages
 (`record_form`), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
@@ -479,7 +480,9 @@ a swinging axis and draws the original's drop shadow; the card draw turns
 face culling off around itself, so both sides are painted, the back first.
 The emblem editor
 (`emblem_form`) starts on palette 0xd3, 0x72, 0x5a, 0x4e and rolls with
-`state · 0x8088405 + 1`. The destination screen (`selection`) places its
+`state · 0x8088405 + 1`; its 23 control records, the company dialog's
+BACK and NEXT, the picture setter's clamps and the swatch (lifted ramp)
+and record (linear ramp) colours are there too. The destination screen (`selection`) places its
 nodes by the engine's sine and cosine (`engine_math`, forwarded from
 `exa_physics::engine_math` so there is one implementation), eases the ring
 twice and the alpha once, tries three orbit nodes, and its journey glows
@@ -695,7 +698,8 @@ the frame callback list (a callback answering false is dropped) and the
 focus hooks: leaving saves the focused form when it is on the layer,
 returning restores it while visible, else the layer's main form, else the
 layer; closing the main form closes the layer. `colour_picker` is the colour
-picker logic: one picker per swatch (raised on a second open), the opening
+picker form's 17 records (`PICKER_FORM`, with each record's event) and its
+logic: one picker per swatch (raised on a second open), the opening
 colour kept for the revert button, RGB and HSV sliders and their fields,
 the six channel-gradient ends, the four field corners, each refresh
 updating the other form once under the sync guard, and the write-back as

@@ -12,6 +12,9 @@
 //! kept as history. The shader source, its four texture units and
 //! `Colour1`–`Colour4`, `Mirror` and `Alpha` uniforms are recorded below.
 
+use crate::creation_forms::{FormRecord, record};
+use crate::record_form::FormSpec;
+
 /// The form's width in pixels.
 pub const FORM_WIDTH: i32 = 0x268;
 /// The form's height in pixels.
@@ -571,6 +574,337 @@ pub fn preview_image(
         height: size,
         pixels,
     })
+}
+
+/// The emblem form's 23 control records, as its constructor passes them:
+/// the `COMPANY NAME` title and its text field (20 bytes; typing the
+/// name `klean` selects the preset), the `COMPANY EMBLEM` title, then for
+/// the background and the design each: its label, the step-down image
+/// button, the picture number's text field (two digits), the step-up
+/// image button, the `Mirror` check box (its word the layer bit) and two
+/// `Colour` labels each with its colour swatch (the palette entry it
+/// shows; the swatch's word at 0x48 is its colour slot 0–3); and the
+/// `Randomise` and `Previous` buttons.
+pub const EMBLEM_RECORDS: [FormRecord; 23] = [
+    FormRecord {
+        text: Some("COMPANY NAME"),
+        style: 0x3b00,
+        ..record(0x5, 0x0, 0xc8, 0x6, 0x28, 0x0)
+    },
+    FormRecord {
+        style: 0x3c0_3b2d,
+        max_len: 0x14,
+        reports: true,
+        ..record(0x11, 0xca07, 0x8008, 0x8007, 0xa0, 0x0)
+    },
+    FormRecord {
+        text: Some("COMPANY EMBLEM"),
+        style: 0x3b00,
+        ..record(0x5, 0x0, 0xc8, 0x1e, 0x28, 0x0)
+    },
+    FormRecord {
+        text: Some("Background"),
+        style: 0x3300,
+        ..record(0x5, 0x0, 0x28, 0x2a, 0x54, 0x0)
+    },
+    step_button(0xb01, 0x24, 0x8007, 0, -1),
+    number_field(0xb03),
+    step_button(0xb02, 0x8008, 0x8000, 0x4040_0080, 1),
+    mirror(0x30, MIRROR_X),
+    colour_label(0x18, "Colour 1"),
+    swatch(0xff28_3ca0, 0),
+    colour_label(0x18, "Colour 2"),
+    swatch(0xff28_3c14, 1),
+    FormRecord {
+        text: Some("Design"),
+        style: 0x3300,
+        ..record(0x5, 0x0, 0x1d8, 0x2a, 0x54, 0x0)
+    },
+    step_button(0xd01, 0x1d4, 0x8007, 0, -1),
+    number_field(0xd03),
+    step_button(0xd02, 0x8008, 0x8000, 0x4040_0080, 1),
+    mirror(0x1e0, MIRROR_Y),
+    colour_label(0x1c8, "Colour 1"),
+    swatch(0xff28_3ca0, 2),
+    colour_label(0x1c8, "Colour 2"),
+    swatch(0xff28_3c14, 3),
+    FormRecord {
+        text: Some("Randomise"),
+        style: 0x40_3b00,
+        reports: true,
+        ..record(0x1, 0x0, 0xc8, 0x70, 0x78, 0x1c)
+    },
+    FormRecord {
+        text: Some("Previous"),
+        style: 0x40_3b00,
+        reports: true,
+        ..record(0x1, 0x0, 0x8000, 0x8006, 0x78, 0x1c)
+    },
+];
+
+/// A picture's step button: an image button whose word at 0x38 is the
+/// step its press adds to the picture number.
+const fn step_button(id: u16, x: i32, y: i32, style: u32, step: i32) -> FormRecord {
+    FormRecord {
+        style,
+        amount: step as u32,
+        icon: 1,
+        reports: true,
+        ..record(0x3, id, x, y, 0x18, 0x0)
+    }
+}
+
+/// A picture number's field: digits only, two bytes, starting at "1".
+const fn number_field(id: u16) -> FormRecord {
+    FormRecord {
+        text: Some("1"),
+        style: 0x400_330d,
+        max_len: 2,
+        reports: true,
+        ..record(0x11, id, 0x8008, 0x8000, 0x1c, 0x0)
+    }
+}
+
+/// A `Mirror` check box; its word at 0x38 is the layer bit it sets.
+const fn mirror(x: i32, bit: u32) -> FormRecord {
+    FormRecord {
+        text: Some("Mirror"),
+        amount: bit,
+        reports: true,
+        ..record(0x2, 0x0, x, 0x8007, 0x0, 0x0)
+    }
+}
+
+const fn colour_label(x: i32, text: &'static str) -> FormRecord {
+    FormRecord {
+        text: Some(text),
+        ..record(0x5, 0x0, x, 0x8006, 0x40, 0x0)
+    }
+}
+
+/// A colour swatch: its colour word (RGBA, the alpha byte the palette
+/// index) and its colour slot at 0x48. Its callback opens the palette
+/// swatch popup; the popup's pick calls the form's colour slot back.
+const fn swatch(colour: u32, slot: i32) -> FormRecord {
+    FormRecord {
+        amount: colour,
+        tag: slot,
+        reports: true,
+        ..record(0x17, 0x0, 0x8008, 0x8000, 0x30, 0x0)
+    }
+}
+
+/// The emblem form's records by role.
+pub mod records {
+    pub const NAME: usize = 1;
+    pub const BACKGROUND_DOWN: usize = 4;
+    pub const BACKGROUND_NUMBER: usize = 5;
+    pub const BACKGROUND_UP: usize = 6;
+    pub const BACKGROUND_MIRROR: usize = 7;
+    pub const DESIGN_DOWN: usize = 13;
+    pub const DESIGN_NUMBER: usize = 14;
+    pub const DESIGN_UP: usize = 15;
+    pub const DESIGN_MIRROR: usize = 16;
+    /// The four colour swatches, by colour slot.
+    pub const SWATCHES: [usize; 4] = [9, 11, 18, 20];
+    pub const RANDOMISE: usize = 21;
+    pub const PREVIOUS: usize = 22;
+}
+
+/// The emblem form: 0x268 × 0x258 (600), the base border; the company
+/// dialog that holds it ORs the centring bits 0x800 and 0x8000 into its
+/// placement word.
+pub const EMBLEM_FORM: FormSpec = FormSpec {
+    size: (FORM_WIDTH, FORM_HEIGHT),
+    border: crate::arena_forms::BASE_BORDER,
+    placement: 0x8800,
+    attributes: crate::arena_forms::BASE_ATTRIBUTES,
+    title: "",
+    records: &EMBLEM_RECORDS,
+    children: &[],
+};
+
+/// The company dialog's two records: `BACK` at the bottom left and `NEXT`
+/// at the bottom right.
+pub const COMPANY_RECORDS: [FormRecord; 2] = [
+    FormRecord {
+        text: Some("BACK"),
+        style: 0x48_3300,
+        reports: true,
+        ..record(0x1, 0x0, 0x8, 0x0, 0xa4, 0x1c)
+    },
+    FormRecord {
+        text: Some("NEXT"),
+        style: 0x4a_3300,
+        reports: true,
+        ..record(0x1, 0x0, 0x8, 0x0, 0xa4, 0x1c)
+    },
+];
+
+/// The company dialog's records by role.
+pub mod company {
+    pub const BACK: usize = 0;
+    pub const NEXT: usize = 1;
+}
+
+/// The company dialog at a screen's design size (the screen at unit 4):
+/// a form with no border and no placement bits, the attribute word 0x20,
+/// over the whole screen in opaque black.
+pub fn company_form(screen: (i32, i32), unit: i32) -> FormSpec {
+    let unit = unit.max(1);
+    FormSpec {
+        size: (screen.0 * 4 / unit, screen.1 * 4 / unit),
+        border: 0,
+        placement: 0,
+        attributes: 0x20,
+        title: "",
+        records: &COMPANY_RECORDS,
+        children: &[],
+    }
+}
+
+/// What an emblem form record's callback does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmblemAction {
+    /// The name field changed: a changed name equal to `klean` selects the
+    /// preset.
+    Name,
+    /// A step button: the background or design number plus the step.
+    Step {
+        design: bool,
+        step: i32,
+    },
+    /// A number field: its text read as a number selects the picture.
+    Number {
+        design: bool,
+    },
+    /// A mirror box: its layer bit is set while it is on.
+    Mirror {
+        bit: u32,
+    },
+    /// A colour swatch: the palette swatch popup opens on it.
+    Swatch {
+        slot: usize,
+    },
+    Randomise,
+    Previous,
+}
+
+/// The action of an emblem record.
+pub fn emblem_action(record: usize) -> Option<EmblemAction> {
+    use records::*;
+    let r = EMBLEM_RECORDS.get(record)?;
+    Some(match record {
+        NAME => EmblemAction::Name,
+        BACKGROUND_DOWN | BACKGROUND_UP => EmblemAction::Step {
+            design: false,
+            step: r.amount as i32,
+        },
+        DESIGN_DOWN | DESIGN_UP => EmblemAction::Step {
+            design: true,
+            step: r.amount as i32,
+        },
+        BACKGROUND_NUMBER => EmblemAction::Number { design: false },
+        DESIGN_NUMBER => EmblemAction::Number { design: true },
+        BACKGROUND_MIRROR | DESIGN_MIRROR => EmblemAction::Mirror { bit: r.amount },
+        RANDOMISE => EmblemAction::Randomise,
+        PREVIOUS => EmblemAction::Previous,
+        _ => {
+            let slot = SWATCHES.iter().position(|&s| s == record)?;
+            EmblemAction::Swatch { slot }
+        }
+    })
+}
+
+/// A picture number field's text as the original's string-to-number
+/// conversion reads it: a decimal number, else 0.
+pub fn number_value(text: &[u8]) -> i32 {
+    std::str::from_utf8(text)
+        .ok()
+        .and_then(|t| t.trim().parse::<i32>().ok())
+        .unwrap_or(0)
+}
+
+/// The step buttons' disabled bits after a selection: a number at or
+/// under 1 becomes 1 and disables the step-down button (leaving the
+/// step-up button as it was); otherwise the step-down button is enabled
+/// and the step-up button is disabled when the number reached the
+/// maximum (taking it), else enabled. `None` leaves a button alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepStates {
+    pub index: i32,
+    pub down_disabled: Option<bool>,
+    pub up_disabled: Option<bool>,
+}
+
+/// The picture selector's rule, as the background and design setters run
+/// it (maximum 50 or 80).
+pub fn step_states(index: i32, max: i32) -> StepStates {
+    if index <= 1 {
+        StepStates {
+            index: 1,
+            down_disabled: Some(true),
+            up_disabled: None,
+        }
+    } else if index >= max {
+        StepStates {
+            index: max,
+            down_disabled: Some(false),
+            up_disabled: Some(true),
+        }
+    } else {
+        StepStates {
+            index,
+            down_disabled: Some(false),
+            up_disabled: Some(false),
+        }
+    }
+}
+
+/// The colour a swatch shows for a palette index: the lifted ramp's bytes
+/// with the index in the alpha byte, as the form's apply step writes it.
+pub fn swatch_colour(index: u8) -> [u8; 4] {
+    let [r, g, b] = exa_formats::palette::lifted_bytes(index);
+    [r, g, b, index]
+}
+
+/// The colour the form's refresh stores for a palette index: the linear
+/// ramp's bytes (× 255, rounded to even, saturated) with the index kept in
+/// the alpha byte.
+pub fn record_colour(index: u8) -> u32 {
+    let [r, g, b] = exa_formats::palette::linear(index)
+        .map(|c| exa_formats::pixel::round_f32(c * 255.0).clamp(0, 255) as u8);
+    u32::from_le_bytes([r, g, b, index])
+}
+
+/// The preview's palette: the linear ramp's bytes (the record's colours
+/// as the form's refresh fills them).
+pub fn preview_palette(index: u8) -> [u8; 3] {
+    let [r, g, b, _] = record_colour(index).to_le_bytes();
+    [r, g, b]
+}
+
+impl EmblemEditor {
+    /// The form's refresh: each colour's RGB bytes from its palette index
+    /// on the linear ramp, the index kept.
+    pub fn refresh_colours(&mut self) {
+        for colour in &mut self.record.colours {
+            *colour = record_colour(colour.to_le_bytes()[3]);
+        }
+    }
+
+    /// The Previous button: while a record is kept, the newest is taken
+    /// back (and dropped). Answers whether the button is disabled after
+    /// (fewer than one record left).
+    pub fn previous(&mut self) -> (bool, bool) {
+        let taken = if let Some(record) = self.history.pop() {
+            self.record = record;
+            true
+        } else {
+            false
+        };
+        (taken, self.history.is_empty())
+    }
 }
 
 #[cfg(test)]

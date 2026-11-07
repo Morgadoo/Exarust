@@ -601,6 +601,16 @@ pub fn dispatch(
             }
             0
         }
+        // The extended classes (`RF_GUI_Controls_Ex`) keep their own state
+        // words: a landed release reports to the record's owner, who runs
+        // the class's own rule (a combo box's list, a swatch's popup, a
+        // spinner's step); no on bit or radio group is touched.
+        (c, message::RELEASE) if crate::controls::extended_class(c).is_some() => {
+            if param & RELEASE_LANDS != 0 && over && controls[i].reports {
+                events.push(ControlEvent::Changed(i));
+            }
+            0
+        }
         (_, message::RELEASE) => {
             if param & RELEASE_LANDS == 0 || !over {
                 return 0;

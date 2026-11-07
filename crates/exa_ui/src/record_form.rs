@@ -253,6 +253,9 @@ pub struct RecordForm {
     /// The form's title as drawn (the constructor's, until a refresh
     /// changes it).
     pub title: String,
+    /// A screen place the form's owner gave it (a child form placed in its
+    /// parent's client), kept over a rebuild.
+    pub at: Option<(i32, i32)>,
     held: Option<usize>,
     hovered: Option<usize>,
 }
@@ -266,9 +269,18 @@ impl RecordForm {
             geometry: geometry(spec, screen, unit),
             amounts: spec.records.iter().map(|r| r.amount).collect(),
             title: spec.title.to_string(),
+            at: None,
             held: None,
             hovered: None,
         }
+    }
+
+    /// Places the form's top left at a screen point (a child form its
+    /// owner places in its own client).
+    pub fn place_at(&mut self, x: i32, y: i32) {
+        self.at = Some((x, y));
+        self.geometry.form.x = x;
+        self.geometry.form.y = y;
     }
 
     pub fn unit(&self) -> i32 {
@@ -290,6 +302,10 @@ impl RecordForm {
             n.state = o.state;
             n.value = o.value;
             n.text = o.text.clone();
+        }
+        if let Some((x, y)) = self.at {
+            g.form.x = x;
+            g.form.y = y;
         }
         self.geometry = g;
         self.screen = screen;
@@ -478,6 +494,11 @@ impl RecordForm {
                 ..Message::default()
             },
         )
+    }
+
+    /// The record the pointer holds.
+    pub fn held(&self) -> Option<usize> {
+        self.held
     }
 
     /// Whether a record is held by the pointer.
