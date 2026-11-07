@@ -37,6 +37,17 @@ pub fn cast_onto_floor(
     )
 }
 
+/// How far over its floor hit an arena spawner stands a body (m): 5 cm.
+pub const ARENA_SNAP_LIFT: f32 = 0.05;
+
+/// The arena spawners' floor snap: `at` lifted [`START_CAST_LIFT`] and
+/// line-cast [`START_CAST_REACH`] straight down; on a hit the body stands
+/// [`ARENA_SNAP_LIFT`] over it (the original adds 5 cm to the hit's
+/// height). `None` on a miss, where the original keeps `at`.
+pub fn arena_snap(at: Vec3, cast: impl FnOnce(Vec3, Vec3, f32) -> Option<Vec3>) -> Option<Vec3> {
+    cast_onto_floor(at, cast).map(|hit| hit + Vec3::Y * ARENA_SNAP_LIFT)
+}
+
 /// Arena centres (metres), by arena name.
 const ARENA_CENTRES: [(&str, [f32; 3]); 12] = [
     ("arena1", [0.0, 0.0, 3.0]),
@@ -181,6 +192,23 @@ pub fn duel_opponent(level: &str, player: Start) -> Start {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The arena snap stands a body 5 cm over the cast's hit from 10 m up;
+    /// a miss gives nothing.
+    #[test]
+    fn the_arena_snap_stands_five_cm_over_the_hit() {
+        let at = Vec3::new(1.0, 0.0, 2.0);
+        let snapped = arena_snap(at, |from, dir, reach| {
+            assert_eq!(
+                (from, dir, reach),
+                (Vec3::new(1.0, 10.0, 2.0), Vec3::NEG_Y, 30.0)
+            );
+            Some(Vec3::new(1.0, 0.2, 2.0))
+        })
+        .unwrap();
+        assert!((snapped - Vec3::new(1.0, 0.25, 2.0)).length() < 1e-6);
+        assert_eq!(arena_snap(at, |_, _, _| None), None);
+    }
 
     #[test]
     fn duel_faces_off_across_the_centre() {

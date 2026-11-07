@@ -146,6 +146,13 @@ fn at(fraction_bits: u32) -> f32 {
     f32::from_bits(fraction_bits)
 }
 
+/// Whether a match of `template` snaps our spot to the floor before it
+/// stands anyone there: the elimination (7) and reserve (5) setups do, the
+/// duel's and challenger's do not.
+pub fn snaps_our_spot(template: i32) -> bool {
+    matches!(template, 5 | 7)
+}
+
 /// The slots a match of `template` spawns at its `level` and gear `tier`
 /// around `spawn`, opponents first in spawn order, then the company's
 /// entrants. An unknown template spawns nobody.
@@ -852,6 +859,13 @@ mod tests {
             place.position.map(f32::to_bits),
             place.forward.map(f32::to_bits),
         )
+    }
+
+    /// Only the elimination and reserve setups snap our spot.
+    #[test]
+    fn only_elimination_and_reserve_snap_our_spot() {
+        assert!(snaps_our_spot(7) && snaps_our_spot(5));
+        assert!(!snaps_our_spot(1) && !snaps_our_spot(8) && !snaps_our_spot(6));
     }
 
     #[test]

@@ -137,6 +137,10 @@ pub struct SceneBodyPlan {
     /// The practice spawn: the record's first three traits are overwritten
     /// before the body and its brain are built ([`crate::prelude::practice_opponent`]).
     pub practice: bool,
+    /// The arena spawners' floor snap: the spawn casts `at` onto the
+    /// level's floor with the line cast and stands the body 5 cm over the
+    /// hit ([`exa_world::start::arena_snap`]); a miss keeps `at`.
+    pub snap: bool,
 }
 
 impl SceneBodyPlan {
@@ -159,6 +163,7 @@ impl SceneBodyPlan {
             act_at_ms: 0,
             behaviour: None,
             practice: false,
+            snap: false,
         }
     }
 
@@ -213,6 +218,8 @@ pub fn opponent_plan(
     // Every match fighter thinks with its own brain: the target pass picks
     // its foe among the other sides, with or without the player.
     body.brain = BodyBrain::Npc;
+    // The generic and the profile spawners snap their place to the floor.
+    body.snap = true;
     body
 }
 
@@ -307,6 +314,8 @@ pub fn beast_scene_plan(tier: u32, place: &Place, now_ms: u32, act_grace_ms: u32
     body.act_at_ms = now_ms.wrapping_add(act_grace_ms);
     body.behaviour = Some(OPPONENT_BEHAVIOUR);
     body.brain = BodyBrain::Npc;
+    // The Beast's spawner snaps its place to the floor.
+    body.snap = true;
     body
 }
 
@@ -336,6 +345,8 @@ pub fn company_plan(
     body.condition_health = SPAWN_HEALTH;
     body.brain = BodyBrain::Npc;
     body.act_at_ms = now_ms.wrapping_add(act_grace_ms);
+    // The company entrant's placement snaps its place to the floor.
+    body.snap = true;
     body
 }
 
@@ -990,6 +1001,7 @@ fn apply_scene_commands(
     bodies: Query<Entity>,
     models: Query<&ChildOf, With<SceneFighter>>,
     mut tables: Local<Option<GameTables>>,
+    frame_physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
     mut messages: MessageReader<SceneCommand>,
     mut built: MessageWriter<SceneBodyBuilt>,
 ) {
@@ -1062,9 +1074,27 @@ fn apply_scene_commands(
                     roll,
                     clock_seed,
                 };
+                // The arena spawners stand the body on the floor the line
+                // cast meets, 5 cm over it.
+                let snapped = plan
+                    .snap
+                    .then(|| {
+                        let physics = frame_physics.as_deref()?;
+                        let at = exa_world::start::arena_snap(plan.at, |from, dir, reach| {
+                            physics.0.line_cast(from, dir, reach)
+                        });
+                        info!("arena snap: a body planned at {} stands at {at:?}", plan.at);
+                        at
+                    })
+                    .flatten()
+                    .map(|at| SceneBodyPlan {
+                        at,
+                        ..(**plan).clone()
+                    });
+                let plan = snapped.as_ref().unwrap_or(plan);
                 if let Some(body) = spawn_scene_body(&mut commands, &mut context, plan) {
                     built.write(SceneBodyBuilt {
-                        plan: plan.clone(),
+                        plan: Box::new(plan.clone()),
                         body,
                     });
                 }
