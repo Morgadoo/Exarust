@@ -1166,6 +1166,14 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
   state × 3 >> 32), redrawn while equal to the side's last pick; a side's
   last pick starts at 0, so its first attack is never its first clip
   (crouched it would always be Attack Mid; Exarust has no crouch yet).
+  A fighter with a shield and the Ward technique (or Synchrony, unless the
+  attack chains), or with a weapon in each hand, does not draw: it takes
+  the clip that answers the parry it would make against its foe's attack
+  (Left or Right parry: the main side's Attack Down, a shield's other side
+  Combo 3, two weapons' Combo 2; Up: the side's first; a low parry: Attack
+  Up, a shield's Combo 2, two weapons' Combo 3), and counters the foe's
+  motion; with no foe attacking, its own parry of the last 500 ms steers
+  the pick the same way.
   Unarmed, the three clips of each side are one clip: the main side is
   the right straight (the right arm out, the body twisted into it, the
   left fist pulled back), the other side the left straight, and the
@@ -1518,7 +1526,7 @@ held weapon's hands bits, `0x80` for the fists).
 | another two-hander, kind bit 0 set (bladed, stick) | `0x20` "2H Light" | 2 | `0x20` |
 | another two-hander | `0x10` "Two Handed" | 2 | `0x20` |
 | a polearm | `0x40` "Polearm" | 2 | `0x30` |
-| a shield (beside anything) | `0x100` "1H & Shield", or `0x200` "Shield C1" / `0x300` "Shield C2" by two character flags; plus `0x10010000` (the "Torch" overlay) when the main item is a light | 3 | the main item's |
+| a shield (beside anything) | `0x100` "1H & Shield", or `0x300` "Shield C2" with the Ward technique, else `0x200` "Shield C1" with Synchrony (the technique flags); plus `0x10010000` (the "Torch" overlay) when the main item is a light | 3 | the main item's |
 | a light in the off hand | `0x3` "1H & Torch" | 4 | the main item's (`0` beside the fists) |
 | a light in the main hand | `0x10010001`: "One Handed" with the "Torch" overlay | 5 | the light's (`0x10` for the torch) |
 

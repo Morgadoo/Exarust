@@ -2281,6 +2281,33 @@ fn duellist(
                     ai.bearing.1,
                     reach * CM
                 );
+                // The side starters pick the side's clip themselves: aimed
+                // at the foe's parry (a shield fighter's or one with two
+                // weapons), else at random, never the side's last. The
+                // stab's and the overhead's starters mark the foe's motion
+                // they counter.
+                let aim = attacker.aim(
+                    Some(fighter),
+                    ragdoll.map_or(0.0, Ragdoll::crouch) > 0.0,
+                    false,
+                    now,
+                );
+                let (motion, countered) = match motion {
+                    AttackMotion::Main(_) | AttackMotion::Other(_) => {
+                        let side = if matches!(motion, AttackMotion::Main(_)) {
+                            exa_combat::attack::Side::Main
+                        } else {
+                            exa_combat::attack::Side::Other
+                        };
+                        let (pick, countered) = attacker.pick_aimed(side, &aim);
+                        (side.motion(pick), countered)
+                    }
+                    _ => (motion, exa_combat::attack::countered_by(motion, &aim)),
+                };
+                info!(
+                    "duellist {entity:?} attacks: {} (countering {countered:?})",
+                    motion.action()
+                );
                 // A stab's aim starts on the attack's aim, level.
                 if motion == AttackMotion::Stab {
                     ai.stab_aim = exa_combat::stab::StabAim::start(ai.mind.aim);
@@ -2295,6 +2322,7 @@ fn duellist(
                     blades.iter(),
                     AttackStart {
                         remise: fighter.remise(),
+                        countered,
                         ..AttackStart::of(motion, class, now)
                     },
                     stance.action(),

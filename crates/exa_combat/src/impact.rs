@@ -307,6 +307,21 @@ fn note_cry(
 
 /// Whether a hard impact is dropped after its sound and before the clock's
 /// random spread is drawn: on a part that strikes in an overhead swing.
+/// Stance class of a weapon in each hand.
+const STANCE_TWO_WEAPONS: u8 = 6;
+
+/// Whether a hard hit on a striking weapon interrupts its swing (the
+/// conditions [`hard_impact`] tests before an immediate counter): an
+/// active side strike not stalled, with children, its chain the primary,
+/// past 0.6 of its clip.
+fn interrupts(flags: u32, has_children: bool, root_is_primary: bool, clock: f32) -> bool {
+    flags & 0x1_0005 == 1
+        && flags & 0x2 == 0
+        && has_children
+        && root_is_primary
+        && f64::from(clock) > 0.6
+}
+
 fn overhead_drop(overhead: bool, striking: bool) -> bool {
     overhead && striking
 }
@@ -349,7 +364,9 @@ pub struct WeaponImpacts<'w, 's> {
         (Without<Fighter>, With<ImpactBook>),
     >,
     pub swings: Query<'w, 's, &'static mut SwingState>,
-    pub attackers: Query<'w, 's, &'static Attacker>,
+    pub attackers: Query<'w, 's, &'static mut Attacker>,
+    /// The fighters' swing records (the chain's blend).
+    pub records: Query<'w, 's, &'static crate::swing::Swing>,
     pub blades: Query<'w, 's, &'static Blade>,
     /// A held item's own collision sound sets, part for part.
     pub body_sounds: Query<'w, 's, &'static exa_physics::prop::BodySounds>,
@@ -381,7 +398,7 @@ pub fn strike_limbs(
         &mut Condition,
         &mut StateFlags,
         Option<&mut exa_anim::Animator>,
-        Option<&Attacking>,
+        Option<&mut Attacking>,
         &mut Ragdoll,
     )>,
     bodies: Query<(Entity, &Ragdoll), (Without<Fighter>, Without<ImpactBook>)>,
@@ -733,7 +750,7 @@ pub fn strike_limbs(
             let Some(&owner) = owner_of.get(&owner_key) else {
                 continue;
             };
-            let Ok((_, f, _, _, _, anim, attacking, body)) = fighters.get_mut(owner) else {
+            let Ok((_, f, _, _, _, mut anim, mut attacking, body)) = fighters.get_mut(owner) else {
                 continue;
             };
             let Ok(mut swing) = weapon.swings.get_mut(owner) else {
@@ -745,11 +762,19 @@ pub fn strike_limbs(
                     .map_or(0.0, |c| anim.clip_progress(c)),
                 _ => 0.0,
             };
-            let motion = attacking.map_or(0, |a| a.motion.index() as i32);
-            let primary = weapon.attackers.get(owner).ok().and_then(|a| a.primary);
+            let motion = attacking.as_deref().map_or(0, |a| a.motion.index() as i32);
+            let (primary, two_weapons) =
+                weapon.attackers.get(owner).ok().map_or((None, false), |a| {
+                    (a.primary, a.stance_class == STANCE_TWO_WEAPONS)
+                });
             let blade = weapon.blades.get(target).ok();
             let root_is_primary = blade.is_some_and(|b| primary == Some(b.slot));
-            let counter_taken = attacking.is_some_and(|a| a.weapon_class == 0x90)
+            let has_children = item.parts.len() > 1;
+            // The immediate counter (two weapons past 0.4 of the clip): the
+            // original runs it where a hard hit would interrupt the swing,
+            // and a counter that starts takes the interrupt's place.
+            let counter_taken = two_weapons
+                && interrupts(swing.flags, has_children, root_is_primary, clock)
                 && f64::from(clock) > 0.4
                 && exa_physics::part::immediate_counter(swing.flags, motion).is_some();
             let hit = HardImpact {
@@ -757,7 +782,7 @@ pub fn strike_limbs(
                 motion,
                 clock,
                 impact: *impact,
-                has_children: item.parts.len() > 1,
+                has_children,
                 root_is_primary,
                 counter_taken,
                 now_ms: now,
@@ -773,7 +798,40 @@ pub fn strike_limbs(
                     .map_or(Vec3::ZERO, |p| p.transform().translation.into());
                 weapon.camera_hits.write(CameraHit { at });
             }
-            if let Some(reaction) = hard_impact(&hit) {
+            if counter_taken
+                && let (Some(anim), Some(attacking), Ok(mut attacker)) = (
+                    anim.as_deref_mut(),
+                    attacking.as_deref_mut(),
+                    weapon.attackers.get_mut(owner),
+                )
+            {
+                // The counter chains the other side's attack; the hit's
+                // reaction ends there (the stab and overhead test reads the
+                // new side attack).
+                let blend = weapon
+                    .records
+                    .get(owner)
+                    .copied()
+                    .unwrap_or(crate::swing::Swing::FISTS)
+                    .chain_blend();
+                let next = crate::swing::chain_side_attack(
+                    &mut commands,
+                    owner,
+                    crate::swing::ChainedFighter {
+                        anim,
+                        attacker: &mut attacker,
+                        state: &mut swing,
+                        attacking,
+                        fighter: &f,
+                    },
+                    blend,
+                    u64::from(now),
+                );
+                info!(
+                    "immediate counter: {owner:?} chains {} after a hard hit",
+                    next.action()
+                );
+            } else if let Some(reaction) = hard_impact(&hit) {
                 swing.flags = reaction.flags;
                 if reaction.interrupted {
                     swing.strength = 1.0;
