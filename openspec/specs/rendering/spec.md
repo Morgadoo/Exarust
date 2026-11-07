@@ -898,6 +898,13 @@ The blended list SHALL be ordered by a selection that takes the lowest 4-bit lay
 - **WHEN** the opaque keys are 5, 1, 2
 - **THEN** the order is 5, 2, 1
 
+### Requirement: Blended list order on the transparent phase
+Every blended surface material SHALL carry its render state (decal bit, blend layer, opacity, build order), and the transparent phase SHALL draw the decal states first in build order, then the blended states in the blended list's layer and opacity selection order, then surfaces without a state by view depth.
+
+#### Scenario: A faint and a dense glass
+- **WHEN** a faint glass is built before a dense glass on the same layer
+- **THEN** the dense glass is drawn first, whatever their distances
+
 ### Requirement: Super-sampled view size
 The view model SHALL draw each super-sampled sub-view at the render-scale size (the window's at the default mode 0; `3·trunc(w/4)`, `2·trunc(w/3)`, `3·trunc(w/5)` or `trunc(w/2)` for modes 1–4) into a buffer twice it, up to four sub-views a pass with the original's jitters, and at the window's size without super-sampling.
 

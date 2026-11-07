@@ -1209,6 +1209,18 @@ impl ModelLoader<'_> {
         if mat.alpha_mode == AlphaMode::Add {
             mat.params.flags |= flags::ADDITIVE;
         }
+        // A blended record registers a render state in the decal or the
+        // blended list, in the order records are built; the renderer walks
+        // those lists in its own order, not by distance.
+        if !matches!(mat.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+            static REGISTERED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let seq = REGISTERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            mat.blend_state = Some(exa_render::passes::BlendState::of_class(
+                blended_class(m),
+                m.opacity,
+                seq,
+            ));
+        }
         // Faint surfaces (glass, decals) and those the record marks cast no
         // shadows; a refracting record casts, and one whose destination
         // factor is ONE never does.

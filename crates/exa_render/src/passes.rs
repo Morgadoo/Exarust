@@ -586,6 +586,80 @@ impl ParticleStage {
     }
 }
 
+/// A blended surface's render state as the scene's walk orders it: the
+/// class word's decal bit (`0x10000`, the decal list drawn before the
+/// blended ones), its blend layer ([`blend_layer`] of the word's low 16
+/// bits), its opacity, and the order the state was registered in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendState {
+    pub decal: bool,
+    pub layer: u8,
+    pub opacity: f32,
+    pub seq: u32,
+}
+
+impl BlendState {
+    /// The state of a record's loaded class word and opacity, registered
+    /// `seq`-th.
+    pub fn of_class(class: u32, opacity: f32, seq: u32) -> Self {
+        Self {
+            decal: class & 0x1_0000 != 0,
+            layer: blend_layer(class as u16),
+            opacity,
+            seq,
+        }
+    }
+}
+
+/// The spacing between two ranks' sort values, metres: wider than any view
+/// depth (Bevy's far plane is 1000 m), so one rank's surfaces never mix with
+/// the next one's.
+pub const RANK_SPACING: f32 = 2048.0;
+/// The most ranks a list keeps apart; later ones share the last.
+pub const MAX_RANKS: usize = 512;
+
+/// The value Bevy's transparent phase adds to a surface's view depth before
+/// its ascending sort (`Material::depth_bias`), placing the original's
+/// walk in front of everything else on that phase: the decal list first,
+/// then the blended list by rank, each rank `RANK_SPACING` apart, and the
+/// passes the original draws after the blended lists (hooks, particles,
+/// weather; bias 0) last. Within one rank Bevy's distance order stays.
+pub fn order_bias(decal: bool, rank: usize) -> f32 {
+    let block = (MAX_RANKS as f32 + 1.0) * RANK_SPACING;
+    let base = if decal { -3.0 * block } else { -2.0 * block };
+    base + rank.min(MAX_RANKS) as f32 * RANK_SPACING
+}
+
+/// Ranks registered blended states in the original's list order: the decal
+/// list in registration order (it is grouped by program, which the blended
+/// sort does not do, and the program key has no Exarust equivalent), the
+/// blended list in [`sort_blended`] order over the states in registration
+/// order. Returns `(index into states, rank)`, ranks counted per list.
+pub fn blended_ranks(states: &[BlendState]) -> Vec<(usize, usize)> {
+    let mut order: Vec<usize> = (0..states.len()).collect();
+    order.sort_by_key(|&i| states[i].seq);
+    let mut out = Vec::with_capacity(states.len());
+    let decals = order.iter().copied().filter(|&i| states[i].decal);
+    out.extend(decals.enumerate().map(|(rank, i)| (i, rank)));
+    let blended: Vec<usize> = order.into_iter().filter(|&i| !states[i].decal).collect();
+    let entries: Vec<RenderEntry> = blended
+        .iter()
+        .map(|&i| RenderEntry {
+            key: 0,
+            layer: states[i].layer,
+            opacity: states[i].opacity,
+            material: i as u32,
+        })
+        .collect();
+    out.extend(
+        sort_blended(&entries)
+            .into_iter()
+            .enumerate()
+            .map(|(rank, entry)| (entry.material as usize, rank)),
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -960,5 +1034,38 @@ mod tests {
         assert_eq!(factory_list(2, 0x8000), Some(3));
         assert_eq!(factory_list(1, 0x1_0000), Some(3));
         assert_eq!(factory_list(2, 0x1_0000 | 0x8000), Some(3));
+    }
+
+    /// The ranks follow the blended sort and put decals in their own list;
+    /// the biases keep decals before every blended rank and both before the
+    /// passes drawn after the blended lists, whatever the view depth.
+    #[test]
+    fn blended_states_rank_and_bias_in_walk_order() {
+        let state = |decal, layer, opacity, seq| BlendState {
+            decal,
+            layer,
+            opacity,
+            seq,
+        };
+        // Registered: a faint glass, a decal, a dense glass, a layer-1 web.
+        let states = [
+            state(false, 0, 0.2, 0),
+            state(true, 0, 1.0, 1),
+            state(false, 0, 0.9, 2),
+            state(false, 1, 0.5, 3),
+        ];
+        let ranks = blended_ranks(&states);
+        assert_eq!(ranks, [(1, 0), (2, 0), (0, 1), (3, 2)]);
+        assert_eq!(
+            BlendState::of_class(0x1_0013, 0.5, 7),
+            state(true, 1, 0.5, 7)
+        );
+        let far = -1000.0;
+        assert!(order_bias(true, MAX_RANKS) + 0.0 < order_bias(false, 0) + far);
+        assert!(order_bias(false, 0) + 0.0 < order_bias(false, 1) + far);
+        assert!(order_bias(false, MAX_RANKS) + 0.0 < far);
+        // The values stay fine enough to keep distances a metre apart.
+        let base = order_bias(true, 0);
+        assert!((base - 1.0) < base);
     }
 }

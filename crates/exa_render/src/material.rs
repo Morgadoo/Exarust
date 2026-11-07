@@ -25,7 +25,10 @@ impl Plugin for MaterialsPlugin {
         crate::sun_casters::load_caster_shaders(app);
         app.add_plugins(MaterialPlugin::<ExaMaterial>::default())
             .init_resource::<FadeToBlack>()
-            .add_systems(PostUpdate, (mark_shadowless, sync_fade_to_black));
+            .add_systems(
+                PostUpdate,
+                (mark_shadowless, sync_fade_to_black, order_blended_states),
+            );
     }
 }
 
@@ -39,6 +42,46 @@ pub struct FadeToBlack(pub bool);
 /// Horizontal distance from the origin (m) at which [`FadeToBlack`] reaches
 /// black; the fade is a·(2 − a) with a = min(distance / radius, 1).
 pub const FADE_RADIUS: f32 = 2.0;
+
+/// Places every blended surface where the original's scene walk draws it:
+/// when a material is added or removed, the registered states are ranked
+/// in list order ([`crate::passes::blended_ranks`]: the decal list, then
+/// the blended list in its layer and opacity order) and each material's
+/// transparent-phase bias is set from its rank. Only changed values are
+/// written. Rules: `docs/RENDERING.md` (Pass order).
+fn order_blended_states(
+    mut materials: ResMut<Assets<ExaMaterial>>,
+    mut events: MessageReader<AssetEvent<ExaMaterial>>,
+) {
+    let changed = events
+        .read()
+        .any(|e| matches!(e, AssetEvent::Added { .. } | AssetEvent::Removed { .. }));
+    if !changed {
+        return;
+    }
+    let (ids, states): (Vec<AssetId<ExaMaterial>>, Vec<crate::passes::BlendState>) = materials
+        .iter()
+        .filter_map(|(id, m)| m.blend_state.map(|state| (id, state)))
+        .unzip();
+    let ranks = crate::passes::blended_ranks(&states);
+    let decals = states.iter().filter(|state| state.decal).count();
+    let layers = states.iter().filter(|state| state.layer != 0).count();
+    bevy::log::debug!(
+        "blended walk: {} states ({decals} decal, {} blended, {layers} on a layer above 0)",
+        states.len(),
+        states.len() - decals
+    );
+    for (index, rank) in ranks {
+        let bias = crate::passes::order_bias(states[index].decal, rank);
+        if materials
+            .get(ids[index])
+            .is_some_and(|m| m.draw_order != bias)
+            && let Some(mut material) = materials.get_mut(ids[index])
+        {
+            material.draw_order = bias;
+        }
+    }
+}
 
 /// Keeps every material's fade bit equal to [`FadeToBlack`].
 fn sync_fade_to_black(
@@ -459,6 +502,13 @@ pub struct ExaMaterial {
     /// When set, this pass culls that face. Cloth submits one material per
     /// pass: front, then back.
     pub cloth_cull: Option<bevy::render::render_resource::Face>,
+    /// The render state a blended record registers in the original's
+    /// decal or blended list; `None` for every other surface.
+    pub blend_state: Option<crate::passes::BlendState>,
+    /// The list walk's place for this surface on the transparent phase
+    /// ([`crate::passes::order_bias`]), kept by [`order_blended_states`];
+    /// 0 sorts by view depth alone.
+    pub draw_order: f32,
 }
 
 impl Default for ExaMaterial {
@@ -490,6 +540,8 @@ impl Default for ExaMaterial {
             no_shadows: false,
             cut_shadow: false,
             cloth_cull: None,
+            blend_state: None,
+            draw_order: 0.0,
         }
     }
 }
@@ -649,6 +701,12 @@ impl Material for ExaMaterial {
 
     fn alpha_mode(&self) -> AlphaMode {
         self.alpha_mode
+    }
+
+    /// Bevy's transparent phase sorts by view depth plus this value; the
+    /// original walks its blended surfaces by list and rank instead.
+    fn depth_bias(&self) -> f32 {
+        self.draw_order
     }
 
     fn specialize(

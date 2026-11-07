@@ -525,9 +525,36 @@ for the depth-write-free classes and the particles. The clear is the
 camera's clear colour; the decal bias, the particles' depth pre-pass and
 the hook lists have no separate node yet. `exa_cube_shadows` and `exa_gi`
 run in the `Core3d` prepass, and the post chain follows the transparent
-phase. The original's list order inside a phase is not reproduced by Bevy's
-batching (the same materials and meshes batch in any order); draw order
-between different materials follows the phase's own sort.
+phase. The original's list order inside the opaque phases is not
+reproduced by Bevy's batching (the same materials and meshes batch in any
+order); depth writes make it invisible there.
+
+**Blended order.** The original never sorts blended surfaces by distance.
+The lists are sorted only when materials are compiled (all of them, or the
+ones just added): the opaque list grouped by program, the blended list by
+layer and opacity as above; the decal and alpha-tested lists keep the
+order their states were registered in, which follows the scene's material
+list. A frame then walks the scene's sectors in scene order and, inside a
+sector, the list's states in that order and each state's objects in the
+order the sector registered them (through the deferred draw queue, or
+directly with the sector's scissor when the scene keeps sector
+rectangles). The decal list is drawn for every sector before any blended
+list; the hook lists, the particle pass and the weather come after the
+blended lists. Exarust gives every blended record a render state
+(`passes::BlendState`: the class word's decal bit, its layer, its opacity
+and its build order); `exa_render::material` ranks them with
+`passes::blended_ranks` whenever a material is added or removed and turns
+the rank into the material's `depth_bias`, which Bevy adds to the view
+depth it sorts the transparent phase by (`passes::order_bias`: the decal
+list first, then each blended rank 2048 m apart, then everything with no
+state, such as smoke, flames and rain, by distance). Two differences
+remain: Exarust has no per-object sector, so the sector walk is not
+reproduced (all sectors form one list), and objects of the same state keep
+Bevy's distance order instead of their registration order. In the shipped
+levels the walk ranks 77 states in exanima01, 10 in exanima06, 4 in the
+arena and 13 in arenao3 (one decal state in all; the rest blended, one or
+two on a layer above 0); at the views tested the picture does not change
+beyond the same-build noise floor.
 
 ## Light nodes
 

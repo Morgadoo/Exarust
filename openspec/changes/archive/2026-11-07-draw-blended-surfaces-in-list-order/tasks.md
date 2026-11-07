@@ -1,0 +1,3 @@
+- [x] Trace the blended walk, its sorts and its sector order (REA).
+- [x] Rank blended states and feed the rank to the transparent phase.
+- [x] Before/after grids with a same-build noise floor.

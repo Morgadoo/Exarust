@@ -118,6 +118,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   the sub-image blits and the canvas placement of the icon atlas
   ([`docs/formats/RFI.md`](../../docs/formats/RFI.md), Generated mip levels).
 - `geometry`: the original's planar vertex streams (format-word flags, per-stream sizes and buffer offsets, attribute locations, index-size encoding and CPU index batches) as tested pure rules; not called by the running renderer, where Bevy's mesh allocator takes their place.
+- `passes` (blended order): `BlendState`, `blended_ranks` and `order_bias` put the original's decal and blended list order on Bevy's transparent phase through `ExaMaterial::depth_bias`, re-ranked by `material::order_blended_states` when materials are added or removed ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
 - `queue`: the deferred draw queue (1023 entries, bucketed by the sector's light count at weight 0.004 or more capped at six, kept as a list grouped by bucket with the original's head and behind-the-first insertion rules).
 - `capture`: the still-image capture plan (eight samples jittered from the recorded `view` table, blended at `1 − 1/(i+1)`, half-size downsample) and the two recorded downsample shader sources.
 - `quality`: the settings screen's live renderer options: `ShadowQuality`
