@@ -28,6 +28,9 @@
 use exa_formats::palette::{hsv, rgb_to_hsv};
 use exa_formats::pixel::{BYTE_UNIT, round_f32};
 
+use crate::creation_forms::{FormRecord, record};
+use crate::record_form::FormSpec;
+
 /// The colour swatch control class id.
 pub const COLOUR_SWATCH_CLASS: u16 = 0x17;
 /// The update word a refresh from RGB leaves.
@@ -415,6 +418,145 @@ impl PickerSet {
     pub fn finalize(&mut self) {
         self.pickers.clear();
     }
+}
+
+/// The picker form's 17 control records (`TColourPicker`), as its
+/// constructor passes them: for R, G, B, H, S and V a trackbar (its
+/// caption the channel's letter, its group word the channel) and a
+/// spinner over 0–255 in steps of 1 beside it; the `Old colour` and
+/// `New colour` swatches; `Reset` and `Close`; and the 164 × 164 colour
+/// image at the client's top left.
+pub const PICKER_RECORDS: [FormRecord; 17] = [
+    channel_bar("R:", 0x3, 0),
+    channel_spin(0),
+    channel_bar("G:", 0xa, 1),
+    channel_spin(1),
+    channel_bar("B:", 0x11, 2),
+    channel_spin(2),
+    channel_bar("H:", 0x19, 0),
+    channel_spin(0),
+    channel_bar("S:", 0x20, 1),
+    channel_spin(1),
+    channel_bar("V:", 0x27, 2),
+    channel_spin(2),
+    FormRecord {
+        text: Some("Old colour"),
+        style: 0x150_1320,
+        reports: true,
+        ..record(0x17, 0x0, 0x88, 0x2f, 0x3c, 0x0)
+    },
+    FormRecord {
+        text: Some("New colour"),
+        style: 0x140_5320,
+        // No callback of its own: its owner word (the colour it takes) is
+        // the picker's bytes rule.
+        ..record(0x17, 0x0, 0xc8, 0x8000, 0x3c, 0x0)
+    },
+    FormRecord {
+        text: Some("Reset"),
+        reports: true,
+        ..record(0x1, 0x0, 0x5a, 0x38, 0x64, 0x0)
+    },
+    FormRecord {
+        text: Some("Close"),
+        reports: true,
+        ..record(0x1, 0x0, 0xd0, 0x38, 0x64, 0x0)
+    },
+    FormRecord {
+        reports: true,
+        ..record(0x18, 0x0, 0x8, 0x3, FIELD_SIZE, FIELD_SIZE)
+    },
+];
+
+/// The colour image's side in pixels at unit 4.
+pub const FIELD_SIZE: i32 = 0xa4;
+
+const fn channel_bar(text: &'static str, y: i32, channel: u16) -> FormRecord {
+    FormRecord {
+        text: Some(text),
+        style: 0x1002_1320,
+        group: channel,
+        reports: true,
+        ..record(0x4, 0x0, 0x3c, y, 0x88, 0x0)
+    }
+}
+
+const fn channel_spin(channel: u16) -> FormRecord {
+    FormRecord {
+        style: 0x2_430d,
+        group: channel,
+        reports: true,
+        ..record(0x10, 0x0, 0x8, 0x8000, 0x30, 0x0)
+    }
+}
+
+/// The picker form's records by role.
+pub mod picker_records {
+    /// The RGB trackbars and spinners, by channel.
+    pub const RGB_BARS: [usize; 3] = [0, 2, 4];
+    pub const RGB_SPINS: [usize; 3] = [1, 3, 5];
+    /// The HSV trackbars and spinners, by component.
+    pub const HSV_BARS: [usize; 3] = [6, 8, 10];
+    pub const HSV_SPINS: [usize; 3] = [7, 9, 11];
+    pub const OLD_COLOUR: usize = 12;
+    pub const NEW_COLOUR: usize = 13;
+    pub const RESET: usize = 14;
+    pub const CLOSE: usize = 15;
+    pub const FIELD: usize = 16;
+}
+
+/// The spinners' range and step (their words at 0x40, 0x48 and 0x50).
+pub const SPIN_MIN: f32 = 0.0;
+pub const SPIN_MAX: f32 = 255.0;
+pub const SPIN_STEP: f32 = 1.0;
+
+/// The picker form: 0x192 × 0x11a, titled "Colour", border 1, the
+/// upper-layer attribute 0x1000 and the centring-across bit 0x800 ORed into
+/// the base words.
+pub const PICKER_FORM: FormSpec = FormSpec {
+    size: (0x192, 0x11a),
+    border: 1,
+    placement: 0x800,
+    attributes: crate::arena_forms::BASE_ATTRIBUTES | 0x1000,
+    title: "Colour",
+    records: &PICKER_RECORDS,
+    children: &[],
+};
+
+/// The event a picker record's callback sends, from the record's value:
+/// a trackbar's value (0–1) and a spinner's (0–255) by channel, the
+/// image's point (hue across, saturation down), the old swatch and Reset
+/// revert, Close finishes, and the new swatch takes its own bytes.
+pub fn record_event(
+    record: usize,
+    value: f32,
+    point: (f32, f32),
+    bytes: [u8; 4],
+) -> Option<PickerEvent> {
+    use picker_records::*;
+    let channel = |list: [usize; 3]| list.iter().position(|&r| r == record);
+    if let Some(channel) = channel(RGB_BARS) {
+        return Some(PickerEvent::RgbRaw { channel, value });
+    }
+    if let Some(channel) = channel(RGB_SPINS) {
+        return Some(PickerEvent::RgbSlider { channel, value });
+    }
+    if let Some(channel) = channel(HSV_BARS) {
+        return Some(PickerEvent::HsvRaw { channel, value });
+    }
+    if let Some(channel) = channel(HSV_SPINS) {
+        return Some(PickerEvent::HsvSlider { channel, value });
+    }
+    Some(match record {
+        OLD_COLOUR | RESET => PickerEvent::Revert,
+        CLOSE => PickerEvent::Finish,
+        NEW_COLOUR => PickerEvent::Bytes(bytes),
+        FIELD => PickerEvent::Field {
+            hue: point.0,
+            saturation: point.1,
+        },
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

@@ -106,6 +106,7 @@ pub mod nav_drag;
 pub mod nav_pick;
 pub mod npc_search;
 pub mod object_click;
+pub mod option_forms;
 pub mod os_clipboard;
 pub mod os_pointer;
 pub mod pair_trace;
