@@ -295,6 +295,8 @@ Round 117 rooms: the room walk and fade follow the original's numbers, and story
 
 Round 119 explore: the story explores every frame, and items are not placed through a wall's hollow.
 
+Round 120 loadplace: a loaded story puts its player where it was saved, so a reload no longer falls and loses its save.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
