@@ -939,9 +939,27 @@ impl RoomTracker {
     /// (ms). Nothing changes while the anchor's cell has no room.
     pub fn update(&mut self, rooms: &Rooms, anchor: Vec2, now: u64) {
         let closed = &self.closed;
-        let mut wanted = Self::wanted_through(rooms, anchor, |link| {
+        let wanted = Self::wanted_through(rooms, anchor, |link| {
             !closed.contains(&(link.from, link.to))
         });
+        self.update_wanted(rooms, wanted, now);
+    }
+
+    /// One frame of the walk's forced-room branch at time `now` (ms): the
+    /// original takes it whenever the view does not follow the player (the
+    /// Spectate mode of an arena match no entrant of the player's fights),
+    /// with the room the match start stored (the room at the arena's spawn
+    /// spot). Its door test then measures from a point at minus the largest
+    /// float on both axes, whose squared distance to any door point is
+    /// infinite and never within [`DOOR_REACH`], so the forced room is the
+    /// only room wanted; the hysteresis and fades are the walk's own.
+    pub fn update_forced(&mut self, rooms: &Rooms, room: u16, now: u64) {
+        self.update_wanted(rooms, vec![room], now);
+    }
+
+    /// The walk's list and fade update for the rooms `wanted` this frame
+    /// (nothing changes when none is).
+    fn update_wanted(&mut self, rooms: &Rooms, mut wanted: Vec<u16>, now: u64) {
         if wanted.is_empty() {
             return;
         }
@@ -1390,6 +1408,37 @@ mod tests {
             assert_eq!(rooms.cell_word(cell), grid.edges[cell as usize]);
         }
         assert_eq!(rooms.cell_word(grid.width * grid.height), 0);
+    }
+
+    #[test]
+    fn the_forced_room_alone_is_wanted_even_beside_its_door() {
+        // Walked from the anchor beside the door, both rooms are wanted;
+        // forced to room 0, only room 0 is (the door test's far point never
+        // reaches a door), and it fades in and leaves as the walk's rooms do.
+        let rooms = Rooms::flood(&two_rooms().0);
+        let mut walked = RoomTracker::new(rooms.len());
+        walked.update(&rooms, near_door(1.0), 0);
+        assert_eq!(walked.active(), [0, 1]);
+        let mut forced = RoomTracker::new(rooms.len());
+        forced.update_forced(&rooms, 0, 0);
+        assert_eq!(forced.active(), [0]);
+        assert_eq!(forced.fade(0), Fade::Entering);
+        assert_eq!(forced.state(1), RoomState::Adjacent);
+        forced.update_forced(&rooms, 0, FADE_MS);
+        assert_eq!(forced.fade(0), Fade::Active);
+        // Forced to the other room: room 0 leaves over the fade.
+        forced.update_forced(&rooms, 1, 2 * FADE_MS);
+        assert_eq!(forced.active(), [0, 1]);
+        assert_eq!(forced.fade(0), Fade::Leaving);
+        forced.update_forced(&rooms, 1, 3 * FADE_MS);
+        assert_eq!(forced.active(), [1]);
+        // The door test's point: minus the largest float on both axes. Its
+        // squared distance to a door point overflows to infinity, which the
+        // reach compare rejects.
+        let far = Vec2::splat(-f32::from_bits(0x7f7f_c99e));
+        let d = Vec2::new(-1.5, 3.0) - far;
+        let d2 = d.x * d.x + d.y * d.y;
+        assert!(d2.is_infinite() && d2 >= DOOR_REACH * DOOR_REACH);
     }
 
     #[test]
