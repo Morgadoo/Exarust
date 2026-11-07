@@ -22,7 +22,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Characters, motion & animation | 506 | 198 | 23 | 83% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 81% | 0% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 94% | 0% |  |
+| AI & behaviour | 437 | 206 | 17 | 95% | 0% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 83% | 0% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% |  |
@@ -68,7 +68,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TMotileDynamics | Physics, bodies & cloth | 121 | 93% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
 | XA_Arena | Game modes, arena & session | 71 | 94% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 98% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
-| SG_PlayerControls | AI & behaviour | 47 | 98% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
+| SG_PlayerControls | AI & behaviour | 47 | 99% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
 | TMotilePart | Characters, motion & animation | 53 | 81% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TThaumTree | Thaumaturgy & effects | 38 | 89% | exa_game/src/thaum/tree.rs; exa_game/src/power_screen.rs |
