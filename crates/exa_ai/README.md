@@ -45,7 +45,9 @@ keeps its stance. A body without muscles still walks the chosen step in
 the interim combat walk until it arrives; a guard lets go
 of a swing in progress (once a swing), and a fighter stuck for 21 ticks
 runs the chase route through the navigation grid when the level has one,
-walking the route while the combat tick ends at the chase; it can be told
+walking the route while the combat tick ends at the chase (the walk's
+follow ends, as the path follower's hurried soft stop, once its ground is
+within a metre of the route's end in 3-D, or when it has no route); it can be told
 to hold its ground (a debug aid). The fighter's skill and blend come from
 its brain's personality, else Exarust's default (skill 0, blend 1).
 
@@ -81,7 +83,9 @@ cell behind it, routes it through the navigation grid (followed past
 150 cm end to end), walks it through the AI's locomotion driver (`drive`),
 settles its look and pauses 0.5–2.5 s, then (a roam) walks a forced route
 into the room it aimed at and pauses 1–5 s. A body the scene takes back
-mid-leg faces its route's goal. The original's reset when the level is
+mid-leg faces its route's goal. When combat, a flight or the scene takes
+the body, a leg under way ends with the soft stop once; the idle walk does
+not touch the driver otherwise, so a fighter's chase walks its route. The original's reset when the level is
 written out on leaving it (the body heals to its lasting health, forgets
 every contact, and a roaming AI is put down along fresh wander paths and
 leaves combat) is `presence::reenter`; Exarust writes no level on leaving,
