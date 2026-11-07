@@ -55,7 +55,10 @@ is not a mesh; only the fade-all-the-way bit on a mesh that is no
 candidate), and the segment and overhead kinds keep the mesh's triangles
 for their callbacks, as does a mesh the camera's wall probe meets
 (`CutAwayMesh::probe`: `flags2` holds `0x10000000` and `0x200000`). An instance node takes its own word over its owner's
-mesh. Rules: `docs/RENDERING.md` (Cut-away fade).
+mesh. A grid tileset is loaded through `ModelLoader::tileset_model`, which
+runs the tileset loader's mark first (`mark_tileset`: every node but those
+named from the byte `0xE4` takes `0x10000000`), so its pieces are wall
+probe obstacles; it is cached apart from the plain model. Rules: `docs/RENDERING.md` (Cut-away fade).
 `model::underscore_skinned_child` and `model::skinned_mesh_under` are the
 wound and effect lookups (the `_`-named child; and a skinned child in
 reverse child order, else the first found in the subtrees in forward

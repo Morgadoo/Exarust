@@ -2033,7 +2033,9 @@ fn story_companion(
     Some(exa_world::PlacedCharacter {
         name: record.name.clone(),
         position: companion.position * 0.01,
-        yaw: companion.facing.to_radians(),
+        // The spawn record's facing word is radians and the story start
+        // passes -90 unconverted, so the companion faces -90 rad.
+        yaw: companion.facing,
         dead: false,
         race: record.race,
         female: record.female,

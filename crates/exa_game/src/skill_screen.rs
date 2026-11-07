@@ -8,11 +8,14 @@
 //! once (and again when the interface unit changes), the reveal sound
 //! `SkillShow_01` plays, a ring screen is built over the window and the
 //! player's record is attached, which refreshes its ready flag. The
-//! player's controls hear nothing while it is open in the original (they
-//! are suspended), so the skills key does not toggle it shut; the right
+//! player's controls hear nothing while it is open (they are off), so the
+//! skills key does not toggle it shut; the right
 //! button closes it at once, as the screen's pointer method calls the open
 //! routine's toggle. Closing refreshes the body's technique word from the
 //! record (the close routine's technique refresh and character refit).
+//! The open routine turns the player's controls off before it builds the
+//! screen and the close routine turns them back on
+//! ([`crate::controls_live`]).
 //!
 //! Every frame the draw's fades advance (the reveal clears its bit; a
 //! finished hide closes the screen) and the popup's fade runs (a finished
@@ -63,6 +66,7 @@ use exa_ui::skill_gui::{
 use crate::experience::{global_xp_for_worth, global_xp_worth, technique_bits};
 use crate::experience_live::{StoryExperience, TechniqueWord};
 use crate::player::PlayerBody;
+use crate::player_controls::PlayerControl;
 
 /// The canvas's layer: a GUI form over the HUD, as the power tree's.
 pub const SKILL_Z: i32 = crate::power_screen::TREE_Z;
@@ -197,19 +201,24 @@ fn open_skills(
     mut ui: ResMut<SkillUi>,
     bank: Option<ResMut<exa_audio::SoundBank>>,
     mut sources: Option<ResMut<Assets<AudioSource>>>,
-    mut commands: Commands,
+    (mut commands, control): (Commands, Option<ResMut<PlayerControl>>),
 ) {
     if requests.read().count() == 0 {
         return;
     }
-    // The player's controls are suspended while the screen is up: the key
-    // does not reach the open routine again.
+    // The player's controls are off while the screen is up, so the key does
+    // not reach the open routine again; the routine's own toggle closes an
+    // open screen.
     if ui.screen.is_some() {
         return;
     }
     let (Ok(window), Ok(mut data)) = (windows.single(), players.single_mut()) else {
         return;
     };
+    // The open routine turns the controls off before it builds the screen.
+    if let Some(mut control) = control {
+        crate::controls_live::switch_controls(&mut control, true, "skill screen opens");
+    }
     let unit = unit_of(gui.as_deref());
     if let Some(game) = game.as_deref()
         && ui
@@ -311,16 +320,21 @@ pub fn hit_code(screen: &SkillScreen, turn: f32, x: i32, y: i32) -> i32 {
     })
 }
 
-/// Closes the screen as the close routine does: the screen goes and the
-/// body's technique word is refreshed from the record.
+/// Closes the screen as the close routine does: the screen goes, the
+/// player's controls come back on and the body's technique word is
+/// refreshed from the record.
 fn close(
     ui: &mut SkillUi,
     player: Option<(Entity, &CharacterData)>,
     story: Option<&mut StoryExperience>,
     commands: &mut Commands,
+    control: Option<&mut PlayerControl>,
 ) {
     ui.screen = None;
     ui.last = None;
+    if let Some(control) = control {
+        crate::controls_live::switch_controls(control, false, "skill screen closes");
+    }
     if let Some((entity, data)) = player {
         let word = technique_bits(&data.record.skills);
         if let Some(story) = story {
@@ -341,6 +355,7 @@ fn pointer(
     mut story: Option<ResMut<StoryExperience>>,
     mut ui: ResMut<SkillUi>,
     mut commands: Commands,
+    mut control: Option<ResMut<PlayerControl>>,
 ) {
     let now = clock(&time);
     let mut mask = 0u16;
@@ -387,7 +402,13 @@ fn pointer(
     match outcome {
         Some(SkillPointer::Close) => {
             let player = players.single().ok();
-            close(&mut ui, player, story.as_deref_mut(), &mut commands);
+            close(
+                &mut ui,
+                player,
+                story.as_deref_mut(),
+                &mut commands,
+                control.as_deref_mut(),
+            );
         }
         Some(SkillPointer::Changed) => {
             // One record in the original: the experience system's copy

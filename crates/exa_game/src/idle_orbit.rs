@@ -18,7 +18,8 @@
 //! active view not being the game's, restamps the clock; a dialogue or the
 //! power bar makes the player busy. Exarust's in-game menu is such a window;
 //! no Exarust screen blocks the controls yet, nor is there a dialogue or a
-//! power bar.
+//! power bar. While the controls are off (the skill screen, the power tree,
+//! the arena arsenal: [`crate::controls_live`]) the watch does not run.
 //!
 //! Evidence: the controls' frame and its blocked branch, read in the
 //! instructions (`context/re/player-control-hand.md`, The idle turn).
@@ -183,7 +184,13 @@ fn watch_idle(
     players: Query<(Option<&Condition>, Option<&Ragdoll>), With<PlayerBody>>,
     mut cameras: Query<&mut ChaseCamera>,
     mut watch: ResMut<IdleWatch>,
+    control: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
+    // The watch is the controls' frame task's, which does not run while
+    // the controls are off.
+    if crate::player_controls::PlayerControl::is_off(control.as_deref()) {
+        return;
+    }
     let Some((condition, body)) = players.iter().next() else {
         return;
     };

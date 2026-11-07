@@ -332,6 +332,25 @@ and leaves a drag's link in place (Exarust's lift moves the item on the
 item cursor; entering combat lets go of the drag rather than leave a link
 no release would end); the flag that keeps a player out of combat mode.
 
+### Controls off
+
+The controls can be switched off. They are off when created, turned on by
+the Character or Spectate mode's start and off by its end, and off while
+the skill screen, the power tree or the arena arsenal is open: their open
+routines turn them off before building the form and their close routines
+turn them back on. The inventory, the character view and the menus
+leave it alone. While the controls are off the key handler and the
+controls' frame task return at once, so no hotkey, pad command, movement
+request, idle camera turn or deferred hotkey slot runs; the mouse hook for
+the orbit and Cursor Look is dropped with its capture; the key word, the
+behaviour's move flag and the locomotion flags are cleared once; the click,
+Ctrl and right-button handlers leave the view; the right button goes to the
+GUI and the pad takes its menu set. Turning them back on restores all of it
+and re-applies the combat toggle. Exarust also leaves the casting and
+kinesis inputs empty while they are off (the original's key poll reads
+nothing while a form has the focus), and counts the skill screen and the
+power tree, which hit-test the whole window, as the pointer over the GUI.
+
 ## Gamepad
 
 The original's gamepad is Steam Input: three action sets whose actions the
@@ -559,6 +578,11 @@ with no gate of its own. Exarust's default puts it on R3, the button that
 shares nothing with the emulated left button; `Look` (Cursor Look, a held
 bit nothing reads on a pad) shares R3. The aim stick sets the combat
 aim, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` turns it.
+`Select` outside a dialogue confirms the end-of-session menu's selected
+row while that menu shows, as the pad routine's call into the end menu
+does (its random-pitch click sound is not played: Exarust's end menu has
+none); in a dialogue it picks the reply. While the controls are off (see
+Controls off) the pad routine does not run.
 
 The command bits for inventory, skills, powers, the power tree, use power,
 select/use, talk, pause and camera mode reach the word, but Exarust has no
@@ -1854,8 +1878,10 @@ character body's possession routines; addresses are in the research notes.
   detector and the fade are not on the draw path yet (`room_view` still
   draws from the room states), and with no CPU triangles the tests stop
   at the bounding sphere.
-- **Wall tilt**: each camera tick ends with a probe from 50 cm under the
-  followed point along the view, alternately testing the present step
+- **Wall tilt**: each tick of a camera that follows a body ends with a
+  probe from 50 cm under the body's hip (a character's point, which the
+  original's probe reads; a free camera runs no probe and its tilt holds)
+  along the view, alternately testing the present step
   (30 cm ball, a hit climbs to at most 4) and the step below (20 cm, a miss
   comes down); the tilt eases toward 0.15 rad steeper per step, its change
   scaled by the controller's zoom-spring rate (5/59), and is added to the
@@ -1869,9 +1895,14 @@ character body's possession routines; addresses are in the research notes.
   the probe's ball swept from the segment's far end back toward the start,
   anything else with the one-sided ray from the start
   (`exa_world::cut_away::WallObstacle`; the callbacks are the cut-away's
-  `sphere_cast` and `ray_cast`). The grid tileset loader's own mark (every
-  set-model node but those whose name starts with the byte 0xE4) is not
-  applied, so grid pieces are not obstacles. The original's scene walk is
+  `sphere_cast` and `ray_cast`). A mesh the cut-away fade has marked (the
+  mark bit the original's walk reads) is skipped. The grid tileset
+  loader marks every node of a wall or floor set but those whose name
+  starts with the byte 0xE4 with `0x10000000` before the set is used
+  (`exa_assets::mark_tileset`, `ModelLoader::tileset_model`), so the
+  dungeons' wall, corner, trim and strip pieces (8 393 shipped set meshes
+  carry `0x200000` too; 280 are `0xE4` pieces) are obstacles as well: the
+  ray callback for all but one kind `0x5…` piece. The original's scene walk is
   `nav_camera::probe_scene_hit`: the visible sectors, the mesh flag words
   (`0x89` class bits, the flags and state words), the owner pointer and
   blocking word, the segment-versus-bounding-sphere test
@@ -1882,8 +1913,29 @@ character body's possession routines; addresses are in the research notes.
   visible bit is not read), a bounding-sphere reject, the oriented box
   within reach, and each mesh's contacts pushing the point a radius out in
   the order the mesh reports them (`lift_out_of_geometry`).
-- **The free camera's own rules** (the editor and free-flight camera, no
-  chase caller): A/D strafe along the right axis and S/W along the forward
+- **The free camera** (live while spectating with no body followed;
+  `nav_camera::FreeFocus`): each tick the movement keys (the preset's
+  `0x800`) make the pan vector, A/D along the drawn right axis and S/W
+  along the forward one, flattened and normalised (`0x20000`); the
+  terrain's height query under the looked-at point lifts it toward a
+  metre over the ground (`terrain_focus_lift`); the drift is the point's
+  move since the last tick, a pan past 2⁻²³ adds the pull
+  `(shown zoom / 2000 + 0.25)·6000/59²` cm along it, and a drift past 1e-5
+  (squared, in double) moves the point by 0.01^(1/59) of it with its
+  height held to 0–200 cm (the preset's limits). A frame draws the point
+  between its last two ticks, and the eye sits the camera distance back
+  along the backward vector from it. The arena's spectated start places
+  the camera at the original's pose (the spawn spot raised by 700, 1180,
+  1100 cm, looking at it) through the placement routine and frees it
+  there; a camera freed by a double click starts from where it last
+  looked. Not reproduced: the key gate's viewport field (not identified;
+  Exarust reads the keys whenever the camera is free), the pad routine's
+  movement vector the original adds, the height offset the frame adds
+  (a vector easing toward a camera-node field nothing in Exarust sets).
+  The follow-point spring (0.0653) and the area bounds belong to the
+  editor preset's `0x400000` and the braking to `0x2000`, which the game's
+  records leave clear.
+- **The free camera's own helpers** (tests only): A/D strafe along the right axis and S/W along the forward
   axis, the controller's movement vector added last, and, when the
   controller asks, the height zeroed and the vector normalised past 2⁻²³
   (`nav_camera::pan_input`); the looked-at point is tethered to its
@@ -1891,8 +1943,8 @@ character body's possession routines; addresses are in the research notes.
   the radius with the height kept (`focus_tether`); its drift carries 0.96
   of its change and keeps 0.99, stopping under 1e-7/1e-4 squared
   (`pan_velocity`); the zoom's shown value snaps within 0.001
-  (`zoom_snap`). These are tests only (the chase camera always follows a
-  body, and the free branch moves only the unfollowed looked-at point).
+  (`zoom_snap`). The tether is the editor preset's area bounds and the
+  drift is the shake's carry; the pan vector is the free camera's.
 - **The zoom spring** (live): a tick whose shown zoom is within 0.001 of
   the target snaps it there; otherwise the spring runs: the change toward
   the target at 5/59 less the last move is held to 5 a tick, carried by

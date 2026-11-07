@@ -997,6 +997,8 @@ Round 123 lift: the lift takes the item out of the simulation as the original do
 
 Round 131 navcam: the chase camera springs its backward vector to the node axis with the zoom on its capped spring, and the wall probe is answered by the levels marked walls, trees and buildings.
 
+Round 133 navcam2: the spectating camera runs free with the pan keys and terrain lift, and the dungeon tilesets are wall-probe obstacles.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1394,6 +1396,8 @@ Round 125 combatrules: the 24 combat-rule routines were re-audited against the a
 Round 126 motilepart: the attack starters aim at the foe parry, the AI side attacks take the starter pick, the two-weapon counter chains the other side and shields fight in the Ward or Synchrony style.
 
 Round 128 combatrules review fixes: a held weapon record measures its sweet spot on the side it strikes with, an off-hand factory weapon is built and rated from its own item, and the attacker recoil ends the attack at the blow into the stance by energy with both arms at 0.2, a two-weapon fighter late in a side swing countering into the other side through the shared chain (attacker recoil 70 to 95, the record builder 85 to 92, sweet spot 85 to 95, factory spawn 75 to 87). exanima01 stays identical to main; the arena duel diverges at its first recoil, whose stance starts 420 ms earlier.
+
+Round 134 gamemain: the player controls turn off under the skill screen, power tree and arsenal and outside the Character and Spectate modes as in the original, so open forms no longer leak input to the world.
 
 ### Phase 5 — Visual and audio fidelity (started)
 

@@ -413,8 +413,17 @@ pub fn column_layers(
 /// Sends the arsenal's key and scroll presses to the open window and draws
 /// it into the shared GUI frames after the screens.
 /// Opens the window when the hub asks. The set stays 0 until a store fills it.
-fn open_arsenal(mut window: ResMut<ArsenalWindow>, mut open: MessageReader<OpenArsenal>) {
+/// The open turns the player's controls off first, as the original's
+/// arsenal open does.
+fn open_arsenal(
+    mut window: ResMut<ArsenalWindow>,
+    mut open: MessageReader<OpenArsenal>,
+    control: Option<ResMut<crate::player_controls::PlayerControl>>,
+) {
     if open.read().next().is_some() {
+        if let Some(mut control) = control {
+            crate::controls_live::switch_controls(&mut control, true, "arsenal opens");
+        }
         window.open(0);
         info!("arsenal window opens");
     }
@@ -427,10 +436,18 @@ fn arsenal_live(
     mut icons: Option<ResMut<PanelIcons>>,
     mut frames: ResMut<GuiFrames>,
     textures: Option<Res<GuiTextures>>,
+    mut control: Option<ResMut<crate::player_controls::PlayerControl>>,
 ) {
     for key in keys.read() {
         if window.open {
             window.key(key.code, key.flags);
+            // The close gives the player's controls back, as the
+            // original's arsenal close does.
+            if !window.open
+                && let Some(control) = control.as_deref_mut()
+            {
+                crate::controls_live::switch_controls(control, false, "arsenal closes");
+            }
         }
     }
     for scroll in scrolls.read() {

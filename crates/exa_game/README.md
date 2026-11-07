@@ -55,7 +55,8 @@ presses a node or answers the learning row or forget dialog, the right
 button closes), keeps the story's experience copy in step, and rasterises
 `exa_ui::skill_draw`'s list (the four programs, the skin's rounded boxes,
 the GUI font's glyphs) over the HUD; closing puts the record's technique
-word on the body. The running screen (`power_screen`)
+word on the body. Opening it turns the player's controls off and closing it
+turns them back on (`controls_live`). The running screen (`power_screen`)
 opens the tree with P, draws the tree and the bar through
 `exa_ui::tree_draw` and the domain wheel child's own paint (backdrop, sector
 bands, choice glow, icons, ring frame and label, hovered every frame)
@@ -800,13 +801,15 @@ shows, as the original's load holds its pause counter).
 The controls' spectate session (`spectate`, the original's Spectate game
 mode): its start sets the spectate flag and frees the camera, the player is
 not steered while it runs, a double click makes the chase camera follow the
-picked character (anything else frees it, the camera keeping its last
-point), and its end clears both. The arena starts it when no participant
+picked character (anything else frees it: the camera runs the controller's
+free branch from its last point, `nav_camera::FreeFocus`, W/A/S/D panning
+the point, the terrain lifting it toward a metre over the ground, its
+height held to 0–2 m), and its end clears both. The arena starts it when no participant
 is the player's to control (only hired employees entered): the bench
 (`save_live`) keeps the manager's record as the next player spawn's and
-despawns the player, the camera stands at the original's fixed pose (the
-spawn spot raised by 700, 1180 and 1100 cm, looking at it) until a double
-click follows someone, the room walk is forced to the room at the spawn
+despawns the player, the camera is placed at the original's pose (the
+spawn spot raised by 700, 1180 and 1100 cm, looking at it) and runs free
+from there until a double click follows someone, the room walk is forced to the room at the spawn
 spot while the match level lasts (`exa_world::room_view::ForcedRoom`, as
 the original's match starts store that room), every match fighter carries
 a brain (with relations) whose target
@@ -861,6 +864,16 @@ word takes the queued word back. Its gate is the condition mask `0x82C1`,
 back after it): the body walks it, ends it and takes the queue at a
 landing; the behaviour clamps a taken queued target by the line walk and
 the grid snap on its next tick. The stance clip plays throughout.
+
+The controls' off switch (`player_controls::PlayerControl::set_off`, live
+in `controls_live`) is set at creation, cleared by the Character and
+Spectate modes' starts and set by their ends, and set while the skill
+screen, the power tree or the arena arsenal is open. While it is set the
+hotkeys and the pad routine dispatch nothing, the movement request and the
+behaviour read no key, button or stick (the switch clears the move request
+and the locomotion flags once), the mouse capture is dropped, the idle
+camera stops and the casting and kinesis inputs read nothing; the skill
+screen and the power tree also hold the pointer over the GUI.
 
 The controls' rules (`player_controls`) are the click's and the
 double-click interaction's outcomes (a lock's key and first-unlock
@@ -1327,7 +1340,12 @@ off the backward vector (the target turning a whole turn when it crosses
 ±π, `wrap_target_yaw`), turns the node to the target yaw led at most 45°
 (`lead_yaw`) and springs the vector to the node's axis (`spring_back`); a
 frame draws the vector, the zoom spring's last two values (`frame_zoom`)
-and the shake between ticks. Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),
+and the shake between ticks. A camera that follows nothing (spectating)
+also runs the free branch each tick (`FreeFocus::tick`: the pan keys, the
+terrain lift, the zoom's pull `free_pull`, the rate and the height limits)
+and draws its own point between ticks; it runs no wall probe, which starts
+at the followed body's hip and skips meshes the cut-away fade marked.
+Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),
 a fast shot's distance starting the zoom again at 1300.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds

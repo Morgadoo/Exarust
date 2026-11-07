@@ -472,6 +472,22 @@ pub fn mesh_triangles(mesh: &RfcMesh) -> Option<Vec<[Vec3; 3]>> {
 }
 
 /// Whether `node`'s parent in `scene` is a mesh node.
+/// The name byte that keeps a tileset node out of the wall probe's mark.
+pub const TILESET_UNMARKED: char = '\u{e4}';
+
+/// The grid tileset loader's mark, run on every node of a loaded set: the
+/// second flag word takes the wall probe's kind bit
+/// ([`CutAwayMesh::PROBE_KIND`]) unless the node's name starts with the
+/// byte `0xE4` ([`TILESET_UNMARKED`]). The loader also sets the class
+/// word's `0x1000`, whose reader is not identified; Exarust leaves it.
+pub fn mark_tileset(scene: &mut Scene) {
+    for node in &mut scene.nodes {
+        if !node.name.starts_with(TILESET_UNMARKED) {
+            node.flags2 |= CutAwayMesh::PROBE_KIND;
+        }
+    }
+}
+
 fn parent_is_mesh(scene: &Scene, node: &Node) -> bool {
     node.parent
         .and_then(|p| p.checked_sub(1))
@@ -611,6 +627,26 @@ impl ModelLoader<'_> {
 
     pub(crate) fn cache_model(&mut self, key: String, model: Option<Arc<Model>>) {
         self.cache.models.insert(key, model);
+    }
+
+    /// The model of a grid tileset (a wall or floor set), as the grid's
+    /// tileset loader leaves it: before the set is used every node's second
+    /// flag word takes the wall probe's kind bit
+    /// ([`CutAwayMesh::PROBE_KIND`]) unless its name starts with the byte
+    /// `0xE4` ([`mark_tileset`]), so the set's pieces are the camera wall
+    /// probe's obstacles. Cached apart from [`ModelLoader::model`].
+    pub fn tileset_model(&mut self, pack: PackKind, entry: &str) -> Option<Arc<Model>> {
+        let key = format!("{}#tileset", model_key(pack, entry));
+        if let Some(cached) = self.cache.models.get(&key) {
+            return cached.clone();
+        }
+        let model = self.model_job(pack, entry).map(|mut job| {
+            mark_tileset(&mut job.scene);
+            let built = job.build(bevy::tasks::ComputeTaskPool::try_get());
+            Arc::new(self.assemble(built))
+        });
+        self.cache.models.insert(key, model.clone());
+        model
     }
 
     pub fn model(&mut self, pack: PackKind, entry: &str) -> Option<Arc<Model>> {

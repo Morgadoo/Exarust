@@ -12,8 +12,11 @@
 //! - a double click picks under the cursor: a character's body makes the
 //!   camera follow it, anything else (or nothing) frees the camera, which
 //!   then stays where it looks;
-//! - the chase camera looks at the followed body's pelvis, else at the
-//!   point it last looked at.
+//! - the chase camera looks at the followed body's pelvis; a free camera
+//!   runs the controller's free branch from the point it last looked at:
+//!   W/A/S/D pan that point along the view, the terrain lifts it toward a
+//!   metre over the ground, and its height stays within the preset's
+//!   0–2 m (`crate::nav_camera::FreeFocus`).
 //!
 //! Exarust's arena always fields the player, so nothing in play enters the
 //! session yet; the play flag `--spectate` enters it once the load is over,
@@ -43,8 +46,9 @@ pub struct SpectateSession {
     /// An arena match's entry started the session (no entrant was the
     /// player's): the hub's arrival ends it.
     pub arena: bool,
-    /// The fixed camera pose the arena's start puts the camera at: the eye
-    /// and the point it looks at (m). A follow replaces it.
+    /// The camera placement the arena's start asks for: the eye and the
+    /// point it looks at (m). The chase camera places itself there once,
+    /// free, and takes it.
     pub pose: Option<(Vec3, Vec3)>,
     /// The point whose room the room walk is forced to (m): the arena's
     /// spawn spot, as the original's match start stores the room there.
@@ -113,11 +117,15 @@ fn start_on_load(
     mut commands: Commands,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut session: ResMut<SpectateSession>,
+    control: Option<ResMut<crate::player_controls::PlayerControl>>,
 ) {
     if loading.is_some() {
         return;
     }
     session.start();
+    if let Some(mut control) = control {
+        crate::controls_live::switch_controls(&mut control, false, "spectate starts");
+    }
     commands.remove_resource::<SpectateOnLoad>();
     info!("spectate: session started");
 }
@@ -183,31 +191,36 @@ fn end_arena_session(
     mut session: ResMut<SpectateSession>,
     scene: Option<Res<crate::arena_live::ArenaScene>>,
     players: Query<(), With<crate::player::Player>>,
+    control: Option<ResMut<crate::player_controls::PlayerControl>>,
 ) {
     if !session.arena || scene.is_some() || players.is_empty() {
         return;
     }
     session.end();
+    // The Spectate mode's end turns the controls off, then the Character
+    // mode's start turns them on.
+    if let Some(mut control) = control {
+        crate::controls_live::switch_controls(&mut control, true, "spectate ends");
+        crate::controls_live::switch_controls(&mut control, false, "start of play");
+    }
     commands.remove_resource::<crate::save_live::SavedPlayer>();
     info!("spectate: session ended; the manager is back in Character mode");
 }
 
-/// The chase camera's focus while spectating: the followed body's pelvis
-/// drawn `alpha` of the way into the tick, else the point it last looked
-/// at, else `fallback`.
-pub(crate) fn spectate_focus(
+/// The hip of the body the spectating camera follows, drawn `alpha` of the
+/// way into the tick (the original's character point, which its follow
+/// placement and wall probe read); `None` for a free camera, or once the
+/// followed body is gone.
+pub(crate) fn followed_hip(
     session: &SpectateSession,
     bodies: &Query<&Ragdoll>,
     alpha: f32,
-    fallback: Vec3,
-) -> Vec3 {
+) -> Option<Vec3> {
     session
         .follow
         .and_then(|e| bodies.get(e).ok())
         .and_then(|b| b.parts.iter().find(|p| p.parent.is_none()))
         .map(|pelvis| Vec3::from(pelvis.drawn(alpha).translation))
-        .or(session.focus)
-        .unwrap_or(fallback)
 }
 
 /// The room walk follows the session: while it runs the view follows no
