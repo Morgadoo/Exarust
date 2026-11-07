@@ -207,6 +207,10 @@ The system SHALL build a held weapon's record as the original does: from its sec
 - **WHEN** the installed "Torch A01" and "Flail A" are measured
 - **THEN** the torch is 58.3 cm long, its flame and shadow nodes not counted, and the flail 84.4 cm, its four rigid links added to the handle
 
+#### Scenario: Length walk past a plain node
+- **WHEN** a weapon's first-child chain is a rigid 50 cm part, a plain 5 cm node and a rigid 20 cm part, striking from 0 to 1
+- **THEN** its length is 70 cm, the plain node passed over, and its sweet spot 30 cm, that walk stopping at the plain node
+
 #### Scenario: Held by its character
 - **WHEN** a tall human (size 1.05) in armour of encumbrance 0.5 holds the same sword
 - **THEN** its reach is 120.6 cm, its recoil 0.67, its swing shaping 0.275 and its blend 8

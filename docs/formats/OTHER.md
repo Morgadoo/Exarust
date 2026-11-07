@@ -1674,7 +1674,7 @@ weapon is flipped):
 | W10 impact | (1 − b)·0.6 + 0.4w + 0.1 (0.4w + 0.1 above balance 100) + (byte `0x32` − 127)/100 |
 | W11..W14 | slash, crush, pierce, thrust: 0.5·(x/100)^0.7, 0 for a 0 byte (double precision) |
 | W16 handling | 0.8 − ((1 − u/2)·w + 1 − b)/8; the body turns at it × B·(1 − 0.25·progress)·P while attacking ([PLAYER.md](../PLAYER.md), Combat mode) |
-| W21 length | armed: the box top (centre.y + half extent.y) of the weapon's node plus that of every rigid node down its first-child chain, stopping at the first node that is not rigid; unarmed: across the hand, \|centre.x\| + half extent.x |
+| W21 length | armed: the box top (centre.y + half extent.y) of the weapon's node plus that of every rigid node down its whole first-child chain (a node that is not rigid is passed over, not an end: the walk runs while the node has children); unarmed: across the hand, \|centre.x\| + half extent.x |
 | W22 sweet spot | armed: whole parts while the next one down the chain is rigid, then (W4 + 0.6·(W5 − W4)) of the part it stopped at; unarmed: W21 |
 | W23 (unarmed) | the end byte as a number (80 for the fists); unused for reach |
 | W24 second hand | (byte `0x40` − 128)·0.00156 + 1: where the second hand holds a haft (a two-hander's −30·W24 cm, a polearm's −40·W24) |

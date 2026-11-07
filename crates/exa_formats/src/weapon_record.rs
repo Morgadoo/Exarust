@@ -127,22 +127,23 @@ impl Lengths {
     /// The lengths of an armed weapon whose own node, then its first child,
     /// that child's first child and so on, are `chain`, with the striking
     /// part from `start` to `end` of its last part. The length adds the
-    /// tops of the weapon's node and of every rigid node down the chain,
-    /// stopping at the first node that is not rigid; the sweet spot adds
+    /// top of the weapon's node and of every rigid node down the whole
+    /// chain, passing over a node that is not rigid; the sweet spot adds
     /// whole parts while the next one is rigid, then 60 % of the striking
     /// part of the part it stopped at.
     pub fn armed(chain: &[ChainNode], start: f32, end: f32) -> Self {
         let Some(first) = chain.first() else {
             return Self::default();
         };
-        // The original's walk stops at the first node down the chain that
-        // is not a rigid body: no later rigid node counts.
+        // The length's walk goes down the first-child chain to its end and
+        // adds each rigid node it meets (single-precision sums in order);
+        // a node that is not rigid is passed over, not an end. Only the
+        // sweet spot's walk below stops at the first one.
         let mut length = first.top;
         for next in &chain[1..] {
-            if !next.rigid {
-                break;
+            if next.rigid {
+                length += next.top;
             }
-            length += next.top;
         }
         let mut whole = 0.0f32;
         let mut last = first;
@@ -1077,10 +1078,10 @@ mod tests {
         let torch = [n(58.3, true), n(36.5, false), n(93.0, false)];
         let l = Lengths::armed(&torch, 0.7, 0.9);
         assert!(close(l.length, 58.3) && close(l.sweet_spot, 0.82 * 58.3));
-        // The walk stops at the first node that is not rigid: a rigid node
-        // past a plain one does not count.
+        // The length's walk passes over a node that is not rigid and adds a
+        // rigid node past it; the sweet spot's stops at the plain node.
         let l = Lengths::armed(&[n(50.0, true), n(5.0, false), n(20.0, true)], 0.0, 1.0);
-        assert!(close(l.length, 50.0) && close(l.sweet_spot, 30.0));
+        assert!(close(l.length, 70.0) && close(l.sweet_spot, 30.0));
         assert_eq!(Lengths::armed(&[], 0.0, 1.0), Lengths::default());
     }
 
@@ -1287,6 +1288,7 @@ mod tests {
         let db = crate::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
         let items = crate::objdb::items(&db);
         let (mut plain, mut factory, mut missing) = (0, 0, 0);
+        let mut past_plain = 0;
         let mut by_name = std::collections::HashMap::new();
         for item in &items {
             let Some(w) = item.weapon else { continue };
@@ -1303,6 +1305,13 @@ mod tests {
                 plain += 1;
                 let scene = Scene::parse(bytes).unwrap();
                 let nodes = chain(&scene.nodes, 0);
+                // A rigid node past a plain one down the chain: the length's
+                // walk passes over the plain node and counts it.
+                if let Some(plain_at) = nodes.iter().position(|n| !n.rigid)
+                    && nodes[plain_at..].iter().any(|n| n.rigid)
+                {
+                    past_plain += 1;
+                }
                 // The box tops the mesh: centre plus half extent is the
                 // highest vertex.
                 if let NodeBody::Mesh(m) = &scene.nodes[0].body {
@@ -1349,6 +1358,9 @@ mod tests {
             by_name.insert(item.name.clone(), r);
         }
         assert_eq!((plain, factory, missing), (103, 98, 7));
+        // No shipped weapon has one: the shipped lengths are the same
+        // either way.
+        assert_eq!(past_plain, 0);
         let near = |a: f32, b: f32, tol: f32| (a - b).abs() < tol;
         // The torch: its shadow and flame children are not rigid bodies.
         let torch = by_name["Torch A01"];
