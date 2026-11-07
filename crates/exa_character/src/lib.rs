@@ -1923,6 +1923,16 @@ fn equip_outfits(
                     spawned.insert((i, k), part);
                 }
             }
+            // A linked-body item (a flail) keeps the skin its import built:
+            // its meshes follow the item's own nodes, which its bodies move.
+            for (i, node) in weapon.nodes.iter().enumerate() {
+                if let Some(skin) = &node.prop_skin {
+                    let parts: Vec<Entity> = (0..node.parts.len())
+                        .filter_map(|k| spawned.get(&(i, k)).copied())
+                        .collect();
+                    exa_world::prop_skin::attach(&mut commands, skin, &parts, &node_entities);
+                }
+            }
             // The item's own bodies (every rigid node, or the assembled
             // factory body) and the grip links that tie them to the hand.
             // The holder's body may not exist yet: the grip then waits for

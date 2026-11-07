@@ -59,7 +59,7 @@
 //!          --kinesis-pick <frame>     play mode: from that frame after loading (waiting for one), a running Kinesis of the player takes
 //!                                     the nearest prop body within 5 m, as the hand's pick hands it one
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
-//!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
+//!          --weapon <name>            weapon in the right hand (Objects.rpk entry; `+` stands for a space, for grid scenes)
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
 //!          --spawn-watch <ticks>      log each living body's pelvis height over its feet and its ground for this many
 //!                                     fixed ticks after it spawns (default 120; exa_game::limp at debug level)
@@ -1033,7 +1033,7 @@ fn main() -> AppExit {
             "--mechanism-poke" => options.mechanism_poke = args.next().and_then(|v| v.parse().ok()),
             "--kinesis-pick" => options.kinesis_pick = args.next().and_then(|v| v.parse().ok()),
             "--autowalk" => options.autowalk = true,
-            "--weapon" => options.weapon = args.next(),
+            "--weapon" => options.weapon = args.next().map(|w| w.replace('+', " ")),
             "--opponent" => options.opponent = true,
             "--opponent-shield" => {
                 options.opponent = true;
