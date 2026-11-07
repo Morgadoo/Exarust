@@ -999,6 +999,8 @@ Round 131 navcam: the chase camera springs its backward vector to the node axis 
 
 Round 133 navcam2: the spectating camera runs free with the pan keys and terrain lift, and the dungeon tilesets are wall-probe obstacles.
 
+Round 137 tetra: the locomotion and the lift servo read the root displacement from the two-step point in the original float order.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1400,6 +1402,8 @@ Round 128 combatrules review fixes: a held weapon record measures its sweet spot
 Round 134 gamemain: the player controls turn off under the skill screen, power tree and arsenal and outside the Character and Spectate modes as in the original, so open forms no longer leak input to the world.
 
 Round 135 itemtext: a repair refreshes an open item card in place, and one apparel condition routine serves the migration, the shop and the repair.
+
+Round 136 blocked: the player controls block on knock-out, death and the arena forms as in the original; only the second block and the off switch refuse the hotkeys.
 
 ### Phase 5 — Visual and audio fidelity (started)
 
@@ -2430,6 +2434,8 @@ Round 103 thaum2: displacement tendrils draw with their own material and the AI'
 Round 124 forcepicks: the force blast meets struck parts in their frame and stirs the cloths; the throw, barricade, long door and summoning ask the navigation picks.
 
 Round 132 trees: the skill screen opens in play on K with learn, forget and close, and four port bugs in it are fixed; the power tree has nothing missing.
+
+Round 136 saves: the save unit start-up legacy pass runs where the original runs it.
 
 ### Phase 8 — Polish and release
 

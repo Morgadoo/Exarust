@@ -26,7 +26,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Thaumaturgy & effects | 697 | 296 | 83 | 83% | 0% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% |  |
-| Game modes, arena & session | 646 | 193 | 23 | 88% | 0% |  |
+| Game modes, arena & session | 646 | 193 | 23 | 89% | 0% |  |
 | UI | 959 | 312 | 63 | 85% | 0% | RF_GUI_3DViewport, TMessageBox |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
@@ -77,7 +77,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TVCCloth | Physics, bodies & cloth | 30 | 96% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
 | TVXGIManager | Rendering & GPU | 29 | 97% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
 | TSimSector | Physics, bodies & cloth | 28 | 90% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
-| XA_SaveGames | Game modes, arena & session | 27 | 87% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
+| XA_SaveGames | Game modes, arena & session | 27 | 90% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
 | TGUIItemContainer | Items, materials & crafting | 26 | 90% | exa_game/src/item_container.rs; exa_items/src/card.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
 | TMesh | Rendering & GPU | 25 | 91% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
