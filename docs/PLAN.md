@@ -2363,6 +2363,8 @@ Round 64 thaumtree: the power tree opens from the creator, and its texts, which 
 
 Round 102 thaum: Constant Displacement's veil phases blows on the running body.
 
+Round 103 thaum2: displacement tendrils draw with their own material and the AI's Long Door finds its place on the navigation grid.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
