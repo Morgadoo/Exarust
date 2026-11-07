@@ -177,15 +177,21 @@ pub struct ModelNode {
 /// word's cut-away bits as the mesh loader leaves them (kind, carries and
 /// the fade-all-the-way bit; the parent carry is dropped when the parent
 /// is not a mesh) and, for the kinds whose callbacks walk the mesh (the
-/// camera segment's `0x2…` and the overhead `0x6…`), the node mesh's
+/// camera segment's `0x2…` and the overhead `0x6…`) and for the camera's
+/// wall-probe obstacles ([`CutAwayMesh::probe`]), the node mesh's
 /// triangles in the node's space (metres). Rules: `docs/RENDERING.md`
-/// (Cut-away fade).
+/// (Cut-away fade) and `docs/PLAYER.md` (Camera).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CutAwayMesh {
     /// `flags2 & 0x7B00_0000` after the loader's parent rule.
     pub word: u32,
     /// The mesh triangles, for the kinds that ask them.
     pub triangles: Option<Arc<Vec<[Vec3; 3]>>>,
+    /// The camera's wall probe meets the mesh: its second flag word holds
+    /// both [`CutAwayMesh::PROBE_KIND`] (a kind bit) and
+    /// [`CutAwayMesh::PROBE_SCENE`] (the scene walks' mesh bit), as the
+    /// level's outdoor walls, trees and buildings do.
+    pub probe: bool,
 }
 
 impl CutAwayMesh {
@@ -194,6 +200,16 @@ impl CutAwayMesh {
         | exa_formats::rfc::Node::CUT_AWAY_PARENT
         | exa_formats::rfc::Node::CUT_AWAY_CHILDREN
         | exa_formats::rfc::Node::CUT_AWAY_FULL;
+    /// The kind bit the camera's wall probe asks for.
+    pub const PROBE_KIND: u32 = 0x1000_0000;
+    /// The mesh bit both of the camera's scene walks ask for.
+    pub const PROBE_SCENE: u32 = 0x20_0000;
+
+    /// Whether the camera's wall probe meets a mesh with second flag word
+    /// `flags2`.
+    pub fn probes(flags2: u32) -> bool {
+        flags2 & Self::PROBE_KIND != 0 && flags2 & Self::PROBE_SCENE != 0
+    }
 
     /// The record of a mesh node with second flag word `flags2`, whose
     /// parent is a mesh when `parent_is_mesh`: the mesh loader clears the
@@ -218,10 +234,12 @@ impl CutAwayMesh {
             return None;
         }
         let kind = word & Node::CUT_AWAY_KIND;
-        let walks = kind == 0x2000_0000 || kind == 0x6000_0000;
+        let probe = Self::probes(flags2);
+        let walks = kind == 0x2000_0000 || kind == 0x6000_0000 || probe;
         Some(Self {
             word,
             triangles: if walks { triangles() } else { None },
+            probe,
         })
     }
 }
@@ -4080,6 +4098,17 @@ mod tests {
             0x0800_0000
         );
         assert!(CutAwayMesh::of(0x0300_0010, true, tri).is_none());
+        // The wall probe's obstacles (a level wall's 0x1023_1000, a
+        // building's 0x5023_1000) keep their triangles; the kind bit alone
+        // is no obstacle.
+        let wall = CutAwayMesh::of(0x1023_1000, true, tri).unwrap();
+        assert!(wall.probe && wall.triangles.is_some());
+        let building = CutAwayMesh::of(0x5023_1000, true, tri).unwrap();
+        assert_eq!(building.word, 0x5000_0000);
+        assert!(building.probe && building.triangles.is_some());
+        let bare = CutAwayMesh::of(0x1000_0000, true, tri).unwrap();
+        assert!(!bare.probe && bare.triangles.is_none());
+        assert!(!b.probe);
     }
 
     fn material_node(materials: &[&str]) -> ModelNode {

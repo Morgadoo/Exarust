@@ -995,6 +995,8 @@ Round 121 pick: dropped items can be lifted again.
 
 Round 123 lift: the lift takes the item out of the simulation as the original does, items stack, and the space-free query is ported.
 
+Round 131 navcam: the chase camera springs its backward vector to the node axis with the zoom on its capped spring, and the wall probe is answered by the levels marked walls, trees and buildings.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1666,6 +1668,8 @@ Round 115 cutaway: roofs, awnings and overhangs between the camera and the playe
 Round 124 playerctl2: the orbit and Cursor Look share one capture that re-centres the pointer and warps to the aim point; the story revive resets every brain with the space-free query.
 
 Round 129 meshrender: the PBR program vertex grime and wear now draw from the meshes stored colours, as in the original.
+
+Round 130 motiledyn: ground placements pose the body as the original pose-only sampler routes it, held weapons and shields give way twice as far unless their holder strikes or parries, and the item use counters are fed; the arena duel and exanima01 traces change on purpose.
 
 ### Phase 6 — AI (started)
 

@@ -1814,16 +1814,25 @@ character body's possession routines; addresses are in the research notes.
   Modelled with tests; nothing calls it yet because the cursor still uses
   the aim plane and the hand picks through the physics world.
 - **Middle mouse** orbits: 4.8 rad per screen width (the division in
-  double precision), through a near critically damped spring (stiffness
-  250/59² = 0.0718184 and retention 0.6162461 per tick, the game camera
-  preset's view and default retention as the preset applies them:
-  `nav_camera::GAME_CAMERA_PRESET`, built into the chase camera's
-  controller), leading by at most 45° per tick.
+  double precision). The drag moves the target yaw; the view follows it
+  as the controller's tick does: the camera node is turned to the pitch
+  (with the wall tilt, held to 1.54 rad) and the target yaw led at most
+  45° ahead of the shown yaw, and the backward vector springs toward the
+  node's backward axis, its velocity the last move plus 250/59² =
+  0.0718184 of the gap, moved by 0.6162461 of it and normalised by the
+  engine's reciprocal root, only while that velocity's square passes
+  1e-8 (`nav_camera::spring_back`; the game camera preset's view and
+  default retention, `nav_camera::GAME_CAMERA_PRESET`). The shown yaw is
+  the vector's heading as the tick reads it, before the spring; when it
+  jumps more than half a turn (crossing ±π) the target turns a whole
+  turn with it, in double precision (`wrap_target_yaw`). A pitch change
+  reaches the view through the same spring.
 - A scripted **camera shot** (session start, next fight, story start and
   continue, arena shots) goes through the placement routine
   (`nav_camera::place`): the target and shown yaw become the engine's
-  planar yaw (its fast arc cosine) of the eye's offset from the target and
-  the orbit stops; a fast shot's distance (1300) becomes the shown zoom and,
+  planar yaw (its fast arc cosine) of the eye's offset from the target,
+  the backward vector takes the offset's direction and stops, and the wall
+  avoidance starts over (no step, no tilt); a fast shot's distance (1300) becomes the shown zoom and,
   held between 800 and 2000, the zoom (`ChaseCamera::face_shot`). A slow
   shot keeps the zoom [guess: the original passes its own last placed
   distance].
@@ -1848,11 +1857,21 @@ character body's possession routines; addresses are in the research notes.
 - **Wall tilt**: each camera tick ends with a probe from 50 cm under the
   followed point along the view, alternately testing the present step
   (30 cm ball, a hit climbs to at most 4) and the step below (20 cm, a miss
-  comes down); the tilt eases toward 0.15 rad steeper per step and is added
-  to the axis pitch, held to 1.54 rad. Modelled (`ChaseCamera::probe_wall`),
-  but nothing answers the probe in the live game yet: the original sweeps
-  only level meshes with certain flag bits, and Exarust's level colliders
-  hold every static mesh, ceilings included. The sweep itself is
+  comes down); the tilt eases toward 0.15 rad steeper per step, its change
+  scaled by the controller's zoom-spring rate (5/59), and is added to the
+  axis pitch, held to 1.54 rad (`ChaseCamera::probe_wall`). The probe
+  meets only the meshes whose second flag word holds both `0x10000000`
+  and `0x200000`: the outdoor levels' walls (arena7, arenao1, arenao2,
+  arenao4, exanima08, exanima67: 171 level meshes) and the object
+  library's trees and buildings, not ceilings. Each such mesh a view drew
+  last frame, with no simulated body of its own, is asked when the probe's
+  38.5 m segment meets its bounding sphere: a building (kind `0x5…`) with
+  the probe's ball swept from the segment's far end back toward the start,
+  anything else with the one-sided ray from the start
+  (`exa_world::cut_away::WallObstacle`; the callbacks are the cut-away's
+  `sphere_cast` and `ray_cast`). The grid tileset loader's own mark (every
+  set-model node but those whose name starts with the byte 0xE4) is not
+  applied, so grid pieces are not obstacles. The original's scene walk is
   `nav_camera::probe_scene_hit`: the visible sectors, the mesh flag words
   (`0x89` class bits, the flags and state words), the owner pointer and
   blocking word, the segment-versus-bounding-sphere test
@@ -1872,11 +1891,17 @@ character body's possession routines; addresses are in the research notes.
   the radius with the height kept (`focus_tether`); its drift carries 0.96
   of its change and keeps 0.99, stopping under 1e-7/1e-4 squared
   (`pan_velocity`); the zoom's shown value snaps within 0.001
-  (`zoom_snap`) and its spring holds a change to its step, carries it,
-  damps it by the double 0.998 (a carried move of at most 0.0002, or a
-  NaN, snaps to the target) and floors it at half its range
-  (`ZoomSpring`). These are tests only; the chase camera drives its own
-  orbit, pitch and zoom springs.
+  (`zoom_snap`). These are tests only (the chase camera always follows a
+  body, and the free branch moves only the unfollowed looked-at point).
+- **The zoom spring** (live): a tick whose shown zoom is within 0.001 of
+  the target snaps it there; otherwise the spring runs: the change toward
+  the target at 5/59 less the last move is held to 5 a tick, carried by
+  the last move and damped by the double 0.998 (a carried move of at most
+  0.0002, or a NaN, snaps to the target), never under half the smallest
+  zoom (`ZoomSpring`). A frame draws the field of view from the spring's
+  last two values, and the stored shown zoom (which the pitch floor
+  reads) follows the drawn one once they are 0.01 apart
+  (`frame_zoom`, `frame_zoom_kept`).
 - **The idle turn.** Each frame the player's controls test whether the
   player is idle: the pointer within 2 pixels of where it was last seen on
   both axes, the condition word plain (0, so not walking or attacking), no

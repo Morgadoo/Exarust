@@ -664,7 +664,9 @@ the gains the character tick sets from what the character does
 (`body::Bearing`), its race (`body::RaceMuscles`) and its own character's
 stats from its record (`body::BodyStats`: most energy, the limbs' scale,
 the head's gain and factor and the walking arms of the undead)
-(`src/body_muscle.rs`);
+(`src/body_muscle.rs`; the arm state machine also records the arm setter's
+held factor, `Drive::held_contact`: 2, or 1 in an attack or a parry, which
+the character crate's grip runtime puts on the held items' contact mobility);
 a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
 (`body::Drive`); and the carry holds the body up in place of gravity, with
