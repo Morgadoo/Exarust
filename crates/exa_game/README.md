@@ -1108,7 +1108,11 @@ installs the click and session hooks and places the manager by
 scanned, current slot −1, then 0 after a delete or a dropped death) with its
 new-slot, select, touch, delete, death and current-slot load and save.
 `save_live` runs the save unit in the game when the host gives a folder
-(`--save-dir`): `--save-at` saves the session (the story at the loaded
+(`--save-dir`): as it makes the two slot managers it runs the start-up
+legacy pass over the story's, then the arena's saves
+(`save_live::remove_legacy_saves` over `Slots::remove_legacy`: a save whose
+player data signature is below its mode's current one is deleted, a
+failing pass is logged and the start-up goes on); `--save-at` saves the session (the story at the loaded
 level, or the arena company, staff, arsenal and stash as the arena tables)
 to a new slot and never writes over a file that holds bytes; `--arena-slot`
 makes the entered hub load that slot as the original's full load does
