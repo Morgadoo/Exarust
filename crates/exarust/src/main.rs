@@ -960,6 +960,10 @@ fn register_debug_commands(
 const FIXED_COUNTER_READING: u64 = 0x0123_4567_89AB_CDEF;
 
 fn main() -> AppExit {
+    // The original's start enters the engine's floating-point mode (flush
+    // and read denormals as zero) on the main thread; the task pools and the
+    // simulation thread enter it as they start.
+    exa_physics::float_mode::enter();
     let all: Vec<String> = std::env::args().skip(1).collect();
     match all.first().map(String::as_str) {
         Some("grid") => return grid::run(&all[1..]),
@@ -1919,6 +1923,11 @@ fn main() -> AppExit {
                     ..default()
                 }),
                 ..default()
+            })
+            // Every task-pool thread enters the engine's floating-point
+            // mode as it starts, as the original's threads do.
+            .set(bevy::app::TaskPoolPlugin {
+                task_pool_options: exa_physics::float_mode::task_pool_options(),
             })
             // A stalled frame breaks the ALSA stream, and rodio then
             // reports the same error in a tight loop (gigabytes of log).
