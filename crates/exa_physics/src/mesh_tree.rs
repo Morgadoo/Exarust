@@ -153,6 +153,34 @@ impl MeshTree {
     }
 }
 
+/// The first front face of a node mesh along a unit ray (metres, in the
+/// mesh's own frame), within `max`: the original's mesh ray query, through
+/// the mesh's kd-tree when it has one, else every triangle in the file's
+/// order, the nearest kept. Each triangle is tested in centimetres, as the
+/// tree stores them. Returns the triangle and the distance (m).
+pub fn ray_mesh(
+    triangles: &[[Vec3; 3]],
+    tree: Option<&MeshTree>,
+    origin: Vec3,
+    direction: Vec3,
+    max: f32,
+) -> Option<(u32, f32)> {
+    if let Some(tree) = tree {
+        return tree.ray(origin, direction, max);
+    }
+    let from = origin * TREE_SCALE;
+    let mut best: Option<(u32, f32)> = None;
+    let mut reach = max * TREE_SCALE;
+    for (i, t) in triangles.iter().enumerate() {
+        let tri = Triangle::new(t[0] * TREE_SCALE, t[1] * TREE_SCALE, t[2] * TREE_SCALE);
+        if let Some(d) = crate::kd_tree::ray_triangle(&tri, from, direction, reach) {
+            reach = d;
+            best = Some((i as u32, d / TREE_SCALE));
+        }
+    }
+    best
+}
+
 /// The signed volume a closed mesh encloses (in its units cubed): positive
 /// when its fronts ((b − a) × (c − a)) face out, as the mesh queries need
 /// (a debug check of a mesh's winding).

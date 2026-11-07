@@ -817,7 +817,7 @@ fn choose_split(bounds: &[(Vec3, Vec3)], min: Vec3, max: Vec3, flat: bool) -> Op
 
 /// The nearest-hit triangle test: front faces only, the hit strictly inside
 /// `(0, tmax)`.
-fn ray_triangle(tri: &Triangle, origin: Vec3, dir: Vec3, tmax: f32) -> Option<f32> {
+pub(crate) fn ray_triangle(tri: &Triangle, origin: Vec3, dir: Vec3, tmax: f32) -> Option<f32> {
     let [v0, v1, v2] = tri.vertices;
     let e1 = v1 - v0;
     let e2 = v2 - v0;

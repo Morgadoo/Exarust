@@ -935,17 +935,68 @@ pub(crate) fn character_hit<'a>(
     best
 }
 
+/// The nearest part of a prop body with no stand-in collider (a body put
+/// into the scene after the level was built: a dropped item, a weapon let
+/// go of) along the unit ray, within `max`: each part's node mesh asked as
+/// the original's pick asks a mesh node (its first front face, the ray
+/// taken into the part's frame), a part without triangles by its
+/// collision spheres.
+pub(crate) fn loose_prop_hit<'a>(
+    origin: Vec3,
+    dir: Vec3,
+    max: f32,
+    props: impl Iterator<Item = (Entity, &'a Ragdoll)>,
+) -> Option<(f32, Hit)> {
+    let mut best: Option<(f32, Hit)> = None;
+    for (body, ragdoll) in props {
+        for (part, p) in ragdoll.parts.iter().enumerate() {
+            let reach = best.map_or(max, |b| b.0);
+            let at = p.transform();
+            let t = if let Some(triangles) = p.triangles.as_deref() {
+                let to_part = at.inverse();
+                let local = to_part.transform_vector3(dir);
+                let scale = local.length();
+                if scale.is_nan() || scale <= 0.0 {
+                    continue;
+                }
+                exa_physics::mesh_tree::ray_mesh(
+                    triangles,
+                    p.tree.as_deref(),
+                    to_part.transform_point3(origin),
+                    local / scale,
+                    reach * scale,
+                )
+                .map(|(_, t)| t / scale)
+            } else {
+                p.spheres
+                    .iter()
+                    .filter_map(|&(c, r)| ray_sphere(origin, dir, at.transform_point3(c), r, reach))
+                    .reduce(f32::min)
+            };
+            if let Some(t) = t
+                && best.is_none_or(|b| t < b.0)
+            {
+                best = Some((t, Hit::Prop { body, part }));
+            }
+        }
+    }
+    best
+}
+
 /// The pick along the cursor's ray: the level and the props' stand-ins,
-/// then the characters' spheres, the nearest first.
+/// the props with no stand-in by their part meshes, then the characters'
+/// meshes or spheres, the nearest first (the original's pick asks every
+/// mesh node under the cursor and keeps the nearest face).
 fn pick_along<'a>(
     ray: Ray3d,
     physics: &Physics,
     stand_ins: &StandIns,
     collider_nodes: &ColliderNodes,
+    props: impl Iterator<Item = (Entity, &'a Ragdoll)>,
     characters: impl Iterator<Item = (Entity, &'a Ragdoll, Condition)>,
 ) -> Option<Picked> {
     let (origin, dir) = (ray.origin, *ray.direction);
-    let fixed = physics
+    let level = physics
         .fixed_pick(origin, dir, PICK_RANGE)
         .map(|(handle, t)| {
             let hit = if let Some((body, part)) = stand_ins.owner_of(handle) {
@@ -957,6 +1008,12 @@ fn pick_along<'a>(
             };
             (t, hit)
         });
+    let reach = level.map_or(PICK_RANGE, |f| f.0);
+    let fixed = match (level, loose_prop_hit(origin, dir, reach, props)) {
+        (Some(f), Some(p)) if p.0 < f.0 => Some(p),
+        (None, Some(p)) => Some(p),
+        (f, _) => f,
+    };
     let reach = fixed.map_or(PICK_RANGE, |f| f.0);
     let near = match (fixed, character_hit(origin, dir, reach, characters)) {
         (Some(f), Some(c)) if c.0 < f.0 => c,
@@ -1269,11 +1326,25 @@ pub(crate) fn pick_with(
         (Some(c), false) => Some((e, r, *c)),
         _ => None,
     });
+    // A prop a hand holds is not on the scene's own list in the original
+    // (it hangs under its holder), so the cursor's pick does not meet it.
+    let loose = bodies
+        .iter()
+        .filter(|(e, r, _, prop)| {
+            *prop
+                && !stand_ins.0.contains_key(e)
+                && !r
+                    .parts
+                    .iter()
+                    .any(|p| p.state.has(exa_physics::part::PartState::HELD))
+        })
+        .map(|(e, r, ..)| (e, r));
     pick_along(
         ray?,
         physics,
         stand_ins,
         collider_nodes,
+        loose,
         others.chain(player),
     )
 }
@@ -2506,9 +2577,16 @@ fn end_lift(
                 }
                 // The original's put-back with the saved frames: awake for
                 // at least half the full count, then (after the placement
-                // query) placed for eight ticks.
+                // query) placed for eight ticks with its world contacts
+                // dropped.
                 ragdoll.wake_to(exa_physics::sector_lists::RELEASE_WAKE);
                 ragdoll.settle_for(exa_physics::sector_lists::RELEASE_SETTLE);
+                ragdoll.clear_world_contacts();
+                info!(
+                    "hand: released body countdown {}, settling {} ticks, world contacts cleared",
+                    ragdoll.countdown(),
+                    ragdoll.settling()
+                );
             }
         }
     });
@@ -3008,6 +3086,56 @@ mod tests {
         out
     }
 
+    /// A prop with no stand-in (a dropped item) is picked on its node
+    /// mesh's front face, not its sphere; with no mesh, on its spheres; a
+    /// ray beside it picks nothing.
+    #[test]
+    fn a_dropped_prop_is_picked_on_its_mesh() {
+        let e = Entity::from_raw_u32(7).unwrap();
+        let mut body = ball_body(Vec3::new(0.0, 0.0, 3.0));
+        body.set_part_mesh(0, std::sync::Arc::new(cube(0.1)));
+        let ray = Ray3d::new(Vec3::ZERO, Dir3::Z);
+        let physics = Physics::default();
+        let stand_ins = StandIns::default();
+        let collider_nodes = ColliderNodes::default();
+        let picked = pick_along(
+            ray,
+            &physics,
+            &stand_ins,
+            &collider_nodes,
+            [(e, &body)].into_iter(),
+            std::iter::empty(),
+        )
+        .unwrap();
+        assert_eq!(picked.hit, Hit::Prop { body: e, part: 0 });
+        // The mesh's near face (the cube's half side under the part's
+        // origin), not its 0.2 m sphere.
+        let origin_z = body.parts[0].transform().translation.z;
+        assert!(
+            (picked.at.z - (origin_z - 0.1)).abs() < 1e-4,
+            "{}",
+            picked.at
+        );
+        let aside = Ray3d::new(Vec3::X, Dir3::Z);
+        assert!(
+            pick_along(
+                aside,
+                &physics,
+                &stand_ins,
+                &collider_nodes,
+                [(e, &body)].into_iter(),
+                std::iter::empty(),
+            )
+            .is_none()
+        );
+        // Without a mesh, its sphere.
+        let plain = ball_body(Vec3::new(0.0, 0.0, 3.0));
+        let (t, hit) =
+            loose_prop_hit(Vec3::ZERO, Vec3::Z, 10.0, [(e, &plain)].into_iter()).unwrap();
+        assert_eq!(hit, Hit::Prop { body: e, part: 0 });
+        assert!(t < 3.0);
+    }
+
     /// A limb with its node mesh is picked where the ray meets the mesh's
     /// front face, through its kd-tree, not on its collision spheres: a ray
     /// through a sphere beside the mesh picks nothing.
@@ -3068,6 +3196,7 @@ mod tests {
             &physics,
             &stand_ins,
             &collider_nodes,
+            std::iter::empty(),
             bodies.into_iter(),
         )
         .unwrap();
@@ -3092,6 +3221,7 @@ mod tests {
                 &physics,
                 &stand_ins,
                 &collider_nodes,
+                std::iter::empty(),
                 bodies.into_iter()
             ),
             None
@@ -3258,8 +3388,15 @@ mod tests {
                 .fixed_pick(ray.origin, *ray.direction, PICK_RANGE)
                 .expect("the ray meets the node");
             assert_eq!(collider_nodes.node_of(handle), Some(node));
-            let picked = pick_along(ray, physics, &stand_ins, collider_nodes, std::iter::empty())
-                .expect("the pick finds the node");
+            let picked = pick_along(
+                ray,
+                physics,
+                &stand_ins,
+                collider_nodes,
+                std::iter::empty(),
+                std::iter::empty(),
+            )
+            .expect("the pick finds the node");
             assert_eq!(picked.hit, Hit::SceneNode { node });
         }
     }

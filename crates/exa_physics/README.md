@@ -1587,7 +1587,9 @@ thigh turns; and `MOTILE_ENVIRONMENT` is the class init's unused
 0.2556/0.15/0.03 environment. `full_tone`/`clear_foot_state` are the
 original's resets.
 
-`mesh_tree` puts a body node's CPU triangles behind the tree as the
+`mesh_tree::ray_mesh` is a node mesh's ray query (first front face, through the
+tree or every triangle of a small mesh), used by the hand's pick of bodies with no
+stand-in collider. `mesh_tree` puts a body node's CPU triangles behind the tree as the
 original does: a node mesh of more than 10 and fewer than 100 000 triangles
 gets one (`takes_tree`, the scene loader's queue rule), a shape builder's
 fitted mesh (a limb's or a weapon's) one at any count (`shape_tree`). Trees

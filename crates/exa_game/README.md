@@ -1090,7 +1090,7 @@ kit through the kit's temporary database across the arena's load
 (`Step::PreparePlayerKit`, `Step::EquipPlayerKit`, `save_kit::KitScratch`)
 instead of promoting it.
 
-The pick meets a character's limb at the nearest front face of its node mesh, through the limb's kd-tree with the ray in the limb's frame (`hand::character_hit`, logged at debug: "mesh pick: … (bone) face …"); a limb without a tree is met by its collision spheres.
+The pick meets a character's limb at the nearest front face of its node mesh, through the limb's kd-tree with the ray in the limb's frame (`hand::character_hit`, logged at debug: "mesh pick: … (bone) face …"); a limb without a tree is met by its collision spheres. A prop body put into the scene after the level was built (a GUI drop, a weapon let go of) has no stand-in collider, so the pick also asks each such body's part meshes for their nearest front face (`hand::loose_prop_hit`, `exa_physics::mesh_tree::ray_mesh`: the tree, or every triangle of a mesh of ten or fewer; a part with no triangles by its spheres), as the original's cursor pick asks every mesh node of the scene; a body a hand holds (its parts' held bit) is left out, as it hangs under its holder. A dropped item can be lifted again. `--gui-drop ID@FRAME,ID@FRAME…` drops several items (a later one at the same pointer lands on the earlier). The lift's release prints the item's countdown and settling ticks and drops its world contacts (`Ragdoll::clear_world_contacts`), as the original's place does.
 A left click that is not a drag sends `hand::WorldClick`. A static mesh
 under a named scene node is that node (`hand::Hit::SceneNode`), the way the
 original's scene pick returns the node; plain geometry stays

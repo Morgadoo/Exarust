@@ -25,9 +25,9 @@
 //! exists the hand begins the lift on it (`hand::lift_gui_drops`), so the
 //! item rides the cursor until the button that dragged it is let go.
 //!
-//! The debug flag `--gui-drop ID@FRAME` gives the player's pack the item
-//! (unless the pack holds it already) and queues its drop at that frame
-//! after the load, as a drag out of the window would.
+//! The debug flag `--gui-drop ID@FRAME[,ID@FRAME...]` gives the player's
+//! pack each item (unless the pack holds it already) and queues its drop at
+//! its frame after the load, as a drag out of the window would.
 //!
 //! Evidence: the controls' GUI drag claim, the drop routine and its
 //! deferred task (`context/re/player-control-hand.md`).
@@ -76,17 +76,23 @@ pub struct GuiDropLift {
     pub copy_frame: bool,
 }
 
-/// `--gui-drop ID@FRAME`: the item put into the player's pack and dropped
-/// at that frame after the load.
-#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct GuiDropScript(pub Option<(u32, u32)>);
+/// `--gui-drop ID@FRAME[,ID@FRAME...]`: each item put into the player's
+/// pack and dropped at its frame after the load (a debug tool; a later
+/// drop at the same pointer lands on an earlier one).
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct GuiDropScript(pub Vec<(u32, u32)>);
 
 impl GuiDropScript {
-    /// Reads `ID@FRAME` (the id in hexadecimal with or without `0x`, or
-    /// decimal).
+    /// Reads `ID@FRAME` entries separated by commas (each id in
+    /// hexadecimal with `0x`, or decimal).
     pub fn parse(text: &str) -> Option<Self> {
-        let (id, frame) = text.split_once('@')?;
-        Some(Self(Some((parse_id(id)?, frame.trim().parse().ok()?))))
+        text.split(',')
+            .map(|entry| {
+                let (id, frame) = entry.split_once('@')?;
+                Some((parse_id(id)?, frame.trim().parse().ok()?))
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(Self)
     }
 }
 
@@ -181,16 +187,16 @@ fn scripted_gui_drop(
     mut items: ResMut<ItemCursor>,
     mut drop: ResMut<GuiDrop>,
 ) {
-    let Some((id, frame)) = script.0 else {
+    let Some(last) = script.0.iter().map(|&(_, f)| f).max() else {
         return;
     };
-    if loading.is_some() || *frames > frame {
+    if loading.is_some() || *frames > last {
         return;
     }
     *frames += 1;
-    if *frames != frame {
+    let Some(&(id, frame)) = script.0.iter().find(|&&(_, f)| f == *frames) else {
         return;
-    }
+    };
     let Some(mut p) = players.iter_mut().next() else {
         info!("gui drop script: no player at frame {frame}");
         return;
@@ -506,11 +512,15 @@ mod tests {
     fn the_drop_script_reads_its_item_and_frame() {
         assert_eq!(
             GuiDropScript::parse("0x12@300"),
-            Some(GuiDropScript(Some((0x12, 300))))
+            Some(GuiDropScript(vec![(0x12, 300)]))
         );
         assert_eq!(
             GuiDropScript::parse("18@5"),
-            Some(GuiDropScript(Some((18, 5))))
+            Some(GuiDropScript(vec![(18, 5)]))
+        );
+        assert_eq!(
+            GuiDropScript::parse("391@60,391@120"),
+            Some(GuiDropScript(vec![(391, 60), (391, 120)]))
         );
         assert_eq!(GuiDropScript::parse("0x12"), None);
         assert_eq!(GuiDropScript::parse("x@1"), None);

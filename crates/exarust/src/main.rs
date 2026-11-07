@@ -207,7 +207,7 @@
 //!                                     after loading, as its double click in the pack would (the use cursor)
 //!          --item-card ID@FRAME       debug: open the item's description card at the pointer (`--cursor`) at that frame
 //!                                     after loading, as a world object's click would
-//!          --gui-drop ID@FRAME        debug: put the item into the pack and drop it into the world at that frame
+//!          --gui-drop ID@FRAME[,..]   debug: put each item into the pack and drop it into the world at its frame
 //!                                     after loading, as a drag out of the window would (hold LMB to lift it)
 //!          --character-use ID@FRAME[+],...  debug: the player's interaction (Ctrl/double click) on the living
 //!                                     character with that record id at that frame after loading (`+`: with
@@ -563,7 +563,7 @@ pub struct Options {
     pub game_events: Option<exa_game::game_event_live::GameEventScript>,
     /// `--encounter-script TEXT`: run as one more encounter script.
     pub encounter_script: Vec<u8>,
-    /// `--gui-drop ID@FRAME`: the item dropped out of the pack.
+    /// `--gui-drop ID@FRAME[,ID@FRAME...]`: the items dropped out of the pack.
     pub gui_drop: exa_game::gui_drop::GuiDropScript,
     /// `--item-card ID@FRAME`: the item's card opened at the pointer.
     pub item_card: exa_game::item_card::CardScript,
@@ -2031,7 +2031,7 @@ fn main() -> AppExit {
     .insert_resource(options.use_item)
     .insert_resource(options.double_click)
     .insert_resource(options.kit_use.clone())
-    .insert_resource(options.gui_drop)
+    .insert_resource(options.gui_drop.clone())
     .insert_resource(options.item_card)
     .insert_resource(exa_game::thaum::debug_cast::DebugCasts(
         options.debug_casts.clone(),
