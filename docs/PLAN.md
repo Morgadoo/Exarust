@@ -999,6 +999,8 @@ Round 131 navcam: the chase camera springs its backward vector to the node axis 
 
 Round 133 navcam2: the spectating camera runs free with the pan keys and terrain lift, and the dungeon tilesets are wall-probe obstacles.
 
+Round 137 tetra: the locomotion and the lift servo read the root displacement from the two-step point in the original float order.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
