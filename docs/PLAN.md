@@ -1369,6 +1369,8 @@ Round 61 crystalsockets (S12): the crystal sockets and all three item abilities 
 
 Round 114 uitext: the combo box draws as the original's, and every shipped item's description is checked against the original's rules.
 
+Round 116 forms: the merchant options, the company dialog with its emblem form and the colour picker are built from the original's records.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
