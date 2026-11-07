@@ -164,3 +164,100 @@ fn the_mesh_mode_lands_on_a_body_on_the_floor() {
     );
     assert!(height_meshes(&grid, Vec3::new(1.0, 1.0, 1.0), |_| false, |_| Some(&body)).is_empty());
 }
+
+/// The placement overlap query finds a crate whose box the probe's bound
+/// sphere reaches (1 cm into it) and not one 1 cm clear of it: the scan's
+/// gates take the bound sphere unpadded, only the mesh query is padded.
+/// A crate a metre away is found only at a frame moved next to it.
+#[test]
+fn the_placement_query_finds_bodies_touching_the_place() {
+    let probe = crate_at(Vec3::ZERO);
+    // Sphere of 0.2 m at y 0.2; the other's cube spans ±0.2 about its
+    // centre: touching at a 0.4 m gap of centres, clear past it.
+    let near = crate_at(Vec3::new(0.39, 0.0, 0.0));
+    let clear = crate_at(Vec3::new(0.41, 0.0, 0.0));
+    let far = crate_at(Vec3::new(1.5, 0.0, 0.0));
+    let bodies = [
+        (entity(1), &probe),
+        (entity(2), &near),
+        (entity(3), &clear),
+        (entity(4), &far),
+    ];
+    let mut grid = SectorBodies::default();
+    grid.rebuild(bodies.into_iter());
+    let lookup = |e: Entity| bodies.iter().find(|(id, _)| *id == e).map(|(_, b)| *b);
+    let found = placement_touches(&grid, entity(1), 0, probe.parts[0].transform(), lookup);
+    assert_eq!(found, [entity(2)]);
+    // At a frame moved next to the far crate, only that one.
+    let moved = Affine3A::from_translation(Vec3::new(1.12, 0.0, 0.0));
+    let found = placement_touches(&grid, entity(1), 0, moved, lookup);
+    assert_eq!(found, [entity(4)]);
+}
+
+/// The pre-test lets a NaN distance through (the original's unordered
+/// compare) and refuses a sphere whose padded reach is short of the box.
+#[test]
+fn the_placement_pre_test_passes_a_nan() {
+    let half = Vec3::splat(10.0);
+    let r = half.length();
+    assert!(sector::placement_meet(Vec3::NAN, 1.0, Vec3::ZERO, half, r));
+    assert!(sector::placement_meet(
+        Vec3::new(12.9, 0.0, 0.0),
+        1.0,
+        Vec3::ZERO,
+        half,
+        r
+    ));
+    assert!(!sector::placement_meet(
+        Vec3::new(13.1, 0.0, 0.0),
+        1.0,
+        Vec3::ZERO,
+        half,
+        r
+    ));
+}
+
+/// A touch raises the lower countdown to the higher; equal ones stay.
+#[test]
+fn a_placement_touch_equalises_the_countdowns() {
+    let mut a = crate_at(Vec3::ZERO);
+    let mut b = crate_at(Vec3::X);
+    a.wake_to(128);
+    b.wake_to(40);
+    equalise_placement(&mut a, &mut b);
+    assert_eq!((a.countdown(), b.countdown()), (128, 128));
+    b.wake_to(200);
+    equalise_placement(&mut a, &mut b);
+    assert_eq!((a.countdown(), b.countdown()), (200, 200));
+}
+
+/// On a world: the release query wakes a sleeping crate against the
+/// probe's place to the probe's countdown.
+#[test]
+fn placing_a_released_body_wakes_its_neighbour() {
+    let mut world = World::new();
+    let probe = world.spawn(crate_at(Vec3::ZERO)).id();
+    let near = world.spawn(crate_at(Vec3::new(0.39, 0.0, 0.0))).id();
+    let far = world.spawn(crate_at(Vec3::new(3.0, 0.0, 0.0))).id();
+    world
+        .get_mut::<Ragdoll>(probe)
+        .unwrap()
+        .wake_to(RELEASE_WAKE);
+    let mut grid = SectorBodies::default();
+    {
+        let mut q = world.query::<(Entity, &Ragdoll)>();
+        let mut list: Vec<(Entity, &Ragdoll)> = q.iter(&world).collect();
+        list.sort_unstable_by_key(|(e, _)| *e);
+        grid.rebuild(list.into_iter());
+    }
+    world.insert_resource(grid);
+    let frame = world.get::<Ragdoll>(probe).unwrap().parts[0].transform();
+    let before = world.get::<Ragdoll>(near).unwrap().countdown();
+    place_released(&mut world, probe, 0, frame);
+    assert!(before < RELEASE_WAKE);
+    assert_eq!(
+        world.get::<Ragdoll>(near).unwrap().countdown(),
+        RELEASE_WAKE
+    );
+    assert_eq!(world.get::<Ragdoll>(far).unwrap().countdown(), before);
+}
