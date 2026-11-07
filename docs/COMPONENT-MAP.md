@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **78.7% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 70.7% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **78.8% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 70.8% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **45.4%** reproduced.
 
 ## By section
@@ -18,8 +18,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Data, assets & I/O | 440 | 91 | 26 | 81% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 80% | 1% |  |
 | World, levels & terrain | 454 | 174 | 31 | 77% | 0% |  |
-| Physics, bodies & cloth | 363 | 242 | 13 | 88% | 0% |  |
-| Characters, motion & animation | 506 | 198 | 23 | 81% | 0% |  |
+| Physics, bodies & cloth | 363 | 242 | 13 | 89% | 0% |  |
+| Characters, motion & animation | 506 | 198 | 23 | 82% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 81% | 0% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 90% | 0% |  |
@@ -65,12 +65,12 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
-| TMotileDynamics | Physics, bodies & cloth | 121 | 89% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
+| TMotileDynamics | Physics, bodies & cloth | 121 | 91% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
 | XA_Arena | Game modes, arena & session | 71 | 93% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 96% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
-| TMotilePart | Characters, motion & animation | 53 | 77% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
+| TMotilePart | Characters, motion & animation | 53 | 78% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 86% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
-| SG_CharacterGen | Characters, motion & animation | 43 | 83% | exa_character/src/layers.rs; exa_character/src/look.rs |
+| SG_CharacterGen | Characters, motion & animation | 43 | 84% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TThaumTree | Thaumaturgy & effects | 38 | 88% | exa_game/src/thaum/tree.rs; exa_game/src/power_screen.rs |
 | TGUIDrawSkin | UI | 35 | 91% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
 | TPathFinder | AI & behaviour | 32 | 91% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
