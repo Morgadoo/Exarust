@@ -453,9 +453,9 @@ pub struct Part {
     /// contact wanted to move it. The two pushes cancel, so nothing moves
     /// by this array; [`crate::body_pairs`] keeps it for the node owner.
     pub(crate) placed_offset: [Vec3; 4],
-    /// A plain rigid body hung from the character (a model node with its
-    /// own body chunk and no skeleton bone, the demon's tail and wings): it
-    /// takes the plain step's full gravity and its links stay limp links,
+    /// A part hung from the character from a model node with its own body
+    /// chunk and no skeleton bone (the demon's tail and wings): a member of
+    /// the part list at a tone of 0.01, so its links stay limp links,
     /// never muscles ([`Ragdoll::make_plain`]).
     pub plain: bool,
 }
@@ -957,8 +957,24 @@ pub struct GoLimp {
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct OwnPartBody {
     pub spheres: Vec<(Vec3, f32)>,
-    pub links: Vec<(Vec3, Vec3, f32, bool)>,
+    pub links: Vec<OwnLink>,
     pub mobility: f32,
+    /// The character's race mass divisor, for the limb mass factor.
+    pub mass_divisor: f32,
+}
+
+/// A link of a node's own body chunk, as stored: the point on the node, the
+/// point on the parent (before the node's translation), its slack, its
+/// strength and smoothing (kept, unlike the skeleton's, which the reader
+/// forces to strength 1), and whether it is a soft weld.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OwnLink {
+    pub on_part: Vec3,
+    pub on_parent: Vec3,
+    pub slack: f32,
+    pub strength: f32,
+    pub smoothing: f32,
+    pub welded: bool,
 }
 
 /// Makes the body under this entity (a body model root) physical: its parts
@@ -4122,14 +4138,16 @@ impl Ragdoll {
         }
     }
 
-    /// Makes the part at `index` a plain rigid body hung from the
-    /// character, as the original keeps a model node whose own body chunk
-    /// has no skeleton counterpart (the motion binder pairs only the
-    /// skeleton's bone numbers; the part list takes only bodies of the limb
-    /// class): it moves with `inverse_mass` (its registered mobility), its
-    /// stored links flagged `welded` become soft welds, and its links' two
-    /// shares follow the new mass.
-    pub fn make_plain(&mut self, index: usize, inverse_mass: f32, welded: &[bool]) {
+    /// Makes the part at `index` a plain part hung from the character, as
+    /// the original keeps a model node whose own body chunk has no skeleton
+    /// counterpart (the motion binder copies the skeleton's chunk only onto
+    /// nodes of a skeleton bone number; the init gives a part-list member
+    /// without a bone index the hittable class and a tone of 0.01): it
+    /// moves with `inverse_mass` (its registered mobility in the limbs'
+    /// units), its stored links take their own strength and smoothing and
+    /// become soft welds where flagged, they are never muscles, and its
+    /// links' two shares follow the new mass.
+    pub fn make_plain(&mut self, index: usize, inverse_mass: f32, own: &[OwnLink]) {
         let Some(range) = self.links_of.get(index).cloned() else {
             return;
         };
@@ -4138,8 +4156,12 @@ impl Ragdoll {
         part.inverse_mass = inverse_mass;
         part.link_mobility = inverse_mass * LINK_MOBILITY;
         for (k, l) in self.links[range].iter_mut().enumerate() {
-            if !l.origin && welded.get(k).copied().unwrap_or(false) {
-                l.flags |= LINK_SOFT_WELD;
+            if let Some(stored) = own.get(k).filter(|_| !l.origin) {
+                l.strength = stored.strength;
+                l.smoothing = stored.smoothing;
+                if stored.welded {
+                    l.flags |= LINK_SOFT_WELD;
+                }
             }
             let (m, m_parent) = (
                 LINK_MOBILITY * self.parts[l.part].inverse_mass,
@@ -4923,9 +4945,7 @@ impl Ragdoll {
         for p in &mut self.parts {
             p.start = p.positions;
             p.strain = 0.0;
-            let plain = p.plain;
             let pull = carried
-                .filter(|_| !plain)
                 .and_then(|(tone, energy, carry, scale)| {
                     let a = lift::carry_share(p.bone, tone, energy, scale)?;
                     Some(gravity * (1.0 - a) + carry * a)

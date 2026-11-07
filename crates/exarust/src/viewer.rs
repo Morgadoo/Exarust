@@ -3488,25 +3488,14 @@ fn spawn_placed_characters(
         // A numbered node with its own body chunk (the demon's tail and
         // wings) keeps it for the body builder.
         if physical {
-            let limbs = body
-                .nodes
-                .iter()
-                .filter(|n| {
-                    exa_formats::rsq::bone_index(&n.name).is_some_and(|b| (1..=18).contains(&b))
-                })
-                .count();
-            let unit = exa_game::limp::plain_mass_unit(
-                limbs,
-                stats.size,
-                exa_formats::races::body_of_character(races, c.race).mass_divisor,
-            );
+            let divisor = exa_formats::races::body_of_character(races, c.race).mass_divisor;
             for (i, &entity) in entities.iter().enumerate() {
                 if let Some(rigid) = &body.nodes[i].rigid
                     && exa_formats::rsq::bone_index(&body.nodes[i].name).is_some_and(|b| b >= 1)
                 {
                     commands
                         .entity(entity)
-                        .insert(exa_game::limp::own_part_body(rigid, unit));
+                        .insert(exa_game::limp::own_part_body(rigid, divisor));
                 }
             }
         }

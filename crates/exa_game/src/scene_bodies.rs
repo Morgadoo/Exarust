@@ -567,16 +567,7 @@ pub fn spawn_scene_body(
         ))
         .id();
     let (model_entity, nodes) = exa_world::spawn_model_nodes(commands, &body, None);
-    let plain_unit = crate::limp::plain_mass_unit(
-        body.nodes
-            .iter()
-            .filter(|n| {
-                exa_formats::rsq::bone_index(&n.name).is_some_and(|b| (1..=18).contains(&b))
-            })
-            .count(),
-        stats.size,
-        exa_formats::races::body_of_character(context.races, record.race).mass_divisor,
-    );
+    let divisor = exa_formats::races::body_of_character(context.races, record.race).mass_divisor;
     for (index, &node) in nodes.iter().enumerate() {
         if let Some(bone) =
             exa_formats::rsq::bone_index(&body.nodes[index].name).filter(|&bone| bone >= 1)
@@ -590,7 +581,7 @@ pub fn spawn_scene_body(
             if let Some(rigid) = &body.nodes[index].rigid {
                 commands
                     .entity(node)
-                    .insert(crate::limp::own_part_body(rigid, plain_unit));
+                    .insert(crate::limp::own_part_body(rigid, divisor));
             }
         }
     }

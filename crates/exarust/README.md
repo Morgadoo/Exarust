@@ -44,7 +44,7 @@ A Spirit Form cast asks the viewer for its spirit body
 (`exa_game::mind::runtime::SpiritBodyAsked`): `spawn_spirit_bodies` builds a
 record of race byte 14 through the placed-character path and marks the
 body as the caster's spirit, which the mind runtime then hands the player.
-The placed-character path builds every race but the demon physical and logs the bodies built per race (`bodies built per race: …`); it builds the wraith physical with its race's hover
+The placed-character path builds every race physical and logs the bodies built per race (`bodies built per race: …`); `--spawn-race n@x,y,z` places a living character of race byte n (the first actor template of the race, else the first story level's record of it); it builds the wraith physical with its race's hover
 flag, so the spirit floats on its hovering lift and walks.
 The game adds `exa_physics::sim_app`'s shell: the simulation's own world,
 stepped in lockstep with the fixed step on its `exa-sim` thread, or on the

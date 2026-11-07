@@ -622,7 +622,11 @@ Blows are queued for the next tick, and parts are drawn between their last
 two ticks by interpolating their four particles and building the part's
 matrix from them, as the original does (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each
-joint's range (`body::Ragdoll::new`); a limp body's links also damp each
+joint's range (`body::Ragdoll::new`); a model node with its own body chunk and no skeleton bone (the demon's
+tail and wings, `body::OwnPartBody`) is a plain part: its stored spheres
+and links (their strength, smoothing and soft welds), links that are never
+muscles (the init's tone of 0.01) and its own mobility over the init's limb
+mass factor (`body::Ragdoll::make_plain`); a limp body's links also damp each
 joint inside its range through their smoothed lengths, reset when the
 body goes limp (`body::Ragdoll::go_limp`). In a living body every slack
 link is a link muscle that turns its joint toward the clip's angle, with

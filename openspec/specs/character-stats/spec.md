@@ -486,3 +486,10 @@ A worn piece's coverage share SHALL be capped at 1 by an ordered compare, so a s
 #### Scenario: Cap
 - **WHEN** shares 1.5, 0.5 and NaN are capped
 - **THEN** they become 1, 0.5 and NaN
+
+### Requirement: Unarmed reach in combat
+A character's stats SHALL carry its race's unarmed reach, and the AI SHALL use it as the character's reach while it holds no armed weapon.
+
+#### Scenario: A harvester reaches farther
+- **WHEN** an unarmed harvester's reach is read
+- **THEN** it is 1.5 m, a human's 0.5 m
