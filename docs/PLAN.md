@@ -1667,6 +1667,8 @@ Round 124 playerctl2: the orbit and Cursor Look share one capture that re-centre
 
 Round 129 meshrender: the PBR program vertex grime and wear now draw from the meshes stored colours, as in the original.
 
+Round 130 motiledyn: ground placements pose the body as the original pose-only sampler routes it, held weapons and shields give way twice as far unless their holder strikes or parries, and the item use counters are fed; the arena duel and exanima01 traces change on purpose.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
