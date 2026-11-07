@@ -138,7 +138,7 @@ impl Presence {
     }
 }
 
-/// What the level-leave reset did.
+/// What the revive pass's reset did.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Reentry {
     /// The lasting health came back to the current pool.
@@ -159,20 +159,22 @@ pub const REENTRY_ROUNDS: u32 = 2;
 /// The lasting health a reset needs to restore the current pool from it.
 pub const HEAL_FLOOR: f32 = 0.01;
 
-/// The reset the original gives every AI character when the level is
-/// written out as the player leaves it, so the character is not found as
-/// it was left. A collapsed or dead body (`out`) or a dormant one
+/// The reset the original gives every AI character in the world's revive
+/// pass (the story revive of a knocked-out player runs it over the scene's
+/// characters, through the behaviour's method slot 26; nothing else calls
+/// that slot). A collapsed or dead body (`out`) or a dormant one
 /// (`dormant`) is left alone. Otherwise the body's current health returns
 /// to its lasting pool when that is over [`HEAL_FLOOR`], and every contact
-/// and the target are forgotten. A roaming AI that is not a statue is then
-/// put down along freshly planned wander paths, twice: a wander endpoint
-/// whose path spans over [`REENTRY_SPAN_CM2`] becomes the body's goal, and
-/// from there a home-side endpoint over the same span; the body ends at the
-/// last goal, if any, and leaves combat. `wander` and `home` return a
-/// planned endpoint and the squared ground span from the path's first point
-/// to it, or none when the level has no room to draw one from.
-///
-/// Exarust does not write levels on leaving, so nothing calls this yet.
+/// and the target are forgotten. A roaming AI (activity 1) that is not a
+/// statue is then put down along freshly planned wander paths, twice, from
+/// where it stands (`from`, cm): a wander plan from the standing point
+/// whose path spans over [`REENTRY_SPAN_CM2`] moves the standing point to
+/// its end, and from there a home-side plan over the same span moves it
+/// on; the body ends at the last standing point and leaves combat (the
+/// caller places it there and asks the space-free query). `wander` and
+/// `home` plan from a point and return the path's last point and the
+/// squared ground span from its first point to it, or none when the level
+/// has no room to draw one from.
 #[allow(clippy::too_many_arguments)]
 pub fn reenter(
     out: bool,
@@ -181,8 +183,9 @@ pub fn reenter(
     statue: bool,
     health: &mut Fighter,
     contacts: &mut Combatant,
-    wander: &mut dyn FnMut() -> Option<(Vec3, f32)>,
-    home: &mut dyn FnMut() -> Option<(Vec3, f32)>,
+    from: Vec3,
+    wander: &mut dyn FnMut(Vec3) -> Option<(Vec3, f32)>,
+    home: &mut dyn FnMut(Vec3) -> Option<(Vec3, f32)>,
 ) -> Reentry {
     let mut result = Reentry::default();
     if out || dormant {
@@ -197,17 +200,19 @@ pub fn reenter(
     if !roaming || statue {
         return result;
     }
+    let mut at = from;
     let mut goal = None;
     for _ in 0..REENTRY_ROUNDS {
-        if let Some((point, span)) = wander()
+        if let Some((point, span)) = wander(at)
             && REENTRY_SPAN_CM2 < span
         {
-            goal = Some(point);
-            if let Some((point, span)) = home()
+            at = point;
+            if let Some((point, span)) = home(at)
                 && REENTRY_SPAN_CM2 < span
             {
-                goal = Some(point);
+                at = point;
             }
+            goal = Some(at);
         }
     }
     result.moved_to = goal;
@@ -570,12 +575,12 @@ mod tests {
         );
     }
 
-    /// The level-leave reset heals the current pool from the lasting one,
+    /// The revive pass's reset heals the current pool from the lasting one,
     /// clears the contacts, and moves a roaming AI along its plans twice,
     /// leaving combat; a statue stays where it is and stays in combat; a
     /// collapsed or dormant body is not touched.
     #[test]
-    fn the_level_leave_reset_heals_clears_and_moves_a_roam() {
+    fn the_revive_reset_heals_clears_and_moves_a_roam() {
         let mut fighter = Fighter::default();
         fighter.health.yellow = 0.2;
         fighter.health.red = 0.6;
@@ -583,11 +588,13 @@ mod tests {
         let target = contacts.contact_index(Entity::PLACEHOLDER);
         contacts.contacts[target].concern = 3.0;
         let mut calls = 0;
-        let mut wander = || {
+        let mut froms = Vec::new();
+        let mut wander = |from: Vec3| {
             calls += 1;
+            froms.push(from);
             Some((Vec3::new(calls as f32 * 100.0, 0.0, 0.0), 30_000.0))
         };
-        let mut home = || Some((Vec3::new(0.0, 0.0, 500.0), 10.0));
+        let mut home = |_: Vec3| Some((Vec3::new(0.0, 0.0, 500.0), 10.0));
         let done = reenter(
             false,
             false,
@@ -595,6 +602,7 @@ mod tests {
             false,
             &mut fighter,
             &mut contacts,
+            Vec3::new(7.0, 0.0, 7.0),
             &mut wander,
             &mut home,
         );
@@ -604,12 +612,17 @@ mod tests {
         // Two rounds of wander, each over the span (100 cm, then 200 cm);
         // the home point is under the span, so the last wander wins.
         assert_eq!(calls, 2);
+        // Each round plans from where the last one ended.
+        assert_eq!(
+            froms,
+            vec![Vec3::new(7.0, 0.0, 7.0), Vec3::new(100.0, 0.0, 0.0)]
+        );
         assert_eq!(done.moved_to, Some(Vec3::new(200.0, 0.0, 0.0)));
         // A home point over the span wins its round.
         let mut fighter = Fighter::default();
         let mut contacts = Combatant::default();
-        let mut wander = || Some((Vec3::new(100.0, 0.0, 0.0), 22_501.0));
-        let mut home = || Some((Vec3::new(0.0, 0.0, 500.0), 22_501.0));
+        let mut wander = |_: Vec3| Some((Vec3::new(100.0, 0.0, 0.0), 22_501.0));
+        let mut home = |_: Vec3| Some((Vec3::new(0.0, 0.0, 500.0), 22_501.0));
         let done = reenter(
             false,
             false,
@@ -617,6 +630,7 @@ mod tests {
             false,
             &mut fighter,
             &mut contacts,
+            Vec3::ZERO,
             &mut wander,
             &mut home,
         );
@@ -627,8 +641,8 @@ mod tests {
         fighter.health.yellow = 0.0;
         fighter.health.red = 0.01;
         let mut contacts = Combatant::default();
-        let mut never = || None;
-        let mut home = || -> Option<(Vec3, f32)> { None };
+        let mut never = |_: Vec3| None;
+        let mut home = |_: Vec3| -> Option<(Vec3, f32)> { None };
         let done = reenter(
             false,
             false,
@@ -636,6 +650,7 @@ mod tests {
             true,
             &mut fighter,
             &mut contacts,
+            Vec3::ZERO,
             &mut never,
             &mut home,
         );
@@ -663,6 +678,7 @@ mod tests {
                 false,
                 &mut fighter,
                 &mut contacts,
+                Vec3::ZERO,
                 &mut never,
                 &mut home,
             );

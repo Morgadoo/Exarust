@@ -110,8 +110,10 @@ original uses plain Fifo: `ADAPTIVE_VSYNC`), the Alt+Enter toggle, the
 full-screen window's minimise on losing the activation, the pointer warp's
 four-move hold (`WarpHold`), the GUI drag's pointer clip with its
 endless edge wrap (`PointerClip`) and the full-screen confinement
-(`FocusConfinement`). `os_pointer` applies the warp hold (Cursor Look's
-release) and the confinement (winit's confined grab) to the window, and
+(`FocusConfinement`). `os_pointer` applies the warp hold (the mouse
+capture's release, `player::cursor_look`: the orbit and Cursor Look share
+one capture that re-centres the pointer every frame and warps it on release
+to the aim point's screen point, `docs/PLAYER.md`) and the confinement (winit's confined grab) to the window, and
 `os_clipboard` is the system clipboard for the text controls, through
 Windows-1252 as the original's ANSI text (`SystemClipboard`, opened on
 first use). `frame` also holds the logger's message
@@ -622,7 +624,13 @@ within 3000 cm of the knocked-out player goes home (Stand 2, put at its
 home facing its home angle) and sleeps (statue bit and byte, statue rest,
 the sleep scales), and when one did the player is put 200 cm past the
 third-axis face of the `Alarm_` box holding the armed point, facing back
-across it, asking for motion 0x1d. `golem_body::rest_sleepers` keeps a
+across it, asking for motion 0x1d. Then the pass's second part,
+`revive_pass::reset_brains` (`flow::Step::ReviveBrains`), resets every AI
+brain through `exa_ai::presence::reenter`: healed, contacts cleared, and a
+roaming one moved along two rounds of wander and home-side plans, placed,
+asked the space-free query (`exa_physics::sector_lists::space_taken`) and
+moved to the grid's nearest walkable point when its body meets another;
+it leaves combat and returns to idle. `golem_body::rest_sleepers` keeps a
 sleeper's statue byte and gait word as the same statue rest: the sleep
 activity's entry sets it and the sleeper's knock-out clears it
 (`exa_ai::brain::StatueByte`). A spawned body (the scene bodies, the arena's

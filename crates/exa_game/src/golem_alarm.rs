@@ -162,7 +162,8 @@ impl Plugin for GolemAlarmPlugin {
             )
             .add_systems(
                 Update,
-                return_from_alarm
+                (return_from_alarm, crate::revive_pass::reset_brains)
+                    .chain()
                     .after(crate::flow::FlowSystems::Transition)
                     .before(crate::flow::FlowSystems::ApplySteps),
             );

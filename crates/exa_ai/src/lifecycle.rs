@@ -168,7 +168,7 @@ pub const IDLE_RETURN_STEP: i32 = 1;
 /// becomes the current state and the body's in-combat mark clears; the
 /// flags, the state and the mark are the caller's, and the step to restart
 /// at ([`IDLE_RETURN_STEP`]) is returned. The chase that loses its foe
-/// calls it (with [`restart_idle`]); the attach and the level-leave reset
+/// calls it (with [`restart_idle`]); the attach and the revive pass's reset
 /// are its other callers.
 pub fn return_to_idle(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) -> i32 {
     crate::motion::leave_look(gaze, turn, body_look_yaw);

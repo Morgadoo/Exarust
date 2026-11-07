@@ -123,6 +123,7 @@ pub mod power_screen;
 pub mod practice;
 pub mod prelude;
 pub mod report;
+pub mod revive_pass;
 pub mod rise;
 pub mod role_scripts;
 pub mod save_kit;

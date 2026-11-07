@@ -1406,6 +1406,12 @@ pub enum Step {
     /// ([`crate::golem_alarm::return_from_alarm`] takes the step before the
     /// steps are applied).
     AlarmReturn,
+    /// The story revive's world pass, after the alarm return: every AI
+    /// character's reset through its behaviour (healed, contacts cleared, a
+    /// roaming one moved along fresh wander plans and asked the space-free
+    /// query; [`crate::revive_pass::reset_brains`] takes the step before
+    /// the steps are applied).
+    ReviveBrains,
     /// Raise the knocked-out player's dead body (the story revive): only a
     /// dead condition word (0xA00) is raised; combat mode is left, the
     /// yellow health becomes half the red and the body is laid down to wake
@@ -2844,9 +2850,10 @@ impl Flow {
             delayed: false,
             start_ms: now.wrapping_add(WAKE_DELAY_MS),
         };
-        // The world's revive pass runs before the save; its first part is
-        // the alarm return (the rest of the pass is not reproduced).
-        let mut steps = vec![Step::ClosePrelude, Step::AlarmReturn];
+        // The world's revive pass runs before the save: the alarm return,
+        // then every character's behaviour reset (the bodies' wake and the
+        // removed bodies' contact drop are not reproduced).
+        let mut steps = vec![Step::ClosePrelude, Step::AlarmReturn, Step::ReviveBrains];
         if self.mode.is_game() {
             steps.push(Step::Save {
                 drop_on_low_health: false,
@@ -5451,12 +5458,13 @@ mod tests {
                 .any(|step| matches!(step, Step::Wake(WakePose { flags: 0x40, .. })))
         );
         assert_eq!(flow.story.wake.start_ms, 8101);
-        // The revival closes the prelude, runs the alarm return, then saves
-        // the story.
+        // The revival closes the prelude, runs the world pass (the alarm
+        // return, then the brains' reset), then saves the story.
         assert_eq!(steps.first(), Some(&Step::ClosePrelude));
         assert_eq!(steps.get(1), Some(&Step::AlarmReturn));
+        assert_eq!(steps.get(2), Some(&Step::ReviveBrains));
         assert_eq!(
-            steps.get(2),
+            steps.get(3),
             Some(&Step::Save {
                 drop_on_low_health: false
             })
@@ -5633,6 +5641,8 @@ mod tests {
                 })
         );
         assert!(at(Step::AlarmReturn) < at(Step::ReviveBody));
+        assert!(at(Step::AlarmReturn) < at(Step::ReviveBrains));
+        assert!(at(Step::ReviveBrains) < at(Step::ReviveBody));
         assert_eq!(flow.phase, Phase::Playing);
         // The wake-up animation is watched from two seconds on.
         assert!(flow.story.wake.animating);
