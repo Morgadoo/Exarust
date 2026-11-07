@@ -1,6 +1,6 @@
 ## Why
 
-PLAN Phase 7 (interface). The extended controls' combo box had its draw
+PLAN Phase 4 (items and their windows). The extended controls' combo box had its draw
 laid out but no form painted it: the hub's loadout form drew a panel and
 a left-placed name instead. The item description sentences were live but
 had only hand-made tests; nothing checked them over the shipped items.
