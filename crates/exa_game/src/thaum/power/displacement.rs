@@ -43,11 +43,16 @@
 //!   volume each control tick while it is under 0.12 (in double); ending
 //!   marks the hum stopping (its flags gain 0x300), returns the reserve and
 //!   closes the shell and the distortion.
-//! - **The Summon** ([`Summon`]): picks a place and a demon, then grows the
-//!   effect over 3 s, fades over 1 s, waits 1 s and cleans up.
+//! - **The Summon** ([`Summon`]): picks a place (the cursor's, or the
+//!   Long Door's grid query for the AI), brings `demon a01` in facing the
+//!   caster, holds it for 2 s while its tendrils play, opens the shell over
+//!   it for 3 s while the vanish table brings its body in, lets it go, and
+//!   closes the shell over the last second.
 //!
-//! Evidence: the vanish base, the three instant classes and the constant
-//! power's control handler, read from `Exanima.exe`.
+//! Evidence: the vanish base, the four instant classes (the summon's
+//! activation, control, arrival and its body's deferred lookup), the
+//! summon's phase table and the constant power's control handler, read
+//! from `Exanima.exe`.
 
 use bevy::math::Vec3;
 
@@ -162,12 +167,14 @@ pub struct DemonSummon {
 
 /// The demon's record name.
 pub const DEMON_RECORD: &str = "demon a01";
-/// The role it takes.
+/// The role it is given: 33, Activity Wait (its init script sets the
+/// activity to 2, so the demon waits where it stands).
 pub const DEMON_ROLE: u32 = 0x21;
 /// The familiarity the two characters gain toward each other (the
 /// summon's literal is 75.0).
 pub const DEMON_RELATION: f32 = 75.0;
-/// The relation topic.
+/// The relation role each holds toward the other: 28, Ally (attitude +100
+/// at weight one half, blended with the familiarity).
 pub const DEMON_TOPIC: u32 = 0x1c;
 
 /// The demon record the summon loads and the roles it is given.
@@ -737,137 +744,264 @@ impl Default for ConstantDisplacement {
     }
 }
 
-/// The Summon's phases.
+/// The Summon's phases: an AI's first, while the navigation grid picks the
+/// place.
 pub const SUMMON_PICK: i32 = 0x10;
-/// The demon is spawned.
+/// The place is known and the demon is asked for; the summon waits for its
+/// body.
 pub const SUMMON_SPAWN: i32 = 0x11;
-/// The effect grows.
+/// The demon stands, held, and its tendrils play: 2 s.
 pub const SUMMON_GROW: i32 = 3;
-/// The effect fades.
+/// The shell opens over the demon and the table brings its body in: 3 s.
 pub const SUMMON_FADE: i32 = 4;
-/// The tail before cleanup.
+/// The demon is let go and the shell closes: 1 s, then cleanup.
 pub const SUMMON_TAIL: i32 = 5;
 
-/// What a summon tick asks the game to do.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SummonStep {
-    pub result: i32,
-    /// The demon's body is created.
-    pub spawn: bool,
-    /// The effect's phase changed.
-    pub phase: i32,
-    /// The effect is dropped.
-    pub cleanup: bool,
-    /// The caster's visibility while the effect fades (phase 4):
-    /// `1 − (deadline − now)/3000`, the share in double narrowed first.
-    pub shown: Option<f32>,
+/// The squared floor length (`z² + x²`, single precision) a caster-to-place
+/// line must exceed for the demon to face along it; at or below it (or a
+/// not-a-number) the demon takes the caster's own forward vector and yaw.
+pub const SUMMON_FACING_MIN_SQUARED: f32 = 1.0;
+/// The arrival sound's volume.
+pub const SUMMON_SOUND_VOLUME: f32 = 0.4;
+/// The demon's shell: how long it opens and closes (ms) and its opacity.
+pub const SUMMON_SHELL_OPEN_MS: u32 = 3000;
+pub const SUMMON_SHELL_CLOSE_MS: u32 = 1000;
+pub const SUMMON_SHELL_OPACITY: f32 = 2.0;
+/// The ticks the demon's body is woken for when it is let go.
+pub const SUMMON_WAKE_TICKS: u32 = 256;
+
+/// Where the demon faces on arrival: the line from the place to the caster
+/// (`caster − place`, its height dropped), scaled by the processor's
+/// approximate reciprocal square root, with its yaw by the engine's planar
+/// angle; when that line's squared floor length (`z² + x²`) is at most 1 cm²
+/// (or not a number) the caster's own forward vector and yaw instead. So the
+/// demon turns to face whoever summoned it.
+pub fn summon_facing(caster: Vec3, place: Vec3, forward: Vec3, yaw: f32) -> (Vec3, f32) {
+    let mut d = caster - place;
+    d.y = 0.0;
+    let squared = d.z * d.z + d.x * d.x;
+    if squared > SUMMON_FACING_MIN_SQUARED {
+        (
+            exa_physics::engine_math::normalize_approx(d),
+            exa_physics::engine_math::heading(d),
+        )
+    } else {
+        (forward, yaw)
+    }
 }
 
-/// The Summon: one demon brought in through the vanish effect.
+/// The AI's facing once its place is found: the caster's place less the
+/// place, its height dropped and scaled by the approximate reciprocal
+/// square root (no fallback: a zero line stays zero).
+pub fn picked_facing(caster: Vec3, place: Vec3) -> Vec3 {
+    let mut d = caster - place;
+    d.y = 0.0;
+    exa_physics::engine_math::normalize_approx(d)
+}
+
+/// The arrival sound's pitch: `roll·0.2 + 0.9`, the roll narrowed to single
+/// precision first.
+pub fn summon_pitch(roll: f64) -> f32 {
+    (roll as f32) * 0.2 + 0.9
+}
+
+/// What a summon tick asks the game to do.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SummonStep {
+    pub result: i32,
+    /// The effect's phase after the tick.
+    pub phase: i32,
+    /// The held phase ended: the shell opens from now, the vanish table
+    /// moves on one entry with a new clock and the demon's body is revealed.
+    pub open_shell: bool,
+    /// The fade ended: the demon is let go (its AI's statue byte cleared,
+    /// its roles re-applied, its body woken for 256 ticks), its tendrils
+    /// end and the shell closes with leave to finish.
+    pub release: bool,
+    /// The effect is done: the class cleans up (its vanish node leaves).
+    pub cleanup: bool,
+    /// While the shell opens, the value the original writes on the
+    /// caster's body each tick: `1 − (deadline − now)/3000`, the share in
+    /// double narrowed first (a body field that multiplies its voice's gain;
+    /// not modelled in Exarust).
+    pub caster_gain: Option<f32>,
+}
+
+/// The Summon (`demon a01` brought in through the vanish effect).
+///
+/// - **Activation.** A player's summon knows its place (the cursor's) and
+///   starts at [`SUMMON_SPAWN`], facing by [`summon_facing`]; an AI's starts
+///   at [`SUMMON_PICK`]. The demon's record is read and placed, given role
+///   0x21 and linked to the caster both ways (familiarity 75, relation role
+///   0x1c) as soon as its place is known.
+/// - **Pick** (AI). The navigation query of the Long Door, from the
+///   caster's target (else the caster): found, the facing is
+///   [`picked_facing`] and the summon waits for the body; impossible, it
+///   ends at once (0x12).
+/// - **Arrival** ([`Summon::arrive`]): the body exists. It is placed at the
+///   place facing the aim, held (its AI's statue byte, its body's sleep
+///   word 2, its condition 0), the caster's power memory keeps the demon,
+///   the shell (resting at 0, opening over 3000 ms, closing over 1000 ms,
+///   opacity 2, texture scale over the demon's size) and the tendril image
+///   go on it, the arrival sound plays and the held phase lasts 2000 ms.
+/// - **Held** ([`SUMMON_GROW`]), then **fade** ([`SUMMON_FADE`], 3000 ms)
+///   and **tail** ([`SUMMON_TAIL`], 1000 ms): see [`SummonStep`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Summon {
     pub phase: i32,
     pub deadline: u32,
+    /// The caster is the AI.
+    pub ai: bool,
+    /// What the grid answered (an AI's pick).
+    pub nav: NavAnswer,
+    /// The demon's place (cm), once known.
+    pub place: Option<[f32; 3]>,
+    /// The arrival's facing vector and yaw.
+    pub aim: [f32; 3],
+    pub yaw: f32,
+    /// The demon was asked for.
+    pub asked: bool,
+    /// The demon's body (entity bits), once it has arrived.
+    pub demon: Option<u64>,
+    /// The demon's tendril image (entity bits) while it plays.
+    pub wisps: Option<u64>,
+    /// What the last tick asked for.
+    pub last: SummonStep,
 }
 
 impl Summon {
-    /// A summon beginning at `now`; an AI first picks its place.
-    pub fn new(now: u32, ai: bool) -> Self {
+    /// An AI's summon, picking its place from `now`.
+    pub fn ai(now: u32) -> Self {
         Self {
-            phase: if ai { SUMMON_PICK } else { SUMMON_SPAWN },
+            phase: SUMMON_PICK,
             deadline: now,
+            ai: true,
+            nav: NavAnswer::Waiting,
+            place: None,
+            aim: [0.0; 3],
+            yaw: 0.0,
+            asked: false,
+            demon: None,
+            wisps: None,
+            last: SummonStep::default(),
         }
     }
 
-    /// One control tick. Event 2 ends the summon at once.
-    pub fn control(&mut self, event: i32, now: u32, nav: NavAnswer, created: bool) -> SummonStep {
+    /// A player's summon at `place` (cm), the caster standing at `caster`
+    /// facing `forward` with `yaw`.
+    pub fn player(now: u32, place: Vec3, caster: Vec3, forward: Vec3, yaw: f32) -> Self {
+        let (aim, yaw) = summon_facing(caster, place, forward, yaw);
+        Self {
+            phase: SUMMON_SPAWN,
+            ai: false,
+            nav: NavAnswer::Found,
+            place: Some(place.to_array()),
+            aim: aim.to_array(),
+            yaw,
+            ..Self::ai(now)
+        }
+    }
+
+    /// The AI's grid answer: a found place sets the facing toward the
+    /// caster (`caster`, cm) and waits for the body; an impossible one ends
+    /// the summon on its next tick.
+    pub fn picked(&mut self, answer: NavAnswer, found: Option<Vec3>, caster: Vec3) {
+        if self.phase != SUMMON_PICK {
+            return;
+        }
+        self.nav = answer;
+        if answer == NavAnswer::Found
+            && let Some(place) = found
+        {
+            let aim = picked_facing(caster, place);
+            self.place = Some(place.to_array());
+            self.aim = aim.to_array();
+            self.yaw = exa_physics::engine_math::heading(aim);
+            self.phase = SUMMON_SPAWN;
+        }
+    }
+
+    /// Whether the demon should be asked for now: the place is known and it
+    /// has not been asked for.
+    pub fn wants_demon(&self) -> bool {
+        self.phase == SUMMON_SPAWN && self.place.is_some() && !self.asked
+    }
+
+    /// The demon's body exists (`demon`, entity bits) at `now` on the
+    /// caster's clock: the held phase starts and lasts 2000 ms.
+    pub fn arrive(&mut self, demon: u64, wisps: Option<u64>, now: u32) {
+        if self.phase != SUMMON_SPAWN {
+            return;
+        }
+        self.demon = Some(demon);
+        self.wisps = wisps;
+        self.phase = SUMMON_GROW;
+        self.deadline = now.wrapping_add(SUMMON_WAIT_MS);
+    }
+
+    /// One control tick. Event 2 ends the summon at once (0x12).
+    pub fn control(&mut self, event: i32, now: u32) -> SummonStep {
         let quiet = SummonStep {
-            result: 0,
-            spawn: false,
             phase: self.phase,
-            cleanup: false,
-            shown: None,
+            ..SummonStep::default()
         };
-        if event == 2 {
-            return SummonStep {
+        let step = if event == 2 {
+            SummonStep {
                 result: DONE,
                 cleanup: true,
                 ..quiet
-            };
-        }
-        match self.phase {
-            SUMMON_PICK => {
-                if nav == NavAnswer::Impossible {
+            }
+        } else {
+            match self.phase {
+                SUMMON_PICK if self.nav == NavAnswer::Impossible => {
                     self.phase = DONE;
-                    return SummonStep {
+                    SummonStep {
                         result: DONE,
+                        phase: DONE,
                         cleanup: true,
                         ..quiet
-                    };
+                    }
                 }
-                if nav == NavAnswer::Found {
-                    self.phase = SUMMON_SPAWN;
-                    return SummonStep {
-                        spawn: true,
-                        phase: self.phase,
-                        ..quiet
-                    };
-                }
-                quiet
-            }
-            SUMMON_SPAWN => {
-                if created {
-                    self.phase = SUMMON_GROW;
-                    self.deadline = now.wrapping_add(SUMMON_WAIT_MS);
-                    return SummonStep {
-                        phase: self.phase,
-                        ..quiet
-                    };
-                }
-                quiet
-            }
-            SUMMON_GROW => {
-                if self.deadline <= now {
+                SUMMON_GROW if self.deadline <= now => {
                     self.phase = SUMMON_FADE;
                     self.deadline = now.wrapping_add(SUMMON_FADE_MS);
-                    return SummonStep {
-                        phase: self.phase,
+                    SummonStep {
+                        phase: SUMMON_FADE,
+                        open_shell: true,
                         ..quiet
-                    };
+                    }
                 }
-                quiet
-            }
-            SUMMON_FADE => {
-                if self.deadline > now {
+                SUMMON_FADE if now < self.deadline => {
                     let left = f64::from(self.deadline - now) * (1.0 / f64::from(SUMMON_FADE_MS));
-                    return SummonStep {
-                        shown: Some(1.0 - left as f32),
+                    SummonStep {
+                        caster_gain: Some(1.0 - left as f32),
                         ..quiet
-                    };
+                    }
                 }
-                if self.deadline <= now {
+                SUMMON_FADE => {
                     self.phase = SUMMON_TAIL;
                     self.deadline = now.wrapping_add(SUMMON_TAIL_MS);
-                    return SummonStep {
-                        phase: self.phase,
+                    self.wisps = None;
+                    SummonStep {
+                        phase: SUMMON_TAIL,
+                        release: true,
                         ..quiet
-                    };
+                    }
                 }
-                quiet
-            }
-            SUMMON_TAIL => {
-                if self.deadline <= now {
+                SUMMON_TAIL if self.deadline <= now => {
                     self.phase = DONE;
-                    return SummonStep {
+                    SummonStep {
                         result: DONE,
+                        phase: DONE,
                         cleanup: true,
                         ..quiet
-                    };
+                    }
                 }
-                quiet
+                _ => quiet,
             }
-            _ => quiet,
-        }
+        };
+        self.last = step;
+        step
     }
 }
 
@@ -1167,41 +1301,62 @@ mod tests {
     }
 
     #[test]
-    fn a_summon_runs_its_five_phases() {
-        let mut summon = Summon::new(0, true);
-        assert_eq!(summon.control(0, 1, NavAnswer::Waiting, false).result, 0);
-        assert!(summon.control(0, 2, NavAnswer::Found, false).spawn);
+    fn an_ai_summon_picks_arrives_grows_fades_and_ends() {
+        let mut summon = Summon::ai(0);
+        assert_eq!(summon.control(0, 1).result, 0);
+        assert!(!summon.wants_demon());
+        // The grid finds a place 300 cm behind; the demon faces the caster.
+        summon.picked(
+            NavAnswer::Found,
+            Some(Vec3::new(0.0, 0.0, -300.0)),
+            Vec3::new(0.0, 50.0, 0.0),
+        );
         assert_eq!(summon.phase, SUMMON_SPAWN);
-        assert_eq!(
-            summon.control(0, 3, NavAnswer::Found, false).phase,
-            SUMMON_SPAWN
-        );
-        assert_eq!(
-            summon.control(0, 4, NavAnswer::Found, true).phase,
-            SUMMON_GROW
-        );
-        assert_eq!(
-            summon.control(0, 2003, NavAnswer::Found, true).phase,
-            SUMMON_GROW
-        );
-        assert_eq!(
-            summon.control(0, 2004, NavAnswer::Found, true).phase,
-            SUMMON_FADE
-        );
-        assert_eq!(
-            summon.control(0, 3504, NavAnswer::Found, true).shown,
-            Some(0.5)
-        );
-        assert_eq!(
-            summon.control(0, 5004, NavAnswer::Found, true).phase,
-            SUMMON_TAIL
-        );
-        let done = summon.control(0, 6005, NavAnswer::Found, true);
+        assert!((Vec3::from_array(summon.aim) - Vec3::Z).length() < 1e-3);
+        assert!(summon.wants_demon());
+        // No body yet: it waits.
+        assert_eq!(summon.control(0, 3).phase, SUMMON_SPAWN);
+        summon.arrive(7, Some(9), 4);
+        assert_eq!((summon.phase, summon.deadline), (SUMMON_GROW, 2004));
+        assert!(!summon.control(0, 2003).open_shell);
+        let open = summon.control(0, 2004);
+        assert!(open.open_shell);
+        assert_eq!(summon.phase, SUMMON_FADE);
+        assert_eq!(summon.control(0, 3504).caster_gain, Some(0.5));
+        let release = summon.control(0, 5004);
+        assert!(release.release);
+        assert_eq!((summon.phase, summon.wisps), (SUMMON_TAIL, None));
+        assert_eq!(summon.control(0, 6003).result, 0);
+        let done = summon.control(0, 6004);
         assert_eq!(done.result, DONE);
         assert!(done.cleanup);
+    }
 
-        let mut player = Summon::new(0, false);
+    #[test]
+    fn an_impossible_place_ends_the_ai_summon() {
+        let mut summon = Summon::ai(0);
+        summon.picked(NavAnswer::Impossible, None, Vec3::ZERO);
+        assert_eq!(summon.control(0, 1).result, DONE);
+        assert!(!summon.wants_demon());
+    }
+
+    #[test]
+    fn a_player_summon_faces_the_caster_or_its_way() {
+        let player = Summon::player(
+            0,
+            Vec3::new(300.0, 0.0, 0.0),
+            Vec3::new(0.0, 40.0, 0.0),
+            Vec3::Z,
+            0.25,
+        );
         assert_eq!(player.phase, SUMMON_SPAWN);
-        assert_eq!(player.control(2, 0, NavAnswer::Found, true).result, DONE);
+        assert!(player.wants_demon());
+        assert!((Vec3::from_array(player.aim) + Vec3::X).length() < 1e-3);
+        assert!((player.yaw + std::f32::consts::FRAC_PI_2).abs() < 1e-3);
+        // A place at the caster's feet takes the caster's own way.
+        let (aim, yaw) = summon_facing(Vec3::ZERO, Vec3::new(0.5, 0.0, 0.5), Vec3::X, 1.5);
+        assert_eq!((aim, yaw), (Vec3::X, 1.5));
+        let mut ended = player;
+        assert_eq!(ended.control(2, 0).result, DONE);
     }
 }

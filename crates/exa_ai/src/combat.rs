@@ -23,7 +23,8 @@
 //!   (outside a swing) starts a lunge: the measured reach is 80 cm longer.
 //! - **Chasing and eagerness.** Engaged and balanced (above 0.85): a foe
 //!   beyond 600–800 cm (400 when it lies down, 200–300 when it runs; ¾ when
-//!   the fighter runs), more than 150 cm above or below, or out of sight
+//!   the fighter runs), its ground more than 150 cm above or below the
+//!   fighter's ([`target_point`]), or out of sight
 //!   counts the fighter as stuck; after 21 such ticks it chases. With full
 //!   energy the eagerness drifts by `(3 − k)·(0.02·draw − 0.006)` up to 6
 //!   and falls by 0.01 above; short of energy it is scaled by
@@ -221,6 +222,9 @@ pub fn practise(p: &mut Practice) -> i32 {
 pub struct CombatMind {
     /// The foe's contact level (0 notice … 3 engage).
     pub level: i32,
+    /// Exarust's debug aid: why the last chase check counted the fighter
+    /// stuck (1 far, 2 high, 4 out of sight; 0 not stuck).
+    pub stuck_why: u8,
     pub eagerness: f32,
     /// How committed the fighter is to its swing (1 on a new foe; halved or
     /// cleared late in a swing) [guess: name].
@@ -275,6 +279,7 @@ impl Default for CombatMind {
     fn default() -> Self {
         Self {
             level: 0,
+            stuck_why: 0,
             eagerness: 0.0,
             commitment: 0.0,
             pressing: false,
@@ -452,6 +457,8 @@ pub struct Body {
     pub chest: Vec3,
     pub ground_y: f32,
     pub look: Vec3,
+    /// The point the fighter watches ([`target_point`]): the foe's chest
+    /// across the ground, at the foe's ground height.
     pub target_point: Vec3,
     /// The direction to the foe the last estimate left.
     pub to_target: Vec3,
@@ -742,6 +749,18 @@ pub trait Field {
     }
 }
 
+/// The point an AI watches on the target it sees: the target's chest
+/// across the ground (x, z) at the height of the ground under the target,
+/// not the chest's own height. The contact integration publishes it each
+/// tick the target is in sight; the combat state's chase check measures
+/// its height against the fighter's own ground (more than 150 cm apart is
+/// a chase), its sight test runs from the fighter's ground point to it,
+/// and a running fighter heads for it. So a foe standing on a ledge or a
+/// rock half a metre up is no more out of reach than one on the flat.
+pub fn target_point(foe_chest: Vec3, foe_ground_y: f32) -> Vec3 {
+    Vec3::new(foe_chest.x, foe_ground_y, foe_chest.z)
+}
+
 /// Where the foe stands as far as the fighter can tell: the chest, or
 /// toward its step's goal by three quarters of the skill when it steps, or
 /// ahead of it by its speed × 30 when it runs.
@@ -957,7 +976,11 @@ pub fn chase_and_eagerness(
     let height = (me.target_point.y - me.ground_y).abs();
     let unreachable = foe_contact.as_ref().is_some_and(|c| c.unreachable);
     let ground = Vec3::new(me.position.x, me.ground_y, me.position.z);
-    if range < distance_cm || 150.0 < height || field.blocked(ground, me.target_point) {
+    let far = range < distance_cm;
+    let high = 150.0 < height;
+    let blocked = !far && !high && field.blocked(ground, me.target_point);
+    mind.stuck_why = u8::from(far) | u8::from(high) << 1 | u8::from(blocked) << 2;
+    if far || high || blocked {
         if mind.stuck < 21 || unreachable {
             mind.stuck += 1;
         } else if field.chase(mind.estimate, roll) {

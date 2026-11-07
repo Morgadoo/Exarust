@@ -253,6 +253,10 @@ pub struct PowerCaster {
     /// The body was dying (collapsing or dead) at the last walk: the
     /// broadcast's 2 goes once, when it starts.
     pub was_dying: bool,
+    /// The power memory's creature list for the summoning: the character
+    /// id of the demon it brought in, kept once the demon has arrived and
+    /// never cleared (the AI's summoning advice refuses while it is set).
+    pub summoned: Option<u32>,
 }
 
 /// The status-effect broadcast's events: a body that starts to collapse or
@@ -307,6 +311,7 @@ impl PowerCaster {
             evaluator_idle: false,
             broadcast: None,
             was_dying: false,
+            summoned: None,
         }
     }
 
@@ -417,6 +422,7 @@ impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         exa_physics::sim_app::add_frame_commands(app);
         super::veil_live::bridge_veil_types(app);
+        super::summon_live::bridge_summon_types(app);
         app.add_message::<BarCommand>()
             .add_message::<exa_combat::veto::BlowPhased>()
             .add_message::<super::veil_live::VeilSounded>()
@@ -434,13 +440,30 @@ impl Plugin for CastPlugin {
                     .after(tick_casters)
                     .after(exa_combat::CombatSystems),
             )
-            // An AI's Long Door asks the grid before the walk runs it.
+            // An AI's Long Door and Summon ask the grid before the walk
+            // runs them; a summon whose place is known asks for its demon,
+            // and one whose demon's body exists takes it.
             .add_systems(
                 FixedUpdate,
-                super::long_door_live::pick_long_doors
+                (
+                    super::long_door_live::pick_long_doors,
+                    super::summon_live::ask_demons,
+                    super::summon_live::arrive_demons,
+                )
+                    .chain()
                     .before(tick_casters)
                     .after(BodySystems),
             )
+            .add_systems(
+                FixedUpdate,
+                (
+                    super::summon_live::release_demons,
+                    super::summon_live::end_demon_wisps,
+                )
+                    .after(tick_casters)
+                    .before(super::vanish_live::step_vanishes),
+            )
+            .add_message::<super::summon_live::DemonAsked>()
             .add_message::<super::live::ArcShocked>()
             .add_message::<Otherwhere>()
             .add_message::<exa_ai::presence::Entered>()
@@ -1041,10 +1064,9 @@ fn advise_duellists(
             health_ratio: fighter
                 .filter(|f| f.health.max > 0.0)
                 .map_or(1.0, |f| f.health.yellow / f.health.max),
-            summoned: caster
-                .active
-                .iter()
-                .any(|entry| matches!(entry.class, ActiveClass::Summon(_))),
+            // The power memory holds a creature list for the summoning once
+            // a demon has arrived; the original never checks that it lives.
+            summoned: caster.summoned.is_some(),
             ..AiView::default()
         };
         if let Ok(target) = places.get(duellist.target) {
@@ -1897,11 +1919,21 @@ fn create_displacement(
             debug!("constant displacement: wisps on the body, the veil on {caster_entity:?}");
             entity
         }
-        DisplacementStart::Summon { .. } => {
-            let power = Summon::new(context.now, false);
+        DisplacementStart::Summon { at, .. } => {
+            // The player's summon knows its place (the cursor's) and faces
+            // the caster from it; the AI's picks its place through the
+            // grid first (`summon_live`).
+            let power = match at {
+                Some(place) => {
+                    let forward = context.heading;
+                    let yaw = exa_physics::engine_math::heading(forward);
+                    Summon::player(context.now, place, context.standing, forward, yaw)
+                }
+                None => Summon::ai(context.now),
+            };
             caster.body.cast_hook = Some(super::power::displacement::SUMMON_HOOK);
             // The summoning's creator adds no node: the class builds its
-            // vanish effect on its own activation.
+            // vanish effect over the demon when it arrives.
             push_active(
                 caster,
                 super::displacement::SUMMON,
@@ -1911,7 +1943,10 @@ fn create_displacement(
                 0.0,
                 None,
             );
-            debug!("displacement summon: the class builds its effect");
+            info!(
+                "displacement summon by {caster_entity:?}: phase {:#x}, place {:?} cm",
+                power.phase, power.place
+            );
             None
         }
     }
@@ -2333,7 +2368,7 @@ fn spawn_hand_arcs(
 }
 
 /// The constant displacement's wisps.
-fn spawn_body_wisps(
+pub(crate) fn spawn_body_wisps(
     commands: &mut Commands,
     caster: Entity,
     body: &Ragdoll,
@@ -2718,7 +2753,18 @@ pub(crate) fn tick_casters(
                         result = step.result;
                     }
                     ActiveClass::Summon(power) => {
-                        let step = power.control(event, now, NavAnswer::Found, false);
+                        let step = power.control(event, now);
+                        if step.open_shell || step.release {
+                            info!(
+                                "summon by {caster_entity:?}: phase {:#x} at {now} ms{}",
+                                step.phase,
+                                if step.release {
+                                    ", the demon is let go"
+                                } else {
+                                    ", the shell opens"
+                                }
+                            );
+                        }
                         result = step.result;
                     }
                 }

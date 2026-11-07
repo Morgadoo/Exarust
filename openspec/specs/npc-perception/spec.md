@@ -420,14 +420,12 @@ The perception SHALL read a body as asleep when its state flags carry the dorman
 - **WHEN** an observer with flags 0x10, and one with flags 0x30, look at a body with flags 0x30
 - **THEN** both observers read themselves as asleep and the body as asleep
 
-
 ### Requirement: Target pass picks the foe
 When the target pass enters combat, the brain's foe SHALL become the character the pass picked, whether or not it is the player; a pick that is already the foe SHALL leave the foe as it is. No timer SHALL gate the entry: the pass runs on the brain's turn while it is active.
 
 #### Scenario: A neutral takes the fighter
 - **WHEN** a neutral brain rates a fighting brain beside it an engagement
 - **THEN** it enters combat with that brain as its foe
-
 
 ### Requirement: Equal waits go to the earlier spawned
 When two brains have waited equally long for the target pass's or the route planner's turn, the turn SHALL go to the earlier spawned (the lower entity index), whatever order the brains claim in.
@@ -442,3 +440,10 @@ When a brain's body dies, a follower SHALL stop following (activity 0) and leave
 #### Scenario: A dying follower
 - **WHEN** a following brain's condition becomes dead
 - **THEN** its activity is 0 and it leaves the party
+
+### Requirement: A statue without a sense
+A character whose statue byte is set and who has no contact sense of its own SHALL not perceive its contacts: each contact's concern and hostility SHALL be zeroed instead.
+
+#### Scenario: A held demon
+- **WHEN** a summoned demon is held and a human stands 2 m away
+- **THEN** the demon's contact with the human keeps no concern and no hostility

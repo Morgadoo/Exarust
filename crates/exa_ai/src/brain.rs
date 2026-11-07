@@ -194,8 +194,10 @@ pub struct Npc {
     /// The contact sense its race uses ([`personality::Sense`]).
     pub sense: personality::Sense,
     /// The attach found a statue: its contact sense clears what it sees.
-    /// This is the behaviour's statue byte, which only a golem wake
-    /// clears ([`crate::golem::wake`]).
+    /// This is the behaviour's statue byte, which a golem wake clears
+    /// ([`crate::golem::wake`]); the Summon sets it while it holds its
+    /// demon and clears it when it lets the demon go. With no sense of its
+    /// own, a statue perceives nobody.
     pub statue: bool,
     /// The home a golem wake takes from the body (cm) and its angle: where
     /// the alarm return puts the guardian back.
@@ -1003,6 +1005,15 @@ pub fn perceive_all(
             let was_tracked = combatant.contacts[index].tracked();
             let was_selected = combatant.contacts[index].selected;
             let sight = match npc.sense {
+                // No sense installed and the statue byte set (a summoned
+                // demon while its summon holds it): no perception runs,
+                // and the contact's concern and hostility (with two more
+                // of its values Exarust has not named) are zeroed.
+                personality::Sense::Base if npc.statue => {
+                    combatant.contacts[index].concern = 0.0;
+                    combatant.contacts[index].hostility = 0.0;
+                    combatant::Sight::default()
+                }
                 // No sense installed: the observed character's own
                 // perception, the role-driven base one.
                 personality::Sense::Base => combatant::perceive(

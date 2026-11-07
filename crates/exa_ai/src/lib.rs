@@ -1710,7 +1710,7 @@ fn duellist(
                 chest,
                 ground_y: feet.y * CM,
                 look: combat::of_yaw(ai.mind.heading),
-                target_point: foe_chest,
+                target_point: combat::target_point(foe_chest, target.translation().y * CM),
                 to_target: ai.bearing.0,
                 distance_cm: ai.bearing.1,
                 swing_amount: primary.map(|r| r.swing_turn),
@@ -2093,6 +2093,20 @@ fn duellist(
                 }
             }
             if let Some(outcome) = chased {
+                // Debug aid: `EXA_DUEL_TRACE` also logs what the chase did.
+                if std::env::var_os("EXA_DUEL_TRACE").is_some() {
+                    info!(
+                        "chase-trace {entity:?} end {:?} planned {:?} mark {} reached {}",
+                        outcome.end,
+                        outcome.planned.as_ref().map(|p| (
+                            p.following,
+                            p.route.points.len(),
+                            p.route.points.last().copied()
+                        )),
+                        outcome.mark.is_some(),
+                        outcome.reached.is_some()
+                    );
+                }
                 let contact = &mut combatant.contacts[index];
                 if let Some(mark) = outcome.mark {
                     contact.unreachable_until_ms = mark.until_ms;
@@ -2141,7 +2155,7 @@ fn duellist(
                 info!(
                     "duel-trace {entity:?} t{} dist {:.0} can_step {} block {} run {} spd {:.2} \
                      tone {:.2} sup {:.2} stepping {} state {} queue {} chosen {:?} step {:?} exit {:?} \
-                     mstep {} long {} cond {:#x}",
+                     mstep {} long {} cond {:#x} stuck {} why {} tp {:.0?} gy {:.0}",
                     me.now_ms,
                     ai.bearing.1,
                     me.can_step,
@@ -2158,7 +2172,11 @@ fn duellist(
                     out.exit,
                     ai.mind.step,
                     ai.mind.long_step,
-                    me.condition
+                    me.condition,
+                    ai.mind.stuck,
+                    ai.mind.stuck_why,
+                    me.target_point,
+                    me.ground_y
                 );
             }
             if out.marks.queue_taken
@@ -2325,6 +2343,15 @@ fn duellist(
         {
             let at = drive::DriveBody::of(feet, motor, ragdoll);
             if ai.chasing && !ai.route.is_empty() {
+                if std::env::var_os("EXA_DUEL_TRACE").is_some() {
+                    info!(
+                        "chase-walk {entity:?} feet {:.0?} route {} carrot {:.0?} driving {}",
+                        feet * CM,
+                        ai.route.len(),
+                        crate::path::carrot(&ai.route, feet * CM).goal,
+                        driven.0.driving
+                    );
+                }
                 if let Some(goal) = crate::path::carrot(&ai.route, feet * CM).goal {
                     let cost = |p: Vec3| drive::grid_cost(nav.as_deref(), p);
                     drive::drive(req, &mut driven.0, &at, goal / CM, true, 1, false, &cost);

@@ -2,7 +2,10 @@
 //! distortion shader while the body vanishes, blinks or is summoned.
 //!
 //! A shell opens over 400 ms, holds while its shown fraction is one, and
-//! closes over 300 ms from wherever it is when the fade is asked for. When
+//! closes over 300 ms from wherever it is when the fade is asked for (the
+//! summon's shell over its demon rests at nothing shown until its summon
+//! opens it over 3000 ms and closes it over 1000 ms, at opacity 2 and a
+//! texture scale divided by the demon's size). When
 //! the close reaches zero it calls its end hook and may be removed. The
 //! shader's fade is `(1 − shown²)²`; the rest of its uniforms are a texture
 //! offset rolling over 40 s and a fade plane along the body's up axis.
@@ -131,6 +134,14 @@ pub struct Shell {
     pub can_finish: bool,
     /// The shader's texture position, two random values at creation.
     pub tex_pos: [f32; 2],
+    /// How long it opens and closes, ms ([`OPEN_MS`] and [`CLOSE_MS`]
+    /// unless its maker sets its own).
+    pub open_ms: u32,
+    pub close_ms: u32,
+    /// The shader's texture scale and opacity ([`TEX_SCALE`] and
+    /// [`OPACITY`] unless its maker sets its own).
+    pub tex_scale: f32,
+    pub opacity: f32,
 }
 
 impl Shell {
@@ -142,17 +153,40 @@ impl Shell {
             shown: 0.0,
             can_finish: false,
             tex_pos,
+            open_ms: OPEN_MS,
+            close_ms: CLOSE_MS,
+            tex_scale: TEX_SCALE,
+            opacity: OPACITY,
+        }
+    }
+
+    /// The summon's shell over its demon: made resting at nothing shown,
+    /// opening over `open_ms` and closing over `close_ms` when its summon
+    /// says, at `opacity`, its texture scale divided by the demon's
+    /// `size`.
+    pub fn resting(
+        now_ms: u32,
+        tex_pos: [f32; 2],
+        open_ms: u32,
+        close_ms: u32,
+        opacity: f32,
+        size: f32,
+    ) -> Self {
+        Self {
+            state: ShellState::Resting,
+            open_ms,
+            close_ms,
+            opacity,
+            tex_scale: TEX_SCALE / size,
+            ..Self::new(now_ms, tex_pos)
         }
     }
 
     /// A created shell with a zero stamp takes the clock it is created on.
     pub fn created(now_ms: u32, stored: u32, tex_pos: [f32; 2]) -> Self {
         Self {
-            state: ShellState::Opening,
             stamp: if stored == 0 { now_ms } else { stored },
-            shown: 0.0,
-            can_finish: false,
-            tex_pos,
+            ..Self::new(now_ms, tex_pos)
         }
     }
 
@@ -178,7 +212,7 @@ impl Shell {
         };
         match self.state {
             ShellState::Opening => {
-                self.shown = (span_ms(now_ms, self.stamp) as f64 / f64::from(OPEN_MS)) as f32;
+                self.shown = (span_ms(now_ms, self.stamp) as f64 / f64::from(self.open_ms)) as f32;
                 if self.shown > 1.0 {
                     self.shown = 1.0;
                     self.state = ShellState::Resting;
@@ -186,12 +220,12 @@ impl Shell {
             }
             ShellState::Closing => {
                 self.state = ShellState::Fading;
-                let back = round_i32(CLOSE_MS as f32 * (1.0 - self.shown));
+                let back = round_i32(self.close_ms as f32 * (1.0 - self.shown));
                 self.stamp = now_ms.wrapping_sub(back as u32);
             }
             ShellState::Fading => {
                 self.shown =
-                    (1.0 - span_ms(now_ms, self.stamp) as f64 / f64::from(CLOSE_MS)) as f32;
+                    (1.0 - span_ms(now_ms, self.stamp) as f64 / f64::from(self.close_ms)) as f32;
                 if self.shown <= 0.0 {
                     self.shown = 0.0;
                     self.state = ShellState::Ending;
@@ -236,8 +270,8 @@ impl Shell {
             interior: 0.0,
             tex_pos: self.tex_pos,
             tex_offset: Self::tex_offset(now_ms),
-            tex_scale: TEX_SCALE,
-            opacity: OPACITY,
+            tex_scale: self.tex_scale,
+            opacity: self.opacity,
             plane_scale: PLANE_SCALE,
         }
     }

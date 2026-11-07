@@ -25,7 +25,7 @@ use bevy::prelude::*;
 use exa_world::nav::{NavGrid, find_path};
 
 use super::cast::{ActiveClass, PowerCaster};
-use super::power::displacement::{AI_PICK, NavAnswer, nav_answer, nav_query_target};
+use super::power::displacement::{AI_PICK, NavAnswer, SUMMON_PICK, nav_answer, nav_query_target};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -40,7 +40,7 @@ pub fn ask_grid(grid: &NavGrid, place: Vec3, forward: Vec3) -> (NavAnswer, Optio
 }
 
 /// Each body step, before the casters' walk: an AI's Long Door at phase
-/// 0x10 with no destination asks the grid.
+/// 0x10 with no destination, or its Summon at its pick, asks the grid.
 pub(crate) fn pick_long_doors(
     mut casters: Query<(Entity, &mut PowerCaster, Option<&exa_ai::Duellist>)>,
     places: Query<(
@@ -54,10 +54,16 @@ pub(crate) fn pick_long_doors(
         return;
     };
     for (entity, mut caster, duellist) in &mut casters {
-        let waiting = caster.active.iter().any(|a| {
-            matches!(&a.class, ActiveClass::LongDoor(door)
-                if door.base.phase == AI_PICK && door.destination.is_none()
-                    && door.nav == NavAnswer::Waiting)
+        let waiting = caster.active.iter().any(|a| match &a.class {
+            ActiveClass::LongDoor(door) => {
+                door.base.phase == AI_PICK
+                    && door.destination.is_none()
+                    && door.nav == NavAnswer::Waiting
+            }
+            ActiveClass::Summon(summon) => {
+                summon.phase == SUMMON_PICK && summon.nav == NavAnswer::Waiting
+            }
+            _ => false,
         });
         if !waiting {
             continue;
@@ -84,19 +90,28 @@ pub(crate) fn pick_long_doors(
             _ => at.rotation() * Vec3::Z,
         };
         let (answer, found) = ask_grid(&grid, place, forward);
+        // The summon's facing runs from its place to the caster.
+        let own = places
+            .get(entity)
+            .map_or(place, |(at, _)| at.translation() * CM);
         for entry in &mut caster.active {
-            if let ActiveClass::LongDoor(door) = &mut entry.class
-                && door.base.phase == AI_PICK
-                && door.destination.is_none()
-            {
-                door.nav = answer;
-                if answer == NavAnswer::Found {
-                    door.destination = found.map(|p| p.to_array());
+            match &mut entry.class {
+                ActiveClass::LongDoor(door)
+                    if door.base.phase == AI_PICK && door.destination.is_none() =>
+                {
+                    door.nav = answer;
+                    if answer == NavAnswer::Found {
+                        door.destination = found.map(|p| p.to_array());
+                    }
                 }
+                ActiveClass::Summon(summon) if summon.phase == SUMMON_PICK => {
+                    summon.picked(answer, found, own);
+                }
+                _ => {}
             }
         }
         info!(
-            "long door {entity:?}: the grid answers {answer:?} for subject {subject:?} at {place:?} cm facing {forward:?} (found {found:?})"
+            "displacement pick {entity:?}: the grid answers {answer:?} for subject {subject:?} at {place:?} cm facing {forward:?} (found {found:?})"
         );
     }
 }
