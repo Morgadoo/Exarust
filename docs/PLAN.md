@@ -1637,6 +1637,8 @@ Round 106 mipmaps: the resampling unit's icon path and format refusals follow th
 
 Round 107 blended: transparent surfaces draw in the original's compile-time list order.
 
+Round 115 cutaway: roofs, awnings and overhangs between the camera and the player fade as in the original.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
