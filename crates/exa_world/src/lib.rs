@@ -8,6 +8,7 @@ pub mod bodies;
 pub mod cloth;
 pub mod cloth_draw;
 pub mod cloth_parts;
+pub mod cut_away;
 pub mod db_objects;
 pub mod editor;
 pub mod environment;
@@ -1610,6 +1611,9 @@ pub fn spawn_model_nodes_at(
         let parent = node.parent.map_or(root, |p| entities[p]);
         commands.entity(entities[i]).insert(ChildOf(parent));
     }
+    // The camera's cut-away fade: the candidates and the meshes their
+    // marks carry to.
+    cut_away::attach(commands, model, &entities, &parts_of);
     // A skinned linked-body object's meshes follow its nodes' frames.
     for (i, node) in model.nodes.iter().enumerate() {
         if let Some(skin) = &node.prop_skin {
@@ -3423,6 +3427,7 @@ mod tests {
             is_skin: false,
             placeholder: false,
             visibility: 0,
+            cut_away: None,
             cloth: false,
             cloth_mesh: None,
             mesh: false,

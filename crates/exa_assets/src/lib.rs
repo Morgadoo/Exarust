@@ -44,8 +44,8 @@ use exa_formats::rfi::Rfi;
 pub use exa_rpk::{Archive, GameData, PackKind, locate_install};
 
 pub use model::{
-    ClothMesh, ImageInsert, Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, PropSkin,
-    TextureInfo, mesh_triangles, transform_from_rows,
+    ClothMesh, CutAwayMesh, ImageInsert, Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody,
+    PropSkin, TextureInfo, mesh_triangles, transform_from_rows,
 };
 pub use morph::BodyMorph;
 pub use skin_composite::{SkinBeard, SkinCompositeJob, SkinDecomp};

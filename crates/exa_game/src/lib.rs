@@ -36,6 +36,7 @@ pub mod creator_screen;
 pub mod creator_view;
 pub mod crystal_drain;
 pub mod cursor;
+pub mod cut_away_live;
 pub mod debug_shot;
 pub mod destination;
 pub mod dialogue_live;
@@ -194,6 +195,7 @@ impl Plugin for GamePlugin {
             role_scripts::RoleScriptsPlugin,
             zone_scripts::ZoneScriptsPlugin,
             character_use::CharacterUsePlugin,
+            cut_away_live::CutAwayPlugin,
         ))
         .init_resource::<prelude::Tips>()
         .init_resource::<os_clipboard::SystemClipboard>()

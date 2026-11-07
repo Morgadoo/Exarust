@@ -224,6 +224,16 @@ pub mod flags2 {
     /// `EXA_LOCAL_REF_DEBUG=1`: a [`LOCAL_REFLECTION`] surface inside the GI
     /// volume shows its low-field read × 4 and nothing else.
     pub const DEBUG_LOCAL_REFLECTION: u32 = 2;
+    /// The camera's cut-away fade, blended: the surface draws with
+    /// [`super::ExaParams::cut_away_opacity`] in place of its diffuse
+    /// alpha (the material is blended, writing depth while its opacity is
+    /// above zero). The shadow passes ignore it, as the original's do.
+    pub const CUT_AWAY_BLEND: u32 = 4;
+    /// The camera's cut-away fade, settled and supersampled: the surface
+    /// draws opaque into half of each 2 × 2 block of the supersampled
+    /// scene (the block's diagonal), as the original draws a settled mesh
+    /// into half of its jittered sub-frames.
+    pub const CUT_AWAY_HALF: u32 = 8;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex
@@ -349,7 +359,11 @@ pub struct ExaParams {
     pub texture_bias: f32,
     /// The second flag word ([`flags2`]).
     pub flags2: u32,
-    pub pad2: u32,
+    /// The camera's cut-away fade ([`flags2::CUT_AWAY_BLEND`]): the
+    /// opacity that replaces the diffuse alpha, one less the mesh's fade
+    /// amount, as the original's faded pass writes it into the material's
+    /// `MatDif.a` for the draw. Unused without that bit.
+    pub cut_away_opacity: f32,
     /// The camera's GI block's sample origin (m; the per-object pick's slot
     /// 0, [`ExaParams::gi_origins`]) and the shared sample size (m).
     pub gi_origin: Vec4,
@@ -404,7 +418,7 @@ impl Default for ExaParams {
             flags: flags::LIT,
             texture_bias: -0.75,
             flags2: 0,
-            pad2: 0,
+            cut_away_opacity: 1.0,
             gi_origin: Vec4::ZERO,
             gi_extent: Vec4::ONE,
             displacement: Vec4::ZERO,
@@ -667,6 +681,10 @@ pub struct ExaMaterialKey {
     cloth_cull: Option<bevy::render::render_resource::Face>,
     /// The surface casts the alpha-tested way ([`ExaMaterial::cuts_shadow`]).
     cuts_shadow: bool,
+    /// The surface is a cut-away fade that writes depth (blended, opacity
+    /// above zero): the original lays the faded mesh's depth first, so
+    /// only its nearest layer shows.
+    cut_away_depth: bool,
 }
 
 impl From<&ExaMaterial> for ExaMaterialKey {
@@ -675,6 +693,8 @@ impl From<&ExaMaterial> for ExaMaterialKey {
             two_sided: m.params.flags & flags::TWO_SIDED != 0,
             cloth_cull: m.cloth_cull,
             cuts_shadow: m.cuts_shadow(),
+            cut_away_depth: m.params.flags2 & flags2::CUT_AWAY_BLEND != 0
+                && m.params.cut_away_opacity > 0.0,
         }
     }
 }
@@ -725,6 +745,11 @@ impl Material for ExaMaterial {
             data.cuts_shadow,
         ) {
             return Ok(());
+        }
+        if data.cut_away_depth
+            && let Some(depth) = descriptor.depth_stencil.as_mut()
+        {
+            depth.depth_write_enabled = Some(true);
         }
         if let Some(face) = key.bind_group_data.cloth_cull {
             descriptor.primitive.cull_mode = Some(face);

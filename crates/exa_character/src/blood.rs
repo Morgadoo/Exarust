@@ -1331,6 +1331,7 @@ mod tests {
             mesh: false,
             render_flags: 0,
             visibility: 0,
+            cut_away: None,
             triangles: None,
         }
     }

@@ -119,7 +119,15 @@ u32  flags2        bit 23 (0x800000) the floor bit (the feet's Ground Query
                    their node-word tests, REA; 875 mesh nodes in 0.9.5,
                    `exa-tool corpus floor-nodes`);
                    bit 31 is the deprecated fading flag (a mesh body's
-                   reader replaces it by bit 24)
+                   reader replaces it by bit 24);
+                   bits 28–30 (0x70000000) the camera cut-away kind of a
+                   mesh with bit 29: 0x2… segment, 0x3… sphere only,
+                   0x6… overhead; bit 24 (0x01000000) carries the mark to
+                   the parent, bit 25 (0x02000000) to the mesh children,
+                   bit 27 (0x08000000) fades all the way (REA; Objlib 142
+                   and Resource 38 candidates, none with bit 27,
+                   `exa_world` test `shipped_cut_away_candidates`;
+                   docs/RENDERING.md, Cut-away fade)
 u32  instance      1-based index of the node that owns this one (0: its own);
                    non-zero nodes store no body or sub-chunks
 u32  parent        1-based index into the node list; 0 = root

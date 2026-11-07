@@ -2284,9 +2284,10 @@ pub(crate) fn chase_camera(
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
     mut cameras: Query<(&mut ChaseCamera, &mut Transform, &mut Projection)>,
-    (mut spectate, every_body): (
+    (mut spectate, every_body, mut cut_away): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
+        Option<ResMut<crate::cut_away_live::CutAwayCamera>>,
     ),
 ) {
     let player_focus = players.iter().next().map(|target| {
@@ -2397,6 +2398,16 @@ pub(crate) fn chase_camera(
         // view steep. Until the scene keeps those bits the tilt stays 0.
         let along = cam.advance(time.delta_secs());
         let (backward, zoom, shake) = cam.shown(along);
+        // The cut-away driver casts from the looked-at point back along the
+        // camera's backward vector, by the camera's distance.
+        if let Some(probe) = cut_away.as_deref_mut() {
+            *probe = crate::cut_away_live::CutAwayCamera {
+                focus,
+                backward,
+                distance: CAMERA_DISTANCE,
+                ready: true,
+            };
+        }
         t.translation = focus + backward * CAMERA_DISTANCE;
         t.look_at(focus, Vec3::Y);
         t.translation += shake;

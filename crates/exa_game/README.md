@@ -2067,6 +2067,24 @@ routines that were read from the original.
   script that sends a tone, style, hair-colour and physique edit one at a
   time (frames 120 to 480 after the creator opens).
 
+## Cut-away fade
+
+`cut_away_live` runs the original's camera cut-away each frame after the
+visibility pass: the chase camera writes its looked-at point, backward
+vector and distance (`CutAwayCamera`), the detector casts
+`nav_camera::cut_away_segment` (and the overhead kind's 10 m probe) at
+every seen candidate in spawn order, bounding sphere first and then the
+mesh callbacks of `exa_world::cut_away` in the node's space, with the
+parent and children carries; `scene_nodes::fade_step` moves each mesh's
+amount on the frame clock's whole milliseconds; and each part gets the
+draw its mask asks: its own material when solid, a blended copy whose
+opacity replaces the diffuse alpha while fading (and when settled without
+supersampling), its own material drawn into one diagonal of each
+supersampled 2 × 2 block when settled under supersampling, opacity 0 (still
+casting) when faded out, hidden for a part whose own surface is blended.
+`EXA_CUT_AWAY=0` turns it off. Rendering only: no body, pick or simulation
+reads it. Rules: `docs/RENDERING.md` (Cut-away fade).
+
 ## Content stream requests
 
 `content_requests` runs the game's content stream

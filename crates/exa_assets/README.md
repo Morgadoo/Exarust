@@ -48,6 +48,13 @@ member's inverse binds turn the bone's file frame back and apply its own.
 The model build gives each member `ModelNode::prop_skin` (its parts skinned
 to those bones, binds and joint nodes); `parts` keep the rigid meshes for
 spawners that do not skin (a weapon in a hand).
+Cut-away meshes (`ModelNode::cut_away`, `CutAwayMesh`): a mesh whose
+second flag word carries the cut-away bits keeps them as the mesh loader
+leaves them (`flags2 & 0x7B000000`; the parent carry dropped when the parent
+is not a mesh; only the fade-all-the-way bit on a mesh that is no
+candidate), and the segment and overhead kinds keep the mesh's triangles
+for their callbacks. An instance node takes its own word over its owner's
+mesh. Rules: `docs/RENDERING.md` (Cut-away fade).
 `model::underscore_skinned_child` and `model::skinned_mesh_under` are the
 wound and effect lookups (the `_`-named child; and a skinned child in
 reverse child order, else the first found in the subtrees in forward

@@ -16,7 +16,8 @@ struct ExaParams {
     flags: u32,
     pad0: u32,
     pad1: u32,
-    pad2: u32,
+    // The cut-away fade's opacity: the shadow passes do not read it.
+    cut_away_opacity: f32,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
     displacement: vec4<f32>,
