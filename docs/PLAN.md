@@ -1810,6 +1810,8 @@ Round 55 wraith: Spirit Form's legless wraith hovers and walks, as the original'
 
 Round 62 playercontrols: the pad's commands run as the original's per-frame pad routine; the scripted pad now wins over a keyboard node reported as a gamepad.
 
+Round 108 summon: the summoning brings the demon in as the original does, held, faded in and let go as its caster's ally.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
