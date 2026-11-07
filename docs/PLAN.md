@@ -1367,6 +1367,8 @@ Round 60 itemability (S12, S13): item abilities are crystal sockets, not a recor
 
 Round 61 crystalsockets (S12): the crystal sockets and all three item abilities are live for every character.
 
+Round 114 uitext: the combo box draws as the original's, and every shipped item's description is checked against the original's rules.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
