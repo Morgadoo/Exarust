@@ -747,6 +747,7 @@ built from the group the index list starts with:
 the original's query takes a mesh's hit only above index 0; the dropped hit
 also hides that piece's farther faces. A grid cell's merged floor is not one
 mesh in Exarust, so its first triangle is not reproduced.
+A ghoul's thorax pins are scaled about the thorax origin by half its character size (`RaceMuscles::chest_pins`, `Ragdoll::scale_chest_pins`, the character init's re-scale for race classes 6 and 7); other races keep the stored pins, as the original's in-game bodies do (its full re-scale runs only in the creator's preview).
 `Physics::line_cast` / `contact::line_cast` is the original's line cast
 (front faces of every fixed solid collider, any triangle counting), walked
 over the colliders whole so the frame's replica answers before the step has

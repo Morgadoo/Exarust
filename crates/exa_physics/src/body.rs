@@ -3231,7 +3231,23 @@ impl Ragdoll {
         if race.golem {
             self.smooth_golem_links();
         }
+        if race.chest_pins != 1.0 {
+            self.scale_chest_pins(race.chest_pins);
+        }
         self
+    }
+
+    /// The character init's pin re-scale on the chest part (the ghouls',
+    /// at half the character size): each thorax pin's point, about the
+    /// part's origin, times `by`, and its weights taken again over the
+    /// part's rest. The original re-scales the point it keeps for the pin
+    /// and derives the weights and world point from it.
+    pub fn scale_chest_pins(&mut self, by: f32) {
+        for (part, w) in &mut self.chest {
+            let rest = &self.parts[*part].rest;
+            let point = rest[0] * w[0] + rest[1] * w[1] + rest[2] * w[2] + rest[3] * w[3];
+            *w = weights(&self.parts[*part], point * by);
+        }
     }
 
     /// The character init's golem set-up: every body (pivot) link of every

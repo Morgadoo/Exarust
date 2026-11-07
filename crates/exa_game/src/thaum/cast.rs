@@ -245,6 +245,24 @@ pub struct PowerCaster {
     /// The body's power id's domain evaluator answered nothing when the
     /// duellist's answers were last written.
     pub evaluator_idle: bool,
+    /// An event the original's status-effect broadcast passes every entry
+    /// of the list, outside the focus tick's walk: 2 when the body starts
+    /// to collapse or dies, 8 at a level change ([`status_event`]). Taken
+    /// by the next walk, which runs it before its own.
+    pub broadcast: Option<i32>,
+    /// The body was dying (collapsing or dead) at the last walk: the
+    /// broadcast's 2 goes once, when it starts.
+    pub was_dying: bool,
+}
+
+/// The status-effect broadcast's events: a body that starts to collapse or
+/// dies (the collapse, the kill plane and the fall's death) passes 2, a
+/// level change passes 8 to the player's list; the focus tick's own walk
+/// passes 0 to the body's own entries.
+pub mod status_event {
+    pub const TICK: i32 = 0;
+    pub const DOWN: i32 = 2;
+    pub const LEVEL_CHANGE: i32 = 8;
 }
 
 impl PowerCaster {
@@ -287,6 +305,8 @@ impl PowerCaster {
             last_result: 0,
             seen_action: None,
             evaluator_idle: false,
+            broadcast: None,
+            was_dying: false,
         }
     }
 
@@ -465,6 +485,12 @@ impl Plugin for CastPlugin {
                 ),
             )
             .add_systems(Update, publish_power_factors.after(run_bar_commands))
+            .add_systems(
+                Update,
+                broadcast_level_change.run_if(resource_exists::<
+                    Messages<exa_world::level_lifecycle::LevelChangeRequest>,
+                >),
+            )
             .add_systems(
                 FixedUpdate,
                 (
@@ -2326,6 +2352,35 @@ fn reset_entered_casts(
     }
 }
 
+/// A level change in process passes the player's list the status-effect
+/// broadcast's 8 (the original's level load tells the player's effects, and
+/// each follower's, before it flushes the scene). The next walk runs it.
+pub(crate) fn broadcast_level_change(
+    mut requests: MessageReader<exa_world::level_lifecycle::LevelChangeRequest>,
+    mut casters: Query<(Entity, &mut PowerCaster), With<PlayerBody>>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+) {
+    if !requests.read().any(|request| request.level.is_some()) {
+        return;
+    }
+    for (entity, mut caster) in &mut casters {
+        if caster.active.is_empty() {
+            continue;
+        }
+        info!(
+            "level change: the player's {} active powers are told event 8",
+            caster.active.len()
+        );
+        // The caster is the simulation's: a posted write.
+        match fixed.as_deref_mut() {
+            Some(fixed) => fixed.write(entity, &mut caster, |c| {
+                c.broadcast = Some(status_event::LEVEL_CHANGE);
+            }),
+            None => caster.broadcast = Some(status_event::LEVEL_CHANGE),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn tick_casters(
     mut commands: Commands,
@@ -2384,7 +2439,12 @@ pub(crate) fn tick_casters(
             .map_or(1.0, |d| d.tone);
         let at = ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO).to_array();
         let PowerCaster {
-            body, active, bar, ..
+            body,
+            active,
+            bar,
+            broadcast,
+            was_dying,
+            ..
         } = caster;
         let was_casting = body.condition == casting::CASTING;
         // [inf: the original's controller runs before the body tick and
@@ -2418,76 +2478,59 @@ pub(crate) fn tick_casters(
             debug!("cast released");
         }
         casting::settle_capacity(body);
-        let mut index = 0;
-        while index < active.len() {
-            let entry = &mut active[index];
-            let mut event = 0;
-            if entry.state == ENDING {
-                event = 2;
-            }
-            if let Some(entity) = entry.entity
-                && let Ok(live) = walls.get(entity)
-                && live.wall.state >= wall_state::TOLD_TO_END
-            {
-                event = 2;
-            }
-            let mut result = 0;
-            match &mut entry.class {
-                ActiveClass::Shell(power) => {
-                    let step = power.control(event, body);
-                    result = step.result;
+        // The status-effect broadcast: a body that starts to collapse or
+        // dies passes every entry 2 (the collapse's call: once, as the
+        // dying bit is first set); a level change's 8 was left by
+        // [`broadcast_level_change`]. It runs before the tick's own walk.
+        let dying = condition.is_some_and(|c| c.dying());
+        if dying && !*was_dying && broadcast.is_none() {
+            *broadcast = Some(status_event::DOWN);
+        }
+        *was_dying = dying;
+        let told = broadcast.take();
+        if let Some(event) = told {
+            info!(
+                "status broadcast: event {event} to {} active powers",
+                active.len()
+            );
+        }
+        for pass in told.into_iter().map(Some).chain([None]) {
+            let mut index = 0;
+            while index < active.len() {
+                let entry = &mut active[index];
+                let mut event = 0;
+                if entry.state == ENDING {
+                    event = 2;
                 }
-                ActiveClass::Kinesis(power) => {
-                    let was = (power.state, power.hooked, body.cast_hook, body.casting);
-                    let step = power.control(event, body, entry.tick_cost);
-                    result = step.result;
-                    if result & 2 != 0 {
-                        info!(
-                            "kinesis ends: event {event}, handed {}, before (state {}, hooked {}, \
+                if let Some(entity) = entry.entity
+                    && let Ok(live) = walls.get(entity)
+                    && live.wall.state >= wall_state::TOLD_TO_END
+                {
+                    event = 2;
+                }
+                if let Some(told) = pass {
+                    event = told;
+                }
+                let mut result = 0;
+                match &mut entry.class {
+                    ActiveClass::Shell(power) => {
+                        let step = power.control(event, body);
+                        result = step.result;
+                    }
+                    ActiveClass::Kinesis(power) => {
+                        let was = (power.state, power.hooked, body.cast_hook, body.casting);
+                        let step = power.control(event, body, entry.tick_cost);
+                        result = step.result;
+                        if result & 2 != 0 {
+                            info!(
+                                "kinesis ends: event {event}, handed {}, before (state {}, hooked {}, \
                              hook {:?}, casting {:#x}), focus {:.4} spent {:.4}",
-                            power.handed, was.0, was.1, was.2, was.3, body.focus, body.spent
-                        );
-                    }
-                    // Its end closes the pick's shell and gives the body
-                    // its environment back, unless a throw took them.
-                    if result & 2 != 0
-                        && let Some(end) =
-                            super::hold_live::HoldEnd::of(power.material.take(), power.shell.take())
-                    {
-                        holds.write(end);
-                    }
-                }
-                ActiveClass::Throw(power) => {
-                    let ending = event & 0xa != 0 || power.state == ENDING;
-                    if entry.throw_view.is_some() || ending {
-                        let view = entry.throw_view.unwrap_or(super::power::force::ThrowView {
-                            target_at: at,
-                            mass: 0.0,
-                            caster_point: at,
-                            tick_ms: TICK_MS,
-                        });
-                        let steered = power.phase == super::power::force::THROW_FLY;
-                        let step = power.control(event, now, &view, body);
-                        power.push = step.velocity.map(|v| (v, steered));
-                        power.sound.lift |= step.lift;
-                        power.sound.fade |= step.fade;
-                        if step.hold {
-                            power.held_until = Some(super::power::force::hold_until(now));
+                                power.handed, was.0, was.1, was.2, was.3, body.focus, body.spent
+                            );
                         }
-                        // The drop closes the shell; the restore (or the
-                        // end) gives the body its environment back and
-                        // closes a shell still open.
-                        if step.drop_shell
-                            && let Some(mut aura) = power
-                                .shell
-                                .take()
-                                .and_then(Entity::try_from_bits)
-                                .and_then(|e| auras.get_mut(e).ok())
-                        {
-                            aura.0.start_fade();
-                            debug!("force throw: the shell drops");
-                        }
-                        if step.restore
+                        // Its end closes the pick's shell and gives the body
+                        // its environment back, unless a throw took them.
+                        if result & 2 != 0
                             && let Some(end) = super::hold_live::HoldEnd::of(
                                 power.material.take(),
                                 power.shell.take(),
@@ -2495,160 +2538,200 @@ pub(crate) fn tick_casters(
                         {
                             holds.write(end);
                         }
+                    }
+                    ActiveClass::Throw(power) => {
+                        let ending = event & 0xa != 0 || power.state == ENDING;
+                        if entry.throw_view.is_some() || ending {
+                            let view = entry.throw_view.unwrap_or(super::power::force::ThrowView {
+                                target_at: at,
+                                mass: 0.0,
+                                caster_point: at,
+                                tick_ms: TICK_MS,
+                            });
+                            let steered = power.phase == super::power::force::THROW_FLY;
+                            let step = power.control(event, now, &view, body);
+                            power.push = step.velocity.map(|v| (v, steered));
+                            power.sound.lift |= step.lift;
+                            power.sound.fade |= step.fade;
+                            if step.hold {
+                                power.held_until = Some(super::power::force::hold_until(now));
+                            }
+                            // The drop closes the shell; the restore (or the
+                            // end) gives the body its environment back and
+                            // closes a shell still open.
+                            if step.drop_shell
+                                && let Some(mut aura) = power
+                                    .shell
+                                    .take()
+                                    .and_then(Entity::try_from_bits)
+                                    .and_then(|e| auras.get_mut(e).ok())
+                            {
+                                aura.0.start_fade();
+                                debug!("force throw: the shell drops");
+                            }
+                            if step.restore
+                                && let Some(end) = super::hold_live::HoldEnd::of(
+                                    power.material.take(),
+                                    power.shell.take(),
+                                )
+                            {
+                                holds.write(end);
+                            }
+                            result = step.result;
+                        }
+                    }
+                    ActiveClass::Strikes(power) => {
+                        let shells: Vec<u64> = power.auras.iter().filter_map(|a| a.shell).collect();
+                        let step = power.control(event, body);
+                        result = step.result;
+                        // Its end closes every aura.
+                        if result & 2 != 0 {
+                            for shell in shells.into_iter().filter_map(Entity::try_from_bits) {
+                                if let Ok(mut aura) = auras.get_mut(shell) {
+                                    aura.0.start_fade();
+                                }
+                            }
+                            debug!("force strikes ends: its auras close");
+                        }
+                    }
+                    ActiveClass::Remote(power) => {
+                        let step = power.control(event, at, body);
+                        result = step.result;
+                    }
+                    ActiveClass::Shock(power) => {
+                        let step = power.control(event, body);
+                        result = step.result;
+                        // The release makes the burst at the hand: a fresh
+                        // emitter of the shock's own shape (strength 0.05, so
+                        // its tendrils shock what they reach), before the
+                        // hand's arcs leave. [inf: the original aims its first
+                        // tendril at the controller's aim point within 45° of
+                        // the heading (`effects::blast::blast_aim`); the tick
+                        // has no aim point here, so the burst starts undirected.]
+                        if step.fired
+                            && let Some(body) = ragdoll
+                        {
+                            let mut arcs =
+                                ArcEmitter::new(&crate::thaum::arcs::shock_burst(), &mut draws.0);
+                            arcs.anchor = bone_part(body, RIGHT_HAND)
+                                .and_then(|k| part_point(body, k, HAND_ARCS_OFFSET));
+                            commands.spawn((
+                                Name::new("_ShockBurst"),
+                                LiveArcs {
+                                    arcs,
+                                    hand: Some((caster_entity, RIGHT_HAND)),
+                                    weapon: None,
+                                    caster: Some(caster_entity),
+                                    keep: false,
+                                },
+                            ));
+                            debug!("energy shock: the burst fires at the hand");
+                        }
+                        if (step.fired || step.cleared)
+                            && let Some(entity) = entry.entity.take()
+                        {
+                            commands.entity(entity).despawn();
+                        }
+                    }
+                    ActiveClass::ShockWeapons(power) => {
+                        let step = power.control(event, body);
+                        result = step.result;
+                    }
+                    ActiveClass::Vanish(power) => {
+                        power.answer_hook(body);
+                        let step = power.control(event, now);
+                        if 0.0 < step.spend {
+                            drain(body, step.spend);
+                        }
+                        if step.clear_hook && power.owns_hook(body) {
+                            casting::end_cast(body);
+                        }
+                        power.keep_hook(body);
+                        result = step.result;
+                    }
+                    ActiveClass::LongDoor(power) => {
+                        let nav = if power.destination.is_some() {
+                            NavAnswer::Found
+                        } else {
+                            NavAnswer::Waiting
+                        };
+                        let step = power.control(now, nav);
+                        if step.moved
+                            && let Some(destination) = power.destination
+                        {
+                            moves.write(Otherwhere {
+                                entity: caster_entity,
+                                to: Vec3::from_array(destination),
+                            });
+                        }
+                        if 0.0 < step.spend {
+                            drain(body, step.spend);
+                        }
+                        if step.clear_hook && body.casting == LONG_DOOR {
+                            casting::end_cast(body);
+                        }
+                        result = step.result;
+                    }
+                    ActiveClass::Constant(power) => {
+                        let step = power.control(event, body);
+                        result = step.result;
+                    }
+                    ActiveClass::Summon(power) => {
+                        let step = power.control(event, now, NavAnswer::Found, false);
                         result = step.result;
                     }
                 }
-                ActiveClass::Strikes(power) => {
-                    let shells: Vec<u64> = power.auras.iter().filter_map(|a| a.shell).collect();
-                    let step = power.control(event, body);
-                    result = step.result;
-                    // Its end closes every aura.
-                    if result & 2 != 0 {
-                        for shell in shells.into_iter().filter_map(Entity::try_from_bits) {
-                            if let Ok(mut aura) = auras.get_mut(shell) {
-                                aura.0.start_fade();
-                            }
+                if let Some(state) = entry.class.state() {
+                    entry.state = state;
+                }
+                // The player's bar hook: a power that ends, or that answers
+                // bit 4, marks the slot holding its id.
+                if player.is_some() && result & 6 != 0 {
+                    bar.mark_running(&entry.running(), now);
+                }
+                if result & 2 != 0 {
+                    // The cast motion ends with the power: its id and hook go.
+                    if body.casting == entry.cast_id && !entry.class.keeps_cast() {
+                        body.casting = 0;
+                        body.cast_hook = None;
+                        body.condition &= !casting::CASTING;
+                    }
+                    let entry = active.swap_remove(index);
+                    for companion in entry.companions {
+                        if let Ok(mut live) = arcs.get_mut(companion) {
+                            live.arcs.respawns = false;
+                            live.arcs.ending = true;
                         }
-                        debug!("force strikes ends: its auras close");
                     }
-                }
-                ActiveClass::Remote(power) => {
-                    let step = power.control(event, at, body);
-                    result = step.result;
-                }
-                ActiveClass::Shock(power) => {
-                    let step = power.control(event, body);
-                    result = step.result;
-                    // The release makes the burst at the hand: a fresh
-                    // emitter of the shock's own shape (strength 0.05, so
-                    // its tendrils shock what they reach), before the
-                    // hand's arcs leave. [inf: the original aims its first
-                    // tendril at the controller's aim point within 45° of
-                    // the heading (`effects::blast::blast_aim`); the tick
-                    // has no aim point here, so the burst starts undirected.]
-                    if step.fired
-                        && let Some(body) = ragdoll
+                    if let ActiveClass::Throw(throw) = &entry.class
+                        && throw.sound.fade
+                        && let Some(voice) = throw.sound.voice
                     {
-                        let mut arcs =
-                            ArcEmitter::new(&crate::thaum::arcs::shock_burst(), &mut draws.0);
-                        arcs.anchor = bone_part(body, RIGHT_HAND)
-                            .and_then(|k| part_point(body, k, HAND_ARCS_OFFSET));
-                        commands.spawn((
-                            Name::new("_ShockBurst"),
-                            LiveArcs {
-                                arcs,
-                                hand: Some((caster_entity, RIGHT_HAND)),
-                                weapon: None,
-                                caster: Some(caster_entity),
-                                keep: false,
-                            },
-                        ));
-                        debug!("energy shock: the burst fires at the hand");
+                        faded.write(super::throw_live::ThrowFade(voice));
                     }
-                    if (step.fired || step.cleared)
-                        && let Some(entity) = entry.entity.take()
+                    if let Some(entity) = entry.entity
+                        && let Ok(mut bubble) = bubbles.get_mut(entity)
+                    {
+                        end_bubble(&mut bubble);
+                    }
+                    if let Some(entity) = entry.entity
+                        && !matches!(entry.class, ActiveClass::Remote(_))
+                        && !matches!(entry.class, ActiveClass::Shell(_))
                     {
                         commands.entity(entity).despawn();
                     }
-                }
-                ActiveClass::ShockWeapons(power) => {
-                    let step = power.control(event, body);
-                    result = step.result;
-                }
-                ActiveClass::Vanish(power) => {
-                    power.answer_hook(body);
-                    let step = power.control(event, now);
-                    if 0.0 < step.spend {
-                        drain(body, step.spend);
-                    }
-                    if step.clear_hook && power.owns_hook(body) {
-                        casting::end_cast(body);
-                    }
-                    power.keep_hook(body);
-                    result = step.result;
-                }
-                ActiveClass::LongDoor(power) => {
-                    let nav = if power.destination.is_some() {
-                        NavAnswer::Found
-                    } else {
-                        NavAnswer::Waiting
-                    };
-                    let step = power.control(now, nav);
-                    if step.moved
-                        && let Some(destination) = power.destination
+                    // A shell's power ends before its aura: the aura closes and
+                    // takes its own node away once it has faded out.
+                    if let Some(entity) = entry.entity
+                        && matches!(entry.class, ActiveClass::Shell(_))
+                        && let Ok(mut aura) = auras.get_mut(entity)
                     {
-                        moves.write(Otherwhere {
-                            entity: caster_entity,
-                            to: Vec3::from_array(destination),
-                        });
+                        aura.0.start_fade();
                     }
-                    if 0.0 < step.spend {
-                        drain(body, step.spend);
-                    }
-                    if step.clear_hook && body.casting == LONG_DOOR {
-                        casting::end_cast(body);
-                    }
-                    result = step.result;
+                    continue;
                 }
-                ActiveClass::Constant(power) => {
-                    let step = power.control(event, body);
-                    result = step.result;
-                }
-                ActiveClass::Summon(power) => {
-                    let step = power.control(event, now, NavAnswer::Found, false);
-                    result = step.result;
-                }
+                index += 1;
             }
-            if let Some(state) = entry.class.state() {
-                entry.state = state;
-            }
-            // The player's bar hook: a power that ends, or that answers
-            // bit 4, marks the slot holding its id.
-            if player.is_some() && result & 6 != 0 {
-                bar.mark_running(&entry.running(), now);
-            }
-            if result & 2 != 0 {
-                // The cast motion ends with the power: its id and hook go.
-                if body.casting == entry.cast_id && !entry.class.keeps_cast() {
-                    body.casting = 0;
-                    body.cast_hook = None;
-                    body.condition &= !casting::CASTING;
-                }
-                let entry = active.swap_remove(index);
-                for companion in entry.companions {
-                    if let Ok(mut live) = arcs.get_mut(companion) {
-                        live.arcs.respawns = false;
-                        live.arcs.ending = true;
-                    }
-                }
-                if let ActiveClass::Throw(throw) = &entry.class
-                    && throw.sound.fade
-                    && let Some(voice) = throw.sound.voice
-                {
-                    faded.write(super::throw_live::ThrowFade(voice));
-                }
-                if let Some(entity) = entry.entity
-                    && let Ok(mut bubble) = bubbles.get_mut(entity)
-                {
-                    end_bubble(&mut bubble);
-                }
-                if let Some(entity) = entry.entity
-                    && !matches!(entry.class, ActiveClass::Remote(_))
-                    && !matches!(entry.class, ActiveClass::Shell(_))
-                {
-                    commands.entity(entity).despawn();
-                }
-                // A shell's power ends before its aura: the aura closes and
-                // takes its own node away once it has faded out.
-                if let Some(entity) = entry.entity
-                    && matches!(entry.class, ActiveClass::Shell(_))
-                    && let Ok(mut aura) = auras.get_mut(entity)
-                {
-                    aura.0.start_fade();
-                }
-                continue;
-            }
-            index += 1;
         }
         // The cast end returns a casting body to its stance: one this tick
         // ended, or one ended since that no animator has played.

@@ -906,6 +906,7 @@ pub fn race_muscles(body: &RaceBody) -> RaceMuscles {
         gaits: exa_physics::race_runtime::rows_of(body),
         golem: false,
         hovers: false,
+        chest_pins: 1.0,
     }
 }
 
@@ -921,6 +922,7 @@ pub fn character_muscles(
         balance_bonus: stats.balance_bonus,
         arm_relaxation: stats.arm_relaxation,
         golem: stats.golem,
+        chest_pins: stats.chest_pin_scale,
         ..race_muscles(body)
     }
 }
