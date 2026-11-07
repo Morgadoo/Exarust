@@ -398,6 +398,10 @@ pub struct Attacker {
     /// change. 5 (unarmed) until then, so a swing before the first equip
     /// still sets both arms. [`STANCE_SHIELD`] is a weapon and a shield.
     pub stance_class: u8,
+    /// The parry it would pick against its foe's attack, kept each fixed
+    /// step before the attacks start ([`crate::parry::aim_foe_parries`]):
+    /// what its attack starts aim at.
+    pub foe_parry: Option<FoeParry>,
 }
 
 /// Stance class of a weapon and a shield. While the body strides, the
@@ -413,6 +417,7 @@ impl Default for Attacker {
             seed: 0,
             last_picks: [0; 2],
             stance_class: 5,
+            foe_parry: None,
         }
     }
 }
@@ -422,18 +427,71 @@ impl Attacker {
     /// last, by the original's 32-bit generator; `crouched`, always the
     /// first (Attack Mid or Combo 1), which then counts as its last pick.
     pub fn pick(&mut self, side: Side, crouched: bool) -> usize {
-        let last = &mut self.last_picks[side.index()];
-        if crouched {
-            *last = 0;
-            return 0;
-        }
-        loop {
-            self.seed = self.seed.wrapping_mul(0x0808_8405).wrapping_add(1);
-            let i = ((u64::from(self.seed) * 3) >> 32) as usize;
-            if i != *last {
-                *last = i;
-                return i;
+        let aim = Aim {
+            crouched,
+            ..Aim::default()
+        };
+        self.pick_aimed(side, &aim).0
+    }
+
+    /// The side starters' pick ([`Aim`]): crouched, the first; else the
+    /// pick [`aimed_side`] aims at the foe's parry or its own recent one;
+    /// else one at random, never the side's last. The pick becomes the
+    /// side's last either way. Also returns the foe's motion the attack
+    /// counters (the original's countered-motion word), for an aimed pick
+    /// taken from the foe's parry.
+    pub fn pick_aimed(&mut self, side: Side, aim: &Aim) -> (usize, Option<usize>) {
+        let (aimed, countered) = if aim.crouched {
+            (Some(0), None)
+        } else {
+            aimed_side(side, aim)
+        };
+        let last = self.last_picks[side.index()];
+        let i = aimed.unwrap_or_else(|| {
+            loop {
+                self.seed = self.seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+                let i = ((u64::from(self.seed) * 3) >> 32) as usize;
+                if i != last {
+                    break i;
+                }
             }
+        });
+        self.last_picks[side.index()] = i;
+        if aimed.is_some() && !aim.crouched {
+            info!(
+                "attack pick aimed: {side:?} side pick {i} (foe's parry {:?}, recent parry {:?}, countering {countered:?})",
+                aim.foe, aim.recent_parry
+            );
+        }
+        (i, countered)
+    }
+
+    /// What an attack start of this fighter aims with: its stance class
+    /// and foe's parry, its shield techniques and its own last parry pick
+    /// when its last parry check was under 500 ms before `now_ms` (from
+    /// `fighter`, none without one).
+    pub fn aim(
+        &self,
+        fighter: Option<&crate::Fighter>,
+        crouched: bool,
+        chaining: bool,
+        now_ms: u64,
+    ) -> Aim {
+        let perks = fighter.map(|f| f.perks).unwrap_or_default();
+        let recent_parry = fighter.and_then(|f| {
+            let last = f.parry.last_ms?;
+            (now_ms < last + RECENT_PARRY_MS)
+                .then_some(f.parry.last_pick)
+                .flatten()
+        });
+        Aim {
+            crouched,
+            chaining,
+            stance_class: self.stance_class,
+            synchrony: perks.has(exa_formats::characters::Perk::Synchrony),
+            ward: perks.has(exa_formats::characters::Perk::Ward),
+            foe: self.foe_parry,
+            recent_parry,
         }
     }
 
@@ -498,6 +556,126 @@ pub fn main_start_sound(first: f32, second: f32, size_root: f32) -> (f32, f32) {
     (gain, pitch)
 }
 
+/// A parry clip 0x14 to 0x18 a fighter picks (Parry Left, Right, Up, Left
+/// Dn, Right Dn), as the parry's chooser numbers them.
+const PARRY_LEFT: u8 = 0x14;
+const PARRY_RIGHT: u8 = 0x15;
+const PARRY_UP: u8 = 0x16;
+const PARRY_LEFT_DN: u8 = 0x17;
+const PARRY_RIGHT_DN: u8 = 0x18;
+/// Stance class of a weapon in each hand: the held moveset gives it
+/// exactly with the weapon class 0x90 the original's starters compare.
+const STANCE_TWO_WEAPONS: u8 = 6;
+/// A parry check this recent (ms) still steers a side pick by its clip.
+const RECENT_PARRY_MS: u64 = 500;
+
+/// The parry a fighter would pick against its foe's attack: the parry
+/// chooser's clip with the fighter as the defender, and the motion number
+/// the foe plays (its clip's, even while it carries a chained one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoeParry {
+    pub clip: u8,
+    pub foe_motion: usize,
+}
+
+/// What the original's attack starters read to aim an attack at the
+/// foe's parry: a shield fighter (stance class 3) or one with a weapon in
+/// each hand picks the side attack that answers the parry it would make
+/// against its foe's attack, or else its own parry of the last 500 ms;
+/// its stab and overhead then mark the foe's motion as countered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Aim {
+    /// It crouches: a side attack is always the side's first.
+    pub crouched: bool,
+    /// The start chains from the other side's attack.
+    pub chaining: bool,
+    pub stance_class: u8,
+    /// The Synchrony and Ward shield techniques.
+    pub synchrony: bool,
+    pub ward: bool,
+    /// Its parry against the foe's attack: none without a foe in combat
+    /// (condition 2) playing an attack.
+    pub foe: Option<FoeParry>,
+    /// Its own last parry pick, when its last parry check was under
+    /// 500 ms ago.
+    pub recent_parry: Option<u8>,
+}
+
+impl Aim {
+    fn shield(&self) -> bool {
+        self.stance_class == STANCE_SHIELD
+    }
+
+    fn two_weapons(&self) -> bool {
+        self.stance_class == STANCE_TWO_WEAPONS
+    }
+}
+
+/// A side starter's aimed pick, and the foe's motion it counters. Only a
+/// shield fighter or one with two weapons aims. A shield fighter answers
+/// the foe's parry with Ward, or with Synchrony unless it chains; one with
+/// two weapons always. The main side takes a left parry (Left, Right) to
+/// pick 1, Up to 0 and a low one to 2; the other side the same, except
+/// that a shield fighter swaps 1 and 2. Without an answer, its own recent
+/// parry steers the pick by the same table for a shield fighter, and for
+/// two weapons only by Left (main side 1), Right (other side 1), Up (0)
+/// and the side's own low parry (2); that pick counters nothing.
+pub fn aimed_side(side: Side, aim: &Aim) -> (Option<usize>, Option<usize>) {
+    let shield = aim.shield();
+    if !shield && !aim.two_weapons() {
+        return (None, None);
+    }
+    let table = |clip: u8| -> Option<usize> {
+        let (left, low) = match (side, shield) {
+            (Side::Other, true) => (2, 1),
+            _ => (1, 2),
+        };
+        match clip {
+            PARRY_LEFT | PARRY_RIGHT => Some(left),
+            PARRY_UP => Some(0),
+            PARRY_LEFT_DN | PARRY_RIGHT_DN => Some(low),
+            _ => None,
+        }
+    };
+    let answers = !shield || aim.ward || (aim.synchrony && !aim.chaining);
+    if answers
+        && let Some(foe) = aim.foe
+        && let Some(i) = table(foe.clip)
+    {
+        return (Some(i), Some(foe.foe_motion));
+    }
+    let recent = aim.recent_parry.and_then(|clip| {
+        if shield {
+            return table(clip);
+        }
+        match (side, clip) {
+            (Side::Main, PARRY_LEFT) | (Side::Other, PARRY_RIGHT) => Some(1),
+            (_, PARRY_UP) => Some(0),
+            (Side::Main, PARRY_LEFT_DN) | (Side::Other, PARRY_RIGHT_DN) => Some(2),
+            _ => None,
+        }
+    });
+    (recent, None)
+}
+
+/// The foe's motion an overhead or a stab counters: for a shield fighter
+/// with Synchrony, or (without a shield) one with two weapons, when its
+/// parry against the foe's attack is Left or Left Dn, or Up for a stab.
+pub fn countered_by(motion: AttackMotion, aim: &Aim) -> Option<usize> {
+    let answers = if aim.shield() {
+        aim.synchrony
+    } else {
+        aim.two_weapons()
+    };
+    let foe = aim.foe.filter(|_| answers)?;
+    let hits = match motion {
+        AttackMotion::Overhead => matches!(foe.clip, PARRY_LEFT | PARRY_LEFT_DN),
+        AttackMotion::Stab => matches!(foe.clip, PARRY_LEFT | PARRY_LEFT_DN | PARRY_UP),
+        _ => false,
+    };
+    hits.then_some(foe.foe_motion)
+}
+
 /// The attack a fighter plays: its attack's motion while its clip plays
 /// once.
 pub fn playing(attacking: Option<&Attacking>, anim: &Animator) -> Option<AttackMotion> {
@@ -507,6 +685,148 @@ pub fn playing(attacking: Option<&Attacking>, anim: &Animator) -> Option<AttackM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn foe(clip: u8) -> Option<FoeParry> {
+        Some(FoeParry {
+            clip,
+            foe_motion: 6,
+        })
+    }
+
+    /// A shield fighter with Ward answers the foe's parry: the main side
+    /// takes Left and Right to 1, Up to 0, the lows to 2; the other side
+    /// swaps 1 and 2. It counters the foe's motion.
+    #[test]
+    fn a_ward_shield_answers_the_foes_parry() {
+        let mut aim = Aim {
+            stance_class: STANCE_SHIELD,
+            ward: true,
+            ..Aim::default()
+        };
+        let main = [(0x14, 1), (0x15, 1), (0x16, 0), (0x17, 2), (0x18, 2)];
+        let other = [(0x14, 2), (0x15, 2), (0x16, 0), (0x17, 1), (0x18, 1)];
+        for (clip, i) in main {
+            aim.foe = foe(clip);
+            assert_eq!(aimed_side(Side::Main, &aim), (Some(i), Some(6)));
+        }
+        for (clip, i) in other {
+            aim.foe = foe(clip);
+            assert_eq!(aimed_side(Side::Other, &aim), (Some(i), Some(6)));
+        }
+    }
+
+    /// Synchrony answers only a start that does not chain; a plain shield
+    /// never. Both fall back on the fighter's own recent parry, by the
+    /// same table, countering nothing.
+    #[test]
+    fn synchrony_answers_unless_chaining_and_the_recent_parry_steers() {
+        let mut aim = Aim {
+            stance_class: STANCE_SHIELD,
+            synchrony: true,
+            foe: foe(0x14),
+            ..Aim::default()
+        };
+        assert_eq!(aimed_side(Side::Main, &aim), (Some(1), Some(6)));
+        aim.chaining = true;
+        assert_eq!(aimed_side(Side::Main, &aim), (None, None));
+        aim.recent_parry = Some(0x18);
+        assert_eq!(aimed_side(Side::Main, &aim), (Some(2), None));
+        assert_eq!(aimed_side(Side::Other, &aim), (Some(1), None));
+        aim.synchrony = false;
+        aim.chaining = false;
+        assert_eq!(aimed_side(Side::Other, &aim), (Some(1), None));
+    }
+
+    /// Two weapons answer the foe's parry by the main side's table on both
+    /// sides; their recent parry steers only by the side's own clips.
+    #[test]
+    fn two_weapons_answer_and_remember_by_side() {
+        let mut aim = Aim {
+            stance_class: STANCE_TWO_WEAPONS,
+            foe: foe(0x17),
+            ..Aim::default()
+        };
+        assert_eq!(aimed_side(Side::Main, &aim), (Some(2), Some(6)));
+        assert_eq!(aimed_side(Side::Other, &aim), (Some(2), Some(6)));
+        aim.foe = None;
+        let main = [
+            (0x14, Some(1)),
+            (0x15, None),
+            (0x16, Some(0)),
+            (0x17, Some(2)),
+            (0x18, None),
+        ];
+        let other = [
+            (0x14, None),
+            (0x15, Some(1)),
+            (0x16, Some(0)),
+            (0x17, None),
+            (0x18, Some(2)),
+        ];
+        for (clip, i) in main {
+            aim.recent_parry = Some(clip);
+            assert_eq!(aimed_side(Side::Main, &aim).0, i, "main {clip:#x}");
+        }
+        for (clip, i) in other {
+            aim.recent_parry = Some(clip);
+            assert_eq!(aimed_side(Side::Other, &aim).0, i, "other {clip:#x}");
+        }
+        // One weapon aims at nothing.
+        aim.stance_class = 1;
+        aim.foe = foe(0x14);
+        assert_eq!(aimed_side(Side::Main, &aim), (None, None));
+    }
+
+    /// An aimed pick may repeat the side's last; a crouch still takes the
+    /// first and counters nothing; with nothing to aim at the pick is the
+    /// plain random one.
+    #[test]
+    fn the_aimed_pick_overrides_the_draw() {
+        let mut a = Attacker::default();
+        let aim = Aim {
+            stance_class: STANCE_SHIELD,
+            ward: true,
+            foe: foe(0x16),
+            ..Aim::default()
+        };
+        assert_eq!(a.pick_aimed(Side::Main, &aim), (0, Some(6)));
+        assert_eq!(a.pick_aimed(Side::Main, &aim), (0, Some(6)));
+        let crouched = Aim {
+            crouched: true,
+            ..aim
+        };
+        assert_eq!(a.pick_aimed(Side::Main, &crouched), (0, None));
+        let mut b = Attacker::default();
+        let mut c = Attacker::default();
+        for _ in 0..6 {
+            assert_eq!(
+                b.pick(Side::Other, false),
+                c.pick_aimed(Side::Other, &Aim::default()).0
+            );
+        }
+    }
+
+    /// The overhead counters on a left parry, the stab on a left or an up
+    /// one: a shield fighter only with Synchrony, else two weapons.
+    #[test]
+    fn the_overhead_and_stab_counter_left_parries() {
+        let mut aim = Aim {
+            stance_class: STANCE_SHIELD,
+            synchrony: true,
+            foe: foe(0x16),
+            ..Aim::default()
+        };
+        assert_eq!(countered_by(AttackMotion::Overhead, &aim), None);
+        assert_eq!(countered_by(AttackMotion::Stab, &aim), Some(6));
+        aim.foe = foe(0x17);
+        assert_eq!(countered_by(AttackMotion::Overhead, &aim), Some(6));
+        aim.synchrony = false;
+        aim.ward = true;
+        assert_eq!(countered_by(AttackMotion::Overhead, &aim), None);
+        aim.stance_class = STANCE_TWO_WEAPONS;
+        assert_eq!(countered_by(AttackMotion::Overhead, &aim), Some(6));
+        assert_eq!(countered_by(AttackMotion::Main(0), &aim), None);
+    }
 
     /// Empty hands are stance class 5 until a held moveset copies its own.
     #[test]

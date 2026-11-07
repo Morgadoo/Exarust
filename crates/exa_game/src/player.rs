@@ -661,7 +661,8 @@ impl Plugin for PlayerPlugin {
                     release_held_wake,
                     take_player_stance,
                 )
-                    .chain(),
+                    .chain()
+                    .after(exa_combat::parry::aim_foe_parries),
             )
             .add_systems(FixedPreUpdate, (follow_activation_centre, follow_body_camera))
             .add_systems(Update, (begin_play_session, end_play_session))
@@ -2060,9 +2061,18 @@ fn request_attacks(
         let Some(start) = attack::execute(pb.attack.request(), busy) else {
             continue;
         };
+        // The starters aim at the foe's parry (a shield fighter's or one
+        // with two weapons) and mark the foe's motion they counter.
+        let aim = attacker.aim(fighter, pb.crouch > 0.0, false, now);
+        let mut countered = None;
+        let mut side_pick = |side: Side| {
+            let (pick, c) = attacker.pick_aimed(side, &aim);
+            countered = c;
+            side.motion(pick)
+        };
         let motion = match start.kind {
-            AttackKind::Main => Side::Main.motion(attacker.pick(Side::Main, pb.crouch > 0.0)),
-            AttackKind::Other => Side::Other.motion(attacker.pick(Side::Other, pb.crouch > 0.0)),
+            AttackKind::Main => side_pick(Side::Main),
+            AttackKind::Other => side_pick(Side::Other),
             AttackKind::Overhead => AttackMotion::Overhead,
             AttackKind::Stab => {
                 // The held weapon's long axis, forward or not far back.
@@ -2107,6 +2117,11 @@ fn request_attacks(
                 weapon_class,
                 remise: fighter.is_some_and(Fighter::remise),
                 now_ms: now,
+                countered: if motion.is_side() {
+                    countered
+                } else {
+                    exa_combat::attack::countered_by(motion, &aim)
+                },
             },
             stance.action(),
         );

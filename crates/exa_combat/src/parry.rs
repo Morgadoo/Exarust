@@ -402,6 +402,10 @@ pub struct ParryState {
     /// The armed parry's point (cm), which the held weapon's and the
     /// shield's grips are tied to. Zero before the first measured parry.
     pub point_cm: [f32; 3],
+    /// The clip its last parry pick chose: kept when the parry ends (the
+    /// original never clears it), and read with [`Self::last_ms`] by the
+    /// side attack starters ([`crate::attack::aimed_side`]).
+    pub last_pick: Option<u8>,
 }
 
 impl ParryState {
@@ -1331,6 +1335,7 @@ impl Defender<'_> {
         let mut chosen = -1;
         if repick {
             parry.counter_motion = Some(usize::from(pick.motion));
+            parry.last_pick = Some(pick.clip);
             chosen = i32::from(pick.clip);
         }
         if let Some(stored) = if repick { Some(pick.clip) } else { parry.clip } {
@@ -1367,6 +1372,98 @@ impl Defender<'_> {
             && self.fighter.parry.counter_motion.is_none()
         {
             self.fighter.guard = Guard::Open;
+        }
+    }
+}
+
+/// The parry chooser's clip for a defender at `defender_chest` against a
+/// foe at `foe_chest` facing `foe_forward` (m) that plays motion number
+/// `motion`: none for a motion that is not an attack (5 to 12).
+pub fn chooser_clip(
+    motion: usize,
+    defender_chest: Vec3,
+    foe_chest: Vec3,
+    foe_forward: Vec3,
+) -> Option<u8> {
+    if !(5..=12).contains(&motion) {
+        return None;
+    }
+    let motion = motion as u8;
+    let to_def = (defender_chest - foe_chest).with_y(0.0);
+    let threat = Threat {
+        attacking: true,
+        clock: 0.0,
+        combo: false,
+        cleaving: false,
+        in_front: true,
+        distance_cm: 0.0,
+        reach_cm: 0.0,
+        size: 1.0,
+        defender_has_shield: false,
+        yellow: 1.0,
+        helpless: false,
+        break_tangle: false,
+        motion,
+        yaw: yaw(foe_forward) - yaw(to_def),
+        defender_chest_cm: defender_chest.y * 100.0,
+        attacker_chest_cm: foe_chest.y * 100.0,
+        stab: i32::from(motion) == STAB_MOTION,
+        overhead: i32::from(motion) == OVERHEAD_MOTION,
+    };
+    Some(clip_for(&threat))
+}
+
+/// The parry each fighter would pick against its foe's attack, kept on its
+/// attacker each fixed step before the attacks start, for the original's
+/// attack starters ([`crate::attack::aimed_side`]). The original reads its
+/// target's; Exarust takes the nearest other fighter in combat (condition
+/// 2), as the parry check takes the nearest attacking foe. Its parry is the
+/// chooser's ([`chooser_clip`]) against the motion the foe's chain carries
+/// on, none while the foe plays no attack.
+#[allow(clippy::type_complexity)]
+pub fn aim_foe_parries(
+    mut attackers: Query<
+        (Entity, &mut Attacker, &GlobalTransform, Option<&Ragdoll>),
+        With<Fighter>,
+    >,
+    foes: Query<
+        (
+            Entity,
+            &Condition,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            Option<&Attacking>,
+            &SwingState,
+        ),
+        With<Fighter>,
+    >,
+) {
+    let fighting: Vec<_> = foes
+        .iter()
+        .filter(|(_, condition, ..)| **condition == Condition::ATTACKING)
+        .map(|(e, _, gt, body, attacking, swing)| {
+            let chained = swing.has(crate::swing::flags::CONTINUATION);
+            let motion = attacking.map(|a| (a.chooser_motion(chained), a.motion.index()));
+            (e, stance::chest_point(gt, body), forward(gt), motion)
+        })
+        .collect();
+    for (entity, mut attacker, gt, body) in &mut attackers {
+        let chest = stance::chest_point(gt, body);
+        let foe = fighting
+            .iter()
+            .filter(|(e, ..)| *e != entity)
+            .min_by(|a, b| {
+                let da = (a.1 - chest).length_squared();
+                let db = (b.1 - chest).length_squared();
+                da.total_cmp(&db).then(a.0.cmp(&b.0))
+            });
+        let aim = foe.and_then(|&(_, foe_chest, foe_forward, motion)| {
+            let (chooser, foe_motion) = motion?;
+            let clip = chooser_clip(chooser?, chest, foe_chest, foe_forward)?;
+            Some(crate::attack::FoeParry { clip, foe_motion })
+        });
+        if attacker.foe_parry != aim {
+            attacker.foe_parry = aim;
         }
     }
 }
@@ -1516,7 +1613,14 @@ pub(crate) fn run_parries(
             if !parry_trigger(&trigger) {
                 continue;
             }
-            let motion_index = attacking.motion.index() as u8;
+            // The chooser's motion: the one a chained attack carries on.
+            let Some(motion_index) = attacking
+                .chooser_motion(chained)
+                .filter(|m| (5..=12).contains(m))
+            else {
+                continue;
+            };
+            let motion_index = motion_index as u8;
             let threat = Threat {
                 attacking: true,
                 clock: progress,
@@ -1534,8 +1638,8 @@ pub(crate) fn run_parries(
                 yaw: yaw(forward(gt)) - yaw(to_def),
                 defender_chest_cm: def_chest.y * 100.0,
                 attacker_chest_cm: chest.y * 100.0,
-                stab: matches!(attacking.motion, crate::attack::AttackMotion::Stab),
-                overhead: matches!(attacking.motion, crate::attack::AttackMotion::Overhead),
+                stab: i32::from(motion_index) == STAB_MOTION,
+                overhead: i32::from(motion_index) == OVERHEAD_MOTION,
             };
             best = distance;
             // The attacker's blade point now and a tick ago: the armed
@@ -2129,6 +2233,26 @@ mod wiring_tests {
         assert_eq!(d.get::<Fighter>().parry.counter, 3);
     }
 
+    /// Each fixed step keeps the parry the defender would pick against
+    /// its nearest foe in combat on its attacker: the high foe's Attack Mid
+    /// gives Parry Left and the foe's motion; a foe that stops attacking
+    /// (out of condition 2) gives none.
+    #[test]
+    fn the_foes_parry_is_kept_for_the_attack_starts() {
+        let mut d = Duel::high();
+        d.app.world_mut().run_schedule(FixedPreUpdate);
+        assert_eq!(
+            d.get::<Attacker>().foe_parry,
+            Some(crate::attack::FoeParry {
+                clip: LEFT,
+                foe_motion: 5
+            })
+        );
+        d.foe_rests();
+        d.app.world_mut().run_schedule(FixedPreUpdate);
+        assert_eq!(d.get::<Attacker>().foe_parry, None);
+    }
+
     /// The trigger's clock window is 0.3 through 0.9 of the foe's clip,
     /// unless the foe's swing is a continuation; an open strike window is
     /// not that flag.
@@ -2145,9 +2269,18 @@ mod wiring_tests {
         d.app.world_mut().get_mut::<SwingState>(foe).unwrap().open = [true, true];
         d.tick();
         assert!(!d.parrying());
+        // A chain carries on the attack it chained from, which the
+        // chooser then reads.
         d.app.world_mut().get_mut::<SwingState>(foe).unwrap().flags = flags::CONTINUATION;
+        d.app
+            .world_mut()
+            .get_mut::<Attacking>(foe)
+            .unwrap()
+            .continued_from = Some(AttackMotion::Other(0));
         d.tick();
         assert!(d.parrying());
+        assert_eq!(d.get::<Fighter>().parry.counter_motion, Some(8));
+        assert!(d.get::<Fighter>().parry.last_pick.is_some());
     }
 
     /// A parry ends into the Defence stance for a dying or dazed body, with

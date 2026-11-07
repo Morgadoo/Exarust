@@ -26,7 +26,11 @@ REA (Exanima.exe), read in the assembly:
   the lengths; the off-hand factory weapon is built from its item's weapon
   section and takes the recipe's stats with the assembled extents.
 - exa_combat: `SwingState::recoil_from` and `after_wound` take the motion
-  and decide the counter; `react_to_hits` chains the counter attack, or
+  and decide the counter with the shared hold-bit and motion test
+  (`exa_physics::part::immediate_counter`, from the motilepart lane, which
+  ported the hard-impact caller of the same counter routine);
+  `react_to_hits` chains the counter attack through the shared
+  `swing::chain_side_attack`, or
   starts the recoil's stance at once (blend 40, arms 0.2) and ends the
   attack; the executor stays busy until the recoil's end.
 

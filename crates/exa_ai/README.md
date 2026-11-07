@@ -29,7 +29,9 @@ its eagerness at a half, and each tick weighs up to seventeen places
 score (`place`, with the foe's published arc), keeping its contact with
 the target through the combatant's perception pass (`combatant`); it
 steps to the cheapest, strikes from the cheapest strike place through the original's attack choice (`fight`) and executor
-(`exa_combat::attack`), guards in Cmbt - Idle when fresh and in the
+(`exa_combat::attack`; a side attack's clip is the side starter's pick,
+aimed at the foe's parry for a shield or two weapons, else drawn without
+repeat), guards in Cmbt - Idle when fresh and in the
 Defence stance when tired, and turns its heading 0.03 of the gap a tick
 (by the swing's sweep while it swings, leaning against a foe's side
 swing on guard). Its eagerness drifts up at full energy and its press

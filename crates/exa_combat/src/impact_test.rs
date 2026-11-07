@@ -454,3 +454,21 @@ fn a_limb_hitting_the_level_sounds_and_hurts() {
     let body = app.world().get::<Ragdoll>(target).unwrap();
     assert!(body.parts[0].sound_ready_ms > 0);
 }
+
+/// The immediate counter is asked only where a hard hit would interrupt
+/// the swing: an active side strike (the window bit, no stall, no
+/// continuation, bit 2 clear) with children, on the primary chain, past
+/// 0.6 of its clip.
+#[test]
+fn the_counter_is_asked_only_where_the_hit_would_interrupt() {
+    assert!(interrupts(1, true, true, 0.61));
+    assert!(!interrupts(1, true, true, 0.59));
+    // The float 0.6 widens past the double 0.6.
+    assert!(interrupts(1, true, true, 0.6));
+    assert!(!interrupts(1 | 0x2, true, true, 0.9));
+    assert!(!interrupts(1 | 0x4, true, true, 0.9));
+    assert!(!interrupts(1 | 0x1_0000, true, true, 0.9));
+    assert!(!interrupts(0, true, true, 0.9));
+    assert!(!interrupts(1, false, true, 0.9));
+    assert!(!interrupts(1, true, false, 0.9));
+}

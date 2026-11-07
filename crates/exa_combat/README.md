@@ -44,12 +44,33 @@ the executor's (`attack::start_blend`)
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback;
 [`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode).
 
+The side starters' pick is aimed for two kinds of fighter
+(`attack::aimed_side`, `Attacker::pick_aimed`): a shield fighter (stance
+class 3) with Ward, or with Synchrony unless the start chains, and a
+fighter with a weapon in each hand pick the side attack that answers the
+parry they would make against their foe's attack (the parry chooser with
+them as the defender, kept each fixed step by `parry::aim_foe_parries` on
+`Attacker::foe_parry` against the nearest fighter in combat), and mark the
+foe's motion as countered (the parry state's countered motion, which
+every attack start writes, none for an unaimed one); without an answer
+their own parry pick of the last 500 ms steers the side (`ParryState::
+last_pick`, never cleared, read with `last_ms`). The stab and the overhead
+counter the foe's motion on a left parry (and Up for the stab) for a
+Synchrony shield or two weapons (`attack::countered_by`). The AI's side
+attacks now go through the same pick (they always played the side's first
+clip). A chain (Remise, and two weapons' immediate counter after a hard hit
+on the striking weapon past 0.4 of the clip, in place of the interrupt:
+`swing::chain_side_attack`) keeps the attack it chained from
+(`Attacking::continued_from`), which the parry chooser reads while the
+swing carries the continuation.
+
 A blocked striker recoils (`recoil`): strength and the stall rate become
 0.5 and the released bit clears. A class word of 0x90 (two weapons) that
 is already continuing stops there; one whose clock widens past 0.4 in a
 side swing (motions 5–10) with none of the hold-back flags (`0xA0012`)
-counters instead: the other side's attack chains at once, as the Remise
-chain does. Any other swing sets stalling, cleaving and recoiled, and
+counters instead: the other side's attack chains at once
+(`chain_side_attack`, shared with the Remise chain and the hard-impact
+counter). Any other swing sets stalling, cleaving and recoiled, and
 `react_to_hits` switches it at once to the stance by energy
 (`stance_by_energy`, blend 40), which ends the attack and its clock, and
 sets both arm stiffnesses to 0.2. The executor stays busy until the widened

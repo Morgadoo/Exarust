@@ -101,6 +101,9 @@ impl Plugin for CombatPlugin {
             .add_message::<block::ShieldRung>()
             .add_message::<exa_world::level_lifecycle::WorldReset>()
             .init_resource::<WeaponBlood>()
+            // Each fighter's parry against its foe's attack, which the
+            // attack starts of this fixed step aim at.
+            .add_systems(FixedPreUpdate, parry::aim_foe_parries)
             .add_systems(
                 Update,
                 (
@@ -349,6 +352,10 @@ pub struct Attacking {
     /// routine: the striking part keeps one pending contact, so no other is
     /// sent until it is dealt ([`block::strike_held`]).
     pub held_pending: bool,
+    /// The attack it chained from (the original's previous-motion word),
+    /// set when a swing chains the other side's; the parry chooser reads
+    /// it while the swing carries the chain's continuation.
+    pub continued_from: Option<AttackMotion>,
 }
 
 impl Attacking {
@@ -358,6 +365,18 @@ impl Attacking {
             weapon_class,
             struck: HashSet::new(),
             held_pending: false,
+            continued_from: None,
+        }
+    }
+
+    /// The motion number the parry chooser reads: the attack it chained
+    /// from while the swing carries the continuation (`chained`), none if
+    /// it chained from nothing; else its own.
+    pub fn chooser_motion(&self, chained: bool) -> Option<usize> {
+        if chained {
+            self.continued_from.map(AttackMotion::index)
+        } else {
+            Some(self.motion.index())
         }
     }
 }
@@ -530,6 +549,10 @@ pub struct AttackStart {
     pub weapon_class: u8,
     pub remise: bool,
     pub now_ms: u64,
+    /// The foe's motion the attack counters (the original's
+    /// countered-motion word, which every attack start writes): from
+    /// [`attack::Attacker::pick_aimed`] or [`attack::countered_by`].
+    pub countered: Option<usize>,
 }
 
 impl AttackStart {
@@ -542,8 +565,22 @@ impl AttackStart {
             weapon_class,
             remise: false,
             now_ms,
+            countered: None,
         }
     }
+}
+
+/// Writes the foe's motion an attack start counters into `fighter`'s
+/// parry state, as every original attack starter does (none when it
+/// counters nothing), once the starting system's commands apply.
+pub fn write_countered(commands: &mut Commands, fighter: Entity, countered: Option<usize>) {
+    commands.queue(move |world: &mut World| {
+        if let Some(mut f) = world.get_mut::<Fighter>(fighter)
+            && f.parry.counter_motion != countered
+        {
+            f.parry.counter_motion = countered;
+        }
+    });
 }
 
 /// Starts an attack on a fighter: its clip, ending in `stance`, and its
@@ -574,6 +611,7 @@ pub fn start_attack<'a>(
         Ease::Smooth,
     );
     swing.start(motion.is_side(), start.remise);
+    write_countered(commands, fighter, start.countered);
     if motion.is_side() {
         attacker.side_started_ms = Some(start.now_ms);
     }
@@ -1530,17 +1568,22 @@ fn react_to_hits(
                     if let Ok(mut attacking) = attacks.get_mut(hit.attacker)
                         && let Ok(mut attacker) = attackers.get_mut(hit.attacker)
                     {
-                        let side = swing::chained_side(attacking.motion);
-                        let next = side.motion(attacker.pick(side, false));
-                        let stance = stance_of(&anim);
-                        anim.play_once(next.action(), &stance);
                         let blend = swing.copied().unwrap_or(Swing::FISTS).chain_blend();
-                        anim.blended(blend, Ease::Smooth);
-                        state.chain();
-                        attacking.motion = next;
-                        attacking.struck.clear();
+                        let next = swing::chain_side_attack(
+                            &mut commands,
+                            hit.attacker,
+                            swing::ChainedFighter {
+                                anim: &mut anim,
+                                attacker: &mut attacker,
+                                state: &mut state,
+                                attacking: &mut attacking,
+                                fighter: &f,
+                            },
+                            blend,
+                            now,
+                        );
                         info!(
-                            "{:?} counters its recoil at {now} ms: {} (blend {blend})",
+                            "immediate counter: {:?} chains {} after its recoil",
                             hit.attacker,
                             next.action()
                         );

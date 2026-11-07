@@ -749,7 +749,45 @@ fn falls_off_balance(condition: Condition) -> bool {
 }
 
 /// The side a chain from `motion` goes on: the other one.
-pub(crate) fn chained_side(motion: AttackMotion) -> Side {
+/// What a chained side attack starts on.
+pub(crate) struct ChainedFighter<'a> {
+    pub anim: &'a mut Animator,
+    pub attacker: &'a mut Attacker,
+    pub state: &'a mut SwingState,
+    pub attacking: &'a mut Attacking,
+    pub fighter: &'a Fighter,
+}
+
+/// The other side's starter run as a chain (the original's side starters
+/// called to chain, by the Remise chain and the immediate counter): the
+/// side's clip picked by [`Attacker::pick_aimed`] (aimed at the foe's
+/// parry, a chaining start), the foe's motion it counters written, the
+/// clip played once from where the body is with `blend` frames eased
+/// smoothly, the swing chained (full strength, no stall, its window carried
+/// over) and the attack it chained from kept. Returns the new motion.
+pub(crate) fn chain_side_attack(
+    commands: &mut Commands,
+    entity: Entity,
+    f: ChainedFighter,
+    blend: u32,
+    now: u64,
+) -> AttackMotion {
+    let side = chained_side(f.attacking.motion);
+    let aim = f.attacker.aim(Some(f.fighter), false, true, now);
+    let (pick, countered) = f.attacker.pick_aimed(side, &aim);
+    let motion = side.motion(pick);
+    crate::write_countered(commands, entity, countered);
+    let stance = crate::stance_of(f.anim);
+    f.anim.play_once(motion.action(), &stance);
+    f.anim.blended(blend, Ease::Smooth);
+    f.state.chain();
+    f.attacking.continued_from = Some(f.attacking.motion);
+    f.attacking.motion = motion;
+    f.attacking.struck.clear();
+    motion
+}
+
+fn chained_side(motion: AttackMotion) -> Side {
     match motion {
         AttackMotion::Main(_) => Side::Other,
         _ => Side::Main,
@@ -900,14 +938,19 @@ pub fn run_swings(
     match state.tick(&swing, &t, &mut attacker.primary) {
         SwingEvent::Plays => {}
         SwingEvent::Chains => {
-            let side = chained_side(attacking.motion);
-            let motion = side.motion(attacker.pick(side, false));
-            let stance = crate::stance_of(&anim);
-            anim.play_once(motion.action(), &stance);
-            anim.blended(swing.chain_blend(), Ease::Smooth);
-            state.chain();
-            attacking.motion = motion;
-            attacking.struck.clear();
+            let motion = chain_side_attack(
+                &mut commands,
+                entity,
+                ChainedFighter {
+                    anim: &mut anim,
+                    attacker: &mut attacker,
+                    state: &mut state,
+                    attacking: &mut attacking,
+                    fighter,
+                },
+                swing.chain_blend(),
+                now,
+            );
             debug!(
                 "{entity:?} chains {} at {now} ms (blend {})",
                 motion.action(),
@@ -1576,7 +1619,7 @@ impl SwingState {
             self.flags |= flags::CLEAVING;
             return false;
         };
-        let counter = self.flags & flags::HOLDS_BACK == 0 && (5..=10).contains(&motion);
+        let counter = exa_physics::part::immediate_counter(self.flags, motion as i32).is_some();
         if let Some(f) = follow_through(&FollowStrike {
             class_word: striker.class_word,
             flags: self.flags,
@@ -1622,7 +1665,7 @@ impl SwingState {
             class_word: striker.class_word,
             flags: self.flags,
             clock: striker.clock,
-            counter: cleared & flags::HOLDS_BACK == 0 && (5..=10).contains(&motion),
+            counter: exa_physics::part::immediate_counter(cleared, motion as i32).is_some(),
             drive: speed * weapon_recoil,
             now_ms: striker.now_ms,
         });

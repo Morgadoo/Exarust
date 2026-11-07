@@ -329,7 +329,10 @@ tested rules of their own.
   Torch overlay, looked up under the race's own moveset), the stance class
   and the weapon class (the fists `0x80`); a body's `HeldModifier` (the
   game crate's burning blade asks for "Flaming" when it lights) is ORed into
-  the config. A choice made because the hands changed drops the modifier
+  the config. A held shield's style is the holder's shield techniques'
+  (`ShieldStyle::of_perks`: Shield C2 for Ward, else Shield C1 for
+  Synchrony, else the plain shield moveset, as the original's choice reads
+  the technique flags). A choice made because the hands changed drops the modifier
   and clears `BurningGrip`, the lit-blade byte the burning blade raises.
   Dressing puts a wielded weapon
   in the main hand, the game crate puts a lit torch in its hand, and a
