@@ -253,6 +253,9 @@
 //!                                     with hold it charges, swells and is freed after 7 s, else it rests and shrinks
 //!          --debug-force-cast <s>     play mode: every s seconds the player casts its first power at the nearest character, logging GI shapes and struck bodies' pin gain
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
+//!          --hurt-casters <r>         play mode: every other character that knows a power has its yellow and red
+//!                                     health set to r of its most once loaded (a debug tool: the AI's summoning
+//!                                     waits for its caster at three quarters or less)
 //!          --give id,id,...           play mode: the player starts with these items in its pack (e.g. `474`, the
 //!                                     exanima06 gate's key token)
 //!          --fell-player <frame>      play mode: the player collapses at this frame after the load, as a blow that
@@ -603,6 +606,9 @@ pub struct Options {
     pub debug_bubble: Option<exa_game::effects::bubble_draw::DebugBubbleAt>,
     /// The player's starting yellow and red health.
     pub health: Option<[f32; 2]>,
+    /// `--hurt-casters`: the share of its most health every other
+    /// character that knows a power is set to once loaded.
+    pub hurt_casters: Option<f32>,
     /// Items the player starts with in its pack.
     pub give: Vec<u32>,
     /// The play level runs as a story-mode session.
@@ -1306,6 +1312,9 @@ fn main() -> AppExit {
                         return AppExit::from_code(2);
                     }
                 }
+            }
+            "--hurt-casters" => {
+                options.hurt_casters = args.next().and_then(|v| v.parse().ok());
             }
             "--debug-force-cast" => {
                 options.thaum_debug.cast_every =

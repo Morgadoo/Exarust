@@ -58,6 +58,7 @@ pub mod live;
 pub mod long_door_live;
 pub mod power;
 pub mod shell_hum;
+pub mod summon_live;
 pub mod throw_live;
 pub mod torrent_live;
 pub mod tree;

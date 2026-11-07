@@ -122,7 +122,9 @@ word, the race word the attach reads: the races whose word carries bit
 `0x1000` (the golems, race ids 17–21) install a sense, the class `0x1200`
 (the Golem Suit) the standard one and the others the ally-aware one, and the
 statue bit marks a statue, whose sense clears what it sees. Every other race
-keeps the behaviour base's perception. A statue keeps that mark
+keeps the behaviour base's perception, except while its statue byte is
+set (a summoned demon its summon holds): then it perceives nobody and its
+contacts' concern and hostility are zeroed. A statue keeps that mark
 until a golem alarm zone wakes it (`exa_game::golem_alarm`, the only live
 caller of `golem::wake`): the player stepping into an alarm zone without its
 pass item wakes every statue within 800 cm of it, and the story revive's
@@ -204,7 +206,11 @@ skeleton → human −50, demon → human −100, demon → demon +100 (toleranc
 point past a gain of 10; with probability `(0.8k² + 0.2)²` the foe is
 looked at again, blended back by `0.6 − 0.6k²`; the foe's contact gives
 the level; engaged and balanced, a far, high or unseen foe counts the
-fighter stuck (a chase after 21 ticks) and the eagerness drifts by
+fighter stuck (a chase after 21 ticks). "High" is the watched point's
+height over the fighter's ground: the foe's chest across the ground at the
+foe's own ground height (`combat::target_point`), so a foe on a rock half
+a metre up is fought, not chased; only more than 150 cm of ground between
+them is and the eagerness drifts by
 `(3 − k)(0.02·draw − 0.006)` up to 6 at full energy. The attack, strike
 and spacing drives weigh the places: each costs its ground, the change of
 step, three times each contact's danger and twice its closeness, less the

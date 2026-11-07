@@ -188,8 +188,9 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   share narrowed before it is taken from 1) and finishes after 300 ms; a
   shell shared with Constant Displacement goes back to it. Constant
   Displacement's hum rises by the double 0.002 each tick while under 0.12.
-  The summon brings in `demon a01` with role 0x21 and a 300 relation both
-  ways, waits 2 s, fades the caster over 3 s and finishes 1 s later.
+  The summon brings in `demon a01` (role 33, familiarity 75 and relation
+  role 28 both ways), holds it 2 s, opens its shell over 3 s, lets it go
+  and finishes 1 s later.
 
 `thaum::cast` (the cast plugin) creates the classes from the player's
 power bar: `C` opens and stores the bar, a digit picks a slot, the arrows
@@ -785,8 +786,33 @@ The Summon (`TPwrDispSummonDemon_I`) spawns the character record
 `demon_a01` from the character database at its picked place, facing the
 caster's way (or the place's line), links it to the caster both ways with
 familiarity 75 and topic 0x1c, gives it role 0x21, and grows, fades and
-clears its vanish effect around it; the demon's body (a non-human race) is
-not built in Exarust yet.
+clears its vanish effect around it (`thaum::summon_live`):
+
+- **Place.** The player's is the cursor's; the AI's is the Long Door's grid
+  query (behind its target). The demon faces the caster along the level
+  line from its place (the caster's own way when that line is 1 cm or
+  shorter).
+- **The demon.** `demon a01` from the actor templates, under a fresh id,
+  built through the placed-character path (the viewer, `DemonAsked`). It
+  takes role 33 (Activity Wait); demon and caster each take familiarity 75
+  and relation role 28 (Ally) toward the other.
+- **Arrival.** Held (its statue byte: with no sense of its own it
+  perceives nobody), kept in the caster's power memory (the AI never
+  summons again, even after the demon dies), the summon's vanish over it
+  (its own four-entry table, the shell resting until it opens over 3000 ms
+  and closes over 1000 ms, opacity 2, texture scale over the demon's size)
+  and the tendril image on it; `thmdsp_Smn` at 0.4, pitch `roll·0.2 + 0.9`.
+- **Release** (5 s after the arrival): the statue byte clears, the body
+  wakes for 256 ticks, the tendrils trail away and the shell closes. The
+  demon is then an ordinary character that waits where it stands and
+  fights whom the Demon role hates (humans, the undead); no routine sends it
+  away after a time or at its caster's death, and none makes it follow.
+
+Not modelled: the held body's sleep word, the gain the fade writes on the
+caster's body, the summon's light. `play exanima67 --at -177.4,-3.65,36.1
+--hurt-casters 0.5` shows GdnShaperD summon (its advice waits for three
+quarters of its health or less); `play arena --powers 0x604 --debug-cast
+0@200` the player's.
 
 The vanish's, the Long Door's and the Summon's shell restore and clear
 walks act on the body's physics parts: the restore gives a part that

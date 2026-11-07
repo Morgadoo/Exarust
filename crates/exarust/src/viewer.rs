@@ -93,6 +93,8 @@ impl Plugin for ViewerPlugin {
                     launch_arena_match,
                     arena_exit,
                     spawn_spirit_bodies,
+                    spawn_summoned_demons,
+                    hurt_casters,
                 ),
             )
             // After the hand's own let-go of what it does not hold.
@@ -3142,6 +3144,45 @@ fn fell_player(
     }
 }
 
+/// `--hurt-casters <r>`: as it appears, every character other than the
+/// player that knows a power (a duellist given `--opponent-powers`, a
+/// level's caster such as exanima67's GdnShaperD) has its yellow and red
+/// health set to `r` of its most, once per body. A debug tool: the AI's
+/// summoning is only ready at three quarters or less.
+#[allow(clippy::type_complexity)]
+fn hurt_casters(
+    options: Res<Options>,
+    casters: Query<
+        Entity,
+        (
+            With<exa_game::thaum::cast::PowerCaster>,
+            With<exa_combat::Fighter>,
+            Without<exa_game::player::PlayerBody>,
+        ),
+    >,
+    mut seen: Local<std::collections::HashSet<Entity>>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
+) {
+    let Some(share) = options.hurt_casters else {
+        return;
+    };
+    for entity in &casters {
+        if !seen.insert(entity) {
+            continue;
+        }
+        // A write to simulation data: it lands at the start of the next
+        // fixed step.
+        fixed.post(move |world: &mut World| {
+            if let Some(mut fighter) = world.get_mut::<exa_combat::Fighter>(entity) {
+                let health = share * fighter.health.max;
+                fighter.health.yellow = health;
+                fighter.health.red = health;
+                info!("hurt casters: {entity:?} at {share} of its health ({health:.5})");
+            }
+        });
+    }
+}
+
 /// `--fell-nearest <frame>`: at that frame after the load the living
 /// character body nearest the player collapses as `--fell-player`'s does
 /// (its yellow health emptied, the collapse clip, its dying tick, then
@@ -3797,6 +3838,123 @@ fn spawn_spirit_bodies(
             commands
                 .entity(model)
                 .insert(exa_game::mind::runtime::SpiritOf { body: ask.caster });
+        }
+    }
+}
+
+/// The Summon's demon, as the original's activation makes it: the
+/// character record its summon names (`demon a01`) read from the actor
+/// templates with its own items, registered under a fresh character id
+/// (one past the highest in the scene, a level-local id [guess: the
+/// original's registry hands out the next free id]), built at the asked
+/// point as a level's character is, and marked as its summoner's
+/// (`exa_game::thaum::summon_live`, which then links it).
+#[allow(clippy::too_many_arguments)]
+fn spawn_summoned_demons(
+    mut commands: Commands,
+    mut asked: MessageReader<exa_game::thaum::summon_live::DemonAsked>,
+    game: Res<Game>,
+    db: Option<Res<exa_ai::brain::RoleDatabase>>,
+    story: Option<Res<exa_combat::StoryMode>>,
+    ids: Query<&exa_ai::brain::CharacterId>,
+    players: Query<Entity, With<exa_game::player::PlayerBody>>,
+    mut actors: Local<Option<exa_game::prelude::ActorTemplates>>,
+    mut items: Local<Option<Vec<exa_formats::objdb::Item>>>,
+    mut cache: ResMut<ModelCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+) {
+    let asks: Vec<_> = asked.read().copied().collect();
+    if asks.is_empty() {
+        return;
+    }
+    let Some(db) = db else {
+        warn!("summon: no role database, no demon");
+        return;
+    };
+    let races = game
+        .0
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("races.rdb"))
+        .and_then(|b| exa_formats::races::parse(b).ok())
+        .unwrap_or_default();
+    let actors = actors.get_or_insert_with(|| exa_game::prelude::ActorTemplates::load(&game));
+    let items = items.get_or_insert_with(|| {
+        game.0
+            .pack(PackKind::Resource)
+            .and_then(|p| p.get("objdb.rdb"))
+            .and_then(|b| exa_formats::rdb::Database::parse(b).ok())
+            .map(|db| exa_formats::objdb::items(&db))
+            .unwrap_or_default()
+    });
+    let mut next_id = ids
+        .iter()
+        .map(|id| id.0 & exa_formats::characters::ID_MASK)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    for ask in asks {
+        let Some(template) = actors.get(ask.record) else {
+            warn!("summon: no actor template {:?}, no demon", ask.record);
+            continue;
+        };
+        let mut record = template.clone();
+        if record.name.is_empty() {
+            record.name = ask.record.to_string();
+        }
+        record.id = exa_ai::roles::LOCAL_ID | next_id;
+        next_id += 1;
+        let own = actors.own_items(ask.record);
+        let find = |id: u32| exa_game::prelude::template_item(own, items, id);
+        let look = exa_world::record_look(&record, find);
+        let demon = exa_world::PlacedCharacter {
+            name: record.name.clone(),
+            position: ask.at,
+            yaw: ask.yaw,
+            dead: false,
+            race: record.race,
+            female: record.female,
+            worn: look.worn,
+            held: look.held,
+            hands: look.hands,
+            encumbrance: exa_formats::encumbrance::of_record(&record, find),
+            specials: exa_formats::encumbrance::WornSpecials::of_record(&record, find),
+            record,
+            pose: exa_formats::characters::SavedPose::None,
+            fall: false,
+        };
+        let placing = Placing {
+            races: &races,
+            book: &db.book,
+            player: players.iter().next().unwrap_or(ask.caster),
+            story: story.as_deref().is_some_and(|s| s.0),
+        };
+        let mut built = Vec::new();
+        spawn_placed_characters(
+            &mut commands,
+            &mut loader,
+            &placing,
+            std::slice::from_ref(&demon),
+            Some(&mut built),
+        );
+        for model in built {
+            info!(
+                "summon: {} {model:?} (race byte {}, id {:#x}) built at {:?} m, yaw {:.3}, for {:?}",
+                demon.name, demon.race, demon.record.id, ask.at, ask.yaw, ask.caster
+            );
+            commands
+                .entity(model)
+                .insert(exa_game::thaum::summon_live::Summoned { caster: ask.caster });
         }
     }
 }

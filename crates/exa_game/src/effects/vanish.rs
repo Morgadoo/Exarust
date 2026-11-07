@@ -30,13 +30,14 @@
 //! ([`Vanish::phase_fade`]: a 0x400 entry fades between its start and end,
 //! reversed without 0x800; 0x1000 shows one). Entries 1 and 5 stage the
 //! bodies, 2 reveals them (show call 0x20), 3 shows them (0x30) and 6 hides
-//! them. Nothing runs the table live yet (the casts drive the vanish
-//! through the power classes' own phases). The phased body object itself
+//! them. The summon runs its own four-entry table ([`SUMMON_TABLE`],
+//! [`Vanish::summon`]) over the demon's body, starting revealed at its
+//! first entry. The phased body object itself
 //! and the two calls the start ends with belong to the displacement unit
 //! outside this group.
 //!
 //! Evidence: the effect's show, hide, start, finish and phase-hook
-//! routines, read from `Exanima.exe`.
+//! routines and the two phase tables, read from `Exanima.exe`.
 
 pub use crate::thaum::displacement::CONSTANT as CONSTANT_DISPLACEMENT;
 
@@ -158,6 +159,40 @@ pub const PHASE_TABLE: [VanishPhase; 8] = [
     },
 ];
 
+/// The summon's phase table, as stored right after the unit's (four
+/// entries): a wait for the demon's held phase (start 500, end −16), the
+/// depth pass while the shell opens (0–2800 ms, staging the body at its
+/// end), the depth and fade passes bringing the body in (2800–3200 ms,
+/// handing it back to the scene at its end), and the shown end (from
+/// 3200 ms, end −1). The summon moves it to its second entry itself when
+/// the shell starts to open.
+pub const SUMMON_TABLE: [VanishPhase; 4] = [
+    VanishPhase {
+        flags: 0,
+        start: 500,
+        end: -16,
+        call: PhaseCall::None,
+    },
+    VanishPhase {
+        flags: 0x200,
+        start: 0,
+        end: 2800,
+        call: PhaseCall::Stage,
+    },
+    VanishPhase {
+        flags: 0xe00,
+        start: 2800,
+        end: 3200,
+        call: PhaseCall::Hide,
+    },
+    VanishPhase {
+        flags: 0x1100,
+        start: 3200,
+        end: -1,
+        call: PhaseCall::None,
+    },
+];
+
 /// The vanish over a phased body, its shown bodies and their items.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vanish {
@@ -178,6 +213,9 @@ pub struct Vanish {
     pub bodies: Vec<VanishBody>,
     /// The items' shown amounts.
     pub items: Vec<f32>,
+    /// The phase table it runs: the unit's ([`PHASE_TABLE`]) or the
+    /// summon's ([`SUMMON_TABLE`]).
+    pub table: &'static [VanishPhase],
 }
 
 impl Vanish {
@@ -210,7 +248,28 @@ impl Vanish {
             since_ms: now_ms,
             bodies,
             items,
+            table: &PHASE_TABLE,
         }
+    }
+
+    /// The summon's vanish over the demon's body at `now_ms`: its own phase
+    /// table from the first entry, and the body revealed (shown 1, the show
+    /// call with 0x20) as the summon's arrival does.
+    pub fn summon(now_ms: u32, bodies: Vec<VanishBody>) -> Self {
+        let mut vanish = Self {
+            phase: 0,
+            table: &SUMMON_TABLE,
+            ..Self::start(None, false, now_ms, bodies, Vec::new())
+        };
+        vanish.reveal();
+        vanish
+    }
+
+    /// The summon's own step as its shell starts to open: the table's clock
+    /// restarts at `now_ms`, the body is revealed and the table moves on one
+    /// entry.
+    pub fn summon_opens(&mut self, now_ms: u32) {
+        self.come_back(now_ms);
     }
 
     /// Hide the bodies and the items.
@@ -273,7 +332,7 @@ impl Vanish {
 
     /// The current table entry.
     pub fn phase_entry(&self) -> VanishPhase {
-        PHASE_TABLE[self.phase as usize % PHASE_TABLE.len()]
+        self.table[self.phase as usize % self.table.len()]
     }
 
     #[allow(clippy::manual_clamp)]
@@ -498,5 +557,28 @@ mod tests {
         assert!(!lent.finish(0));
         assert_eq!(lent.phased, Some(0x1));
         assert_eq!(lent.bodies[0].shown, 0.0);
+    }
+
+    #[test]
+    fn the_summon_table_waits_then_brings_the_body_in() {
+        let mut summon = Vanish::summon(100, vec![body()]);
+        // Revealed at the first entry: drawn by the vanish, no pass.
+        assert_eq!((summon.phase, summon.bodies[0].call), (0, REVEAL_CALL));
+        assert!(summon.draws_bodies());
+        assert!(!summon.advance(5_000));
+        assert_eq!(summon.phase_fade(5_000), 0.0);
+        // The shell opens at 2100: the depth entry, a new clock.
+        summon.summon_opens(2_100);
+        assert_eq!(summon.phase_entry().flags, 0x200);
+        assert!(!summon.advance(4_900));
+        assert!(summon.advance(4_901));
+        assert_eq!(summon.bodies[0].call, STAGE_CALL);
+        // 2800–3200 ms: the body fades in, not reversed.
+        assert!((summon.phase_fade(2_100 + 3_000) - 0.5).abs() < 1e-6);
+        assert!(summon.advance(2_100 + 3_201));
+        // Handed back to the scene, shown from the last entry on.
+        assert!(!summon.draws_bodies());
+        assert_eq!(summon.phase_fade(9_000), 1.0);
+        assert_eq!(summon.phase_entry().end, -1);
     }
 }

@@ -421,6 +421,57 @@ fn a_far_foe_is_chased_after_21_stuck_ticks() {
 }
 
 #[test]
+fn the_watched_point_sits_on_the_foes_ground() {
+    let chest = Vec3::new(120.0, 190.0, -40.0);
+    assert_eq!(target_point(chest, 60.0), Vec3::new(120.0, 60.0, -40.0));
+}
+
+#[test]
+fn a_foe_half_a_metre_up_is_not_chased() {
+    // The foe stands 60 cm higher (a rock), 378 cm away; its chest is
+    // 130 cm over its feet. The chase check measures the watched point's
+    // height against the fighter's ground: 60 cm, so it stays, where the
+    // chest's 190 cm would have counted it as out of reach.
+    let chest = Vec3::new(378.0, 190.0, 0.0);
+    let me = Body {
+        ground_y: 0.0,
+        target_point: target_point(chest, 60.0),
+        ..Body::default()
+    };
+    let mut field = Flat::new(chest);
+    let mut mind = CombatMind {
+        level: 3,
+        eagerness: 0.5,
+        stuck: 5,
+        ..CombatMind::default()
+    };
+    let mut roll = 0;
+    let c = chase_and_eagerness(
+        &mut mind, &me, None, 378.0, None, NOVICE, &mut field, &mut roll,
+    );
+    assert_eq!((c, mind.stuck), (Chase::Stay, 0));
+    // Watching the chest instead counts the foe as out of reach.
+    let high = Body {
+        target_point: chest,
+        ..me
+    };
+    chase_and_eagerness(
+        &mut mind, &high, None, 378.0, None, NOVICE, &mut field, &mut roll,
+    );
+    assert_eq!(mind.stuck, 1);
+    // More than 150 cm of ground between them is a chase.
+    let cliff = Body {
+        target_point: target_point(chest, 151.0),
+        ..me
+    };
+    mind.stuck = 21;
+    let c = chase_and_eagerness(
+        &mut mind, &cliff, None, 378.0, None, NOVICE, &mut field, &mut roll,
+    );
+    assert_eq!(c, Chase::Started);
+}
+
+#[test]
 fn the_eagerness_drifts_with_energy() {
     let mut field = Flat::new(Vec3::ZERO);
     let me = Body::default();

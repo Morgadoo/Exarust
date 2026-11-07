@@ -50,7 +50,7 @@ use exa_render::force_effects::{
 use super::cast::{ActiveClass, PowerCaster};
 use super::power::displacement::{AI_PICK, FADING_IN, FADING_OUT, TAIL, VanishBase};
 use crate::effects::shell::{
-    DEPTH_PASS, FADE_PASS, OPACITY, PLANE_SCALE, PlaneBounds, Shell, ShellState, TEX_SCALE,
+    DEPTH_PASS, FADE_PASS, PLANE_SCALE, PlaneBounds, Shell, ShellState,
     fade_plane,
 };
 use crate::effects::vanish::{Vanish as VanishTable, VanishBody};
@@ -81,6 +81,9 @@ pub struct LiveVanish {
     /// made by a cast starts on the next step, as a shell created with a
     /// zero stamp takes the clock it is first stepped on).
     pub started: bool,
+    /// The summoner whose Summon runs this vanish over its demon (`caster`
+    /// is then the demon's body); none for a vanish over its own caster.
+    pub summoner: Option<Entity>,
 }
 
 impl LiveVanish {
@@ -103,7 +106,73 @@ impl LiveVanish {
             holds_shell: true,
             phase: super::power::displacement::HIDDEN,
             started: true,
+            summoner: None,
         }
+    }
+
+    /// The summon's vanish over its arrived `demon` at `now_ms`: the
+    /// summon's table with the body revealed, and the shell resting at
+    /// nothing shown (opening over 3000 ms and closing over 1000 ms when
+    /// the summon says, at opacity 2, its texture scale over the demon's
+    /// `size`).
+    pub fn summon(
+        demon: Entity,
+        summoner: Entity,
+        now_ms: u32,
+        tex_pos: [f32; 2],
+        size: f32,
+    ) -> Self {
+        use super::power::displacement::{
+            SUMMON_GROW, SUMMON_SHELL_CLOSE_MS, SUMMON_SHELL_OPACITY, SUMMON_SHELL_OPEN_MS,
+        };
+        let body = VanishBody {
+            flags: 0,
+            shown: 1.0,
+            call: crate::effects::vanish::HIDE_CALL,
+        };
+        let table = VanishTable::summon(now_ms, vec![body]);
+        Self {
+            caster: demon,
+            shown: table.phase_fade(now_ms),
+            flags: table.phase_entry().flags,
+            table,
+            shell: Some(Shell::resting(
+                now_ms,
+                tex_pos,
+                SUMMON_SHELL_OPEN_MS,
+                SUMMON_SHELL_CLOSE_MS,
+                SUMMON_SHELL_OPACITY,
+                size,
+            )),
+            holds_shell: true,
+            phase: SUMMON_GROW,
+            started: true,
+            summoner: Some(summoner),
+        }
+    }
+
+    /// Follows the summon's step: the shell opens from now and the table
+    /// moves on when the held phase ends; the shell closes with leave to
+    /// finish when the demon is let go.
+    pub fn follow_summon(&mut self, step: &super::power::displacement::SummonStep, now_ms: u32) {
+        // Each step acts once: on the tick its phase changed.
+        if step.phase == self.phase {
+            return;
+        }
+        if step.open_shell {
+            if let Some(shell) = &mut self.shell {
+                shell.stamp = now_ms;
+                shell.state = ShellState::Opening;
+            }
+            self.table.summon_opens(now_ms);
+        }
+        if step.release
+            && let Some(shell) = &mut self.shell
+        {
+            shell.state = ShellState::Closing;
+            shell.finish();
+        }
+        self.phase = step.phase;
     }
 
     /// A vanish a cast has just made: it starts on its first step.
@@ -120,7 +189,10 @@ impl LiveVanish {
             return;
         }
         let tex_pos = self.shell.as_ref().map_or([0.0; 2], |s| s.tex_pos);
-        *self = Self::new(self.caster, now_ms, tex_pos);
+        *self = Self {
+            summoner: self.summoner,
+            ..Self::new(self.caster, now_ms, tex_pos)
+        };
     }
 
     /// Follows the power's phase: the shell's state words and the table's
@@ -266,8 +338,8 @@ pub fn shell_params(
         ),
         fade: uniforms.fade,
         interior,
-        tex_scale: TEX_SCALE,
-        opacity: OPACITY,
+        tex_scale: shell.tex_scale,
+        opacity: shell.opacity,
         push: SHELL_PUSH_M,
     }
 }
@@ -306,6 +378,24 @@ pub(crate) fn step_vanishes(
     };
     for (entity, mut live) in &mut vanishes {
         live.start(clock.now_ms);
+        // A summon's vanish follows its summoner's step.
+        if let Some(summoner) = live.summoner {
+            let step = casters.get(summoner).ok().and_then(|caster| {
+                caster
+                    .active
+                    .iter()
+                    .filter(|entry| entry.entity == Some(entity))
+                    .find_map(|entry| match &entry.class {
+                        ActiveClass::Summon(power) => Some(power.last),
+                        _ => None,
+                    })
+            });
+            if let Some(step) = step {
+                live.follow_summon(&step, clock.now_ms);
+            }
+            live.frame(clock.now_ms);
+            continue;
+        }
         let base = casters.get(live.caster).ok().and_then(|caster| {
             caster
                 .active
