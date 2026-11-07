@@ -95,4 +95,7 @@ armour-variant words are read once from the game folder's `Exanima.exe`
 rule a card uses (a weapon page on a factory model, else any apparel body,
 else a shield section on a factory model), and the card rewrites the
 description through it (the apparel rule also prefixes the variant word to
-the title). Without the executable the description is kept as it is.
+the title). Without the executable the description is kept as it is. A
+corpus test (`desc_phrase_corpus`, with the game installed) describes every
+shipped item whose card builds a sentence (450 in 0.9.5) and checks each
+against the original's rules.

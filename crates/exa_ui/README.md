@@ -509,7 +509,9 @@ placement, the colour drag, the spinner's commit, press, key filter, drag
 step, auto-repeat capture and buttons, the progress, separator, image,
 texture, caption, trackbar and scroll-bar geometry and draw calls, with
 `CVTSS2SI`'s indefinite result and the unordered clamps that let a NaN
-through. The screen and the controls are not drawn by a form yet.
+through. The combo box's front draw (`combo_draw`, `combo_text_origin`,
+`run_width`) is painted by the hub's table-built forms; the screen and the
+other extended controls are not drawn by a form yet.
 
 The thaumaturgy power tree's drawing is `tree_draw`: the six immediate
 programs and the spline renderer's procedural ribbon, the empty slot, icon,

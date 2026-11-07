@@ -2611,6 +2611,16 @@ result reads as 0. Their rules:
   the right edge. The vertical switch likewise has 1, 3, 4 and 5, centred
   by the line height (halved by a shift) or the font base. A 2 is the
   default.
+- **Users.** The executable's static control records name the extended
+  classes in these forms: the colour picker (seven colour swatches, six
+  spinners and its 164 × 164 colour image), the Settings form (separators),
+  the character creator (the name field and a combo box), the saves'
+  journal (an editable `New Entry` combo box), the arena loadout form (the
+  fighter list), the arena hire form (`Look for:` and `Rank:` combo
+  boxes), the emblem form (text fields) and the dormant object editor and
+  its open/save dialog (combo boxes, spinners, swatches, text fields). No
+  static record names a progress bar, texture view, trackbar, caption or
+  scroll bar; a form that builds one in code was not found.
 - **Drawing.** `controls` lays each control's draw out as the skin calls
   it. A spinner's field runs to its button column, its inner rectangle one
   pixel in; the buttons are half the height plus the 1- or 2-pixel overlap
@@ -2622,10 +2632,18 @@ result reads as 0. Their rules:
   in, alpha 0.4), its four-stop bar two pads inside the fill, and its
   one-ink highlight one more pixel in. A separator's line rectangles come
   from its gap; its ink slots are `0x9c, 0xa0, 0xac, 0xb4`, or `0xb8,
-  0xb0, 0xa0, 0x9c` with style bit 0x40. A combo box's arrow sits as above;
-  state bit 0x10 picks the `0xd4` slot, the edit state `0x10000` draws it
-  through the textured path and its text through the text edit unit, else
-  the `0xe0` arrow and the `0xe4` text. A trackbar's track is inset two
+  0xb0, 0xa0, 0x9c` with style bit 0x40. A combo box's arrow is the small atlas's
+  down chevron (the fifth built-in glyph) at the place above: state bit
+  0x10 draws it plain in the `0xd4` slot (that test comes first), else the
+  edit state `0x10000` draws it outlined at full strength, else plain in
+  the `0xe0` slot. Its text is the run the creation fits into its span
+  from the start, measured, placed by the label alignment over the span
+  (the main font's ascent centring it down) and drawn through the edit
+  unit: in the edit state with its caret, else in the `0xe4` slot (the
+  whole-run `0xd8` slot with state bit 0x10, the selection only with
+  0x400). The loadout form's fighter list (style `0x8403320`) has no arrow
+  and centres its name both ways; the hub's table-built forms draw it so
+  (`exa_game::gui_paint::paint_combo_front`). A trackbar's track is inset two
   pixels and drawn at alpha 0.6, its knob at `x + pad + rint(travel ×
   value)`; a scroll bar's track is the same inset and its thumb `4·unit +
   1` wide. An image's shade fades grey 128 from alpha 0 at the top to 255

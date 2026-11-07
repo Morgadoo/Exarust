@@ -1101,7 +1101,8 @@ through `gui_paint`. Manage Company, Company Records, Company Status, the
 loadout form and the dismiss and yes/no dialogs are built from their
 constructors' record tables (`hub_forms`, on `exa_ui::record_form`): the
 records lay out at unit 4, rescale to the live unit and draw in the shown
-palette and line skin; the pointer goes through the control messages and the
+palette and line skin (a combo box through its own front draw,
+`gui_paint::paint_combo_front`); the pointer goes through the control messages and the
 callbacks run the arena's rules (the manage refresh and End Day, the arsenal
 form's rows, steps, slider, shelves and dismissal, the tourney forfeit).
 `--open-hub-window <name>` opens one for a scripted screenshot. Escape or a

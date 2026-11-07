@@ -18,6 +18,13 @@
 //! The original draws from the engine's single shared generator; the card
 //! keeps its own state, which the caller passes in.
 //!
+//! The weapon builder picks a `c]` (crafted) name's condition table from a
+//! register it never sets. The card builder reaches it with that register
+//! zero, so the flawless and perfect tables are read, as here. The card
+//! refresh after a timed wear change (a caller outside this unit) reaches
+//! it holding a section pointer there, which makes the choice depend on an
+//! address; Exarust has no such refresh and keeps the card builder's.
+//!
 //! Evidence: the card builder's sentence branch and the two sentence
 //! builders of the item description unit (REA, checked against the
 //! instructions: the marks are `byte / 2.55` in double precision converted
