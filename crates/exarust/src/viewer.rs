@@ -955,7 +955,8 @@ fn play_level(
             )
             .with_weapon_variants(setup.weapon_variants)
             .with_rivals(rivals)
-            .with_entrants(launch.map_or_else(Vec::new, |launch| launch.entrants.clone())),
+            .with_entrants(launch.map_or_else(Vec::new, |launch| launch.entrants.clone()))
+            .with_event_hands(launch.and_then(|launch| launch.event_hands)),
         );
     } else {
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();

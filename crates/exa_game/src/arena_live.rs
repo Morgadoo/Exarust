@@ -47,6 +47,10 @@ use crate::scene_bodies::{
     hire_opponent_plan, hire_row_plan, opponent_plan,
 };
 
+/// The Captain's template id: its entrants after the first take the
+/// loadout two ranks under the tier.
+const CAPTAIN_TEMPLATE: i32 = 9;
+
 /// The running match's scene state.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct ArenaScene {
@@ -83,6 +87,9 @@ pub struct ArenaScene {
     /// manager, roster member `i` is slot `i + 1`); empty for a match the
     /// command line laid out, whose entry `i` is slot `i`.
     pub entrants: Vec<usize>,
+    /// A weapon event's hands: the two weapon words of the event's first
+    /// entrant, which every company copy holds ([`crate::hirelings::match_copy`]).
+    pub event_hands: Option<[u64; 2]>,
 }
 
 impl ArenaScene {
@@ -119,7 +126,35 @@ impl ArenaScene {
             rivals: [0; crate::career::RIVAL_FIELD],
             roll: crate::arena_match::counter_now() as u32,
             entrants: Vec::new(),
+            event_hands: None,
         }
+    }
+
+    /// A weapon event's hands for the company copies.
+    #[must_use]
+    pub fn with_event_hands(mut self, hands: Option<[u64; 2]>) -> Self {
+        self.event_hands = hands;
+        self
+    }
+
+    /// Company entry `index`'s match copy: the roster member's skills,
+    /// fighting skill and kit for the match's tier, a Captain's entrants
+    /// after the first two ranks under it. The manager (slot 0) has none:
+    /// the career does not keep his kit.
+    #[must_use]
+    pub fn match_copy(
+        &self,
+        career: Option<&crate::hub_windows::ArenaCareer>,
+        index: usize,
+    ) -> Option<crate::hirelings::MatchCopy> {
+        let slot = self.entrant_slot(index);
+        let member = career?.company.roster.get(slot.checked_sub(1)?)?;
+        Some(crate::hirelings::match_copy(
+            member,
+            self.tier,
+            self.template == CAPTAIN_TEMPLATE && index > 0,
+            self.event_hands,
+        ))
     }
 
     /// The board's participants, as company pool slots.
@@ -345,6 +380,7 @@ pub fn round_plans(
                 let (member, id) = scene.entrant(career, index);
                 plans.push(company_plan(
                     member,
+                    scene.match_copy(career, index),
                     &slot.place,
                     MANAGER_ROLE,
                     id,
@@ -760,6 +796,9 @@ fn continue_round(
     {
         screen.close();
     }
+    // Continue first resolves the company bodies that fell since the last
+    // tick.
+    sweep_fallen(arena, &fighters);
     let action = arena.end_action(scene.tournament);
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
     match action {
@@ -911,7 +950,16 @@ fn stand_next_round(
     }
     if let NextRound::Reserve(index) = fight.company {
         let (member, id) = scene.entrant(career, index);
-        let body = company_plan(member, &ours, MANAGER_ROLE, id, now, MATCH_ACT_GRACE_MS);
+        let copy = scene.match_copy(career, index);
+        let body = company_plan(
+            member,
+            copy,
+            &ours,
+            MANAGER_ROLE,
+            id,
+            now,
+            MATCH_ACT_GRACE_MS,
+        );
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
 }
@@ -992,7 +1040,8 @@ fn stand_bracket_round(
                 role, act_at_ms, ..
             } => {
                 let (member, id) = scene.entrant(career, fighter.index);
-                let body = company_plan(member, &place, role, id, 0, act_at_ms);
+                let copy = scene.match_copy(career, fighter.index);
+                let body = company_plan(member, copy, &place, role, id, 0, act_at_ms);
                 commands.write(SceneCommand::Spawn(Box::new(body)));
             }
             RaisedBody::Opponent {
@@ -1085,6 +1134,9 @@ fn forfeit_match(
     if arena.state != MatchState::Fighting {
         return;
     }
+    // The forfeit first resolves the company bodies that fell since the
+    // last tick.
+    sweep_fallen(arena, &fighters);
     match arena.forfeit(scene.tournament) {
         crate::arena_session::ForfeitResult::Ignored => {
             info!("arena forfeit: the manager is already down, ignored");
@@ -1105,6 +1157,48 @@ fn forfeit_match(
                 &mut exits,
             );
         }
+    }
+}
+
+/// The sweep the end screen's Continue and the forfeit run first: every
+/// company body (the player's included) whose health is under 0.01 and
+/// whose fall the once-a-second tick has not resolved yet is resolved now,
+/// as a death or a save, and marked resolved
+/// ([`crate::arena_session::resolve_dead_bodies`]).
+fn sweep_fallen(arena: &mut ArenaMatch, fighters: &Query<MatchBody<'_>>) {
+    let mut entities = Vec::new();
+    let mut scene = Vec::new();
+    for (entity, fighter, condition, body, player) in fighters {
+        let company = player || body.company;
+        entities.push(entity);
+        scene.push(crate::arena_match::SceneFighter {
+            team: if company {
+                crate::arena_match::PLAYER_TEAM
+            } else {
+                body.team as i32
+            },
+            dead: *condition == Condition::DEAD,
+            company,
+            resolved: arena.resolved.contains(&entity),
+            health: fighter.health.red,
+            max: fighter.health.max,
+            id: u8::try_from(body.id).unwrap_or(u8::MAX),
+            name: None,
+            manager: player,
+        });
+    }
+    let resolved = crate::arena_session::resolve_dead_bodies(
+        &mut scene,
+        arena.physician,
+        &mut arena.log,
+        &mut arena.deaths,
+    );
+    for index in resolved {
+        info!(
+            "arena match: the sweep resolved company fighter {}",
+            scene[index].id
+        );
+        arena.resolved.push(entities[index]);
     }
 }
 
@@ -1363,6 +1457,41 @@ mod tests {
         // Past the list (a command-line match) the entry is its own slot.
         assert_eq!(scene.entrant(Some(&career), 2), (Some(("Bram", 50_000)), 2));
         assert_eq!(scene.entrant(None, 0), (None, 2));
+    }
+
+    #[test]
+    fn a_hired_entrant_wears_its_match_copy_and_the_manager_the_template() {
+        use exa_formats::characters::ItemRef;
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        let mut member = career.player.clone();
+        member.name = "Ash".into();
+        // Four levels: rank 2, under the scene's tier 2.
+        member.skill_xp = [20_000, 0, 0, 0, 0, 0];
+        member.loadouts[2].hands[0] = ItemRef::new(77, 0);
+        member.loadouts[2].worn = vec![ItemRef::new(55, 0)];
+        career.company.roster.push(member);
+        let scene = scene().with_entrants(vec![0, 1]);
+        let slots = vec![
+            Slot {
+                who: SlotFighter::Ours(1),
+                place: our_place([0.0; 3]),
+            },
+            Slot {
+                who: SlotFighter::Ours(0),
+                place: our_place([0.0; 3]),
+            },
+        ];
+        let mut scene = scene;
+        scene.player_entry = None;
+        let plans = round_plans(&scene, Some(&career), &slots, 0, 3_000);
+        let BodyLook::Company(company) = &plans[0].look else {
+            panic!("the hired entrant has no match copy: {:?}", plans[0].look);
+        };
+        assert_eq!(company.copy.kit.hands[0].id, 77);
+        assert_eq!(company.copy.kit.worn, vec![ItemRef::new(55, 0)]);
+        assert_eq!(company.copy.combat_skill, 50.0);
+        // The manager's kit is not the career's to copy.
+        assert!(matches!(plans[1].look, BodyLook::Actor(_)));
     }
 
     #[test]

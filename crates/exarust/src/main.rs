@@ -99,7 +99,8 @@
 //!                                     the trade, then open the bought copy's card at the pointer (debug)
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
 //!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
-//!                                     stand-in for a loaded career's employee)
+//!                                     stand-in for a loaded career's employee); its weapons and shields are held,
+//!                                     the rest worn, in its outfit and its six loadouts
 //!          --hub-enter slot,...       play arenahub: once the manager stands, the board's match begins with this
 //!                                     lineup of company pool slots (0 the manager, 1 the first employee); without
 //!                                     0 the match is spectated (debug)
