@@ -815,7 +815,9 @@ playback are not in),
 the per-tick body trace
 (`trace`, with the foot contacts' states and anchors and the ankles,
 ending with the condition word, the swing's rate, strength and state
-word, and whether the fighter is parrying and with which clip), and
+word, and whether the fighter is parrying and with which clip; with
+`EXA_ARCHETYPE_TRACE=1` the bodies whose components changed are logged
+each tick, in the order the trace's rows then follow), and
 the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`, with the feet's
 anchors and states), the joint trace

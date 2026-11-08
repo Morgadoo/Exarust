@@ -162,6 +162,58 @@ impl Plugin for TracePlugin {
                 .after(BodySystems)
                 .run_if(resource_exists::<BodyTrace>),
         );
+        // Debug aid: `EXA_ARCHETYPE_TRACE=1` logs every character body's
+        // components as they change (the tick, the body and the components
+        // it gained and lost), in the order the bodies moved; the trace's
+        // rows follow that order.
+        if std::env::var("EXA_ARCHETYPE_TRACE").is_ok_and(|v| v == "1") {
+            app.add_systems(FixedUpdate, trace_archetypes.after(BodySystems));
+        }
+    }
+}
+
+/// Logs the character bodies whose archetype changed since the last tick.
+fn trace_archetypes(
+    clock: Res<BodyTicks>,
+    bodies: Query<Entity, (With<Ragdoll>, Without<PropBody>)>,
+    entities: &bevy::ecs::entity::Entities,
+    archetypes: &bevy::ecs::archetype::Archetypes,
+    components: &bevy::ecs::component::Components,
+    mut last: Local<bevy::ecs::entity::EntityHashMap<(bevy::ecs::archetype::ArchetypeId, usize)>>,
+) {
+    let name = |id| {
+        components
+            .get_name(id)
+            .map_or_else(|| format!("{id:?}"), |n| n.shortname().to_string())
+    };
+    for body in &bodies {
+        let Ok(at) = entities.get_spawned(body) else {
+            continue;
+        };
+        let now = (at.archetype_id, at.archetype_row.index());
+        let Some(before) = last.insert(body, now) else {
+            continue;
+        };
+        if before.0 == now.0 {
+            continue;
+        }
+        let (old, new) = (&archetypes[before.0], &archetypes[now.0]);
+        let gained: Vec<String> = new
+            .components()
+            .iter()
+            .filter(|&&c| !old.contains(c))
+            .map(|&c| name(c))
+            .collect();
+        let lost: Vec<String> = old
+            .components()
+            .iter()
+            .filter(|&&c| !new.contains(c))
+            .map(|&c| name(c))
+            .collect();
+        info!(
+            "archetype trace: tick {} body {body} row {} gained {gained:?} lost {lost:?}",
+            clock.0, now.1
+        );
     }
 }
 
