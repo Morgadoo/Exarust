@@ -2447,6 +2447,8 @@ Round 140 followers: a recruited companion follows the player through a door int
 
 Round 142 rfcimport: the running game keeps the world character database, world-tagged placements resolve in it, and a travelling follower is registered and saved.
 
+Round 143 arena: hired company entrants fight as their match copy with their rank loadout, as in the original.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
