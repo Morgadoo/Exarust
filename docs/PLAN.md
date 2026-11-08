@@ -1874,6 +1874,8 @@ Round 62 playercontrols: the pad's commands run as the original's per-frame pad 
 
 Round 108 summon: the summoning brings the demon in as the original does, held, faded in and let go as its caster's ally.
 
+Round 145 outdoor: terrain plants draw with the original grass program; the original plants have no wind.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
