@@ -2457,6 +2457,8 @@ Round 143 arena: hired company entrants fight as their match copy with their ran
 
 Round 144 savechars: the story save writes the live scene characters into the level section, so a carried follower is placed again after a load, and the level local character database is live.
 
+Round 148 effects: tendril arcs hit limbs through the swept mesh query and draw with the original electricity program.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
