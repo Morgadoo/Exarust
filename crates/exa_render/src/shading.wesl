@@ -76,6 +76,27 @@ fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
     return out;
 }
 
+// One light in the original's fast light loop (`lightsfst`), which its
+// grass program (`shadegrs_f`) always uses: plain N·L diffuse with no
+// Fresnel share, and a highlight r²/(N·H²(r² − 0.9) + 0.9)² × ¼/(N·V(1 − k)
+// + k) × N·L with no light-side geometry term, its Fresnel 0.04 + 0.96 ×
+// 2^(−8 V·H) (the loop's `dot(8·vwr, lhv)`, `vwr` pointing from the eye).
+fn light_fast(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
+    var out: Lit;
+    let ndl = max(dot(s.n, l), 0.0);
+    let h = normalize(l + s.v);
+    let ndh = max(dot(s.n, h), 0.0);
+    let r2 = pow(s.rough, 4.0);
+    let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
+    let d = 0.25 / (s.ndv * (1.0 - k) + k);
+    let denom = ndh * ndh * (r2 - 0.9) + 0.9;
+    let b = r2 / max(denom * denom, 1e-30) * d * (0.04 + 0.96 * exp2(-8.0 * dot(s.v, h)));
+    let lit = colour * ndl;
+    out.specular = lit * b;
+    out.diffuse = lit;
+    return out;
+}
+
 // Skin lit by one light, as the original's subsurface program lights it:
 // plain N·L diffuse without the Fresnel share, GGX specular as `light`, and
 // the light scattered under the skin (`scatter`), read against the blurred

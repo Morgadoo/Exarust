@@ -434,9 +434,20 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   No plant library stores vertex colours,
   and the plant program's fourth stream is the tangent, so the plants are
   not tinted per vertex. Alpha test 0.1, no fade.
-  The original's grass program sways them in the wind; Exarust draws them
-  still. Exarust gives the chunks no collider, and casts their shadows only
-  above shadow quality 4 (the original's shadow hook).
+  The plants draw with the original's grass program, `shading_v` with
+  `shadegrs_f` (Exarust's `flags2::GRASS`): the vertex program is the
+  ordinary one, so nothing sways (no wind term exists in 0.9.5); the
+  fragment program takes its roughness from the diffuse map's colour,
+  `clamp(1 − 3(g − 0.8r), 0.01, 0.99)²`, lights through the fast light
+  loop (`lightsfst`: no Fresnel share in the diffuse, Fresnel 0.04, no
+  light-side geometry term), never flips the normal on a back face, and
+  adds three quarters of its specular sum. Its material word is lit,
+  `MatSpc`, two-sided and textured (`0x20017`); above shading quality 3,
+  with `PlantSet_01N` loaded, it adds the tangent-space normal map
+  (`Mat.TexNrm`, `Shd.TngtNrm`), switched on every draw. The hook draws
+  with depth writes off (`glDepthMask(false)`; Exarust's plants write
+  depth). Exarust gives the chunks no collider, and casts their shadows
+  only above shadow quality 4 (the original's shadow hook).
 - **Points**: one Poisson-disc set for every tile, from the 32-bit LCG
   (`s = s·0x08088405 + 1`) seeded `0x17972D3E`: radius 1.3 vertex steps
   (26 cm) over 240 × 240, 30 attempts per active point, margin r/4. Draws

@@ -11,7 +11,7 @@ import bevy_pbr::render::{
     clustered_forward as clustering,
 };
 import exa_render::shading::{
-    Surface, Lit, Taps, taps, lit_by, light_shadow, sun_shadow, light, light_skin, schlick, view_depth, vertical_shaping,
+    Surface, Lit, Taps, taps, lit_by, light_shadow, sun_shadow, light, light_fast, light_skin, schlick, view_depth, vertical_shaping,
     gi_frame, gi_tap, gi_slot_tagged, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
     REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -164,6 +164,9 @@ const DIRT_GRIME: u32 = 16u;
 const DIRT_WORN: u32 = 32u;
 // `flags2`: the dirt map is a single-channel BC4 image (red is the colour).
 const GREY_DIRT: u32 = 64u;
+// `flags2`: the original's grass program (`shadegrs_f`) for terrain plants
+// (`exa_render::material::flags2::GRASS`).
+const GRASS: u32 = 128u;
 
 // The material's opacity (`MatDif.a`): the cut-away fade's own while the
 // mesh fades, as the original's faded pass writes it for the draw.
@@ -398,7 +401,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let skin = has(SUBSURFACE);
     let blur = material.subsurface.w;
     let geom = ns;
-    let back_face = has(TWO_SIDED) && !is_front;
+    // The grass program builds its normal itself and never flips it on a
+    // back face, two-sided or not.
+    let grass = (material.flags2 & GRASS) != 0u;
+    let back_face = has(TWO_SIDED) && !is_front && !grass;
     var n = geom;
     var sn = geom;
 @if(VERTEX_TANGENTS) {
@@ -465,6 +471,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         strand_b = cross(n, strand_t);
     }
 }
+    // The grass program's normal: with its normal map, the map's xy along
+    // the vertex tangent as it comes (not made perpendicular) and
+    // cross(normal, tangent)·w, z = √(1 − min(x² + y², 1)) along the vertex
+    // normal, normalised; without, the vertex normal.
+@if(VERTEX_TANGENTS) {
+    if grass && has(NORMAL_MAP) {
+        let wt = in.world_tangent;
+        let gy = cross(in.world_normal, wt.xyz) * wt.w;
+        let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
+        let z = sqrt(1.0 - min(dot(xy, xy), 1.0));
+        n = normalize(wt.xyz * xy.x + gy * xy.y + in.world_normal * z);
+        sn = n;
+    }
+}
     let shadow_normal = select(geom, -geom, back_face);
     var s: Surface;
     s.n = n;
@@ -515,6 +535,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     if has(GLOSS_MAP) && !has(SPECULAR_MAP) {
         s.rough = 1.0 - material.specular.w * textureSample(gloss_map, gloss_sampler, uv).r;
+    }
+    // The grass program's roughness comes from the diffuse map's colour:
+    // a = clamp(1 − 3·(g − 0.8·r), 0.01, 0.99), roughness a² (its `Gloss`),
+    // with the constant Fresnel 0.04 of its light loop and reflection.
+    if grass {
+        let a = clamp(1.0 - (dif_tex.g - dif_tex.r * 0.8) * 3.0, 0.01, 0.99);
+        s.rough = a * a;
+        s.f0 = vec3(0.04);
+        s.legacy = false;
     }
     // The hair program's diffuse colour (`difCol`), which only its blood
     // applies: MatDif·map·(1 − metal) with a specular map, the map's colour
@@ -659,6 +688,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             specular += lit.specular;
             continue;
         }
+        if grass {
+            let lit = light_fast(s, l, colour);
+            diffuse += lit.diffuse;
+            specular += lit.specular;
+            continue;
+        }
         let lit = light(s, l, colour);
         diffuse += lit.diffuse;
         specular += lit.specular;
@@ -684,6 +719,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             let lit = light_skin(s, sn, blur, (*sun).direction_to_light, colour);
             diffuse += lit.diffuse;
             scatter += lit.scatter;
+            specular += lit.specular;
+            continue;
+        }
+        if grass {
+            let lit = light_fast(s, (*sun).direction_to_light, colour);
+            diffuse += lit.diffuse;
             specular += lit.specular;
             continue;
         }
@@ -835,7 +876,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Every program adds its specular sum only for a record with
         // `MatSpc`.
         specular += reflected * schlick(s.f0, s.ndv);
-        colour += specular * cavity;
+        // The grass program adds three quarters of its specular sum.
+        colour += specular * cavity * select(1.0, 0.75, grass);
     }
 
     // The opacity fall-off, as on unlit surfaces but with the shaded normal,

@@ -82,6 +82,7 @@ impl Plugin for TerrainPlugin {
                     bind_level_cube,
                     exa_render::supersample::sync_split_taps::<TerrainMaterial>,
                     sync_plant_shadows,
+                    sync_plant_normal_map,
                 )
                     .chain(),
             )
@@ -683,6 +684,8 @@ impl Plants {
                     // The shader multiplies the texture by the tint as is.
                     diffuse: Vec4::new(tint[0], tint[1], tint[2], 1.0),
                     flags: flags::LIT | flags::TWO_SIDED,
+                    // The original draws its plants with its grass program.
+                    flags2: exa_render::material::flags2::GRASS,
                     ..default()
                 },
                 diffuse_map: base_color_texture,
@@ -970,6 +973,46 @@ fn sync_plant_shadows(
             commands.entity(e).remove::<bevy::light::NotShadowCaster>();
         } else if !cast && !no_cast {
             commands.entity(e).insert(bevy::light::NotShadowCaster);
+        }
+    }
+}
+
+/// The plant program takes its normal-mapped variant only above shading
+/// quality 3 (`vegetation::plant_normal_mapping`), as the original's grass
+/// hook switches its program word every draw. The map stays bound; the
+/// material's normal-map bit follows the setting.
+fn sync_plant_normal_map(
+    quality: Option<Res<exa_render::quality::ShadingQuality>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    chunks: Query<&MeshMaterial3d<exa_render::material::ExaMaterial>, With<PlantChunk>>,
+    added: Query<(), Added<PlantChunk>>,
+) {
+    let changed = quality.as_ref().is_some_and(|q| q.is_changed());
+    if !changed && added.is_empty() {
+        return;
+    }
+    let level = quality.map_or(exa_render::quality::ShadingQuality::default().0, |q| q.0);
+    let mut done = Vec::new();
+    for handle in &chunks {
+        let id = handle.0.id();
+        if done.contains(&id) {
+            continue;
+        }
+        done.push(id);
+        let Some(m) = materials.get(id) else {
+            continue;
+        };
+        let bit = exa_render::material::flags::NORMAL_MAP;
+        let want = vegetation::plant_normal_mapping(level, m.normal_map.is_some());
+        if (m.params.flags & bit != 0) == want {
+            continue;
+        }
+        if let Some(mut m) = materials.get_mut(id) {
+            m.params.flags = if want {
+                m.params.flags | bit
+            } else {
+                m.params.flags & !bit
+            };
         }
     }
 }
