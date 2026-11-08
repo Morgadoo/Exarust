@@ -1687,6 +1687,8 @@ Round 130 motiledyn: ground placements pose the body as the original pose-only s
 
 Round 138 kernel: the support pin goals are set once a tick in the carry as in the original, and the step leads gain the long branch, the exertion write and the 85/83 factor; the duel diverges by design.
 
+Round 146 sectors: every grid level keeps the original scene of sectors live, its visible pass trims the main view and the blended lists are walked sector by sector.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
