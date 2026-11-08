@@ -22,6 +22,13 @@ The system SHALL compute the shared intersection tests with the original's arith
 - **WHEN** a segment from the origin along (NaN, 0, 0) is tested against a sphere of radius 2 at (1, 0, 0)
 - **THEN** the distance is measured from the start and the sphere meets it
 
+### Requirement: Oriented-box slab reciprocal
+The oriented-box slab tests SHALL scale the slab distances by the engine's fast vector reciprocal of the travel, not by an exact division, and fold them with the engine's component minimum, maximum, largest and smallest.
+
+#### Scenario: An entry at the end of the segment
+- **WHEN** a segment of length 8 along x starts 10 from the centre of a box of half extent 2
+- **THEN** it hits exactly when 8 times the fast reciprocal of 8 is below 1
+
 ### Requirement: Plane refresh
 The system SHALL rebuild a face's plane from its polygon with the normal (v2 − v1) × (v0 − v1), normalised, a zero vector left zero, and the offset that puts v0 on the plane.
 

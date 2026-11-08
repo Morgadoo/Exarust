@@ -362,10 +362,19 @@ fn a_segment_hits_an_obb_by_the_slab_test() {
     let along = Vec3::new(20.0, 0.0, 0.0);
     assert!(segment_obb_hit(Vec3::new(-10.0, 0.0, 0.0), along, &obb));
     assert!(!segment_obb_hit(Vec3::new(-10.0, 3.0, 0.0), along, &obb));
-    // The entry exactly at the end of the segment (8 of 8) is rejected.
+    // The entry at the end of the segment (8 of 8) is 8 times the
+    // processor's approximate reciprocal of 8 (RCPPS), which need not be
+    // exactly 1 (the table is the processor vendor's): the segment hits when
+    // that product is below 1.
+    let entry = 8.0 * crate::engine_math::reciprocal_approx3(Vec3::splat(8.0)).x;
+    assert_eq!(
+        segment_obb_hit(Vec3::new(-10.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0), &obb),
+        entry < 1.0
+    );
+    // An entry well past the end is rejected.
     assert!(!segment_obb_hit(
         Vec3::new(-10.0, 0.0, 0.0),
-        Vec3::new(8.0, 0.0, 0.0),
+        Vec3::new(7.0, 0.0, 0.0),
         &obb
     ));
     // Along the y = 2 face: the y slab's far side is 0 × ∞ = NaN, which
