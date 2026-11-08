@@ -34,6 +34,7 @@ pub mod published_light;
 pub mod room_view;
 pub mod rooms;
 pub mod scene_env;
+pub mod scene_live;
 pub mod scene_nodes;
 pub mod shadow_links;
 pub mod start;
@@ -67,7 +68,7 @@ impl Plugin for WorldPlugin {
             sun_shadow::SunShadowPlugin,
             cloth::ClothPlugin,
             level_lifecycle::LevelChangePlugin,
-            mechanisms::MechanismPlugin,
+            (mechanisms::MechanismPlugin, scene_live::SceneLivePlugin),
         ));
     }
 }
@@ -2073,7 +2074,16 @@ impl LevelLoad {
                             // shells, and the rest of the level is sorted
                             // into them.
                             let rooms = std::sync::Arc::new(rooms::Rooms::flood(g));
-                            commands.insert_resource(room_view::LevelRooms::new(rooms.clone()));
+                            let mut level = room_view::LevelRooms::new(rooms.clone());
+                            level.portals = std::sync::Arc::new(
+                                rooms
+                                    .rooms()
+                                    .iter()
+                                    .flat_map(|room| room.links.iter())
+                                    .filter_map(|&link| rooms.portal(g, link))
+                                    .collect(),
+                            );
+                            commands.insert_resource(level);
                             grid::GridBuild::new(self.root, Some(rooms))
                         });
                         build.step(commands, loader, g, budget)

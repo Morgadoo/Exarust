@@ -35,6 +35,7 @@ pub mod quads;
 pub mod quality;
 pub mod queue;
 pub mod rain;
+pub mod sector_walk;
 pub mod shader_bindings;
 pub mod shader_cache;
 pub mod shader_program;
@@ -94,7 +95,10 @@ impl Plugin for RenderPlugin {
             shell::ShellPlugin,
             (glow::GlowPlugin, mind_sight::MindSightPlugin),
             smoke::SmokePlugin,
-            terrain_composite::TerrainCompositePlugin,
+            (
+                terrain_composite::TerrainCompositePlugin,
+                sector_walk::SectorWalkPlugin,
+            ),
         ))
             // The original's shadow maps at its top shadow detail: 512² cubes
             // for lights and fires, 4096² for the sun.
