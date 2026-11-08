@@ -810,9 +810,12 @@ latch, writing the same word the story session's death handler reads
 word; `EndSession` reconstructs a scanned player who dies in the story,
 stripping them the first time (hand and worn data cleared, health just
 under half). A teleporter use reads whether the destination screen is
-already open and opens nothing more then. The destination screen and its
-journey bubble, the grab and
-use input that would send the requests, the level change, the corpse
+already open and opens nothing more then. The single click on either
+device sends its `UseDevice` for the player's body (`object_click`), the
+open destination screen takes the window's pointer, press and Escape
+(`destination`), so a chosen row starts the journey bubble, and
+`--debug-slot FRAME` puts a stand-in crystal on every device's slot. The
+screen's drawing, the grab input, the level change, the corpse
 record a strip leaves, the emissive half of the glow, the aura's shader
 signature and the sound
 playback are not in),

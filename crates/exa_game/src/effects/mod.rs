@@ -198,6 +198,7 @@ fn bridge_effects_types(app: &mut App) {
         .bridge_copy::<crate::effects::fire_row::Attached>()
         .bridge_copy::<crate::effects::fire_row::Flame>()
         .bridge_copy::<crate::effects::scan::ScanEffect>()
+        .bridge_copy::<crate::effects::scan::ScanAura>()
         .bridge_copy::<crate::effects::shell::ShellEffect>();
 }
 

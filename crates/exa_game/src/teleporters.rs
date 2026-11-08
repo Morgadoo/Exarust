@@ -51,7 +51,7 @@ pub struct Possession {
 }
 
 /// A request to use a placed device, from the interaction code: the player
-/// clicked it.
+/// clicked it ([`crate::object_click`], the click's device use).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UseDevice {
     pub device: Entity,
@@ -185,7 +185,7 @@ impl Plugin for TeleportPlugin {
                     .chain()
                     .after(crate::effects::advance_clock),
             )
-            .add_systems(Update, debug_scan);
+            .add_systems(Update, (debug_scan, debug_slot));
     }
 }
 
@@ -432,11 +432,15 @@ pub fn spawn_device_scan(
         .id()
 }
 
-/// The debug scan (`--debug-scan <frame>`): at that frame after the load
-/// the player gets a reconstruction device's scan, as a use that passed the
-/// device's checks starts it, and its sound.
+/// The devices' debug flags. `--debug-scan <frame>` (`scan`): at that
+/// frame after the load the player gets a reconstruction device's scan, as
+/// a use that passed the device's checks starts it, and its sound.
+/// `--debug-slot <frame>` (`slot`): see [`debug_slot`].
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DebugScan(pub Option<u32>);
+pub struct DebugScan {
+    pub scan: Option<u32>,
+    pub slot: Option<u32>,
+}
 
 #[allow(clippy::too_many_arguments)]
 fn debug_scan(
@@ -448,7 +452,7 @@ fn debug_scan(
     mut sounds: MessageWriter<DeviceSound>,
     mut frames: Local<u32>,
 ) {
-    let Some(frame) = script.0 else {
+    let Some(frame) = script.scan else {
         return;
     };
     if loading.is_some() || *frames > frame {
@@ -478,6 +482,74 @@ fn debug_scan(
         clock.now_ms,
         clock.now_ms.wrapping_add(teleporters::SCAN_DELAY_MS)
     );
+}
+
+/// `--debug-slot FRAME` ([`DebugScan::slot`]): at that frame after the load, every placed
+/// teleporter gets a fresh Power Crystal A and every reconstruction device
+/// a Power Crystal L on its `[` slot point, as a player who put one there
+/// leaves it, so a click on the device runs its use. The crystal is a
+/// placed object with no model or body [debug stand-in: the original's
+/// crystal is the item the player brought].
+/// The crystal a device's slot takes: Power Crystal A on a teleporter,
+/// Power Crystal L on a reconstruction device.
+pub fn slot_crystal(kind: u8) -> Option<u32> {
+    match kind {
+        operative::TELEPORTER => Some(teleporters::POWER_CRYSTAL),
+        operative::RES_DEVICE => Some(teleporters::LARGE_POWER_CRYSTAL),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn debug_slot(
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
+    script: Res<DebugScan>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    devices: Query<(Entity, &TeleportDevice)>,
+    names: Query<&Name>,
+    children: Query<&Children>,
+    transforms: Query<&GlobalTransform>,
+    mut frames: Local<u32>,
+) {
+    let Some(frame) = script.slot else {
+        return;
+    };
+    if loading.is_some() || *frames > frame {
+        return;
+    }
+    *frames += 1;
+    if *frames != frame {
+        return;
+    }
+    let mut crystals = Vec::new();
+    for (device, record) in &devices {
+        let Some(id) = slot_crystal(record.kind) else {
+            continue;
+        };
+        let Some(at) = find_slot_entity(device, &children, &names)
+            .and_then(|slot| transforms.get(slot).ok())
+            .map(GlobalTransform::translation)
+        else {
+            info!("debug slot: device {device:?} has no slot");
+            continue;
+        };
+        info!("debug slot: crystal {id:#x} on device {device:?}'s slot at {at:?}");
+        crystals.push((id, at));
+    }
+    fixed.post(move |world| {
+        for (id, at) in crystals {
+            world.spawn((
+                Name::new("debug slot crystal"),
+                PlacedItem {
+                    id,
+                    tagged_id: id,
+                    condition: 0,
+                },
+                Transform::from_translation(at),
+                GlobalTransform::from_translation(at),
+            ));
+        }
+    });
 }
 
 /// Step every device glow and scale the voxel lights of the device's nodes

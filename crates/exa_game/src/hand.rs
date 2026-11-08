@@ -1145,6 +1145,7 @@ impl Plugin for HandPlugin {
             .init_resource::<player_controls::DeviceClock>()
             .add_message::<WorldClick>()
             .add_message::<ObjectClick>()
+            .add_message::<crate::teleporters::UseDevice>()
             .add_message::<crate::item_card::WorldCard>()
             .add_message::<exa_audio::PointSounded>()
             .add_message::<ContainerRequest>()

@@ -114,7 +114,10 @@ impl Plugin for DestinationPlugin {
             .add_message::<TravelToLevel>()
             .add_message::<JourneySave>()
             .add_message::<JourneyStarted>()
-            .add_systems(Update, (open_screen, screen_input, paint_screen).chain())
+            .add_systems(
+                Update,
+                (open_screen, portal_pointer, screen_input, paint_screen).chain(),
+            )
             .add_systems(
                 FixedUpdate,
                 tick_journeys.after(crate::effects::advance_clock),
@@ -161,6 +164,68 @@ fn open_screen(
             random: Mt19937::new(clock.now_ms),
         });
     }
+}
+
+/// The frame of an open screen whose input logs the row nodes again.
+const NODE_LOG_FRAME: u32 = 90;
+
+/// The window's pointer as the open screen reads it, once a frame while a
+/// screen shows: its point in physical pixels (the scripted pointer of an
+/// unattended run, else the mouse over the window), a press of the left
+/// (bit 0) or right (bit 1) button this frame, Escape as the leave key,
+/// and the window's physical size with the interface's GUI scale as its
+/// unit. The first input of a screen, and the one [`NODE_LOG_FRAME`]
+/// frames later (its reveal over), log where its three row nodes stand.
+#[allow(clippy::too_many_arguments)]
+fn portal_pointer(
+    state: Res<PortalScreenState>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    scripted: Option<Res<exa_ui::cursor::ScriptedPointer>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    gui: Option<Res<exa_ui::scale::GuiScale>>,
+    mut inputs: MessageWriter<PortalInput>,
+    mut shown: Local<u32>,
+) {
+    let Some(open) = state.open.as_ref() else {
+        *shown = 0;
+        return;
+    };
+    *shown += 1;
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let scale = window.scale_factor();
+    let logical = match scripted.as_deref() {
+        Some(pointer) => pointer.position(window),
+        None => window.cursor_position(),
+    };
+    let point = logical.map(|p| ((p.x * scale) as i32, (p.y * scale) as i32));
+    let pressed = |button| mouse.as_ref().is_some_and(|m| m.just_pressed(button));
+    let buttons =
+        u16::from(pressed(MouseButton::Left)) | (u16::from(pressed(MouseButton::Right)) << 1);
+    let leave = keys
+        .as_ref()
+        .is_some_and(|k| k.just_pressed(KeyCode::Escape));
+    let (width, height) = (
+        window.physical_width() as i32,
+        window.physical_height() as i32,
+    );
+    let unit = gui.map_or(4, |g| g.scale as i32);
+    if *shown == 1 || *shown == NODE_LOG_FRAME {
+        let nodes: Vec<(f32, f32)> = (1..=selection::HIT_NODES)
+            .map(|node| open.screen.node(node, width, height, unit))
+            .collect();
+        info!("destination screen: {width}x{height} at unit {unit}, row nodes at {nodes:?}");
+    }
+    inputs.write(PortalInput {
+        point,
+        buttons,
+        leave,
+        width,
+        height,
+        unit,
+    });
 }
 
 /// Routes the pointer: the leave key, the hover, the click.

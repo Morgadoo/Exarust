@@ -241,7 +241,11 @@ pub(crate) fn tick_barriers(
         live.barrier.snapshot(0);
         live.barrier.tick(place, place.y, facing, now);
         if live.barrier.dome.phase == Phase::Gone {
-            live.barrier.dome.destroy(true);
+            let gone = live.barrier.dome.destroy(true);
+            info!(
+                "force barrier: destroyed (hum voice freed {}, GI light removed {})",
+                gone.hum, gone.light
+            );
             commands.entity(entity).despawn();
             continue;
         }
@@ -300,6 +304,11 @@ pub fn new_barrier(
     // The hum's start draws after the cast sound's pitch.
     let hum_roll = draws.0.unit();
     barrier.dome.attach_node();
+    // The creator's GI light and the cast's hum voice, which the destructor
+    // frees: the light is registered while the entity lives
+    // (`super::effect_light`) and the voice is held by `super::dome_sound`.
+    barrier.dome.light = true;
+    barrier.dome.hum = true;
     barrier.rate = cost;
     LiveBarrier {
         barrier,

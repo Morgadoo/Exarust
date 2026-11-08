@@ -82,6 +82,11 @@ pub fn new_bubble(
     // The hum's start draws after the cast sound's pitch.
     let hum_roll = draws.0.unit();
     bubble.dome.attach_node();
+    // The creator's GI light and the cast's hum voice, which the destructor
+    // frees: the light is registered while the entity lives
+    // (`super::effect_light`) and the voice is held by `super::dome_sound`.
+    bubble.dome.light = true;
+    bubble.dome.hum = true;
     let sounds = DomeSounds::cast(sound, hum_roll);
     (
         LiveBubble {
@@ -211,7 +216,11 @@ pub(crate) fn tick_bubbles(
             caster.sync_body();
         }
         if live.bubble.dome.phase == Phase::Gone {
-            live.bubble.dome.destroy(true);
+            let gone = live.bubble.dome.destroy(true);
+            info!(
+                "force bubble: destroyed (hum voice freed {}, GI light removed {})",
+                gone.hum, gone.light
+            );
             commands.entity(entity).despawn();
             continue;
         }

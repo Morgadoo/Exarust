@@ -610,6 +610,7 @@ pub struct Options {
     pub debug_casts: Vec<exa_game::thaum::debug_cast::DebugCast>,
     /// The frame a debug scan goes on the player (`--debug-scan`).
     pub debug_scan: Option<u32>,
+    pub debug_slot: Option<u32>,
     /// A teleport bubble made around the player (`--debug-bubble`).
     pub debug_bubble: Option<exa_game::effects::bubble_draw::DebugBubbleAt>,
     /// The player's starting yellow and red health.
@@ -1316,6 +1317,7 @@ fn main() -> AppExit {
                 }
             }
             "--debug-scan" => options.debug_scan = args.next().and_then(|v| v.parse().ok()),
+            "--debug-slot" => options.debug_slot = args.next().and_then(|v| v.parse().ok()),
             "--debug-bubble" => {
                 let text = args.next().unwrap_or_default();
                 match exa_game::effects::bubble_draw::DebugBubbleAt::parse(&text) {
@@ -2051,7 +2053,10 @@ fn main() -> AppExit {
     .insert_resource(exa_game::thaum::debug_cast::DebugCasts(
         options.debug_casts.clone(),
     ))
-    .insert_resource(exa_game::teleporters::DebugScan(options.debug_scan))
+    .insert_resource(exa_game::teleporters::DebugScan {
+        scan: options.debug_scan,
+        slot: options.debug_slot,
+    })
     .insert_resource(exa_game::effects::bubble_draw::DebugBubble(
         options.debug_bubble,
     ))

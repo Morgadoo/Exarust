@@ -8,7 +8,9 @@
 //! - The single click (outside combat mode) on an object node clears the
 //!   placement's first-touch bit, runs a device's use (a scripted device,
 //!   class 2 kind 3, runs its use script with the player as its one actor
-//!   and itself as the operative, then pulses and sounds), and then shows the
+//!   and itself as the operative, then pulses and sounds; a teleporter or a
+//!   reconstruction device asks [`crate::teleporters`] for its own use with
+//!   a [`UseDevice`] for the player's body), and then shows the
 //!   object's item card at once, asks for the delayed card, or has the
 //!   narrator say the device's description
 //!   ([`player_controls::click`]). A point on plain level geometry is
@@ -48,6 +50,7 @@ use crate::player_controls::{
     self, ClickOutcome, ClickTarget, DeviceClock, ObjectInteraction, PendingUse, PendingUses,
     TakeUse, USABLE_DEVICE,
 };
+use crate::teleporters::UseDevice;
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -222,6 +225,8 @@ pub struct ClickOutputs<'w> {
     effects: MessageWriter<'w, exa_script::ScriptEffect>,
     /// A used device's `WitnessRole`, placed at the device.
     witness: MessageWriter<'w, crate::script_cast::WitnessGrant>,
+    /// A teleporter's or reconstruction device's own use.
+    device_uses: MessageWriter<'w, UseDevice>,
 }
 
 /// The dialogue side a narration goes through.
@@ -290,12 +295,33 @@ impl Narrator<'_> {
     }
 }
 
-/// A device's use as the click runs it: the shared clock's rules, the
-/// teleporter and reconstruction device answering no here (their screens
-/// are opened by Exarust's own device path; [Exarust stand-in]).
-fn use_device(devices: &mut DeviceClock, kind: u8, id: u32, now: u64) -> bool {
-    player_controls::device_use(kind, id, now, devices, || {
-        info!("object click: device {id:#x} kind {kind:#x} answers through its own use");
+/// A device's use as the click runs it: the shared clock's rules; a
+/// teleporter or reconstruction device runs its own use, which
+/// [`crate::teleporters`] answers from a [`UseDevice`] request for the
+/// player's body (the original's use measures the reach from the player and
+/// scans the player, whoever clicked). That use runs on the next fixed step,
+/// so the click reads its answer as no [Exarust: the original's answer only
+/// decides an unnamed device's narration, and both devices are named, so
+/// their delayed card follows either way].
+fn use_device(
+    out: &mut ClickOutputs,
+    kind: u8,
+    id: u32,
+    now: u64,
+    device: Entity,
+    user: Option<Entity>,
+) -> bool {
+    let uses = &mut out.device_uses;
+    player_controls::device_use(kind, id, now, &mut out.devices, || {
+        match user {
+            Some(user) => {
+                info!(
+                    "object click: device {id:#x} kind {kind:#x} runs its own use for the player {user:?}"
+                );
+                uses.write(UseDevice { device, user });
+            }
+            None => info!("object click: device {id:#x} kind {kind:#x}: no player to use it"),
+        }
         false
     })
 }
@@ -376,8 +402,10 @@ pub fn run_object_clicks(
     ),
     mut out: ClickOutputs,
     mut narrator: Narrator,
+    players: Query<Entity, With<crate::player::PlayerBody>>,
 ) {
     let now = time.map_or(0, |t| t.elapsed().as_millis() as u64);
+    let user = players.iter().next();
     for click in clicks.read() {
         let Some(found) = objects.resolve(click.hit, click.at) else {
             continue;
@@ -403,7 +431,7 @@ pub fn run_object_clicks(
                         continue;
                     };
                     let used = usable.class == USABLE_DEVICE
-                        && use_device(&mut out.devices, usable.kind, id, now);
+                        && use_device(&mut out, usable.kind, id, now, entity, user);
                     if used {
                         let script = sections.as_deref().and_then(|s| s.use_script.clone());
                         scripted_device_use(
@@ -457,7 +485,7 @@ pub fn run_object_clicks(
                         .with_strings(named, !description.is_empty());
                     let used = match sections.as_deref().and_then(|s| s.usable) {
                         Some(usable) if usable.class == USABLE_DEVICE => {
-                            let used = use_device(&mut out.devices, usable.kind, id, now);
+                            let used = use_device(&mut out, usable.kind, id, now, entity, user);
                             if used {
                                 let script = sections.as_deref().and_then(|s| s.use_script.clone());
                                 scripted_device_use(
@@ -762,6 +790,7 @@ mod tests {
             .add_message::<crate::glow_pulse::PulseGlow>()
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::script_cast::WitnessGrant>()
+            .add_message::<UseDevice>()
             .init_resource::<PendingUses>()
             .init_resource::<DeviceClock>()
             .init_resource::<crate::player_controls::UseCursor>()
@@ -1091,6 +1120,38 @@ mod tests {
         assert_eq!(sounds.len(), 1);
         assert_eq!(sounds[0].name, "Gulp");
         assert_eq!((sounds[0].volume, sounds[0].flags), (0.3, 0x400));
+    }
+
+    /// A teleporter's and a reconstruction device's single click runs
+    /// their own use: a `UseDevice` for the player's body, whoever clicked;
+    /// without a player nothing is asked. The click reads no answer, so the
+    /// device's card or narration does not depend on it.
+    #[test]
+    fn a_teleporter_click_asks_for_its_own_use() {
+        use exa_formats::objdb::operative::{RES_DEVICE, TELEPORTER};
+        for kind in [TELEPORTER, RES_DEVICE] {
+            let mut app = app();
+            let device = placed(
+                &mut app,
+                0x555,
+                Some(sections(Some((USABLE_DEVICE, kind)), false, 0)),
+                Vec3::ZERO,
+            );
+            click(&mut app, Hit::SceneNode { node: device }, Vec3::ZERO, false);
+            assert!(drain::<UseDevice>(&mut app).is_empty());
+            let player = app
+                .world_mut()
+                .spawn(crate::player::PlayerBody::new(0.0))
+                .id();
+            click(&mut app, Hit::SceneNode { node: device }, Vec3::ZERO, false);
+            assert_eq!(
+                drain::<UseDevice>(&mut app),
+                [UseDevice {
+                    device,
+                    user: player
+                }]
+            );
+        }
     }
 
     /// A scripted device's use runs its use script with the player as its
