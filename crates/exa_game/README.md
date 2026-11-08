@@ -1047,6 +1047,13 @@ template (`use_cursor::repair_record`: the price word, the apparel or
 weapon condition, a factory weapon's stat pass through the shop's factory
 cache) and refreshes an open card of the item in place
 (`item_card::CardRefresh`, `item_card::refresh_card`).
+A weapon card's Flip weapon button (`item_card::FlipButton`) is drawn
+with the grip icon (`item_card::GripSheet`, the grip sheet at eight units
+in the grip manager's format) through the skin's image draw; a left press
+on it and the release over it toggle it and turn the striking rows to the
+weapon's other side (`exa_items::card::flip_rows`); the log names the
+button's place and each flip (`--item-card 0xc@300` with `--click-at` on
+the button exercises it).
 `save_live` runs the original's world sync before a story save, its
 checkpoint and a level change (the player's local items promoted to the
 world tier with the link remap table on, `promote_player_items`; the arena

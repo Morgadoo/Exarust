@@ -101,9 +101,45 @@ pub struct ShownCard {
     /// was drawn at: a drop or a drag on it is the socket control's
     /// ([`crate::socket_drag`]).
     pub socket_row: Option<(GuiRect, i32)>,
+    /// The weapon's two striking sides, which the Flip weapon button turns
+    /// between ([`exa_items::card::flip_rows`]).
+    pub sides: [[u8; 3]; 2],
+    /// The Flip weapon button's state word (on and lit while the second
+    /// side shows) and whether a left press started on it.
+    pub flip: FlipButton,
+}
+
+/// The card's Flip weapon button: an image button (class 3, style
+/// 0x80c00080: a toggle in radio group 1) showing the grip sheet's first
+/// cell from the grip manager. A left press on it and the release over it
+/// toggle it; its handler then shows side `(state & 0x60) != 0` of the
+/// weapon's striking rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlipButton {
+    pub state: u32,
+    /// The left press landed on the button.
+    pub pressed: bool,
+    /// Where the button was last drawn (window pixels).
+    pub place: Option<GuiRect>,
 }
 
 impl ShownCard {
+    /// The Flip weapon button's release over it: the button toggles as an
+    /// image button does, and the card's striking rows show the side its
+    /// state picks. Returns the side shown, or `None` when the card has no
+    /// flip button.
+    pub fn flip_released(&mut self) -> Option<usize> {
+        let content = self.built.content.as_mut().filter(|c| c.flip)?;
+        let mut controls = [flip_record()];
+        controls[0].state = self.flip.state;
+        let mut events = Vec::new();
+        gui_controls::toggle(&mut controls, 0, &mut events);
+        self.flip.state = controls[0].state;
+        let side = exa_items::item_gui::card_side(self.flip.state);
+        exa_items::card::flip_rows(content, self.sides, side);
+        Some(side)
+    }
+
     /// Whether the card takes the pointer at a physical point: inside its
     /// form, once its forced pointer test has run (the popup's hit rule).
     pub fn hit(&self, pointer: (i32, i32), _unit: i32) -> bool {
@@ -155,6 +191,11 @@ pub struct CardView {
     pub coins: Option<CoinSheet>,
     /// The coin side the icons were last tried at.
     coins_tried: Option<i32>,
+    /// The grip manager's icons (the Flip weapon button's), made at its
+    /// side.
+    pub grip: Option<GripSheet>,
+    /// The grip side the icons were last tried at.
+    grip_tried: Option<i32>,
     /// A map's parchment the card builder asked for in place of a card,
     /// opened by [`crate::parchment`].
     pub parchment: Option<crate::parchment::OpenParchment>,
@@ -296,7 +337,7 @@ pub fn build_for(
         apparel: facts.apparel,
         shield: facts.shield,
         sockets: facts.sockets,
-        material: facts.material,
+        flip: facts.flip,
         skill: facts.skill,
         // The live screens are story and practice, where the original's
         // rank and points rows are off. [guess: no mode resource is read]
@@ -327,11 +368,11 @@ const MODEL: u32 = 0x10_0000;
 /// put in the card's text as it stands (the refresh does not run the
 /// builder's condition blocks and pronoun markers); an apparel card's
 /// coverage, impact, striking, encumbrance and value controls, or a weapon
-/// card's striking side 0, thrust and value controls, take the record's
+/// card's striking side, thrust and value controls, take the record's
 /// bytes ([`apparel_refresh`], [`weapon_refresh`]). A record whose name does
-/// not resolve, or with neither section, leaves the card as it was. The
-/// weapon card's flip state is not kept by Exarust's card, so its side 0
-/// is read. Returns whether the card changed.
+/// not resolve, or with neither section, leaves the card as it was. A
+/// weapon card's striking bytes are the side its Flip weapon button shows.
+/// Returns whether the card changed.
 pub fn refresh_card(
     card: &mut ShownCard,
     roll: &mut u32,
@@ -373,13 +414,17 @@ pub fn refresh_card(
             byte(b, 0x1A5),
             value,
         ),
-        (None, Some(w)) => weapon_refresh(
-            byte(w, 0x37),
-            byte(w, 0x38),
-            byte(w, 0x39),
-            byte(w, 0x33),
-            value,
-        ),
+        (None, Some(w)) => {
+            // The striking side the card's flip button shows.
+            let side = 6 * exa_items::item_gui::card_side(card.flip.state);
+            weapon_refresh(
+                byte(w, 0x37 + side),
+                byte(w, 0x38 + side),
+                byte(w, 0x39 + side),
+                byte(w, 0x33),
+                value,
+            )
+        }
         (None, None) => return false,
     };
     card.name = title;
@@ -440,7 +485,9 @@ fn card_unit(window: &Window, screens: &GameScreens) -> i32 {
     }
 }
 
-/// A left press over the shown card sets its keep-open bit.
+/// A left press over the shown card sets its keep-open bit; a press on its
+/// Flip weapon button and the release over it toggle the button and turn
+/// the striking rows ([`ShownCard::flip_released`]).
 fn card_press(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -449,7 +496,9 @@ fn card_press(
     mut view: ResMut<CardView>,
     time: Res<Time>,
 ) {
-    if !buttons.just_pressed(MouseButton::Left) {
+    let pressed = buttons.just_pressed(MouseButton::Left);
+    let released = buttons.just_released(MouseButton::Left);
+    if !pressed && !released {
         return;
     }
     let (Some(card), Ok(window)) = (view.shown.as_mut(), windows.single()) else {
@@ -459,9 +508,27 @@ fn card_press(
         return;
     };
     let pointer = pointer * window.scale_factor();
+    let at = (pointer.x as i32, pointer.y as i32);
+    let on_flip = card
+        .flip
+        .place
+        .is_some_and(|place| place.contains(at.0, at.1));
+    if released {
+        if std::mem::take(&mut card.flip.pressed)
+            && on_flip
+            && let Some(side) = card.flip_released()
+        {
+            info!(
+                "item card: {:#x} flipped to side {side} (button state {:#x})",
+                card.item, card.flip.state
+            );
+        }
+        return;
+    }
     let unit = card_unit(window, &screens);
-    if card.hit((pointer.x as i32, pointer.y as i32), unit) {
+    if card.hit(at, unit) {
         card.press(0x1001, time.elapsed().as_millis() as u32);
+        card.flip.pressed = on_flip;
     }
 }
 
@@ -614,6 +681,10 @@ fn show(
         world,
         sockets,
         socket_row: None,
+        sides: catalogue
+            .card_facts(item)
+            .map_or([[0; 3]; 2], |facts| facts.sides),
+        flip: FlipButton::default(),
     });
 }
 
@@ -1090,6 +1161,149 @@ fn load_coin_sheet(game: &exa_assets::Game, side: i32) -> Option<CoinSheet> {
     CoinSheet::of_cells(&loaded.cells, sheet.cell as usize, side)
 }
 
+/// The grip sheet's index among the item GUI's sheets.
+const GRIP_SHEET: usize = 2;
+
+/// The grip manager's icons: the grip sheet's three cells resampled in
+/// the manager's single-channel format to its side, `8 · unit`, in one
+/// atlas. The card's Flip weapon button shows the first.
+pub struct GripSheet {
+    pub atlas: IconAtlas,
+    pub texture: GuiTexture,
+    pub cells: [i32; 3],
+    pub side: i32,
+}
+
+impl GripSheet {
+    /// From the sheet's decoded cells (square, `cell` pixels) at `side`.
+    pub fn of_cells(cells: &[Vec<u8>], cell: usize, side: i32) -> Option<Self> {
+        let format = exa_items::item_gui::SHEET_ATLASES[GRIP_SHEET].format;
+        let out = side.max(1) as usize;
+        let mut atlas = IconAtlas::new(side.max(1), 4);
+        let mut handles = [0; 3];
+        for (i, handle) in handles.iter_mut().enumerate() {
+            let resampled = exa_render::mipmap::resample_rgba8_to_size(
+                cells.get(i)?,
+                cell,
+                cell,
+                out,
+                out,
+                format,
+                0,
+            );
+            (resampled.len() == out * out * 4).then_some(())?;
+            *handle = atlas.add(
+                &IconImage {
+                    width: out as u16,
+                    height: out as u16,
+                    channels: 4,
+                    pixels: resampled,
+                },
+                i as i32 + 1,
+            );
+            (*handle > 0).then_some(())?;
+        }
+        let texture = GuiTexture::from_bottom_up(
+            u32::from(atlas.image.width),
+            u32::from(atlas.image.height),
+            &atlas.image.pixels,
+        )?;
+        Some(Self {
+            atlas,
+            texture,
+            cells: handles,
+            side,
+        })
+    }
+}
+
+/// Reads the grip sheet and makes its icons at `side`.
+fn load_grip_sheet(game: &exa_assets::Game, side: i32) -> Option<GripSheet> {
+    let sheet = &SPRITE_SHEETS[GRIP_SHEET];
+    let name = sheet.name.strip_suffix(".rfi").unwrap_or(sheet.name);
+    let loaded = load_sheet(sheet, game.0.texture(name)?)?;
+    GripSheet::of_cells(&loaded.cells, sheet.cell as usize, side)
+}
+
+/// The skin's image-draw ink slots as the label group's shades: 0xe4 the
+/// seventh (the plain image), 0xf4 the eleventh (on), 0xd8 the fourth
+/// (pressed or disabled).
+fn image_ink(slot: u32, palette: &exa_ui::skin::SkinPalette) -> [u8; 4] {
+    match slot {
+        0xf4 => palette.text[10],
+        0xd8 => palette.text[3],
+        _ => palette.text[6],
+    }
+}
+
+/// The Flip weapon button at `rect` (window pixels): the line skin's button
+/// frame in its state's ink, then the grip icon centred in the button
+/// through the skin's image draw (its ink by the state: plain, on, or
+/// pressed), a pixel lower while on.
+#[allow(clippy::too_many_arguments)]
+fn paint_flip_button(
+    painted: &mut gui_paint::Painted,
+    c: &Control,
+    rect: GuiRect,
+    unit: i32,
+    palette: &exa_ui::skin::SkinPalette,
+    alpha: f32,
+    font: &exa_ui::gui_font::GuiFont,
+    size: Option<(u16, u16)>,
+    grip: Option<&GripSheet>,
+) {
+    let button = gui_paint::paint_line_button(
+        rect,
+        gui_paint::ButtonWords {
+            style: c.style,
+            state: c.state,
+            group: c.group,
+        },
+        unit,
+        palette,
+        alpha,
+        font,
+        size,
+        "",
+    );
+    painted.layers.extend(button.layers);
+    let Some(grip) = grip else {
+        return;
+    };
+    let drawn = exa_ui::skin::draw_skin_image(
+        exa_ui::skin::SkinImagePlace {
+            x: rect.left as i16,
+            y: rect.top as i16,
+            w: rect.width() as i16,
+            h: rect.height() as i16,
+            image: grip.cells[0],
+            size: grip.side,
+            style: c.style,
+            flags: c.state,
+            default_image: false,
+        },
+        exa_ui::skin::SkinImageInks {
+            plain: [palette.text[6][0], palette.text[6][1], palette.text[6][2]],
+            raised: [
+                palette.text[10][0],
+                palette.text[10][1],
+                palette.text[10][2],
+            ],
+            alpha: 0xff,
+        },
+    );
+    let ink = drawn
+        .colour
+        .unwrap_or_else(|| image_ink(drawn.ink.unwrap_or(0xe4), palette));
+    let quads = grip.atlas.draw(drawn.image, drawn.x as f32, drawn.y as f32);
+    if !quads.is_empty() {
+        painted.push(GuiLayer::new(
+            icon_batch(&quads, ink),
+            LayerTexture::Owned(grip.texture.clone()),
+        ));
+    }
+}
+
 /// Reads the rating-dot and crystal sheets and makes the socket cells at
 /// `side`.
 fn load_socket_sheet(game: &exa_assets::Game, side: i32) -> Option<SocketSheet> {
@@ -1214,6 +1428,23 @@ fn item_record(class: u16, x: i32, w: i32, h: i32, value: f32) -> Control {
     c
 }
 
+/// The Flip weapon button as its template stores it: an image button at
+/// 0x90 on the row after the striking rows' anchor (-0x7ff9), its class's
+/// default size, style 0x80c00080 (a toggle), radio group 1, its text the
+/// tooltip's. Its image is the grip sheet's first cell in the grip manager,
+/// which the builder writes into the record.
+fn flip_record() -> Control {
+    let mut flip = Control::new(3, 0x90, -0x7ff9, 0, 0);
+    flip.style = 0x80c0_0080;
+    flip.group = 1;
+    flip.text = b"Flip weapon".to_vec();
+    flip.icon_atlas = true;
+    flip
+}
+
+/// The original's hidden state word (the flip's hidden rows).
+const HIDDEN_ROW: u32 = 0x110;
+
 /// The rating dots beside a row label, at the templates' x (0x98).
 fn dots(value: f32) -> Control {
     item_record(DOTS_CLASS, 0x98, 0, 24, value)
@@ -1246,16 +1477,18 @@ pub fn card_records(built: &BuiltCard) -> (Vec<Control>, i32) {
             records.push(dots(value(1)));
             records.push(row_label(0x9c, -0x7ff6, "Balance"));
             records.push(dots(value(2)));
-            for r in rows.iter().skip(3) {
-                records.push(row_label(0x9c, -0x7ff7, r.label));
-                records.push(dots(r.value));
+            for (i, r) in rows.iter().enumerate().skip(3) {
+                let mut label = row_label(0x9c, -0x7ff7, r.label);
+                let mut value = dots(r.value);
+                if content.hidden & (1 << i) != 0 {
+                    label.state |= HIDDEN_ROW;
+                    value.state |= HIDDEN_ROW;
+                }
+                records.push(label);
+                records.push(value);
             }
-            if content.material {
-                let mut flip = Control::new(3, 0x90, -0x7ff9, 0, 0);
-                flip.style = 0x80c0_0080;
-                flip.group = 1;
-                flip.text = b"Flip weapon".to_vec();
-                records.push(flip);
+            if content.flip {
+                records.push(flip_record());
                 if rows.len().saturating_sub(3) > 2 {
                     extra += 0x14;
                     row = 0x30;
@@ -1511,11 +1744,29 @@ pub fn draw_card(
             None => warn!("item card: the coin sheet did not load"),
         }
     }
+    let grip_side = exa_items::item_gui::manager_cell(exa_items::item_gui::IconManager::Grip, unit);
+    if view.grip_tried != Some(grip_side)
+        && view
+            .shown
+            .as_ref()
+            .and_then(|c| c.built.content.as_ref())
+            .is_some_and(|content| content.flip)
+    {
+        view.grip_tried = Some(grip_side);
+        view.grip = game
+            .as_deref()
+            .and_then(|game| load_grip_sheet(game, grip_side));
+        match &view.grip {
+            Some(_) => info!("item card: grip icons made at {grip_side} px"),
+            None => warn!("item card: the grip sheet did not load"),
+        }
+    }
     let CardView {
         shown,
         sockets: socket_sheet,
         dots: dot_sheet,
         coins: coin_sheet,
+        grip: grip_sheet,
         ..
     } = view.into_inner();
     let Some(card) = shown else {
@@ -1656,7 +1907,33 @@ pub fn draw_card(
     };
     for c in &layout.controls {
         let (x, y) = (rect.left + c.x, rect.top + c.y);
+        if c.state & HIDDEN_ROW == HIDDEN_ROW {
+            continue;
+        }
         match c.class {
+            3 => {
+                let mut flip = c.clone();
+                flip.state = card.flip.state;
+                let place = GuiRect::new(x, y, c.w, c.h);
+                if card.flip.place != Some(place) {
+                    info!(
+                        "item card: {:#x}'s Flip weapon button at ({}, {}) {}x{}",
+                        card.item, x, y, c.w, c.h
+                    );
+                }
+                card.flip.place = Some(place);
+                paint_flip_button(
+                    &mut painted,
+                    &flip,
+                    place,
+                    unit,
+                    &palette,
+                    step.alpha,
+                    &font,
+                    Some(font_texture),
+                    grip_sheet.as_ref(),
+                );
+            }
             DOTS_CLASS => {
                 if let Some(layer) = dot_sheet.as_ref().and_then(|sheet| {
                     crate::doll_view::rating_dots_layer(
@@ -1776,8 +2053,9 @@ pub fn draw_card(
 /// The value slider's draw: its line in the skin's title ink at the
 /// record's middle row, stopping 0.195 of the large-icon cell either side
 /// of the knob, then the knob centred on the value's share of the width
-/// ([`exa_items::item_gui::slider`]) in the skin's ninth label ink. [The
-/// knob's icon is not identified: the rating sheet's whole dot stands in.]
+/// ([`exa_items::item_gui::slider`]) in the skin's ninth label ink: the
+/// rating sheet's first cell (the whole dot) from the interface's global
+/// icon manager, as the slider's draw names it.
 fn paint_slider(
     painted: &mut gui_paint::Painted,
     place: (i32, i32, i32, i32),
@@ -2033,7 +2311,8 @@ mod tests {
         assert_eq!(card_sockets(&built, Some([0x80, 0, 0, 0])), None);
         built.content = Some(CardContent {
             rows: Vec::new(),
-            material: false,
+            flip: false,
+            hidden: 0,
             sockets: true,
             rank: None,
             points: None,
@@ -2072,6 +2351,8 @@ mod tests {
             world: false,
             sockets: None,
             socket_row: None,
+            sides: [[0; 3]; 2],
+            flip: FlipButton::default(),
         };
         // Not hit before its shown flag is set.
         assert!(!card.hit((110, 110), 4));
@@ -2130,7 +2411,8 @@ mod tests {
                     row(0xd03, "Slash", 2.0),
                     row(0xd04, "Pierce", 1.5),
                 ],
-                material: false,
+                flip: false,
+                hidden: 0,
                 sockets: false,
                 rank: None,
                 points: None,
@@ -2139,6 +2421,63 @@ mod tests {
             }),
             description: description.to_string(),
         }
+    }
+
+    #[test]
+    fn the_flip_button_turns_the_striking_rows() {
+        let gates = CardGates {
+            rank: false,
+            points: false,
+        };
+        let content = exa_items::card::weapon_content(
+            0, 100, 50, 127, 10, 0, 40, 60, true, false, 0, 7, gates, false,
+        );
+        let mut card = ShownCard {
+            item: 1,
+            flags: 0,
+            name: String::new(),
+            built: BuiltCard {
+                page: CardPage::Weapon,
+                value: 7,
+                title_colour: None,
+                content: Some(content),
+                description: String::new(),
+            },
+            icon: 0,
+            at: (0, 0),
+            size: card_size(4),
+            pointer: (0, 0),
+            fade: PopupFade::default(),
+            form_flags: 0,
+            world: false,
+            sockets: None,
+            socket_row: None,
+            sides: [[10, 0, 40], [0, 20, 0]],
+            flip: FlipButton::default(),
+        };
+        // The button is the template's image button, after the striking
+        // rows' label and dots pairs.
+        let (records, _) = card_records(&card.built);
+        let flip = records.iter().find(|c| c.class == 3).unwrap();
+        assert_eq!((flip.x, flip.style, flip.group), (0x90, 0x80c0_0080, 1));
+        // The release turns it on and lit: side 1, Crush in the Slash row,
+        // the Pierce row hidden.
+        assert_eq!(card.flip_released(), Some(1));
+        assert_eq!(card.flip.state & 0x60, 0x60);
+        let (records, _) = card_records(&card.built);
+        let labels: Vec<_> = records
+            .iter()
+            .filter(|c| c.class == 5)
+            .map(|c| (String::from_utf8_lossy(&c.text).into_owned(), c.state))
+            .collect();
+        assert_eq!(labels[3], ("Crush".to_string(), 0));
+        assert_eq!(labels[4], ("Pierce".to_string(), HIDDEN_ROW));
+        // Again: off, side 0.
+        assert_eq!(card.flip_released(), Some(0));
+        assert_eq!(card.flip.state & 0x60, 0);
+        // A card without the button does nothing.
+        card.built.content.as_mut().unwrap().flip = false;
+        assert_eq!(card.flip_released(), None);
     }
 
     #[test]

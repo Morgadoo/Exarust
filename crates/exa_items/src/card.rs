@@ -519,15 +519,20 @@ pub struct CardRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardContent {
     pub rows: Vec<CardRow>,
-    /// The material swatch row.
-    pub material: bool,
+    /// The weapon's Flip weapon button: an image button showing the grip
+    /// sheet's first cell, which turns the striking rows to the weapon's
+    /// second side ([`flip_rows`]).
+    pub flip: bool,
+    /// The rows the flip hid (bit `i` for `rows[i]`): still laid out, not
+    /// drawn (the original's hidden state 0x110).
+    pub hidden: u16,
     /// The crystal-socket row.
     pub sockets: bool,
     pub rank: Option<&'static str>,
     pub points: Option<f32>,
     /// The value row, when the caller's gate shows it.
     pub value: Option<u32>,
-    /// The height the special rows add to the page's own (the material and
+    /// The height the special rows add to the page's own (the flip button,
     /// rank and points rows 0x14 each, the socket and value rows 0x18).
     pub extra_height: i32,
 }
@@ -591,11 +596,11 @@ pub fn weapon_points(flags: u32, skill: u8) -> i32 {
 }
 
 /// The weapon card: weight, handling and balance rows, the four striking
-/// rows (each shown above 5, at the byte times 0.05), the material swatch,
+/// rows (each shown above 5, at the byte times 0.05), the Flip weapon button,
 /// the socket row, the rank and points rows and the value. The damage rows
 /// fill the card's three damage slots, so a hidden Slash moves Crush and
 /// Pierce up. The control ids follow the builder's: Slash is 0xd03, Crush
-/// and Pierce follow the shown ones, Thrust is 0x106. The swatch adds its
+/// and Pierce follow the shown ones, Thrust is 0x106. The flip button adds its
 /// height only when more than two striking rows (thrust included) show.
 /// The points row shows while the skill's low five bits are set and reads
 /// [`weapon_points`].
@@ -609,7 +614,7 @@ pub fn weapon_content(
     crush: u8,
     pierce: u8,
     thrust: u8,
-    material: bool,
+    flip: bool,
     sockets: bool,
     skill: u8,
     value: u32,
@@ -665,14 +670,15 @@ pub fn weapon_content(
     } else {
         None
     };
-    let extra_height = i32::from(material && shown > 2) * CARD_SMALL_HEIGHT
+    let extra_height = i32::from(flip && shown > 2) * CARD_SMALL_HEIGHT
         + i32::from(sockets) * CARD_SOCKET_HEIGHT
         + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
     CardContent {
         rows,
-        material,
+        flip,
+        hidden: 0,
         sockets,
         rank,
         points,
@@ -734,7 +740,8 @@ pub fn apparel_content(
         + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
     CardContent {
         rows,
-        material: false,
+        flip: false,
+        hidden: 0,
         sockets,
         rank,
         points,
@@ -787,7 +794,8 @@ pub fn shield_content(
         + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
     CardContent {
         rows,
-        material: false,
+        flip: false,
+        hidden: 0,
         sockets: false,
         rank,
         points,
@@ -840,7 +848,8 @@ pub struct CardBuildInput<'a> {
     pub apparel: Option<ApparelStats>,
     pub shield: Option<ShieldStats>,
     pub sockets: bool,
-    pub material: bool,
+    /// The weapon's flip byte is set (the Flip weapon button shows).
+    pub flip: bool,
     /// The skill row's byte (rank and points).
     pub skill: u8,
     pub gates: CardGates,
@@ -881,7 +890,7 @@ pub fn build_card(input: &CardBuildInput<'_>) -> Option<BuiltCard> {
                 w.crush,
                 w.pierce,
                 w.thrust,
-                input.material,
+                input.flip,
                 input.sockets,
                 input.skill,
                 value,
@@ -1024,6 +1033,44 @@ pub fn apply_refresh(card: &mut BuiltCard, values: &[(u32, f32)]) {
             }
         } else if let Some(content) = card.content.as_mut() {
             refresh_row(&mut content.rows, control, value);
+        }
+    }
+}
+
+/// The striking-row control the flip starts at (Slash's).
+pub const FLIP_FIRST_ROW: u32 = 0xd03;
+
+/// The Flip weapon button's release: the weapon card's striking rows show
+/// side `side` of `sides` (each the slash, crush and pierce bytes; the item
+/// stores the second side six bytes after the first). As the original's
+/// flip handler does, the rows are rewritten in place from the Slash row
+/// on: each side byte that is not 0 takes the next row in the card's order
+/// (its label and its value, the byte × 0.05, and shows it), so a side with
+/// more rows than were built writes over the row after them (Thrust's);
+/// then the rows with the ids after the last written one up to Pierce's
+/// (0xd03 + count to 0xd05) are hidden. A card without a Slash row, like
+/// an id the card lacks, writes nothing (the original then writes into its
+/// scratch record). Rows past the card's end are not written.
+pub fn flip_rows(content: &mut CardContent, sides: [[u8; 3]; 2], side: usize) {
+    let Some(first) = content
+        .rows
+        .iter()
+        .position(|row| row.control == FLIP_FIRST_ROW)
+    else {
+        return;
+    };
+    const LABELS: [&str; 3] = ["Slash", "Crush", "Pierce"];
+    let shown = crate::item_gui::side_rows(sides, side);
+    for (n, &(which, value)) in shown.iter().enumerate() {
+        if let Some(row) = content.rows.get_mut(first + n) {
+            row.label = LABELS[which];
+            row.value = value;
+            content.hidden &= !(1 << (first + n));
+        }
+    }
+    for control in FLIP_FIRST_ROW + shown.len() as u32..=FLIP_FIRST_ROW + 2 {
+        if let Some(i) = content.rows.iter().position(|row| row.control == control) {
+            content.hidden |= 1 << i;
         }
     }
 }
@@ -2249,6 +2296,62 @@ mod tests {
     }
 
     #[test]
+    fn the_flip_rewrites_the_striking_rows_in_place() {
+        let gates = CardGates {
+            rank: false,
+            points: false,
+        };
+        // Side 0: Slash 10 and Pierce 40 (Crush 0), Thrust 60.
+        let mut card = weapon_content(
+            0, 100, 50, 127, 10, 0, 40, 60, true, false, 0, 7, gates, false,
+        );
+        let labels = |c: &CardContent| -> Vec<(&str, f32, bool)> {
+            c.rows
+                .iter()
+                .enumerate()
+                .skip(3)
+                .map(|(i, r)| (r.label, r.value, c.hidden & (1 << i) != 0))
+                .collect()
+        };
+        // Side 1: Crush only. Crush takes the Slash row; the Pierce row
+        // (control 0xd04) and any 0xd05 are hidden; Thrust is untouched.
+        flip_rows(&mut card, [[10, 0, 40], [0, 20, 0]], 1);
+        assert_eq!(
+            labels(&card),
+            [
+                ("Crush", 1.0, false),
+                ("Pierce", 2.0, true),
+                ("Thrust", 3.0, false)
+            ]
+        );
+        // Back to side 0: both rows show again.
+        flip_rows(&mut card, [[10, 0, 40], [0, 20, 0]], 0);
+        assert_eq!(
+            labels(&card),
+            [
+                ("Slash", 0.5, false),
+                ("Pierce", 2.0, false),
+                ("Thrust", 3.0, false)
+            ]
+        );
+        // A side with three rows writes over the row after the built ones.
+        flip_rows(&mut card, [[10, 0, 40], [1, 2, 3]], 1);
+        assert_eq!(
+            labels(&card),
+            [
+                ("Slash", (f64::from(1u8) * 0.05) as f32, false),
+                ("Crush", (f64::from(2u8) * 0.05) as f32, false),
+                ("Pierce", (f64::from(3u8) * 0.05) as f32, false)
+            ]
+        );
+        // No Slash row: nothing is written.
+        let mut none = weapon_content(0, 1, 1, 1, 0, 0, 0, 0, true, false, 0, 7, gates, false);
+        let before = none.clone();
+        flip_rows(&mut none, [[0; 3], [9, 9, 9]], 1);
+        assert_eq!(none, before);
+    }
+
+    #[test]
     fn the_weapon_card_rows_and_their_slots() {
         let gates = CardGates {
             rank: true,
@@ -2269,20 +2372,20 @@ mod tests {
         // Crush is hidden, so Pierce takes the next control and Thrust 0x106.
         assert_eq!((card.rows[4].control, card.rows[4].value), (0xd04, 2.0));
         assert_eq!((card.rows[5].control, card.rows[5].value), (0x106, 3.0));
-        assert!(card.material && card.sockets);
+        assert!(card.flip && card.sockets);
         assert_eq!(card.rank, Some("Adept"));
         // The skill's low five bits (5), halved.
         assert_eq!(card.points, Some(2.5));
         assert_eq!(card.value, Some(7));
-        // The swatch (three striking rows show), socket, rank, points and
+        // The flip button (three striking rows show), socket, rank, points and
         // value rows' additions.
         assert_eq!(card.extra_height, 0x14 + 0x18 + 0x14 + 0x14 + 0x18);
-        // Two striking rows: the swatch adds nothing; a 0x10 flag pair
+        // Two striking rows: the flip button adds nothing; a 0x10 flag pair
         // takes one point off.
         let two = weapon_content(
             0x10, 100, 50, 127, 10, 0, 0, 60, true, false, 0x65, 7, gates, false,
         );
-        assert!(two.material);
+        assert!(two.flip);
         assert_eq!(two.points, Some(2.0));
         assert_eq!(two.extra_height, 0x14 + 0x14);
         // A high-quality weapon maps its title over the high half; the
@@ -2423,7 +2526,7 @@ mod tests {
             apparel: None,
             shield: None,
             sockets: false,
-            material: false,
+            flip: false,
             skill: 0x65,
             gates: CardGates {
                 rank: true,
@@ -2529,7 +2632,8 @@ mod tests {
             title_colour: None,
             content: Some(CardContent {
                 rows,
-                material: false,
+                flip: false,
+                hidden: 0,
                 sockets: false,
                 rank: None,
                 points: None,
