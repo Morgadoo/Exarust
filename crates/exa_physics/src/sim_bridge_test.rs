@@ -777,3 +777,79 @@ fn a_removal_is_not_undone_by_a_value_in_flight() {
         assert!(world.get::<Vel>(e).is_none(), "{e} keeps its Vel removed");
     }
 }
+
+/// A frame-only component: the frame's loading leaves some of its entities
+/// in archetypes the others are not in.
+#[derive(Component, Clone, Copy, Debug)]
+struct Loaded;
+
+/// The order the fixed step visits the tagged entities with a `Vel` and a
+/// `Heavy`.
+fn order_step(
+    moving: Query<&Tag, With<Vel>>,
+    heavy: Query<&Tag, With<Heavy>>,
+    mut seen: ResMut<SnapSeen>,
+) {
+    let moving: Vec<u32> = moving.iter().map(|t| t.0).collect();
+    let heavy: Vec<u32> = heavy.iter().map(|t| t.0).collect();
+    seen.0.push(format!("vel {moving:?} heavy {heavy:?}"));
+}
+
+/// Four entities spawned in tag order; `loaded` marks some of them
+/// [`Loaded`] first (the frame's own data, as a mesh that finished loading),
+/// which puts them after the others in the frame's queries. Then each gets
+/// a copied `Vel` and a lent `Heavy` in the same frame.
+fn order_run(mode: SimMode, loaded: &[usize]) -> (Vec<String>, Vec<u32>) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / crate::STEP_HZ,
+        )))
+        .init_resource::<SnapSeen>()
+        .add_systems(FixedUpdate, order_step);
+    crate::sim_app::add_fixed_commands(&mut app);
+    app.add_plugins((SimShellPlugin { mode }, SimBridgePlugin { extra: vec![] }))
+        .bridge_copy::<Tag>()
+        .bridge_copy::<Vel>()
+        .bridge_lend::<Heavy>()
+        .bridge_copy_resource::<SnapSeen>();
+    let named: Vec<Entity> = (0..4).map(|t| app.world_mut().spawn(Tag(t)).id()).collect();
+    app.update();
+    for &k in loaded {
+        app.world_mut().entity_mut(named[k]).insert(Loaded);
+    }
+    app.update();
+    let world = app.world_mut();
+    let frame_order: Vec<Entity> = world
+        .query_filtered::<Entity, With<Tag>>()
+        .iter(world)
+        .collect();
+    for e in frame_order {
+        world.entity_mut(e).insert((Vel(1.0), Heavy::default()));
+    }
+    app.update();
+    app.update();
+    // The tags in entity order (by index).
+    let mut by_id: Vec<(u32, u32)> = (0..4).map(|t| (named[t as usize].index_u32(), t)).collect();
+    by_id.sort();
+    (
+        app.world().resource::<SnapSeen>().0.clone(),
+        by_id.into_iter().map(|(_, t)| t).collect(),
+    )
+}
+
+/// The simulation's queries visit entities in an order that does not hang
+/// on the frame's own archetypes: values cross in entity order.
+#[test]
+fn the_frames_archetypes_do_not_order_the_simulations_queries() {
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        let (plain, by_id) = order_run(mode, &[]);
+        let sorted = format!("vel {by_id:?} heavy {by_id:?}");
+        assert!(plain.contains(&sorted), "{mode:?}: {plain:?}");
+        for loaded in [&[0][..], &[0, 2], &[1, 3], &[3]] {
+            let (seen, _) = order_run(mode, loaded);
+            assert_eq!(plain, seen, "{mode:?}: loaded {loaded:?}");
+        }
+    }
+}
