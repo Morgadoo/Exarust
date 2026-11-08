@@ -112,6 +112,13 @@ a newer change tick, removals, despawns, messages), the simulation applies
 it, runs, and sends its own changes back the same way; each side's own
 writes from an apply are not sent back, so `Changed`, `Added` and
 `RemovedComponents` see on each side what they would see in one world.
+The simulation applies each type's values and removals in entity order
+(by index: the frame's spawn order, mostly what one world would give), not
+in the order the frame's queries found them:
+that order moves the entities between the simulation's archetypes, and its
+queries (a system's commands, the trace's rows) visit them in it, while the
+frame's own archetypes hang on load timing; without it two lockstep runs of
+exanima01 visited the spawn watch's bodies in two orders.
 Entity ids are the same in both worlds: the frame's allocator hands out every
 id, the simulation spawns its own entities from ids the frame reserved for
 it, and a despawn is mirrored without freeing the id. When the bridge starts

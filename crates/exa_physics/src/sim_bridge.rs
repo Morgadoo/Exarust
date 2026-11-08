@@ -338,6 +338,27 @@ struct ComponentPacket<T> {
     values: Vec<(Entity, T, bool)>,
 }
 
+impl<T> ComponentPacket<T> {
+    /// Puts the removals and values in entity order. The simulation applies
+    /// them in that order: the order a type's values reach it moves those
+    /// entities between archetypes, and the simulation's queries then visit
+    /// them in that order (the order of a system's commands and of the
+    /// trace's rows). The frame gathers in its own query order, which hangs
+    /// on its load-time archetypes (meshes, lights and the GUI arrive in
+    /// whatever order loading finishes), so without this one run's
+    /// simulation could visit two bodies in the other order from another's.
+    ///
+    /// The order is the entities' index, ascending: the frame hands out
+    /// fresh ids in that order, so it is mostly the order one world would
+    /// have given them (spawn order).
+    fn into_entity_order(mut self) -> Self {
+        self.removed.sort_unstable_by_key(|e| e.index_u32());
+        // Stable: an entity named twice keeps its last value last.
+        self.values.sort_by_key(|(e, ..)| e.index_u32());
+        self
+    }
+}
+
 fn assign_mutable<T: Component<Mutability = Mutable>>(entity: &mut EntityWorldMut, value: T) {
     if let Some(mut current) = entity.get_mut::<T>() {
         *current = value;
@@ -623,6 +644,11 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         let Ok(packet) = packet.downcast::<ComponentPacket<T>>() else {
             return 0;
         };
+        let packet = if ctx.sim {
+            packet.into_entity_order()
+        } else {
+            *packet
+        };
         apply_removals::<T>(world, &packet.removed);
         if !ctx.sim && ctx.free && !self.drawn && !self.inbound && !self.snapshot {
             for e in &packet.removed {
@@ -819,9 +845,14 @@ impl<T: Component<Mutability = Mutable> + Default> BridgeHalf for LendComponentH
         }
     }
 
-    fn apply(&mut self, world: &mut World, packet: Packet, _: ApplyCtx) -> usize {
+    fn apply(&mut self, world: &mut World, packet: Packet, ctx: ApplyCtx) -> usize {
         let Ok(packet) = packet.downcast::<ComponentPacket<T>>() else {
             return 0;
+        };
+        let packet = if ctx.sim {
+            packet.into_entity_order()
+        } else {
+            *packet
         };
         apply_removals::<T>(world, &packet.removed);
         let n = packet.values.len();

@@ -1003,6 +1003,8 @@ Round 133 navcam2: the spectating camera runs free with the pan keys and terrain
 
 Round 137 tetra: the locomotion and the lift servo read the root displacement from the two-step point in the original float order.
 
+Round 149 determinism: the lockstep simulation was never value-nondeterministic; exanima01 two outcomes held the same rows in a different order from tick 121, where the spawn watch removes its marker in the simulation query order that followed the frame load-timing archetypes. The simulation now applies each bridged component values and removals in entity index order, so four identical exanima01 scenes are byte-identical (body ids included) and the arena duel is unchanged; EXA_ARCHETYPE_TRACE and context/tools/determinism_grid.sh check it.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
