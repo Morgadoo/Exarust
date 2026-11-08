@@ -86,6 +86,43 @@ pub enum BodyLook {
     /// The Beast at its tier (1 through 5): an Ogre record with the tier's
     /// items.
     Beast(u32),
+    /// A company entrant's match copy: the stand-in template's record (the
+    /// career keeps no body of its own [guess]) with the member's skills,
+    /// fighting skill and match kit written over it.
+    Company(Box<CompanyCopy>),
+}
+
+/// A company entrant's look: the template it stands in with and the match
+/// copy the match start writes over it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompanyCopy {
+    pub template: String,
+    pub copy: crate::hirelings::MatchCopy,
+}
+
+/// Writes a match copy over a record, as the match start does on its copy
+/// of a participant's record: the six skills, the fighting skill, and the
+/// kit put on with the underwear rule. The copy carries no inventory and
+/// no loadouts (the original empties both lists before it copies).
+pub fn put_match_copy<'a>(
+    record: &mut CharacterRecord,
+    copy: &crate::hirelings::MatchCopy,
+    find: impl Fn(u32) -> Option<&'a Item>,
+) {
+    for (skill, (xp, techniques)) in record
+        .skills
+        .iter_mut()
+        .zip(copy.skill_xp.iter().zip(&copy.techniques))
+    {
+        skill.points = *xp;
+        skill.techniques = *techniques;
+    }
+    record.combat_skill = copy.combat_skill;
+    record.inventory.clear();
+    record.loadouts.clear();
+    let mut data = exa_character::record::CharacterData::of_record(std::mem::take(record));
+    data.apply_loadout(&copy.kit, find);
+    *record = data.record;
 }
 
 /// Which brain drives a scene body.
@@ -172,7 +209,10 @@ impl SceneBodyPlan {
     pub fn actor(&self) -> Option<&str> {
         match &self.look {
             BodyLook::Actor(name) => Some(name),
-            BodyLook::Record(_) | BodyLook::Generated(_) | BodyLook::Beast(_) => None,
+            BodyLook::Record(_)
+            | BodyLook::Generated(_)
+            | BodyLook::Beast(_)
+            | BodyLook::Company(_) => None,
         }
     }
 }
@@ -322,12 +362,15 @@ pub fn beast_scene_plan(tier: u32, place: &Place, now_ms: u32, act_grace_ms: u32
 /// A company entrant's plan: the player's side, the manager's role word and
 /// the match's action grace.
 ///
-/// The entrant's record is the employee's world-database character, which
-/// the career does not keep, so the body takes the stand-in template named
-/// after the member [guess].
+/// The entrant's body is the employee's record, which the career keeps
+/// only as its member: with a match copy ([`crate::hirelings::match_copy`])
+/// the body is the stand-in template named after the member [guess] with
+/// the copy's skills and kit written over it; without one (the manager,
+/// whose own kit the career does not keep) the template alone.
 #[must_use]
 pub fn company_plan(
     member: Option<(&str, u16)>,
+    copy: Option<crate::hirelings::MatchCopy>,
     place: &Place,
     role: u32,
     id: u32,
@@ -335,7 +378,11 @@ pub fn company_plan(
     act_grace_ms: u32,
 ) -> SceneBodyPlan {
     let mut body = SceneBodyPlan::base(place);
-    body.look = BodyLook::Actor(fighter_template(0, 0).to_string());
+    let template = fighter_template(0, 0).to_string();
+    body.look = match copy {
+        Some(copy) => BodyLook::Company(Box::new(CompanyCopy { template, copy })),
+        None => BodyLook::Actor(template),
+    };
     body.name = member.map(|(name, _)| name.to_string());
     body.team = PLAYER_TEAM;
     body.roles = vec![role];
@@ -504,6 +551,20 @@ pub fn spawn_scene_body(
             let mut lcg = Lcg::new((context.clock_seed)());
             let record = beast_record(*tier, &mut lcg, context.professions);
             *context.roll = lcg.state();
+            record
+        }
+        BodyLook::Company(company) => {
+            let mut record = context
+                .actors
+                .template(context.game, &company.template, false)?;
+            put_match_copy(&mut record, &company.copy, |id| item_of(context.items, id));
+            info!(
+                "company copy over {}: hands {:?}, worn {:?}, fighting skill {}",
+                company.template,
+                record.hands.map(|hand| hand.id),
+                record.worn.iter().map(|worn| worn.id).collect::<Vec<_>>(),
+                record.combat_skill
+            );
             record
         }
     };
@@ -1251,14 +1312,14 @@ mod tests {
 
     #[test]
     fn a_company_entrant_is_the_players_side_with_its_saved_health() {
-        let plan = company_plan(Some(("Ash", 32_768)), &place(), 0x11, 3, 0, 3_000);
+        let plan = company_plan(Some(("Ash", 32_768)), None, &place(), 0x11, 3, 0, 3_000);
         assert_eq!(plan.team, 1);
         assert_eq!(plan.roles, vec![0x11]);
         assert_eq!(plan.name.as_deref(), Some("Ash"));
         assert!((plan.health - 0.5).abs() < 1e-4);
         assert!(matches!(plan.brain, BodyBrain::Npc));
         assert_eq!(plan.damage, 100.0);
-        let empty = company_plan(None, &place(), 0x11, 1, 0, 3_000);
+        let empty = company_plan(None, None, &place(), 0x11, 1, 0, 3_000);
         assert_eq!(empty.health, 1.0);
         assert_eq!(empty.name, None);
     }
