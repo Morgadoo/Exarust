@@ -3161,14 +3161,17 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   texture's red mixed a third
   into the ribbon's V (across it); a = 1 − |2a − 1|; b = a²⁴; a = a⁶;
   colour = mix(vertex, EleCol (0.65, 0.4, 1), b)·b +
-  EdgCol (0.15, 0.2, 0.4)·a·2; then squared. Additive, two-sided, unlit.
-  The material's emissive texture is a white stand-in until its library
-  texture is available.
+  EdgCol (0.15, 0.2, 0.4)·a·2; then squared. Additive, two-sided, unlit. The
+  fragment's alpha is 0, as the pipeline blends `AlphaMode::Add`
+  premultiplied (ONE, ONE_MINUS_SRC_ALPHA).
+  The material's emissive layer is `BeamNoise01` (the `_ElecMat01` record
+  in the executable); the live thaumaturgy arcs load it, `exa_world::arc`
+  still uses a white stand-in.
 
-Still missing: the exact per-tick tendril integration (jitter and segment
-lifetimes; the live tendril emitter is modelled in `exa_game::thaum::arcs`,
-which the Shock power and shock weapons use), the `_ElecMat01` emissive
-map, the draw's supersample-pass loop (one draw per pass with that pass's
+Still missing: the exact per-tick tendril integration in this layer (the
+live tendril emitter is `exa_game::thaum::arcs`, which the Shock power and
+shock weapons use and which draws with this material and `BeamNoise01`),
+the draw's supersample-pass loop (one draw per pass with that pass's
 viewport and its clock, `Arc::pass_clock`; Exarust's supersampled camera
 draws the arc once), the GI flow, the device's hum, and the callers of this crate's
 arc layer (nothing spawns one yet).

@@ -1394,3 +1394,28 @@ fn a_disabled_body_meets_no_other() {
     assert!(run(false) > 0);
     assert_eq!(run(true), 0);
 }
+
+/// An arc's segment touches a part through the part's swept mesh query: a
+/// 20 cm sphere swept toward the wall's front from 50 cm away reaches it
+/// when it ends within its radius, through the triangle list and through
+/// the kd-tree alike; one that stops 30 cm short, or that runs off behind
+/// the wall's back, does not.
+#[test]
+fn an_arc_segment_touches_a_part_through_its_swept_mesh_query() {
+    for mesh in [wall(), gridded_wall()] {
+        let b = mesh_side(mesh);
+        let part = &b.parts[0];
+        let touches = |from: f32, to: f32| {
+            super::swept_touches(
+                part,
+                Vec3::new(from, 0.1, 0.2),
+                Vec3::new(to, 0.1, 0.2),
+                0.2,
+            )
+        };
+        assert!(touches(0.5, 0.15));
+        assert!(touches(0.5, -0.3));
+        assert!(!touches(0.5, 0.3));
+        assert!(!touches(-0.5, -0.1));
+    }
+}

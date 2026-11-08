@@ -448,7 +448,9 @@ mesh, so a prop is the mesh side whenever it is the less mobile part of a
 pair; a character limb gets its node mesh when its body is built, a held
 item its node's and a factory weapon its merged mesh;
 `Ragdoll::set_part_triangles`, `set_part_mesh` and `set_limb_mesh` set them
-by hand; a part with 64
+by hand; `body::pairs::swept_touches` asks the same swept query of one part
+with a callback that only notes the hit, as an electric arc's segment does;
+a part with 64
 spheres or more, a door leaf's 1 900, has them bucketed in a grid,
 `body::SphereGrid`, so the sphere fallback visits only the spheres a sphere
 can reach, in their stored order, with the plain loop's results), with an

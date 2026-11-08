@@ -475,6 +475,35 @@ pub(crate) fn sphere_on_sphere(e: Vec3, r: f32, c: Vec3, rc: f32) -> Option<(Vec
     Some((c + n * rc, n * (reach - dist)))
 }
 
+/// Whether a sphere of radius `r` swept from `start` to `end` (world,
+/// metres) touches part `p`: the part's swept mesh query with a callback
+/// that only notes the hit, as an electric arc tests a limb segment by
+/// segment. The segment is taken into the part's frame; the mesh's kd-tree
+/// walks the leaves along it, a smaller mesh is tested triangle by
+/// triangle, and a part without a mesh tests its stored spheres.
+pub fn swept_touches(p: &Part, start: Vec3, end: Vec3, r: f32) -> bool {
+    let local = p.transform().inverse();
+    let (s, e) = (local.transform_point3(start), local.transform_point3(end));
+    if let Some(triangles) = p.triangles.as_deref() {
+        if let Some(tree) = p.tree.as_deref() {
+            let mut record = kd_tree::SweptRecord::new(s, e, r);
+            return tree.sweep(&mut record, |rec, ids| {
+                ids.iter().any(|&id| {
+                    triangles
+                        .get(id as usize)
+                        .is_some_and(|t| contact::swept_hit(t, rec.start, rec.end, r).is_some())
+                })
+            });
+        }
+        return triangles
+            .iter()
+            .any(|t| contact::swept_hit(t, s, e, r).is_some());
+    }
+    p.spheres
+        .iter()
+        .any(|&(c, rc)| swept_on_sphere(s, e, r, c, rc).is_some())
+}
+
 /// Sphere of radius `r` moving from `start` to `end` against the sphere
 /// `c`, `rc`. One that starts touching, or that ends touching on the near
 /// side of the other's centre, is pushed off where it ends; one whose path

@@ -35,8 +35,9 @@
 //!   the level ends the tendril at the hit, losing its branches past the
 //!   cut.
 //! - **Characters** ([`ArcEmitter::strike_limb`]): each segment but the
-//!   last is given to the character's query with a 20 cm value
-//!   ([`ArcProbe`]). The first segment that meets a limb of a character
+//!   last, taken into the limb's frame, is the limb mesh's swept query: a
+//!   sphere of 20 cm swept from the segment's start to its end, whose hit
+//!   callback only notes the hit ([`ArcProbe`]). The first segment that meets a limb of a character
 //!   other than the caster shocks that character with the emitter's
 //!   strength along the line from the arcs' mean point to its chest (once
 //!   per character with flag 0x10), and the tendril sends a branch from the
@@ -1155,13 +1156,15 @@ impl ArcEmitter {
     }
 }
 
-/// The value the character query receives with each segment (20 cm),
-/// between the segment's start and its end; its role in that query (a
-/// radius or a reach) is not traced.
+/// The radius (cm) of the sphere each segment sweeps through a limb's
+/// mesh: the record the arcs hand to the limb's swept query is the
+/// engine's swept sphere (length, start with this radius beside it, end,
+/// unit direction, reciprocal direction).
 pub const PROBE_REACH: f32 = 20.0;
 
-/// One segment as the character query receives it: its start and end, its
-/// unit direction and length, and [`PROBE_REACH`].
+/// One segment as the limb's swept query receives it: its start and end,
+/// its unit direction and length, and the swept sphere's radius,
+/// [`PROBE_REACH`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ArcProbe {
     pub start: Vec3,

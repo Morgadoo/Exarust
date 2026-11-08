@@ -29,5 +29,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     col = col * b;
     col = col + edg_colour.rgb * a * 2.0;
     col = col * col;
-    return vec4(col * c.a, 1.0);
+    // Added to the frame (blend word 0x161, destination one): the pipeline
+    // blends premultiplied, so an alpha of 0 keeps the destination whole.
+    return vec4(col * c.a, 0.0);
 }
