@@ -961,12 +961,14 @@ they fold, trade tails with branches that outlive them, jitter (one tick
 in 30 they jump), keep 0.9 of their motion and stay within half a segment
 of their neighbours' middle, end at the level where a segment meets it,
 and shock the first character they touch (once per character with the
-shock-once flag; each segment but the last is given to the character's
-own query with a 20 cm value), reaching a branch toward it. The emitter
-also enters and leaves the world on its node (its hum and its light), and
-a node under a local-frame parent takes the parent's matrix with its own
-offset carried through it. The character query itself is not ported: the
-running game tests each segment against the parts' spheres. Each frame the
+shock-once flag), reaching a branch toward it. Each segment but the last
+is taken into the limb's frame and handed to the limb mesh's swept query
+as a sphere of 20 cm radius swept from its start to its end, with a
+callback that only notes the hit (`exa_physics::body::pairs::swept_touches`:
+the part's kd-tree or triangles, its spheres when it has no mesh). The
+emitter also enters and leaves the world on its node (its hum and its
+light), and a node under a local-frame parent takes the parent's matrix
+with its own offset carried through it. Each frame the
 light flickers within 0.75–1.2,
 the hum's gain and pitch follow the share of points in use, and a
 camera-facing ribbon runs through Hermite midpoints, its ends transparent,
@@ -1293,10 +1295,15 @@ sub-frame with that sub-frame's colour mask and its composite matrix,
 whose depth term it shifts by `((i + first) + ½)·0.002 / count − 0.001`
 and puts back afterwards; with Exarust's one draw a frame the shift is 0.
 
-The arcs' and barricade's meshes come from their own builders but
-are drawn with `exa_render::glow::GlowMaterial`, an additive stand-in: the
-original's electricity program and `effectfbrcd` are not ported, nor are
-the lights and sounds. The displacement tendril's `effectforce_v` /
+The live arcs draw with the electricity program
+(`exa_render::electricity::ArcMaterial`): every arc node the electricity
+unit makes takes `_ElecMat01`, a record in the executable (emissive 1,
+opacity 1, blend word 0x161, shading flags 0x480018) whose one emissive
+layer is `BeamNoise01`; the program is bound with EleCol (0.65, 0.4, 1)
+and EdgCol (0.15, 0.2, 0.4) and each draw uploads TexOfs = (0, the
+emitter's shown scroll). The barricade's mesh comes from its own builder
+but is drawn with `exa_render::glow::GlowMaterial`, an additive stand-in:
+`effectfbrcd` is not ported. The displacement tendril's `effectforce_v` /
 `effectsmoke_f` pair is ported as `ForceRibbonMaterial::smoke` (no live
 tendril draws it yet). The blast-family and torrent ribbons and the shell
 aura draw with their own ported programs (`effectforce_f`,

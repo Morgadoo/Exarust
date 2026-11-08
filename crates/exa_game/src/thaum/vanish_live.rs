@@ -621,7 +621,7 @@ pub(crate) fn load_texture(
     }
 }
 
-fn grey_texel() -> Image {
+pub(crate) fn grey_texel() -> Image {
     Image::new_fill(
         bevy::render::render_resource::Extent3d::default(),
         bevy::render::render_resource::TextureDimension::D2,

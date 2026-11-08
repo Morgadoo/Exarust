@@ -911,11 +911,15 @@ A tendril SHALL end at the hit on the first segment that meets the level, losing
 - **THEN** the tendril keeps three points, its last at 6 cm
 
 ### Requirement: Arc character query
-Each tendril segment but the last SHALL be given to the character's query whole (start, end, unit direction and length) with a value of 20 cm; the first segment that meets a limb of another character SHALL shock it, once per character when the emitter shocks once, and the tendril SHALL send a branch toward the limb from the point before.
+Each tendril segment but the last SHALL be given to the limb's swept query whole (start, end, unit direction and length) as a sphere of 20 cm radius swept from its start to its end through the limb's collision mesh in the limb's frame (through its stored spheres when it has no mesh); the first segment whose sweep touches a limb of another character SHALL shock it, once per character when the emitter shocks once, and the tendril SHALL send a branch toward the limb from the point before.
 
 #### Scenario: The first segment meets
 - **WHEN** the first 4 cm segment meets a limb
-- **THEN** the query received a length of 4 and the value 20, and the tendril branches from its first point
+- **THEN** the query received a length of 4 and the radius 20, and the tendril branches from its first point
+
+#### Scenario: A sweep that stops short
+- **WHEN** a 20 cm sphere swept toward a limb's mesh from 50 cm in front ends 15 cm in front of it, and another ends 30 cm in front
+- **THEN** the first touches the limb and the second does not
 
 ### Requirement: Force shell frame
 A force shell SHALL open over 1.5 times its size in ms, rest, close over its size from what it shows and, the frame after it closes, leave the scene with its light; a one-shot shell SHALL close as soon as it opens and, while closing, stay fully shown. While a shell has its light the light SHALL be (0.14, 0.08, 1) times a tenth of the light curve and a closing shell's colour 2.8 times what it shows.
@@ -1977,3 +1981,10 @@ A barricade cast while one runs SHALL take the nearest-mesh pick under the curso
 #### Scenario: Cast again over the wall
 - **WHEN** a barricade stands at the cursor's ground point and the player casts it again with the cursor unmoved
 - **THEN** the running barricade ends and the cast answers 2
+
+### Requirement: Arc electricity program
+Live electric arcs SHALL draw with the electricity program and the `_ElecMat01` record's emissive layer `BeamNoise01`, with EleCol (0.65, 0.4, 1), EdgCol (0.15, 0.2, 0.4) and a texture offset of (0, the emitter's shown scroll), additive and two-sided.
+
+#### Scenario: A drawn arc
+- **WHEN** an arc whose shown scroll is 0.25 is drawn
+- **THEN** its material's texture offset is (0, 0.25)

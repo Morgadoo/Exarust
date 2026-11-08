@@ -60,6 +60,7 @@ use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
+use exa_render::electricity::ArcMaterial;
 use exa_render::gi::VoxelLight;
 use exa_render::glow::GlowMaterial;
 use exa_world::nav::{NavGrid, NavPatch, stamp_line, unstamp_line};
@@ -455,27 +456,31 @@ pub(crate) fn tick_arcs(
                 .unwrap_or(Vec3::ZERO);
             for part in &body.parts {
                 let world = part.transform();
-                let spheres: Vec<(Vec3, f32)> = part
-                    .spheres
-                    .iter()
-                    .map(|&(c, r)| (world.transform_point3(c) * CM, r * CM))
-                    .collect();
                 let limb = ArcLimb {
                     character: entity.to_bits(),
                     caster: false,
                     at: Vec3::from(world.translation) * CM,
                     chest,
                 };
+                // Each segment is the limb mesh's swept query: a 20 cm
+                // sphere along it, in the limb's frame.
                 let hit = live.arcs.strike_limb(
                     &limb,
                     |probe| {
-                        spheres
-                            .iter()
-                            .any(|&(c, r)| segment_meets(probe.start, probe.end, c, r))
+                        exa_physics::body::pairs::swept_touches(
+                            part,
+                            probe.start / CM,
+                            probe.end / CM,
+                            probe.reach / CM,
+                        )
                     },
                     &mut draws.0,
                 );
                 if let Some(shock) = hit {
+                    debug!(
+                        "arcs shock {entity} (strength {}) through a limb at {:?}",
+                        shock.strength, limb.at
+                    );
                     shocked.write(ArcShocked {
                         body: entity,
                         direction: shock.direction,
@@ -485,18 +490,6 @@ pub(crate) fn tick_arcs(
             }
         }
     }
-}
-
-/// Whether the segment from `a` to `b` comes within `r` of `c`.
-fn segment_meets(a: Vec3, b: Vec3, c: Vec3, r: f32) -> bool {
-    let d = b - a;
-    let len2 = d.length_squared();
-    let t = if len2 > 0.0 {
-        ((c - a).dot(d) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (a + d * t).distance_squared(c) <= r * r
 }
 
 #[allow(clippy::type_complexity)]
@@ -1331,7 +1324,6 @@ fn spawn_debug_effects(
 }
 
 /// The glow tint each effect draws with.
-const ARC_TINT: Vec4 = Vec4::new(1.0, 1.0, 1.0, 1.0);
 const WALL_TINT: Vec4 = Vec4::new(0.45, 0.33, 0.95, 0.25);
 
 fn mesh_of(positions: Vec<[f32; 3]>, colours: Vec<[f32; 4]>, indices: Vec<u32>) -> Mesh {
@@ -1426,13 +1418,14 @@ fn camera_axis(cameras: &Query<&GlobalTransform, exa_render::supersample::SceneC
         .map_or(Vec3::NEG_Z, |c| c.forward().as_vec3())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw_arcs(
     mut commands: Commands,
     mut arcs: Query<(
         Entity,
         &mut LiveArcs,
         Option<&EffectMesh>,
+        Option<&MeshMaterial3d<ArcMaterial>>,
         Option<&super::effect_light::EffectLight>,
     )>,
     mut shapes: Query<(
@@ -1445,13 +1438,14 @@ fn draw_arcs(
     time: Res<Time<Fixed>>,
     mut draws: ResMut<FrameEffectDraws>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<GlowMaterial>>,
+    mut materials: Option<ResMut<Assets<ArcMaterial>>>,
+    mut look: ArcLook,
     mut audio: ShockAudio,
     mut hums: Local<bevy::platform::collections::HashMap<Entity, Option<u32>>>,
 ) {
     let eye = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
-    for (entity, mut live, drawn, light) in &mut arcs {
+    for (entity, mut live, drawn, material, light) in &mut arcs {
         let voxel = held_voxels.get(entity).ok();
         let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0.0);
         let at = live.arcs.anchor.map(|p| p / CM).unwrap_or(Vec3::ZERO);
@@ -1497,15 +1491,74 @@ fn draw_arcs(
             .collect();
         let indices = r.drawn().iter().map(|&i| u32::from(i)).collect();
         let mesh = mesh_of_uv(positions, uvs, colours, indices);
-        show(
-            &mut commands,
-            entity,
-            drawn,
-            mesh,
-            ARC_TINT,
-            &mut meshes,
-            &mut materials,
-        );
+        // `_ElecMat01`'s program reads the emitter's shown scroll as the
+        // second texture offset.
+        let offset = Vec4::new(0.0, frame.scroll, 0.0, 0.0);
+        let Some(materials) = materials.as_deref_mut() else {
+            continue;
+        };
+        match drawn {
+            Some(EffectMesh(handle)) => {
+                if let Some(mut m) = meshes.get_mut(handle) {
+                    *m = mesh;
+                }
+                if let Some(material) = material
+                    && let Some(mut m) = materials.get_mut(&material.0)
+                {
+                    m.tex_offset = offset;
+                }
+            }
+            None => {
+                let handle = meshes.add(mesh);
+                let mut material = ArcMaterial::new(look.texture());
+                material.tex_offset = offset;
+                commands.entity(entity).insert((
+                    EffectMesh(handle.clone()),
+                    Mesh3d(handle),
+                    MeshMaterial3d(materials.add(material)),
+                    Transform::IDENTITY,
+                    NoFrustumCulling,
+                    bevy::light::NotShadowCaster,
+                    bevy::light::NotShadowReceiver,
+                ));
+            }
+        }
+    }
+}
+
+/// `_ElecMat01`'s emissive layer, which the electricity unit's material
+/// record names `BeamNoise01.rfi`: the texture pack's entry is its stem.
+pub const ARC_TEXTURE: &str = "beamnoise01";
+
+/// The arcs' picture, loaded on first use: [`ARC_TEXTURE`] with its values
+/// read raw, or a mid-grey texel when the install does not have it.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct ArcLook<'w, 's> {
+    loaded: Local<'s, Option<Handle<Image>>>,
+    images: Option<ResMut<'w, Assets<Image>>>,
+    game: Option<Res<'w, exa_assets::Game>>,
+}
+
+impl ArcLook<'_, '_> {
+    fn texture(&mut self) -> Handle<Image> {
+        if let Some(handle) = self.loaded.as_ref() {
+            return handle.clone();
+        }
+        let Some(images) = self.images.as_deref_mut() else {
+            return Handle::default();
+        };
+        let handle = match self.game.as_deref().map(|game| {
+            game.load_texture(ARC_TEXTURE, exa_assets::texture::ColorSpace::Linear, None)
+        }) {
+            Some(Ok(image)) => images.add(image),
+            Some(Err(e)) => {
+                warn!("arcs: {ARC_TEXTURE}: {e}; a grey texel stands in");
+                images.add(super::vanish_live::grey_texel())
+            }
+            None => images.add(super::vanish_live::grey_texel()),
+        };
+        *self.loaded = Some(handle.clone());
+        handle
     }
 }
 
@@ -1721,7 +1774,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
-            .init_asset::<GlowMaterial>()
+            .init_asset::<Image>()
+            .init_asset::<ArcMaterial>()
             .insert_resource(FrameEffectDraws::default())
             .add_systems(Update, draw_arcs);
         let mut arcs = ArcEmitter::allocate(1, 4, 2.0);
@@ -1788,6 +1842,43 @@ mod tests {
         assert!(app.world().get::<exa_render::gi::GiShape>(held).is_none());
     }
 
+    /// Live arcs draw with `_ElecMat01`'s program: their own arc material,
+    /// whose texture offset is (0, the emitter's shown scroll).
+    #[test]
+    fn live_arcs_draw_with_the_electricity_program() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<ArcMaterial>()
+            .insert_resource(FrameEffectDraws::default())
+            .add_systems(Update, draw_arcs);
+        let mut arcs = ArcEmitter::new(&hand_arcs(), &mut Mt19937::new(1));
+        arcs.scroll = [0.25, 0.25];
+        let arc = app
+            .world_mut()
+            .spawn(LiveArcs {
+                arcs,
+                hand: None,
+                weapon: None,
+                caster: None,
+                keep: true,
+            })
+            .id();
+        app.update();
+        let handle = app
+            .world()
+            .get::<MeshMaterial3d<ArcMaterial>>(arc)
+            .expect("an arc material")
+            .0
+            .clone();
+        let materials = app.world().resource::<Assets<ArcMaterial>>();
+        let material = materials.get(&handle).unwrap();
+        assert_eq!(material.tex_offset, Vec4::new(0.0, 0.25, 0.0, 0.0));
+        assert_eq!(material.ele_colour.truncate(), Vec3::new(0.65, 0.4, 1.0));
+    }
+
     /// A hand arc's voxel light sits at the arcs' mean. Its intensity is the
     /// frame's, and it leaves when the arcs end.
     #[test]
@@ -1796,7 +1887,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
-            .init_asset::<GlowMaterial>()
+            .init_asset::<Image>()
+            .init_asset::<ArcMaterial>()
             .insert_resource(FrameEffectDraws::default())
             .add_systems(Update, draw_arcs);
         let mut arcs = ArcEmitter::new(&hand_arcs(), &mut Mt19937::new(1));
@@ -1848,34 +1940,6 @@ mod tests {
         app.update();
         assert!(app.world().get::<HeldVoxel>(arc).is_none());
         assert!(app.world().get::<VoxelLight>(held).is_none());
-    }
-
-    #[test]
-    fn a_segment_meets_a_sphere_beside_it() {
-        assert!(segment_meets(
-            Vec3::ZERO,
-            Vec3::X * 10.0,
-            Vec3::new(5.0, 2.0, 0.0),
-            2.0
-        ));
-        assert!(!segment_meets(
-            Vec3::ZERO,
-            Vec3::X * 10.0,
-            Vec3::new(5.0, 2.1, 0.0),
-            2.0
-        ));
-        assert!(segment_meets(
-            Vec3::ZERO,
-            Vec3::ZERO,
-            Vec3::new(0.0, 1.0, 0.0),
-            1.0
-        ));
-        assert!(!segment_meets(
-            Vec3::ZERO,
-            Vec3::X,
-            Vec3::new(3.0, 0.0, 0.0),
-            1.0
-        ));
     }
 
     /// A held weapon whose strike chain meets the wall breaks the holder's
