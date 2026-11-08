@@ -247,6 +247,13 @@ pub mod flags2 {
     /// The dirt map is a single-channel BC4 image (the original's luminance
     /// upload): its red channel stands for all three.
     pub const GREY_DIRT: u32 = 64;
+    /// The original's grass program (`shading_v` + `shadegrs_f`), which its
+    /// terrain plants draw with: the normal never flipped on a back face
+    /// (with the normal map, built on the vertex tangent as it comes),
+    /// roughness from the diffuse map's colour (clamp(1 − 3·(g − 0.8·r),
+    /// 0.01, 0.99)²), the fast light loop (`lightsfst`: no Fresnel share in
+    /// the diffuse, Fresnel 0.04) and three quarters of the specular sum.
+    pub const GRASS: u32 = 128;
 }
 
 /// The original's dirt modes 1 and 2, which only its PBR program

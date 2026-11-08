@@ -343,9 +343,9 @@ fn growth_key(growth: Growth, variants: &[Variant]) -> f32 {
 
 /// Whether the plant program uses its normal-mapped variant: the renderer's
 /// shading quality above 3 and the plant normal texture present. The
-/// original switches a shader feature word and its program variant here.
-/// Exarust has one plant shader, so the rule is
-/// kept as data; the material carries the normal map at every quality.
+/// original switches a shader feature word and its program variant here;
+/// Exarust sets or clears the plant material's normal-map bit
+/// (`terrain::sync_plant_normal_map`).
 pub fn plant_normal_mapping(shading_quality: i32, normal_texture: bool) -> bool {
     shading_quality > 3 && normal_texture
 }

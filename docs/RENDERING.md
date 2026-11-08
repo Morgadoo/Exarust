@@ -1257,6 +1257,32 @@ yet: hair as cloth, the `HarHPC1` texture set bit `0x10000` selects (its
 maps do not ship; `exa_character::look::hair_textures` names both sets),
 and the creation scene's smoothing.
 
+### Grass
+
+Terrain plants (`exa_world::terrain`, the chunks of grass, small and large
+plants) draw with the original's grass program, `shading_v` + `shadegrs_f`
+(`material::flags2::GRASS` in `exa.wesl`):
+
+- the normal is the vertex normal, never flipped on a back face; with the
+  normal map (above shading quality 3, `PlantSet_01N` loaded) it is
+  `normalize(T·x + cross(N, T)·w·y + N·z)` on the vertex tangent as it
+  comes, `z = √(1 − min(x² + y², 1))`;
+- roughness (its `Gloss`) is `a²` with
+  `a = clamp(1 − 3·(g − 0.8·r), 0.01, 0.99)` of the diffuse map's colour
+  (Exarust keeps its 0.02 roughness floor);
+- each light goes through the fast loop (`lightsfst`, `light_fast` in
+  `shading.wesl`): diffuse `L·N·L` with no Fresnel share, highlight
+  `r²/(N·H²(r² − 0.9) + 0.9)² · ¼/(N·V(1 − k) + k) · N·L` times
+  `0.04 + 0.96·2^(−8·V·H)`;
+- the reflection (no reflection layer) is a quarter of the ambient times
+  `gv`, its Fresnel `0.04 + 0.96·2^((−5.55473·N·V − 6.98316)·N·V)`, and
+  three quarters of the specular sum is added to `(lights + ambient) ×
+  MatDif × map`.
+
+The original has no wind: the vertex program is the ordinary one. Not
+ported: the hook draws without depth writes, and the diffuse colour's wet
+mix (`Wetness`).
+
 ### Character assembly
 
 The original dresses a character into one auto-skinned mesh: the body and
