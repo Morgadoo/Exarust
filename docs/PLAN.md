@@ -1409,6 +1409,8 @@ Round 136 blocked: the player controls block on knock-out, death and the arena f
 
 Round 141 motilepart2: support pins are pulled per part after its links, and the attack starters end an ongoing parry as the original does.
 
+Round 147 itemgui: the weapon card material swatch was really the Flip weapon button, now live; it turns the striking rows to the weapon other side.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
