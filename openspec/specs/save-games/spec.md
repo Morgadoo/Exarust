@@ -500,11 +500,14 @@ An arena save SHALL, with the id remap table on, promote the manager's record (l
 - **THEN** they become world 1, world 2, world 3, world 4, world 5 and world 1
 
 ### Requirement: Saved level section
-Every save SHALL write the current level's section under its locale name after the world databases, holding the live local tier and its library and the placed objects as the scene holds them: a spawned object at its live placement with its live id and condition, a spawned object that is gone left out with the objects inside it, an unspawned one as loaded, and an object dropped since added at the end. A story save SHALL also write the scene's characters: each stored placement whose character stands in the scene takes its live place, heading and death when it moved or died, one whose record left the level's character database is left out, one with no character is kept, and a scene character with no placement is added with its record's id; the section's character database SHALL be the live local one.
+Every save SHALL write the current level's section under its locale name after the world databases, holding the live local tier and its library and the placed objects as the scene holds them: a spawned object at its live placement with its live id and condition, a spawned object that is gone left out with the objects inside it, an unspawned one as loaded, and an object dropped since added at the end.
 
 #### Scenario: A taken and a dropped object
 - **WHEN** a spawned object holding another is gone and an item was dropped into the world, and the game saves
 - **THEN** the section's list leaves both out, closes up the later container numbers and ends with the dropped item
+
+### Requirement: Saved scene characters
+A story save SHALL write the scene's characters into the level section: each stored placement whose character stands in the scene takes its live place, heading and death when it moved or died, one whose record left the level's character database is left out, one with no character is kept, and a scene character with no placement is added with its record's id; the section's character database SHALL be the live local one.
 
 #### Scenario: A carried follower saved and loaded
 - **WHEN** Derrin follows the player from exanima01 to exanima02, the story is saved there and the save is loaded
