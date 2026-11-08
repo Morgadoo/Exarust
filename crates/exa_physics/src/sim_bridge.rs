@@ -113,6 +113,24 @@ pub trait BridgeHalf: Send + Sync + 'static {
     fn hierarchy(&self) -> bool {
         false
     }
+    /// A resource's half: spawns the resource's entity in `world` (empty)
+    /// unless it has one, so the entity takes its id now, in the order the
+    /// types were registered, not whenever the value first lands (an async
+    /// build's result, a value moved across in whichever step it came),
+    /// which would move every id handed out after it.
+    fn hold(&self, _world: &mut World) {}
+}
+
+/// Spawns `T`'s resource entity (without a value) unless `world` has one:
+/// the value inserted later lands on it, and a removal keeps it. Resources
+/// are entities, so a resource first inserted at a moment that hangs on
+/// load timing would otherwise take an id from the middle of the level's
+/// entities and move all those spawned after it.
+pub fn hold_resource_entity<T: Resource>(world: &mut World) {
+    let id = world.register_component::<T>();
+    if world.resource_entities().get(id).is_none() {
+        world.spawn(bevy::ecs::resource::IsResource::new(id));
+    }
 }
 
 /// Frame side: an entity the simulation's world holds, because a bridged
@@ -1015,6 +1033,10 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
             .get_or_insert_with(|| world.register_component::<T>())
     }
 
+    fn hold(&self, world: &mut World) {
+        hold_resource_entity::<T>(world);
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1428,6 +1450,10 @@ impl<T: Resource> BridgeHalf for MoveResourceHalf<T> {
         component_id::<T>(world, &mut self.id)
     }
 
+    fn hold(&self, world: &mut World) {
+        hold_resource_entity::<T>(world);
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1538,6 +1564,10 @@ impl<T: Resource + Default> BridgeHalf for OwnResourceHalf<T> {
     fn init(&mut self, world: &mut World) -> ComponentId {
         world.init_resource::<T>();
         component_id::<T>(world, &mut self.id)
+    }
+
+    fn hold(&self, world: &mut World) {
+        hold_resource_entity::<T>(world);
     }
 
     fn drain_removed(&mut self, _: &World) {}
@@ -1931,6 +1961,10 @@ fn add_type(app: &mut App, t: impl BridgeType) -> &mut App {
 }
 
 fn add_digested(app: &mut App, t: impl BridgeType, digest: Option<DigestMaker>) -> &mut App {
+    // A bridged resource's entity is spawned now, while the plugins build
+    // in their fixed order, on the frame's side (the simulation's holds its
+    // own when the bridge starts).
+    t.half().hold(app.world_mut());
     app.world_mut()
         .get_resource_or_init::<SimBridgeTypes>()
         .add(t, digest);
@@ -2791,6 +2825,9 @@ fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
     let mut side = BridgeSide::new(setup.halves, false);
     side.free = setup.free;
     side.init(world);
+    for half in &side.halves {
+        half.hold(world);
+    }
     // The simulation's own queue of posted calls and writes; its writes
     // stay snapshot writes, as the frame's queue's were when it was lent.
     if let Some(mut fixed) = world.get_resource_mut::<crate::sim_app::FixedCommands>() {
