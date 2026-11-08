@@ -1,0 +1,5 @@
+- [x] Trace the renderer's per-sector walks and what the scene's frame writes for them (REA).
+- [x] Keep a live scene for grid levels: sectors, portals, membership, moves, removals, frames, bounds.
+- [x] Run the scene's frame each frame with the room states and the main view; trim the main view's list.
+- [x] Walk the decal and blended lists sector by sector on the transparent phase.
+- [x] Before/after grids (shots, FPS) and lockstep traces.

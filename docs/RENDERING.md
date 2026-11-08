@@ -547,14 +547,48 @@ and its build order); `exa_render::material` ranks them with
 the rank into the material's `depth_bias`, which Bevy adds to the view
 depth it sorts the transparent phase by (`passes::order_bias`: the decal
 list first, then each blended rank 2048 m apart, then everything with no
-state, such as smoke, flames and rain, by distance). Two differences
-remain: Exarust has no per-object sector, so the sector walk is not
-reproduced (all sectors form one list), and objects of the same state keep
-Bevy's distance order instead of their registration order. In the shipped
-levels the walk ranks 77 states in exanima01, 10 in exanima06, 4 in the
-arena and 13 in arenao3 (one decal state in all; the rest blended, one or
-two on a layer above 0); at the views tested the picture does not change
-beyond the same-build noise floor.
+state, such as smoke, flames and rain, by distance). In a tile-grid level
+the sector walk is reproduced too (`exa_render::sector_walk`): the live
+scene (`exa_world::scene_live`, below) registers every mesh in its room's
+sector, and after Bevy's sort the transparent phase is re-sorted, stably,
+by list and then, for the decal and blended lists, by sector, so the
+decals of the scene's own sector, then of each room in room order, come
+first, then the blended surfaces the same way. One difference remains:
+objects of the same state in one sector keep Bevy's distance order instead
+of their registration order. In the shipped levels the walk ranks 77
+states in exanima01, 10 in exanima06, 4 in the arena and 13 in arenao3
+(one decal state in all; the rest blended, one or two on a layer above 0);
+at the views tested the picture does not change beyond the same-build
+noise floor.
+
+**Sectors on the live path.** The frame's sector walk reads each sector's
+visibility word and each entry's mesh word, which the scene unit's
+per-frame update writes; the renderer itself never tests a box. A blended
+list may be walked a second way (a per-sector walk that tests the
+sector's own word, switches the scissor test per entry on the entry's
+`0x1000_0000` bit, calls the state's per-entry hook and draws directly
+instead of through the deferred queue); which way is chosen by a word of
+the scene's render target whose writer was not traced. Both walk the
+sectors in scene order, so the order Exarust reproduces is the same.
+Exarust keeps a scene for the loaded tile-grid level
+(`exa_world::scene_live`): the scene's own sector (drawn with every view,
+as the room manager never hides it), then one sector per room with its
+door portals (the quad on the shared edge from −50 cm to the opening's
+top, facing the room behind) and its linked sectors; every mesh is a mesh
+node registered in its room's sector, a character's meshes follow the
+room at its position, and a shadow-casting mesh bounds its sector's first
+box (the original's mesh preparation sets that option bit when one of its
+parts' materials casts). Each frame the room states and the main camera's
+view volume go to the scene's frame (classification, membership rebuild,
+hidden and visible passes, removals), and a registered mesh the visible
+pass leaves undrawn is taken out of the main camera's visible list; shadow
+views are not touched. In practice that removes what an adjacent room
+shows outside its doorways' frusta, which its lid already covers from the
+gameplay camera. Not reproduced: the portal scissor as a pixel scissor
+(only the portal frusta cull), the per-quadrant scissor regions of the
+super-sampled sub-frames, the light aliases' links on this scene (lights
+stay global), and levels without a grid (a sectorless scene, one list in
+the original as here).
 
 ## Light nodes
 

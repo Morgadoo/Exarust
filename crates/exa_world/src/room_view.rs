@@ -28,7 +28,9 @@ use exa_render::cube_shadows::{CubeLid, CubeShadow};
 use exa_render::shell::ShellMaterial;
 
 use crate::grid::{ShellStrips, ray_blocks};
-use crate::rooms::{DoorBodies, DoorLink, Fade, RoomState, RoomTracker, Rooms, link_open};
+use crate::rooms::{
+    DoorBodies, DoorLink, DoorPortal, Fade, RoomState, RoomTracker, Rooms, link_open,
+};
 
 pub struct RoomViewPlugin;
 
@@ -75,6 +77,10 @@ pub struct LevelRooms {
     /// Each room's occluder and lid triangles (world, metres), once the
     /// grid has built them.
     pub shells: Arc<Vec<ShellStrips>>,
+    /// Every room's door portals, one per door link in the rooms' link
+    /// order ([`Rooms::portal`]); empty until the level builder sets them
+    /// from its grid.
+    pub portals: Arc<Vec<DoorPortal>>,
 }
 
 impl LevelRooms {
@@ -85,6 +91,7 @@ impl LevelRooms {
             tracker,
             doors: DoorBodies::new(),
             shells: Arc::default(),
+            portals: Arc::default(),
         }
     }
 
@@ -572,7 +579,7 @@ type ShellQuery<'w, 's> = Query<
 /// Moves the active rooms with the anchor and shows what each room's state
 /// asks for.
 #[allow(clippy::too_many_arguments)]
-fn track_rooms(
+pub(crate) fn track_rooms(
     time: Res<Time<Real>>,
     view: Res<RoomView>,
     level: Option<ResMut<LevelRooms>>,

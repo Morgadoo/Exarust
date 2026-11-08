@@ -25,6 +25,7 @@
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
 //!          --no-cube-lids             debug: the room's lid stays out of its lights' cube shadows (to compare)
+//!          --no-sector-cull           debug: the scene's visible pass leaves the main view's list alone (to compare)
 //!          --bevy-sun-cascades        the sun keeps Bevy's cascades instead of the original's fitted map
 //!          --no-gi                    no voxel GI (ambient from the environment cube)
 //!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
@@ -335,6 +336,8 @@ pub struct Options {
     pub no_shadows: bool,
     /// Debug: rooms' lids stay out of the lights' cube faces.
     pub no_cube_lids: bool,
+    /// Debug: the scene's visible pass leaves the main view's list alone.
+    pub no_sector_cull: bool,
     /// The sun keeps Bevy's cascades in terrain levels too.
     pub bevy_sun_cascades: bool,
     /// The voxel GI settings.
@@ -990,6 +993,7 @@ fn main() -> AppExit {
             "--msm" => options.msm = true,
             "--no-shadows" => options.no_shadows = true,
             "--no-cube-lids" => options.no_cube_lids = true,
+            "--no-sector-cull" => options.no_sector_cull = true,
             "--bevy-sun-cascades" => options.bevy_sun_cascades = true,
             "--no-gi" => options.gi.enabled = false,
             "--no-supersample" => options.no_supersample = true,
@@ -1989,6 +1993,7 @@ fn main() -> AppExit {
         .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
         .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
         .insert_resource(exa_render::cube_shadows::CubeLids(!options.no_cube_lids))
+        .insert_resource(exa_world::scene_live::SectorCull(!options.no_sector_cull))
         .insert_resource(exa_world::sun_shadow::SunShadowFit(
             !options.bevy_sun_cascades,
         ))

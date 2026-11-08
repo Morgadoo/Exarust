@@ -46,8 +46,8 @@
 //! angles are radians; the cell and doorway tests multiply by 100 as the
 //! original works in centimetres. The model is pure data: [`crate::rooms`]
 //! supplies the room states and [`crate::light_flood`] shares
-//! [`cell_spill`]. Exarust still draws through `room_view`; nothing here is
-//! on the draw path yet.
+//! [`cell_spill`]. [`crate::scene_live`] keeps a scene for the loaded grid
+//! level and runs its frame, whose visible pass trims the main view.
 
 // The original's branches on partially ordered comparisons are deliberate:
 // a NaN takes the processor's side, so the negated form spells it out.
@@ -980,6 +980,9 @@ pub struct SceneNode {
     /// meaning they are due. An alias copies it so a spread walk knows
     /// whether the alias is current.
     pub link_stamp: u32,
+    /// Quiet passes only ([`Scene::quiet_passes`]): no child slot changed
+    /// and no child went stale since the last child validation.
+    pub children_settled: bool,
 }
 
 impl SceneNode {
@@ -1027,6 +1030,7 @@ impl SceneNode {
             link_head: -1,
             links: Vec::new(),
             link_stamp: 1,
+            children_settled: false,
         }
     }
 
@@ -1161,6 +1165,12 @@ pub struct Sector {
     /// A spread walk is inside this sector (the original's busy byte): a
     /// link back to it is skipped so a loop terminates.
     pub spreading: bool,
+    /// Quiet passes only ([`Scene::quiet_passes`]): the last pass over the
+    /// sector was the hidden pass and its lists did not change since.
+    pub quiet: bool,
+    /// Quiet passes only: the nodes whose frame was refreshed since the
+    /// last pass over the sector.
+    pub woken: Vec<usize>,
 }
 
 impl Sector {
@@ -1190,6 +1200,8 @@ impl Sector {
             bounds: SectorBounds::default(),
             linked: Vec::new(),
             spreading: false,
+            quiet: false,
+            woken: Vec::new(),
         }
     }
 
@@ -1249,6 +1261,17 @@ pub struct Scene {
     /// Nodes whose release was deferred to their owner (the scene's free
     /// list).
     pub pending_free: Vec<usize>,
+    /// An Exarust shortcut for a large live scene: in a sector whose last
+    /// pass was the hidden pass and whose lists did not change since (no
+    /// registration, membership rebuild or removal, no moved alias) the
+    /// hidden pass visits only the meshes whose frames were refreshed since
+    /// (the others' masks are already cleared and they did not move), and a
+    /// node whose children did not change skips the child validation. The
+    /// result is the same, but for the order of the moved meshes in the
+    /// frame's events, as long as the scene is changed only through its
+    /// methods (direct field writes do not wake a sector), so it is off
+    /// unless the caller sets it.
+    pub quiet_passes: bool,
 }
 
 impl Scene {
@@ -1274,6 +1297,7 @@ impl Scene {
             material_adds: Vec::new(),
             material_removes: Vec::new(),
             pending_free: Vec::new(),
+            quiet_passes: false,
         }
     }
 
@@ -1286,6 +1310,22 @@ impl Scene {
         self.nodes.push(node);
         if let Some(parent) = parent {
             self.nodes[parent].children.push(Some(id));
+            self.nodes[parent].children_settled = false;
+        }
+        id
+    }
+
+    /// Puts a fresh node of `kind` in the slot of a node that was taken out
+    /// (an Exarust helper: the original frees the node object and allocates
+    /// a new one; the live scene reuses slots so its node array does not
+    /// grow with every spawned effect). Returns `id`.
+    pub fn reuse_node(&mut self, id: usize, kind: NodeKind, parent: Option<usize>) -> usize {
+        let mut node = SceneNode::new(kind);
+        node.parent = parent;
+        self.nodes[id] = node;
+        if let Some(parent) = parent {
+            self.nodes[parent].children.push(Some(id));
+            self.nodes[parent].children_settled = false;
         }
         id
     }
@@ -1297,6 +1337,8 @@ impl Scene {
         n.rotation = rotation;
         n.half_extents = half_extents;
         n.stale = true;
+        let parent = n.parent;
+        self.unsettle(parent);
     }
 
     /// Adds a doorway to a sector. The caller sets its `neighbour`.
@@ -1434,6 +1476,7 @@ impl Scene {
     /// check.
     pub fn register(&mut self, node: usize, sector: usize) {
         self.nodes[node].sector = Some(sector);
+        self.sectors[sector].quiet = false;
         match self.nodes[node].kind {
             NodeKind::Geometry => self.geometry.push(node),
             NodeKind::Light if self.nodes[node].flags & WORLD_LIGHT == 0 => {
@@ -1675,10 +1718,12 @@ impl Scene {
         }
         if let Some(parent) = self.nodes[node].parent {
             self.nodes[parent].children.retain(|&c| c != Some(node));
+            self.nodes[parent].children_settled = false;
         }
         self.nodes[node].parent = self.sectors[sector].node;
         if let Some(parent) = self.nodes[node].parent {
             self.nodes[parent].children.push(Some(node));
+            self.nodes[parent].children_settled = false;
         }
         let in_scene = self.nodes[node].scene_flags & IN_SCENE != 0;
         if in_scene {
@@ -1715,6 +1760,13 @@ impl Scene {
         body.stale = false;
         body.moved = true;
         body.light_state = 1;
+        if self.quiet_passes
+            && let Some(sector) = body.sector
+            && let Some(s) = self.sectors.get_mut(sector)
+        {
+            s.woken.push(node);
+        }
+        let body = &mut self.nodes[node];
         let children: Vec<usize> = body.children.iter().flatten().copied().collect();
         for child in children {
             self.refresh(child);
@@ -1728,6 +1780,9 @@ impl Scene {
     /// (The original logs each one; Exarust's hierarchy has no empty
     /// slots, so only malformed model data reaches this.)
     pub fn validate_children(&mut self, node: usize) -> usize {
+        if self.quiet_passes && self.nodes[node].children_settled {
+            return 0;
+        }
         let mut dropped = 0;
         let mut at = 0;
         while at < self.nodes[node].children.len() {
@@ -1744,7 +1799,17 @@ impl Scene {
                 }
             }
         }
+        if self.quiet_passes {
+            self.nodes[node].children_settled = true;
+        }
         dropped
+    }
+
+    /// Marks a node's children as changed for [`Scene::quiet_passes`].
+    fn unsettle(&mut self, node: Option<usize>) {
+        if let Some(n) = node.and_then(|n| self.nodes.get_mut(n)) {
+            n.children_settled = false;
+        }
     }
 
     /// Whether the node or any descendant carries [`OWNED`] (the original's
@@ -1907,6 +1972,7 @@ impl Scene {
     /// removed first alias with nothing to take its place maps to 0 and is
     /// read as kept by the bucket remap; that quirk is kept.
     pub fn rebuild_membership(&mut self, sector: usize) -> bool {
+        self.sectors[sector].quiet = false;
         let owned = |alias: &LightAlias| alias.owner == Some(sector);
         // 1. Unprocessed aliases that left.
         {
@@ -2518,6 +2584,7 @@ impl Scene {
     /// asks for buckets gets them, then the processed count takes the whole
     /// list and the "mesh added" change bit clears.
     pub fn finish_new_meshes(&mut self, sector: usize) {
+        self.sectors[sector].quiet = false;
         let done = self.sectors[sector]
             .meshes_done
             .min(self.sectors[sector].meshes.len());
@@ -2819,6 +2886,7 @@ impl Scene {
         let queued = self.removals.push(Removal { node, kind, sector });
         if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
             s.changes |= REMOVAL_CHANGES;
+            s.quiet = false;
         }
         if kind != RemovalKind::Hide {
             self.mark_deleting(node);
@@ -2880,6 +2948,10 @@ impl Scene {
                     *slot = None;
                 }
             }
+            p.children_settled = false;
+        }
+        if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
+            s.quiet = false;
         }
         if let Some(n) = self.nodes.get_mut(node) {
             if !n.removed {
@@ -3153,7 +3225,24 @@ impl Scene {
         faces: &mut dyn FnMut(usize, usize) -> u32,
         events: &mut FrameEvents,
     ) {
-        let meshes = self.processed_meshes(sector);
+        let woken = std::mem::take(&mut self.sectors[sector].woken);
+        let meshes = if self.quiet_passes && self.sectors[sector].quiet && {
+            let s = &self.sectors[sector];
+            let done = s.aliases_done.min(s.aliases.len());
+            !s.aliases[..done].iter().any(|a| a.moved)
+        } {
+            // Only the woken meshes still in the sector (all processed:
+            // a registration would have ended the quiet).
+            let mut woken = woken;
+            woken.retain(|&id| {
+                self.nodes[id].sector == Some(sector) && self.nodes[id].kind == NodeKind::Mesh
+            });
+            woken.sort_unstable();
+            woken.dedup();
+            woken
+        } else {
+            self.processed_meshes(sector)
+        };
         self.refresh_stale(&meshes);
         let moved_aliases = self.begin_alias_pass(sector);
         let alias_count = self.sectors[sector]
@@ -3186,6 +3275,9 @@ impl Scene {
                 }
             }
         }
+        if self.quiet_passes {
+            self.sectors[sector].quiet = true;
+        }
     }
 
     /// The visible-sector pass over the processed meshes. Returns whether
@@ -3198,6 +3290,8 @@ impl Scene {
         faces: &mut dyn FnMut(usize, usize) -> u32,
         events: &mut FrameEvents,
     ) -> bool {
+        self.sectors[index].quiet = false;
+        self.sectors[index].woken.clear();
         let meshes = self.processed_meshes(index);
         self.refresh_stale(&meshes);
         let moved_aliases = self.begin_alias_pass(index);
@@ -4232,6 +4326,43 @@ mod tests {
         scene.nodes[node].mask = HIDDEN_KEEPS | SEEN;
         scene.update_visibility(16);
         assert_eq!(scene.nodes[node].mask, HIDDEN_KEEPS);
+    }
+
+    #[test]
+    fn quiet_passes_skip_only_what_would_not_change() {
+        let run = |quiet: bool| {
+            let (mut scene, sector, node) = node_scene();
+            scene.quiet_passes = quiet;
+            let mut moved = Vec::new();
+            // Hidden twice: the second pass has nothing to do.
+            for _ in 0..2 {
+                scene.classify(Vec3::ZERO, &[box_view(10.0)], &no_project);
+                let events = scene.frame(16, Vec3::ZERO, &[box_view(10.0)], &no_project);
+                moved.push(events.moved.clone());
+            }
+            let quiet_after = scene.sectors[sector].quiet;
+            // A move wakes the sector: its cell follows.
+            scene.set_frame(
+                node,
+                Vec3::new(7.0, 0.0, 0.0),
+                Mat3::IDENTITY,
+                Vec3::splat(0.5),
+            );
+            scene.refresh(node);
+            let events = scene.frame(16, Vec3::ZERO, &[box_view(10.0)], &no_project);
+            moved.push(events.moved.clone());
+            // Shown again: the visible pass draws it.
+            scene.sectors[sector].state = SectorState::Active;
+            scene.rebuild_bounds();
+            scene.frame(16, Vec3::ZERO, &[box_view(10.0)], &no_project);
+            let mask = scene.nodes[node].mask;
+            (moved, quiet_after, scene.nodes[node].cell, mask, node)
+        };
+        let (moved, quiet, cell, mask, node) = run(true);
+        assert!(quiet);
+        assert_eq!(moved[2], vec![node]);
+        assert_eq!(mask, MAIN | SEEN);
+        assert_eq!(run(false), (moved, false, cell, mask, node));
     }
 
     #[test]
