@@ -2449,6 +2449,8 @@ Round 142 rfcimport: the running game keeps the world character database, world-
 
 Round 143 arena: hired company entrants fight as their match copy with their rank loadout, as in the original.
 
+Round 144 savechars: the story save writes the live scene characters into the level section, so a carried follower is placed again after a load, and the level local character database is live.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
