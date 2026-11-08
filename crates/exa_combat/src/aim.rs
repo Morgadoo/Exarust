@@ -8,10 +8,13 @@
 //!
 //! Aim inside 50 cm reuses the previous direction; between 50 and 100 cm
 //! the vertical component is replaced by `(10000 − d²)·1e-4` before the
-//! direction is normalized.
+//! direction is normalized by the engine's fast reciprocal square root
+//! (zero stays zero). The look direction is the engine's pitch-and-yaw
+//! direction, through its fast sine and cosine.
 
 use bevy::math::Vec3;
 use exa_physics::body::locomotion::{asin_approx, heading_of};
+use exa_physics::engine_math::{direction_from_pitch_yaw, normalize_approx};
 
 /// The most the yaw and pitch move in one tick, π/100 (1.8°), as the
 /// original compares it: the double π/100 against a single-precision
@@ -137,8 +140,8 @@ fn track_head_inner(
         if distance_squared < HEAD_FAR_SQUARED {
             d[1] = (HEAD_FAR_SQUARED - distance_squared) * 1e-4;
         }
-        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        [d[0] / length, d[1] / length, d[2] / length]
+        // The engine's fast zero-safe normalise (reciprocal square root).
+        normalize_approx(Vec3::from_array(d)).to_array()
     };
 
     let mut yaw = step(head.yaw, head_atan2_xz(dir_in[0], dir_in[2]));
@@ -165,11 +168,9 @@ fn track_head_inner(
     }
 
     *head = HeadTrack { yaw, pitch };
-    let dir = [
-        pitch.cos() * yaw.sin(),
-        -pitch.sin(),
-        pitch.cos() * yaw.cos(),
-    ];
+    // The engine's direction from a pitch and a yaw, by its fast sine and
+    // cosine.
+    let dir = direction_from_pitch_yaw(pitch, yaw).to_array();
     // The flat direction is scaled by the reciprocal of its length, not
     // divided by it.
     let flat_scale = 1.0 / (dir[0] * dir[0] + dir[2] * dir[2]).sqrt();
@@ -286,9 +287,13 @@ mod tests {
     #[test]
     fn looking_up_takes_the_engines_arc_sine() {
         // Height 0.6 of a unit direction: asin 0.6435 (the polynomial is
-        // within 1e-3); starting there, the far variant (no floor) holds it
+        // within 1e-3). The direction is the engine's fast normalise, so its
+        // height is 0.6 only to the reciprocal square root's precision;
+        // starting at that pitch, the far variant (no floor) holds it
         // exactly.
-        let want = -asin_approx(0.6);
+        let height = normalize_approx(Vec3::new(0.0, 600.0, 800.0)).y;
+        assert!((height - 0.6).abs() < 1e-3, "{height}");
+        let want = -asin_approx(height);
         assert!((want + 0.6435).abs() < 1e-3, "{want}");
         let mut head = HeadTrack {
             yaw: 0.0,
@@ -302,6 +307,27 @@ mod tests {
             [0.0, 600.0, 800.0],
         );
         assert_eq!(head.pitch, want);
+    }
+
+    #[test]
+    fn the_look_is_the_engines_pitch_and_yaw_direction() {
+        // The written direction is the engine's (fast sine and cosine) of
+        // the stored angles, bit for bit, not the library's.
+        let mut head = HeadTrack {
+            yaw: 0.3,
+            pitch: -0.2,
+        };
+        let look = track_head_far(
+            &mut head,
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [300.0, 120.0, 700.0],
+        );
+        assert_eq!(
+            look.dir,
+            direction_from_pitch_yaw(head.pitch, head.yaw).to_array()
+        );
     }
 
     #[test]

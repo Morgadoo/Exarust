@@ -27,7 +27,12 @@
 //!
 //! The original switches the x87 control word around the run; its maths is
 //! SSE2 double precision, which that word does not reach, so plain `f64`
-//! arithmetic in the same order gives the same bits. Rules:
+//! arithmetic in the same order gives the same bits. Its support set and
+//! the widened copy of the points come from the runtime library's heap in
+//! the original; here they are a fixed array and a `Vec`. The one caller is
+//! the sun map's fit ([`crate::sun_fit::fitted_sphere`]), run every frame
+//! for each active camera in a level with a terrain
+//! (`EXA_SUN_FIT_TRACE=1` logs its steps). Rules:
 //! `docs/RENDERING.md` (Sun shadow fit).
 
 use bevy::math::{DVec3, Vec3};

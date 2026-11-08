@@ -113,6 +113,27 @@ pub fn reciprocal_sqrt(value: f32) -> f32 {
     }
 }
 
+/// The processor's approximate reciprocal of each component (`RCPPS` on
+/// `(x, y, z, 0)`), the engine's fast vector reciprocal: about 12 bits,
+/// the hardware's own table, so the low bits are the running processor's
+/// as they were the original's. Exact division off x86-64.
+pub fn reciprocal_approx3(v: Vec3) -> Vec3 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE is part of the x86_64 baseline.
+        unsafe {
+            use std::arch::x86_64::{_mm_rcp_ps, _mm_set_ps, _mm_storeu_ps};
+            let mut out = [0.0f32; 4];
+            _mm_storeu_ps(out.as_mut_ptr(), _mm_rcp_ps(_mm_set_ps(0.0, v.z, v.y, v.x)));
+            Vec3::new(out[0], out[1], out[2])
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        v.recip()
+    }
+}
+
 /// The same with the rounding control set to round up (and restored
 /// after): the ceiling. NaN and out-of-range values give `i32::MIN`.
 pub fn ceil_to_i32(x: f32) -> i32 {
@@ -980,6 +1001,32 @@ mod tests {
         let unit = normalize_approx(Vec3::new(3.0, 0.0, 4.0));
         assert!((unit.length() - 1.0).abs() < 1e-3);
         assert!(normalize_approx(Vec3::new(f32::NAN, 0.0, 0.0)).x.is_nan());
+    }
+
+    #[test]
+    fn the_vector_reciprocal_is_the_processors_approximation() {
+        // RCPPS: within 1.5·2⁻¹² of the exact value, each lane on its own
+        // (the scalar RCPSS gives the same lane), zero gives infinity with
+        // its sign and a NaN stays NaN.
+        let v = Vec3::new(3.0, -0.125, 1.0e4);
+        let r = reciprocal_approx3(v);
+        for (approx, x) in [(r.x, v.x), (r.y, v.y), (r.z, v.z)] {
+            let exact = 1.0 / x;
+            assert!(((approx - exact) / exact).abs() <= 1.5 / 4096.0);
+            #[cfg(target_arch = "x86_64")]
+            // SAFETY: SSE is part of the x86_64 baseline.
+            unsafe {
+                use std::arch::x86_64::{_mm_cvtss_f32, _mm_rcp_ss, _mm_set_ss};
+                assert_eq!(
+                    approx.to_bits(),
+                    _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(x))).to_bits()
+                );
+            }
+        }
+        let z = reciprocal_approx3(Vec3::new(0.0, -0.0, f32::NAN));
+        assert_eq!(z.x, f32::INFINITY);
+        assert_eq!(z.y, f32::NEG_INFINITY);
+        assert!(z.z.is_nan());
     }
 
     #[test]

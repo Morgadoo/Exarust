@@ -350,28 +350,20 @@ fn wrap(angle: f32) -> f32 {
 }
 
 /// The polar direction from a pitch and a yaw as the engine builds it:
-/// `(cos p · sin y, −sin p, cos p · cos y)`.
+/// `(cos p · sin y, −sin p, cos p · cos y)` by its fast sine and cosine
+/// ([`exa_physics::engine_math::direction_from_pitch_yaw`]).
 pub fn direction(pitch: f32, yaw: f32) -> Vec3 {
-    Vec3::new(
-        pitch.cos() * yaw.sin(),
-        -pitch.sin(),
-        pitch.cos() * yaw.cos(),
-    )
+    exa_physics::engine_math::direction_from_pitch_yaw(pitch, yaw)
 }
 
 /// The direction the original builds from the behaviour's own point
 /// `from_cm` (its eye) and a point `to_cm`: the unit vector from `to_cm`
 /// to `from_cm`, its yaw held within 45° of the body's facing and its
-/// pitch the engine's `asin` of the height. The original normalises with
-/// the hardware reciprocal square root; this uses the exact one.
+/// pitch the engine's `asin` of the height. The vector is normalised as
+/// the original does, by the engine's fast zero-safe normalise (the
+/// hardware reciprocal square root).
 pub fn look_direction(from_cm: Vec3, to_cm: Vec3, body_forward: Vec3) -> Vec3 {
-    let delta = from_cm - to_cm;
-    let length_squared = delta.length_squared();
-    let unit = if length_squared == 0.0 {
-        Vec3::ZERO
-    } else {
-        delta * (1.0 / length_squared.sqrt())
-    };
+    let unit = exa_physics::engine_math::normalize_approx(from_cm - to_cm);
     let yaw = atan2_xz(unit.x, unit.z);
     let pitch = asin_fast(unit.y);
     let body = atan2_xz(body_forward.x, body_forward.z);
