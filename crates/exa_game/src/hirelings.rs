@@ -303,6 +303,87 @@ pub fn kit_value(items: &[u32], hands: [u32; 2], value_word: impl Fn(u32) -> Opt
     total
 }
 
+/// A company fighter's match copy: what the match start writes on the copy
+/// of a participant's record before its body is made.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchCopy {
+    /// The AI's fighting skill ([`match_fighting_skill`]).
+    pub combat_skill: f32,
+    /// The four hand slots and the worn items.
+    pub kit: exa_formats::characters::Loadout,
+    /// The six skills' experience, as the record holds it.
+    pub skill_xp: [u16; 6],
+    /// The six skills' techniques.
+    pub techniques: [[u8; 6]; 6],
+}
+
+/// The match copy of a company member for a match of `tier`.
+///
+/// The fighting skill comes from the member's level sum. A match with no
+/// gear tier (below 0) puts on the first loadout and empties the item word
+/// of all four hands (their flags stay). Otherwise the loadout of the
+/// member's rank is put on, its rank at most the tier, or two under the
+/// tier for a Captain's entrants after the first ([`match_kit`]); a weapon
+/// event then writes the event entry's first weapon word into the main
+/// hand and the second word, its item cleared, into the off hand
+/// (`event_hands`, the two words of the event's first entrant).
+///
+/// A Captain's wing at tier 0 or 1 names a rank below 0, which the
+/// original reads from before the loadout list; the copy then keeps the
+/// member's own outfit [guess]. The original also rebuilds a record whose
+/// loadout list does not hold six; a member always holds six here.
+#[must_use]
+pub fn match_copy(
+    member: &crate::career::Member,
+    tier: i32,
+    captain_wing: bool,
+    event_hands: Option<[u64; 2]>,
+) -> MatchCopy {
+    use exa_formats::characters::ItemRef;
+    let level_sum = crate::report::level_sum(&member.skill_xp) as i32;
+    let mut kit = exa_formats::characters::Loadout {
+        word: 0,
+        hands: [
+            ItemRef::new(member.outfit.hands[0], 0),
+            ItemRef::new(member.outfit.hands[1], 0),
+            ItemRef::NONE,
+            ItemRef::NONE,
+        ],
+        worn: member
+            .outfit
+            .items
+            .iter()
+            .map(|&id| ItemRef::new(id, 0))
+            .collect(),
+    };
+    match match_kit(level_sum, tier, captain_wing) {
+        MatchKit::Bare => {
+            kit.copy_from(&member.loadouts[0]);
+            for hand in &mut kit.hands {
+                hand.id = 0;
+            }
+        }
+        MatchKit::Rank(rank) => {
+            if let Some(loadout) = usize::try_from(rank)
+                .ok()
+                .and_then(|rank| member.loadouts.get(rank))
+            {
+                kit.copy_from(loadout);
+            }
+            if let Some([main, off]) = event_hands {
+                kit.hands[0] = ItemRef::new(main as u32, (main >> 32) as u32);
+                kit.hands[1] = ItemRef::new(0, (off >> 32) as u32);
+            }
+        }
+    }
+    MatchCopy {
+        combat_skill: match_fighting_skill(level_sum),
+        kit,
+        skill_xp: member.skill_xp,
+        techniques: member.techniques,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,5 +563,76 @@ mod tests {
         let mut top = kit.clone();
         trim_loadout(&mut top, 7, rank);
         assert_eq!(top.items, vec![1, 2, 3, 4]);
+    }
+
+    fn ranked_member(levels: u16) -> crate::career::Member {
+        use exa_formats::characters::ItemRef;
+        let mut company = crate::career::Company::new("Ash");
+        company.hire("Bran", Profession::Combatant).unwrap();
+        let mut member = company.roster.remove(0);
+        member.skill_xp = [levels * SKILL_STEP, 0, 0, 0, 0, 0];
+        member.outfit = Loadout {
+            hands: [90, 0],
+            items: vec![91],
+        };
+        for (rank, loadout) in member.loadouts.iter_mut().enumerate() {
+            let rank = rank as u32;
+            loadout.hands = [
+                ItemRef::new(10 + rank, 0x0100_0000),
+                ItemRef::new(20 + rank, 7),
+                ItemRef::NONE,
+                ItemRef::new(30, 9),
+            ];
+            loadout.worn = vec![ItemRef::new(40 + rank, 0)];
+        }
+        member
+    }
+
+    #[test]
+    fn a_match_copy_wears_its_ranks_loadout_capped_by_the_tier() {
+        // Seven levels: rank 3, a fighting skill of 80.
+        let member = ranked_member(7);
+        let copy = match_copy(&member, 5, false, None);
+        assert_eq!(copy.combat_skill, 80.0);
+        assert_eq!(copy.kit.hands[0].id, 13);
+        assert_eq!(copy.kit.worn[0].id, 43);
+        assert_eq!(match_copy(&member, 1, false, None).kit.hands[0].id, 11);
+        // A Captain's wing goes two under the tier.
+        assert_eq!(match_copy(&member, 4, true, None).kit.hands[0].id, 12);
+        // Ten levels or more fight at skill 100.
+        assert_eq!(
+            match_copy(&ranked_member(12), 5, false, None).combat_skill,
+            100.0
+        );
+    }
+
+    #[test]
+    fn a_match_with_no_tier_takes_the_first_loadout_with_empty_hands() {
+        let copy = match_copy(&ranked_member(7), -1, false, Some([5, 6]));
+        assert_eq!(copy.kit.worn[0].id, 40);
+        assert!(copy.kit.hands.iter().all(|hand| hand.id == 0));
+        // The flags words stay.
+        assert_eq!(copy.kit.hands[0].flags, 0x0100_0000);
+        assert_eq!(copy.kit.hands[3].flags, 9);
+    }
+
+    #[test]
+    fn a_weapon_event_arms_the_main_hand_and_clears_the_off_hands_item() {
+        let main = 0x0000_0002_0000_0077u64;
+        let off = 0x0000_0003_0000_0088u64;
+        let copy = match_copy(&ranked_member(2), 5, false, Some([main, off]));
+        assert_eq!(copy.kit.hands[0].id, 0x77);
+        assert_eq!(copy.kit.hands[0].flags, 2);
+        assert_eq!(copy.kit.hands[1].id, 0);
+        assert_eq!(copy.kit.hands[1].flags, 3);
+        // The worn items are the rank's.
+        assert_eq!(copy.kit.worn[0].id, 41);
+    }
+
+    #[test]
+    fn a_captains_wing_below_rank_zero_keeps_the_outfit() {
+        let copy = match_copy(&ranked_member(7), 1, true, None);
+        assert_eq!(copy.kit.hands[0].id, 90);
+        assert_eq!(copy.kit.worn[0].id, 91);
     }
 }

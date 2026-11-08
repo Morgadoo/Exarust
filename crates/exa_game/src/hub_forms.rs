@@ -652,6 +652,16 @@ impl HubWindows {
                     match hook {
                         YesHook::ForfeitTourney => {
                             crate::tournament::forfeit_tourney(&mut career.entries);
+                            // The board's own event list loses the same
+                            // entrants and the board refreshes.
+                            if let Some(board) = self.board.as_mut() {
+                                for entry in &mut board.entries {
+                                    if entry.winner == 0 {
+                                        entry.participants.clear();
+                                    }
+                                }
+                                board.show();
+                            }
                             info!("hub: the tourney is forfeited");
                         }
                     }
@@ -1270,11 +1280,46 @@ pub fn hub_employee_kit_on_load(
         warn!("--hub-employee-kit: {}", refusal.message());
         return;
     }
-    let member = crate::career::Member {
+    // The member carries the kit as its record would: weapons and shields
+    // in the two hands (in order), the rest worn, and the six loadouts a
+    // hire builds from it (a level-0 fighter trims none).
+    let mut outfit = crate::hirelings::Loadout::default();
+    for &item in &ask.kit {
+        let hand = matches!(
+            crate::arsenal::shelf_of(kinds.kind(item)),
+            Some(crate::arsenal::WEAPONS | crate::arsenal::SHIELDS)
+        );
+        match outfit.hands.iter_mut().find(|held| **held == 0) {
+            Some(free) if hand => *free = item,
+            _ => outfit.items.push(item),
+        }
+    }
+    let mut member = crate::career::Member {
         name: ask.name.clone(),
         profession: Profession::Combatant,
         ..career.player.clone()
     };
+    for (slot, loadout) in member
+        .loadouts
+        .iter_mut()
+        .zip(crate::hirelings::ranked_loadouts(&outfit, 0, |_| None))
+    {
+        *slot = exa_formats::characters::Loadout {
+            word: 0,
+            hands: [
+                exa_formats::characters::ItemRef::new(loadout.hands[0], 0),
+                exa_formats::characters::ItemRef::new(loadout.hands[1], 0),
+                exa_formats::characters::ItemRef::NONE,
+                exa_formats::characters::ItemRef::NONE,
+            ],
+            worn: loadout
+                .items
+                .iter()
+                .map(|&id| exa_formats::characters::ItemRef::new(id, 0))
+                .collect(),
+        };
+    }
+    member.outfit = outfit;
     career.company.roster.push(member);
     let stowed: Vec<(u32, Option<usize>)> = ask
         .kit
@@ -1641,6 +1686,19 @@ mod tests {
     fn the_yes_no_dialog_runs_its_hook() {
         let (mut windows, mut career) = opened();
         career.entries[0].count = 3;
+        career.entries[1].count = 1;
+        career.entries[1].team_id = 4;
+        // The open board lists the same entrants, the second event decided.
+        let mut board = career.board();
+        let fighter = exa_ui::match_board::Participant {
+            slot: 1,
+            value: 0,
+            weapon: 0,
+        };
+        board.entries[0].participants = vec![fighter];
+        board.entries[1].participants = vec![fighter];
+        board.entries[1].winner = 4;
+        windows.board = Some(board);
         windows.open_yes_no(crate::tournament::FORFEIT_TOURNEY, YesHook::ForfeitTourney);
         click(
             &mut windows,
@@ -1649,6 +1707,10 @@ mod tests {
             dialog::YES,
         );
         assert_eq!(career.entries[0].count, 0);
+        assert_eq!(career.entries[1].count, 1);
+        let board = windows.board.as_ref().unwrap();
+        assert!(board.entries[0].participants.is_empty());
+        assert_eq!(board.entries[1].participants.len(), 1);
         assert!(
             windows
                 .forms

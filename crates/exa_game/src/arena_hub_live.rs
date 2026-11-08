@@ -437,6 +437,9 @@ pub struct ArenaMatchLaunch {
     /// The week's tournament field: the rival company each team from 2 on
     /// wears.
     pub rivals: [i32; crate::career::RIVAL_FIELD],
+    /// A weapon event's hands for the company copies: the two weapon words
+    /// of the started event's first entrant.
+    pub event_hands: Option<[u64; 2]>,
     pub fighters: Vec<LaunchedFighter>,
 }
 
@@ -602,6 +605,24 @@ fn plan_match(
     } else {
         [0; 3]
     };
+    // A tournament event's start gives each earlier event that has no
+    // winner and no entrant a rival winner (2 to 7), stopping at the first
+    // entered event.
+    if tournament {
+        crate::tournament::settle_unentered(&mut career.entries, &mut career.roll);
+    }
+    // A weapon event's company copies hold the started event's (the first
+    // undecided one with entrants) first entrant's two weapon words.
+    let weapon_event = board.selected.flags & exa_ui::match_board::FLAG_WEAPON != 0;
+    let event_hands = if tournament && weapon_event {
+        career
+            .entries
+            .iter()
+            .find(|row| row.team_id == 0 && 0 < row.count as i32)
+            .map(|row| row.entries[0].weapon)
+    } else {
+        None
+    };
     Some(ArenaMatchLaunch {
         template,
         arena: start.arena,
@@ -615,6 +636,7 @@ fn plan_match(
         prize: board.selected.prize,
         weapon_variants,
         rivals,
+        event_hands,
         fighters,
     })
 }
@@ -1339,6 +1361,13 @@ fn hub_clicks(
                             } else if action == exa_ui::match_board::BoardAction::Close {
                                 windows.close_window();
                                 hub.busy = false;
+                            } else if action == exa_ui::match_board::BoardAction::Forfeit {
+                                // The tournament's Forfeit asks first; its
+                                // Yes forfeits every undecided event.
+                                windows.open_yes_no(
+                                    crate::tournament::FORFEIT_TOURNEY,
+                                    crate::hub_forms::YesHook::ForfeitTourney,
+                                );
                             }
                         }
                         HubWindowKind::Shop => {
@@ -2504,6 +2533,40 @@ mod tests {
         assert!(plan_launch_at(&mut career, &board, false, 0x1234_5678).is_some());
         assert_eq!(career.company.copper, 0);
         assert_eq!(career.company.spent, 3);
+    }
+
+    #[test]
+    fn a_weapon_event_start_settles_earlier_events_and_carries_the_hands() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.day = 0;
+        // Event 0 has no entrant, event 1 is the company's with its first
+        // entrant's two weapon words, event 2 has no entrant either.
+        career.entries[1].count = 1;
+        career.entries[1].entries[0].weapon = [0x0000_0001_0000_0042, 0x0000_0002_0000_0043];
+        let mut board = career.board();
+        board.tab = exa_ui::match_board::BoardTab::Tournament;
+        board.selected = exa_ui::match_board::STANDARD_MATCHES[0].record();
+        // Champion: a weapon event.
+        board.selected.kind = 17;
+        board.selected.flags = exa_ui::match_board::FLAG_WEAPON;
+        board.selected.team_size = 1;
+        board.rebuild_lineups();
+        let launch = plan_launch_at(&mut career, &board, false, 0x1000_0000).unwrap();
+        assert_eq!(
+            launch.event_hands,
+            Some([0x0000_0001_0000_0042, 0x0000_0002_0000_0043])
+        );
+        // The earlier unentered event takes a rival winner of 2 to 7; the
+        // pass stops at the entered one.
+        assert!((2..=7).contains(&career.entries[0].team_id));
+        assert_eq!(career.entries[1].team_id, 0);
+        assert_eq!(career.entries[2].team_id, 0);
+        // A standard match carries no event hands and settles nothing.
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        let board = career.board();
+        let launch = plan_launch_at(&mut career, &board, false, 0x1000_0000).unwrap();
+        assert_eq!(launch.event_hands, None);
+        assert_eq!(career.entries[0].team_id, 0);
     }
 
     #[test]
