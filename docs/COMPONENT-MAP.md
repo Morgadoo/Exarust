@@ -63,7 +63,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
 | TMotileDynamics | Physics, bodies & cloth | 121 | 94% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
-| XA_Arena | Game modes, arena & session | 71 | 94% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
+| XA_Arena | Game modes, arena & session | 71 | 95% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 98% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 99% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
 | TMotilePart | Characters, motion & animation | 53 | 82% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
