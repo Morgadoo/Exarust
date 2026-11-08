@@ -96,6 +96,7 @@ pub fn collect_followers(
     followers: FollowerQuery,
     mut world: Option<ResMut<crate::world_characters::WorldCharacters>>,
     level: Option<Res<exa_ai::brain::RoleDatabase>>,
+    mut local: Option<ResMut<crate::world_characters::LocalCharacters>>,
 ) {
     // The scene's characters in a fixed order, as the scene's list is.
     let mut scene: Vec<_> = followers.iter().collect();
@@ -133,20 +134,12 @@ pub fn collect_followers(
         };
         let (_, _, roles, transform, data, possessions, fighter, flags, condition, caster) =
             scene[at];
-        let mut record = data.map_or_else(CharacterRecord::reset, |d| d.record.clone());
-        if let Some(possessions) = possessions {
-            record = crate::save_live::record_with_possessions(record, possessions);
-        }
-        if let Some(fighter) = fighter {
-            let focus = caster.map_or(crate::save_live::record_focus(&record), |c| c.body.focus);
-            let health = crate::save_live::body_health(
-                fighter,
-                flags.copied().unwrap_or_default(),
-                condition.copied().unwrap_or_default(),
-                focus,
-            );
-            record = crate::save_live::record_with_health(record, health);
-        }
+        let reset = exa_character::record::CharacterData::of_record(CharacterRecord::reset());
+        let record = crate::save_live::scene_character_record(
+            data.unwrap_or(&reset),
+            possessions,
+            fighter.map(|f| (f, flags.copied(), condition.copied(), caster)),
+        );
         records.push(record);
         travelling_motiles.push(motiles[at]);
         kept.push((roles.clone(), transform.translation()));
@@ -161,10 +154,13 @@ pub fn collect_followers(
     let leaving = level.as_ref().map_or(0, |level| level.locale);
     if let Some(world) = world.as_mut() {
         for record in &mut records {
-            let local = record.id;
+            let old = record.id;
             let id = world.register(record, leaving);
+            // A level's own character leaves the level's store first.
+            let removed = old & exa_formats::character_db::WORLD_TAG == 0
+                && local.as_mut().is_some_and(|local| local.remove(old));
             info!(
-                "Migration: {} registered in the world character database: {local:#x} -> {id:#x} (level {leaving})",
+                "Migration: {} registered in the world character database: {old:#x} -> {id:#x} (level {leaving}; deleted from the level's: {removed})",
                 record.name
             );
         }

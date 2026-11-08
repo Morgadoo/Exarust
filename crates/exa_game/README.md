@@ -277,7 +277,16 @@ it leaves as its level), the re-attach stores the destination's id on the
 record, the story save writes the store's records beside the player
 (`save_live::story_player_world_with`), a story load imports the save's
 `#worldchrdb` as the store, and the host's level loads look world-tagged
-placements up in it.
+placements up in it. The level's own store is live too
+(`world_characters::LocalCharacters`, read from the section at each load):
+the door flush deletes a registered follower from it, and a story save
+first flushes every scene character's live possessions and health into its
+store (`level_save::LevelSaveScene::flush_characters`; the player's record
+over the world store's player slot) and then writes the section's
+characters from the live scene (`level_save::characters_after`: moved and
+dead characters where they stand, a departed follower left out, an arrived
+one added with its world id) with the live local store as its character
+database, so a load places a saved follower again.
 The save's writers have the pieces the original exports: the world
 databases (`slots::export_world_databases`: the character database
 flushed and saved, the object world tier and its string library, each
@@ -1159,7 +1168,9 @@ routine with the character as its actor and `ZoneID` (`exanima01`'s
 save writes the current level's section after the world databases
 (`level_save`: the section the level was read from, `exa_world::LevelSource`,
 with the live local tier and the live placed objects written over it; gone
-objects leave with what they held, drops are added) and a story load reads
+objects leave with what they held, drops are added; a story save also
+writes the live scene characters and the live local character database)
+and a story load reads
 the level from the save's own section (`exa_world::SavedLevelSection`). The
 arena's save runs its promotion pass first, with the id remap table on: the
 manager's record, the stash, the arsenal's boxes, each employee's record

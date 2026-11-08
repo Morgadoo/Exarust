@@ -870,7 +870,15 @@ pub fn export_characters(level: &ReadScene) -> Result<Vec<SceneNode>> {
         let name = level
             .characters
             .as_ref()
-            .and_then(|chars| chars.record(placement.id))
+            .and_then(|chars| {
+                // A world placement is named by the world record the scene
+                // was given, never by a level record of the same low id.
+                if placement.id & crate::characters::WORLD_DB != 0 {
+                    chars.records.iter().find(|r| r.id == placement.id)
+                } else {
+                    chars.record(placement.id)
+                }
+            })
             .and_then(|record| stored_name(&record.name))
             .unwrap_or([0; 16]);
         let pose = pose_tree(&placement.pose)?;

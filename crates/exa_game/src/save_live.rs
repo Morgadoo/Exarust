@@ -37,9 +37,11 @@
 //! live local tier and placed objects written over it) and a story load
 //! hands the save's section to the level load ([`StoryRestore::level_section`]).
 //! The arena's save runs its promotion pass first (the manager, the stash,
-//! the arsenal, the staff, the scene's entity ids). Not written: every
-//! character but the player (the running game keeps no live character
-//! database).
+//! the arsenal, the staff, the scene's entity ids). A story save first
+//! flushes every scene character into its store (the world character
+//! database or the level's) and the live player over the world store's
+//! player slot, and its level section carries the scene's characters
+//! ([`crate::level_save`]).
 //!
 //! Evidence: the save unit's new-slot, save, full load, arena reader and
 //! list regeneration routines (`docs/formats/SAVES.md`).
@@ -314,6 +316,7 @@ impl Plugin for SaveLivePlugin {
             .init_resource::<ArenaStores>()
             .init_resource::<SaveReport>()
             .init_resource::<crate::world_characters::WorldCharacters>()
+            .init_resource::<crate::world_characters::LocalCharacters>()
             .init_resource::<exa_assets::live_objects::LiveObjects>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_systems(
@@ -343,6 +346,11 @@ impl Plugin for SaveLivePlugin {
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             )
             .add_systems(Update, crate::follower_travel::restore_arrivals)
+            .add_systems(
+                Update,
+                crate::world_characters::track_local_characters
+                    .before(crate::follower_travel::restore_arrivals),
+            )
             .add_systems(
                 Update,
                 bench_the_manager.before(crate::arena_live::stand_first_round),
@@ -676,6 +684,41 @@ pub fn record_with_health(
     let mut data = exa_character::record::CharacterData::of_record(record);
     data.save_health(health);
     data.into_record()
+}
+
+/// What a fighting body's health is read from: its fighter, state flags,
+/// condition and caster.
+pub type FightingBody<'a> = (
+    &'a exa_combat::Fighter,
+    Option<exa_combat::StateFlags>,
+    Option<exa_combat::Condition>,
+    Option<&'a crate::thaum::cast::PowerCaster>,
+);
+
+/// A scene character's record as the save's flush stores it: the body's
+/// record with its live possessions written back and, for a body that
+/// fights, its health ([`body_health`], [`record_with_health`]); the
+/// door's follower flush stores the same.
+pub fn scene_character_record(
+    data: &exa_character::record::CharacterData,
+    possessions: Option<&exa_items::possession::Possessions>,
+    body: Option<FightingBody<'_>>,
+) -> CharacterRecord {
+    let mut record = data.record.clone();
+    if let Some(possessions) = possessions {
+        record = record_with_possessions(record, possessions);
+    }
+    if let Some((fighter, flags, condition, caster)) = body {
+        let focus = caster.map_or(record_focus(&record), |caster| caster.body.focus);
+        let health = body_health(
+            fighter,
+            flags.unwrap_or_default(),
+            condition.unwrap_or_default(),
+            focus,
+        );
+        record = record_with_health(record, health);
+    }
+    record
 }
 
 /// A spawned body's health loaded from its record, as the player spawn's
@@ -1166,6 +1209,28 @@ pub fn apply_loaded_discovery(
     }
 }
 
+/// The story save's character flush, ahead of its sections: every scene
+/// character's record takes its live possessions and health in its store
+/// ([`crate::level_save::LevelSaveScene::flush_characters`]) and the live
+/// player's record becomes the world store's player slot
+/// ([`crate::world_characters::WorldCharacters::refresh_player`]). Returns
+/// the world store's other records (the save's `#worldchrdb` beside the
+/// player) and where the scene's characters stand.
+fn flush_story_characters(
+    mut world: Option<&mut crate::world_characters::WorldCharacters>,
+    player: Option<&StoryPlayer>,
+    scene: &mut crate::level_save::LevelSaveScene,
+) -> (Vec<CharacterRecord>, Vec<crate::level_save::LiveCharacter>) {
+    let characters = scene.flush_characters(world.as_deref_mut());
+    let Some(world) = world else {
+        return (Vec::new(), characters);
+    };
+    if let Some(player) = player {
+        world.refresh_player(&player.record);
+    }
+    (world.others(), characters)
+}
+
 /// The live session with the story player's record and placement: the
 /// sections it writes besides the player data.
 fn story_save_world(
@@ -1270,6 +1335,7 @@ fn save_to_new_slot(
         .copied()
         .unwrap_or_default()
         .stamp(&mut session);
+    let mut characters: Option<Vec<crate::level_save::LiveCharacter>> = None;
     let (name, export) = match session.mode {
         Mode::Arena => {
             // The manager's record goes into the world character database
@@ -1284,14 +1350,21 @@ fn save_to_new_slot(
             stamp_story(&mut session, flow.as_deref());
             stamp_discovery(&mut session, experience.as_deref());
             let player = live_story_player(&players, created.as_deref());
-            let others = world.as_mut().map(|w| w.others()).unwrap_or_default();
+            let (others, flushed) =
+                flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
+            characters = Some(flushed);
             let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
             (player.map(|p| p.record.name), export)
         }
     };
     log_world_export(&export);
     // The current level under its locale name, after the world databases.
-    let section = scene.section(live.db(), session.mode == Mode::Story);
+    let named = world.as_deref_mut().map(|w| w.others()).unwrap_or_default();
+    let section = scene.section(
+        live.db(),
+        session.mode == Mode::Story,
+        characters.as_deref().map(|live| (live, named.as_slice())),
+    );
     let world = export.save_world(
         section
             .as_ref()
@@ -1341,7 +1414,7 @@ fn run_save_steps(
         ResMut<exa_assets::live_objects::LiveObjects>,
         Option<ResMut<crate::world_characters::WorldCharacters>>,
     ),
-    scene: crate::level_save::LevelSaveScene,
+    mut scene: crate::level_save::LevelSaveScene,
 ) {
     let steps: Vec<SaveStep> = steps.read().copied().collect();
     if steps.is_empty() {
@@ -1400,10 +1473,11 @@ fn run_save_steps(
                 stamp_discovery(&mut session, experience.as_deref());
                 sync_players(&mut live, &mut players);
                 let player = live_story_player(&players, created.as_deref());
-                let others = world.as_mut().map(|w| w.others()).unwrap_or_default();
+                let (others, characters) =
+                    flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
                 let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
                 log_world_export(&export);
-                let section = scene.section(live.db(), true);
+                let section = scene.section(live.db(), true, Some((&characters, &others)));
                 let level_section = section
                     .as_ref()
                     .map(|(name, bytes)| (name.as_str(), bytes.as_slice()));
@@ -1447,12 +1521,13 @@ fn run_save_steps(
                     sync_players(&mut live, &mut players);
                 }
                 let player = live_story_player(&players, created.as_deref());
-                let others = world.as_mut().map(|w| w.others()).unwrap_or_default();
+                let (others, characters) =
+                    flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
                 let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
                 // The disable flag skips the save but not the copy: the
                 // old save becomes the checkpoint, as in the original.
                 let section = (!disabled)
-                    .then(|| scene.section(live.db(), true))
+                    .then(|| scene.section(live.db(), true, Some((&characters, &others))))
                     .flatten();
                 let world = export.save_world(
                     section

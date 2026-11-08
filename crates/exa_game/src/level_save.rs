@@ -24,9 +24,22 @@
 //! objects inside it, and the later objects' container numbers close up; one
 //! the load never spawned (a record without a model, another slot's) stays
 //! as the section had it; an object dropped into the world since is added
-//! at the end. [Exarust's: the props, the doors' and levers' positions, the
-//! scene characters and the settings chunk's live words are the loaded
-//! section's.]
+//! at the end. A story save also writes the scene's characters: the save
+//! first flushes every scene character's live possessions and health into
+//! its record in its store ([`LevelSaveScene::flush_characters`]), then the
+//! section's placements follow the live scene ([`characters_after`]) and its
+//! character database is the live local store
+//! ([`crate::world_characters::LocalCharacters`]). [Exarust's: the props,
+//! the doors' and levers' positions and the settings chunk's live words are
+//! the loaded section's; a character's pose, motion and AI home are the
+//! stored ones.]
+//!
+//! The original's character section (`0xCAC00001`): each character's health
+//! is stored into its record, the local character database is flushed and
+//! written (`0xCECDDB00`) when it holds a record, then each character's
+//! placement (`0xCAC0CA00`: the record's id, the body's x, floor and z, the
+//! heading and the condition word, then the pose for a dead body, and the
+//! AI home and motion in save mode).
 //!
 //! Evidence: the save unit's save routine (the section order, the
 //! exporter's call and the locale name) and the exporter's scene walk and
@@ -34,6 +47,7 @@
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
+use exa_formats::characters::{ID_MASK, Placement, WORLD_DB};
 use exa_formats::rfc::{PlacedObject, Scene};
 use exa_formats::rfc_level::LevelRaw;
 
@@ -186,10 +200,152 @@ pub fn placed_after(
     (out, counts)
 }
 
+/// A character as it stands in the running scene, for the save's
+/// character section.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveCharacter {
+    /// Its record's id (the world tag for a world record).
+    pub id: u32,
+    /// Its feet, metres.
+    pub position: [f32; 3],
+    /// Its heading (Exarust's yaw).
+    pub yaw: f32,
+    /// Its body is dead.
+    pub dead: bool,
+}
+
+/// What the character pass did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CharacterCounts {
+    /// Placements whose character still stands in the scene.
+    pub kept: usize,
+    /// Of those, the ones written with the live place (or death).
+    pub moved: usize,
+    /// Placements whose record left the level (a follower that took a
+    /// door), left out.
+    pub removed: usize,
+    /// Placements with no live character, kept as the section had them.
+    pub unspawned: usize,
+    /// Characters with no placement in the section (an arrived follower),
+    /// added at the end.
+    pub added: usize,
+}
+
+/// A live character closer than this (metres, any axis) to its stored
+/// placement keeps the stored one, so a character that only idled is
+/// written back unchanged [Exarust's: the original writes every
+/// character's live body position and heading; Exarust's standing bodies
+/// sway by a few centimetres].
+const CHARACTER_UNMOVED: f32 = 0.1;
+
+/// Whether two ids name the same record: the same store (the world bit)
+/// and the same low 28 bits.
+fn same_record(a: u32, b: u32) -> bool {
+    a & WORLD_DB == b & WORLD_DB && a & ID_MASK == b & ID_MASK
+}
+
+/// The section's character placements after the live scene, as the
+/// exporter's walk writes the scene's characters: each stored placement
+/// whose record's character stands in the scene (the nearest of that
+/// record's) takes its live place, heading and death when it moved; one
+/// with no live character stays as stored unless `gone` says its record
+/// left the level's store (a follower flushed at a door: its node left the
+/// scene); a live character with no placement is added at the end with its
+/// live place and condition (living 0, dead `0xA00`) and no saved pose.
+/// A character who died since the load keeps the stored pose, if any, and
+/// one stored dead keeps its whole placement [Exarust's: the original
+/// writes the live pose tree of a dead body].
+pub fn characters_after(
+    stored: &[Placement],
+    live: &[LiveCharacter],
+    gone: impl Fn(u32) -> bool,
+) -> (Vec<Placement>, CharacterCounts) {
+    let mut counts = CharacterCounts::default();
+    let mut used = vec![false; live.len()];
+    let mut out = Vec::with_capacity(stored.len() + live.len());
+    for placement in stored {
+        let here = Vec3::from_array(placement.position);
+        let nearest = live
+            .iter()
+            .enumerate()
+            .filter(|&(i, c)| !used[i] && same_record(c.id, placement.id))
+            .min_by(|(_, a), (_, b)| {
+                let da = Vec3::from_array(a.position).distance_squared(here);
+                let db = Vec3::from_array(b.position).distance_squared(here);
+                da.total_cmp(&db)
+            })
+            .map(|(i, _)| i);
+        let Some(i) = nearest else {
+            if placement.id & WORLD_DB == 0 && gone(placement.id) {
+                counts.removed += 1;
+            } else {
+                counts.unspawned += 1;
+                out.push(placement.clone());
+            }
+            continue;
+        };
+        used[i] = true;
+        counts.kept += 1;
+        let character = live[i];
+        let mut placement = placement.clone();
+        if placement.is_dead() {
+            // A level's dead lie on their stored pose and do not walk.
+            out.push(placement);
+            continue;
+        }
+        let travel = (Vec3::from_array(character.position) - here)
+            .abs()
+            .max_element();
+        let died = character.dead && !placement.is_dead();
+        if travel > CHARACTER_UNMOVED || died {
+            counts.moved += 1;
+            placement.position = character.position;
+            placement.yaw = character.yaw;
+            if died {
+                placement.condition = exa_formats::characters::DEAD;
+            }
+        }
+        out.push(placement);
+    }
+    for (character, _) in live.iter().zip(&used).filter(|(_, used)| !**used) {
+        counts.added += 1;
+        out.push(Placement {
+            id: character.id,
+            position: character.position,
+            yaw: character.yaw,
+            condition: if character.dead {
+                exa_formats::characters::DEAD
+            } else {
+                0
+            },
+            pose: exa_formats::characters::SavedPose::None,
+            motion: None,
+            ai_home: None,
+        });
+    }
+    (out, counts)
+}
+
+/// The character part of a story save's level section: the live scene's
+/// characters, the level store's records that left it, the world records
+/// the placements may name and the live local store's body.
+#[derive(Debug, Clone)]
+pub struct SectionCharacters<'a> {
+    pub live: &'a [LiveCharacter],
+    /// Low ids of the records the live level store holds; a stored
+    /// placement whose record it lacks left the level.
+    pub held: &'a [u32],
+    pub world: &'a [exa_formats::characters::CharacterRecord],
+    /// The local store's body (`None`: the store is empty and the section
+    /// writes none).
+    pub database: Option<Vec<u8>>,
+}
+
 /// The level section a save writes: `source` (the section the level was
 /// read from) with the live placed objects and the live local tier
 /// (`records`, the tier's writer, and `strings`, its library's) written
 /// over it, exported with the save switches ([`export_level_scene`]).
+#[allow(clippy::too_many_arguments)]
 pub fn saved_section(
     source: &[u8],
     spawned: &[u32],
@@ -198,9 +354,20 @@ pub fn saved_section(
     strings: Vec<u8>,
     story: bool,
     settings: SettingsState,
+    characters: Option<SectionCharacters<'_>>,
 ) -> exa_formats::Result<(Vec<u8>, PlacementCounts)> {
     let mut scene = Scene::parse(source)?;
     let mut raw = LevelRaw::scan(source)?;
+    if let Some(characters) = characters {
+        let chars = scene.characters.get_or_insert_with(Default::default);
+        let (placements, _) = characters_after(&chars.placements, characters.live, |id| {
+            !characters.held.contains(&(id & ID_MASK))
+        });
+        chars.placements = placements;
+        // The world records the placements name, for their node names.
+        chars.records.extend(characters.world.iter().cloned());
+        raw.character_database = characters.database;
+    }
     let (placed, counts) = placed_after(
         &scene.placed_objects,
         scene.nodes.len(),
@@ -241,7 +408,21 @@ pub struct LevelSaveScene<'w, 's> {
         ),
     >,
     parents: Query<'w, 's, &'static ChildOf>,
+    characters: Query<'w, 's, SceneCharacter, Without<crate::player::PlayerBody>>,
+    local: Option<ResMut<'w, crate::world_characters::LocalCharacters>>,
 }
+
+/// A scene character as the save's flush reads it.
+type SceneCharacter = (
+    &'static GlobalTransform,
+    &'static exa_character::record::CharacterData,
+    Option<&'static exa_items::possession::Possessions>,
+    Option<&'static exa_combat::Fighter>,
+    Option<&'static exa_combat::StateFlags>,
+    Option<&'static exa_combat::Condition>,
+    Option<&'static crate::thaum::cast::PowerCaster>,
+    Option<&'static exa_physics::body::locomotion::Locomotor>,
+);
 
 impl LevelSaveScene<'_, '_> {
     /// The arena save's entity rewrite: every scene object whose id is a
@@ -308,17 +489,113 @@ impl LevelSaveScene<'_, '_> {
         out
     }
 
+    /// The save's flush of the scene's characters (the player aside, whose
+    /// record the save writes itself): each one's live possessions and
+    /// health go into its record ([`crate::save_live::scene_character_record`]),
+    /// which becomes the live copy in its store: the world store for a
+    /// world record (a follower that took a door), the level's for the
+    /// rest. Returns where each stands, for the level section.
+    pub fn flush_characters(
+        &mut self,
+        mut world: Option<&mut crate::world_characters::WorldCharacters>,
+    ) -> Vec<LiveCharacter> {
+        let mut out = Vec::new();
+        let (mut to_world, mut to_local) = (0, 0);
+        for (transform, data, possessions, fighter, flags, condition, caster, locomotor) in
+            &self.characters
+        {
+            let record = crate::save_live::scene_character_record(
+                data,
+                possessions,
+                fighter.map(|f| (f, flags.copied(), condition.copied(), caster)),
+            );
+            if record.id & WORLD_DB != 0 {
+                if let Some(world) = world.as_deref_mut() {
+                    world.store(&record);
+                    to_world += 1;
+                }
+            } else if let Some(local) = self.local.as_deref_mut()
+                && local.store(&record)
+            {
+                to_local += 1;
+            }
+            // The body's yaw is its locomotion's; the node keeps its spawn
+            // turn.
+            let yaw = locomotor.map_or_else(
+                || transform.rotation().to_euler(EulerRot::YXZ).0,
+                |locomotor| locomotor.yaw,
+            );
+            out.push(LiveCharacter {
+                id: record.id,
+                position: transform.translation().to_array(),
+                yaw,
+                dead: condition.is_some_and(|c| c.is_dead()),
+            });
+        }
+        // The scene's order is the entities'; keep it stable.
+        info!(
+            "save: {} scene characters flushed ({to_world} into the world character database, {to_local} into the level's)",
+            out.len()
+        );
+        out
+    }
+
     /// The section the save writes for the running level, named by its
     /// locale; `None` without a loaded level or when it does not export.
+    /// A story save passes the scene's characters (`characters`, from
+    /// [`Self::flush_characters`]) and the world records their placements
+    /// may name (`world`): the section's placements and its character
+    /// database are then the live ones ([`characters_after`],
+    /// [`crate::world_characters::LocalCharacters::section_body`]).
     pub fn section(
-        &self,
+        &mut self,
         db: &exa_formats::objdb::ObjectDb,
         story: bool,
+        characters: Option<(
+            &[LiveCharacter],
+            &[exa_formats::characters::CharacterRecord],
+        )>,
     ) -> Option<(String, Vec<u8>)> {
-        let source = self.source.as_deref()?;
         let live = self.live_placements();
+        let characters = characters.filter(|_| story).and_then(|(live, world)| {
+            let local = self.local.as_deref_mut()?;
+            let held: Vec<u32> = local.db.ids().collect();
+            Some((live, world, held, local.section_body()))
+        });
+        let source = self.source.as_deref()?;
         let records = db.write(exa_formats::objdb::Tier::Local);
         let strings = db.library(exa_formats::objdb::Tier::Local).write();
+        if let Some((live, _, held, _)) = &characters {
+            let stored = exa_formats::rfc::Scene::parse(&source.bytes)
+                .ok()
+                .and_then(|scene| scene.characters)
+                .map(|chars| chars.placements)
+                .unwrap_or_default();
+            let (after, counts) =
+                characters_after(&stored, live, |id| !held.contains(&(id & ID_MASK)));
+            // The first moved characters' stored and written places, for a
+            // check of the live positions against the placements.
+            for (before, now) in stored
+                .iter()
+                .zip(&after)
+                .filter(|(a, b)| a.id == b.id && a.position != b.position)
+                .take(4)
+            {
+                info!(
+                    "save: character {:#x} written at {:?} (stored {:?}, yaw {:.3} -> {:.3})",
+                    now.id, now.position, before.position, before.yaw, now.yaw
+                );
+            }
+            info!(
+                "save: level section {} characters: {} kept ({} moved), {} gone, {} never spawned, {} added",
+                source.locale(),
+                counts.kept,
+                counts.moved,
+                counts.removed,
+                counts.unspawned,
+                counts.added
+            );
+        }
         match saved_section(
             &source.bytes,
             &source.spawned,
@@ -327,6 +604,14 @@ impl LevelSaveScene<'_, '_> {
             strings,
             story,
             SettingsState::reset(),
+            characters
+                .as_ref()
+                .map(|(live, world, held, database)| SectionCharacters {
+                    live,
+                    held,
+                    world,
+                    database: database.clone(),
+                }),
         ) {
             Ok((bytes, counts)) => {
                 info!(
@@ -490,6 +775,7 @@ mod tests {
             strings,
             true,
             SettingsState::reset(),
+            None,
         )
         .unwrap();
         assert_eq!(counts.added, 1);
@@ -510,6 +796,143 @@ mod tests {
                 .any(|object| object.id == moved_before.id
                     && (object.transform[3][1] - moved_before.transform[3][1] - 0.5).abs() < 1e-3)
         );
+    }
+
+    fn stored(id: u32, x: f32) -> Placement {
+        Placement {
+            id,
+            position: [x, 0.0, 0.0],
+            yaw: 0.5,
+            condition: 0,
+            pose: exa_formats::characters::SavedPose::None,
+            motion: None,
+            ai_home: None,
+        }
+    }
+
+    fn standing(id: u32, x: f32, dead: bool) -> LiveCharacter {
+        LiveCharacter {
+            id,
+            position: [x, 0.0, 0.0],
+            yaw: 1.0,
+            dead,
+        }
+    }
+
+    /// An idling character keeps its placement, a moved one takes its live
+    /// place, one who left the level's store leaves, one never spawned
+    /// stays, a death is written and an arrival with a world id is added.
+    #[test]
+    fn the_live_scene_rewrites_the_character_placements() {
+        let placements = [
+            stored(4, 1.0), // idles
+            stored(5, 2.0), // walks 3 m
+            stored(6, 3.0), // left with the player
+            stored(7, 4.0), // never built
+            stored(8, 5.0), // died where it stood
+            stored(2, 6.0), // a level record 2: not the world follower 2
+        ];
+        let live = [
+            standing(4, 1.05, false),
+            standing(5, 5.0, false),
+            standing(8, 5.0, true),
+            standing(2, 6.0, false),
+            standing(WORLD_DB | 2, 9.0, false),
+        ];
+        let held = [4, 5, 7, 8, 2];
+        let (out, counts) = characters_after(&placements, &live, |id| !held.contains(&id));
+        // A stored corpse keeps its placement whatever its node says.
+        let mut corpse = stored(9, 1.0);
+        corpse.condition = exa_formats::characters::DEAD;
+        let (kept, _) = characters_after(
+            std::slice::from_ref(&corpse),
+            &[standing(9, 4.0, true)],
+            |_| false,
+        );
+        assert_eq!(kept, [corpse]);
+        assert_eq!(
+            counts,
+            CharacterCounts {
+                kept: 4,
+                moved: 2,
+                removed: 1,
+                unspawned: 1,
+                added: 1
+            }
+        );
+        let ids: Vec<u32> = out.iter().map(|p| p.id).collect();
+        assert_eq!(ids, [4, 5, 7, 8, 2, WORLD_DB | 2]);
+        assert_eq!((out[0].position[0], out[0].yaw), (1.0, 0.5));
+        assert_eq!((out[1].position[0], out[1].yaw), (5.0, 1.0));
+        assert!(out[3].is_dead());
+        assert_eq!(out[4].position[0], 6.0);
+        assert_eq!(out[5].position, [9.0, 0.0, 0.0]);
+        assert_eq!(out[5].condition, 0);
+    }
+
+    /// Derrin carried into exanima02 under world id 2 is written into the
+    /// saved section's placements beside the level's own characters, and
+    /// the section placed again finds him in the world store at level 3
+    /// (skipped without the game).
+    #[test]
+    fn a_carried_follower_is_written_into_the_saved_section() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let source = pack.get("exanima02.rfc").unwrap();
+        let scene = Scene::parse(source).unwrap();
+        let chars = scene.characters.clone().unwrap();
+        let mut local = crate::world_characters::LocalCharacters::of_section(source);
+        assert!(!local.db.is_empty());
+        let mut derrin = exa_formats::characters::CharacterRecord::reset();
+        derrin.id = WORLD_DB | 2;
+        derrin.name = "Derrin".into();
+        derrin.locale = 3;
+        let live = [LiveCharacter {
+            id: WORLD_DB | 2,
+            position: [1.0, 0.5, 2.0],
+            yaw: 0.25,
+            dead: false,
+        }];
+        let held: Vec<u32> = local.db.ids().collect();
+        let records = scene
+            .local_database
+            .clone()
+            .map(|db| db.write())
+            .unwrap_or_default();
+        let strings = scene.local_strings.clone().unwrap_or_default().write();
+        let world = [derrin.clone()];
+        let (saved, _) = saved_section(
+            source,
+            &[],
+            &[],
+            records,
+            strings,
+            true,
+            SettingsState::reset(),
+            Some(SectionCharacters {
+                live: &live,
+                held: &held,
+                world: &world,
+                database: local.section_body(),
+            }),
+        )
+        .unwrap();
+        let back = Scene::parse(&saved).unwrap();
+        let back_chars = back.characters.as_ref().unwrap();
+        // Nobody of the level's stood in the scene, so all are kept.
+        assert_eq!(back_chars.placements.len(), chars.placements.len() + 1);
+        assert_eq!(back_chars.records.len(), chars.records.len());
+        let last = back_chars.placements.last().unwrap();
+        assert_eq!(last.id, WORLD_DB | 2);
+        assert!((last.position[2] - 2.0).abs() < 1e-3);
+        let placed = exa_world::placed_characters(&back, &[], Some(3), &world);
+        assert!(placed.iter().any(|c| c.name == "Derrin"));
+        // Elsewhere (level 2) the locale gate keeps him out.
+        let elsewhere = exa_world::placed_characters(&back, &[], Some(2), &world);
+        assert!(!elsewhere.iter().any(|c| c.name == "Derrin"));
     }
 
     #[test]
