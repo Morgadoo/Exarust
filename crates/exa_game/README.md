@@ -483,8 +483,12 @@ the node's frame, `effectbarrier_f`/`effectbubble_f` through
 hum at the frame's levels, the contacts' `thmfrc_bi` and the Bubble's
 break `thmfrc_brf`); a Barrier cast out of combat mode ends at once (its
 hook answers the controller's out-of-combat ask). A kinesis's aim is taken
-only when the line from the caster's head to it crosses no active room's
-occluder or lid and no level geometry (`thaum::kinesis_live::steer`). A kinesis's shell hums
+only when the line test from the caster's head to it is clear: no active
+room's occluder or lid, no level geometry and no unlocked door, props,
+characters and locked doors passed over (`thaum::kinesis_live::line_clear`,
+`line_skips`); while its pick waits the hand's reach is its sight of the
+cursor's point (`KinesisSight`), and every steering tick stamps the held
+body with its caster for another 2 s. A kinesis's shell hums
 (`thaum::shell_hum`: the looping `thmfrc_knsdr` from `r·0.8` of its length
 in, at the shell's levels and its node's box centre, freed with the shell),
 every held shell carries its `gi_cuboid` box light and every strikes aura

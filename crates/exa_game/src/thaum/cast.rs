@@ -476,6 +476,7 @@ impl Plugin for CastPlugin {
             .add_message::<exa_combat::StrikeHooked>()
             .init_resource::<super::kinesis_live::KinesisPickHook>()
             .init_resource::<super::kinesis_live::KinesisCursor>()
+            .init_resource::<super::kinesis_live::KinesisSight>()
             .init_resource::<super::kinesis_live::KinesisKeys>()
             .init_resource::<super::throw_live::ThrowPick>()
             .init_resource::<EffectDraws>()
@@ -516,6 +517,12 @@ impl Plugin for CastPlugin {
                 )
                     .chain()
                     .before(run_bar_commands),
+            )
+            .add_systems(
+                Update,
+                super::kinesis_live::see_kinesis_reach
+                    .after(super::kinesis_live::read_kinesis_input)
+                    .before(crate::hand::HandSystems),
             )
             // The duellists' power system answers their combat state and
             // casts what it chose, in the brains' tick, every body tick.

@@ -106,7 +106,7 @@ use crate::object_click::ObjectClick;
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
 use crate::player_controls::{self, CharacterInteraction, ClickOutcome, ClickTarget};
-use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
+use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked, KinesisSight};
 use exa_ui::hud::HudShowUntil;
 use exa_world::markers::{PlacedTemplate, PlacementMarkerNode};
 
@@ -769,19 +769,22 @@ pub fn release_handler(word: u32) -> ReleaseHandler {
 }
 
 /// Whether a press finds its point out of reach. While the player's
-/// kinesis waits for its pick the original asks the kinesis's pick callback
-/// instead of measuring: the point is in reach exactly when the kinesis can
-/// take it, wherever it is. Otherwise the hand's own measure (`measured`)
-/// answers. [inf: the callback tests the cursor ray against the scene's
-/// kinesis nodes; Exarust takes a prop the hand can move.]
+/// kinesis waits for its pick the original asks the kinesis's reach
+/// callback instead of measuring: the point is in reach, wherever it is,
+/// when the kinesis sees it (`seen`, `crate::thaum::kinesis_live::KinesisSight`:
+/// the cursor's point with no occluder before it and a clear line from the
+/// caster's head). Otherwise the hand's own measure (`measured`) answers.
+/// [inf: the original's pick then takes the node the cursor met; Exarust
+/// takes a prop the hand can move.]
 pub fn press_out_of_reach(
     measured: bool,
     waiting: bool,
+    seen: bool,
     hit: Option<Hit>,
     named: Option<Pick>,
 ) -> bool {
     if waiting {
-        !(matches!(hit, Some(Hit::Prop { .. })) && named.is_some_and(Pick::movable))
+        !(seen && matches!(hit, Some(Hit::Prop { .. })) && named.is_some_and(Pick::movable))
     } else {
         measured
     }
@@ -1553,7 +1556,7 @@ fn press_hand(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
-    kinesis: Option<Res<KinesisPickHook>>,
+    (kinesis, sight): (Option<Res<KinesisPickHook>>, Option<Res<KinesisSight>>),
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
     (
         over_gui,
@@ -1660,6 +1663,7 @@ fn press_hand(
         out_of_reach: press_out_of_reach(
             hand.out_of_reach,
             kinesis.is_some(),
+            sight.is_some_and(|s| s.0),
             picked.map(|p| p.hit),
             named,
         ),
@@ -2980,8 +2984,8 @@ mod tests {
         assert!(measures_reach(true, false, true, true));
     }
 
-    /// While the kinesis waits, its pick alone answers the reach: a movable
-    /// prop is in reach wherever it is, anything else out of it.
+    /// While the kinesis waits, its sight answers the reach: a movable prop
+    /// it sees is in reach wherever it is, anything else out of it.
     #[test]
     fn the_waiting_kinesis_answers_the_reach() {
         let prop = Hit::Prop {
@@ -2997,6 +3001,7 @@ mod tests {
         assert!(!press_out_of_reach(
             true,
             true,
+            true,
             Some(prop),
             Some(Pick::Loose)
         ));
@@ -3004,19 +3009,30 @@ mod tests {
         assert!(press_out_of_reach(
             false,
             true,
+            true,
             Some(corpse),
             Some(Pick::Corpse)
         ));
-        assert!(press_out_of_reach(false, true, Some(prop), None));
-        assert!(press_out_of_reach(false, true, None, None));
-        // Not waiting: the measure answers.
+        assert!(press_out_of_reach(false, true, true, Some(prop), None));
+        assert!(press_out_of_reach(false, true, true, None, None));
+        // Waiting: a movable prop the kinesis cannot see is out of reach.
         assert!(press_out_of_reach(
+            false,
             true,
             false,
             Some(prop),
             Some(Pick::Loose)
         ));
+        // Not waiting: the measure answers.
+        assert!(press_out_of_reach(
+            true,
+            false,
+            false,
+            Some(prop),
+            Some(Pick::Loose)
+        ));
         assert!(!press_out_of_reach(
+            false,
             false,
             false,
             Some(corpse),

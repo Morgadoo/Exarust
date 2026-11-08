@@ -129,12 +129,18 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   loses its aura, one taken gains one while fewer than four carry one, the
   running power steps its auras' ripples, and its end closes them all; Kinesis
   waits on the hand for its pick while it runs (a press that would lift a
-  prop hands it the prop, and the pick alone answers the reach: a point
-  it can take is in reach wherever it is, any other out of it),
+  prop hands it the prop, and the kinesis alone answers the reach: a
+  movable prop is in reach wherever it is when the cursor's point has no
+  active room's occluder before it on the cursor's ray and the line test
+  from the caster's head to it, raised 5 cm and stopping 5 cm short, is
+  clear; anything else is out of it),
   holds a pick at a third of its extents' sum and aims at its centre.
   Each tick, when the cursor's ray (passing over the held body) hits
   within 40 m, the aim is that hit raised `100 − depth` (at least 10) back
-  along the ray and, when the line from the caster's head to it is clear,
+  along the ray and, when the line test from the caster's head to it is
+  clear (an active room's occluder, then its lid, then the level's meshes
+  or a door that is not locked block it; props, characters and locked
+  doors let it through),
   settled by `h/(|h| + 1)·200` of its height over the caster (`h` that
   height times 0.005); the held part's origin is pushed at its reach (half
   its count of linked child bodies plus one; Exarust counts the held part's
@@ -143,7 +149,8 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   number) less a fifth of its own motion, each particle by its origin
   weight, and the body wakes. It turns by `reach²` times the double 0.001
   a tick by the stick or the key pairs (each pair if/else), about the
-  camera's right axis and the vertical, and stamps its user for 2 s
+  camera's right axis and the vertical, and stamps its user for another
+  2 s every tick, whether the cursor hit or not
   (`exa_game::thaum::kinesis_live`). The pick also puts the body in the
   held environment (no gravity; the per-second retentions 0.125 above
   40 cm/s, 0.0125 above 20 and 0.025 at rest, in place of the body's own:
