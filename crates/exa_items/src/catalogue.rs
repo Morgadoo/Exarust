@@ -145,8 +145,11 @@ pub struct CardFacts {
     /// in bits 0–6 with `0x80` when the socket exists, and the charge in the
     /// high byte.
     pub socket_words: [u16; 4],
-    /// The weapon card's material row gate.
-    pub material: bool,
+    /// The weapon's flip byte: the card shows the Flip weapon button.
+    pub flip: bool,
+    /// The weapon's two striking sides (slash, crush and pierce each), the
+    /// second six bytes after the first: what the card's flip shows.
+    pub sides: [[u8; 3]; 2],
     /// The rank word's low byte: the weapon's `+0x42` or the body's
     /// `+0x1ab`.
     pub skill: u8,
@@ -603,7 +606,11 @@ fn card_facts<'a>(
         }
     }
     if let Some(weapon) = weapon_section {
-        facts.material = byte(weapon, 0x3A) != 0;
+        facts.flip = byte(weapon, 0x3A) != 0;
+        facts.sides = [
+            [byte(weapon, 0x37), byte(weapon, 0x38), byte(weapon, 0x39)],
+            [byte(weapon, 0x3D), byte(weapon, 0x3E), byte(weapon, 0x3F)],
+        ];
         facts.weapon = Some(WeaponStats {
             flags: word(weapon, 0),
             weight: byte(weapon, 0x30),
@@ -997,7 +1004,9 @@ mod tests {
         weapon[0x37] = 80; // slash
         weapon[0x38] = 20; // crush
         weapon[0x39] = 30; // pierce
-        weapon[0x3a] = 1; // material row
+        weapon[0x3a] = 1; // flip button
+        weapon[0x3d] = 5; // the second side's slash
+        weapon[0x3f] = 90; // and pierce
         weapon[0x42] = 0x42; // rank
         weapon[0x48] = 0x80; // sockets
         weapon[0x49] = 2; // the first socket's charge (empty, kind 0)
@@ -1031,7 +1040,8 @@ mod tests {
         // The four socket words: kind in the low seven bits, 0x80 when the
         // socket exists, the charge in the high byte.
         assert_eq!(facts.socket_words, [0x0280, 0xC884, 0x0791, 0]);
-        assert!(facts.material);
+        assert!(facts.flip);
+        assert_eq!(facts.sides, [[80, 20, 30], [5, 0, 90]]);
         let w = facts.weapon.unwrap();
         assert_eq!((w.flags, w.weight, w.balance), (0x10, 40, 60));
         assert_eq!((w.grip, w.thrust), (130, 70));
@@ -1251,5 +1261,38 @@ mod tests {
         assert!(!socketed.is_empty());
         // The row's flag is the first socket's existence bit.
         assert!(socketed.iter().all(|(_, words)| words[0] & 0x80 != 0));
+    }
+
+    #[test]
+    fn the_installed_weapons_with_a_flip_have_two_sides() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(resource) = game.pack(exa_assets::PackKind::Resource) else {
+            return;
+        };
+        let Some(db) = resource
+            .get("objdb.rdb")
+            .and_then(|bytes| Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let cat = ItemCatalogue::of_database(&db);
+        let mut flips: Vec<(u32, String, [[u8; 3]; 2])> = cat
+            .cards
+            .iter()
+            .filter(|(_, facts)| facts.flip && facts.weapon.is_some())
+            .map(|(id, facts)| (*id, facts.name.clone(), facts.sides))
+            .collect();
+        flips.sort();
+        for (id, name, sides) in &flips {
+            eprintln!("flip {id:#x} {name}: {sides:?}");
+        }
+        assert!(!flips.is_empty());
+        // A flip turns the weapon to a second side that strikes otherwise.
+        assert!(flips.iter().any(|(_, _, sides)| sides[0] != sides[1]));
     }
 }

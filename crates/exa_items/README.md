@@ -73,6 +73,12 @@ slider, Flip weapon, Sockets, Rank, Points, Price; `card_records`,
 takes the opener's height and place, and fades on the popup's squared
 curve; leaving the card starts the fade. The rows' labels are the
 templates' (a weapon's Weight, Impact, Balance; apparel's Coverage).
+A weapon with the flip byte (`catalogue::CardFacts::{flip, sides}`) gets
+the Flip weapon image button, painted with the grip sheet's first cell at
+the grip manager's eight units; clicking it toggles it and rewrites the
+striking rows from the weapon's other side (`card::flip_rows`: positional
+from the Slash row, the rows a side lacks hidden), and the card refresh
+reads the side shown.
 A kit's wear write reaches a card's sentence through the catalogue's record refresh. After each repair write the live record is brought up to its template (`refresh::repair_copy`: the template's price word, then the apparel condition, or the weapon bytes, the factory stat pass and the weapon condition), and an open card of the item is refreshed in place as the original's card refresh does (`exa_game::item_card::refresh_card`: the sentence rule `desc_phrase::SentenceSource::refreshed`, apparel first and no factory test, `describe_refresh` with the crafted-name register's great table, the text set without the condition blocks and pronoun markers, and the rows and value through `card::apply_refresh`). The apparel condition and the condition price are `exa_formats::item_condition`, the one routine the template migration also runs; the weapon condition is `exa_formats::weapon_stats::condition`.
 
 The catalogue now keeps each record's card facts (display name and

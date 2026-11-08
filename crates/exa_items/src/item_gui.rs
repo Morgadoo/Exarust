@@ -904,8 +904,8 @@ pub struct LoadedSheet {
 /// that does not fit leaves the sheet out. The running inventory reads the
 /// dot sheet for its encumbrance dots (`exa_game::doll_view`); the card
 /// reads the dot and crystal sheets for its socket row and the coin sheet
-/// for its coin control (`exa_game::item_card`), and paints no grip
-/// buttons yet.
+/// for its coin control and the grip sheet for its Flip weapon button
+/// (`exa_game::item_card`).
 pub fn load_sheet(sheet: &SpriteSheet, bytes: &[u8]) -> Option<LoadedSheet> {
     let rfi = exa_formats::rfi::Rfi::parse(bytes).ok()?;
     let width = i32::try_from(rfi.header.width).ok()?;
