@@ -2445,6 +2445,8 @@ Round 136 saves: the save unit start-up legacy pass runs where the original runs
 
 Round 140 followers: a recruited companion follows the player through a door into the next level, as the original transition carries followers.
 
+Round 142 rfcimport: the running game keeps the world character database, world-tagged placements resolve in it, and a travelling follower is registered and saved.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
