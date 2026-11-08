@@ -233,8 +233,20 @@ back to the exporter's, so it exports the section the level was read from
 objects written over it: a spawned object keeps its place with its live id,
 condition and placement, one that is gone leaves the list with what it
 held (the later container numbers close up), one never spawned stays, a
-drop is added at the end; the props, doors, scene characters and the
-settings chunk's live words are the loaded section's. A load imports the
+drop is added at the end. A story save also flushes every scene character
+into its store (its health and possessions; the world character database for
+a world record, the level's own for the rest; the live player over the world
+store's player slot) and writes the section's characters from the live scene
+(`level_save::characters_after`: a moved or newly dead character at its live
+place, heading and condition, a stored corpse as stored, a character whose
+record left the level's store left out, an arrival added with its world id)
+with the live local character database as the section's `0xCECDDB00`. The
+original's character section stores each character's health into its
+record, flushes and writes the local database when it holds a record, then
+each placement (`0xCAC0CA00`: the record's id, the body's x, floor and z,
+heading, condition, then the pose for a dead body and the AI home and motion
+in save mode). The props, doors, the settings chunk's live words and a
+character's pose, motion and home are the loaded section's. A load imports the
 save's section instead of the archive's file
 (`exa_world::SavedLevelSection`, `LevelLoad::begin_from`) and migrates the
 whole local tier, as every import does.
