@@ -131,6 +131,10 @@ pub struct LiveScene {
     /// Meshes the last cull took out of the main view's list, and that
     /// list's length after it.
     culled: (usize, usize),
+    /// Since the last log line: frames whose cull took a mesh out, and the
+    /// most it took in one frame.
+    culled_frames: u32,
+    culled_most: usize,
     /// Time spent (ms) since the last log line: bookkeeping, the scene's
     /// frame, the outputs; and the frames counted.
     timing: [f32; 3],
@@ -569,15 +573,19 @@ fn run_scene(
         let portal = scene.sectors.iter().filter(|s| s.through_portal).count();
         let drawn = scene.sectors.iter().filter(|s| s.mask != 0).count();
         info!(
-            "scene sectors: {} rooms, {} meshes registered, {} undrawn by the visible pass; {} sectors drawn, {} through doorways; the main view's list lost {} and kept {}",
+            "scene sectors: {} rooms, {} meshes registered, {} undrawn by the visible pass; {} sectors drawn, {} through doorways; the main view's list lost {} and kept {} (it lost meshes in {} frames since the last line, at most {})",
             scene.sectors.len() - 1,
             live.node_of.len(),
             live.node_of.len() - live.drawn.len(),
             drawn,
             portal,
             live.culled.0,
-            live.culled.1
+            live.culled.1,
+            live.culled_frames,
+            live.culled_most
         );
+        live.culled_frames = 0;
+        live.culled_most = 0;
         let n = live.timing_frames.max(1) as f32;
         let awake = scene.sectors.iter().filter(|s| !s.quiet).count();
         info!(
@@ -635,6 +643,10 @@ fn cull_undrawn(
     });
     let after = list.len();
     live.culled = (before - after, after);
+    if before > after {
+        live.culled_frames += 1;
+        live.culled_most = live.culled_most.max(before - after);
+    }
 }
 
 #[cfg(test)]

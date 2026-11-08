@@ -46,8 +46,8 @@
 //! angles are radians; the cell and doorway tests multiply by 100 as the
 //! original works in centimetres. The model is pure data: [`crate::rooms`]
 //! supplies the room states and [`crate::light_flood`] shares
-//! [`cell_spill`]. Exarust still draws through `room_view`; nothing here is
-//! on the draw path yet.
+//! [`cell_spill`]. [`crate::scene_live`] keeps a scene for the loaded grid
+//! level and runs its frame, whose visible pass trims the main view.
 
 // The original's branches on partially ordered comparisons are deliberate:
 // a NaN takes the processor's side, so the negated form spells it out.
