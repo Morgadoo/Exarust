@@ -1882,6 +1882,8 @@ Round 108 summon: the summoning brings the demon in as the original does, held, 
 
 Round 145 outdoor: terrain plants draw with the original grass program; the original plants have no wind.
 
+Round 150 effects2: the kinesis line is blocked as the original node rule decides, its reach is its sight of the cursor point, and blame lasts 2 s past a long hold.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
