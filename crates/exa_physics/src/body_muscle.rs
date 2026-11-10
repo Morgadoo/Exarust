@@ -31,17 +31,18 @@ const HEAD_SHARE: f32 = 0.25;
 pub(super) const SATURATION: f32 = 0.1;
 /// Cap of a part's anchor relaxation, but the arms'.
 pub(super) const RELAX_CAP: f32 = 1.0;
-/// The damping gain is D·k/(0.5|e|² + 1.4), e in cm.
+/// The damping gain is D·k/(0.5|e|² + 1.4), e in cm: the spread in single
+/// precision, the floor and the division in double.
 const DAMPING_SPREAD: f32 = 0.5;
-const DAMPING_FLOOR: f32 = 1.4;
+const DAMPING_FLOOR: f64 = 1.4;
 /// D = (E − 0.5)² unless that difference compares below 0, when it is 0.
 const DAMPED_FROM: f32 = 0.5;
 /// k while the body moves, and the numerator of the standing k (divided by
 /// the race's stance factor: 80 for a human).
 const MOVING_K: f32 = 50.0;
 const STANDING_K: f32 = 40.0;
-/// The pelvis's and the legs' damping share (bones below 8).
-const LEG_DAMPING: f32 = 0.6;
+/// The pelvis's and the legs' damping share (bones below 8), a double.
+const LEG_DAMPING: f64 = 0.6;
 /// The lowest stance factor the standing k divides by (a guard against
 /// broken race data).
 pub(super) const MIN_STANCE: f32 = 0.01;
@@ -616,32 +617,66 @@ pub(super) fn relax_leg(lambda: f32, target: f32) -> f32 {
     }
 }
 
+/// The damping term a link muscle adds its gap's change by: k over
+/// (0.5|e|² + 1.4), `len2` the error's squared length (cm²), the spread
+/// taken in single precision and the floor and the division in double;
+/// times D, through the double 0.6 on the pelvis and the legs (`leg`).
+pub(super) fn damping_term(k: f32, d: f32, len2: f32, leg: bool) -> f32 {
+    let ratio = (f64::from(k) / (f64::from(DAMPING_SPREAD * len2) + DAMPING_FLOOR)) as f32;
+    if leg {
+        (f64::from(d) * (f64::from(ratio) * LEG_DAMPING)) as f32
+    } else {
+        ratio * d
+    }
+}
+
+/// The original's soft saturation of a pull `e` whose squared length is
+/// `len2`: e·r/(c + r) with r the processor's approximate reciprocal root
+/// of `len2` (`RSQRTSS`) and the division its approximate reciprocal
+/// (`RCPSS`), so about e/(1 + c|e|) to some twelve bits.
+pub(super) fn saturate(e: Vec3, len2: f32, saturation: f32) -> Vec3 {
+    let r = crate::engine_math::reciprocal_sqrt(len2);
+    let s = r * crate::engine_math::reciprocal_approx(saturation + r);
+    e * s
+}
+
 /// A link muscle's pull in one pass, in the original's centimetres: the gap
 /// `error` from the part's point to its (relaxed) anchor, plus `motion`,
-/// how that gap changed since the tick began, times
-/// `damping`/(0.5|e|² + 1.4); then saturated to e/(1 + c|e|). `None` when
-/// it is under 1.19e-7 cm², and the link then does nothing this pass.
+/// how that gap changed since the tick began, times the damping term
+/// ([`damping_term`], from k, D and whether the part is the pelvis or a
+/// leg's); then saturated ([`saturate`]). `None` when it is under
+/// 1.19e-7 cm², and the link then does nothing this pass.
 pub(super) fn muscle_pull(
     error: Vec3,
     motion: Vec3,
-    damping: f32,
+    (d, k): (f32, f32),
+    leg: bool,
     saturation: f32,
 ) -> Option<Vec3> {
-    let e = error + motion * (damping / (DAMPING_SPREAD * error.length_squared() + DAMPING_FLOOR));
+    let e = error + motion * damping_term(k, d, error.length_squared(), leg);
     let len2 = e.length_squared();
     if len2.is_nan() || len2 < LINK_EPSILON2 * CM * CM {
         return None;
     }
-    Some(e / (1.0 + saturation * len2.sqrt()))
+    Some(saturate(e, len2, saturation))
+}
+
+/// One tick's link-muscle gains: the strength scale A = √E·T, the damping
+/// D and the damping's k.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct MuscleGains {
+    pub strength: f32,
+    pub d: f32,
+    pub k: f32,
 }
 
 impl Drive {
-    /// The strength scale A = √E·T and the damping gain D·k of this tick's
-    /// link muscles. The root is taken as the energy is, so a NaN or a
+    /// The strength scale A = √E·T and the damping D and its k of this
+    /// tick's link muscles. The root is taken as the energy is, so a NaN or a
     /// negative stays a NaN. D = (E − 0.5)² unless that difference compares
     /// below 0, when it is 0 (a NaN is squared and stays). k = 50 while
     /// moving, else 40 over the race's stance factor.
-    pub(super) fn muscle_gains(&self) -> (f32, f32) {
+    pub(super) fn muscle_gains(&self) -> MuscleGains {
         let strength = self.energy.sqrt() * self.tone_target();
         let below = self.energy - DAMPED_FROM;
         let d = if below < 0.0 { 0.0 } else { below * below };
@@ -650,7 +685,7 @@ impl Drive {
         } else {
             STANDING_K / self.race.stance.max(MIN_STANCE)
         };
-        (strength, d * k)
+        MuscleGains { strength, d, k }
     }
 }
 
@@ -666,20 +701,21 @@ impl Link {
         part: &Part,
         parent: &Part,
         anchor: [f32; 4],
-        (strength, damping): (f32, f32),
+        gains: MuscleGains,
     ) -> Option<Vec3> {
         let a = part.point(&self.on_part);
         let fixed = parent.point(&anchor);
         let target = fixed + (a - fixed) * part.relax;
         let (was, target_was) = self.history;
         let motion = (target - target_was) - (a - was);
-        let damping = if part.bone < 8 {
-            damping * LEG_DAMPING
-        } else {
-            damping
-        };
-        let pull = muscle_pull((target - a) * CM, motion * CM, damping, part.saturation)? / CM;
-        let mut c = pull * (self.strength * part.factor * strength);
+        let pull = muscle_pull(
+            (target - a) * CM,
+            motion * CM,
+            (gains.d, gains.k),
+            part.bone < 8,
+            part.saturation,
+        )? / CM;
+        let mut c = pull * (self.strength * part.factor * gains.strength);
         let d = parent.point(&self.on_parent) - a;
         let len = d.length();
         if len > self.slack {

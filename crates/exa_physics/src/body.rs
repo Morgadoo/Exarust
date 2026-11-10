@@ -1568,13 +1568,23 @@ fn living_retention(factor: f32, dormant: bool) -> f32 {
     keep * factor
 }
 
-/// The original's smoothing for a link point `r` (m) from its part's origin.
+/// The original's smoothing for a link point `r` (m) from its part's
+/// origin, from its squared distance r² (cm², (x² + y²) + z²): none when
+/// r² is at most the double 0.1 or not a number; else
+/// (1 − (r² − 25)·0.001)² in double, rounded once, and 0.99 when that
+/// compares over the double 0.99.
 fn setup_smoothing(r: Vec3) -> f32 {
     let r2 = (r * CM).length_squared();
-    if r2 <= 0.1 {
+    if f64::from(r2) <= 0.1 || r2.is_nan() {
         return 0.0;
     }
-    (1.0 - (r2 - 25.0) * 0.001).powi(2).min(0.99)
+    let keep = 1.0 - f64::from(r2 - 25.0) * 0.001;
+    let smoothing = (keep * keep) as f32;
+    if f64::from(smoothing) > 0.99 {
+        0.99
+    } else {
+        smoothing
+    }
 }
 
 /// The flags of a root body's links to its node (the world). Registration
@@ -4798,8 +4808,8 @@ impl Ragdoll {
     /// gain and energy recovery (the original's character tick, before the
     /// body moves, so the pose drive and the link muscles read the same
     /// energy), inertia and gravity or the carry, then the pose drive's
-    /// push; a living body's link muscles remember
-    /// where the tick began.
+    /// push and the edges of every part restored; a living body's link
+    /// muscles remember where the tick began.
     fn step(&mut self) {
         self.simulated = true;
         self.pass = 0;
@@ -4841,6 +4851,13 @@ impl Ragdoll {
         }
         if let Some(drive) = self.drive.as_mut() {
             drive_parts(&mut self.parts, drive);
+            // The tree's root is the last of its parts to step (the sector
+            // list holds a tree root first and is walked from its end), and
+            // its living step ends by restoring the six edges of every part
+            // of the tree, after their inertia, carry and pose drive.
+            for p in &mut self.parts {
+                keep_rigid(p);
+            }
         }
     }
 

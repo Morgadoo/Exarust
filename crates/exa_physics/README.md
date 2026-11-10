@@ -668,8 +668,10 @@ muscles (the init's tone of 0.01) and its own mobility over the init's limb
 mass factor (`body::Ragdoll::make_plain`); a limp body's links also damp each
 joint inside its range through their smoothed lengths, reset when the
 body goes limp (`body::Ragdoll::go_limp`). In a living body every slack
-link is a link muscle that turns its joint toward the clip's angle, with
-the gains the character tick sets from what the character does
+link is a link muscle that turns its joint toward the clip's angle (its
+damping term divided in double, its pull saturated through the processor's
+approximate reciprocal root and reciprocal, `RSQRTSS` and `RCPSS`, as the
+original's), with the gains the character tick sets from what the character does
 (`body::Bearing`), its race (`body::RaceMuscles`) and its own character's
 stats from its record (`body::BodyStats`: most energy, the limbs' scale,
 the head's gain and factor and the walking arms of the undead)
@@ -678,7 +680,8 @@ held factor, `Drive::held_contact`: 2, or 1 in an attack or a parry, which
 the character crate's grip runtime puts on the held items' contact mobility);
 a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
-(`body::Drive`); and the carry holds the body up in place of gravity, with
+(`body::Drive`), and the living step ends with every part's six edges
+restored, as the tree's root does when it steps last; and the carry holds the body up in place of gravity, with
 a lift servo holding its pelvis at a target height over the ground under
 its feet, a full crouch at 60 cm times the body scale (`src/body_lift.rs`). A character moves through a locomotion request its
 behaviour writes (`body::locomotion::Locomotion`: heading, look, the
