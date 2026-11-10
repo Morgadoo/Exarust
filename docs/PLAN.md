@@ -1005,6 +1005,8 @@ Round 137 tetra: the locomotion and the lift servo read the root displacement fr
 
 Round 149 determinism: the lockstep simulation was never value-nondeterministic; exanima01 two outcomes held the same rows in a different order from tick 121, where the spawn watch removes its marker in the simulation query order that followed the frame load-timing archetypes. The simulation now applies each bridged component values and removals in entity index order, so four identical exanima01 scenes are byte-identical (body ids included) and the arena duel is unchanged; EXA_ARCHETYPE_TRACE and context/tools/determinism_grid.sh check it.
 
+Round 152 determ2: the arena duel lockstep trace no longer splits into two modes; its values were always identical and only the body ids moved, because a Bevy resource is an entity spawned on first insert and the nav grid async build and the low field took ids among the spawns by load timing, while the parallel startup numbered spawns in thread order. Every registered resource entity is now held at the start of the second update, the simulation holds its bridged resources, and fixed-frame runs start single-threaded: four duel runs with presses are byte-identical with body ids (EXA_ENTITY_TRACE added). Dressing-time garment and weapon ids still interleave by load timing (trace unaffected).
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the

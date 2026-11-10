@@ -829,7 +829,10 @@ the per-tick body trace
 ending with the condition word, the swing's rate, strength and state
 word, and whether the fighter is parrying and with which clip; with
 `EXA_ARCHETYPE_TRACE=1` the bodies whose components changed are logged
-each tick, in the order the trace's rows then follow), and
+each tick, in the order the trace's rows then follow; with
+`EXA_ENTITY_TRACE=1` every entity of the frame's world is logged the
+frame it is first seen, with its id and components, so two runs' id
+allocations can be diffed), and
 the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`, with the feet's
 anchors and states), the joint trace

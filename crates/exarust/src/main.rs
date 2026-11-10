@@ -2211,6 +2211,16 @@ fn main() -> AppExit {
         }
     }
     if fixed_frames {
+        // The startup systems run one at a time, in the schedule's order: a
+        // spawn takes its entity's id when it is queued, so the startup's
+        // parallel spawners (the GUI's nodes, the camera, the level's root)
+        // would otherwise number their entities in thread order.
+        use bevy::ecs::schedule::ScheduleLabel;
+        for label in [PreStartup.intern(), Startup.intern(), PostStartup.intern()] {
+            app.edit_schedule(label, |schedule| {
+                schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+            });
+        }
         // Whatever a frame took, it advances game time by 1/60 s: the frames'
         // clocks and the ticks they run repeat from run to run.
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(

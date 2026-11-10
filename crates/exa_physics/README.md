@@ -121,7 +121,15 @@ frame's own archetypes hang on load timing; without it two lockstep runs of
 exanima01 visited the spawn watch's bodies in two orders.
 Entity ids are the same in both worlds: the frame's allocator hands out every
 id, the simulation spawns its own entities from ids the frame reserved for
-it, and a despawn is mirrored without freeing the id. When the bridge starts
+it, and a despawn is mirrored without freeing the id. A resource is an
+entity too, spawned when it is first inserted: `resource_hold`
+(`ResourceHoldPlugin`, which `SimBridgePlugin` adds) spawns an empty entity
+for every registered resource type at the start of the frame's second update
+(the simulation's world holds its bridged resources' when the bridge
+starts), so a resource first inserted when some load finishes (the
+navigation grid's async build, the low field once the camera has a size)
+lands on its held entity instead of taking an id among the characters'
+(the arena duel's body ids took two values across runs). When the bridge starts
 it builds the moved schedules and lists every type their systems or run
 conditions touch that is not bridged (`BridgeCoverage`, logged; while one
 is missing, a failing system is skipped with one warning); after each step
