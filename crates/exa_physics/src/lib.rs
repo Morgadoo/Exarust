@@ -31,6 +31,7 @@ pub mod plate;
 pub mod prop;
 pub mod race_runtime;
 pub mod relay;
+pub mod resource_hold;
 pub mod sector;
 pub mod sector_lists;
 pub mod shape;
