@@ -105,7 +105,11 @@ fn attach_off_hands(
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let Some(game) = game else { return };
-    for (body, off, ragdoll, race, fighter, half_sword) in &mut bodies {
+    // In spawn order, as the dress takes its bodies: the items' entities
+    // are numbered in the bodies' order.
+    let mut bodies: Vec<_> = bodies.iter_mut().collect();
+    bodies.sort_unstable_by_key(|b| b.0.index_u32());
+    for (body, off, ragdoll, race, fighter, half_sword) in bodies {
         let by_bone: std::collections::HashMap<usize, Entity> = children
             .iter_descendants(body)
             .filter_map(|e| parts.get(e).ok().map(|p| (p.bone, e)))

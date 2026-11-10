@@ -170,7 +170,8 @@
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
-//!                                     (the arena's draws read a fixed counter instead of the clock)
+//!                                     (the arena's draws read a fixed counter instead of the clock;
+//!                                     the characters are dressed in one frame, in spawn order)
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
@@ -2221,6 +2222,10 @@ fn main() -> AppExit {
                 schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
             });
         }
+        // The characters are dressed in one frame, in spawn order, so their
+        // garments and held items (and those items' bodies, which the solver
+        // walks in entity order) take the same ids every run.
+        app.insert_resource(exa_character::DressAtOnce);
         // Whatever a frame took, it advances game time by 1/60 s: the frames'
         // clocks and the ticks they run repeat from run to run.
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(

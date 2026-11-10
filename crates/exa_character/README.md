@@ -86,7 +86,13 @@ physique values and the body morphs they select remain the body's concern
   the body's, its meshes) and the painting run on the async compute pool, and at most
   32 MiB of painted textures are made a frame; a body is dressed, 8 ms of
   dressing a frame, once everything it wears is in, before the animation
-  systems bind the skinned parts in the same frame.
+  systems bind the skinned parts in the same frame. The dress, the hair and
+  the off-hand passes take their bodies in spawn order (entity index). Under
+  `--fixed-frames` (`DressAtOnce`) every body is dressed in the frame its
+  parts are attached, its fits and paints built there and the hair with no
+  budget, so the garments, held items and their bodies take the same ids
+  every run (the solver walks bodies in entity order; a swapped pair of
+  weapon ids changed the arena duel's first clash).
 - Physique: a body root's `exa_assets::BodyMorph` (a placed character's
   record, `--physique` for the character view and the player) fits each
   garment as a variant morphed with the body (`ModelLoader::morphed_job`,
