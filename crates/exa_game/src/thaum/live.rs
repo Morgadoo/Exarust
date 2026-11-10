@@ -139,6 +139,7 @@ impl Plugin for ThaumEffectsPlugin {
                             crate::effects::scan_draw::drop_scan_copies,
                             crate::effects::bubble_draw::draw_bubbles,
                             crate::effects::bubble_draw::drop_bubble_draws,
+                            crate::effects::bubble_sound::sound_bubbles,
                             (
                                 crate::effects::dome_draw::draw_domes,
                                 super::dome_sound::sound_domes,

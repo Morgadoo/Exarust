@@ -50,7 +50,7 @@ use crate::player_controls::{
     self, ClickOutcome, ClickTarget, DeviceClock, ObjectInteraction, PendingUse, PendingUses,
     TakeUse, USABLE_DEVICE,
 };
-use crate::teleporters::UseDevice;
+use crate::teleporters::{DeviceReads, UseDevice};
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -296,15 +296,19 @@ impl Narrator<'_> {
 }
 
 /// A device's use as the click runs it: the shared clock's rules; a
-/// teleporter or reconstruction device runs its own use, which
-/// [`crate::teleporters`] answers from a [`UseDevice`] request for the
-/// player's body (the original's use measures the reach from the player and
-/// scans the player, whoever clicked). That use runs on the next fixed step,
-/// so the click reads its answer as no [Exarust: the original's answer only
-/// decides an unnamed device's narration, and both devices are named, so
-/// their delayed card follows either way].
+/// teleporter or reconstruction device answers its own use, which
+/// [`crate::teleporters`] decides for the player's body (the original's use
+/// measures the reach from the player and scans the player, whoever
+/// clicked). The click reads that answer at once, as the original runs the
+/// use before it decides the card or the narration; what the use starts
+/// (the destination screen, the scan) is the fixed step's, from the
+/// [`UseDevice`] sent here, which decides again on the same data. Without a
+/// player the use answers no and nothing is asked [Exarust: the original
+/// skips the reach test then; a scan or a screen needs the player].
+#[allow(clippy::too_many_arguments)]
 fn use_device(
     out: &mut ClickOutputs,
+    reads: &DeviceReads,
     kind: u8,
     id: u32,
     now: u64,
@@ -313,16 +317,16 @@ fn use_device(
 ) -> bool {
     let uses = &mut out.device_uses;
     player_controls::device_use(kind, id, now, &mut out.devices, || {
-        match user {
-            Some(user) => {
-                info!(
-                    "object click: device {id:#x} kind {kind:#x} runs its own use for the player {user:?}"
-                );
-                uses.write(UseDevice { device, user });
-            }
-            None => info!("object click: device {id:#x} kind {kind:#x}: no player to use it"),
-        }
-        false
+        let Some(user) = user else {
+            info!("object click: device {id:#x} kind {kind:#x}: no player to use it");
+            return false;
+        };
+        let answer = reads.decide(device, user).answer();
+        info!(
+            "object click: device {id:#x} kind {kind:#x} runs its own use for the player {user:?}: {answer}"
+        );
+        uses.write(UseDevice { device, user });
+        answer
     })
 }
 
@@ -402,7 +406,7 @@ pub fn run_object_clicks(
     ),
     mut out: ClickOutputs,
     mut narrator: Narrator,
-    players: Query<Entity, With<crate::player::PlayerBody>>,
+    (players, reads): (Query<Entity, With<crate::player::PlayerBody>>, DeviceReads),
 ) {
     let now = time.map_or(0, |t| t.elapsed().as_millis() as u64);
     let user = players.iter().next();
@@ -431,7 +435,7 @@ pub fn run_object_clicks(
                         continue;
                     };
                     let used = usable.class == USABLE_DEVICE
-                        && use_device(&mut out, usable.kind, id, now, entity, user);
+                        && use_device(&mut out, &reads, usable.kind, id, now, entity, user);
                     if used {
                         let script = sections.as_deref().and_then(|s| s.use_script.clone());
                         scripted_device_use(
@@ -485,7 +489,8 @@ pub fn run_object_clicks(
                         .with_strings(named, !description.is_empty());
                     let used = match sections.as_deref().and_then(|s| s.usable) {
                         Some(usable) if usable.class == USABLE_DEVICE => {
-                            let used = use_device(&mut out, usable.kind, id, now, entity, user);
+                            let used =
+                                use_device(&mut out, &reads, usable.kind, id, now, entity, user);
                             if used {
                                 let script = sections.as_deref().and_then(|s| s.use_script.clone());
                                 scripted_device_use(

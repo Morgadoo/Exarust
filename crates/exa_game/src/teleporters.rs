@@ -241,63 +241,75 @@ fn find_slot_entity(
     })
 }
 
-/// The two ends of the destination screen: the message the use writes and
-/// the screen the destination module keeps. A screen already open makes the
-/// original answer "already open" and open nothing.
+/// What a teleporter's or reconstruction device's use decides, before it
+/// acts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeviceDecision {
+    /// Refused: the use answers no.
+    Refused,
+    /// The use answers yes and starts nothing (a destination screen already
+    /// open, or a scan already on the player).
+    Nothing,
+    /// Open the destination screen for this crystal.
+    OpenScreen {
+        item: Entity,
+        adapter: bool,
+        screen: ScreenData,
+    },
+    /// Scan the player.
+    Scan,
+}
+
+impl DeviceDecision {
+    /// The use's answer: yes unless refused.
+    pub fn answer(&self) -> bool {
+        !matches!(self, DeviceDecision::Refused)
+    }
+}
+
+/// What a device's use reads: the device, its `[` slot, the placed objects
+/// around it, the player, the open screen and the possession. The click
+/// reads the answer from it as the original's single click does (the use
+/// runs before the click decides its card or narration) and the fixed step
+/// acts on the same decision.
 #[derive(bevy::ecs::system::SystemParam)]
-struct PortalBridge<'w> {
-    screens: MessageWriter<'w, OpenPortalScreen>,
+pub struct DeviceReads<'w, 's> {
+    devices: Query<'w, 's, (&'static TeleportDevice, &'static GlobalTransform)>,
+    names: Query<'w, 's, &'static Name>,
+    children: Query<'w, 's, &'static Children>,
+    placed: Query<'w, 's, (Entity, &'static PlacedItem, &'static GlobalTransform)>,
+    transforms: Query<'w, 's, &'static GlobalTransform>,
+    scans: Query<'w, 's, (), With<ScanEffect>>,
+    possession: Option<Res<'w, Possession>>,
     open: Option<Res<'w, crate::destination::PortalScreenState>>,
 }
 
-impl PortalBridge<'_> {
-    /// Whether a destination screen is showing.
-    fn is_open(&self) -> bool {
+impl DeviceReads<'_, '_> {
+    /// Whether a destination screen is showing: the original finds a
+    /// visible destination form with its own id on the interface and
+    /// answers "already open" then.
+    fn screen_open(&self) -> bool {
         self.open.as_ref().is_some_and(|state| state.open.is_some())
     }
 
-    /// Ask the destination module for a screen.
-    fn write(&mut self, message: OpenPortalScreen) {
-        self.screens.write(message);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn use_devices(
-    mut commands: Commands,
-    mut uses: MessageReader<UseDevice>,
-    devices: Query<(&TeleportDevice, &GlobalTransform)>,
-    names: Query<&Name>,
-    children: Query<&Children>,
-    placed: Query<(Entity, &PlacedItem, &GlobalTransform)>,
-    transforms: Query<&GlobalTransform>,
-    identities: Query<&RecordIdentity>,
-    scans: Query<(), With<ScanEffect>>,
-    possession: Res<Possession>,
-    clock: Res<EffectClock>,
-    mut latch: ResMut<Latch>,
-    mut build: ResMut<scan::ScanBuild>,
-    (mut flow, mut frame): (
-        Option<ResMut<crate::flow::Flow>>,
-        ResMut<exa_physics::sim_app::FrameCommands>,
-    ),
-    mut screens: PortalBridge<'_>,
-    mut sounds: MessageWriter<DeviceSound>,
-) {
-    for use_it in uses.read() {
-        let Ok((device, device_transform)) = devices.get(use_it.device) else {
-            continue;
+    /// The use of `device` for `user`, as the original's own use of a
+    /// teleporter (class 2 kind 0x0F) or a reconstruction device (kind
+    /// 0x12) decides it; anything that is no such device, or misses a
+    /// piece, is refused.
+    pub fn decide(&self, device: Entity, user: Entity) -> DeviceDecision {
+        let Ok((record, device_transform)) = self.devices.get(device) else {
+            return DeviceDecision::Refused;
         };
-        let Ok(user_transform) = transforms.get(use_it.user) else {
-            continue;
+        let Ok(user_transform) = self.transforms.get(user) else {
+            return DeviceDecision::Refused;
         };
-        let Some(slot) = find_slot_entity(use_it.device, &children, &names) else {
-            continue;
+        let Some(slot) = find_slot_entity(device, &self.children, &self.names) else {
+            return DeviceDecision::Refused;
         };
-        let Ok(slot_transform) = transforms.get(slot) else {
-            continue;
+        let Ok(slot_transform) = self.transforms.get(slot) else {
+            return DeviceDecision::Refused;
         };
-        let slot_name = names.get(slot).map(|n| n.as_str()).unwrap_or("[slot]");
+        let slot_name = self.names.get(slot).map(|n| n.as_str()).unwrap_or("[slot]");
         let children_cm = [Child {
             name: slot_name,
             at: slot_transform.translation() * 100.0,
@@ -308,7 +320,7 @@ fn use_devices(
         let user_cm = user_transform.translation() * 100.0;
         let mut objects = Vec::new();
         let mut entities = Vec::new();
-        for (entity, item, transform) in &placed {
+        for (entity, item, transform) in &self.placed {
             objects.push(Object {
                 id: item.id,
                 condition: item.condition,
@@ -316,52 +328,89 @@ fn use_devices(
             });
             entities.push(entity);
         }
-        match device.kind {
-            operative::TELEPORTER => {
-                // The original finds a visible destination form with its own
-                // id on the interface and answers "already open" then; the
-                // destination screen is that form, one at a time.
-                let screen_open = screens.is_open();
-                let PortalUse::Open {
+        let possessing = self.possession.as_ref().is_some_and(|p| p.active);
+        match record.kind {
+            operative::TELEPORTER => match teleporters::use_portal(
+                possessing,
+                device_cm,
+                Some(user_cm),
+                &children_cm,
+                &objects,
+                Some(&record.operative),
+                self.screen_open(),
+            ) {
+                PortalUse::Refused => DeviceDecision::Refused,
+                PortalUse::AlreadyOpen => DeviceDecision::Nothing,
+                PortalUse::Open {
                     item,
                     adapter,
                     screen,
-                } = teleporters::use_portal(
-                    possession.active,
-                    device_cm,
-                    Some(user_cm),
-                    &children_cm,
-                    &objects,
-                    Some(&device.operative),
-                    screen_open,
-                )
-                else {
-                    continue;
-                };
-                let Some(index) = objects.iter().position(|object| std::ptr::eq(object, item))
-                else {
-                    continue;
-                };
-                screens.write(OpenPortalScreen {
-                    device: use_it.device,
-                    user: use_it.user,
-                    item: entities[index],
-                    adapter,
-                    screen,
-                });
-            }
+                } => match objects.iter().position(|object| std::ptr::eq(object, item)) {
+                    Some(index) => DeviceDecision::OpenScreen {
+                        item: entities[index],
+                        adapter,
+                        screen,
+                    },
+                    None => DeviceDecision::Refused,
+                },
+            },
             operative::RES_DEVICE => {
-                let scanning = children
-                    .get(use_it.user)
-                    .is_ok_and(|kids| kids.iter().any(|kid| scans.contains(kid)));
-                let ScanUse::Started { .. } = teleporters::use_res_device(
-                    possession.active,
+                let scanning = self
+                    .children
+                    .get(user)
+                    .is_ok_and(|kids| kids.iter().any(|kid| self.scans.contains(kid)));
+                match teleporters::use_res_device(
+                    possessing,
                     device_cm,
                     Some(user_cm),
                     &children_cm,
                     &objects,
                     scanning,
-                ) else {
+                ) {
+                    ScanUse::Refused => DeviceDecision::Refused,
+                    ScanUse::AlreadyScanning => DeviceDecision::Nothing,
+                    ScanUse::Started { .. } => DeviceDecision::Scan,
+                }
+            }
+            _ => DeviceDecision::Refused,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn use_devices(
+    mut commands: Commands,
+    mut uses: MessageReader<UseDevice>,
+    reads: DeviceReads,
+    identities: Query<&RecordIdentity>,
+    clock: Res<EffectClock>,
+    mut latch: ResMut<Latch>,
+    mut build: ResMut<scan::ScanBuild>,
+    (mut flow, mut frame): (
+        Option<ResMut<crate::flow::Flow>>,
+        ResMut<exa_physics::sim_app::FrameCommands>,
+    ),
+    mut screens: MessageWriter<OpenPortalScreen>,
+    mut sounds: MessageWriter<DeviceSound>,
+) {
+    for use_it in uses.read() {
+        match reads.decide(use_it.device, use_it.user) {
+            DeviceDecision::Refused | DeviceDecision::Nothing => {}
+            DeviceDecision::OpenScreen {
+                item,
+                adapter,
+                screen,
+            } => {
+                screens.write(OpenPortalScreen {
+                    device: use_it.device,
+                    user: use_it.user,
+                    item,
+                    adapter,
+                    screen,
+                });
+            }
+            DeviceDecision::Scan => {
+                let Ok(user_transform) = reads.transforms.get(use_it.user) else {
                     continue;
                 };
                 spawn_device_scan(&mut commands, &mut build, use_it.user, clock.now_ms);
@@ -388,7 +437,6 @@ fn use_devices(
                     hold_ms: pulse_hold_ms,
                 });
             }
-            _ => {}
         }
     }
 }
@@ -484,12 +532,6 @@ fn debug_scan(
     );
 }
 
-/// `--debug-slot FRAME` ([`DebugScan::slot`]): at that frame after the load, every placed
-/// teleporter gets a fresh Power Crystal A and every reconstruction device
-/// a Power Crystal L on its `[` slot point, as a player who put one there
-/// leaves it, so a click on the device runs its use. The crystal is a
-/// placed object with no model or body [debug stand-in: the original's
-/// crystal is the item the player brought].
 /// The crystal a device's slot takes: Power Crystal A on a teleporter,
 /// Power Crystal L on a reconstruction device.
 pub fn slot_crystal(kind: u8) -> Option<u32> {
@@ -500,6 +542,12 @@ pub fn slot_crystal(kind: u8) -> Option<u32> {
     }
 }
 
+/// `--debug-slot FRAME` ([`DebugScan::slot`]): at that frame after the
+/// load, every placed teleporter gets a fresh Power Crystal A and every
+/// reconstruction device a Power Crystal L on its `[` slot point, as a
+/// player who put one there leaves it, so a click on the device runs its
+/// use. The crystal is a placed object with no model or body [debug
+/// stand-in: the original's crystal is the item the player brought].
 #[allow(clippy::too_many_arguments)]
 fn debug_slot(
     mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
@@ -918,6 +966,51 @@ mod tests {
             ))
             .id();
         (device, user)
+    }
+
+    /// The answer the click reads: a reconstruction device with its
+    /// crystal on the slot says yes (a scan), yes again while the scan is
+    /// on the player (nothing more starts), and no out of reach, without a
+    /// crystal or while the player possesses another body.
+    #[test]
+    fn the_click_reads_the_device_use_answer() {
+        use bevy::ecs::system::RunSystemOnce;
+        let decide = |app: &mut App, device: Entity, user: Entity| {
+            app.world_mut()
+                .run_system_once(move |reads: DeviceReads| reads.decide(device, user))
+                .unwrap()
+        };
+        let mut app = app();
+        let (res, user) = device(
+            &mut app,
+            operative::RES_DEVICE,
+            teleporters::LARGE_POWER_CRYSTAL,
+        );
+        assert_eq!(decide(&mut app, res, user), DeviceDecision::Scan);
+        assert!(decide(&mut app, res, user).answer());
+        app.world_mut()
+            .write_message(UseDevice { device: res, user });
+        at(&mut app, 100);
+        assert_eq!(scans_on(&mut app, user), 1);
+        assert_eq!(decide(&mut app, res, user), DeviceDecision::Nothing);
+        assert!(decide(&mut app, res, user).answer());
+        app.world_mut().resource_mut::<Possession>().active = true;
+        assert!(!decide(&mut app, res, user).answer());
+        app.world_mut().resource_mut::<Possession>().active = false;
+        app.world_mut()
+            .entity_mut(user)
+            .insert(GlobalTransform::from_translation(Vec3::new(5.0, 0.0, 0.0)));
+        assert_eq!(decide(&mut app, res, user), DeviceDecision::Refused);
+        // A teleporter whose slot holds the reconstruction crystal refuses.
+        let mut app = self::app();
+        let (tele, player) = device(
+            &mut app,
+            operative::TELEPORTER,
+            teleporters::LARGE_POWER_CRYSTAL,
+        );
+        assert!(!decide(&mut app, tele, player).answer());
+        // Something that is no device refuses.
+        assert!(!decide(&mut app, player, player).answer());
     }
 
     fn at(app: &mut App, ms: u32) {

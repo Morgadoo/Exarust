@@ -280,10 +280,13 @@ pub fn teleporter_light(
     } else {
         fade
     };
-    let swell = if charge <= 0.8 {
-        1.0
+    // The charge is compared and the swell worked out in double precision,
+    // then narrowed.
+    let over = f64::from(charge) > 0.8;
+    let swell = if over {
+        (1.0 - (f64::from(charge) - 0.8) * 5.0) as f32
     } else {
-        1.0 - (charge - 0.8) * 5.0
+        1.0
     };
     let pulse = (2.0 - charge) * charge * swell;
     let period = (TELE_PERIOD_MS - (charge * TELE_PERIOD_SWING).round_ties_even() as i32) as i64;
@@ -293,7 +296,7 @@ pub fn teleporter_light(
     } else {
         ((span % period) as f64 / period as f64) as f32
     };
-    let colour_swell = if charge > 0.8 { swell * 2.0 } else { swell };
+    let colour_swell = if over { swell * 2.0 } else { swell };
     TeleporterLight {
         fade,
         pulse,
@@ -523,7 +526,8 @@ mod tests {
         assert_eq!(t.colour, TELEPORTER_COLOUR);
         let t = teleporter_light(5, -0.5, 0.9, 0, 0, 1.0);
         assert_eq!(t.fade, -0.5);
-        let s = 1.0 - (0.9f32 - 0.8) * 5.0;
+        // The swell in double precision, narrowed.
+        let s = (1.0 - (f64::from(0.9f32) - 0.8) * 5.0) as f32;
         assert_eq!(t.pulse, (2.0 - 0.9) * 0.9 * s);
         assert_eq!(t.colour, TELEPORTER_COLOUR * (s * 2.0));
     }

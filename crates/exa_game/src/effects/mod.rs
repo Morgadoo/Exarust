@@ -27,6 +27,7 @@
 pub mod blast;
 pub mod bubble;
 pub mod bubble_draw;
+pub mod bubble_sound;
 pub mod danger;
 pub mod dome_draw;
 pub mod effect_geometry;

@@ -810,11 +810,16 @@ latch, writing the same word the story session's death handler reads
 word; `EndSession` reconstructs a scanned player who dies in the story,
 stripping them the first time (hand and worn data cleared, health just
 under half). A teleporter use reads whether the destination screen is
-already open and opens nothing more then. The single click on either
-device sends its `UseDevice` for the player's body (`object_click`), the
-open destination screen takes the window's pointer, press and Escape
-(`destination`), so a chosen row starts the journey bubble, and
-`--debug-slot FRAME` puts a stand-in crystal on every device's slot. The
+already open and opens nothing more then. The use's decision is shared
+(`DeviceReads`): the single click on either device reads its answer at
+once and sends its `UseDevice` for the player's body (`object_click`);
+the open destination screen takes the window's pointer, press and Escape
+and holds the pointer (`destination`, `PointerOverGui`), so a chosen row
+starts the journey bubble, whose `teleportf01` voice, `teleportc01` close
+and shrinking volume play (`effects::bubble_sound`); its light keeps the
+node's 120 cm; and `--debug-slot FRAME` puts a stand-in crystal on every
+device's slot. A journey's level change passes no flags (no portal use,
+hand-over or long hold). The
 screen's drawing, the grab input, the level change, the corpse
 record a strip leaves, the emissive half of the glow, the aura's shader
 signature and the sound
@@ -1967,7 +1972,7 @@ fade over the menu's screens; the original destroys the body with the
 world.
 The transition screen runs live (`run_transition`, `transition_screen`):
 `exa_ui::transition`'s state machine on the real clock, the action at
-black, the level exit's long hold from its fade bit, each caller's music
+black, the level exit's long hold from its portal bit, each caller's music
 fade (the track's gain, its stop at black and the screen's audio fade), the
 world fade reset, a black hold while a level change it asked for loads, and
 its alpha drawn as a black form over the game.

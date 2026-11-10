@@ -170,14 +170,14 @@ The practice ladder's next fight SHALL reload its arena (`arena`, or `arenae` fo
 - **THEN** the steps load `arenae` with a teardown and the next step is the practice scene filter
 
 ### Requirement: Transition screen
-Every flow transition SHALL open the transition screen with its action and run the action once the screen passes black: a 600 ms fade, or 2000 ms with a 1000 ms hold when the level exit's fade bit set the long hold before the open; then two frames, a 500 ms hold, a 600 ms fade back in and the close. The screen SHALL run every frame on the real clock whatever covers the game, and an action that changes the level SHALL keep it black until the change is done.
+Every flow transition SHALL open the transition screen with its action and run the action once the screen passes black: a 600 ms fade, or 2000 ms with a 1000 ms hold when the level exit's portal bit set the long hold before the open; then two frames, a 500 ms hold, a 600 ms fade back in and the close. The screen SHALL run every frame on the real clock whatever covers the game, and an action that changes the level SHALL keep it black until the change is done.
 
 #### Scenario: Action at black
 - **WHEN** a revival's transition starts at 1000 ms on the real clock
 - **THEN** the alpha is 128 at 1300 ms, 255 with no action at 1600 ms, the revival runs at 1601 ms, the screen stays black to 2130 ms, is at 128 at 2431 ms and closes at 2731 ms
 
-#### Scenario: Long hold from the fade bit
-- **WHEN** a level exit with the fade bit opens the screen at 0 ms
+#### Scenario: Long hold from the portal bit
+- **WHEN** a level exit with the portal bit opens the screen at 0 ms
 - **THEN** the alpha is 128 at 1000 ms, nothing loads at 2000 ms and the level loads at 2001 ms
 
 #### Scenario: Held during the load
@@ -441,3 +441,10 @@ The flow SHALL block the player's controls at the knock-out (after its tip), at 
 #### Scenario: Knock-out steps
 - **WHEN** the story player is knocked out
 - **THEN** the steps hide the game view, take the controls, show tip 2 and block the controls, in that order
+
+### Requirement: Journey level exit
+A teleporter journey's level change SHALL pass no flags: no portal use, no AI hand-over and no long transition hold. A level exit with the portal bit (the level portals' zone exits) SHALL ask for the portal use on the player and the AI hand-over and set the long hold.
+
+#### Scenario: A journey to level 7
+- **WHEN** a journey's resting bubble shrinks away and asks for level 7
+- **THEN** the level exit's steps hold no portal use and no AI hand-over, and the transition uses the 600 ms fade

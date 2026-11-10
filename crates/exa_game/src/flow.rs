@@ -1351,10 +1351,12 @@ pub enum Step {
     /// Stamp the level-6 checkpoint with the engine clock (the level's own
     /// time; the save unit reads it).
     LevelTime,
-    /// The screen fades out over the level change (the exit's fade bit).
-    FadeOut,
+    /// The portal use on the player: the dissolve burst seeded over its
+    /// body and `portaluse01` (the exit's portal bit; the zone exits of the
+    /// level portals set it, a teleporter journey does not).
+    PortalUse,
     /// The AI takes over the player's body for the level change (the exit's
-    /// fade bit).
+    /// portal bit).
     AiHandover,
     /// Leave the world: props, bodies, particles, blood and the level.
     TeardownWorld,
@@ -1882,7 +1884,7 @@ pub struct Flow {
     pub menu_open: bool,
     pub hook: Hook,
     transition: Option<Transition>,
-    /// The level exit's fade bit set the transition screen's long hold
+    /// The level exit's portal bit set the transition screen's long hold
     /// (a 2000 ms fade and a 1000 ms hold) for the next transition.
     long_transition: bool,
     pub story: StoryState,
@@ -2390,7 +2392,7 @@ impl Flow {
     /// fades the music out with the screen and stops it at black; each
     /// caller passes the original's argument. The screen's short-hold flag
     /// (the third argument) is clear for every caller in this unit; the
-    /// long hold is the level exit's fade bit, which the original sets on
+    /// long hold is the level exit's portal bit, which the original sets on
     /// the screen before it opens and the open leaves alone. The phase
     /// before the transition is kept and the phase word becomes the
     /// transition's.
@@ -3205,7 +3207,7 @@ impl Flow {
     /// name. Otherwise a player whose condition has neither dead bit loses
     /// the controls, the game view goes, the save rule runs (every exit
     /// saves; early levels also keep a checkpoint) and the new level loads at
-    /// the exit's spawn point behind the transition. The fade bit also gives
+    /// the exit's spawn point behind the transition. The portal bit also gives
     /// the transition screen its long hold (a 2000 ms fade, a 1000 ms hold);
     /// `music_changes` is the story's level-entry music check for the
     /// destination ([`exa_audio::story_music_changes`]), which fades the
@@ -3241,7 +3243,7 @@ impl Flow {
             }
         }
         if exit.flags & 1 != 0 {
-            steps.push(Step::FadeOut);
+            steps.push(Step::PortalUse);
             steps.push(Step::AiHandover);
             self.long_transition = true;
         }
@@ -3802,10 +3804,13 @@ fn travel(
             exa_audio::story_music_changes_for_key(locale.as_bytes(), playing)
         });
         let steps = flow.level_exit(
+            // The journey's level change passes no flags: no portal use, no
+            // AI hand-over and no long transition (the bubble has already
+            // drawn the journey).
             LevelExit {
                 level: journey.level,
                 spawn: journey.arrival,
-                flags: 1,
+                flags: 0,
                 name: None,
             },
             CheckpointRule {
@@ -5873,7 +5878,7 @@ mod tests {
                     drop_on_low_health: false
                 },
                 Step::Checkpoint,
-                Step::FadeOut,
+                Step::PortalUse,
                 Step::AiHandover,
                 Step::Transition,
             ]
@@ -5902,8 +5907,8 @@ mod tests {
         let steps = flow.level_exit(next, held, DEAD, false);
         assert_eq!(steps[0], Step::GameGui(false));
         assert!(!steps.contains(&Step::Checkpoint));
-        // Without the fade bit nothing fades or hands over.
-        assert!(!steps.contains(&Step::FadeOut));
+        // Without the portal bit nothing dissolves or hands over.
+        assert!(!steps.contains(&Step::PortalUse));
         assert!(!steps.contains(&Step::AiHandover));
     }
 
@@ -7365,7 +7370,7 @@ mod tests {
         );
     }
 
-    /// The level exit's fade bit gives the screen its long hold: a 2000 ms
+    /// The level exit's portal bit gives the screen its long hold: a 2000 ms
     /// fade and a 1000 ms hold; an exit without it fades over 600 ms.
     #[test]
     fn the_exit_fade_bit_lengthens_the_transition() {

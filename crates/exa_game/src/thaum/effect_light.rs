@@ -139,14 +139,17 @@ pub fn torrent_shape(torrent: &Torrent, gain: f32) -> (GiShape, ShapeVolume) {
 /// The teleporter bubble's shape at `now_ms`, the bubble at `at_cm`: the
 /// `gi_telebubble` shell with [`emissive::teleporter_light`]'s colour,
 /// fade, pulse and phase, its texture window, and the mesh node's world box
-/// plus 60 cm ([`emissive::world_box`]).
+/// plus 60 cm ([`emissive::world_box`]). The light's `Radius` is the node's
+/// stored 120 cm and its box the node's own, set once when the mesh is
+/// built: the charge's swell scales only the drawn sphere (its `Scale`
+/// uniform), never the light.
 pub fn bubble_shape(
     bubble: &Bubble,
     at_cm: Vec3,
     now_ms: u32,
     gain: f32,
 ) -> (GiShape, ShapeVolume) {
-    let radius = SIZE_CM * bubble.uniforms(now_ms).scale;
+    let radius = SIZE_CM;
     let light = emissive::teleporter_light(
         bubble.state.word() as u32,
         bubble.fade,

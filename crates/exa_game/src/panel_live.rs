@@ -918,21 +918,26 @@ fn release_socket_drag(
 pub struct PointerOverGui(pub bool);
 
 /// Sets [`PointerOverGui`] from the pointer and the open forms every frame;
-/// the character creator and its background picker, the skill screen and
-/// the power tree fill the window (their forms hit-test all of it).
+/// the character creator and its background picker, the skill screen, the
+/// power tree and a teleporter's destination screen fill the window (their
+/// forms hit-test all of it; a destination screen's click off its rows
+/// dismisses it).
+#[allow(clippy::type_complexity)]
 pub(crate) fn track_pointer(
     screens: Res<GameScreens>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut over: ResMut<PointerOverGui>,
     creator: Option<Res<crate::creator_screen::CreatorScreen>>,
-    (skills, powers): (
+    (skills, powers, destination): (
         Option<Res<crate::skill_screen::SkillUi>>,
         Option<Res<crate::power_screen::PowerScreen>>,
+        Option<Res<crate::destination::PortalScreenState>>,
     ),
 ) {
     over.0 = creator.is_some_and(|c| c.is_open())
         || skills.is_some_and(|s| s.screen.is_some())
-        || powers.is_some_and(|p| p.open);
+        || powers.is_some_and(|p| p.open)
+        || destination.is_some_and(|d| d.open.is_some());
     if over.0 {
         return;
     }

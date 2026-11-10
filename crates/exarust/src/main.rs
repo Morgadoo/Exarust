@@ -253,6 +253,8 @@
 //!                                     the cursor's ground point goes 1.5 m beyond the player; repeatable
 //!          --debug-scan <frame>       play mode: at that frame after the load the player gets a reconstruction
 //!                                     device's scan (it opens 1600 ms later), as a use that passed the checks starts it
+//!          --debug-slot <frame>       play mode: at that frame after the load a stand-in Power Crystal A goes on every
+//!                                     teleporter's slot and a Power Crystal L on every reconstruction device's slot
 //!          --debug-bubble f[,hold]    play mode: at frame f after the load a teleport bubble is made around the player;
 //!                                     with hold it charges, swells and is freed after 7 s, else it rests and shrinks
 //!          --debug-force-cast <s>     play mode: every s seconds the player casts its first power at the nearest character, logging GI shapes and struck bodies' pin gain
@@ -610,6 +612,8 @@ pub struct Options {
     pub debug_casts: Vec<exa_game::thaum::debug_cast::DebugCast>,
     /// The frame a debug scan goes on the player (`--debug-scan`).
     pub debug_scan: Option<u32>,
+    /// The frame stand-in crystals go on the devices' slots
+    /// (`--debug-slot`).
     pub debug_slot: Option<u32>,
     /// A teleport bubble made around the player (`--debug-bubble`).
     pub debug_bubble: Option<exa_game::effects::bubble_draw::DebugBubbleAt>,
