@@ -1007,6 +1007,8 @@ Round 149 determinism: the lockstep simulation was never value-nondeterministic;
 
 Round 152 determ2: the arena duel lockstep trace no longer splits into two modes; its values were always identical and only the body ids moved, because a Bevy resource is an entity spawned on first insert and the nav grid async build and the low field took ids among the spawns by load timing, while the parallel startup numbered spawns in thread order. Every registered resource entity is now held at the start of the second update, the simulation holds its bridged resources, and fixed-frame runs start single-threaded: four duel runs with presses are byte-identical with body ids (EXA_ENTITY_TRACE added). Dressing-time garment and weapon ids still interleave by load timing (trace unaffected).
 
+Round 155 determ3: lockstep armed duels are deterministic in values and body ids. The first-clash split (53 cm at 10.0 cm per tick against 55 cm at 11.5) came from the held weapons body ids swapping with dressing order, since the body solver and pair stage walk bodies in entity order and the dress ran on a wall-clock budget with async fits and paints. Under fixed frames the characters are now dressed in one frame in spawn order, with hair and off-hands also in spawn order, and bridged resources such as the nav movers are registered so the second-update hold covers them; four sword-duel and four plain-duel runs are byte-identical with identical entity censuses.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
