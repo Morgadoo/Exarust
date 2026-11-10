@@ -48,6 +48,10 @@
 
 use bevy::math::{Vec3, Vec4};
 
+use crate::engine_math::{
+    max_component, max_components, min_component, min_components, reciprocal_approx3,
+};
+
 /// The smallest half extent a point set's bounds gets (original cm, 1e-4).
 pub const MIN_BOUNDS_EXTENT: f32 = 1e-4;
 
@@ -75,34 +79,6 @@ pub fn min_first(a: f32, b: f32) -> f32 {
 /// it is strictly larger, otherwise `b` (a NaN in either gives `b`).
 pub fn max_first(a: f32, b: f32) -> f32 {
     if a > b { a } else { b }
-}
-
-/// [`min_first`] on each component.
-fn min_each(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3::new(
-        min_first(a.x, b.x),
-        min_first(a.y, b.y),
-        min_first(a.z, b.z),
-    )
-}
-
-/// [`max_first`] on each component.
-fn max_each(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3::new(
-        max_first(a.x, b.x),
-        max_first(a.y, b.y),
-        max_first(a.z, b.z),
-    )
-}
-
-/// The largest component, folded `x`, `y`, `z` with [`max_first`].
-fn largest(v: Vec3) -> f32 {
-    max_first(max_first(v.x, v.y), v.z)
-}
-
-/// The smallest component, folded `x`, `y`, `z` with [`min_first`].
-fn smallest(v: Vec3) -> f32 {
-    min_first(min_first(v.x, v.y), v.z)
 }
 
 /// `magnitude` with the sign bit of `sign` added to its own, as the
@@ -286,13 +262,13 @@ pub fn swept_sphere_aabb_hit(
     let extent = half_extents + Vec3::splat(radius);
     let high = (extent + offset) * sweep.inverse_direction;
     let low = (offset - extent) * sweep.inverse_direction;
-    let far = max_each(low, high);
-    let near = min_each(high, low);
-    let entry = largest(near);
+    let far = max_components(low, high);
+    let near = min_components(high, low);
+    let entry = max_component(near);
     if !(sweep.length > entry) {
         return false;
     }
-    (max_first(entry, 0.0) - smallest(far)).is_sign_negative()
+    (max_first(entry, 0.0) - min_component(far)).is_sign_negative()
 }
 
 /// The slab test against an oriented box with the extents `extent`, in
@@ -302,13 +278,13 @@ pub fn swept_sphere_aabb_hit(
 /// entry goes on): a NaN misses. An entry can only be NaN when the exit is
 /// too (the NaN sits in the high lane, which both folds carry), so the
 /// order of the two compares does not change an answer. The reciprocal of
-/// the travel is the original's approximate one.
+/// the travel is the original's approximate one ([`reciprocal_approx3`]).
 fn slabs_hit(offset: Vec3, travel: Vec3, extent: Vec3) -> bool {
-    let inverse = travel.recip();
+    let inverse = reciprocal_approx3(travel);
     let low = (offset - extent) * inverse;
     let high = (offset + extent) * inverse;
-    let entry = largest(min_each(low, high));
-    let exit = smallest(max_each(low, high));
+    let entry = max_component(min_components(low, high));
+    let exit = min_component(max_components(low, high));
     max_first(entry, 0.0) < exit && entry < 1.0
 }
 
@@ -402,19 +378,19 @@ pub fn bounds_of_points(points: &[Vec3]) -> (Vec3, Vec3) {
     };
     let (mut low, mut high) = (first, first);
     for &point in &points[1..] {
-        low = min_each(low, point);
-        high = max_each(high, point);
+        low = min_components(low, point);
+        high = max_components(high, point);
     }
     let centre = (low + high) * 0.5;
-    let extents = max_each(high - centre, Vec3::splat(MIN_BOUNDS_EXTENT));
+    let extents = max_components(high - centre, Vec3::splat(MIN_BOUNDS_EXTENT));
     (centre, extents)
 }
 
 /// Grows the bounds `low..high` to include `point`, as the original expands
 /// a box while it collects a mesh's vertices.
 pub fn expand_bounds(low: &mut Vec3, high: &mut Vec3, point: Vec3) {
-    *low = min_each(*low, point);
-    *high = max_each(*high, point);
+    *low = min_components(*low, point);
+    *high = max_components(*high, point);
 }
 
 /// One face of a convex volume: its outward plane `normal · x + offset = 0`

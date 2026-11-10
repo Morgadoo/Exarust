@@ -536,10 +536,12 @@ precision, the float it rounds to added — and the yaw is then held within
 ±45° of the body's facing; the near variant floors the pitch target at the
 float nearest −0.6, the far one has no floor. A look-at within 50 cm
 horizontally reuses the previous direction; between 50 and 100 cm the
-height is replaced by `(10000 − d²)·1e-4` before normalising. The result
-is the unit direction, the point 250 cm along it (150 cm for the far
-variant) and its flat direction. The direction's sine and cosine are
-Rust's, not the engine's fast trig.
+height is replaced by `(10000 − d²)·1e-4` before normalising with the
+engine's fast normalise (`RSQRTSS`, zero kept). The result is the unit
+direction, the point 250 cm along it (150 cm for the far variant) and its
+flat direction. The direction is the engine's pitch-and-yaw direction
+(`exa_physics::engine_math::direction_from_pitch_yaw`, its fast sine and
+cosine), as the original's tracker calls it.
 
 ## Scope
 

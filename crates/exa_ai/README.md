@@ -436,7 +436,9 @@ states back from after it (`exa_game::mind::runtime`).
 `add_concern` is the script's `AddConcern` (the flags word becomes 3,
 the attitude-weighted rise, capped at 15, the event at 1.2 or else at 4).
 `look_direction` is the direction the original builds from a point back to
-the eye, held within 45° of the body; `candidate_cost` is the footwork
+the eye, held within 45° of the body (normalised by the engine's fast
+normalise and turned back into a direction by its pitch-and-yaw direction,
+as the original calls them); `candidate_cost` is the footwork
 step's pathfinder cost; `outside_radius` and `clamp_move_point` (a far move
 point is put 8·speed + 20 cm straight ahead) are the carry and move
 clamps; `Movement`'s two clear routines drop the queued step and set the

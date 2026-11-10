@@ -1693,6 +1693,8 @@ Round 138 kernel: the support pin goals are set once a tick in the carry as in t
 
 Round 146 sectors: every grid level keeps the original scene of sectors live, its visible pass trims the main view and the blended lists are walked sector by sector.
 
+Round 151 core: the oriented-box slab tests use the original approximate reciprocal and the head tracking the engine fast normalise and trig direction; the sun fit sphere solver was already live.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1881,6 +1883,8 @@ Round 62 playercontrols: the pad's commands run as the original's per-frame pad 
 Round 108 summon: the summoning brings the demon in as the original does, held, faded in and let go as its caster's ally.
 
 Round 145 outdoor: terrain plants draw with the original grass program; the original plants have no wind.
+
+Round 150 effects2: the kinesis line is blocked as the original node rule decides, its reach is its sight of the cursor point, and blame lasts 2 s past a long hold.
 
 ### Phase 7 — Game modes and content
 

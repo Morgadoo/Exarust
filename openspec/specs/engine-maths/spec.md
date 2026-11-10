@@ -71,6 +71,13 @@ The 3D length SHALL be `sqrt((x² + z²) + y²)` and the projection onto a unit 
 - **WHEN** (NaN, 2, NaN) and (1, 5, 3) are combined by the component minimum
 - **THEN** the result is (1, 2, 3)
 
+### Requirement: Engine fast vector reciprocal
+The engine's fast vector reciprocal SHALL be the processor's approximate reciprocal of each component, as one packed operation on (x, y, z, 0): within 1.5·2⁻¹² of the exact value, a zero giving infinity of its sign and a NaN staying NaN.
+
+#### Scenario: Each lane on its own
+- **WHEN** the fast reciprocal of (3, −0.125, 10000) is taken
+- **THEN** each component is the processor's scalar approximate reciprocal of that component, within 1.5·2⁻¹² of the exact one
+
 ### Requirement: One engine maths implementation
 Every crate that may depend on the physics crate SHALL take the fast logarithm, the fast exponential and the approximate reciprocal square root from its engine maths module rather than a copy of its own.
 

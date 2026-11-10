@@ -186,6 +186,13 @@ type SunCameras<'w, 's> = Query<
     Without<exa_render::supersample::Offscreen>,
 >;
 
+/// `EXA_SUN_FIT_TRACE=1` (debug): logs each step of a view's fitted half
+/// extent, the smallest-sphere fit's quantised radius, in a terrain level.
+fn fit_trace() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("EXA_SUN_FIT_TRACE").is_some_and(|v| v == "1"))
+}
+
 /// `EXA_SUN_SOFTNESS=<c>` (debug): the sun light's softness source the map
 /// update reads, in place of the sun placement's, to see the filter and the
 /// caster offset at a chosen softness.
@@ -258,7 +265,15 @@ fn fit_lights(
             let entry = state.views.entry(view).or_default();
             if region.fitted {
                 let volume = fitted_volume(camera_transform, projection, region);
+                let before = entry.fit.half_extent_cm;
                 if entry.fit.fit(&volume, &basis, map_size) {
+                    if fit_trace() && entry.fit.half_extent_cm != before {
+                        info!(
+                            "EXA_SUN_FIT_TRACE: view {view}: the smallest sphere steps the \
+                             sun map from {before} cm to a half extent of {} cm, centre {:?} cm",
+                            entry.fit.half_extent_cm, entry.fit.centre_cm
+                        );
+                    }
                     entry.fit.apply_softness(c);
                     entry.matrices = Some(entry.fit.matrices(&basis, map_size));
                 }
