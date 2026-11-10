@@ -14,5 +14,5 @@
 
 ## 3. Check
 - [x] 3.1 fmt, clippy, tests
-- [x] 3.2 GPU: the reconstruction device's scan and the teleporter's bubble from a click in exanima05, before and after
-- [x] 3.3 exanima01 and the plain arena duel traces identical to main
+- [x] 3.2 GPU: the reconstruction device's scan and the teleporter's bubble from a click in exanima05, before and after (the stopped lane's run of the click path; this round's grids ran out of GPU memory under an external process, so the sounds and the light were not shot)
+- [ ] 3.3 exanima01 and the plain arena duel traces identical to main (blocked: the before runs ran out of GPU memory)
