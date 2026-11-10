@@ -58,7 +58,10 @@ touch copied across each step (2.3 ms a step in exanima01);
 hashes every bridged type after each fixed step, to compare the two tick by
 tick; `--hold-loading` holds game time while the loading screen shows. Under
 `--fixed-frames` a grid quadrant drops the host's forwarded input, so a
-scripted run repeats whatever the host's mouse does.
+scripted run repeats whatever the host's mouse does, and the startup
+schedules run their systems one at a time (a spawn takes its id when it is
+queued, so the GUI's nodes, the camera and the level's root would otherwise
+be numbered in thread order).
 `--sim-boundary <file>` (`src/sim_boundary.rs`) writes, once the level has loaded and the fixed step
 has run 200 ticks, every component and resource type the fixed step's
 schedules share with the frame's, by direction, with each side's readers and

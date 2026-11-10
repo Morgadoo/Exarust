@@ -169,6 +169,36 @@ impl Plugin for TracePlugin {
         if std::env::var("EXA_ARCHETYPE_TRACE").is_ok_and(|v| v == "1") {
             app.add_systems(FixedUpdate, trace_archetypes.after(BodySystems));
         }
+        // Debug aid: `EXA_ENTITY_TRACE=1` logs every entity of the frame's
+        // world the first frame it is seen (the frame, its id and its
+        // components), so two runs' id allocations can be diffed.
+        if std::env::var("EXA_ENTITY_TRACE").is_ok_and(|v| v == "1") {
+            app.add_systems(Last, trace_new_entities);
+        }
+    }
+}
+
+/// Logs the entities first seen this frame, in index order.
+fn trace_new_entities(
+    world: &World,
+    mut frame: Local<u64>,
+    mut seen: Local<std::collections::HashSet<u64>>,
+) {
+    *frame += 1;
+    let mut new: Vec<_> = world
+        .iter_entities()
+        .filter(|e| seen.insert(e.id().to_bits()))
+        .collect();
+    new.sort_by_key(|e| e.id().index());
+    for e in new {
+        let names: Vec<String> = e
+            .archetype()
+            .components()
+            .iter()
+            .filter_map(|&c| world.components().get_name(c))
+            .map(|n| n.shortname().to_string())
+            .collect();
+        info!("entity trace: frame {} {} {names:?}", *frame, e.id());
     }
 }
 

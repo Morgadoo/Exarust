@@ -113,6 +113,12 @@ pub trait BridgeHalf: Send + Sync + 'static {
     fn hierarchy(&self) -> bool {
         false
     }
+    /// A resource's half: spawns the resource's entity in `world` (empty)
+    /// unless it has one, so the entity takes its id when the bridge
+    /// starts, in the order the types were registered, not in whichever
+    /// step the value first comes across, which would move every id handed
+    /// out after it ([`crate::resource_hold`]).
+    fn hold(&self, _world: &mut World) {}
 }
 
 /// Frame side: an entity the simulation's world holds, because a bridged
@@ -1015,6 +1021,10 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
             .get_or_insert_with(|| world.register_component::<T>())
     }
 
+    fn hold(&self, world: &mut World) {
+        crate::resource_hold::hold_resource_entity::<T>(world);
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1428,6 +1438,10 @@ impl<T: Resource> BridgeHalf for MoveResourceHalf<T> {
         component_id::<T>(world, &mut self.id)
     }
 
+    fn hold(&self, world: &mut World) {
+        crate::resource_hold::hold_resource_entity::<T>(world);
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1538,6 +1552,10 @@ impl<T: Resource + Default> BridgeHalf for OwnResourceHalf<T> {
     fn init(&mut self, world: &mut World) -> ComponentId {
         world.init_resource::<T>();
         component_id::<T>(world, &mut self.id)
+    }
+
+    fn hold(&self, world: &mut World) {
+        crate::resource_hold::hold_resource_entity::<T>(world);
     }
 
     fn drain_removed(&mut self, _: &World) {}
@@ -2565,6 +2583,9 @@ impl Plugin for SimBridgePlugin {
             })
             .add_systems(First, count_frame)
             .add_systems(Last, drain_frame_removals);
+        // The frame hands out every id, the simulation's included: its
+        // resources' entities take theirs at a fixed moment.
+        app.add_plugins(crate::resource_hold::ResourceHoldPlugin);
         bridge_bevy_types(app);
         app.world_mut()
             .get_resource_or_init::<crate::sim_app::FixedCommands>()
@@ -2708,7 +2729,12 @@ fn take_schedules(
 pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCoverage>, u64, bool) {
     let started = Instant::now();
     let mut coverage = None;
-    if let Some(setup) = bridge_in.setup {
+    let BridgeIn { setup, mut packet } = bridge_in;
+    // The frame's newly reserved ids are the allocator's before the install
+    // spawns anything (the held resources' entities take pool ids too).
+    let reserved = std::mem::take(&mut packet.reserved);
+    world.entity_allocator_mut().free_many(&reserved);
+    if let Some(setup) = setup {
         let c = install(world, setup);
         report_coverage(&c);
         if !c.missing.is_empty() {
@@ -2727,7 +2753,6 @@ pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCovera
         }
         coverage = Some(c);
     }
-    let BridgeIn { mut packet, .. } = bridge_in;
     let frame_began = packet.update_messages;
     // The writes to snapshot data land on the simulation's own values
     // first, the simulation's own queued ones before the frame's; one to a
@@ -2742,11 +2767,9 @@ pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCovera
     }
     let posts = std::mem::take(&mut packet.posts);
     world.resource_scope(|world, mut bridge: Mut<SimBridge>| {
-        let reserved = packet.reserved.clone();
-        if !reserved.is_empty() {
-            world.entity_allocator_mut().free_many(&reserved);
-            bridge.pool.free.extend(reserved);
-        }
+        // Those the install spawned already are dropped from the pool at
+        // the step's gather, as every reserved id the step spawns.
+        bridge.pool.free.extend(reserved);
         bridge.side.apply(world, packet, true);
     });
     // The frame's posted calls after the simulation's own (they run in the
@@ -2791,6 +2814,9 @@ fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
     let mut side = BridgeSide::new(setup.halves, false);
     side.free = setup.free;
     side.init(world);
+    for half in &side.halves {
+        half.hold(world);
+    }
     // The simulation's own queue of posted calls and writes; its writes
     // stay snapshot writes, as the frame's queue's were when it was lent.
     if let Some(mut fixed) = world.get_resource_mut::<crate::sim_app::FixedCommands>() {
