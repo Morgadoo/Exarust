@@ -7,6 +7,7 @@
 ## 2. Checks
 
 - [x] 2.1 Arena duel with presses, 3000 frames: four runs byte-identical (e502475c..., body ids included); r151 gave 60b8d40d and 525ad6ec in one grid, same values
+- [ ] 2.1b exanima01 x4: not run, every attempt quit with a GPU Out of Memory (a vLLM engine held 18 GB of the 3090)
 - [x] 2.2 Lockstep vs main: the duel's rows equal main's with the body column cut
 - [x] 2.3 Corpus check: not applicable
 - [x] 2.4 exa_physics, exa_game and exarust READMEs, docs/DEBUGGING.md; docs/PLAN.md and docs/COMPONENT-MAP.md unchanged
