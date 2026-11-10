@@ -76,6 +76,7 @@ pub fn attach_hair(
     children: Query<&Children>,
     parts: Query<&BodyPart>,
     hair_cloth: Option<Res<HairCloth>>,
+    at_once: Option<Res<crate::DressAtOnce>>,
 ) {
     let (Some(game), Some(mut cache)) = (game, cache) else {
         return;
@@ -104,8 +105,12 @@ pub fn attach_hair(
         .unwrap_or_default();
     let cloth_on = hair_cloth.map_or_else(hair_cloth_on, |h| h.0);
     let started = std::time::Instant::now();
-    for (body, hair) in &bodies {
-        if started.elapsed() >= HAIR_BUDGET {
+    // In spawn order, as the dress takes its bodies; every body's at once
+    // under [`crate::DressAtOnce`].
+    let mut bodies: Vec<_> = bodies.iter().collect();
+    bodies.sort_unstable_by_key(|b| b.0.index_u32());
+    for (body, hair) in bodies {
+        if at_once.is_none() && started.elapsed() >= HAIR_BUDGET {
             break;
         }
         let Some(head) = children

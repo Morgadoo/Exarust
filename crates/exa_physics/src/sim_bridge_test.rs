@@ -853,3 +853,22 @@ fn the_frames_archetypes_do_not_order_the_simulations_queries() {
         }
     }
 }
+
+/// A moved resource only the fixed step names.
+#[derive(Resource, Debug, Default)]
+struct MovedOnly;
+
+/// Bridging a resource registers its type in the frame's world, so the
+/// frame's resource hold at the second update holds its entity: its first
+/// insert, whenever it comes, then takes no fresh id.
+#[test]
+fn a_bridged_resource_is_held_by_the_frames_hold() {
+    let mut app = App::new();
+    app.bridge_move_resource::<MovedOnly>();
+    let world = app.world_mut();
+    assert!(world.component_id::<MovedOnly>().is_some());
+    crate::resource_hold::hold_resource_entities(world);
+    let before = world.entities().len();
+    world.insert_resource(MovedOnly);
+    assert_eq!(world.entities().len(), before);
+}

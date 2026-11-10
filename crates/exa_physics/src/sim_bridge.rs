@@ -119,6 +119,14 @@ pub trait BridgeHalf: Send + Sync + 'static {
     /// step the value first comes across, which would move every id handed
     /// out after it ([`crate::resource_hold`]).
     fn hold(&self, _world: &mut World) {}
+    /// A resource's half: registers the resource's type in `world` when the
+    /// type is bridged (the frame's app, as its plugins build), so that the
+    /// frame's resource hold at the start of the second update holds its
+    /// entity as well. A resource only the fixed step's systems name is
+    /// otherwise not registered in the frame's world by then, and its first
+    /// insert there (the navigation grid's movers, when the grid's async
+    /// build finishes) took an id among the level's or the characters'.
+    fn register(&self, _world: &mut World) {}
 }
 
 /// Frame side: an entity the simulation's world holds, because a bridged
@@ -1025,6 +1033,10 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
         crate::resource_hold::hold_resource_entity::<T>(world);
     }
 
+    fn register(&self, world: &mut World) {
+        world.register_component::<T>();
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1442,6 +1454,10 @@ impl<T: Resource> BridgeHalf for MoveResourceHalf<T> {
         crate::resource_hold::hold_resource_entity::<T>(world);
     }
 
+    fn register(&self, world: &mut World) {
+        world.register_component::<T>();
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1556,6 +1572,10 @@ impl<T: Resource + Default> BridgeHalf for OwnResourceHalf<T> {
 
     fn hold(&self, world: &mut World) {
         crate::resource_hold::hold_resource_entity::<T>(world);
+    }
+
+    fn register(&self, world: &mut World) {
+        world.register_component::<T>();
     }
 
     fn drain_removed(&mut self, _: &World) {}
@@ -1949,6 +1969,7 @@ fn add_type(app: &mut App, t: impl BridgeType) -> &mut App {
 }
 
 fn add_digested(app: &mut App, t: impl BridgeType, digest: Option<DigestMaker>) -> &mut App {
+    t.half().register(app.world_mut());
     app.world_mut()
         .get_resource_or_init::<SimBridgeTypes>()
         .add(t, digest);

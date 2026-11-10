@@ -129,7 +129,9 @@ for every registered resource type at the start of the frame's second update
 starts), so a resource first inserted when some load finishes (the
 navigation grid's async build, the low field once the camera has a size)
 lands on its held entity instead of taking an id among the characters'
-(the arena duel's body ids took two values across runs). When the bridge starts
+(the arena duel's body ids took two values across runs). Bridging a resource
+registers its type in the frame's world (`BridgeHalf::register`), so the hold
+covers resources only the fixed step names (the navigation movers). When the bridge starts
 it builds the moved schedules and lists every type their systems or run
 conditions touch that is not bridged (`BridgeCoverage`, logged; while one
 is missing, a failing system is skipped with one warning); after each step

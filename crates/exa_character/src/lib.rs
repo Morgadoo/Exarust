@@ -1099,6 +1099,8 @@ fn garment_appearance(garment: &Garment, infos: &HashMap<String, ItemInfo>) -> O
 /// the textures its painting reads take tens of milliseconds each to load:
 /// they are loaded one at a time, and past `deadline` the rest waits for
 /// the next frame. Its model is built on the async compute pool meanwhile.
+/// `at_once` ([`DressAtOnce`]) waits for every build and paint instead.
+#[allow(clippy::too_many_arguments)]
 fn outfit_painted(
     outfit: &Outfit,
     morph: Option<&exa_assets::BodyMorph>,
@@ -1107,6 +1109,7 @@ fn outfit_painted(
     painting: &mut Painting,
     fitting: &mut Fitting,
     deadline: std::time::Instant,
+    at_once: bool,
 ) -> bool {
     let mut ready = true;
     for garment in &outfit.0 {
@@ -1115,7 +1118,7 @@ fn outfit_painted(
         {
             return false;
         }
-        let Some(apparel) = fitted_model(&garment.model, morph, loader, fitting) else {
+        let Some(apparel) = fitted_model(&garment.model, morph, loader, fitting, at_once) else {
             ready = false;
             continue;
         };
@@ -1132,6 +1135,9 @@ fn outfit_painted(
             continue;
         };
         let key = (stem, appearance);
+        if at_once && let Some(task) = painting.0.remove(&key) {
+            loader.painted_material(block_on(task));
+        }
         if painting.0.contains_key(&key) {
             ready = false;
             continue;
@@ -1140,9 +1146,13 @@ fn outfit_painted(
             return false;
         }
         if let Paint::Job(job) = loader.paint_job(&key.0, &appearance) {
-            let task = AsyncComputeTaskPool::get().spawn(async move { job.paint() });
-            painting.0.insert(key, task);
-            ready = false;
+            if at_once {
+                loader.painted_material(job.paint());
+            } else {
+                let task = AsyncComputeTaskPool::get().spawn(async move { job.paint() });
+                painting.0.insert(key, task);
+                ready = false;
+            }
         }
     }
     ready
@@ -1150,23 +1160,29 @@ fn outfit_painted(
 
 /// An apparel model, morphed by the wearer's physique `morph`, once it is
 /// built (`Some(None)` when it cannot be): starts building it on the async
-/// compute pool, or takes the finished build.
+/// compute pool, or takes the finished build; `at_once` builds it, or waits
+/// for its build, here.
 fn fitted_model(
     entry: &str,
     morph: Option<&exa_assets::BodyMorph>,
     loader: &mut ModelLoader,
     fitting: &mut Fitting,
+    at_once: bool,
 ) -> Option<Option<std::sync::Arc<model::Model>>> {
     if let Some(model) = loader.loaded_morphed_model(PackKind::Characters, entry, morph) {
         return Some(model);
     }
     let key = loader.morphed_key(PackKind::Characters, entry, morph);
+    if at_once && let Some(task) = fitting.0.remove(&key) {
+        return Some(loader.finish_model(block_on(task)));
+    }
     if let Some(task) = fitting.0.get_mut(&key) {
         let built = block_on(poll_once(task))?;
         fitting.0.remove(&key);
         return Some(loader.finish_model(built));
     }
     match loader.morphed_job(PackKind::Characters, entry, morph) {
+        Some(job) if at_once => Some(loader.finish_model(job.build(None))),
         Some(job) => {
             let task = AsyncComputeTaskPool::get().spawn(async move { job.build(None) });
             fitting.0.insert(key, task);
@@ -1506,7 +1522,11 @@ fn equip_outfits(
     game: Option<Res<Game>>,
     mut infos: Local<Option<HashMap<String, ItemInfo>>>,
     mut painting: ResMut<Painting>,
-    (mut fitting, mut pending): (ResMut<Fitting>, ResMut<PendingSkins>),
+    (mut fitting, mut pending, at_once): (
+        ResMut<Fitting>,
+        ResMut<PendingSkins>,
+        Option<Res<DressAtOnce>>,
+    ),
     meshes_of: DressMeshes,
     mut bodies: Query<
         (
@@ -1571,9 +1591,21 @@ fn equip_outfits(
     }
     let infos = infos.get_or_insert_with(|| item_info(&game.0));
     // A level's characters are dressed over several frames: all of them in
-    // one frame stalled the window for seconds.
+    // one frame stalled the window for seconds. Under [`DressAtOnce`] every
+    // body is dressed in this frame.
+    let at_once = at_once.is_some();
     let started = std::time::Instant::now();
-    let deadline = started + DRESS_BUDGET;
+    let budget = if at_once {
+        AT_ONCE_DEADLINE
+    } else {
+        DRESS_BUDGET
+    };
+    let deadline = started + budget;
+    // In spawn order (the bodies' entity index, ascending: Bevy's own order
+    // on `Entity` runs newest first), not the storage's: the dress's own
+    // spawns are numbered in the bodies' order.
+    let mut bodies: Vec<_> = bodies.iter_mut().collect();
+    bodies.sort_unstable_by_key(|b| b.0.index_u32());
     for (
         body,
         outfit,
@@ -1588,9 +1620,9 @@ fn equip_outfits(
         skin_look,
         skin_job,
         (refit, dressed_with, mut hair),
-    ) in &mut bodies
+    ) in bodies
     {
-        if started.elapsed() >= DRESS_BUDGET {
+        if started.elapsed() >= budget {
             break;
         }
         // A first dress builds both parts; a refit only the one that
@@ -1617,6 +1649,7 @@ fn equip_outfits(
                 &mut painting,
                 &mut fitting,
                 deadline,
+                at_once,
             )
         {
             continue;
@@ -2066,6 +2099,21 @@ const PAINT_UPLOAD_BUDGET: usize = 32 << 20;
 
 /// Time one frame may spend dressing bodies; the rest wait for later frames.
 const DRESS_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// The dress's budget and the loads' deadline under [`DressAtOnce`]: never
+/// reached.
+const AT_ONCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Dresses every body in the frame its parts are attached, in entity order,
+/// waiting for its garments' builds and paints (and builds every body's
+/// hair at once): a `--fixed-frames` run's dress then numbers its garments,
+/// held items and their bodies the same way every run. Dressing on a
+/// frame budget with the paints on the async pool let one run dress the
+/// opponent before the player and another after: the held weapons' bodies
+/// swapped ids, so the solver met them in the other order and the duel's
+/// first clash came out differently.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct DressAtOnce;
 
 #[cfg(test)]
 mod tests {
