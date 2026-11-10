@@ -1415,6 +1415,8 @@ Round 141 motilepart2: support pins are pulled per part after its links, and the
 
 Round 147 itemgui: the weapon card material swatch was really the Flip weapon button, now live; it turns the striking rows to the weapon other side.
 
+Round 154 motilepart3: the living step restores every part edges after the pose drive, and the link muscles damp and saturate with the original precision.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
