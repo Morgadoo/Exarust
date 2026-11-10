@@ -76,18 +76,20 @@ fn elbow_angle(body: &Ragdoll) -> f32 {
     z.x.atan2(z.z)
 }
 
-/// Idle: D = (1 − 0.5)² = 0.25 and k = 40 / 0.5 = 80, so the damping gain
+/// Idle: D = (1 − 0.5)² = 0.25 and k = 40 / 0.5 = 80, so the damping term
 /// at a small error is 0.25·80/1.4 = 14.3, and 8.6 on the pelvis and legs;
 /// walking, k = 50 gives 8.9. The strength A = √E·T is 0.5 idle (T = 0.5).
 #[test]
 fn damping_gains_are_the_originals() {
     let mut drive = Drive::default();
-    let (strength, damping) = drive.muscle_gains();
-    assert!((strength - 0.5).abs() < 1e-6);
-    assert!((damping / 1.4 - 14.286).abs() < 1e-3, "{}", damping / 1.4);
-    assert!((damping * LEG_DAMPING / 1.4 - 8.571).abs() < 1e-3);
+    let g = drive.muscle_gains();
+    assert!((g.strength - 0.5).abs() < 1e-6);
+    assert_eq!((g.d, g.k), (0.25, 80.0));
+    assert!((damping_term(g.k, g.d, 0.0, false) - 14.286).abs() < 1e-3);
+    assert!((damping_term(g.k, g.d, 0.0, true) - 8.571).abs() < 1e-3);
     drive.bearing.moving = true;
-    assert!((drive.muscle_gains().1 / 1.4 - 8.929).abs() < 1e-3);
+    assert_eq!(drive.muscle_gains().k, 50.0);
+    assert!((damping_term(50.0, 0.25, 0.0, false) - 8.929).abs() < 1e-3);
     // A skeleton stands with stance factor 0.75: k = 53.3.
     let mut skeleton = Drive {
         race: RaceMuscles {
@@ -98,7 +100,29 @@ fn damping_gains_are_the_originals() {
         ..Drive::default()
     };
     skeleton.stance = 0.75;
-    assert!((skeleton.muscle_gains().1 - 0.25 * 40.0 / 0.75).abs() < 1e-4);
+    assert!((skeleton.muscle_gains().k - 40.0 / 0.75).abs() < 1e-4);
+}
+
+/// The damping term is k over (0.5|e|² + 1.4) with the spread in single
+/// precision and the floor and the division in double, times D; on the
+/// pelvis and legs the double 0.6 is taken before D, all in double.
+#[test]
+fn the_damping_term_divides_in_double() {
+    for (k, d, len2) in [
+        (80.0f32, 0.25f32, 3.7f32),
+        (53.333_332, 0.0625, 0.01),
+        (50.0, 0.2, 12.5),
+    ] {
+        let ratio = (f64::from(k) / (f64::from(0.5 * len2) + 1.4)) as f32;
+        assert_eq!(
+            damping_term(k, d, len2, false).to_bits(),
+            (ratio * d).to_bits()
+        );
+        let leg = (f64::from(d) * (f64::from(ratio) * 0.6)) as f32;
+        assert_eq!(damping_term(k, d, len2, true).to_bits(), leg.to_bits());
+    }
+    // No damping below half energy, whatever the gap.
+    assert_eq!(damping_term(80.0, 0.0, 9.0, true), 0.0);
 }
 
 /// The strength follows √E: a body dazed to a quarter of its energy pulls
@@ -107,17 +131,21 @@ fn damping_gains_are_the_originals() {
 #[test]
 fn strength_follows_the_root_of_energy_and_damping_stops_at_half() {
     let mut drive = Drive::default();
-    let (full, _) = drive.muscle_gains();
+    let full = drive.muscle_gains().strength;
     drive.energy = 0.25;
-    let (dazed, damping) = drive.muscle_gains();
-    assert!((dazed - 0.5 * full).abs() < 1e-6, "{dazed} against {full}");
-    assert_eq!(damping, 0.0);
+    let g = drive.muscle_gains();
+    assert!(
+        (g.strength - 0.5 * full).abs() < 1e-6,
+        "{} against {full}",
+        g.strength
+    );
+    assert_eq!(g.d, 0.0);
     for e in [0.5, 0.4, 0.05] {
         drive.energy = e;
-        assert_eq!(drive.muscle_gains().1, 0.0, "E = {e}");
+        assert_eq!(drive.muscle_gains().d, 0.0, "E = {e}");
     }
     drive.energy = 0.75;
-    assert!((drive.muscle_gains().1 - 0.0625 * 80.0).abs() < 1e-4);
+    assert_eq!(drive.muscle_gains().d, 0.0625);
 }
 
 /// The root is taken as the energy is: a NaN stays a NaN strength, and a
@@ -133,28 +161,60 @@ fn a_nan_energy_keeps_a_nan_muscle_strength() {
         }
         .muscle_gains()
     };
-    let (strength, damping) = gains(f32::NAN);
-    assert!(strength.is_nan());
-    assert!(damping.is_nan());
-    let (strength, damping) = gains(-1.0);
-    assert!(strength.is_nan());
-    assert_eq!(damping, 0.0);
-    let (strength, damping) = gains(-0.0);
-    assert_eq!(strength.to_bits(), (-0.0f32).to_bits());
-    assert_eq!(damping, 0.0);
+    let g = gains(f32::NAN);
+    assert!(g.strength.is_nan());
+    assert!(g.d.is_nan());
+    let g = gains(-1.0);
+    assert!(g.strength.is_nan());
+    assert_eq!(g.d, 0.0);
+    let g = gains(-0.0);
+    assert_eq!(g.strength.to_bits(), (-0.0f32).to_bits());
+    assert_eq!(g.d, 0.0);
 }
 
-/// The pull: the error plus its change times gain/(0.5|e|² + 1.4), then
-/// e/(1 + 0.1|e|): 10 cm pulls 5 cm; 1 cm moving 0.1 cm with gain 20 pulls
-/// (1 + 0.1·20/1.9)/(1 + 0.1·2.053) = 1.703 cm. Under 1.19e-7 cm², nothing.
+/// The pull: the error plus its change times the damping term, then about
+/// e/(1 + 0.1|e|): 10 cm pulls 5 cm; 1 cm moving 0.1 cm with D·k = 20
+/// pulls (1 + 0.1·20/1.9)/(1 + 0.1·2.053) = 1.703 cm. Under 1.19e-7 cm²,
+/// nothing.
 #[test]
 fn pulls_are_damped_and_saturated() {
-    let pull = muscle_pull(Vec3::X * 10.0, Vec3::ZERO, 20.0, SATURATION).unwrap();
-    assert!((pull.x - 5.0).abs() < 1e-5, "{pull}");
-    let pull = muscle_pull(Vec3::X, Vec3::X * 0.1, 20.0, SATURATION).unwrap();
-    assert!((pull.x - 1.703).abs() < 1e-3, "{pull}");
-    assert_eq!(muscle_pull(Vec3::splat(1e-4), Vec3::ZERO, 20.0, 0.1), None);
-    assert_eq!(muscle_pull(Vec3::NAN, Vec3::ZERO, 20.0, 0.1), None);
+    let gains = (1.0, 20.0);
+    let pull = muscle_pull(Vec3::X * 10.0, Vec3::ZERO, gains, false, SATURATION).unwrap();
+    assert!((pull.x - 5.0).abs() < 5e-3, "{pull}");
+    let pull = muscle_pull(Vec3::X, Vec3::X * 0.1, gains, false, SATURATION).unwrap();
+    assert!((pull.x - 1.703).abs() < 2e-3, "{pull}");
+    assert_eq!(
+        muscle_pull(Vec3::splat(1e-4), Vec3::ZERO, gains, false, 0.1),
+        None
+    );
+    assert_eq!(muscle_pull(Vec3::NAN, Vec3::ZERO, gains, false, 0.1), None);
+}
+
+/// The saturation is the processor's: r = RSQRTSS(|e|²), then e times
+/// r·RCPSS(c + r), every lane by the same factor; within twelve bits of
+/// e/(1 + c|e|).
+#[test]
+fn the_saturation_uses_the_processors_approximations() {
+    use crate::engine_math::{reciprocal_approx, reciprocal_sqrt};
+    for e in [
+        Vec3::new(3.0, -4.0, 12.0),
+        Vec3::new(0.01, 0.0, 0.02),
+        Vec3::splat(70.0),
+    ] {
+        let len2 = e.length_squared();
+        let r = reciprocal_sqrt(len2);
+        let want = e * (r * reciprocal_approx(0.1 + r));
+        let got = saturate(e, len2, 0.1);
+        assert_eq!(
+            got.to_array().map(f32::to_bits),
+            want.to_array().map(f32::to_bits)
+        );
+        let exact = e / (1.0 + 0.1 * len2.sqrt());
+        assert!(
+            (got - exact).length() <= exact.length() * 1e-3,
+            "{got} {exact}"
+        );
+    }
 }
 
 /// A moving body's stance factor rises 0.01 a tick from the race's 0.5 to
@@ -672,7 +732,7 @@ fn part_factors_and_arm_strengths() {
 
     let sigma = |body: &Ragdoll| {
         let d = body.drive.as_ref().unwrap();
-        body.links[1].strength * body.parts[1].factor * d.muscle_gains().0
+        body.links[1].strength * body.parts[1].factor * d.muscle_gains().strength
     };
     let mut body = arm();
     for _ in 0..60 {
@@ -770,7 +830,12 @@ fn one_muscle_pass_keeps_the_momentum() {
     let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
     let muscle = &body.links[1];
     let (part, parent) = (&body.parts[1], &body.parts[0]);
-    let pull = muscle.muscle(part, parent, muscle.anchor.unwrap(), (0.5, 20.0));
+    let gains = MuscleGains {
+        strength: 0.5,
+        d: 0.25,
+        k: 80.0,
+    };
+    let pull = muscle.muscle(part, parent, muscle.anchor.unwrap(), gains);
     assert!(pull.is_some_and(|c| c.length() > 1e-3), "{pull:?}");
     body.iterate();
     let momentum: Vec3 = body
@@ -1474,4 +1539,53 @@ fn the_body_tick_feeds_the_use_counters() {
     let before = used(&body);
     body.aim(Affine3A::IDENTITY, pose);
     assert_eq!(used(&body), before);
+}
+
+/// The living step ends with the tree's root restoring the six edges of
+/// every part, after inertia and the pose drive: a part whose particles
+/// moved apart over the last tick starts the iterations with its rest
+/// edges (the limp step leaves them stretched).
+#[test]
+fn the_living_step_restores_every_parts_edges() {
+    let edges = |p: &Part| {
+        [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)].map(|(a, b)| {
+            (
+                (p.positions[b] - p.positions[a]).length(),
+                (p.rest[b] - p.rest[a]).length(),
+            )
+        })
+    };
+    let stretch = |body: &mut Ragdoll| {
+        for p in &mut body.parts {
+            for (k, x) in p.previous.iter_mut().enumerate() {
+                *x -= Vec3::new(0.004 * k as f32, -0.003, 0.002 * k as f32);
+            }
+        }
+    };
+    let worst = |body: &Ragdoll| {
+        body.parts
+            .iter()
+            .flat_map(edges)
+            .map(|(now, rest)| (now - rest).abs())
+            .fold(0.0, f32::max)
+    };
+    let mut living = arm();
+    stretch(&mut living);
+    living.step();
+    let mut limp = arm();
+    limp.go_limp();
+    stretch(&mut limp);
+    limp.step();
+    // One pass in the edges' order leaves a little of the stretch; the
+    // limp step keeps all of it.
+    assert!(
+        worst(&limp) > 1e-3,
+        "the limp step keeps its particles' motion"
+    );
+    assert!(
+        worst(&living) < 0.5 * worst(&limp),
+        "{} against {}",
+        worst(&living),
+        worst(&limp)
+    );
 }

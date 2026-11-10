@@ -179,6 +179,16 @@ fn leg_limits_and_smoothing() {
     // Near the origin the formula passes 1 and is capped.
     assert_eq!(setup_smoothing(Vec3::new(0.01, 0.0, 0.0)), 0.99);
     assert_eq!(setup_smoothing(Vec3::new(0.003, 0.0, 0.0)), 0.0);
+    // The formula is in double, rounded once; a NaN point has none.
+    let r = Vec3::new(0.1249, -0.0031, 0.0402);
+    let c = r * CM;
+    let r2 = c.length_squared();
+    let keep = 1.0 - f64::from(r2 - 25.0) * 0.001;
+    assert_eq!(
+        setup_smoothing(r).to_bits(),
+        ((keep * keep) as f32).to_bits()
+    );
+    assert_eq!(setup_smoothing(Vec3::NAN), 0.0);
     body.go_limp();
     assert!(body.drive.is_none());
     assert_eq!(body.links[shin_limit].strength, 1.0);

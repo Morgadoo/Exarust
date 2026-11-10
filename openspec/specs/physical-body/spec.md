@@ -395,7 +395,7 @@ In a living body a pivot (slack at most 0.01 cm) SHALL close d/(1 + 0.001|d|) of
 - **THEN** one pass takes back 80 cm
 
 ### Requirement: Link strength and smoothing
-Each link SHALL keep a strength: 1, except a lower leg's first link with over 10 cm of slack, its leg limit, at 0.2 when a living body is built, then following its leg's gait, and 1 once the body goes limp; the femur's first such link SHALL be its leg limit. Each link SHALL keep the smoothing (1 − (r² − 25)·0.001)², at most 0.99 and 0 within √0.1 cm, r being its point's distance from the part's origin in cm.
+Each link SHALL keep a strength: 1, except a lower leg's first link with over 10 cm of slack, its leg limit, at 0.2 when a living body is built, then following its leg's gait, and 1 once the body goes limp; the femur's first such link SHALL be its leg limit. Each link SHALL keep the smoothing (1 − (r² − 25)·0.001)² in double, rounded once, 0.99 when it compares over the double 0.99, and 0 when r² compares at most the double 0.1 or is not a number, r² being its point's squared distance from the part's origin in cm, summed (x² + y²) + z².
 
 #### Scenario: Human leg
 - **WHEN** a living human body is built
@@ -435,8 +435,15 @@ A limp part SHALL keep its velocity as the original's default environment gives 
 - **WHEN** a living human body's part drifts at 6 cm/s
 - **THEN** it keeps 0.98977 of its velocity per tick
 
+### Requirement: Living step restores the edges
+At the end of a living body's step, after every part's inertia, carry and pose drive and before the iterations, each part's six edges SHALL be restored once, as the tree's root does when it steps last.
+
+#### Scenario: Stretched part
+- **WHEN** a living arm whose particles moved apart over the last tick is stepped
+- **THEN** its parts' edges are under half as far from their rest lengths as a limp arm's after the same step
+
 ### Requirement: Link muscles
-In a living body each slack link SHALL pull its point toward its anchor, where the clip's joint angle puts it on the parent: e = anchor − point, plus the gap's change over the tick × D·k/(0.5|e|² + 1.4), D = (E − 0.5)², or 0 when E − 0.5 compares below 0 (a NaN stays), k = 50 moving, else 40 / stance factor, ×0.6 on the pelvis and legs; then e/(1 + c|e|), c = 0.1, in cm; times strength × part factor × √E·T (a NaN or negative root stays NaN), the excess beyond the slack added at full weight.
+In a living body each slack link SHALL pull its point toward its anchor, where the clip's joint angle puts it on the parent: e = anchor − point, plus the gap's change over the tick × D·k/(0.5|e|² + 1.4), D = (E − 0.5)², or 0 when E − 0.5 compares below 0 (a NaN stays), k = 50 moving, else 40 / stance factor, the division in double and ×0.6 (in double, before D) on the pelvis and legs; then e·r·RCPSS(c + r), r = RSQRTSS(|e|²), about e/(1 + c|e|), c = 0.1, in cm; times strength × part factor × √E·T (a NaN or negative root stays NaN), the excess beyond the slack added at full weight.
 
 #### Scenario: Elbow swing
 - **WHEN** a living arm's clip swings the elbow 40° over 10 ticks and holds it
@@ -453,6 +460,10 @@ In a living body each slack link SHALL pull its point toward its anchor, where t
 #### Scenario: Momentum
 - **WHEN** one pass of a link muscle moves a part and its parent
 - **THEN** the body's momentum is unchanged
+
+#### Scenario: Processor approximations
+- **WHEN** a link muscle saturates an error of (3, −4, 12) cm
+- **THEN** it is scaled by r·RCPSS(0.1 + r), r = RSQRTSS(169), within 0.1% of e/(1 + 0.1·13)
 
 ### Requirement: Muscle gains
 Each tick the character tick SHALL set: the stance factor s, the race's standing (human 0.5; 1 dormant or in the shock's stagger), rising 0.01 a tick (double) toward 0.7 + 0.3·run (last tick's run blend) while the decision walks, runs or backpedals it, never past it, keeping what it reached above it; T = tone·s; part factors 0.5, a foot half its lower leg's, the head a quarter of the thorax's × its head factor, shoulders, arms and hands 1.25 × scale × arm stiffness, and the legs' gains.

@@ -113,6 +113,23 @@ pub fn reciprocal_sqrt(value: f32) -> f32 {
     }
 }
 
+/// The processor's approximate reciprocal (`RCPSS`): about 12 bits, the
+/// hardware's own table. Exact division off x86-64.
+pub fn reciprocal_approx(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE is part of the x86_64 baseline.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rcp_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(value)))
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value
+    }
+}
+
 /// The processor's approximate reciprocal of each component (`RCPPS` on
 /// `(x, y, z, 0)`), the engine's fast vector reciprocal: about 12 bits,
 /// the hardware's own table, so the low bits are the running processor's
