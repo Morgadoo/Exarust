@@ -525,8 +525,24 @@ and a flush remembers its last entry's bucket for the lights.
 Exarust lets Bevy's phases take the place of the fixed walk: `Opaque3d` for
 the opaque class, `AlphaMask3d` for the alpha-tested one and `Transparent3d`
 for the depth-write-free classes and the particles. The clear is the
-camera's clear colour; the decal bias, the particles' depth pre-pass and
-the hook lists have no separate node yet. `exa_cube_shadows` and `exa_gi`
+camera's clear colour; the particles' depth pre-pass and the hook lists
+have no separate node yet. The decal and blended lists' depth bias is in
+the surface material's vertex stage (`exa_vertex.wesl`, Bevy's mesh vertex
+stage plus the bias): the original widens the first view's projection
+`[2][2]` term to double, adds 2·10⁻⁵, stores the sum in single for every
+view (`passes::biased_depth_term`; on its camera's −12 600/12 400 term the
+stored step is 2.0027·10⁻⁵) and writes the unbiased term back after the
+blended lists. With its planes (near 1 m, far 125 m) that is the depth of a
+surface whose inverse view distance is larger by (δ/2)·(f − n)/(f·n) ≈
+9.93·10⁻⁶ per metre (`passes::list_depth_shift`), about 1 mm nearer at
+10 m. A surface with a decal or blended render state (`ExaMaterial`'s
+`blend_state`) adds that to Bevy's reverse depth `near/d`, scaled by the
+view's own near plane (clip z += near · shift · w, perspective views only);
+every other surface draws with the unchanged Bevy stage, and effects with
+no render state (smoke, flames, rain) are not biased.
+`--no-list-depth-bias` turns it off, to compare. At the views compared the
+picture does not change: the decals sit on their surfaces without
+z-fighting either way, and the bias only decides coplanar ties. `exa_cube_shadows` and `exa_gi`
 run in the `Core3d` prepass, and the post chain follows the transparent
 phase. The original's list order inside the opaque phases is not
 reproduced by Bevy's batching (the same materials and meshes batch in any
