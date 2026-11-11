@@ -176,7 +176,12 @@ impl Plugin for ThaumEffectsPlugin {
 }
 
 /// The data this plugin's fixed-step systems touch, for the simulation's
-/// bridge (`exa_physics::sim_bridge`).
+/// bridge (`exa_physics::sim_bridge`). The frame writes the blast, torrent,
+/// barrier, bubble, barricade and wisp effects only to draw them (light
+/// points, ribbon normals, shown shares, growth): they are drawn copies, so
+/// a free simulation's newer effect state is never rolled back by a frame
+/// copy based on an older step (an AI's charging Force Blast lost its
+/// release that way).
 fn bridge_thaum_effects_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<exa_combat::impact::LimbImpact>()
@@ -190,9 +195,9 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_copy::<exa_character::held::HeldMoveset>()
         .bridge_copy::<crate::effects::danger::Hazard>()
         .bridge_copy_in_resource::<crate::player::CursorGround>()
-        .bridge_copy::<crate::thaum::barrier_live::LiveBarrier>()
-        .bridge_copy::<crate::thaum::blast_live::LiveBlast>()
-        .bridge_copy::<crate::thaum::bubble_live::LiveBubble>()
+        .bridge_copy_drawn::<crate::thaum::barrier_live::LiveBarrier>()
+        .bridge_copy_drawn::<crate::thaum::blast_live::LiveBlast>()
+        .bridge_copy_drawn::<crate::thaum::bubble_live::LiveBubble>()
         .bridge_copy::<crate::thaum::cast::LiveShellAura>()
         .bridge_copy::<crate::thaum::cast::PowerCaster>()
         .bridge_copy::<crate::thaum::hold_live::StrikesAura>()
@@ -202,11 +207,11 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_move_resource::<crate::thaum::live::EffectDraws>()
         .bridge_move_resource::<crate::thaum::live::EffectRoll>()
         .bridge_copy::<crate::thaum::live::LiveArcs>()
-        .bridge_copy::<crate::thaum::live::LiveBarricade>()
-        .bridge_copy::<crate::thaum::live::LiveWisps>()
+        .bridge_copy_drawn::<crate::thaum::live::LiveBarricade>()
+        .bridge_copy_drawn::<crate::thaum::live::LiveWisps>()
         .bridge_copy::<crate::thaum::live::NavStamped>()
         .bridge_copy::<crate::thaum::live::ShockReady>()
-        .bridge_copy::<crate::thaum::torrent_live::LiveTorrent>()
+        .bridge_copy_drawn::<crate::thaum::torrent_live::LiveTorrent>()
         .bridge_copy::<crate::thaum::user_stamp::UserStamp>()
         .bridge_copy::<crate::thaum::vanish_live::ConstantShell>()
         .bridge_copy::<crate::thaum::vanish_live::LiveVanish>()
