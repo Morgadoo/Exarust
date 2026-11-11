@@ -303,6 +303,8 @@ Round 122 navsys: every thread runs in the engine's float mode, and the chase ca
 
 Round 127 terrain: a spectated arena match shows only the room at its spawn spot, as the original match starts set it; the terrain and grid routine tables were rebuilt.
 
+Round 159 roomlights: a dungeon mesh is lit only by the lights its room lists, as the original sector aliases decide; the existing wall-window flood already kept light in its rooms, so the picture is unchanged.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
