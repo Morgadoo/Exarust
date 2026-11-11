@@ -122,7 +122,6 @@ pub(crate) struct DemonMind<'w, 's> {
     roles: Query<'w, 's, &'static mut Roles>,
     relations: Query<'w, 's, &'static mut Relations>,
     npcs: Query<'w, 's, &'static mut Npc>,
-    sizes: Query<'w, 's, &'static exa_physics::body::Physical>,
     db: Option<Res<'w, RoleDatabase>>,
 }
 
@@ -161,10 +160,12 @@ pub(crate) fn arrive_demons(
         let wisps =
             super::cast::spawn_body_wisps(&mut commands, demon, body, &mut draws, &mut roll);
         let tex_pos = [roll.0.unit(), roll.0.unit()];
-        let size = mind
-            .sizes
-            .get(demon)
-            .map_or(1.0, |p| p.stats.size)
+        // The demon's size, from its built body's muscles (the build
+        // took the spawn's `Physical` request off the root).
+        let size = body
+            .drive
+            .as_ref()
+            .map_or(1.0, |drive| drive.stats.size)
             .max(f32::MIN_POSITIVE);
         let vanish = commands
             .spawn((
@@ -217,7 +218,7 @@ pub(crate) fn arrive_demons(
         info!(
             "summon by {caster_entity:?}: {DEMON_RECORD} {demon:?} (id {}) arrives, held for \
              2000 ms; role {DEMON_ROLE}, familiarity {DEMON_RELATION} and relation role \
-             {DEMON_TOPIC} with {}; sound pitch {pitch:.3}",
+             {DEMON_TOPIC} with {}; sound pitch {pitch:.3}; vanish size {size:.3}",
             hex(demon_id),
             hex(caster_id)
         );

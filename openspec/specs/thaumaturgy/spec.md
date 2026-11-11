@@ -2083,3 +2083,10 @@ Control Mind's handover, the hand-back's transition and Spirit Form's end SHALL 
 #### Scenario: A handover behind the bridge
 - **WHEN** Control Mind binds its target with the simulation behind the bridge
 - **THEN** the player takes the target's body and no command fails
+
+### Requirement: The demon's size from its body
+The summon's arrival SHALL take the demon's size for its shell from the demon's built body (its muscles' character stats), not from the spawn request the body build consumes.
+
+#### Scenario: The demon arrives
+- **WHEN** a summoned demon of size 1.5 arrives
+- **THEN** its shell's texture scale is divided by 1.5
