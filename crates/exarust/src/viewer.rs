@@ -3077,9 +3077,12 @@ fn poke_mechanisms(
 
 const SHOVE_PROPS_REACH: f32 = 3.0;
 const SHOVE_PROPS_SPEED: f32 = 1.5;
+/// How often (ticks) `--shove-props` logs where the shoved bodies are.
+const SHOVE_PROPS_EVERY: u64 = 50;
 
 /// `--shove-props`: at that frame after loading, a blow to every prop body
-/// within [`SHOVE_PROPS_REACH`] of the player, away from it and up; then,
+/// within [`SHOVE_PROPS_REACH`] of the player, away from it and up; every
+/// [`SHOVE_PROPS_EVERY`] ticks, where each one's first particle is; then,
 /// once every one of them sleeps again, how far each moved and how long it
 /// took.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -3090,6 +3093,7 @@ fn shove_props_at_frame(
     mut frames: Local<u32>,
     mut shoved: Local<Vec<(Entity, Vec3)>>,
     mut since: Local<u64>,
+    mut reported: Local<u64>,
     players: Query<&GlobalTransform, With<exa_game::player::Player>>,
     bodies: Query<(Entity, &exa_physics::body::Ragdoll), With<exa_physics::prop::PropBody>>,
     mut shoves: MessageWriter<exa_physics::body::Shove>,
@@ -3136,6 +3140,20 @@ fn shove_props_at_frame(
     }
     if *frames <= at + 1 || shoved.is_empty() {
         return;
+    }
+    // Every 50 ticks until they settle, where each shoved body is, in
+    // full: runs (lockstep) compare prop by prop.
+    let after = clock.0 - *since;
+    if after / SHOVE_PROPS_EVERY > *reported {
+        *reported = after / SHOVE_PROPS_EVERY;
+        let at: Vec<String> = shoved
+            .iter()
+            .map(|(e, _)| match bodies.get(*e) {
+                Ok((_, b)) => format!("{:?}", b.parts[0].positions[0].to_array()),
+                Err(_) => "removed".into(),
+            })
+            .collect();
+        info!("--shove-props: {after} ticks after: {}", at.join(" "));
     }
     // A body removed below the world counts as settled.
     let all_asleep = shoved

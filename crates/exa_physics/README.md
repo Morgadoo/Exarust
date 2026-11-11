@@ -199,7 +199,9 @@ sleeping part is not moved. Each `Part` keeps its cell entry (the cell and
 the time it was linked there, `body::pairs::CellEntry`); the pair stage's
 `link_cells` joins new bodies in list order and moves the awake parts that
 changed cells in awake-list order on its own clock before each detection,
-and each cell's parts are met latest-linked first. The original steps each
+and each cell's parts are met latest-linked first. `EXA_CELL_ORDER=join`
+meets them in joining order instead (the order before the head move) and
+`EXA_CELL_ORDER=trace` logs the first detections where the two differ. The original steps each
 part as a body of its own in the list's reverse order; Exarust steps a tree
 in one `Ragdoll::step`, which gives the same values because a part's step
 reads only its own particles and the character's words (the carry, the

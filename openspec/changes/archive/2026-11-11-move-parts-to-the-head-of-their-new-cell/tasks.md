@@ -7,7 +7,8 @@
 
 - [x] 2.1 `CellEntry` per part and the pair stage's `link_cells` (join in list order, migrate in awake-list order), the cell meeting order by link time
 - [x] 2.2 `Ragdoll::set_velocity` writes the two-ticks-ago particles
-- [x] 2.3 Tests: the head move, sleepers kept, bodies without a place; a velocity read by the two-step point
+- [x] 2.3 The `EXA_CELL_ORDER` debug aid (join order, trace)
+- [x] 2.4 Tests: the head move, sleepers kept, bodies without a place; a velocity read by the two-step point
 
 ## 3. Check
 

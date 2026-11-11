@@ -39,6 +39,15 @@ every routine that writes a body's particle sets:
   joins new bodies in list order and moves each awake part whose cell changed to the head, in awake-list order, on its
   own clock before the detection; each cell's parts are met latest-linked first.
 - `Ragdoll::set_velocity` also writes the two-ticks-ago particles.
+- A debug aid, `EXA_CELL_ORDER=join|trace`: meet each cell's parts in joining order (the order before this change),
+  or log the first detections where the two orders differ.
+
+## Impact
+
+Lockstep stays deterministic. Against main the duels and exanima01 first differ where an awake part meets two parts
+of one cell, one of which moved in (a character's parts crossing a 6 m cell line), in the head-first order; with
+`EXA_CELL_ORDER=join` the same binary is tick-identical to main in every scene, and the velocity change alters none
+of them.
 
 ## Out of scope
 
