@@ -432,6 +432,14 @@ fn press_hotkeys(
                 Hotkey::ToggleCombat => {
                     if pb.toggle_combat() {
                         req.entered_combat();
+                        // Entering combat mode closes every in-game screen
+                        // and the power tree (the bar stays).
+                        commands.queue(|world: &mut World| {
+                            crate::gui_screens::sweep_screens(
+                                world,
+                                crate::gui_screens::ScreenSweep::Every,
+                            );
+                        });
                     }
                     pb.aim = req.heading;
                     if pb.combat
@@ -482,6 +490,16 @@ fn press_hotkeys(
                     }
                 }
                 Hotkey::Inventory | Hotkey::Journal => {
+                    // The journal's opener leaves combat mode first, when
+                    // the player is in action and alive, whether it then
+                    // opens, focuses or closes the journal.
+                    if action == Hotkey::Journal
+                        && exa_ui::game_gui::journal_leaves_combat(!word.dying(), !word.is_dead())
+                        && pb.combat
+                    {
+                        pb.set_combat(false);
+                        info!("journal: the opener leaves combat mode");
+                    }
                     screens.write(ScreenRequest::screen(
                         if action == Hotkey::Inventory {
                             GameScreen::Inventory

@@ -562,6 +562,13 @@ pub fn journal_controls_flag(opening: bool) -> u8 {
     u8::from(!opening)
 }
 
+/// Whether the journal's opener turns combat mode off: with a player, its
+/// first step, before the open, focus or close. A player out of action or
+/// dead (condition 0xa00) returns before it, keeping the mode.
+pub fn journal_leaves_combat(player_ready: bool, player_alive: bool) -> bool {
+    player_ready && player_alive
+}
+
 /// The journal window's size: 244 × 518.
 pub const JOURNAL_SIZE: (i32, i32) = (244, 518);
 /// The journal's text box: 228 × 412 at (0, 88), stretched downwards, with

@@ -1677,6 +1677,19 @@ drawing:
   two entries resets the first, otherwise removes the selection; the list
   renames the selected entry while editing and otherwise stores the text
   and selects the picked row.
+- **Sweeps and saves.** Entering combat mode (Tab, or a script's
+  combat-mode call that turns it on) closes every in-game screen (tag
+  mask 0xce100000) back to front, then the power tree; the shown power
+  bar stays. Control Mind's handover and hand-back close the container
+  and journal family (mask 0xce1c0000) front to back, then the tree, or
+  the shown bar falls. The journal's opener turns combat mode off first,
+  for a player in action and alive, whether it then opens, focuses or
+  closes the journal. Every game save first saves the open screens
+  without closing them: an open container popup saves its panel into its
+  record and the journal stores its text (the inventory and loot panels'
+  items already live in the bodies' possessions in Exarust). The
+  journal text box's Tab callback turns combat mode on; Exarust's journal
+  text is drawn read-only, so nothing calls it yet.
 - **Controls.** The power slot (0xac3, 40 × 40) answers its hint with 3
   (0x103 for a hovered slot with a count) and hides a visible tooltip;
   a press with 0x2000 on an enabled slot with an icon or a kind opens the
