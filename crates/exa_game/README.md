@@ -140,6 +140,17 @@ the session's log buffer, which rewrites `<user folder>/<project>.log`
 message box (6, 7, shown by the binary's handler). The script reports,
 the display-mode refusal and the save writer's package failure log
 through it; `EXA_LOG_PROBE` logs a chosen message on a chosen frame.
+`view_overlay` is the 3D viewport's two overlays, live: the frame-rate
+readout (top right, counted while drawn and read once more than 250 ms
+have passed, at the inner right less the border, a unit and the main
+font's gap per byte, its ink the skin's seventh label ink at alpha 0xa0)
+and the version line "V 0.9.5.2g" (bottom left, a unit in and the border
+and a unit up), each over a black half-alpha shadow a pixel up and left.
+The title flag (set by the return to the title and the splash's
+hand-over, cleared by every session start) shows the version line and
+hides the readout; the readout's flag takes ShowFPS at a session start
+and whenever the setting changes. Each line is rasterised into its own
+box only, when it changes.
 Tests pin the arithmetic and the orders. `hw_config` applies the full-screen
 rule and the present mode, `exarust::frame_loop` the pacing, the focus key
 release, Alt+Enter and the minimise; the other models document the original's loop, which

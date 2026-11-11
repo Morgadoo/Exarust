@@ -164,6 +164,7 @@ pub mod trace;
 pub mod trade;
 pub mod transition_screen;
 pub mod use_cursor;
+pub mod view_overlay;
 pub mod weather;
 pub mod window;
 pub mod world_characters;
@@ -253,6 +254,7 @@ impl Plugin for GamePlugin {
                 hw_config::HardwareConfigPlugin,
                 os_pointer::OsPointerPlugin,
                 engine_log::EngineLogPlugin,
+                view_overlay::ViewOverlayPlugin,
             ),
             destination::DestinationPlugin,
             (
