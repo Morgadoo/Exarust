@@ -1059,3 +1059,47 @@ fn a_starting_collapse_groans_once() {
     assert_eq!(all[0].sounds.wound, None);
     assert!((volume - 0.153_138).abs() < 1e-5 && (pitch - 0.8).abs() < 1e-6);
 }
+
+/// A body that dies while its parry still runs ends the parry, as the
+/// original's death runs its parry end when the parrying flag is set: no
+/// longer parrying, no countered motion, the guard open. One that dies
+/// without a parry is left alone.
+#[test]
+fn a_death_while_parrying_ends_the_parry() {
+    for parrying in [true, false] {
+        let mut app = App::new();
+        app.add_systems(Update, dying_tick);
+        let mut body = legs();
+        body.drive.as_mut().unwrap().tone = 0.25;
+        let mut fighter = Fighter::default();
+        fighter.parry.active = parrying;
+        fighter.parry.counter_motion = Some(5);
+        fighter.guard = crate::damage::Guard::Parry;
+        let id = app
+            .world_mut()
+            .spawn((
+                fighter,
+                Condition::COLLAPSING,
+                Collapse::default(),
+                body,
+                Animator::new("Default", FALL_BACKWARD),
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.insert_resource(TickedCharacter {
+            body: id,
+            character: None,
+        });
+        app.update();
+        assert_eq!(*app.world().get::<Condition>(id).unwrap(), Condition::DEAD);
+        let f = app.world().get::<Fighter>(id).unwrap();
+        assert!(!f.parry.active);
+        if parrying {
+            assert_eq!(f.parry.counter_motion, None);
+            assert_eq!(f.guard, crate::damage::Guard::Open);
+        } else {
+            assert_eq!(f.parry.counter_motion, Some(5));
+            assert_eq!(f.guard, crate::damage::Guard::Parry);
+        }
+    }
+}

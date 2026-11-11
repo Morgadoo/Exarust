@@ -52,7 +52,9 @@ parry they would make against their foe's attack (the parry chooser with
 them as the defender, kept each fixed step by `parry::aim_foe_parries` on
 `Attacker::foe_parry` against the fighter's combat target, `CombatTarget`,
 when it is in combat; a fighter with no target component takes the
-nearest fighter in combat), and mark the
+nearest fighter in combat; an AI whose target changed earlier in the tick
+takes it and aims again just before its starters, `parry::aim_at_new_target`
+over `parry::fighting_of`), and mark the
 foe's motion as countered (the parry state's countered motion, which
 every attack start writes, none for an unaimed one); without an answer
 their own parry pick of the last 500 ms steers the side (`ParryState::
@@ -488,6 +490,9 @@ while held, `holds_regeneration`: attacking or Cmbt - Idle playing; else
 +0.0003 × `RATE_CAP` a tick to `RATE_CAP` = 0.01/83, yellow += √red ×
 rate above `RED_FLOOR`) and the clamps. Every hit on a fighter sets its
 rate to 0 in the hit reaction, and the collapse's death sets yellow to 0.
+A death while the parry still runs ends it first
+(`collapse::end_parry_at_death`: not parrying, no countered motion, the
+guard open, the hands' arm bit and the held items' parry grips released).
 Rules: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md)
 (Regeneration).
 
