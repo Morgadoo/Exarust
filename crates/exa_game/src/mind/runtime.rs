@@ -339,7 +339,13 @@ impl MindLive {
         data: Option<&exa_character::record::CharacterData>,
         body: Option<&exa_physics::body::Ragdoll>,
     ) -> Self {
-        let stats = body.and_then(|b| b.drive.as_ref()).map(|d| d.stats);
+        // A corpse's stats are the ones its muscles kept when they went.
+        let stats = body.and_then(|b| {
+            b.drive
+                .as_ref()
+                .map(|d| d.stats)
+                .or_else(|| b.kept_muscles().map(|(_, stats)| stats))
+        });
         Self {
             condition: condition.0,
             rules: fighter.map_or(0, |f| f.stats.rules.0),
