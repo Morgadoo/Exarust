@@ -2920,7 +2920,18 @@ pub(crate) fn chase_camera(
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
     mut cameras: Query<(&mut ChaseCamera, &mut Transform, &mut Projection)>,
-    (mut spectate, every_body, mut cut_away, look, obstacles, views, keys, terrain, mut logged): (
+    (
+        mut spectate,
+        every_body,
+        mut cut_away,
+        look,
+        obstacles,
+        views,
+        keys,
+        terrain,
+        mut logged,
+        loading,
+    ): (
         Option<ResMut<crate::spectate::SpectateSession>>,
         Query<&Ragdoll>,
         Option<ResMut<crate::cut_away_live::CutAwayCamera>>,
@@ -2934,8 +2945,19 @@ pub(crate) fn chase_camera(
         Res<ButtonInput<KeyCode>>,
         Option<Res<exa_world::terrain::ground::TerrainGround>>,
         Local<Option<Vec3>>,
+        Option<Res<exa_ui::LoadingStatus>>,
     ),
 ) {
+    // The camera's clock stands still behind the loading screen, as the
+    // game time does: a load takes a different number of frames from run
+    // to run, and a clock that ran through them would tick the camera at a
+    // different phase of the body ticks after it (a fixed-frames run's
+    // camera, which the parked bodies' note reads, would not repeat).
+    let dt = if loading.is_some() {
+        0.0
+    } else {
+        time.delta_secs()
+    };
     let player_focus = players.iter().next().map(|target| {
         camera_focus(
             target.translation,
@@ -3080,7 +3102,7 @@ pub(crate) fn chase_camera(
         };
         let steps_before = cam.wall_steps;
         let along = cam.advance_probing(
-            time.delta_secs(),
+            dt,
             followed,
             &mut |start, direction, radius, length| {
                 seen.iter()

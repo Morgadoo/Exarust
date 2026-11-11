@@ -44,6 +44,7 @@ pub(crate) fn take_bearing(
         Option<&exa_ai::combatant::Combatant>,
         Option<&Fighter>,
         Option<&crate::golem_body::StatueRest>,
+        Option<&exa_physics::body::InView>,
     )>,
 ) {
     let Some(motions) = motions else { return };
@@ -59,6 +60,7 @@ pub(crate) fn take_bearing(
         combatant,
         fighter,
         statue,
+        in_view,
     )) = bodies.get_mut(ticked.body)
     else {
         return;
@@ -101,4 +103,9 @@ pub(crate) fn take_bearing(
     body.set_bearing(bearing);
     // The body tick's timers, from what the bearing just measured.
     body.tick_timers();
+    // Its dormant branch: a dormant body nothing drew last frame is parked
+    // (`crate::park`).
+    if body.park_unseen(in_view.is_none_or(|v| v.0)) {
+        info!("parked body {:?}: dormant and not drawn", ticked.body);
+    }
 }

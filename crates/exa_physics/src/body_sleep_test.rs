@@ -425,3 +425,41 @@ fn bodies_are_walked_from_the_last_to_join() {
         std::cmp::Ordering::Less
     );
 }
+
+/// A parked body is out of the solver: in the game's step it neither falls
+/// nor keeps its velocity, its countdown loses one a tick down to its deep
+/// state, and a wake does not unpark it; unparked, it falls again from
+/// rest.
+#[test]
+fn a_parked_body_holds_until_unparked() {
+    let mut app = app(Physics::default(), 1.0 / 60.0);
+    let mut body = ball(Vec3::new(0.0, 5.0, 0.0));
+    body.set_velocity(Vec3::X * 2.0);
+    body.countdown = 3;
+    body.park();
+    let e = app.world_mut().spawn(body).id();
+    super::floor_test::run_ticks(&mut app, 6);
+    let body = app.world().get::<Ragdoll>(e).unwrap();
+    let at = body.parts[0].transform().translation;
+    assert_eq!(
+        Vec3::from(at),
+        Vec3::new(0.0, 5.0, 0.0),
+        "held where it was parked"
+    );
+    assert_eq!(body.countdown(), 0);
+    assert!(body.parked_deep && body.parts[0].previous == body.parts[0].positions);
+    let mut body = app.world_mut().get_mut::<Ragdoll>(e).unwrap();
+    body.wake();
+    assert!(body.parked(), "a wake leaves the mark");
+    super::floor_test::run_ticks(&mut app, 2);
+    let y = app.world().get::<Ragdoll>(e).unwrap().parts[0]
+        .transform()
+        .translation
+        .y;
+    assert_eq!(y, 5.0);
+    app.world_mut().get_mut::<Ragdoll>(e).unwrap().unpark();
+    super::floor_test::run_ticks(&mut app, 2);
+    let body = app.world().get::<Ragdoll>(e).unwrap();
+    let at = body.parts[0].transform().translation;
+    assert!(at.y < 5.0 && at.x.abs() < 1e-6, "falls from rest: {at}");
+}

@@ -1734,6 +1734,8 @@ character body's possession routines; addresses are in the research notes.
   when the player is left idle (below).
 - The camera **ticks every 17 ms** of real time: a tick runs once the frame
   passes its start, at most nine a frame (a longer stall drops the rest).
+  Its clock stands still while the loading screen is up, as the game time
+  does, so a fixed-frames run's camera repeats tick for tick.
   The clock is the original's integer millisecond form: the tick clock and
   the frame's stamp are unsigned 32-bit milliseconds, compared as such, and
   the frame lies `1 − (clock − frame)/17` into the last tick

@@ -500,8 +500,9 @@ pub mod state {
     pub const ASLEEP: u32 = 0x1;
     /// Cleared by a wake (its meaning is not established).
     pub const RESTING: u32 = 0x2;
-    /// Cleared through a node tree by its own helper (its meaning is not
-    /// established).
+    /// Parked: the body tick's mark on a dormant character nothing drew,
+    /// which keeps the body out of the step; cleared through a node tree
+    /// by [`super::World::clear_marks`] (live: `Ragdoll::park`).
     pub const MARKED: u32 = 0x4;
     /// Deep sleep (a freeze clears it).
     pub const DEEP: u32 = 0x8;
@@ -921,7 +922,10 @@ impl World {
     }
 
     /// Clears the [`state::MARKED`] bit of every body from `node` down
-    /// through every child node.
+    /// through every child node: the AI manager frame's wake of a parked
+    /// character that was drawn, and the golem wake. The running game's
+    /// counterpart is [`crate::body::Ragdoll::unpark`] (a character is one
+    /// body there).
     pub fn clear_marks(&mut self, node: usize) {
         if let Some(body) = self.body_of(node) {
             self.bodies[body].state &= !state::MARKED;

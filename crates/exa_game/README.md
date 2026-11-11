@@ -748,11 +748,17 @@ self-sharpening, burning), the self-sharpening check and hit hook (the slash
 byte and its share), the worn item's light and the apparel
 effect with their 0.9/0.1 hysteresis, the skin material fade (the square of
 the value, first match) and the focus-item power slot. The golem guardians
-are in `exa_ai::golem`; `golem_alarm` runs their alarm zones live: the AI
+are in `exa_ai::golem`. `park` takes a dormant character nothing draws
+out of the simulation: the frame notes, before the fixed loop, whether
+any sphere of a dormant or parked body was inside an active world
+camera's frustum in the last frame (`exa_physics::body::InView`), the posture stage parks an
+undrawn dormant body (`Ragdoll::park_unseen`) and the AI manager's frame
+unparks a drawn one before its rise (`park::wake_parked`);
+`EXA_NO_PARK=1` turns the note off. `golem_alarm` runs their alarm zones live: the AI
 manager's zone check for the player (past 3 cm from its last checked
 point), the pass item search, and the ring that wakes the statue golems
 within 800 cm of the zone (statue bit and byte cleared, `golem_act`, home
-taken, the player their only contact at concern 10) with the level start's
+taken, the player their only contact at concern 10, the body unparked) with the level start's
 reset, and the alarm return the story revive runs before its save
 (`flow::Step::AlarmReturn`): while an alarm is armed, every awake golem
 within 3000 cm of the knocked-out player goes home (Stand 2, put at its

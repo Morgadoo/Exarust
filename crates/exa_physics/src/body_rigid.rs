@@ -345,6 +345,8 @@ impl Ragdoll {
             fell_out: false,
             frozen: false,
             disabled: false,
+            parked: false,
+            parked_deep: false,
             environment_keep: None,
             held_environment: None,
             // The constructor's 2, and one more for each articulated child

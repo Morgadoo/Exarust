@@ -1826,6 +1826,13 @@ pub struct Ragdoll {
     /// cursor, which the pair stage and the level detection skip and whose
     /// grabs a struck body breaks ([`Ragdoll::set_disabled`]).
     disabled: bool,
+    /// Parked (the original's state bit 4, the body tick's mark on a
+    /// dormant character nothing draws): out of the solver until the AI
+    /// manager's frame sees it drawn ([`Ragdoll::park`]).
+    parked: bool,
+    /// A parked body whose countdown ran out: nothing is done to it any
+    /// more (the original's deep bit on a parked body).
+    parked_deep: bool,
     /// The velocity a part keeps each tick in a body of the mechanism
     /// environment (levers and push surfaces), whatever its speed band;
     /// `None` keeps the default environment's banded retention
@@ -1961,6 +1968,8 @@ impl Ragdoll {
             fell_out: self.fell_out,
             frozen: self.frozen,
             disabled: self.disabled,
+            parked: self.parked,
+            parked_deep: self.parked_deep,
             environment_keep: self.environment_keep,
             held_environment: self.held_environment,
             link_iterations: self.link_iterations,
@@ -2732,6 +2741,15 @@ pub struct BodyTicks(pub u64);
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OutOfScene;
 
+/// Whether the renderer drew a character's body in its last frame: one of
+/// the body's spheres was inside an active world camera's frustum (the
+/// original's render-visibility word on the character's node, whose low
+/// bits its scene culling sets each frame). The frame writes it; the body tick and the AI manager's frame
+/// read it ([`Ragdoll::park_unseen`], [`Ragdoll::unpark`]). A body without
+/// it counts as drawn.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InView(pub bool);
+
 /// The original's game clock advances this many milliseconds a body tick
 /// (12 ms, the 83 Hz tick rounded), however long the tick took: its timers
 /// in milliseconds (attack cooldowns, the double click) run on it, so they
@@ -2813,6 +2831,7 @@ pub fn bridge_body_types(app: &mut App) {
         .bridge_copy::<crate::grip::ReplaceHeld>()
         .bridge_snapshot::<Ragdoll>()
         .bridge_copy::<OutOfScene>()
+        .bridge_copy::<InView>()
         .bridge_move_resource::<Physics>()
         .bridge_move_resource::<crate::collision_share::CollisionChanges>()
         .bridge_copy_resource::<crate::StaticColliders>()
@@ -3028,6 +3047,8 @@ impl Ragdoll {
             fell_out: false,
             frozen: false,
             disabled: false,
+            parked: false,
+            parked_deep: false,
             environment_keep: None,
             held_environment: None,
             link_iterations: LIVING_LINK_ITERATIONS,
@@ -4023,6 +4044,71 @@ impl Ragdoll {
     /// Whether the body is disabled ([`Ragdoll::set_disabled`]).
     pub fn disabled(&self) -> bool {
         self.disabled
+    }
+
+    /// Parks the body (the original's state bit 4, set down the
+    /// character's node tree): the solver leaves it out, as the original's
+    /// state masks do (no integration, no pair, link or level stage meets
+    /// it), and each tick only rolls its particle sets, so it keeps no
+    /// velocity, and takes one off its countdown, until the countdown is
+    /// spent and nothing more is done. A wake raises the countdown and
+    /// clears the sleep but not the mark: only [`Ragdoll::unpark`] lets the
+    /// body be simulated again.
+    pub fn park(&mut self) {
+        self.parked = true;
+    }
+
+    /// Clears the park mark (the original's unmark down the node tree):
+    /// from the next tick the body is simulated again by its own sleep
+    /// state, from rest. The live counterpart of the dynamics unit's
+    /// [`crate::dynamics::World::clear_marks`].
+    pub fn unpark(&mut self) {
+        self.parked = false;
+        self.parked_deep = false;
+    }
+
+    /// Whether the body is parked ([`Ragdoll::park`]).
+    pub fn parked(&self) -> bool {
+        self.parked
+    }
+
+    /// The body tick's dormant branch: a dormant character (a lying sleeper
+    /// or a resting statue) whose body nothing drew in the last frame
+    /// (`in_view` false) is parked unless it already is; one in view is left
+    /// as it is (only the AI manager's frame unparks it,
+    /// [`Ragdoll::unpark`]). A body that is not dormant is left alone.
+    /// Returns whether it parked the body now.
+    pub fn park_unseen(&mut self, in_view: bool) -> bool {
+        let dormant = self.drive.as_ref().is_some_and(|d| d.dormant);
+        if !dormant || in_view || self.parked {
+            return false;
+        }
+        self.park();
+        true
+    }
+
+    /// One tick of a parked body, the original's branch for a body its
+    /// state keeps out of the integration: the newest particle set becomes
+    /// the previous one and the previous one the oldest (so the body keeps
+    /// no velocity), the drawn sets stop moving, and the countdown loses
+    /// one while it is at least 1; once it is under 1 the body goes deep
+    /// and later ticks do nothing.
+    pub(crate) fn park_tick(&mut self) {
+        if self.parked_deep {
+            return;
+        }
+        self.level_impacts.clear();
+        for p in &mut self.parts {
+            p.two_ticks_ago = p.previous;
+            p.previous = p.positions;
+            p.shown.0 = p.shown.1;
+            p.drawn_particles.0 = p.drawn_particles.1;
+        }
+        if self.countdown < 1 {
+            self.parked_deep = true;
+        } else {
+            self.countdown -= 1;
+        }
     }
 
     /// Whether the body is placed (the original's state bit 0x1000): the
@@ -5923,6 +6009,14 @@ pub fn step_bodies(
     let mut ordered: Vec<(Entity, Mut<Ragdoll>)> = bodies.iter_mut().collect();
     ordered.sort_unstable_by(|(a, ra), (b, rb)| walk_order((*a, ra), (*b, rb)));
     for (_, mut body) in ordered {
+        // A parked body is out of the solver: its state masks keep it from
+        // the integration and from every pair, link and level stage.
+        if body.parked {
+            if !body.parked_deep {
+                body.park_tick();
+            }
+            continue;
+        }
         match body.sleep {
             Sleep::Awake => awake.push(body),
             Sleep::Asleep => {
