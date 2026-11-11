@@ -2781,3 +2781,5 @@ Round 55 arenaweather (S4): no career state reaches the arena's weather draw and
 
 Round 56 nightlook: the night environment already matched the original; the arenao3 moon "octagon" is the tower roofs' real shadow; the warm o3/o4 nights are fire light and GI (a GI warmth calibration question).
 
+Round 185 mainview: the engine message hook writes the log file, shows the timed overlay and opens message boxes as the original does.
+
