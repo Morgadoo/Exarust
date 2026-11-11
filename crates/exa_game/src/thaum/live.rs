@@ -131,6 +131,7 @@ impl Plugin for ThaumEffectsPlugin {
                             .run_if(super::effect_draw::force_effects_alive),
                         (
                             super::blast_live::draw_blasts,
+                            super::blast_sound::sound_blasts,
                             super::torrent_live::draw_torrents,
                             super::effect_draw::draw_shell_auras,
                             super::effect_draw::draw_rigid_auras,

@@ -145,6 +145,7 @@ impl Plugin for ItemAbilityPlugin {
                 (
                     debug_ability_item,
                     ability_tick,
+                    check_focus_items,
                     hit_hooks,
                     (flame_row_lights, flame_row_draws, flame_row_loops)
                         .after(fire_row::frame_rows),
@@ -157,6 +158,54 @@ impl Plugin for ItemAbilityPlugin {
                     .after(exa_physics::body::BodySystems)
                     .before(crate::thaum::live::tick_arcs),
             );
+    }
+}
+
+/// The focus item's ability type: an item whose weapon section names it
+/// gives its holder the focus-item slot bit.
+pub const FOCUS_ABILITY: u32 = item_effects::FOCUS_ITEM_KIND as u32;
+
+/// The focus-item check, run when what a caster holds in its hands
+/// changes: either hand's weapon section naming ability type 4 sets the
+/// body's slot bit, and the bit going tells the running powers past the
+/// slots to end ([`crate::thaum::cast::PowerCaster::take_focus_slot`]).
+/// [inf: the original's check is called from the hands' item changes; it
+/// runs here when the held ids differ from the last frame's, and once for
+/// a caster first seen.]
+pub(crate) fn check_focus_items(
+    mut casters: Query<(Entity, &Possessions, &mut crate::thaum::cast::PowerCaster)>,
+    objects: Option<Res<LiveObjects>>,
+    mut held: Local<HashMap<Entity, [u32; 2]>>,
+) {
+    let Some(objects) = objects else {
+        return;
+    };
+    held.retain(|entity, _| casters.contains(*entity));
+    for (entity, possessions, mut caster) in &mut casters {
+        let ids = [possessions.out[0].id, possessions.out[1].id];
+        if held.get(&entity) == Some(&ids) {
+            continue;
+        }
+        held.insert(entity, ids);
+        let kinds = ids.map(|id| {
+            (id != 0)
+                .then(|| objects.db().section(id, WEAPON_SECTION))
+                .flatten()
+                .and_then(ability_of)
+                .map(|a| a.kind as i32)
+        });
+        let slot = item_effects::focus_slot(caster.body.item_flags, kinds);
+        let ended = caster.take_focus_slot(slot);
+        debug!(
+            "focus item check: {entity:?} holds {ids:?}, slot word {:#x}, {} slots{}",
+            slot.word,
+            caster.body.slots,
+            if ended {
+                ", running powers past them told to end"
+            } else {
+                ""
+            }
+        );
     }
 }
 

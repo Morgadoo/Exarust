@@ -38,7 +38,9 @@
 //!   is over 0.1.
 //! - **The focus item** ([`focus_slot`]): an item whose power record names
 //!   effect 4 in either hand sets the body's slot word to 0x100 (and any
-//!   other word to 0); when the bit goes the power tree is refreshed.
+//!   other word to 0); when the bit goes the running powers past the
+//!   slots are told to end (`crate::item_ability::check_focus_items` runs
+//!   it live; the item's weapon section names ability type 4).
 //!
 //! The list runs once a second of game time ([`WornEffects::run`]): the
 //! body tick, right after its focus tick, runs it when the game clock has

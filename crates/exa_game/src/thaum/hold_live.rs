@@ -288,6 +288,10 @@ pub(super) fn dress_strikes(
         let Some(key) = ragdoll.parts.first().map(|p| p.entity) else {
             continue;
         };
+        // The weapon changes reach the power holding the item hook.
+        if !caster.hooks.item_is(super::force::STRIKES) {
+            continue;
+        }
         for entry in caster.active.iter_mut() {
             let ActiveClass::Strikes(power) = &mut entry.class else {
                 continue;

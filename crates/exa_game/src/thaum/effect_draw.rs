@@ -648,6 +648,10 @@ pub(crate) fn ripple_strikes(
         let Ok((caster, attacker)) = casters.get(hook.attacker) else {
             continue;
         };
+        // The blow reaches the power holding the strike hook.
+        if !caster.hooks.strike_is(super::force::STRIKES) {
+            continue;
+        }
         let Some(power) = caster.active.iter().find_map(|entry| match &entry.class {
             super::cast::ActiveClass::Strikes(power) if power.state != super::power::ENDING => {
                 Some(power)

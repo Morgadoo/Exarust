@@ -257,6 +257,54 @@ pub struct PowerCaster {
     /// id of the demon it brought in, kept once the demon has arrived and
     /// never cleared (the AI's summoning advice refuses while it is set).
     pub summoned: Option<u32>,
+    /// The body's two weapon hook slots, by the power id that set them
+    /// last ([`HookSlots`]).
+    pub hooks: HookSlots,
+    /// A character's Concentration as its record holds it (the skill's
+    /// word and its technique picks), from which its persistent slots are
+    /// counted again when the focus item comes or goes.
+    pub concentration: Option<(u16, Vec<u8>)>,
+}
+
+/// The body's weapon hook slots Force Strikes and Shock Weapons share: the
+/// item hook (a weapon taken or put away) and the strike hook (a landed
+/// blow). Strikes' activation takes both; Shock Weapons' takes the item
+/// hook; either's end clears both, whoever set them. A power acts on a
+/// weapon change or a blow only while the slot is its own, so a second of
+/// the two cast over the first takes its weapon changes, and ending either
+/// leaves the other deaf to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HookSlots {
+    pub item: Option<u32>,
+    pub strike: Option<u32>,
+}
+
+impl HookSlots {
+    /// Force Strikes' activation.
+    pub fn take_strikes(&mut self) {
+        self.item = Some(super::force::STRIKES);
+        self.strike = Some(super::force::STRIKES);
+    }
+
+    /// Shock Weapons' activation.
+    pub fn take_shock_weapons(&mut self) {
+        self.item = Some(super::energy::SHOCK_WEAPONS);
+    }
+
+    /// Either power's end.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether `power` holds the item hook.
+    pub fn item_is(&self, power: u32) -> bool {
+        self.item == Some(power)
+    }
+
+    /// Whether `power` holds the strike hook.
+    pub fn strike_is(&self, power: u32) -> bool {
+        self.strike == Some(power)
+    }
 }
 
 /// The status-effect broadcast's events: a body that starts to collapse or
@@ -312,6 +360,8 @@ impl PowerCaster {
             broadcast: None,
             was_dying: false,
             summoned: None,
+            hooks: HookSlots::default(),
+            concentration: None,
         }
     }
 
@@ -346,7 +396,31 @@ impl PowerCaster {
             &concentration.techniques,
             caster.record.focus_item,
         );
+        caster.concentration = Some((concentration.points, concentration.techniques.to_vec()));
         Some(caster)
+    }
+
+    /// The focus-item check's result on the caster ([`crate::item_effects::focus_slot`]):
+    /// the body's slot bit follows the hands, a character's persistent
+    /// slots are counted again with or without the focus item, and when the
+    /// bit went the running powers past the slots are told to end
+    /// ([`super::tree::limit_running_powers`]). Returns whether one was.
+    /// [inf: the original assigns the whole item word (0x100 or 0); Exarust
+    /// keeps the word's other bits, which its armour pass sets apart.]
+    pub fn take_focus_slot(&mut self, slot: crate::item_effects::FocusSlot) -> bool {
+        use crate::item_effects::FOCUS_SLOT_BIT;
+        self.body.item_flags = (self.body.item_flags & !FOCUS_SLOT_BIT) | slot.word;
+        if let Some((points, picks)) = &self.concentration {
+            self.record.focus_item = slot.word & FOCUS_SLOT_BIT != 0;
+            self.body.slots = casting::slot_count(*points, picks, self.record.focus_item);
+        }
+        if !slot.lost {
+            return false;
+        }
+        self.sync_body();
+        let kept = super::tree::limit_running_powers(&mut self.body.powers, self.body.slots);
+        self.take_states();
+        !kept
     }
 
     /// What the armour pass's worn specials do to the caster's body: the
@@ -637,6 +711,13 @@ fn dispatch_domain(
     }
 }
 
+/// The level a cast's creators read: the physics world and the static
+/// colliders' records.
+type Level<'a> = (
+    Option<&'a Physics>,
+    Option<&'a exa_physics::StaticColliders>,
+);
+
 /// The context a cast's creator reads besides the body.
 struct CastContext {
     now: u32,
@@ -675,7 +756,10 @@ pub(crate) fn run_bar_commands(
     hand: Option<Res<Hand>>,
     ground: Option<Res<CursorGround>>,
     throw_pick: Option<Res<super::throw_live::ThrowPick>>,
-    physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
+    (physics, statics): (
+        Option<Res<exa_physics::collision_share::FramePhysics>>,
+        Option<Res<exa_physics::StaticColliders>>,
+    ),
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
     mut draws: ResMut<FrameEffectDraws>,
@@ -979,7 +1063,7 @@ pub(crate) fn run_bar_commands(
                     entry.result > 0,
                     start,
                     &place,
-                    physics.as_deref().map(|p| &p.0),
+                    (physics.as_deref().map(|p| &p.0), statics.as_deref()),
                     &armed,
                     &mut draws,
                     &mut roll,
@@ -1039,7 +1123,7 @@ fn begin_cast(
     started: bool,
     start: Option<CastStart>,
     place: &CastPlace,
-    physics: Option<&Physics>,
+    level: Level<'_>,
     weapons: &[WeaponArc],
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
@@ -1065,7 +1149,7 @@ fn begin_cast(
             start,
             &context,
             place.ragdoll,
-            physics,
+            level,
             weapons,
             draws,
             roll,
@@ -1215,7 +1299,10 @@ fn cast_for_duellists(
         Option<&Ragdoll>,
         Option<&exa_ai::presence::Presence>,
     )>,
-    physics: Option<Res<Physics>>,
+    (physics, statics): (
+        Option<Res<Physics>>,
+        Option<Res<exa_physics::StaticColliders>>,
+    ),
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
     target_bodies: Query<&Ragdoll>,
@@ -1317,7 +1404,7 @@ fn cast_for_duellists(
             result > 0,
             start,
             &place,
-            physics.as_deref(),
+            (physics.as_deref(), statics.as_deref()),
             &armed,
             &mut draws,
             &mut roll,
@@ -1466,7 +1553,7 @@ fn create_active(
     start: CastStart,
     context: &CastContext,
     ragdoll: Option<&Ragdoll>,
-    physics: Option<&Physics>,
+    level: Level<'_>,
     weapons: &[WeaponArc],
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
@@ -1479,7 +1566,7 @@ fn create_active(
             start,
             context,
             ragdoll,
-            physics,
+            level,
             draws,
             roll,
         ),
@@ -1514,10 +1601,11 @@ fn create_force(
     start: ForceStart,
     context: &CastContext,
     ragdoll: Option<&Ragdoll>,
-    physics: Option<&Physics>,
+    level: Level<'_>,
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
 ) -> Option<Entity> {
+    let physics = level.0;
     match start {
         ForceStart::Blast { setup, cost } if setup != WAVE_SETUP => {
             let body = ragdoll?;
@@ -1526,6 +1614,8 @@ fn create_force(
             let generation = caster.body.cast_generation;
             let mut blast = Blast::new(setup, cost, TICK_MS, &view, &mut draws.0);
             blast.link();
+            // The start's charge loop takes its start from the next draw.
+            let charge_roll = draws.0.unit() as f32;
             let hazard = Hazard::Blast {
                 at: blast.centre,
                 released: blast.state >= crate::effects::blast::THROWN,
@@ -1540,6 +1630,10 @@ fn create_force(
                         hooked,
                         generation,
                         contact_scale: 0.0,
+                        sounds: super::blast_sound::BlastSounds {
+                            charge_roll,
+                            release_pitch: None,
+                        },
                     },
                     hazard,
                 ))
@@ -1651,7 +1745,7 @@ fn create_force(
                 debug!("force barricade: the ground pick meets nothing");
                 return None;
             }
-            let place = barricade_place(context, physics, roll);
+            let place = barricade_place(context, level, roll);
             let frame = WallFrame::facing(place.centre, place.facing);
             let now = context.now;
             let trim = |start: Vec3, dir: Vec3, len: f32| {
@@ -1785,6 +1879,7 @@ fn create_force(
                 body.cast_hook = Some(super::force::STRIKES_HOOK);
                 held
             };
+            caster.hooks.take_strikes();
             power.held = held;
             let spec = creator(
                 EffectKind::Strikes,
@@ -1844,6 +1939,7 @@ fn create_energy(
                 PowerBase::new(super::energy::SHOCK_WEAPONS).accrue(&mut caster.body, cost);
             let armed = spawn_weapon_arcs(commands, caster_entity, weapons, draws);
             power.count = armed.len();
+            caster.hooks.take_shock_weapons();
             push_active(
                 caster,
                 super::energy::SHOCK_WEAPONS,
@@ -2196,10 +2292,12 @@ fn push_active(
 
 /// Place a barricade: the player's ground pick under the cursor; without a
 /// cursor ray the cast's point (the aim plane's, or the AI's target), else
-/// two metres ahead, taken as it stands; the floor probe is the level's.
+/// two metres ahead, taken as it stands. The floor probe is the original's
+/// floor cast: the static meshes of floor nodes only
+/// ([`Physics::static_floor_below`]).
 fn barricade_place(
     context: &CastContext,
-    physics: Option<&Physics>,
+    (physics, statics): Level<'_>,
     roll: &mut EffectRoll,
 ) -> super::force::BarricadePlace {
     let hit = context
@@ -2213,9 +2311,18 @@ fn barricade_place(
             exact: true,
         });
     let floor = |from: Vec3, reach: f32| {
-        physics
-            .and_then(|p| p.fixed_hit(from / CM, Vec3::NEG_Y, reach / CM))
-            .map(|d| d * CM)
+        let depth = physics
+            .zip(statics)
+            .and_then(|(p, s)| p.static_floor_below(s, from / CM, reach / CM))
+            .map(|d| d * CM);
+        debug!(
+            "barricade floor cast: from {:.0} cm, {}",
+            from.y,
+            depth.map_or("no floor node within reach".to_string(), |d| format!(
+                "a floor node {d:.1} cm down"
+            ))
+        );
+        depth
     };
     place_barricade(hit, context.caster, floor, roll.0.unit())
 }
@@ -2296,6 +2403,10 @@ fn follow_weapon_changes(
     mut draws: ResMut<EffectDraws>,
 ) {
     for (caster_entity, mut caster) in &mut casters {
+        // The weapon changes reach the power holding the item hook.
+        if !caster.hooks.item_is(super::energy::SHOCK_WEAPONS) {
+            continue;
+        }
         let Some(index) = caster
             .active
             .iter()
@@ -2640,6 +2751,7 @@ pub(crate) fn tick_casters(
             bar,
             broadcast,
             was_dying,
+            hooks,
             ..
         } = caster;
         let was_casting = body.condition == casting::CASTING;
@@ -2791,8 +2903,10 @@ pub(crate) fn tick_casters(
                         let shells: Vec<u64> = power.auras.iter().filter_map(|a| a.shell).collect();
                         let step = power.control(event, body);
                         result = step.result;
-                        // Its end closes every aura.
+                        // Its end closes every aura and clears the
+                        // shared weapon hooks.
                         if result & 2 != 0 {
+                            hooks.clear();
                             for shell in shells.into_iter().filter_map(Entity::try_from_bits) {
                                 if let Ok(mut aura) = auras.get_mut(shell) {
                                     aura.0.start_fade();
@@ -2843,6 +2957,10 @@ pub(crate) fn tick_casters(
                     ActiveClass::ShockWeapons(power) => {
                         let step = power.control(event, body);
                         result = step.result;
+                        // Its end clears the shared weapon hooks.
+                        if result & 2 != 0 {
+                            hooks.clear();
+                        }
                     }
                     ActiveClass::Vanish(power) => {
                         power.answer_hook(body);

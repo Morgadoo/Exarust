@@ -12,11 +12,13 @@
 //! - **Each tick** ([`Wave::tick_paying`]): a charging wave pays its drain
 //!   once its chunks are placed; a shortfall calls the hook (it fizzles)
 //!   and ends the cast. The charge passing 1 throws the ring and clears the
-//!   caster's hook and power id. Thrown, its live chunks strike the other
-//!   bodies' limbs through the blast's own contact ([`strike_chunks`]), the
-//!   wave's setup giving the pushes, and a struck character takes the
-//!   blast's knock. The entity leaves the scene when the wave is spent or
-//!   fizzled.
+//!   caster's hook and power id. Thrown, its live chunks take the blast's
+//!   contact slots, which the wave's class shares: the level's static
+//!   meshes, the cloths and each other body part by part
+//!   ([`super::blast_live::strike_part`]), the wave's setup giving the
+//!   pushes; a struck character takes the blast's knock, counter, concern
+//!   and loosened pins, and a body met is woken. The entity leaves the
+//!   scene when the wave is spent or fizzled.
 //!
 //! Not wired, as for the blast: the alert at the throw (reach 1200 cm), the
 //! sounds, the light, the stun and the draw; and the contact's wear, which
@@ -29,13 +31,19 @@ use bevy::prelude::*;
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::Locomotor;
 
-use super::barricade::WAKE_TICKS;
-use super::blast_live::{BLAST_HOOK, LimbSphere, body_mass, strike_chunks};
+use exa_ai::brain::Npc;
+use exa_ai::combatant::Combatant;
+use exa_physics::Physics;
+
+use super::blast_live::{
+    BLAST_HOOK, BODY_WAKE, ChunkSet, STATIC_SCALE, body_mass, knock_character, part_near,
+    stir_cloth, strike_level, strike_part,
+};
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, spend_tick};
 use super::force::{BlastSetup, WAVE_SETUP};
 use super::live::EffectDraws;
-use crate::effects::blast::{BlastChunk, character_knock};
+use crate::effects::blast::BlastChunk;
 use crate::effects::force_wave::{Wave, WaveChunk, WaveEvent, WaveState};
 
 /// Centimetres a metre.
@@ -133,26 +141,22 @@ fn as_blast_chunk(chunk: &WaveChunk) -> BlastChunk {
     }
 }
 
-/// One tick of a thrown wave's live chunks against `body`. Returns the
-/// impulse a character gathered, `None` when nothing was struck. `chunks`,
-/// `alive` and `limbs` are the caller's scratch buffers.
-pub(crate) fn strike_wave(
-    live: &mut LiveWave,
-    body: &mut Ragdoll,
-    chunks: &mut Vec<BlastChunk>,
-    alive: &mut Vec<bool>,
-    limbs: &mut Vec<LimbSphere>,
-) -> Option<Vec3> {
+/// The wave's chunks as the blast's contacts walk them, and which live:
+/// `chunks` and `alive` are the caller's scratch buffers.
+fn wave_chunks(live: &LiveWave, chunks: &mut Vec<BlastChunk>, alive: &mut Vec<bool>) {
     chunks.clear();
     chunks.extend(live.wave.chunks.iter().map(as_blast_chunk));
     alive.clear();
     alive.extend(live.wave.chunks.iter().map(|c| c.life >= 1));
-    let struck = strike_chunks(chunks, alive, &live.setup, body, limbs);
-    for (wave, blast) in live.wave.chunks.iter_mut().zip(chunks.iter()) {
+}
+
+/// The contacts' moves and weights back on the wave's chunks (the wave
+/// keeps no wear).
+fn take_back(live: &mut LiveWave, chunks: &[BlastChunk]) {
+    for (wave, blast) in live.wave.chunks.iter_mut().zip(chunks) {
         wave.at = blast.at;
         wave.weight = blast.weight;
     }
-    struck
 }
 
 fn root_of(body: &Ragdoll) -> Option<Vec3> {
@@ -201,7 +205,17 @@ pub(crate) fn tick_waves(
     mut draws: ResMut<EffectDraws>,
     mut chunks: Local<Vec<BlastChunk>>,
     mut alive: Local<Vec<bool>>,
-    mut limbs: Local<Vec<LimbSphere>>,
+    mut triangles: Local<Vec<[Vec3; 3]>>,
+    (physics, statics, places): (
+        Option<Res<Physics>>,
+        Option<Res<exa_physics::StaticColliders>>,
+        Query<&GlobalTransform>,
+    ),
+    (mut combatants, npcs, mut cloths): (
+        Query<&mut Combatant>,
+        Query<&Npc>,
+        Query<&mut exa_world::cloth::ClothInstance>,
+    ),
 ) {
     for (entity, mut live) in &mut waves {
         let live = &mut *live;
@@ -230,27 +244,62 @@ pub(crate) fn tick_waves(
             caster.sync_body();
         }
         if live.wave.state == WaveState::Thrown {
+            // The blast's contact slots, in the sector's order: the level,
+            // the simulated objects, then the bodies' parts.
+            wave_chunks(live, &mut chunks, &mut alive);
+            let mut set = ChunkSet {
+                chunks: &mut chunks,
+                alive: &alive,
+                setup: live.setup,
+                centre: live.wave.centre,
+                radius: live.wave.bound_radius,
+            };
+            let mut scale = 0.0;
+            if let (Some(physics), Some(statics)) = (physics.as_deref(), statics.as_deref()) {
+                let hits = strike_level(&mut set, statics, physics, &places, &mut triangles);
+                if 0 < hits {
+                    debug!("wave {entity:?} meets the level: {hits} chunk contacts");
+                }
+                scale = STATIC_SCALE;
+            }
+            for mut cloth in &mut cloths {
+                if stir_cloth(&set, scale, &mut cloth) {
+                    debug!("wave {entity:?} stirs a cloth");
+                }
+            }
             for (other, mut body) in &mut bodies {
                 if other == live.caster {
                     continue;
                 }
-                let Some(impulse) =
-                    strike_wave(live, &mut body, &mut chunks, &mut alive, &mut limbs)
-                else {
-                    continue;
-                };
-                body.touch(WAKE_TICKS);
+                let character = body.drive.is_some();
                 let mass = body_mass(&body);
-                let Some(drive) = body.drive.as_mut() else {
-                    continue;
-                };
-                let knock = character_knock(mass, drive.energy, impulse);
-                drive.energy = knock.energy;
-                if let Some((direction, size)) = knock.knock {
-                    let flat = Vec3::new(direction.x, 0.0, direction.z);
-                    body.begin_knockback(flat * (size / CM));
+                for part in 0..body.parts.len() {
+                    if !part_near(&set, &body.parts[part]) {
+                        continue;
+                    }
+                    let strike = strike_part(&mut set, &mut body, part, character, mass);
+                    if !strike.struck {
+                        continue;
+                    }
+                    debug!(
+                        "wave {entity:?} strikes {other:?} part {part}: impulse {:.3?} cm",
+                        strike.impulse
+                    );
+                    if character {
+                        knock_character(
+                            &mut body,
+                            mass,
+                            strike.impulse,
+                            live.caster,
+                            other,
+                            &mut combatants,
+                            &npcs,
+                        );
+                    }
+                    body.touch(BODY_WAKE);
                 }
             }
+            take_back(live, &chunks);
         }
         if event == WaveEvent::Removed {
             commands.entity(entity).despawn();

@@ -477,8 +477,13 @@ original's start sets them, the per-part contact in each struck part's
 frame against its node mesh (the chunk pushed out of the faces it reaches,
 the limb push with the part's velocity at the chunk's particle weights,
 the knock, pins and wake per part; a part without a mesh answers with its
-spheres), the cloths' stir (their particles, rustle envelope and wake),
-the level sweep that rebounds a chunk, the release's alert
+spheres; the part's node mesh asked its two-sided sphere query), the
+cloths' stir (their particles, rustle envelope and wake), the level's
+static meshes walked from the static grid (`strike_level_mesh`: the mesh
+walk's two-sided query and the rebound; the bolt's sampled walk through
+the front sphere or the swept query, its record's end left at the mesh
+node's origin as the original leaves it), the charge loop `thmfrc_cu01`
+and the release set on their handles (`thaum::blast_sound`), the release's alert
 to the caster's known characters, the instability counter and the concern
 a struck character takes, and its ribbon drawn with the glow material. A barrier cast runs its dome as an entity
 (`thaum::barrier_live`): cast motion 0x23 and the hook that ends it, the
@@ -512,13 +517,22 @@ its `gi_gradline` line along the weapon with a point light at its first
 ripple (`thaum::effect_light::shell_lights`), and a strikes caster's landed
 blow ripples its primary weapon's aura at half the hook's strength with
 `thmfrc_shi` (`thaum::effect_draw::ripple_strikes`, from
-`exa_combat::StrikeHooked`). A wave cast runs its wave round the caster's body root
+`exa_combat::StrikeHooked`) while Strikes holds the body's strike hook;
+Strikes and Shock Weapons share the body's weapon hook slots
+(`thaum::cast::HookSlots`: the later activation takes the item hook,
+either's end clears both). A cast barricade's floor probe meets floor
+nodes only. A wave cast runs its wave round the caster's body root
 (`thaum::wave_live`): charging on the blast's hook, paying its drain each
-tick, and thrown into other bodies' limbs. A torrent cast runs its streams from
+tick, and thrown through the blast's contact slots, which its class shares
+(the level's meshes, the cloths, each other body part by part with the
+character knock). A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
-its hook until the caster lets go or runs out, its points pushing other
-bodies' limbs at the reach of ten, the level sweep, the knock, counter and concern
-a struck character takes, its ribbon drawn with the glow material, and
+its hook until the caster lets go or runs out, its points walking the
+level's meshes and each other body's part meshes with the two-sided query
+(`walk_torrent_mesh`: the surface points and pushes gathered per stream,
+the point eased toward its pushed place, the stream loop's bump; the limb
+callback pushing the part at the gathered surface's weights), the knock,
+counter, concern and pins a struck character takes per part, its ribbon drawn with the glow material, and
 leaving once its frame would draw nothing. Cast hooks answer by event
 (`thaum::casting::CastHook`): the shell's and the bubble's refuse another
 cast until their raise clip ends, and a caster's animator leaving its cast
@@ -1072,7 +1086,10 @@ click at a placed id). Charged crystals lose 2 charge a game second
 player's hands, worn and carried items, then the socket and inventory
 sources once a second; the container sources are not wired). A held
 item's ability runs once a game second for every character
-(`item_ability`): the lightning mace (ability 1) raises its hum arcs
+(`item_ability`); when the hands change, the focus-item check
+(`item_ability::check_focus_items`) sets the body's slot bit from an
+ability-4 item, counts a character's persistent slots again and, when the
+bit goes, tells the running powers past them to end. The lightning mace (ability 1) raises its hum arcs
 (`thaum::arcs::hum_arcs`) while its first socket holds a charged crystal A
 or AR, its hits shock with zero strength, charge the socket and spark; the
 self-sharpening sword (2) gains slash from a crystal B one run in eight and

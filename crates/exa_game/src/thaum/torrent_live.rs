@@ -15,25 +15,30 @@
 //! - **Each tick** ([`tick_torrent`]): the torrent pays its drain while it
 //!   charges and half of it while it runs; a shortfall calls the hook and
 //!   ends the cast. Its spawn delays draw from the effects' shared roll.
-//!   Once running (flags 0xb_0000), its live points push the limb spheres
-//!   of other bodies they reach ([`strike_streams`]), and a struck
-//!   character takes [`torrent_knock`] of the gathered impulse once a tick:
-//!   the energy, a knockback step, its instability counter +1 and concern
-//!   1 at 0.01 toward the caster. The live points also meet the level
-//!   (a swept ball at the static reach) and move half way to the contact.
+//!   Once running (flags 0xb_0000), its live points take the sector's
+//!   contacts in its step's order: the level's static meshes, then each
+//!   other body part by part ([`walk_torrent_mesh`]: each stream's live
+//!   points from the head back, in the mesh's frame, past its bounding
+//!   sphere and box, asked of the mesh's two-sided sphere query with the
+//!   push-out callback that gathers the surface points and pushes; a point
+//!   met eases toward its pushed place and raises the stream loop's volume
+//!   and pitch). A part's limb callback ([`strike_torrent_part`]) pushes the
+//!   part's particles at the gathered surface's weights by
+//!   [`limb_impulse`]; a struck character takes [`torrent_knock`] of the
+//!   part's gathered impulse: the energy, a knockback step, its instability
+//!   counter +1, the loosened pins and concern 1 at 0.01 toward the caster;
+//!   a body met is woken.
 //! - **Leaving**: the frame that would build no triangles removes it
 //!   ([`Torrent::builds_nothing`]): fizzled, or every stream spent.
 //!
 //! [inf: the frame's turned aim is the blast aim here (the player
-//! behaviour's turn spring is not wired), and the contact is Exarust's
-//! sphere test against a point's reach (its width times the limb scale,
-//! plus the margin, plus 10), as for the blast.] The stream ribbon draws
-//! with the glow stand-in ([`draw_torrents`]). The hit ends as the blast's
-//! does ([`super::blast_live::loosen_pins`]): the support-pin gain becomes
-//! the knock's and the balance's landing momentum takes its full weight.
-//! The torrent's GI multi-point shape lives with it
-//! (`super::effect_light`). Not wired: the simulated objects' points and
-//! the sounds.
+//! behaviour's turn spring is not wired); the level's meshes are walked
+//! triangle by triangle without their kd-trees; a part without a node mesh
+//! answers with its spheres.] The stream ribbon draws with
+//! `effecttorrent_f` ([`draw_torrents`]). The hit ends as the blast's does
+//! ([`super::blast_live::loosen_pins`]). The torrent's GI multi-point shape
+//! lives with it (`super::effect_light`). Not wired: the simulated objects'
+//! points and the sounds' voices.
 //!
 //! Evidence: the torrent's creator, start, hook, tick and frame, read from
 //! `Exanima.exe`.
@@ -45,21 +50,21 @@ use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::Locomotor;
 
-use super::barricade::WAKE_TICKS;
 use super::blast_live::{
-    LimbSphere, blast_view, body_mass, bounds_miss, gather_limbs, most_reach, reach_box,
-    refresh_limbs,
+    BODY_WAKE, PartMesh, blast_view, body_mass, level_meshes, part_weights, reach_box,
+    weighted_motion,
 };
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook, spend_tick};
 use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon};
 use crate::effects::blast::{EPSILON, HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
-    CONTACT_EASE, POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION,
-    Torrent, TorrentEvents, TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
+    POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION, Torrent,
+    TorrentEvents, TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
 };
 use crate::player::CursorGround;
 use crate::thaum::engine::lerp;
+use crate::thaum::torrent_hit;
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -192,13 +197,61 @@ fn live_points(stream: &Stream) -> impl Iterator<Item = &StreamPoint> {
     })
 }
 
-/// The level's static contact: every live point is swept as a ball of its
-/// static reach and one that meets the level moves half way to the
-/// surface. [inf: the original walks the level's static faces; Exarust
-/// asks rapier for the swept ball.]
-fn strike_level(torrent: &mut Torrent, physics: &Physics) -> usize {
-    let mut hits = 0;
+/// What a torrent's mesh walk gathers over one stream's points (reset at
+/// each stream): the surface points its pushes met, summed, the pushes
+/// taken back, summed, and how many there were.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Gathered {
+    pub surface: Vec3,
+    pub pushed: Vec3,
+    pub count: i32,
+}
+
+/// The torrent's push-out callback: a surface point within the sphere's
+/// radius (and not at its centre) pushes the sphere out to it; the push is
+/// taken from the gathered pushes, the point added to the gathered surface
+/// and the count raised.
+fn gather_push(gathered: &mut Gathered, sphere: &mut (Vec3, f32), point: Vec3) {
+    let d = sphere.0 - point;
+    let d2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+    if d2 < sphere.1 * sphere.1 && EPSILON <= d2 {
+        let d = d * (sphere.1 / d2.sqrt() - 1.0);
+        sphere.0 += d;
+        gathered.pushed -= d;
+        gathered.surface += point;
+        gathered.count += 1;
+    }
+}
+
+/// The torrent's mesh walk over one mesh, as the original runs it for the
+/// level and for a part: each stream's live points from its head back,
+/// each taken into the mesh's frame (`to_mesh`, cm) with its reach
+/// `width·scale + margin + 10`, tested against the mesh's bounding sphere
+/// and box (`bounds`: centre, half extents, radius, cm), and asked of the
+/// mesh's two-sided sphere query (`query`) with the push-out callback
+/// ([`gather_push`]). A point the mesh met hands its pushed place, back in
+/// the world, to `limb` (the part contact's limb callback; none for the
+/// level), then eases toward that place by `ease`, and the stream loop's
+/// volume and pitch rise by its life share ([`torrent_hit`]). The
+/// gathered sums are reset at each stream, not each point. Returns whether
+/// a point met the mesh.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn walk_torrent_mesh(
+    torrent: &mut Torrent,
+    scale: f32,
+    ease: f32,
+    to_mesh: impl Fn(Vec3) -> Vec3,
+    to_world: impl Fn(Vec3) -> Vec3,
+    bounds: (Vec3, Vec3, f32),
+    mut query: impl FnMut(&mut (Vec3, f32), &mut dyn FnMut(&mut (Vec3, f32), Vec3)) -> bool,
+    mut limb: Option<&mut dyn FnMut(&mut Gathered, Vec3, &StreamPoint)>,
+) -> bool {
+    let (centre, half, radius) = bounds;
+    let margin = torrent.margin;
+    let point_life = torrent.point_life;
+    let mut struck = false;
     for index in 0..torrent.count {
+        let mut gathered = Gathered::default();
         let head = torrent.records[index].head;
         let mut k = head;
         loop {
@@ -206,19 +259,32 @@ fn strike_level(torrent: &mut Torrent, physics: &Physics) -> usize {
             if point.life < 1 {
                 break;
             }
-            let reach = torrent_reach(point.width, STATIC_CONTACT.scale, torrent.margin);
-            let motion = point.at - point.previous;
-            let squared = (motion.x * motion.x + motion.y * motion.y) + motion.z * motion.z;
-            if EPSILON < squared {
-                let length = squared.sqrt();
-                let direction = motion * (1.0 / length);
-                if let Some(toi) =
-                    physics.level_sweep(point.previous / CM, direction, length / CM, reach / CM)
-                {
-                    let contact = point.previous + direction * (toi * CM);
+            let local = to_mesh(point.at);
+            let reach = torrent_reach(point.width, scale, margin);
+            let span = reach + radius;
+            let near = local.distance_squared(centre) <= span * span
+                && exa_physics::intersect::point_aabb_distance_squared(local, centre, half)
+                    <= reach * reach;
+            if near {
+                let mut sphere = (local, reach);
+                let met = query(&mut sphere, &mut |s, q| gather_push(&mut gathered, s, q));
+                if met {
+                    let world = to_world(sphere.0);
+                    if let Some(limb) = limb.as_deref_mut() {
+                        limb(&mut gathered, world, &point);
+                    }
+                    let sounds = &mut torrent.sounds;
+                    let hit = torrent_hit(
+                        point.life,
+                        point_life,
+                        sounds.loop_volume,
+                        sounds.loop_pitch,
+                    );
+                    sounds.loop_volume = hit.left;
+                    sounds.loop_pitch = hit.right;
                     let point = &mut torrent.records[index].points[k];
-                    point.at = lerp(point.at, contact, CONTACT_EASE);
-                    hits += 1;
+                    point.at = lerp(point.at, world, ease);
+                    struck = true;
                 }
             }
             k = if k == 0 { POINTS - 1 } else { k - 1 };
@@ -227,77 +293,173 @@ fn strike_level(torrent: &mut Torrent, physics: &Physics) -> usize {
             }
         }
     }
+    struck
+}
+
+/// The torrent's static contact on the level's meshes: the reach scale
+/// 0.25, the ease 0.5 and no limb callback ([`walk_torrent_mesh`]), each
+/// mesh in the world's frame.
+fn strike_level(
+    torrent: &mut Torrent,
+    statics: &exa_physics::StaticColliders,
+    physics: &Physics,
+    places: &Query<&GlobalTransform>,
+    triangles: &mut Vec<[Vec3; 3]>,
+) -> usize {
+    let margin = torrent.margin;
+    let Some((low, high)) = reach_box(torrent.records[..torrent.count].iter().flat_map(|stream| {
+        live_points(stream).map(|point| {
+            (
+                point.at,
+                torrent_reach(point.width, STATIC_CONTACT.scale, margin),
+            )
+        })
+    })) else {
+        return 0;
+    };
+    let around = (torrent.centre, torrent.bound_radius);
+    let mut hits = 0;
+    level_meshes(
+        statics,
+        physics,
+        places,
+        around,
+        (low, high),
+        triangles,
+        |mesh| {
+            let met = walk_torrent_mesh(
+                torrent,
+                STATIC_CONTACT.scale,
+                STATIC_CONTACT.ease,
+                |p| p,
+                |p| p,
+                (mesh.centre, mesh.half, mesh.radius),
+                |sphere, on_point| {
+                    let mut met = false;
+                    for t in mesh.triangles {
+                        if let Some(q) =
+                            exa_physics::mesh_query::two_sided_point(t, sphere.0, sphere.1, EPSILON)
+                        {
+                            on_point(sphere, q);
+                            met = true;
+                        }
+                    }
+                    met
+                },
+                None,
+            );
+            hits += usize::from(met);
+        },
+    );
     hits
 }
 
-/// One tick of a running torrent's live points against `body`'s limb
-/// spheres. `limbs` is the caller's scratch buffer; a body whose limbs' box
-/// misses the live points' box grown by their most reach is skipped (the
-/// points do not move here). Returns the pushes made and the impulse a
-/// character gathered.
-pub(crate) fn strike_streams(
-    torrent: &Torrent,
+/// One part's contact, as the original's torrent part contact runs it:
+/// the part's terms ([`limb_terms`]: reach scale, push and ease), the walk
+/// over the part's node mesh in its frame ([`walk_torrent_mesh`]), and the
+/// limb callback for each point met: the gathered surface points' mean
+/// (the sum divided in place by the count), the part's velocity at that
+/// mean (its particles' weighted motion at the mean's weights), the
+/// impulse ([`limb_impulse`] with the point's pushed place and life share)
+/// gathered and pushed on the particles at those weights. Returns whether a
+/// point met the part and the impulse it gathered (cm).
+pub(crate) fn strike_torrent_part(
+    torrent: &mut Torrent,
     body: &mut Ragdoll,
-    limbs: &mut Vec<LimbSphere>,
-) -> (usize, Vec3) {
-    let Some(effect) = reach_box(torrent.records[..torrent.count].iter().flat_map(|stream| {
-        live_points(stream).map(|point| {
-            let reach = most_reach(|scale| torrent_reach(point.width, scale, torrent.margin));
-            (point.at, reach)
-        })
-    })) else {
-        return (0, Vec3::ZERO);
+    part: usize,
+    character: bool,
+    mass: f32,
+) -> (bool, Vec3) {
+    let Some(p) = body.parts.get(part) else {
+        return (false, Vec3::ZERO);
     };
-    let (low, high) = gather_limbs(body, limbs);
-    if bounds_miss(low, high, effect) {
-        return (0, Vec3::ZERO);
-    }
-    let character = body.drive.is_some();
-    let mass = body_mass(body);
-    let mut pushes = 0;
-    let mut gathered = Vec3::ZERO;
-    for stream in &torrent.records[..torrent.count] {
-        for &point in live_points(stream) {
-            let share = point.life as f32 / torrent.point_life as f32;
-            let mut start = 0;
-            while start < limbs.len() {
-                let part_index = limbs[start].part;
-                let mut end = start;
-                while end < limbs.len() && limbs[end].part == part_index {
-                    end += 1;
-                }
-                let inverse = limbs[start].inverse_mass;
-                let (scale, push, _) = limb_terms(character, inverse, mass);
-                let reach = torrent_reach(point.width, scale, torrent.margin);
-                let mut pushed = false;
-                for limb in &limbs[start..end] {
-                    let (centre, radius, velocity, sphere) =
-                        (limb.centre, limb.radius, limb.velocity, limb.sphere);
-                    let d = point.at - centre;
-                    let distance = d.length();
-                    if distance >= reach + radius || distance <= 0.0 || distance.is_nan() {
-                        continue;
-                    }
-                    let contact = centre + d * (radius / distance);
-                    let impulse = limb_impulse(&point, contact, velocity, inverse, push, share);
-                    if !impulse.is_finite() || impulse == Vec3::ZERO {
-                        continue;
-                    }
-                    body.push_sphere(part_index, sphere, impulse / CM);
-                    if character {
-                        gathered += impulse;
-                    }
-                    pushes += 1;
-                    pushed = true;
-                }
-                if pushed {
-                    refresh_limbs(body, part_index, limbs, start, end);
-                }
-                start = end;
-            }
+    let inverse = p.inverse_mass;
+    let (scale, push, ease) = limb_terms(character, inverse, mass);
+    let frame = p.transform();
+    let to_part = frame.inverse();
+    let (bounds, mesh) = PartMesh::of_part(p);
+    let bounds_cm = (bounds.centre * CM, bounds.half * CM, bounds.radius * CM);
+    let point_life = torrent.point_life;
+    let mut impulse_sum = Vec3::ZERO;
+    let mut limb = |gathered: &mut Gathered, world: Vec3, point: &StreamPoint| {
+        if gathered.count < 1 {
+            return;
         }
+        gathered.surface *= 1.0 / gathered.count as f32;
+        let surface = frame.transform_point3(gathered.surface / CM) * CM;
+        let part_now = &body.parts[part];
+        let w = part_weights(part_now, surface);
+        let velocity = weighted_motion(part_now, w);
+        let share = point.life as f32 / point_life as f32;
+        let impulse = limb_impulse(point, world, velocity, inverse, push, share);
+        impulse_sum += impulse;
+        body.push_part_weighted(part, w, impulse / CM);
+    };
+    let struck = walk_torrent_mesh(
+        torrent,
+        scale,
+        ease,
+        |p| to_part.transform_point3(p / CM) * CM,
+        |p| frame.transform_point3(p / CM) * CM,
+        bounds_cm,
+        |sphere, on_point| mesh.query_cm(sphere, on_point),
+        Some(&mut limb),
+    );
+    (struck, impulse_sum)
+}
+
+/// Whether the sector would hand the torrent a part: the part's mesh
+/// sphere (cm) meets the torrent's bounding sphere. [inf: as the blast's,
+/// a sphere test stands in for the sector's cell walk.]
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn part_near(torrent: &Torrent, part: &exa_physics::body::Part) -> bool {
+    let bounds = if part.triangles.is_some() {
+        part.pairing.mesh
+    } else {
+        part.pairing.sphere
+    };
+    let centre = part.transform().transform_point3(bounds.centre) * CM;
+    let span = bounds.radius * CM + torrent.bound_radius;
+    !(centre.distance_squared(torrent.centre) > span * span)
+}
+
+/// What a struck character takes from one part's torrent contact: the
+/// energy, the knock from the part's gathered impulse ([`torrent_knock`]),
+/// its instability counter +1, the loosened pins and concern 1 at 0.01
+/// toward the caster.
+fn knock_torrent_character(
+    body: &mut Ragdoll,
+    mass: f32,
+    impulse: Vec3,
+    caster: Entity,
+    struck: Entity,
+    combatants: &mut Query<&mut Combatant>,
+    npcs: &Query<&Npc>,
+) {
+    let Some(knock) = body.drive.as_mut().map(|drive| {
+        let knock = torrent_knock(mass, drive.energy, impulse);
+        drive.energy = knock.energy;
+        let counter = drive.balance().counter() + 1;
+        drive.balance_mut().set_counter(counter);
+        knock
+    }) else {
+        return;
+    };
+    if let Some((direction, size)) = knock.knock {
+        let flat = Vec3::new(direction.x, 0.0, direction.z);
+        body.begin_knockback(flat * (size / CM));
     }
-    (pushes, gathered)
+    if let Ok(mut combatant) = combatants.get_mut(struck) {
+        let aggression = npcs
+            .get(struck)
+            .ok()
+            .and_then(|npc| npc.personality)
+            .map_or(0.0, |personality| personality.restraint);
+        combatant.add_concern(caster, aggression, HIT_HOSTILITY.0, HIT_HOSTILITY.1);
+    }
+    if let Some(drive) = body.drive.as_mut() {
+        super::blast_live::loosen_pins(drive, &knock);
+    }
 }
 
 /// Ticks every torrent in the scene.
@@ -318,7 +480,10 @@ pub(crate) fn tick_torrents(
     npcs: Query<&Npc>,
     mut draws: ResMut<EffectDraws>,
     mut roll: ResMut<EffectRoll>,
-    mut limbs: Local<Vec<LimbSphere>>,
+    (statics, mut triangles): (
+        Option<Res<exa_physics::StaticColliders>>,
+        Local<Vec<[Vec3; 3]>>,
+    ),
 ) {
     for (entity, mut live) in &mut torrents {
         let live = &mut *live;
@@ -368,45 +533,45 @@ pub(crate) fn tick_torrents(
             caster.sync_body();
         }
         if live.torrent.flags & RUNNING_FLAGS != 0 {
-            if let Some(physics) = physics.as_deref() {
-                strike_level(&mut live.torrent, physics);
+            // The sector's contacts in its step's order: the level, then
+            // the bodies' parts.
+            if let (Some(physics), Some(statics)) = (physics.as_deref(), statics.as_deref()) {
+                let hits =
+                    strike_level(&mut live.torrent, statics, physics, &places, &mut triangles);
+                if 0 < hits {
+                    debug!("torrent {entity:?} meets the level: {hits} meshes");
+                }
             }
             for (other, mut body) in &mut bodies {
                 if other == live.caster {
                     continue;
                 }
-                let (pushes, impulse) = strike_streams(&live.torrent, &mut body, &mut limbs);
-                if pushes == 0 {
-                    continue;
-                }
-                body.touch(WAKE_TICKS);
+                let character = body.drive.is_some();
                 let mass = body_mass(&body);
-                let Some(knock) = body.drive.as_mut().map(|drive| {
-                    let knock = torrent_knock(mass, drive.energy, impulse);
-                    drive.energy = knock.energy;
-                    let counter = drive.balance().counter() + 1;
-                    drive.balance_mut().set_counter(counter);
-                    super::blast_live::loosen_pins(drive, &knock);
-                    knock
-                }) else {
-                    continue;
-                };
-                if let Some((direction, size)) = knock.knock {
-                    let flat = Vec3::new(direction.x, 0.0, direction.z);
-                    body.begin_knockback(flat * (size / CM));
-                }
-                if let Ok(mut combatant) = combatants.get_mut(other) {
-                    let aggression = npcs
-                        .get(other)
-                        .ok()
-                        .and_then(|npc| npc.personality)
-                        .map_or(0.0, |personality| personality.restraint);
-                    combatant.add_concern(
-                        live.caster,
-                        aggression,
-                        HIT_HOSTILITY.0,
-                        HIT_HOSTILITY.1,
+                for part in 0..body.parts.len() {
+                    if !part_near(&live.torrent, &body.parts[part]) {
+                        continue;
+                    }
+                    let (struck, impulse) =
+                        strike_torrent_part(&mut live.torrent, &mut body, part, character, mass);
+                    if !struck {
+                        continue;
+                    }
+                    debug!(
+                        "torrent {entity:?} strikes {other:?} part {part}: impulse {impulse:.3?} cm"
                     );
+                    if character {
+                        knock_torrent_character(
+                            &mut body,
+                            mass,
+                            impulse,
+                            live.caster,
+                            other,
+                            &mut combatants,
+                            &npcs,
+                        );
+                    }
+                    body.touch(BODY_WAKE);
                 }
             }
         }
@@ -596,113 +761,108 @@ mod tests {
         }
     }
 
-    /// The strike before its body transforms were shared and its bodies
-    /// skipped by their boxes, kept to pin the new one to it.
-    fn strike_streams_unshared(torrent: &Torrent, body: &mut Ragdoll) -> (usize, Vec3) {
-        let character = body.drive.is_some();
-        let mass = body_mass(body);
-        let mut pushes = 0;
-        let mut gathered = Vec3::ZERO;
-        for stream in &torrent.records[..torrent.count] {
-            let mut k = stream.head;
-            loop {
-                let point = stream.points[k];
-                if point.life < 1 {
-                    break;
-                }
-                let share = point.life as f32 / torrent.point_life as f32;
-                for part_index in 0..body.parts.len() {
-                    let part = &body.parts[part_index];
-                    let inverse = part.inverse_mass;
-                    let (scale, push, _) = limb_terms(character, inverse, mass);
-                    let reach = torrent_reach(point.width, scale, torrent.margin);
-                    let world = part.transform();
-                    let here: Vec3 = part.positions.iter().copied().sum::<Vec3>() * 0.25;
-                    let before: Vec3 = part.previous.iter().copied().sum::<Vec3>() * 0.25;
-                    let velocity = (here - before) * CM;
-                    let spheres: Vec<(Vec3, f32)> = part
-                        .spheres
-                        .iter()
-                        .map(|&(c, r)| (world.transform_point3(c) * CM, r * CM))
-                        .collect();
-                    for (s, (centre, radius)) in spheres.into_iter().enumerate() {
-                        let d = point.at - centre;
-                        let distance = d.length();
-                        if distance >= reach + radius || distance <= 0.0 || distance.is_nan() {
-                            continue;
-                        }
-                        let contact = centre + d * (radius / distance);
-                        let impulse = limb_impulse(&point, contact, velocity, inverse, push, share);
-                        if !impulse.is_finite() || impulse == Vec3::ZERO {
-                            continue;
-                        }
-                        body.push_sphere(part_index, s, impulse / CM);
-                        if character {
-                            gathered += impulse;
-                        }
-                        pushes += 1;
-                    }
-                }
-                k = if k == 0 { POINTS - 1 } else { k - 1 };
-                if k == stream.head {
-                    break;
-                }
+    /// A rigid part at the origin whose node mesh is one face in the plane
+    /// x = 0.3 m facing +x.
+    fn wall_body() -> Ragdoll {
+        use bevy::math::Affine3A;
+        use exa_physics::body::RigidPart;
+        Ragdoll::rigid(&[RigidPart {
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            rest: [
+                Vec3::new(-0.2, 0.0, -0.2),
+                Vec3::new(0.2, 0.0, -0.2),
+                Vec3::new(0.0, 0.0, 0.2),
+                Vec3::new(0.0, 0.4, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: Affine3A::IDENTITY,
+            mobility: 1.0,
+            spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: Some(exa_physics::sector::Bounds::of_box(
+                Vec3::new(0.3, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 1.0),
+            )),
+            triangles: Some(std::sync::Arc::new(vec![[
+                Vec3::new(0.3, -1.0, -1.0),
+                Vec3::new(0.3, 1.0, -1.0),
+                Vec3::new(0.3, 0.0, 1.0),
+            ]])),
+        }])
+    }
+
+    /// A running torrent whose first stream's head alone lives, at `at`
+    /// (cm) moving by `motion`, width 4.
+    fn one_point(at: Vec3, motion: Vec3) -> Torrent {
+        let mut body = CastBody::default();
+        let (live, _, _) = live(&mut body);
+        let mut torrent = live.torrent;
+        torrent.margin = 0.0;
+        for stream in &mut torrent.records {
+            for point in &mut stream.points {
+                point.life = 0;
             }
         }
-        (pushes, gathered)
+        torrent.count = 1;
+        let stream = &mut torrent.records[0];
+        let point = &mut stream.points[stream.head];
+        point.life = torrent.point_life / 2;
+        point.at = at;
+        point.previous = at - motion;
+        point.width = 4.0;
+        point.straightness = 0.5;
+        torrent
     }
 
     #[test]
-    fn the_shared_strike_matches_the_unshared_one_to_the_bit() {
-        use crate::thaum::blast_live::test_bodies::{
-            between, near, same, same_particles, scattered,
-        };
-        let mut random = Mt19937::new(11);
-        let (mut struck, mut skipped) = (0, 0);
-        for round in 0..200 {
-            let mut body = CastBody::default();
-            let (mut live, _, _) = live(&mut body);
-            let torrent = &mut live.torrent;
-            torrent.margin = between(&mut random, 0.0, 20.0);
-            let count = torrent.count;
-            for (index, stream) in torrent.records[..count].iter_mut().enumerate() {
-                stream.head = (random.unit() * POINTS as f64) as usize % POINTS;
-                // The first stream of a round lives round its whole ring.
-                let living = if index == 0 {
-                    POINTS
-                } else {
-                    (random.unit() * POINTS as f64) as usize
-                };
-                for point in &mut stream.points {
-                    point.life = 0;
-                }
-                for n in 0..living {
-                    let point = &mut stream.points[(stream.head + POINTS - n) % POINTS];
-                    point.life = 1 + (random.unit() * 40.0) as i32;
-                    point.at = near(&mut random, Vec3::new(0.0, 100.0, 0.0), 150.0);
-                    point.previous = point.at - near(&mut random, Vec3::ZERO, 20.0);
-                    point.width = between(&mut random, 1.0, 30.0);
-                }
-            }
-            for _ in 0..3 {
-                let mut old_body = scattered(&mut random, Vec3::new(0.0, 1.0, 0.0), 3.0);
-                let mut new_body = old_body.clone();
-                let mut limbs = Vec::new();
-                let old = strike_streams_unshared(&live.torrent, &mut old_body);
-                let new = strike_streams(&live.torrent, &mut new_body, &mut limbs);
-                assert_eq!(old.0, new.0, "round {round}");
-                assert!(same(old.1, new.1), "round {round}");
-                assert!(same_particles(&old_body, &new_body), "round {round}");
-                if old.0 > 0 {
-                    struck += 1;
-                } else {
-                    skipped += 1;
-                }
-            }
-        }
+    fn a_part_contact_walks_the_parts_mesh_and_pushes_the_part() {
+        let mut body = wall_body();
+        let before = body.parts[0].positions;
+        let mass = body_mass(&body);
+        let mut torrent = one_point(Vec3::new(35.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 0.0));
+        let volume = torrent.sounds.loop_volume;
+        let (struck, impulse) = strike_torrent_part(&mut torrent, &mut body, 0, false, mass);
+        assert!(struck);
+        // The point 5 cm in front of the face is pushed out to its reach and
+        // eases part of the way there.
+        let inverse = body.parts[0].inverse_mass;
+        let (scale, _, ease) = limb_terms(false, inverse, mass);
+        let reach = 4.0 * scale + 10.0;
+        let head = torrent.records[0].head;
+        let at = torrent.records[0].points[head].at;
+        let pushed = 30.0 + reach;
         assert!(
-            struck > 50 && skipped > 50,
-            "{struck} struck, {skipped} not"
+            (at.x - (35.0 + (pushed - 35.0) * ease)).abs() < 1e-3,
+            "{at:?}"
         );
+        assert!(impulse.x < 0.0, "{impulse:?}");
+        let moved: f32 = body.parts[0]
+            .positions
+            .iter()
+            .zip(before)
+            .map(|(a, b)| a.x - b.x)
+            .sum();
+        assert!(moved < 0.0);
+        assert!(torrent.sounds.loop_volume > volume);
+        // Out of reach: nothing.
+        let mut far = one_point(Vec3::new(50.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 0.0));
+        assert!(!strike_torrent_part(&mut far, &mut body, 0, false, mass).0);
+    }
+
+    #[test]
+    fn the_push_out_gathers_the_surface_and_the_push() {
+        let mut gathered = Gathered::default();
+        let mut sphere = (Vec3::new(5.0, 0.0, 0.0), 13.0);
+        gather_push(&mut gathered, &mut sphere, Vec3::ZERO);
+        assert!((sphere.0.x - 13.0).abs() < 1e-5);
+        assert!((gathered.pushed.x + 8.0).abs() < 1e-5);
+        assert_eq!((gathered.surface, gathered.count), (Vec3::ZERO, 1));
+        // At the centre: nothing.
+        let centre = sphere.0;
+        gather_push(&mut gathered, &mut sphere, centre);
+        assert_eq!(gathered.count, 1);
     }
 }

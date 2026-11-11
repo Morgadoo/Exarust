@@ -1689,7 +1689,10 @@ original's resets.
 tree or every triangle of a small mesh), used by the hand's pick of bodies with no
 stand-in collider; `mesh_tree::sphere_contacts` is its sphere query (each front
 face the sphere reaches hands its closest point to a callback that may move the
-sphere), which a force blast's part contact asks. `mesh_tree` puts a body node's CPU triangles behind the tree as the
+sphere). `mesh_query` holds the mesh's per-leaf effect tests the kd-tree
+installer sets beside the pair stage's: the two-sided sphere test (a
+force blast's, wave's and torrent's part and level contacts), the front
+sphere test and the swept test (the bolt's sampled walk). `mesh_tree` puts a body node's CPU triangles behind the tree as the
 original does: a node mesh of more than 10 and fewer than 100 000 triangles
 gets one (`takes_tree`, the scene loader's queue rule), a shape builder's
 fitted mesh (a limb's or a weapon's) one at any count (`shape_tree`). Trees
