@@ -50,7 +50,7 @@ impl DivinationScreen {
     /// Opens a reading at `now`, dealing three distinct cards from `random`.
     pub fn open(now: u32, seed: u32) -> Self {
         let mut random = Mt19937::new(seed);
-        let reading = div_card::open(now, &mut |count| (random.unit() * f64::from(count)) as u32);
+        let reading = div_card::open(now, &mut |count| random.random(count as i32) as u32);
         Self {
             open: Some(OpenReading {
                 reading,

@@ -44,6 +44,7 @@ pub mod rfi;
 pub mod rigid_body;
 pub mod roles;
 pub mod rsq;
+pub mod rtl_random;
 pub mod save_chunk;
 pub mod save_package;
 pub mod settings_ini;
