@@ -200,7 +200,11 @@ follow-through by its size, the blow's impact and where on the weapon it
 struck; a guard (for a striker under 1.4) or a body that turns blows
 (`StateFlags::TURNS_BLOWS`, checked before a parry) recoils it
 (`SwingState::recoil_from`), and a clash or a block marks the swing's
-weapon and shield sounds once a swing (`strike_back`). The swing's first
+weapon and shield sounds once a swing (`strike_back`). The striking and
+struck parts find their stat record up the part chain
+(`record_chain`: a held item's part reads its top part's, a fist its
+hand's; with none the contact deals nothing), and a clash rings the struck
+part with its own frame and sound clock and stamps the striking part's. The swing's first
 clash rings the striking weapon (`sounds::weapon_ring`): the haft
 class's shared set (`WH_HaftWoodA`, `WH_HaftMA`, `WH_HaftLA`) when the haft
 took it, else its own set, at volume × share and pitch × 1.2 (double), as an
@@ -522,7 +526,12 @@ plays them; the jolt and the rumble are live too: the damage pass writes
 `pain::BlowFelt` (the wound, the yellow, the striker's scale, speed and
 overhead swing, the blade's velocity in cm a tick as the jolt's direction)
 and `exa_game`'s `feel_blows` kicks the chase camera (`kick_random`) and
-raises the pad's rumble.
+raises the pad's rumble. Before that feedback the struck body's damage
+callback runs: the only one 0.9.5 installs is Force Shell's, a ripple at the
+contact with the unweighed yellow (`impact::ShellHit`); after the striker's
+hook an overhead's wound asks the striker's clawed hands back to their base
+(`OverheadWounded`). The routine's scripted override (a global hook) is never
+set in 0.9.5 and is not ported.
 
 A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
 the game-clock time it was lost, whether it has left the world) and

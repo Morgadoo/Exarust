@@ -1631,7 +1631,10 @@ window queues its icon handles and the manager frees their references and
 atlas cells. A body whose `Possessions` changed has its `Physical` stats'
 encumbrance recomputed by `equip::refresh_encumbrance` from the worn
 burdens, the held shield and its record's techniques (both the physical
-and the fighter copy; a new body keeps its spawn value). A double click
+and the fighter copy; a new body keeps its spawn value), and the armour
+pass's worn rules run again (`equip::refresh_worn_specials`): the second
+wind, the item-effect list (an item still worn keeps its bytes), the golem
+suit, the mind ward, the focus charm and the golem core's red regeneration. A double click
 classifies a container's open, a card close and a use; a popup's inner
 panel and top are `open_container`'s, but no live container popup is drawn
 yet. The inventory screen still has no bound item list.
