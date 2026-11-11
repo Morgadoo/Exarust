@@ -63,7 +63,7 @@ fn the_trigger_is_one_and_a_half_radii() {
 }
 
 /// A knockback step keeps the target the blow set, including while the body
-/// is walking. Balance under 0.2 ends it.
+/// is walking. Balance under 0.2 clears it without the step's end.
 #[test]
 fn a_knockback_step_keeps_the_blow_target() {
     let mut steps = Steps::default();
@@ -77,8 +77,30 @@ fn a_knockback_step_keeps_the_blow_target() {
     assert!(steps.knockback);
     let mut down = trigger(0.1, true, 0.0);
     down.locomoting = true;
-    assert!(matches!(consider(&mut steps, &down), Plan::Ended));
+    assert!(matches!(consider(&mut steps, &down), Plan::Idle));
     assert!(!steps.knockback);
+    assert!(!steps.stepping);
+}
+
+/// A step running when the balance falls under 0.2 is cleared, not ended
+/// (no foot is landed); a NaN balance is not under the floor, and 0.2 in
+/// single precision is just over the double floor.
+#[test]
+fn a_step_under_the_balance_floor_is_cleared_not_ended() {
+    let mut going = Steps {
+        stepping: true,
+        out_of_balance: true,
+        placed: true,
+        ..Steps::default()
+    };
+    assert!(matches!(
+        consider(&mut going, &trigger(0.19, true, 0.0)),
+        Plan::Idle
+    ));
+    assert!(!going.stepping && !going.out_of_balance);
+    assert!(!below_floor(f32::NAN));
+    assert!(!below_floor(0.2));
+    assert!(below_floor(0.199_999_99));
 }
 
 /// A knockback step's stance is clamped as any step's, to 1.1 plain step

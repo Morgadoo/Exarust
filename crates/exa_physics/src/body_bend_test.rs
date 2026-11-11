@@ -79,15 +79,17 @@ fn the_step_lifts_and_a_free_foot_keeps_eight_tenths() {
     assert!(close(next_lift(10.0, false, false, 0.0), 8.0));
 }
 
-/// A floor, and a 15 cm step under the right foot only (x ≥ 0), wide in z
-/// so a bending ankle stays on it. The left ankle (x = −0.1, probe 5 cm)
-/// does not reach it.
+/// A floor, and a 15 cm step under the right foot only (x ≥ 3 cm), wide in
+/// z so a bending ankle stays on it. The left ankle (x = −0.1, probe 5 cm)
+/// does not reach it, nor does it once the stance has drifted 5 cm toward
+/// it (the feet grip in full from each tick's first iteration, as the
+/// original's balance pass resets their grip).
 fn step_under_the_right_foot() -> Vec<[Vec3; 3]> {
     let mut tris = floor_quad(0.0, 4.0);
     let y = 0.15;
     let at = |x: f32, z: f32| Vec3::new(x, y, z);
-    tris.push([at(0.0, -1.0), at(0.0, 1.0), at(0.4, 1.0)]);
-    tris.push([at(0.0, -1.0), at(0.4, 1.0), at(0.4, -1.0)]);
+    tris.push([at(0.03, -1.0), at(0.03, 1.0), at(0.4, 1.0)]);
+    tris.push([at(0.03, -1.0), at(0.4, 1.0), at(0.4, -1.0)]);
     tris
 }
 

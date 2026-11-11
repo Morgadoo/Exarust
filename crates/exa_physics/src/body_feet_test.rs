@@ -792,9 +792,10 @@ fn a_standing_body_plants_its_feet() {
 /// they were planted: the pose turns 90° about the vertical over 60 ticks
 /// and holds; the pelvis turns with it, and its feet step to their new
 /// stance spots one at a time (six steps, each reaching its spot), while a
-/// foot planted with its grip full stays within 1 cm of its anchor (0.6 cm)
-/// and of where its grip became full. (A foot that just landed settles
-/// onto its anchor, moved halfway to it, while its grip rises.)
+/// foot planted for 50 ticks (1000 iterations) stays within 1 cm of its
+/// anchor and of where it stood then. (A foot that just landed settles
+/// onto its anchor, moved halfway to it; the balance pass puts its grip
+/// back at full every tick, so the grip alone no longer marks it settled.)
 #[test]
 fn a_quarter_turn_in_place_keeps_planted_feet_within_a_cm() {
     let floor = floor_quad(0.0, 5.0);
@@ -807,6 +808,8 @@ fn a_quarter_turn_in_place_keeps_planted_feet_within_a_cm() {
     let mut stepped = [false; 2];
     // Where each foot's ankle was when it last stood on a new anchor.
     let mut stood_at: [Option<(Vec3, Vec3)>; 2] = [None; 2];
+    // Ticks each foot has stood on its present anchor.
+    let mut stood_for = [0u32; 2];
     for tick in 0..300 {
         let angle = std::f32::consts::FRAC_PI_2 * (tick as f32 / 60.0).min(1.0);
         let turn = Affine3A::from_rotation_y(angle);
@@ -821,8 +824,9 @@ fn a_quarter_turn_in_place_keeps_planted_feet_within_a_cm() {
             // ankle is from the anchor, and has moved since the grip filled.
             let stood = |s: FootState| s.stands() && !s.has(FootState::ANCHORED);
             let (at, _) = ankle(&body, k);
-            let held = leg.grip == 1.0 && leg.anchor.xz() == anchor.xz();
-            if stood(state) && stood(leg.state) && held {
+            let same = stood(state) && stood(leg.state) && leg.anchor.xz() == anchor.xz();
+            stood_for[k] = if same { stood_for[k] + 1 } else { 0 };
+            if stood_for[k] >= 50 {
                 let start = match stood_at[k] {
                     Some((on, start)) if on.xz() == anchor.xz() => start,
                     _ => at,

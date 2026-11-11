@@ -543,9 +543,11 @@ fn moving_drops_the_trailing_foot_request() {
 }
 
 /// A placement drops the twist and the move vector's reach and takes its
-/// yaw from the matrix's flattened forward by the original's arc cosine:
-/// (1, 0.5, 1) faces 0.785179 rad (the exact π/4 is 0.785398); a vertical
-/// forward gives a zero heading and yaw.
+/// yaw from the matrix's flattened forward, normalised approximately, by
+/// the original's arc cosine: (1, 0.5, 1) faces 0.785179 rad (the exact
+/// π/4 is 0.785398); the request's heading and the stance facing take that
+/// yaw, the cursor and the look the raw forward's; a vertical forward gives
+/// a zero heading and yaw.
 #[test]
 fn a_placement_resets_the_twist_and_takes_the_matrix_heading() {
     let mut body = Locomotor {
@@ -555,12 +557,42 @@ fn a_placement_resets_the_twist_and_takes_the_matrix_heading() {
         yaw: 2.0,
         ..Locomotor::default()
     };
-    let heading = body.placed(Vec3::new(1.0, 0.5, 1.0));
+    let mut req = Locomotion::default();
+    let heading = body.placed(&mut req, Vec3::new(1.0, 0.5, 1.0));
     assert_eq!(body.twist, Quat::IDENTITY);
     assert_eq!(body.twist_before, Quat::IDENTITY);
     assert_eq!(body.reach, 0.0);
-    assert!((heading - Vec3::new(1.0, 0.0, 1.0).normalize()).length() < 1e-6);
+    assert!((heading - Vec3::new(1.0, 0.0, 1.0).normalize()).length() < 1e-3);
+    assert_eq!(
+        heading,
+        crate::engine_math::normalize_approx(Vec3::new(1.0, 0.0, 1.0))
+    );
     assert!((body.yaw - 0.785_179).abs() < 1e-5, "{}", body.yaw);
-    assert_eq!(body.placed(Vec3::Y), Vec3::ZERO);
+    assert_eq!(req.heading, body.yaw);
+    assert_eq!(body.stance_facing, body.yaw);
+    assert!((req.cursor - 0.785_179).abs() < 1e-5);
+    assert_eq!(req.look, req.cursor);
+    assert_eq!(req.desired, req.cursor);
+    assert_eq!(body.placed(&mut req, Vec3::Y), Vec3::ZERO);
     assert_eq!(body.yaw, 0.0);
+}
+
+/// The ground placement's facing leaves the twist and the reach alone.
+#[test]
+fn a_ground_placement_faces_without_the_reset() {
+    let mut body = Locomotor {
+        twist: Quat::from_rotation_y(0.4),
+        reach: 200.0,
+        ..Locomotor::default()
+    };
+    let mut req = Locomotion::default();
+    body.face(&mut req, Vec3::new(-0.6, 0.0, 0.8));
+    assert_eq!(body.twist, Quat::from_rotation_y(0.4));
+    assert_eq!(body.reach, 200.0);
+    assert!(body.yaw < 0.0);
+    assert!(
+        (body.yaw - (-0.6f32).atan2(0.8)).abs() < 1e-3,
+        "{}",
+        body.yaw
+    );
 }
