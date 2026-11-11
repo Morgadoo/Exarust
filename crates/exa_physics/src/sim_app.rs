@@ -1040,7 +1040,10 @@ fn run_free(
                     &mut clock,
                 ),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    crate::exit_trace::stage("simulation thread: the frame closed the channel");
+                    return;
+                }
             }
         }
         // A hold the frame waits for: answered between steps, after every
@@ -1131,7 +1134,10 @@ fn run_free(
                 &mut clock,
             ),
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Disconnected) => {
+                crate::exit_trace::stage("simulation thread: the frame closed the channel");
+                return;
+            }
         }
     }
 }
@@ -1222,6 +1228,7 @@ impl FreeStamp {
 /// as the trace files, which flush when dropped).
 impl Drop for Runner {
     fn drop(&mut self) {
+        crate::exit_trace::stage("sim shell: dropping, the channel closes");
         // Closing the channel ends the thread's loop.
         let thread = match self {
             Runner::Thread {
@@ -1240,6 +1247,7 @@ impl Drop for Runner {
         };
         if let Some(thread) = thread {
             let _ = thread.join();
+            crate::exit_trace::stage("sim shell: the simulation thread joined");
         }
     }
 }
@@ -1272,7 +1280,8 @@ impl SimShell {
                         // The original's simulation thread enters the
                         // engine's floating-point mode first.
                         crate::float_mode::enter_logged("exa-sim");
-                        run_free(sub_app, inbox, outbox, epoch, published)
+                        run_free(sub_app, inbox, outbox, epoch, published);
+                        crate::exit_trace::stage("simulation thread: its world dropped");
                     })
                     .expect("the simulation thread starts");
                 Runner::Free {

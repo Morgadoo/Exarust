@@ -20,7 +20,7 @@ members = [
     "crates/exarust",
 ]
 # Patched dependencies (see [patch.crates-io]) are not members.
-exclude = ["patches/gpu-allocator"]
+exclude = ["patches/gpu-allocator", "patches/rodio"]
 
 [workspace.package]
 edition = "2024"
@@ -121,6 +121,8 @@ codegen-units = 1
 strip = "symbols"
 
 # gpu-allocator with uploads kept out of a small (non-resizable) BAR window:
-# see patches/gpu-allocator/EXARUST.md.
+# see patches/gpu-allocator/EXARUST.md. rodio with a resampler whose chunk
+# position does not overflow (the exit stall): see patches/rodio/EXARUST.md.
 [patch.crates-io]
 gpu-allocator = { path = "patches/gpu-allocator" }
+rodio = { path = "patches/rodio" }

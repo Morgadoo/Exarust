@@ -10,5 +10,9 @@ bevy.workspace = true
 exa_formats.workspace = true
 rapier3d.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The exit trace's in-process thread stacks (signals, glibc's backtrace).
+libc = "0.2"
+
 [lints]
 workspace = true
