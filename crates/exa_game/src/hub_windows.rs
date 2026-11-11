@@ -1927,7 +1927,14 @@ type HubDrawExtras<'w> = (
     Option<ResMut<'w, crate::item_panel_draw::PanelIcons>>,
     Option<Res<'w, exa_ui::ScriptedPointer>>,
     Option<Res<'w, exa_ui::GuiLevelState>>,
+    Option<Res<'w, bevy::diagnostic::FrameCount>>,
 );
+
+/// The form's caret bit: the blink turns it every fifth frame (lit
+/// without a frame count).
+fn caret_lit(frames: Option<&bevy::diagnostic::FrameCount>) -> bool {
+    frames.is_none_or(|f| (f.0 / 5) % 2 == 0)
+}
 
 /// Draws the open hub window into the GUI's queue. The in-game screens'
 /// draw clears the queue each frame; without it (a host that has no game
@@ -1941,7 +1948,7 @@ pub fn draw_hub_windows(
     time: Option<Res<Time>>,
     game_screens: Option<Res<crate::gui_screens::GameScreens>>,
     mut fade: Local<HubFade>,
-    (kit, mut icons, scripted, glyphs): HubDrawExtras,
+    (kit, mut icons, scripted, glyphs, frame_count): HubDrawExtras,
 ) {
     let Some(windows) = windows else {
         return;
@@ -2035,6 +2042,17 @@ pub fn draw_hub_windows(
             picker: (open.window == crate::hub_forms::FormWindow::Picker)
                 .then(|| options.picker.as_ref().map(|state| &state.picker))
                 .flatten(),
+            key_focus: options
+                .key_focus
+                .filter(|(window, _)| *window == open.window)
+                .map(|(_, record)| record),
+            edits: options
+                .edits
+                .iter()
+                .filter(|e| e.window == open.window)
+                .map(|e| (e.record, e.view))
+                .collect(),
+            caret_lit: caret_lit(frame_count.as_deref()),
         };
         let frame = (open.window != crate::hub_forms::FormWindow::Manage).then(|| {
             crate::hub_forms::paint_form_with(&mut painted, &open.form, &shown, &extras).0
@@ -2053,6 +2071,13 @@ pub fn draw_hub_windows(
     }
     if let Some(popup) = windows.forms.options.popup.as_ref() {
         crate::option_forms::paint_popup(&mut painted, popup, &shown);
+    }
+    if let Some(dragging) = windows.forms.options.dragging.as_ref() {
+        crate::option_forms::paint_colour_drag(
+            &mut painted,
+            dragging,
+            windows.forms.options.last_at,
+        );
     }
     debug!(
         "hub windows: {:?} at {:?} paints {} layers ({} stacked forms, fade {alpha})",

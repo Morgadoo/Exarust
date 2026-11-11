@@ -14,13 +14,15 @@
 //!   record array is static in the original).
 //! - **Company dialog and emblem form** ([`exa_ui::emblem_form`]). The
 //!   dialog is a black screen with BACK and NEXT; the emblem form is centred
-//!   on it. The name field types the company's name (and `klean` selects
-//!   the preset); the step buttons and number fields select the background
+//!   on it. The name field types the company's name at its caret (and
+//!   `klean` with Enter selects the preset); the step buttons and number
+//!   fields select the background
 //!   and design through the selector rule
 //!   ([`exa_ui::emblem_form::step_states`]); the mirror boxes set the layer
 //!   bits; each colour swatch opens the palette swatch popup
 //!   ([`exa_ui::col_swatch`]) under the pointer, whose hovered or pressed
-//!   cell is the colour slot's palette index; Randomise rolls and Previous
+//!   cell is the colour slot's palette index, and a swatch dragged onto
+//!   another gives it its colour word; Randomise rolls and Previous
 //!   takes the last roll back. NEXT with an empty name refuses ("Please name
 //!   your company"); otherwise it stores the name and emblem in the career.
 //! - **Colour picker** ([`exa_ui::colour_picker::PICKER_FORM`]). The six
@@ -36,7 +38,10 @@
 //! stack ([`crate::hub_forms::HubForms::open_message`]). Not built: the
 //! creator that NEXT starts (the hub does not run it), the colour image's
 //! picture (no constructor or refresh gives the record one; it draws its
-//! shade), a spinner's typed value and drag, and the combo boxes' keys.
+//! shade), and a spinner's typed value and drag.
+//!
+//! The focus follows the pointer; the focused text field or combo box takes
+//! the keys through its own handler ([`exa_ui::field_edit`]).
 
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
@@ -45,15 +50,18 @@ use exa_ui::col_swatch::{self, ColourSwatch};
 use exa_ui::colour_picker::{
     self, ColourPicker, PICKER_FORM, PickerEvent, SwatchControl, picker_records,
 };
+use exa_ui::controls::{COLOUR_SWATCH, COMBO_BOX, ColourDrag, TEXT_FIELD};
 use exa_ui::drop_down::{DropDownList, DropDownOwner};
 use exa_ui::emblem_form::{
     self, COMPANY_RECORDS, EMBLEM_FORM, EmblemAction, EmblemEditor, EmblemRandom, company,
     company_form, emblem_action, records as emblem_records,
 };
+use exa_ui::field_edit::{self, FieldKey, FieldWords};
 use exa_ui::gui_controls::{Control, state};
 use exa_ui::gui_core::GuiRect;
 use exa_ui::record_form::RecordForm;
 use exa_ui::settings::Rect;
+use exa_ui::text_edit::{EditAction, EditView};
 
 use crate::gui_paint::Painted;
 use crate::hub_forms::FormWindow;
@@ -81,9 +89,6 @@ pub enum Popup {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmblemState {
     pub editor: EmblemEditor,
-    /// The name field had an edit since the form opened (the field's
-    /// changed bit, which the name callback tests before the preset).
-    pub name_changed: bool,
 }
 
 /// The colour picker's state beside its records: the picker and the
@@ -107,6 +112,48 @@ pub struct OptionForms {
     pub look_for_word: u32,
     /// The last pointer the forms saw (a spinner's release reads it).
     pub last_at: (i32, i32),
+    /// The text field or combo box the form's focus is on: the record
+    /// under the pointer, which takes the keys ([`exa_ui::field_edit`]).
+    pub key_focus: Option<(FormWindow, usize)>,
+    /// A text field's Enter gave the focus up at this pointer; it comes
+    /// back when the pointer moves.
+    pub focus_released: Option<(i32, i32)>,
+    /// The edit bytes of every text field and combo box a key or press
+    /// reached.
+    pub edits: Vec<FieldEdit>,
+    /// The colour swatch the left button holds, until the drag threshold.
+    pub held_swatch: Option<HeldSwatch>,
+    /// The colour a swatch is dragging.
+    pub dragging: Option<ColourDragging>,
+    /// The clock (milliseconds) the pointer's drag threshold reads.
+    pub clock: i64,
+    /// The main font the forms draw with (its advances place the caret).
+    pub font: Option<exa_ui::gui_font::GuiFont>,
+}
+
+/// A text field's or combo box's edit bytes beside its record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldEdit {
+    pub window: FormWindow,
+    pub record: usize,
+    pub view: EditView,
+}
+
+/// The swatch a left press holds: where and when the press was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeldSwatch {
+    pub window: FormWindow,
+    pub record: usize,
+    pub at: (i32, i32),
+    pub clock: i64,
+}
+
+/// A colour drag: the swatch it came from and its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColourDragging {
+    pub window: FormWindow,
+    pub record: usize,
+    pub drag: ColourDrag,
 }
 
 impl OptionForms {
@@ -116,6 +163,11 @@ impl OptionForms {
         self.focus = None;
         self.emblem = None;
         self.picker = None;
+        self.key_focus = None;
+        self.focus_released = None;
+        self.edits.clear();
+        self.held_swatch = None;
+        self.dragging = None;
     }
 }
 
@@ -191,7 +243,6 @@ impl HubWindows {
         let mut form = RecordForm::open(&EMBLEM_FORM, screen, unit);
         let mut state = EmblemState {
             editor: EmblemEditor::new(),
-            name_changed: false,
         };
         apply_emblem(&mut form, &state.editor);
         state.editor.refresh_colours();
@@ -485,12 +536,9 @@ impl HubWindows {
         };
         let form = &mut self.forms.forms[i].form;
         match action {
-            EmblemAction::Name => {
-                self.forms.options.focus = Some((FormWindow::Emblem, record));
-            }
-            EmblemAction::Number { .. } => {
-                self.forms.options.focus = Some((FormWindow::Emblem, record));
-            }
+            // The fields take the keys while the pointer is on them
+            // ([`crate::hub_forms::HubForms::follow_key_focus`]).
+            EmblemAction::Name | EmblemAction::Number { .. } => {}
             EmblemAction::Step { design, step } => {
                 let current = if design {
                     state.editor.record.design
@@ -622,10 +670,11 @@ impl HubWindows {
         sync_picker(form, state);
     }
 
-    /// A typed key for the focused text field: a printable byte up to the
-    /// field's limit (a digits field drops anything else), Backspace takes
-    /// the last byte off, Enter submits. The name field calls its owner on
-    /// every edit; the number fields on Enter.
+    /// A typed key for the colour picker's clicked spinner field: a
+    /// printable byte up to the field's limit (a digits field drops
+    /// anything else), Backspace takes the last byte off. (The text fields
+    /// and combo boxes take their keys through their own handler,
+    /// [`Self::field_key`].)
     pub(crate) fn type_key(&mut self, key: TypedKey) {
         let Some((window, record)) = self.forms.options.focus else {
             return;
@@ -661,11 +710,100 @@ impl HubWindows {
         }
         let notify = style & exa_ui::controls::text_style::NOTIFY != 0;
         if window == FormWindow::Emblem && ((edited && notify) || submit) {
-            self.emblem_text(record, edited);
+            let bits = if submit { field_edit::SUBMITTED } else { 0 };
+            self.emblem_text(record, bits);
         }
     }
 
-    fn emblem_text(&mut self, record: usize, edited: bool) {
+    /// A key message for the focused text field or combo box: the
+    /// control's own key handler through the edit unit, then its owner's
+    /// callback with the state bits the handler sets. Answers the
+    /// clipboard request.
+    pub(crate) fn field_key(
+        &mut self,
+        career: &mut ArenaCareer,
+        key: FieldKey,
+        clipboard: Option<&[u8]>,
+    ) -> Option<EditAction> {
+        let (window, record) = self.forms.options.key_focus?;
+        let i = self.forms.find(window)?;
+        let unit = self.forms.forms[i].form.unit();
+        let font = self.forms.field_font(unit);
+        let has_callback = self.forms.forms[i].form.spec.records.get(record)?.reports;
+        let c = self.forms.forms[i].form.controls().get(record)?.clone();
+        let mut view = view_of(&mut self.forms.options.edits, window, record, &c.text);
+        let mut text = c.text.clone();
+        let max_len = match self.forms.forms[i].form.spec.records[record].max_len {
+            0 => 255,
+            n => n,
+        };
+        let words = FieldWords {
+            text: &mut text,
+            view: &mut view,
+            style: c.style,
+            max_len,
+            has_callback,
+        };
+        let effect = if c.class == TEXT_FIELD {
+            field_edit::text_field_key(&font, words, c.w, c.margin, unit, key, clipboard)
+        } else {
+            field_edit::combo_key(&font, words, c.w, c.margin, unit, key, clipboard)
+        };
+        self.forms.forms[i]
+            .form
+            .set_text(record, &String::from_utf8_lossy(&text));
+        self.forms.forms[i].form.geometry.controls[record].text = text;
+        store_view(&mut self.forms.options.edits, window, record, view);
+        if let Some(bits) = effect.call {
+            self.field_callback(career, window, record, bits);
+        }
+        if effect.release_focus {
+            self.forms.options.key_focus = None;
+            self.forms.options.focus_released = Some(self.forms.options.last_at);
+            debug!("forms: Enter gives the focus up");
+        }
+        effect.clipboard
+    }
+
+    /// A field's owner callback, run with the state bits its key handler
+    /// sets: the emblem name's preset on the submitted bit, a picture
+    /// number's selection, the merchant's options re-stored from their
+    /// selection words, the loadout list's row.
+    fn field_callback(
+        &mut self,
+        career: &mut ArenaCareer,
+        window: FormWindow,
+        record: usize,
+        bits: u32,
+    ) {
+        match window {
+            FormWindow::Emblem => self.emblem_text(record, bits),
+            FormWindow::Merchant => {
+                let Some(form) = self.forms.get(window) else {
+                    return;
+                };
+                let word = form.amounts.get(record).copied().unwrap_or(0);
+                if record == merchant::LOOK_FOR {
+                    self.forms.options.look_for_word = word;
+                    career.merchant_kinds = arena_forms::look_for_kinds(word);
+                } else if record == merchant::RANK {
+                    career.merchant_rank = arena_forms::rank_of(word);
+                }
+                info!(
+                    "hub trade: Enter on record {record} re-stores the merchant's look-for {:#x} and rank {}",
+                    career.merchant_kinds, career.merchant_rank
+                );
+            }
+            FormWindow::Loadout => self.loadout_list_entered(career, record),
+            _ => {}
+        }
+    }
+
+    /// The emblem fields' callbacks. The name's runs on every key (its
+    /// notify style) but acts only with the submitted bit, Enter's: the
+    /// name `klean` selects the preset. A picture number's runs on Enter
+    /// and selects the number its text reads.
+    fn emblem_text(&mut self, record: usize, bits: u32) {
         let Some(i) = self.forms.find(FormWindow::Emblem) else {
             return;
         };
@@ -675,9 +813,11 @@ impl HubWindows {
         let form = &mut self.forms.forms[i].form;
         match emblem_action(record) {
             Some(EmblemAction::Name) => {
-                state.name_changed |= edited;
+                if bits & field_edit::SUBMITTED == 0 {
+                    return;
+                }
                 let text = String::from_utf8_lossy(&form.controls()[record].text).into_owned();
-                if state.name_changed && crate::emblem::apply_klean(&text, &mut state.editor) {
+                if crate::emblem::apply_klean(&text, &mut state.editor) {
                     apply_emblem(form, &state.editor);
                     state.editor.refresh_colours();
                     info!("emblem: the name klean selects the preset");
@@ -689,6 +829,258 @@ impl HubWindows {
             }
             _ => {}
         }
+    }
+}
+
+/// A field's edit bytes, made with its creation's when no key or press
+/// reached it yet.
+fn view_of(edits: &mut Vec<FieldEdit>, window: FormWindow, record: usize, text: &[u8]) -> EditView {
+    match edits
+        .iter()
+        .find(|e| e.window == window && e.record == record)
+    {
+        Some(e) => e.view,
+        None => {
+            let view = field_edit::created_view(text);
+            edits.push(FieldEdit {
+                window,
+                record,
+                view,
+            });
+            view
+        }
+    }
+}
+
+fn store_view(edits: &mut [FieldEdit], window: FormWindow, record: usize, view: EditView) {
+    if let Some(e) = edits
+        .iter_mut()
+        .find(|e| e.window == window && e.record == record)
+    {
+        e.view = view;
+    }
+}
+
+/// Whether a record takes the form's keys as an editing control: a text
+/// field or combo box without the no-keys style bit (0x100000).
+fn takes_keys(c: &Control) -> bool {
+    matches!(c.class, TEXT_FIELD | COMBO_BOX) && c.style & 0x10_0000 == 0
+}
+
+impl crate::hub_forms::HubForms {
+    /// The main font at a unit: the one the paint stored, else the level's.
+    pub(crate) fn field_font(&self, unit: i32) -> exa_ui::gui_font::GuiFont {
+        self.options.font.unwrap_or_else(|| {
+            *exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(unit)).main
+        })
+    }
+
+    /// The focus follows the pointer, as the idle pointer's hit and focus
+    /// does: the record under it in the form it targets. A text field or
+    /// combo box that gains it gets the focus message, which selects its
+    /// whole text. After a release the focus waits for the pointer to move.
+    pub(crate) fn follow_key_focus(&mut self, target: usize, at: (i32, i32)) {
+        if let Some(released) = self.options.focus_released {
+            if released == at {
+                return;
+            }
+            self.options.focus_released = None;
+        }
+        let Some(open) = self.forms.get(target) else {
+            return;
+        };
+        let window = open.window;
+        let next = open
+            .form
+            .hovered()
+            .filter(|&i| open.form.controls().get(i).is_some_and(takes_keys))
+            .map(|i| (window, i));
+        if next == self.options.key_focus {
+            return;
+        }
+        self.options.key_focus = next;
+        if let Some((window, record)) = next {
+            let text = self.forms[target].form.controls()[record].text.clone();
+            let mut view = view_of(&mut self.options.edits, window, record, &text);
+            field_edit::focus_gained(&text, &mut view);
+            store_view(&mut self.options.edits, window, record, view);
+            debug!("forms: the focus is on {window:?} record {record}");
+        }
+    }
+
+    /// A focused text field's screen rectangle, pad, unit and words.
+    fn focused_field(&self, target: usize) -> Option<(FormWindow, usize, Control, (i32, i32))> {
+        let (window, record) = self.options.key_focus?;
+        let open = self.forms.get(target)?;
+        if open.window != window {
+            return None;
+        }
+        let c = open.form.controls().get(record)?.clone();
+        (c.class == TEXT_FIELD).then_some((window, record, c, open.form.origin()))
+    }
+
+    /// A left press on the focused text field in its hovered state: the
+    /// caret goes under the pointer with the anchor (the press's 0x40).
+    pub(crate) fn field_press(&mut self, target: usize, at: (i32, i32)) {
+        let Some((window, record, c, origin)) = self.focused_field(target) else {
+            return;
+        };
+        if !field_edit::press_places_caret(1, c.state) {
+            return;
+        }
+        let unit = self.forms[target].form.unit();
+        let font = self.field_font(unit);
+        let mut view = view_of(&mut self.options.edits, window, record, &c.text);
+        let rect = (origin.0 + c.x, origin.1 + c.y, c.w, c.h);
+        let at_x =
+            field_edit::text_field_origin(rect, c.margin, unit, c.style, &font, &c.text, &view).x;
+        let span = exa_ui::controls::text_field_span(c.w, c.margin, unit);
+        field_edit::press_caret(&font, &c.text, &mut view, at_x, at.0, span);
+        store_view(&mut self.options.edits, window, record, view);
+        debug!(
+            "forms: caret at {} in {window:?} record {record}",
+            view.caret
+        );
+    }
+
+    /// The pointer moved while the left button holds the focused text
+    /// field: the caret follows it and the selection grows (0x30).
+    pub(crate) fn field_drag(&mut self, target: usize, at: (i32, i32)) {
+        let Some((window, record, c, origin)) = self.focused_field(target) else {
+            return;
+        };
+        if self.forms[target].form.held() != Some(record) {
+            return;
+        }
+        let unit = self.forms[target].form.unit();
+        let font = self.field_font(unit);
+        let mut view = view_of(&mut self.options.edits, window, record, &c.text);
+        let rect = (origin.0 + c.x, origin.1 + c.y, c.w, c.h);
+        let at_x =
+            field_edit::text_field_origin(rect, c.margin, unit, c.style, &font, &c.text, &view).x;
+        let span = exa_ui::controls::text_field_span(c.w, c.margin, unit);
+        field_edit::drag_caret(&font, &c.text, &mut view, at_x, at.0, span);
+        store_view(&mut self.options.edits, window, record, view);
+    }
+
+    /// A left press on a colour swatch: held until the pointer moves past
+    /// the drag threshold, when it starts the colour drag.
+    pub(crate) fn swatch_press(&mut self, target: usize, at: (i32, i32)) {
+        let Some(open) = self.forms.get(target) else {
+            return;
+        };
+        let Some(record) = open.form.held() else {
+            return;
+        };
+        if open.form.controls().get(record).map(|c| c.class) != Some(COLOUR_SWATCH) {
+            return;
+        }
+        self.options.held_swatch = Some(HeldSwatch {
+            window: open.window,
+            record,
+            at,
+            clock: self.options.clock,
+        });
+    }
+
+    /// With the button held on a swatch, a move past the pointer's drag
+    /// threshold sends the swatch the drag press (0x4001): it starts the
+    /// colour drag with its colour, the press's offset into it and its
+    /// inner size, and the form lets the press go.
+    pub(crate) fn swatch_drag(&mut self, target: usize, at: (i32, i32), screen_h: i32) {
+        let Some(held) = self.options.held_swatch else {
+            return;
+        };
+        let elapsed = (self.options.clock - held.clock)
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        let limit = exa_ui::gui_core::drag_limit(screen_h);
+        let threshold = i64::from(exa_ui::gui_core::drag_threshold(elapsed, limit));
+        let (dx, dy) = (
+            (i64::from(at.0) - i64::from(held.at.0)).abs(),
+            (i64::from(at.1) - i64::from(held.at.1)).abs(),
+        );
+        if dx <= threshold && dy <= threshold {
+            return;
+        }
+        self.options.held_swatch = None;
+        let Some(open) = self.forms.get_mut(target) else {
+            return;
+        };
+        if open.window != held.window {
+            return;
+        }
+        let Some(c) = open.form.controls().get(held.record).cloned() else {
+            return;
+        };
+        let (ox, oy) = open.form.origin();
+        let colour = u32::from_le_bytes(c.colour.unwrap_or([0; 4]));
+        let press = exa_ui::controls::swatch_press(
+            0x4001,
+            colour,
+            held.at,
+            (ox + c.x, oy + c.y, c.w, c.h),
+            c.margin,
+        );
+        if let exa_ui::controls::SwatchPress::Drag(drag) = press {
+            open.form.cancel_hold();
+            info!(
+                "forms: {:?} record {} drags colour {colour:#010x}",
+                held.window, held.record
+            );
+            self.options.dragging = Some(ColourDragging {
+                window: held.window,
+                record: held.record,
+                drag,
+            });
+        }
+    }
+
+    /// The release ends a colour drag: the swatch under the pointer that
+    /// accepts the colour code takes the colour and runs its drop
+    /// callback (the emblem swatches': the colour slot takes the word).
+    /// Answers whether a drag ended.
+    pub(crate) fn drop_colour(&mut self, target: usize, at: (i32, i32)) -> bool {
+        let Some(drag) = self.options.dragging.take() else {
+            return false;
+        };
+        let Some(open) = self.forms.get_mut(target) else {
+            return true;
+        };
+        let window = open.window;
+        let hit = open.form.hit(at.0, at.1);
+        let Some(record) = hit.filter(|&i| {
+            open.form
+                .controls()
+                .get(i)
+                .is_some_and(|c| c.class == COLOUR_SWATCH)
+                && exa_ui::controls::swatch_accepts(exa_ui::controls::COLOUR_DRAG_CODE)
+        }) else {
+            info!("forms: the colour drag is dropped on nothing");
+            return true;
+        };
+        // Only the emblem's swatches carry a drop callback in the forms
+        // the hub builds.
+        if window != FormWindow::Emblem {
+            info!("forms: {window:?} record {record} has no drop callback");
+            return true;
+        }
+        let mut word = open.form.controls()[record]
+            .colour
+            .map_or(0, u32::from_le_bytes);
+        field_edit::swatch_drop(&mut word, drag.drag.colour);
+        open.form.geometry.controls[record].colour = Some(word.to_le_bytes());
+        if let (Some(slot), Some(state)) = (
+            emblem_records::SWATCHES.iter().position(|&r| r == record),
+            self.options.emblem.as_mut(),
+        ) {
+            field_edit::emblem_drop(&mut state.editor.record.colours, slot, word);
+            info!(
+                "emblem: colour {} takes the dropped {word:#010x} (palette {:#04x})",
+                slot + 1,
+                word >> 24
+            );
+        }
+        true
     }
 }
 
@@ -906,29 +1298,114 @@ fn shade_layer(rect: GuiRect, top: [u8; 4], bottom: [u8; 4]) -> exa_ui::gui_draw
     exa_ui::gui_draw::GuiLayer::new(batch, exa_ui::gui_draw::LayerTexture::None)
 }
 
+/// How a text field draws: whether it has the focus (its selection shows
+/// and its caret can), its edit bytes, and the form's caret bit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FieldDraw {
+    pub focused: bool,
+    pub view: Option<EditView>,
+    pub caret_lit: bool,
+}
+
+/// A text field's front draw: the slot `0xe4` ink bound, the edit unit's
+/// run at the field's own text origin (the selection shown while it has
+/// the focus, the whole-run ink while disabled, the state's text ink 6
+/// beside a selection), then the caret glyph where the caret is while
+/// the field has the focus and the form's caret bit is lit.
+fn paint_text_field_front(
+    painted: &mut Painted,
+    c: &Control,
+    rect: GuiRect,
+    look: &Look,
+    draw: FieldDraw,
+) {
+    use exa_ui::text_edit::{EditInk, caret_position, draw_edit, scroll_view};
+    let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
+    let Some(texture) = size else {
+        return;
+    };
+    let unit = look.unit;
+    let span = exa_ui::controls::text_field_span(c.w, c.margin, unit);
+    let view = draw.view.unwrap_or_else(|| {
+        let mut view = field_edit::created_view(&c.text);
+        scroll_view(&font, &c.text, &mut view, span);
+        view
+    });
+    let place = (rect.left, rect.top, rect.width(), rect.height());
+    let at = field_edit::text_field_origin(place, c.margin, unit, c.style, &font, &c.text, &view);
+    let palette = &look.palette;
+    let edit = draw_edit(
+        &font,
+        &c.text,
+        &view,
+        at.x,
+        at.y,
+        draw.focused,
+        c.state & state::DISABLED != 0,
+        6,
+        palette.highlight[4],
+    );
+    if let Some(([x, y, w, h], ink)) = edit.selection {
+        painted.push(exa_ui::loadout::solid_layer([x, y, w, h], ink));
+    }
+    let slot = crate::gui_paint::text_slot;
+    for run in &edit.runs {
+        let ink = match run.ink {
+            EditInk::Current => slot(palette, 0xe4),
+            EditInk::Text(index) => slot(palette, 0xcc + (index as u8) * 4),
+            EditInk::Selected => slot(palette, 0xf4),
+            EditInk::Whole => slot(palette, 0xd8),
+        };
+        if run.quads.is_empty() {
+            continue;
+        }
+        painted.push(exa_ui::gui_draw::GuiLayer::new(
+            exa_ui::gui_draw::text_batch(&font, &run.quads, ink, texture),
+            exa_ui::gui_draw::LayerTexture::Named(font.texture),
+        ));
+    }
+    if draw.focused && draw.caret_lit {
+        let (x, y) = caret_position(&font, &c.text, &view, at.x, at.y);
+        painted.push(crate::gui_paint::caption_layer(
+            &font,
+            texture,
+            &[exa_ui::text_layout::CARET_GLYPH],
+            (x, y),
+            slot(palette, 0xe4),
+        ));
+    }
+}
+
+/// The colour a swatch drags, drawn under the pointer: its rectangle at
+/// the press's offset, in the colour at alpha 0xa0 through the solid
+/// program.
+pub(crate) fn paint_colour_drag(painted: &mut Painted, dragging: &ColourDragging, at: (i32, i32)) {
+    let (x, y, w, h) = exa_ui::controls::colour_drag_rect(at, &dragging.drag);
+    let [r, g, b, _] = dragging.drag.colour.to_le_bytes();
+    painted.push(exa_ui::loadout::solid_layer([x, y, w, h], [r, g, b, 0xa0]));
+}
+
 /// Paints an extended-class record the table-built forms carry beside the
-/// basic classes: a text field's frame and text (its caret while it has
-/// the focus), a colour swatch's colour under its frame, a spinner's field,
-/// value and two buttons, and an image's shade. Answers whether it painted.
+/// basic classes: a text field's frame and its edit run (its caret while
+/// it has the focus), a colour swatch's colour under its frame, a
+/// spinner's field, value and two buttons, and an image's shade. Answers
+/// whether it painted.
 pub(crate) fn paint_extended(
     painted: &mut Painted,
     c: &Control,
     rect: GuiRect,
     look: &Look,
-    focused: bool,
+    draw: FieldDraw,
 ) -> bool {
-    use exa_ui::controls::{COLOUR_SWATCH, IMAGE, SPINNER, TEXT_FIELD};
+    use exa_ui::controls::{IMAGE, SPINNER};
     match c.class {
         TEXT_FIELD => {
-            // The field's inner frame (the label skin's style 0xf0 frames)
-            // and its run, aligned by the field's own alignment bits; a
-            // caret mark follows the run while the field has the focus.
+            // The field's inner frame (the label skin's style 0xf0 frames),
+            // then its front draw.
             let mut field = c.clone();
             field.class = 5;
             field.style = 0xf0 | (c.style & 0x7700);
-            if focused {
-                field.text.push(b'_');
-            }
+            field.text.clear();
             let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
             let text = crate::settings_form::Text { font: &font, size };
             crate::settings_form::paint_control(
@@ -940,6 +1417,7 @@ pub(crate) fn paint_extended(
                 None,
                 painted,
             );
+            paint_text_field_front(painted, c, rect, look, draw);
             true
         }
         COLOUR_SWATCH => {
@@ -1122,13 +1600,119 @@ pub fn load_emblem_textures(
     }
 }
 
-/// Typed keys reach the focused text field of the hub's forms.
+/// The edit keys a key-down sends as the original's key bytes (the
+/// virtual-key codes the edit unit switches on).
+fn edit_key_byte(code: KeyCode) -> Option<u8> {
+    use exa_ui::text_edit::key;
+    Some(match code {
+        KeyCode::Backspace => key::BACKSPACE,
+        KeyCode::Delete => key::DELETE,
+        KeyCode::ArrowLeft => key::LEFT,
+        KeyCode::ArrowRight => key::RIGHT,
+        KeyCode::Home => key::HOME,
+        KeyCode::End => key::END,
+        KeyCode::Enter | KeyCode::NumpadEnter => field_edit::ENTER,
+        KeyCode::KeyC => key::COPY,
+        KeyCode::KeyV => key::PASTE,
+        KeyCode::KeyX => key::CUT,
+        _ => return None,
+    })
+}
+
+/// Keys reach the hub's forms: the focused text field or combo box (the
+/// record under the pointer) takes each key-down as its key byte and each
+/// typed character as a typed byte, through its own handler; Ctrl with C,
+/// X or V asks the system clipboard. The colour picker's clicked spinner
+/// keeps its own typing ([`HubWindows::type_key`]). A message box on top
+/// takes the keys instead.
+#[allow(clippy::too_many_arguments)]
 pub fn hub_form_typing(
     mut typed: MessageReader<KeyboardInput>,
     keys: Res<ButtonInput<KeyCode>>,
     mut windows: ResMut<HubWindows>,
+    mut career: ResMut<ArenaCareer>,
+    textures: Option<Res<exa_ui::gui_draw::GuiTextures>>,
+    clipboard: Option<ResMut<crate::os_clipboard::SystemClipboard>>,
 ) {
     let events: Vec<KeyboardInput> = typed.read().cloned().collect();
+    if let Some(textures) = textures.as_deref() {
+        let unit = if windows.unit > 0 { windows.unit } else { 4 };
+        windows.forms.options.font = Some(crate::hub_windows::screen_font(textures, unit).0);
+    }
+    if windows.forms.message_on_top() {
+        return;
+    }
+    let mut clipboard = clipboard;
+    if windows.forms.options.key_focus.is_some() {
+        let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+        let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        let mut sent: Vec<KeyCode> = Vec::new();
+        let mut presses: Vec<FieldKey> = Vec::new();
+        for event in events.iter().filter(|e| e.state.is_pressed()) {
+            // The key-down first, as the window procedure sends it; the
+            // character after it (not with Ctrl).
+            let key_byte =
+                edit_key_byte(event.key_code).filter(|&b| ctrl || !matches!(b, 0x43 | 0x56 | 0x58));
+            if let Some(byte) = key_byte {
+                sent.push(event.key_code);
+                presses.push(FieldKey {
+                    byte,
+                    typed: false,
+                    ctrl,
+                    shift,
+                });
+            }
+            if ctrl {
+                continue;
+            }
+            let text: Option<String> = match &event.logical_key {
+                Key::Character(text) => Some(text.to_string()),
+                Key::Space => Some(" ".to_string()),
+                _ => None,
+            };
+            for ch in text.iter().flat_map(|t| t.chars()) {
+                if (' '..='~').contains(&ch) {
+                    presses.push(FieldKey {
+                        byte: ch as u8,
+                        typed: true,
+                        ctrl,
+                        shift,
+                    });
+                }
+            }
+        }
+        // Scripted key-downs (`--press`) come without a keyboard message.
+        for code in keys.get_just_pressed() {
+            if sent.contains(code) {
+                continue;
+            }
+            if let Some(byte) =
+                edit_key_byte(*code).filter(|&b| ctrl || !matches!(b, 0x43 | 0x56 | 0x58))
+            {
+                presses.push(FieldKey {
+                    byte,
+                    typed: false,
+                    ctrl,
+                    shift,
+                });
+            }
+        }
+        for key in presses {
+            let pasted = (key.ctrl && !key.typed && key.byte == exa_ui::text_edit::key::PASTE)
+                .then(|| clipboard.as_deref_mut().and_then(|c| c.read()))
+                .flatten();
+            let action = windows.field_key(&mut career, key, pasted.as_deref());
+            match action {
+                Some(EditAction::Copy(bytes)) | Some(EditAction::Cut(bytes)) => {
+                    if let Some(c) = clipboard.as_deref_mut() {
+                        c.put(&bytes);
+                    }
+                }
+                _ => {}
+            }
+        }
+        return;
+    }
     if windows.forms.options.focus.is_none() {
         return;
     }
@@ -1188,6 +1772,154 @@ mod tests {
                 windows.answer(career, window, record, true);
             }
         }
+    }
+
+    fn type_text(windows: &mut HubWindows, career: &mut ArenaCareer, text: &str) {
+        for ch in text.bytes() {
+            windows.field_key(
+                career,
+                FieldKey {
+                    byte: ch,
+                    typed: true,
+                    ..FieldKey::default()
+                },
+                None,
+            );
+        }
+    }
+
+    fn key_down(windows: &mut HubWindows, career: &mut ArenaCareer, byte: u8) {
+        windows.field_key(
+            career,
+            FieldKey {
+                byte,
+                ..FieldKey::default()
+            },
+            None,
+        );
+    }
+
+    fn hover(windows: &mut HubWindows, at: (i32, i32)) {
+        windows.forms.input(at, false, false);
+    }
+
+    #[test]
+    fn the_emblem_name_edits_at_the_caret_and_klean_waits_for_enter() {
+        let mut windows = windows();
+        let mut career = ArenaCareer::default();
+        windows.open_company();
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        let name = centre(form, emblem_records::NAME);
+        // The focus follows the pointer: no click is needed.
+        hover(&mut windows, name);
+        assert_eq!(
+            windows.forms.options.key_focus,
+            Some((FormWindow::Emblem, emblem_records::NAME))
+        );
+        type_text(&mut windows, &mut career, "kean");
+        for _ in 0..3 {
+            key_down(&mut windows, &mut career, exa_ui::text_edit::key::LEFT);
+        }
+        type_text(&mut windows, &mut career, "l");
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        assert_eq!(form.controls()[emblem_records::NAME].text, b"klean");
+        // Every key told the owner, but the preset waits for Enter's
+        // submitted bit.
+        let state = windows.forms.options.emblem.as_ref().unwrap();
+        assert_eq!(state.editor.record.background, 1);
+        key_down(&mut windows, &mut career, field_edit::ENTER);
+        let state = windows.forms.options.emblem.as_ref().unwrap();
+        assert_eq!(
+            (state.editor.record.background, state.editor.record.design),
+            (52, 81)
+        );
+        // The name's release style gave the focus up until the pointer moves.
+        assert_eq!(windows.forms.options.key_focus, None);
+        hover(&mut windows, name);
+        assert_eq!(windows.forms.options.key_focus, None);
+        hover(&mut windows, (name.0 + 1, name.1));
+        assert!(windows.forms.options.key_focus.is_some());
+        // The focus selects the whole name: a typed byte replaces it, and a
+        // twenty-first byte is refused.
+        type_text(&mut windows, &mut career, "abcdefghijklmnopqrstuvw");
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        assert_eq!(
+            form.controls()[emblem_records::NAME].text,
+            b"abcdefghijklmnopqrst"
+        );
+    }
+
+    #[test]
+    fn a_picture_number_takes_digits_and_selects_on_enter() {
+        let mut windows = windows();
+        let mut career = ArenaCareer::default();
+        windows.open_company();
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        let number = centre(form, emblem_records::DESIGN_NUMBER);
+        hover(&mut windows, number);
+        type_text(&mut windows, &mut career, "1x2");
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        assert_eq!(form.controls()[emblem_records::DESIGN_NUMBER].text, b"12");
+        let state = windows.forms.options.emblem.as_ref().unwrap();
+        assert_eq!(state.editor.record.design, 1);
+        key_down(&mut windows, &mut career, field_edit::ENTER);
+        let state = windows.forms.options.emblem.as_ref().unwrap();
+        assert_eq!(state.editor.record.design, 12);
+        // The number field keeps the focus (no release style).
+        assert!(windows.forms.options.key_focus.is_some());
+    }
+
+    #[test]
+    fn a_merchant_combo_edits_its_text_and_enter_restores_its_choice() {
+        let mut windows = windows();
+        let mut career = ArenaCareer::default();
+        windows.open_merchant_options(&career);
+        let form = windows.forms.get(FormWindow::Merchant).unwrap();
+        let look = centre(form, merchant::LOOK_FOR);
+        hover(&mut windows, look);
+        // The focus selected the whole text; End drops the selection and
+        // Backspace takes the last byte.
+        key_down(&mut windows, &mut career, exa_ui::text_edit::key::END);
+        key_down(&mut windows, &mut career, exa_ui::text_edit::key::BACKSPACE);
+        let form = windows.forms.get(FormWindow::Merchant).unwrap();
+        assert_eq!(form.controls()[merchant::LOOK_FOR].text, b"Anythin");
+        career.merchant_kinds = 0x1000;
+        key_down(&mut windows, &mut career, field_edit::ENTER);
+        // The callback stores the stock type its selection word names.
+        assert_eq!(career.merchant_kinds, 0);
+    }
+
+    #[test]
+    fn a_swatch_drag_drops_its_colour_on_another_swatch() {
+        let mut windows = windows();
+        let mut career = ArenaCareer::default();
+        windows.open_company();
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        let from = centre(form, emblem_records::SWATCHES[0]);
+        let to = centre(form, emblem_records::SWATCHES[3]);
+        let word = u32::from_le_bytes(form.controls()[emblem_records::SWATCHES[0]].colour.unwrap());
+        windows.forms.options.clock = 1000;
+        windows.forms.input(from, true, false);
+        // Inside the threshold nothing drags yet.
+        windows.forms.input((from.0 + 1, from.1), false, false);
+        assert!(windows.forms.options.dragging.is_none());
+        windows.forms.options.clock = 1500;
+        windows.forms.input((to.0, to.1), false, false);
+        assert!(windows.forms.options.dragging.is_some());
+        let answered = windows.forms.input(to, false, true);
+        // The drop took the release: no swatch callback (no palette popup).
+        assert!(answered.is_empty());
+        for (window, record, _) in answered {
+            windows.answer(&mut career, window, record, true);
+        }
+        assert!(windows.forms.options.popup.is_none());
+        let state = windows.forms.options.emblem.as_ref().unwrap();
+        assert_eq!(state.editor.record.colours[3], word);
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        assert_eq!(
+            form.controls()[emblem_records::SWATCHES[3]].colour,
+            Some(word.to_le_bytes())
+        );
     }
 
     #[test]
@@ -1283,9 +2015,7 @@ mod tests {
         let form = windows.forms.get(FormWindow::Emblem).unwrap();
         let name = centre(form, emblem_records::NAME);
         click(&mut windows, &mut career, name);
-        for ch in "Ravens".chars() {
-            windows.type_key(TypedKey::Char(ch));
-        }
+        type_text(&mut windows, &mut career, "Ravens");
         let dialog = windows.forms.get(FormWindow::Company).unwrap();
         let next = centre(dialog, company::NEXT);
         windows.forms.options.focus = None;

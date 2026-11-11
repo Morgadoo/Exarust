@@ -501,6 +501,18 @@ impl RecordForm {
         self.held
     }
 
+    /// The record the pointer hovers (the form's focused record).
+    pub fn hovered(&self) -> Option<usize> {
+        self.hovered
+    }
+
+    /// Lets the held record go without a release: a colour swatch whose
+    /// press became a drag (the drag's drop, not the swatch, takes the
+    /// release).
+    pub fn cancel_hold(&mut self) {
+        self.held = None;
+    }
+
     /// Whether a record is held by the pointer.
     pub fn is_held(&self) -> bool {
         self.held.is_some()

@@ -155,3 +155,10 @@ The trade window SHALL add the merchant's options form only when it trades with 
 #### Scenario: Weapons of Novice rank
 - **WHEN** a new career's merchant trade opens and Weapons, then Novice, are picked from the lists
 - **THEN** the boxes first read Anything and Any, and then the stock type is 0xc000 and the specialisation 2
+
+### Requirement: The merchant's options take keys
+Keys typed over a merchant option box SHALL edit the box's shown text only; Enter SHALL re-store the stock type or specialisation from the box's selection word.
+
+#### Scenario: Enter after editing
+- **WHEN** the Look for: box's text is edited and Enter pressed on a new career
+- **THEN** the stock type is 0, the Anything row's

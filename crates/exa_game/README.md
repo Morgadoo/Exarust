@@ -1244,6 +1244,15 @@ dialog with the emblem form (the name field, the picture steps and number
 fields, the mirror boxes, the colour swatches through the palette swatch
 popup, Randomise, Previous, BACK and NEXT, and the emblem preview), and the
 colour picker form; `--open-hub-window merchant|company|picker` opens them.
+The focus follows the pointer to the record under it, and a focused text
+field or combo box takes the keys through its own handler
+(`exa_ui::field_edit`): typing at the caret, Backspace, Delete, the arrows,
+Home, End, Shift selections, Ctrl+C/X/V through the system clipboard, a
+press or drag placing the caret; Enter submits (the emblem name's `klean`
+preset, a picture number's selection, the merchant's options re-stored, the
+loadout fighter list's row). A swatch dragged past the pointer's threshold
+carries its colour under the pointer and an emblem swatch it is dropped on
+takes it.
 The message box stands on the stack too (`HubForms::open_message`, built by
 `exa_ui::modal_screens::open_message_box`): a refused hire shows "Hire" with
 the refusal's text and the company dialog's NEXT with an empty name shows

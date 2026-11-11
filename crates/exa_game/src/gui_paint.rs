@@ -851,11 +851,14 @@ pub(crate) struct ComboWords<'a> {
     /// The control's pad (its margin word).
     pub pad: i32,
     pub text: &'a [u8],
+    /// The box's edit bytes once a key or press reached it; else the run
+    /// its creation fits.
+    pub view: Option<exa_ui::text_edit::EditView>,
 }
 
 /// The skin palette's ink at a byte slot of the text group (slots `0xcc`
 /// to `0xf8`, four bytes each), as the control draws bind it.
-fn text_slot(palette: &SkinPalette, slot: u8) -> [u8; 4] {
+pub(crate) fn text_slot(palette: &SkinPalette, slot: u8) -> [u8; 4] {
     let index = usize::from(slot.saturating_sub(0xcc) / 4).min(11);
     palette.text[index]
 }
@@ -929,8 +932,11 @@ pub(crate) fn paint_combo_front(
         return painted;
     };
     let span = exa_ui::controls::combo_text_span(place.2, words.pad, unit);
-    let mut view = EditView::default();
-    scroll_view(font, words.text, &mut view, span);
+    let view = words.view.unwrap_or_else(|| {
+        let mut view = EditView::default();
+        scroll_view(font, words.text, &mut view, span);
+        view
+    });
     let run_w = run_width(words.text, view.first, view.length, &font.advances);
     let at = combo_text_origin(
         place,
