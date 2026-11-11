@@ -163,6 +163,14 @@ impl LiveScene {
         self.scene.as_ref()?.nodes[node].sector
     }
 
+    /// Whether the last visible pass drew a registered mesh (its node's
+    /// main-view bit); `None` for a mesh the scene does not hold.
+    pub fn drawn_by_main(&self, entity: Entity) -> Option<bool> {
+        self.node_of
+            .contains_key(&entity)
+            .then(|| self.drawn.contains(&entity))
+    }
+
     fn reset(&mut self) {
         *self = Self {
             drawn: EntityHashSet::default(),
