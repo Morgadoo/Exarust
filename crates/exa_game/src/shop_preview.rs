@@ -108,7 +108,7 @@ pub fn possessions(record: &CharacterRecord) -> Possessions {
 }
 
 /// The view's drop of `id` (with its panel's `flags`) on the preview's
-/// record. `race_flags` is the record's race word (bit 4: it wears
+/// record. `race_flags` is the race's look word (bit 4: it wears
 /// apparel). `None` when the item has no section the drop takes, or the
 /// conflict pass refused it.
 pub fn dress<'a>(

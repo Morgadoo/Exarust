@@ -310,6 +310,9 @@ pub struct DollItems {
     copies: std::sync::Arc<HashMap<u32, Item>>,
     /// The live database's revision the copies were read at.
     revision: u64,
+    /// The game's race table, for the view's drag-over test and drop
+    /// (`None` until a game is read).
+    races: Option<std::sync::Arc<exa_formats::races::RaceDb>>,
     tried: bool,
 }
 
@@ -330,6 +333,16 @@ impl DollItems {
             .map(|db| exa_formats::objdb::items(&db))
             .unwrap_or_default();
         self.items = std::sync::Arc::new(items.into_iter().map(|item| (item.id, item)).collect());
+        self.races = Some(std::sync::Arc::new(exa_formats::races::RaceDb::new(
+            crate::scene_bodies::game_races(game),
+        )));
+    }
+
+    /// The race of a record's race byte, as the original's race lookup
+    /// gives it (its built-in record for an id the table lacks); `None`
+    /// before a game is read.
+    pub fn race(&self, byte: u8) -> Option<&exa_formats::races::Race> {
+        self.races.as_deref().map(|db| db.of_character(byte))
     }
 
     /// Reads again what the live database changed since the last sync: the
@@ -397,6 +410,39 @@ impl DollItems {
             self.sync(live);
         }
     }
+}
+
+/// The character view's drag-over test for an item dragged onto a figure
+/// of `race` ([`exa_ui::character_view::accepts_drag`]): apparel only on a
+/// view that allows changes and a race that wears it (the look word's bit
+/// 4), a weapon or shield flagged for golems (`0x2000000`) or for the
+/// large races (`0x4000000`, weapons only) only on a race whose kind word
+/// has the matching bit, and an item with none of those sections only as
+/// the AL crystal on a race that takes it while no item is shown. A view
+/// the test refuses never gets the drop: the drag ends as a cancelled one.
+/// `None` for `race` (no game read) accepts as the human's race does.
+pub fn figure_accepts(
+    race: Option<&exa_formats::races::Race>,
+    id: u32,
+    kind: possession::ItemKind,
+    shield_flags: Option<u32>,
+    has_apparel: bool,
+    view_no_changes: bool,
+) -> bool {
+    let (look, core, body) = race.map_or((4, 0, 0), |r| (r.look, r.flags, r.stats.kind));
+    exa_ui::character_view::accepts_drag(exa_ui::character_view::AcceptDragInput {
+        refused_by_callback: false,
+        id: id & ID_MASK,
+        apparel: has_apparel,
+        weapon: kind.weapon.is_some(),
+        shield: kind.shield,
+        section_flags: kind.weapon.or(shield_flags).unwrap_or(0),
+        race_flags: look,
+        race_core_flags: core,
+        body_flags: body,
+        view_no_changes,
+        shown_icon: 0,
+    })
 }
 
 /// Marks a mesh of the figure moved onto the view's layer.
@@ -1167,6 +1213,27 @@ fn equip_dropped(
         let has_apparel = record
             .as_ref()
             .is_some_and(|item| item.burden.is_some() && !item.worn_model.is_empty());
+        let race = target
+            .and_then(|t| bodies.get(t).ok())
+            .and_then(|entry| entry.5)
+            .and_then(|data| items.race(data.record.race));
+        if !figure_accepts(
+            race,
+            drop.id,
+            kind,
+            catalogue.and_then(|c| c.shield_flags(drop.id)),
+            has_apparel,
+            false,
+        ) {
+            info!(
+                "character view: refuses the drag of {:#x} (race {:?})",
+                drop.id,
+                race.map(|r| r.name.as_str())
+            );
+            cancel(&mut screens, drop);
+            continue;
+        }
+        let race_wears_apparel = race.is_none_or(|r| r.look & 4 != 0);
         let insight = drop.right_half
             && target
                 .and_then(|t| bodies.get(t).ok())
@@ -1185,7 +1252,7 @@ fn equip_dropped(
             has_apparel,
             has_weapon: kind.weapon.is_some(),
             has_shield: kind.shield,
-            race_wears_apparel: true,
+            race_wears_apparel,
             insight,
             ..DropFacts::default()
         });
@@ -1888,5 +1955,108 @@ mod tests {
                 .all(|v| v.y == 389.0 || v.y == 411.0)
         );
         assert!(rating_dots_layer(&sheet, 0.0, (0, 0, 28), 4, [0; 4]).is_none());
+    }
+
+    #[test]
+    fn the_figure_takes_race_bound_items_only_for_their_race() {
+        let mut human = exa_formats::races::builtin_human();
+        human.look = 0x1BF;
+        let mut golem = human.clone();
+        golem.look = 0;
+        golem.flags = 0x2000;
+        golem.stats.kind = 0x1_0000;
+        let golem_weapon = possession::ItemKind {
+            weapon: Some(0x0200_0000),
+            ..Default::default()
+        };
+        let large_weapon = possession::ItemKind {
+            weapon: Some(0x0400_0000),
+            ..Default::default()
+        };
+        let shield = possession::ItemKind {
+            shield: true,
+            ..Default::default()
+        };
+        let plain = possession::ItemKind::default();
+        let takes = |race, id, kind, shield, apparel, frozen| {
+            figure_accepts(Some(race), id, kind, shield, apparel, frozen)
+        };
+        // A weapon flagged for golems: only a race with the kind bit 0x10000.
+        assert!(!takes(&human, 7, golem_weapon, None, false, false));
+        assert!(takes(&golem, 7, golem_weapon, None, false, false));
+        // A weapon flagged for the large races needs the bit 0x20000.
+        assert!(!takes(&golem, 7, large_weapon, None, false, false));
+        // A shield reads its own section's flags.
+        assert!(takes(&human, 9, shield, Some(0), false, false));
+        assert!(!takes(&human, 9, shield, Some(0x0200_0000), false, false));
+        // Apparel: the look word's bit 4 and a view that allows changes.
+        assert!(takes(&human, 8, plain, None, true, false));
+        assert!(!takes(&human, 8, plain, None, true, true));
+        assert!(!takes(&golem, 8, plain, None, true, false));
+        // No section: only the AL crystal on a race that takes it.
+        assert!(!takes(&human, 500, plain, None, false, false));
+        assert!(takes(&golem, 500, plain, None, false, false));
+        assert!(!takes(&golem, 501, plain, None, false, false));
+        // No race table: the human's look.
+        assert!(figure_accepts(None, 8, plain, None, true, false));
+    }
+
+    /// The shipped records' race-bound weapons and shields, tested against
+    /// the shipped races (skipped without the game).
+    #[test]
+    fn shipped_race_bound_items() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let db = exa_formats::rdb::Database::parse(pack.get("objdb.rdb").unwrap()).unwrap();
+        let catalogue = ItemCatalogue::of_database(&db);
+        let races = exa_formats::races::RaceDb::new(
+            exa_formats::races::parse(pack.get("races.rdb").unwrap()).unwrap(),
+        );
+        let human = races.of_character(0);
+        let mut bound = Vec::new();
+        for r in &db.records {
+            let kind = catalogue.kind(r.id).unwrap_or_default();
+            // A weapon is bound by either bit, a shield by the golems' only
+            // (one shield record's first word is text whose 0x4000000 bit
+            // the test does not read for shields).
+            let (flags, mask) = match (kind.weapon, catalogue.shield_flags(r.id)) {
+                (Some(flags), _) => (flags, 0x0600_0000),
+                (None, Some(flags)) if kind.shield => (flags, 0x0200_0000),
+                _ => continue,
+            };
+            if flags & mask == 0 {
+                continue;
+            }
+            let takers: Vec<&str> = races
+                .races
+                .iter()
+                .filter(|race| {
+                    figure_accepts(
+                        Some(race),
+                        r.id,
+                        kind,
+                        catalogue.shield_flags(r.id),
+                        false,
+                        false,
+                    )
+                })
+                .map(|race| race.name.as_str())
+                .collect();
+            eprintln!("{:#x} flags {flags:#x}: taken by {takers:?}", r.id);
+            assert!(!figure_accepts(
+                Some(human),
+                r.id,
+                kind,
+                catalogue.shield_flags(r.id),
+                false,
+                false
+            ));
+            bound.push(r.id);
+        }
+        eprintln!("{} race-bound weapons and shields", bound.len());
+        assert!(!bound.is_empty());
     }
 }

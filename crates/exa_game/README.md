@@ -1824,7 +1824,12 @@ panel's press, accept, drop and drag-end rules; a drop on another pack moves
 the possession entries, a drop on the same panel only repositions, and a
 drop on a body's equipment panel or outside every panel is refused (a loot
 window has no running character view and there is no GUI-to-world drop
-yet). A drop on the inventory's figure is `doll_view`'s: apparel is worn
+yet). A drop on the inventory's figure is `doll_view`'s. It first runs the
+view's drag-over test for the figure's race (`doll_view::figure_accepts`,
+with the race table on `DollItems`). A golem-flagged weapon or shield
+(`0x2000000`) needs the race kind bit `0x10000`, a `0x4000000` weapon the
+bit `0x20000`, and apparel the race look word's bit 4. A refused drag is
+cancelled. The trade preview's drop runs the same test. Then apparel is worn
 through the equip conflict pass (displaced pieces back to the pack, the
 braies dropped, the outfit re-dressed), a weapon goes into the hands by
 the take-in plan and a shield into the off hand, the player's hands and

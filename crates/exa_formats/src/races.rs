@@ -403,7 +403,8 @@ pub struct RaceStats {
     /// word picks the left hand's claw.
     /// An item check also matches bit `0x10000` (golems) with items flagged
     /// `0x2000000` and bit `0x20000` (ogres, the Herath creatures, the
-    /// demon) with items flagged `0x4000000`; what it decides is not traced.
+    /// demon) with items flagged `0x4000000`: the character view takes such
+    /// a weapon or shield onto the figure only for a race with the bit.
     pub kind: u32,
     /// Reach of the empty hands, metres (`0x84`; human 0.5, ogre 1.0, fael
     /// 1.3, Sir 1.5): the character's reach while it holds no weapon.
