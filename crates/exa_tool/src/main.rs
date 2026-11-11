@@ -589,7 +589,9 @@ fn races(game: &GameData) -> Result<()> {
             r.health
         );
         println!(
-            "    flags {:#x} / {:#x}  kind {:#x}{}{}",
+            "    look {:#x}  mind {}  flags {:#x} / {:#x}  kind {:#x}{}{}",
+            r.look,
+            s.mind,
             r.flags,
             s.flags2,
             s.kind,

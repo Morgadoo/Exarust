@@ -12,7 +12,7 @@
 //!   ([`price`], the tick over 1000).
 //! - **Gates**: most casts first ask for focus of 0.3 times the cost (in
 //!   double precision; a NaN passes) and then a picked target. The target's
-//!   record kind decides: 1 or 2 is living, 4 or 5 undead, anything else
+//!   race's mind word decides: 1 or 2 is living, 4 or 5 undead, anything else
 //!   refuses after whatever the cast already spent. An undead target takes
 //!   the cost (half for Control Mind) and answers 0 with the cast's sound.
 //! - **Spending**: an instant cast adds its cost to the body's spent focus
@@ -500,7 +500,7 @@ pub struct MindBody {
     /// Focus, spent and reserved focus, techniques, status and condition
     /// words, slots and tick.
     pub cast: CastBody,
-    /// The record's kind word ([`mind_kind`]).
+    /// The race record's mind word ([`mind_kind`]; `exa_formats::races::RaceStats::mind`).
     pub record_kind: u32,
     /// The body's rules bits ([`RAISED_RULE`], [`DECAYED_RULE`]).
     pub rules: u32,

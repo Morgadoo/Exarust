@@ -446,6 +446,10 @@ pub struct RaceStats {
     /// shrinks by 1 with every silent swing, so larger values tire of it
     /// sooner (inferred). A feral character uses 2.
     pub attack_voices: i32,
+    /// The mind word (`0xEC`): what the Mind casts take a character of the
+    /// race for ([`Race::mind`]): 1 or 2 a living mind, 4 or 5 an undead
+    /// one, anything else no mind the casts act on.
+    pub mind: u32,
 }
 
 /// First flag word: its characters bleed (wounds paint blood, and its body
@@ -460,7 +464,9 @@ pub const LOOK_MALE_TEXTURES: u32 = 0x2;
 /// Look word: the race model loader runs one more morph-controller pass
 /// after loading the race's morph set (what that pass does is not traced).
 /// The normal maps load under [`LOOK_FEMALE_TEXTURES`] and
-/// [`LOOK_MALE_TEXTURES`], not under this bit.
+/// [`LOOK_MALE_TEXTURES`], not under this bit. The same bit dresses the
+/// race ([`Race::wears_apparel`]): human, skeleton, ancient, ogre and
+/// manipulator.
 pub const LOOK_MORPH_PASS: u32 = 0x4;
 /// Look word: the race has hair (the body builder adds a `CharExt` style
 /// under the head).
@@ -509,6 +515,7 @@ impl RaceStats {
         footsteps: String::new(),
         voice_volume: 0.0,
         attack_voices: 0,
+        mind: 0,
     };
 
     fn read(b: &[u8]) -> RaceStats {
@@ -526,6 +533,7 @@ impl RaceStats {
             footsteps: text(b, FOOTSTEPS, FOOTSTEPS_LEN),
             voice_volume: float(b, VOICE_VOLUME),
             attack_voices: word(b, ATTACK_VOICES) as i32,
+            mind: word(b, MIND),
         }
     }
 }
@@ -566,6 +574,8 @@ const RECOVERY: usize = 0x90;
 const GAITS: usize = 0x94;
 const GAIT_ROW: usize = 20;
 const HEALTH: usize = 0xE4;
+/// The mind word ([`RaceStats::mind`]).
+const MIND: usize = 0xEC;
 const PERCEPTION: usize = 0x110;
 const PROTECTION: usize = 0x11C;
 const HELD_OFFSET: usize = 0x12C;
@@ -624,6 +634,15 @@ impl Race {
     /// first flag word's red-regeneration bit, the golem suit.
     pub fn keeps_dormant_corpse(&self) -> bool {
         self.flags & REGENERATES_RED != 0
+    }
+
+    /// Whether the race wears apparel: the look word's [`LOOK_MORPH_PASS`]
+    /// bit. The character's model build loads the record's worn items only
+    /// under it (and the character view takes apparel onto a figure only
+    /// under it): humans, skeletons, ancients, ogres and the manipulator.
+    /// The built-in record (look 0) does not.
+    pub fn wears_apparel(&self) -> bool {
+        self.look & LOOK_MORPH_PASS != 0
     }
 
     /// Whether the race fights with claws.
@@ -715,6 +734,37 @@ mod tests {
         b[PROTECTION..PROTECTION + 4].copy_from_slice(&[70, 130, 70, 80]);
         b[COVERAGE + 4 * 9] = 100;
         b
+    }
+
+    /// The shipped races' dressing bit and mind word, by race byte (the race
+    /// id less one), and the built-in record's for a byte the table lacks
+    /// (skipped without the game).
+    #[test]
+    fn shipped_races_dress_and_have_minds() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let db = RaceDb::new(parse(pack.get("races.rdb").unwrap()).unwrap());
+        let dressed: Vec<u8> = (0..=u8::MAX)
+            .filter(|&byte| db.by_id(u32::from(byte) + 1).is_some())
+            .filter(|&byte| db.of_character(byte).wears_apparel())
+            .collect();
+        // Human, skeleton, ancient, ogre and the manipulator.
+        assert_eq!(dressed, [0, 1, 2, 3, 9]);
+        let mind = |byte: u8| db.of_character(byte).stats.mind;
+        // Living minds: the human frame and the ogre.
+        assert_eq!([mind(0), mind(1), mind(2), mind(3)], [1, 1, 1, 2]);
+        // Undead minds: the Herath creatures, the manipulator and the demon.
+        for byte in 4..=11 {
+            assert_eq!(mind(byte), 4, "{byte}");
+        }
+        // No mind: the wraith, the golems and the built-in record.
+        for byte in [14, 16, 17, 18, 19, 20, 12, 200] {
+            assert_eq!(mind(byte), 0, "{byte}");
+        }
+        assert!(!db.of_character(200).wears_apparel());
     }
 
     #[test]

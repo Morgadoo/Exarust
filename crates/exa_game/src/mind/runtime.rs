@@ -249,27 +249,19 @@ pub fn body_id(entity: Entity) -> BodyId {
 
 /// Gives every character a mind: a body with a fighter and a condition (a
 /// spirit body takes its caster's list when it is adopted).
-/// Its record kind is living (1), or undead (4) for the skeleton and the
-/// ancient [guess: the record kind word is not read from the record; these
-/// are the two undead races of the human frame].
+/// Its record kind is the mind word of its race record, as the Mind casts
+/// read it from the character's race ([`exa_formats::races::RaceStats::mind`],
+/// kept on the fighter's stats): humans, skeletons and ancients 1, ogres 2
+/// (living), the Herath creatures, the manipulator and the demon 4
+/// (undead), the wraith and the golems 0 (no mind the casts act on).
 #[allow(clippy::type_complexity)]
 pub fn attach_minds(
     mut commands: Commands,
-    bodies: Query<
-        (Entity, Option<&exa_character::record::CharacterData>),
-        (
-            With<Fighter>,
-            With<Condition>,
-            Without<MindBody>,
-            Without<SpiritOf>,
-        ),
-    >,
+    bodies: Query<(Entity, &Fighter), (With<Condition>, Without<MindBody>, Without<SpiritOf>)>,
 ) {
-    for (entity, data) in &bodies {
+    for (entity, fighter) in &bodies {
         let mut mind = MindBody::new(body_id(entity));
-        if data.is_some_and(|d| matches!(d.record.race, 1 | 2)) {
-            mind.record_kind = 4;
-        }
+        mind.record_kind = fighter.stats.mind;
         commands.entity(entity).insert(mind);
     }
 }
@@ -409,6 +401,13 @@ pub fn cast_mind(
             let outcome = casts::mind_cast(&row, cost, &mut mind, Some(&mut other), scene);
             std::mem::swap(body, &mut mind.cast);
             ai = other.ai.take_changes();
+            info!(
+                "mind cast {:#x} on {target:?}: race mind word {} ({:?}), answer {}",
+                row.id,
+                other.record_kind,
+                casts::mind_kind(other.record_kind),
+                outcome.code
+            );
             outcome
         }
         None => {

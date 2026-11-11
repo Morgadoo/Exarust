@@ -21,7 +21,8 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   average physique, skin `0x8000`, hair `40 80 40 00`, pitch 1, in the
   underwear) or from a creator preset (its name cleared).
 - Its rules are the original's character-data routines: the underwear rule
-  (a human whose worn items do not cover the groin gets item 8 appended),
+  (a human whose worn items do not cover the groin gets item 8 appended;
+  `keep_underwear` reads the marked body's race byte from `RaceWeaponry`),
   the equip conflict pass (refused when an overlapping worn item's equip
   lock is over 50, as for the golem suit; otherwise worn items whose
   occupancy overlaps the new one on any bone come off, and the caller gets

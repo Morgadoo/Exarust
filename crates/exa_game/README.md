@@ -564,7 +564,7 @@ or its behaviour suspended (`thaum::casting::player_asks_hooks`).
 
 The Mind domain (`mind`) has its casts (`mind::casts`): the sixteen-row
 table, the front end (Control Mind's lock, the shared pricing), the 0.3
-focus gate, the record kinds (1–2 living, 4–5 undead), Calm, Enrage,
+focus gate, the record kinds (1–2 living, 4–5 undead), read from the race record's mind word (`RaceStats::mind`, kept on `CharacterStats::mind` and copied by `attach_minds`), Calm, Enrage,
 Confusion, Trust, Suspicion, Fear, Embolden, Loyalty, Control Mind, Raise
 Dead and Command Dead (with the revival's fixed 0.2 decay), Sense Minds
 and Mask Mind (instant and persistent) and Spirit Form, each handing its
@@ -2444,7 +2444,7 @@ body's stats, its fighter and held item, the record data and possessions,
 and a duellist or placed-character brain — the same components a level's
 placed characters carry. The physical body's race muscles take the character
 init's race presets over the race record's balance bonus and arm relaxation
-(`character_muscles`; a human keeps its record's). Every race takes a physical body (`physical_frame`), as the original builds every character on the one template body (`humanoid.rsq`) and only re-tunes it in the character init's race branches: a level's ghouls, Fael, Sir and harvesters stand, walk and fight on their own bodies, the ghouls with their chest pins at half size. A model node with its own body chunk and no template bone (the demon's tail and wings) becomes a plain rigid body hung from its parent part (`limp::own_part_body`, `plain_mass_unit`). A fighter's stats carry its race's unarmed reach, which the AI reads while it holds no weapon. Only the human frame is dressed (`human_frame`). A `SceneCommand::Despawn` naming the root or the
+(`character_muscles`; a human keeps its record's). Every race takes a physical body (`physical_frame`), as the original builds every character on the one template body (`humanoid.rsq`) and only re-tunes it in the character init's race branches: a level's ghouls, Fael, Sir and harvesters stand, walk and fight on their own bodies, the ghouls with their chest pins at half size. A model node with its own body chunk and no template bone (the demon's tail and wings) becomes a plain rigid body hung from its parent part (`limp::own_part_body`, `plain_mass_unit`). A fighter's stats carry its race's unarmed reach, which the AI reads while it holds no weapon. A body is dressed only when its race's look word has bit `0x4` (`Race::wears_apparel`: human, skeleton, ancient, ogre and the manipulator), as the original's model build loads worn items; the human frame (`human_frame`) only picks the physical links. A `SceneCommand::Despawn` naming the root or the
 body model removes the root's whole subtree. The generator reads the game's tables once, on its first command;
 frames without one cost nothing. The arena's generic and hire-list
 opponents take `BodyLook::Generated` plans (`opponent_plan`,
