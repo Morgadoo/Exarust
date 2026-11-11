@@ -2751,6 +2751,7 @@ fn screenshot_after_frames(
     let Some(path) = &options.screenshot else {
         if *frames == options.frames {
             info!("--frames: {} frames played, exiting", options.frames);
+            exa_physics::exit_trace::stage("--frames: the exit message written");
             exit.write(AppExit::Success);
         }
         return;
