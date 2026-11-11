@@ -1969,6 +1969,17 @@ fn main() -> AppExit {
     // The original's level-6 box for a graphics device that cannot run
     // the renderer, captioned with the window's title.
     message_box::install_gpu_failure_box(WINDOW_TITLE, !unattended);
+    // The engine's message hook: its level-6 and level-7 boxes, and the
+    // log file beside the settings files.
+    message_box::install_log_boxes(!unattended);
+    if !options.no_settings
+        && let Some(folder) = user_settings::folder()
+    {
+        exa_game::engine_log::set_log_file(Some(exa_game::engine_log::log_file_path(
+            &folder,
+            &data.project().name,
+        )));
+    }
     let offscreen = options.offscreen.clone();
     let mut plugins = DefaultPlugins
             .set(WindowPlugin {

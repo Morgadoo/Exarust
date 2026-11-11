@@ -65,6 +65,24 @@ fn kdialog(message: &MessageBox) -> bool {
         .is_ok()
 }
 
+/// Whether the hook's boxes open a dialog (else they go to standard error).
+static LOG_BOXES_INTERACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn show_log_box(message: &MessageBox) {
+    show(
+        message,
+        LOG_BOXES_INTERACTIVE.load(std::sync::atomic::Ordering::Relaxed),
+    );
+}
+
+/// Has the engine's message hook ([`exa_game::engine_log`]) show its
+/// level-6 and level-7 boxes here.
+pub fn install_log_boxes(interactive: bool) {
+    LOG_BOXES_INTERACTIVE.store(interactive, std::sync::atomic::Ordering::Relaxed);
+    exa_game::engine_log::set_message_box_handler(show_log_box);
+}
+
 /// Whether a panic's message is the renderer's "no usable adapter".
 pub fn is_gpu_failure(panic_message: &str) -> bool {
     panic_message.contains(NO_ADAPTER)

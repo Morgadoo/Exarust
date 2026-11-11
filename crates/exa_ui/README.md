@@ -52,7 +52,7 @@ the scroll arrows. The control faces, panels, marks, sliders and scroll
 bars are built from them in the original's ink order. `gui_draw` loads the
 skin atlas and all six GUI faces at start-up (the five Rayform faces from
 the executable's resources) and submits a frame: every `GuiLayer` carries a batch, the texture its textured
-primitives sample and an optional clip; the renderer walks the layers and
+primitives sample and an optional clip (`render_frames` takes the frame's queue in `PostUpdate`; a late submitter, the engine's timed overlay, orders itself before it); the renderer walks the layers and
 their primitives in submission order and reproduces the skin's four
 programs (solid, textured with `TexCol`, rounded with `Scale`, and the
 mode a subclass answers when asked: flat for the line skin, the stone for

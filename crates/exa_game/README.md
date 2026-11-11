@@ -133,6 +133,13 @@ operating-system error report (level 5, "Windows Error"), which the save
 writer logs after "IO Error : Failed to create package file." when a
 package file cannot be opened; `hw_config` logs "Display mode not
 supported." for a full-screen size the display does not list.
+`engine_log` is the original's message hook, live: every message goes to
+the session's log buffer, which rewrites `<user folder>/<project>.log`
+(every level but 5), then to the status history (1–3), the timed overlay
+(4, 5; drawn after the interface in the window's top-left corner) or a
+message box (6, 7, shown by the binary's handler). The script reports,
+the display-mode refusal and the save writer's package failure log
+through it; `EXA_LOG_PROBE` logs a chosen message on a chosen frame.
 Tests pin the arithmetic and the orders. `hw_config` applies the full-screen
 rule and the present mode, `exarust::frame_loop` the pacing, the focus key
 release, Alt+Enter and the minimise; the other models document the original's loop, which

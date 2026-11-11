@@ -85,7 +85,23 @@ event-driven winit loop.
   cannot run the renderer (captioned with the window's title); Exarust
   shows it when Bevy's renderer finds no usable adapter, through `zenity`
   or `kdialog`, else on standard error (always on standard error in an
-  unattended run).
+  unattended run). A level-6 or level-7 message logged through the
+  message hook opens the same box.
+- **The message hook.** Every message goes through one hook the main unit
+  installs when it initialises (its finalisation frees the buffer, the
+  overlay and the timer table). The hook appends `title: text` and a
+  carriage return and line feed to the session's log buffer and, for every
+  level but 5, recreates the log file and writes the whole buffer into it,
+  so a level-5 line reaches the file with the next message written. While
+  start-up logs its system information block (`Version`, `System`, the
+  OpenGL lines) the file is not written. The file is the user folder's
+  `<project>.log` (`Userdata` beside the executable when it exists, else
+  `%APPDATA%\<project>`); Exarust writes `<project>.log` in its own user
+  folder, beside the settings files, unless `--no-settings`
+  (`exa_game::engine_log`). Levels 1–3 then go to the status history,
+  which nothing in 0.9.5 draws (its line is written and never read), 4
+  and 5 to the timed overlay, 6 and 7 to a box. Exarust also writes each
+  message to its own log on standard error.
 - **Timed overlay.** Level-4 and level-5 messages join a ring of sixteen
   slots (fifteen lines) and stay two seconds plus 50 ms a byte, the oldest
   dropping one a tick once its expiry is strictly past; a push into a full
@@ -93,9 +109,16 @@ event-driven winit loop.
   from the window's corner, eighty units wide, grown by each line's wrapped
   height plus a unit of gap, filled at alpha `0x80` in style 3; the lines
   sit two units in and advance the same way (`exa_game::frame::LogOverlay`
-  and `overlay_layout`). Exarust does not draw the overlay yet: the rules
-  are pinned so a GUI pass can. `exa_ui::fps` shows how a font line becomes
-  an `ImageNode`.
+  and `overlay_layout`). The frame tick drops the expired line before the
+  view is drawn and draws the overlay after the interface, in the GUI
+  level's main font and the skin's eighth label ink, each line wrapped at
+  the panel's width with a 1000-pixel text box; the panel is the soft
+  rounded box the GUI's shadows use, grown by three units' worth on every
+  side. Exarust draws it the same way through the GUI's draw queue after
+  every other GUI frame (`exa_game::engine_log`), timed by the app's real
+  clock (the original's game clock less the time its tick stood still);
+  nothing is drawn while no line waits. `EXA_LOG_PROBE` logs a message on a
+  chosen frame (`docs/DEBUGGING.md`).
 - **Reported failures.** A full-screen size the display refuses is logged
   as "Error : Display mode not supported." (level 4) and the desktop's size
   is kept; Exarust logs it when the settings' `ScreenWidth`/`ScreenHeight`
@@ -103,7 +126,8 @@ event-driven winit loop.
   save package file that cannot be opened or created logs "IO Error :
   Failed to create package file." and then the operating system's text
   for the error as "Windows Error : …" (level 5, always reported);
-  Exarust logs both lines as warnings (`exa_game::slots`).
+  Exarust logs both through the message hook (`exa_game::slots`), so
+  both show on the overlay.
 - **Pointer warps and drags.** When the game moves the pointer itself it
   holds the position it reads at the target for the next four pointer
   moves, putting the pointer back when a move lands 41 pixels or more away

@@ -1004,7 +1004,9 @@ pub fn rasterise(frames: &[GuiFrame], textures: &GuiTextures, width: u32, height
     out
 }
 
-fn render_frames(
+/// Rasterises the frame's submitted GUI frames onto the canvas; systems
+/// that submit late order themselves before it.
+pub fn render_frames(
     mut commands: Commands,
     mut frames: ResMut<GuiFrames>,
     textures: Res<GuiTextures>,
