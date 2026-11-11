@@ -2054,9 +2054,19 @@ pub fn draw_hub_windows(
                 .collect(),
             caret_lit: caret_lit(frame_count.as_deref()),
         };
-        let frame = (open.window != crate::hub_forms::FormWindow::Manage).then(|| {
-            crate::hub_forms::paint_form_with(&mut painted, &open.form, &shown, &extras).0
-        });
+        let frame = match open.window {
+            crate::hub_forms::FormWindow::Manage => None,
+            // The picker keeps the draw skin's default instance: its
+            // background and records are drawn in place, with no frame
+            // layers over its children.
+            crate::hub_forms::FormWindow::Picker => {
+                crate::base_form::paint_base_form(&mut painted, &open.form, &shown, &extras);
+                None
+            }
+            _ => {
+                Some(crate::hub_forms::paint_form_with(&mut painted, &open.form, &shown, &extras).0)
+            }
+        };
         if open.window == crate::hub_forms::FormWindow::Emblem
             && let Some(state) = options.emblem.as_ref()
         {

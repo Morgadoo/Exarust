@@ -1009,7 +1009,7 @@ pub(crate) fn paint_form(
 }
 
 /// What the extended forms add to a form's paint: the focused text field
-/// and a trackbar's gradient under its track.
+/// and the colour picker whose lists a marker trackbar stripes.
 #[derive(Default)]
 pub(crate) struct FormExtras<'a> {
     pub focus: Option<usize>,
@@ -1113,30 +1113,6 @@ pub(crate) fn paint_form_with(
                 }
             }
             0xac01 => {}
-            4 if extras.picker.is_some() => {
-                if let Some(stops) = extras
-                    .picker
-                    .and_then(|picker| crate::option_forms::picker_gradient(picker, i))
-                {
-                    // The gradient under the track, inset as the track is.
-                    let track = GuiRect::new(
-                        rect.left + 2 * unit,
-                        rect.top + rect.height() / 2 - unit,
-                        (rect.width() - 4 * unit).max(1),
-                        2 * unit,
-                    );
-                    painted.push(crate::option_forms::gradient_layer(track, &stops));
-                }
-                crate::settings_form::paint_control(
-                    c,
-                    origin,
-                    unit,
-                    &look.palette,
-                    &text,
-                    None,
-                    painted,
-                );
-            }
             _ if crate::option_forms::paint_extended(
                 painted,
                 c,

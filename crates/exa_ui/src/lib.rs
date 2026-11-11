@@ -283,6 +283,7 @@ pub use skill_gui::{
     SkillIcons, SkillPrograms, SkillResources, SkillShaderProgram, TEX, build_group_icons,
     build_single_icons, group_cells, icon_sharpened, skill_programs,
 };
+pub use skin::{BASE_SCHEME, BASE_TITLED_CLIENT_TOP, base_palette, shown_base_palette};
 pub use skin::{
     BEVEL_INK, BackdropCorner, BaseSkin, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan,
     CentredIcon, CloseEdge, ControlLabelDraw, ControlLabelPlace, ControlPlace, ControlScrollPlace,
