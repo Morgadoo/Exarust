@@ -1896,6 +1896,8 @@ Round 150 effects2: the kinesis line is blocked as the original node rule decide
 
 Round 153 effects3: a teleporter or reconstruction device click reads the device own answer, the destination screen holds the pointer, and the journey bubble plays its sounds with its light at the node size; GPU checks were blocked by an external process holding the card.
 
+Round 157 portal: leaving through a portal dissolves the player in the original particle burst, and level portals spray their sparks.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
