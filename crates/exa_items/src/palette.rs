@@ -229,7 +229,8 @@ impl Palette {
     /// A palette around a given primary and secondary colour: the tertiary
     /// is rolled, then the shades; a weapon's (kind 2) takes as metal the
     /// first metal colour within one family and two shades of the
-    /// secondary, and with a painted plate the last such one.
+    /// secondary, and with a painted plate the last such one. The arena's
+    /// profile outfit pass calls it with a company's two colours.
     pub fn roll_around(
         &mut self,
         wealth: f32,
@@ -285,6 +286,13 @@ impl Palette {
     /// mode (0 rolled, 1 the palette's, 2 the third shade's, 4 a leather's,
     /// `0x40` a gem's) and level. `None` where the original leaves the
     /// colour unset.
+    ///
+    /// Its only callers in 0.9.5 are the factory's two area rolls (the
+    /// first areas of a fresh item's stored choices and the random roll),
+    /// and both pass mode 0, which is the factory's own colour roll
+    /// (`exa_formats::factory::random_colour`, live there). Modes 1, 2, 4
+    /// and `0x40` are unreachable in the shipped game; they are kept as the
+    /// original has them and are not wired.
     pub fn part_colour(&self, material: u8, mode: u8, level: u8, state: &mut u32) -> Option<u8> {
         let class = MATERIAL_CLASS
             .get(usize::from(material))

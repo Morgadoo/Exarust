@@ -2,6 +2,7 @@
 //!
 //! Planned in Phase 4–7; see `README.md` next to this crate and `docs/PLAN.md`.
 
+pub mod archive_pass;
 pub mod arena;
 pub mod arena_board;
 pub mod arena_hub;
@@ -175,6 +176,8 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         bridge_game_types(app);
+        // The save unit's importer hook for a level read from the archive.
+        exa_world::set_archive_pass(archive_pass::archive_pass);
         app.add_plugins((
             exa_assets::AssetsPlugin,
             player::PlayerPlugin,

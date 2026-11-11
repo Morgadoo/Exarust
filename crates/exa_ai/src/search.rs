@@ -348,44 +348,17 @@ pub struct Scene {
     pub open: Vec<u32>,
 }
 
-/// Bone weights of the apparel value, bones 1 to 20.
-const BONE_WEIGHT: [f32; 20] = [
-    1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 0.5, 2.0, 2.5, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 1.0,
-    1.0,
-];
-
 impl Apparel {
-    fn protection_sum(&self) -> f32 {
-        self.protection.iter().map(|&b| u32::from(b)).sum::<u32>() as f32
-    }
-
-    /// The weighted coverage sum and the largest bone value.
+    /// The weighted coverage sum and the largest bone value
+    /// ([`exa_formats::item_value::protection_parts`]).
     pub fn coverage(&self) -> (f32, f32) {
-        let p = self.protection_sum();
-        let (mut sum, mut most) = (0.0f32, 0.0f32);
-        for (c, w) in self.coverage.iter().zip(BONE_WEIGHT) {
-            if *c == 0 {
-                continue;
-            }
-            let v = (f64::from(*c) * 0.01 * 0.005) as f32 * p;
-            sum += v * w;
-            if most < v {
-                most = v;
-            }
-        }
-        (sum, most)
+        exa_formats::item_value::protection_parts(&self.coverage, self.protection)
     }
 
-    /// Its bulk: `Σ p · w · √(c/100) · 0.005` over the covered bones.
+    /// Its bulk: `Σ p · w · √(c/100) · 0.005` over the covered bones
+    /// ([`exa_formats::item_value::protection_value`]).
     pub fn bulk(&self) -> f32 {
-        let p = self.protection_sum();
-        let mut bulk = 0.0f32;
-        for (c, w) in self.coverage.iter().zip(BONE_WEIGHT) {
-            if *c != 0 {
-                bulk += p * (f64::from(w) * (f64::from(*c) * 0.01).sqrt() * 0.005) as f32;
-            }
-        }
-        bulk
+        exa_formats::item_value::protection_value(&self.coverage, self.protection)
     }
 
     /// Whether two pieces share any occupancy bit.
@@ -399,20 +372,16 @@ impl Apparel {
 
 impl Arm {
     /// Its value: −10 for tier 0, else `thrust/140 + tier · ((q/255)²/2 +
-    /// 1/2) · (1 − (damage/255) · 0.3)`, × 0.8 for the `0x10` hand bits.
+    /// 1/2) · (1 − (damage/255) · 0.3)`, × 0.8 for the `0x10` hand bits
+    /// ([`exa_formats::item_value::weapon_desirability`]).
     pub fn value(&self) -> f32 {
-        if self.tier & 0x1F == 0 {
-            return -10.0;
-        }
-        let q = f32::from(self.quality) / 255.0;
-        let worn = f32::from(self.damage) / 255.0;
-        let v = f32::from(self.thrust) / 140.0
-            + f32::from(self.tier & 0x1F) * (q * q * 0.5 + 0.5) * (1.0 - worn * 0.3);
-        if self.flags & 0x30 == 0x10 {
-            v * 0.8
-        } else {
-            v
-        }
+        exa_formats::item_value::weapon_desirability(
+            self.flags,
+            self.quality,
+            self.damage,
+            self.thrust,
+            self.tier,
+        )
     }
 
     /// Its class, 0 to 3, by the hand bits and the low nibble.

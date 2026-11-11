@@ -204,6 +204,22 @@ impl LiveObjects {
         );
     }
 
+    /// [`Self::load_level`] for records the importer's hook has already
+    /// migrated (the archive pass, whose first step is the tier
+    /// migration): the tier is loaded as given.
+    pub fn load_level_migrated(
+        &mut self,
+        name: &str,
+        records: Option<Store>,
+        strings: Option<Library>,
+    ) {
+        let records = records.unwrap_or_default();
+        let count = records.len();
+        let db = self.db_mut();
+        db.load_local(records, strings.unwrap_or_default());
+        info!("object database: level {name} local tier {count} records (archive pass)");
+    }
+
     /// A record decoded as an item, by its whole id (any tier).
     pub fn item(&self, id: u32) -> Option<Item> {
         let mut item = self.db.find(id)?.item().ok()?;
