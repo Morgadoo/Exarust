@@ -713,7 +713,9 @@ link, the soft world weld its attach built, made a plain world link to the
 parry point with the grip's strength (`exa_physics::grip::GripLinks::
 aim_parry`), the other hand's item's link is disabled, and a blow that has
 passed disables them all; the parry's end disables them again
-(`release_parry`; the hand grips are left alone). The point reads the
+(`release_parry`; the hand grips are left alone). The tick a link goes
+from disabled to held logs `armed parry:` at debug level
+(`GripLinks::parry_held`), the feature sweep's check. The point reads the
 attacker's clip progress, from its blade tip. The shield's plane link is
 not modelled. Its geometry: `parry_blade_height` finds how far up the attacker's
 blade the parry meets it (the chest gap less 20 cm against the reach and

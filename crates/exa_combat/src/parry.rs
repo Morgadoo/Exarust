@@ -2009,6 +2009,12 @@ fn hold_parry_links(
         let Some((g, point_cm)) = hold else { continue };
         let Some(slot) = slot else { continue };
         if g.flags == 0 && g.enabled && slot == usize::from(g.slot) {
+            if !links.parry_held() && links.has_parry_link() {
+                debug!(
+                    "armed parry: {e:?}'s parry link holds it toward {point_cm:.1?} cm, strength {:.3}",
+                    g.strength
+                );
+            }
             links.aim_parry(point_cm / 100.0, g.strength);
         } else if g.other_disabled && slot == 1 - usize::from(g.slot).min(1) {
             links.release_parry();

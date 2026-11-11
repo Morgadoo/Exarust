@@ -1217,6 +1217,13 @@ The player's combat target SHALL be picked by its behaviour's auto-target in eac
 - **WHEN** the player leaves combat mode
 - **THEN** its combat target is none in that step
 
+### Requirement: Armed parry trace
+At debug level, the armed parry SHALL log the tick an item's parry link goes from disabled to held. The log line SHALL name the item, the parry point and the link's strength.
+
+#### Scenario: A sword duel
+- **WHEN** an armed fighter parries with its sword
+- **THEN** the log shows `armed parry:` with the sword's link held toward the parry point
+
 ### Requirement: Weapon record up the part chain
 A striking or struck part SHALL read its own weapon stat record, else its nearest ancestor's below the tree's root, whose record is never read from below. A held item's part SHALL find its top part's record, a fist its hand's, and a striking part with none SHALL deal nothing.
 
