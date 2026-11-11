@@ -1019,6 +1019,8 @@ Round 156 walkorder: bodies are walked in the original sector-list order with an
 
 Round 163 bridgeaudit: a bridge audit checks every frame schedule for systems that read a type the frame world does not hold (31 moved, sim-only or lent-while-free types), logs them and stops a debug build on one unless allowed. It found two silent failures besides the revive reset: the debug weapon blood registered no blood-list spot (now stained at the next fixed step) and the profiler brains line always read 0 (now a growing snapshot). After the fixes it finds no reader in four debug-heavy scenes; the duels and exanima01 are identical to main.
 
+Round 179 rbd: a body part that changes collision cells moves to the head of its new cell list, as the original grid step does.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
