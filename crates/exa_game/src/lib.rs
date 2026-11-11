@@ -62,6 +62,7 @@ pub mod footprints;
 pub mod footwork;
 pub mod form_input;
 pub mod frame;
+pub mod frame_timers;
 pub mod game_event;
 pub mod game_event_live;
 pub mod gamepad;
@@ -256,6 +257,7 @@ impl Plugin for GamePlugin {
                 hw_config::HardwareConfigPlugin,
                 os_pointer::OsPointerPlugin,
                 engine_log::EngineLogPlugin,
+                frame_timers::FrameTimersPlugin,
                 view_overlay::ViewOverlayPlugin,
             ),
             destination::DestinationPlugin,

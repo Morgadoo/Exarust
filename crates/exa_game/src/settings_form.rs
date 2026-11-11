@@ -200,6 +200,7 @@ fn apply_rows(form: &mut FormState, config: &mut HardwareConfig, events: &[FormE
 /// the form's own hit and press ([`FormState`]); the base form takes the
 /// frame codes (the arrows and their repeat, the thumb and the rail) and
 /// the wheel, which goes to the form under the pointer.
+#[allow(clippy::too_many_arguments)]
 fn drive_controls_page(
     page: &mut Option<(crate::form_input::FormTask, exa_ui::gui_core::FormId)>,
     form: &mut FormState,
@@ -208,6 +209,7 @@ fn drive_controls_page(
     mouse: &ButtonInput<MouseButton>,
     wheel: i32,
     now: u32,
+    timers: Option<&mut crate::frame_timers::FrameTimers>,
 ) {
     if form.page != 1 {
         *page = None;
@@ -260,7 +262,7 @@ fn drive_controls_page(
         scroll.fraction = form.scroll;
     }
     let frame = crate::form_input::read_pointer(window, scripted, mouse, wheel, now);
-    task.drive(&frame);
+    task.drive(&frame, timers);
     for event in task.take_events(*id) {
         if let exa_ui::base_form::BaseEvent::Scrolled(f) = event {
             info!("settings: Controls page scrolled to {f:.3}");
@@ -288,6 +290,7 @@ fn form_input(
     config: Option<ResMut<HardwareConfig>>,
     mut bindings: Option<ResMut<Bindings>>,
     mut applied: MessageWriter<BindingsApplied>,
+    mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
 ) {
     let notches: f32 = wheel
         .read()
@@ -343,6 +346,7 @@ fn form_input(
                     &mouse,
                     notches as i32,
                     now,
+                    timers.as_deref_mut(),
                 );
             }
         }

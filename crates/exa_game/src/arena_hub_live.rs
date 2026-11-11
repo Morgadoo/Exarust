@@ -759,10 +759,11 @@ fn hub_enter_on_load(
     }
 }
 
-/// Timer ticks the auto rematch waits after the return to the hub.
-pub const REMATCH_TICKS: u64 = 40;
-/// Real-time milliseconds per timer tick.
-pub const TIMER_TICK_MS: u64 = 100;
+/// Timer units the auto rematch waits after the return to the hub: its
+/// record in the frame's timer table ([`crate::frame_timers::FrameTimers`]).
+pub const REMATCH_TICKS: u32 = 40;
+/// Real-time milliseconds per timer unit (the table's multiplier).
+pub const TIMER_TICK_MS: u32 = crate::frame::TIMER_MULTIPLIER;
 
 /// The original's dormant auto-match switch ([`crate::arena_live::ArenaAutoContinue`],
 /// `--arena-auto`): a round's end continues by itself and, 40 timer ticks
@@ -773,8 +774,8 @@ pub const TIMER_TICK_MS: u64 = 100;
 pub struct ArenaRematch {
     /// The board the last launch came from: its selected match is replayed.
     pub board: Option<exa_ui::match_board::Board>,
-    /// The real-time millisecond the rematch is due.
-    pub due_ms: Option<u64>,
+    /// The rematch's record in the frame's timer table, while pending.
+    pub timer: Option<u32>,
     /// This hub entry already scheduled (or skipped) its rematch.
     pub scheduled: bool,
 }
@@ -809,15 +810,16 @@ pub fn rematch_team(
         .collect()
 }
 
-/// The auto switch's rematch: once per hub entry it is scheduled
-/// [`REMATCH_TICKS`] timer ticks of real time ahead when a match was
-/// launched before; when due, the last board's match starts again with
-/// [`rematch_team`]'s lineup.
+/// The auto switch's rematch: once per hub entry, when a match was
+/// launched before, it registers a [`REMATCH_TICKS`]-unit record in the
+/// frame's timer table; the frame that record comes due frees it (the
+/// original's callback sets its own free flag) and the last board's match
+/// starts again with [`rematch_team`]'s lineup.
 #[allow(clippy::too_many_arguments)]
 fn auto_rematch(
     auto: Option<Res<crate::arena_live::ArenaAutoContinue>>,
     mut hub: ResMut<ArenaHub>,
-    time: Option<Res<Time<Real>>>,
+    timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
     mut rematch: ResMut<ArenaRematch>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     flow: Option<Res<Flow>>,
@@ -826,16 +828,21 @@ fn auto_rematch(
     if !auto.is_some_and(|auto| auto.0) {
         return;
     }
+    let Some(mut timers) = timers else {
+        return;
+    };
     if !hub.entered {
-        rematch.due_ms = None;
+        if let Some(id) = rematch.timer.take() {
+            timers.free(id);
+        }
         rematch.scheduled = false;
         return;
     }
-    let now = time.map_or(0, |time| time.elapsed().as_millis() as u64);
     if !rematch.scheduled {
         rematch.scheduled = true;
         if rematch.board.is_some() {
-            rematch.due_ms = Some(now + REMATCH_TICKS * TIMER_TICK_MS);
+            rematch.timer =
+                Some(timers.add(REMATCH_TICKS, crate::frame_timers::TimerUser::ArenaRematch));
             info!(
                 "arena auto: rematch in {} ms",
                 REMATCH_TICKS * TIMER_TICK_MS
@@ -843,10 +850,11 @@ fn auto_rematch(
         }
         return;
     }
-    if rematch.due_ms.is_none_or(|due| now < due) {
+    let Some(id) = rematch.timer.filter(|&id| timers.fired(id)) else {
         return;
-    }
-    rematch.due_ms = None;
+    };
+    timers.free(id);
+    rematch.timer = None;
     let Some(mut board) = rematch.board.clone() else {
         return;
     };

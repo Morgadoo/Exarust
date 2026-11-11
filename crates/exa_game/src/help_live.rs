@@ -408,6 +408,7 @@ fn manual_input(
     mut screen: ResMut<ManualScreen>,
     mut steps: Option<ResMut<FlowSteps>>,
     mut flow: Option<ResMut<crate::flow::Flow>>,
+    mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     if !screen.is_open() {
@@ -462,7 +463,7 @@ fn manual_input(
         scroll.content = content;
         scroll.step = step;
     }
-    forms.drive(&frame);
+    forms.drive(&frame, timers.as_deref_mut());
     let mut closed = false;
     for event in forms.take_events(outer) {
         match event {
