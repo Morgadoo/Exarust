@@ -138,6 +138,8 @@ Round 139 osgui: the hub shows the original message box (hire refusals, company 
 
 Round 183 runtime: the run-time library random generator the game calls in over 150 places is one shared port with the original reseed rule, and SysUtils is shown unreachable from engine code.
 
+the domain wheel premise of a constant GUI scale was wrong: the original scale global is the interface unit times 0.25, so the wheel grows above unit 4; unit 4 pictures are unchanged.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
@@ -2814,4 +2816,6 @@ Round 56 nightlook: the night environment already matched the original; the aren
 Round 185 mainview: the engine message hook writes the log file, shows the timed overlay and opens message boxes as the original does.
 
 the main unit timer table now runs once a frame; the GUI work (tooltip, arrow repeat, closed form deletion) runs on its 100 ms timer as in the original.
+
+to verify next: the saves slot kind mapping (the assembly name builder maps kind 1 to the save file and kind 2 to the checkpoint, which Exarust may have inverted), and the level-exit save keeping the old level position.
 
