@@ -332,6 +332,20 @@ fn body_rule_bits() {
     assert_eq!(cored(&suit, 18, 500), 0x70);
     assert_eq!(cored(&suit, 18, 431), 0x170);
     assert_eq!(cored(&guard, 16, 431), 0x40);
+    // A race with both golem bits tests only the `0x2000` kind's core.
+    let mut both = race(18, 2.0);
+    both.flags = 0x3020;
+    assert_eq!(cored(&both, 18, 431) & 0x100, 0x100);
+    assert_eq!(cored(&both, 18, 500) & 0x100, 0);
+    // The refresh re-tests it: taking the core off blocks it again, and a
+    // race that is no golem keeps its rules.
+    let worn = BodyRules(0x70);
+    assert_eq!(golem_rules(worn, golem_core(0x2020), [7]).0, 0x170);
+    assert_eq!(
+        golem_rules(BodyRules(0x170), golem_core(0x2020), [500]).0,
+        0x70
+    );
+    assert_eq!(golem_rules(BodyRules(0x12), golem_core(0x27), []).0, 0x12);
     let r = BodyRules(0x170);
     assert!(r.has(BodyRules::REGENERATES_RED) && r.has(BodyRules::NO_RED_REGENERATION));
     assert!(!r.has(BodyRules::TAKES_REMEDIES));

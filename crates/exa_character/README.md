@@ -395,8 +395,10 @@ tested rules of their own.
   items' contact mobility is put at their base times its held factor
   (`grip_runtime::scale_held_contacts`, from `Drive::held_contact`: 2, or 1
   in an attack or a parry, nothing in a shock or a kick); the shield always,
-  the other items only while the holder is armed. The base is the item's
-  registered mobility, standing in for the original's weapon-mass base.
+  the other items only while the holder is armed. A held weapon's base is
+  its top part's contact mobility as the holding pass's mass redistribution
+  left it (`exa_physics::weapon_mass`); another item's is its registered
+  mobility.
   The grip runtime (`grip_runtime`) reads the holder's clip
   and its locomotion every tick (after the character ticks, before the
   bodies step), takes the mode a motion start derives from the clip or the
@@ -450,7 +452,9 @@ tested rules of their own.
   the hands an armed character's hands are at their base and an unarmed
   one's at half (a quarter in the heavy-claws state), as the original's
   emptying of the hands and its equip refresh leave them; every attack
-  start in the heavy-claws state quarters both hands; a collapse empties
+  start in the heavy-claws state quarters both hands, and an overhead's
+  wound puts them back at the base (`exa_combat::OverheadWounded`,
+  `overhead_claw_hands`); a collapse empties
   an unarmed character's hands back to the base; and a gobbler's collapse
   gives each femur's limit link 10 cm of slack. The same refresh gives an
   unarmed character's hands the permanent weapon bit (`Ragdoll::set_fist`,

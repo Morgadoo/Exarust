@@ -487,7 +487,7 @@ fn make_link(
 ) -> Option<GripLink> {
     let on_item = item.weights_at(bindings.item_part, on_item)?;
     let on_hand = hand.weights_at(parent?, on_hand)?;
-    let item_mobility = item.parts.get(bindings.item_part)?.inverse_mass;
+    let item_mobility = item.link_mobility(bindings.item_part)?;
     let parent_mobility = hand.link_mobility(parent?)?;
     Some(GripLink {
         item: bindings.item_part,
@@ -527,7 +527,7 @@ pub fn origin_pivot(
 ) -> Option<GripLink> {
     let on_item = item.weights_at(item_part, Vec3::ZERO)?;
     let on_hand = holder.weights_at(parent, Vec3::from(item_in_parent.translation))?;
-    let item_mobility = item.parts.get(item_part)?.inverse_mass;
+    let item_mobility = item.link_mobility(item_part)?;
     let parent_mobility = holder.link_mobility(parent)?;
     Some(GripLink {
         item: item_part,
@@ -778,7 +778,7 @@ pub fn torch_links(
         let on_item = item.weights_at(bindings.item_part, local)?;
         let in_hand = item_to_hand.transform_point3(local);
         let on_hand = hand.weights_at(holding, in_hand)?;
-        let item_mobility = item.parts.get(bindings.item_part)?.inverse_mass;
+        let item_mobility = item.link_mobility(bindings.item_part)?;
         let parent_mobility = hand.link_mobility(holding)?;
         links.push(GripLink {
             item: bindings.item_part,
@@ -870,7 +870,7 @@ pub fn shield_links(
             (left, in_arm - left_hand_offset * cm)
         };
         let on_hand = hand.weights_at(parent, on_parent)?;
-        let item_mobility = item.parts.get(bindings.item_part)?.inverse_mass;
+        let item_mobility = item.link_mobility(bindings.item_part)?;
         let parent_mobility = hand.link_mobility(parent)?;
         links.push(GripLink {
             item: bindings.item_part,

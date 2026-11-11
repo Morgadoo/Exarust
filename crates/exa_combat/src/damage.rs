@@ -185,6 +185,11 @@ pub struct Strike {
     pub hanging: bool,
     /// The attacker's Force Strikes strength ([`crate::PowerFactors`]).
     pub strikes: f32,
+    /// The striking part: its index in a held item's body (0, the item's
+    /// top part, for a sweep's blade and a fist), whose sound clock the
+    /// blow stamps. Its record is the one its chain finds
+    /// ([`crate::record_chain`]).
+    pub part: usize,
 }
 
 /// What the struck character brings to a blow.

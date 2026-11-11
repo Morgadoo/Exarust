@@ -257,8 +257,11 @@ is pending (`Locomotor::plant_request`, up to 500 ms after a clip
 replaced Walk or Run). The combat state leaves its stance motion alone while
 the body's auto-parry holds (`Fighter::parry`'s parrying flag). A running body
 stops its run before the drives (the step goal pulled to `8·speed + 20`
-cm along its facing). The cast chooser runs at the first place for a body
-not attacking with a foe, and a cast running past a second is torn down
+cm along its facing). The cast chooser runs at the first place of the search, after its
+contact pass, for a body not attacking that still has a foe (a pass that
+dropped the foe casts nothing, nor does a search that starts past the
+first place), after the footwork's plan has read the attack drive; a
+cast clears the drive for the places, and a cast running past a second is torn down
 once the power system is done (`cast`). A duellist with `DuelPowers`
 asks it as its power system: the game answers its slots before
 `DuelSystems` and casts the chosen power after it
