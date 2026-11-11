@@ -905,7 +905,9 @@ plus five ticks of its fast velocity becomes the new support foot
 over unless it has reached, the search starts from the original's
 just-under-maximum sentinel so a NaN distance never wins, the first leg
 stands in when none is free, and the standing position moves so that
-foot's spot is where the foot is. A queued footwork step is taken by the original's rule at the
+foot's spot is where the foot is. A step running when the balance falls
+under 0.2 (compared in double) is only cleared, as the original's balance
+routine clears it: no foot is landed and the standing position stays. A queued footwork step is taken by the original's rule at the
 next landing; a queued vector along the body's look (`Ragdoll::look_steps`, set by the movement
 stage from the request's look) is first bent at the body's target's circle (`approach_bend`;
 the target is the behaviour's, `Ragdoll::aim_steps`: the player's auto-target, the duellist's
@@ -974,7 +976,12 @@ current clip's pose-only sample lowered onto that frame at rest,
 re-anchors each foot at its posed contact on the frame less the clip root
 at its ground plus the sole (`placement::ground_foot_anchor`) and
 restarts the slack links' smoothed lengths; no ground leaves the body
-alone. The character keeps its place (its feet on the character's ground;
+alone. Every placement writes the facing from its matrix's forward
+(`body::locomotion::Locomotor::face`, run by the ground placement and,
+with the twist and reach reset of `Locomotor::placed`, at the fighters'
+spawn): the forward flattened and normalised by `RSQRTSS` as the heading
+and the stance facing, the body's yaw the heading's angle by the engine's
+arc cosine, the cursor and the look the raw forward's. The character keeps its place (its feet on the character's ground;
 moving it to the snap's ground made the earlier squat). The leg
 snap (`Ragdoll::snap_placement`):
 each probe is the clip ankle plus 5·scale cm
@@ -1053,7 +1060,9 @@ stance level. A still 40 cm sideways error moves the target 33.6 cm.
 The lower leg's and foot's friction follow its
 state; in each iteration a standing
 foot is gripped at its anchor (the PD grip, a walking one the velocity
-servo, a lifted one only pushed up) and its toe held over the floor
+servo, a lifted one only pushed up; the balance routine's feet centre puts
+every leg's grip back at full each tick, so the iterations' rise from an
+anchored foot's zero only runs within a tick) and its toe held over the floor
 (`body::Ragdoll::clear_feet`, `body::Ragdoll::ankle`,
 `body::Balance::level`/`extension`/`landings`; the overlay's
 `body::Ragdoll::drawn_foot`). The controller's carry moves the anchors

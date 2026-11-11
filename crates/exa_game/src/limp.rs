@@ -633,10 +633,11 @@ fn place_on_ground(
     physics: Option<Res<exa_physics::Physics>>,
     sector_bodies: Option<Res<exa_physics::sector_lists::SectorBodies>>,
     others: Query<(&Ragdoll, Option<&Condition>), Without<GroundPlacement>>,
-    states: Query<(
+    mut states: Query<(
         Option<&Condition>,
-        Option<&Locomotor>,
+        Option<&mut Locomotor>,
         Option<&exa_combat::Fighter>,
+        Option<&mut Locomotion>,
     )>,
 ) {
     for (root, placement, mut body, at) in &mut asked {
@@ -651,7 +652,7 @@ fn place_on_ground(
         let routing = states
             .get(root)
             .ok()
-            .map(|(c, m, f)| PlacementRouting::of(&body, c, m, f));
+            .map(|(c, m, f, _)| PlacementRouting::of(&body, c, m, f));
         if let Some(r) = routing {
             info!(
                 "ground placement {root:?}: routed by femur posture {:?}, twist {:.1} deg, feral {:.2}",
@@ -675,6 +676,16 @@ fn place_on_ground(
         floor.translation.y = placement.floor;
         if let Some(yaw) = placement.yaw {
             floor.matrix3 = bevy::math::Mat3A::from_rotation_y(yaw);
+        }
+        // The placement's facing, from the frame's forward: the heading
+        // normalised approximately and its yaw by the original's arc cosine.
+        if let Ok((_, Some(mut motor), _, Some(mut req))) = states.get_mut(root) {
+            let was = motor.yaw;
+            motor.face(&mut req, Vec3::from(floor.matrix3.z_axis));
+            debug!(
+                "ground placement {root:?}: facing yaw {:.6} rad (was {was:.6})",
+                motor.yaw
+            );
         }
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
         // The Height Query in its mesh mode, as a grid scene's is: the body
@@ -1203,10 +1214,12 @@ impl Hold {
 /// the legs and below the head (the lumbar and the thorax, bone − 1
 /// indexed), against the twist before this tick's twist block for a start
 /// made earlier in the tick (`before`) or this tick's for a follow-up the
-/// clock starts (`now`).
+/// clock starts (`now`). It also names the thighs (`thighs`, bone − 1),
+/// which a whole capture leaves at their last target.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Lean {
     pub(crate) bones: Vec<usize>,
+    pub(crate) thighs: Vec<usize>,
     pub(crate) before: Quat,
     pub(crate) now: Quat,
 }
@@ -1226,14 +1239,23 @@ impl Lean {
             .filter(|p| (LEAN_FIRST..LEAN_END).contains(&p.bone))
             .map(|p| p.bone - 1)
             .collect();
-        Self { bones, before, now }
+        Self {
+            bones,
+            thighs: thigh_slots(body),
+            before,
+            now,
+        }
     }
 
     /// The turns a pending capture takes: its midline bones half-leaned
     /// against `twist`, every other turn as measured. The whole capture
     /// half-leans them as the plain one does (the original's two capture
     /// routines run the same correction on the twist-flagged parts under
-    /// the head).
+    /// the head), and leaves the thighs out: the original's whole capture
+    /// gives a part whose femur flag is set (the part classification sets
+    /// it on the parent of each part with foot contacts) its stored clip
+    /// turn, the target before the femur posture, instead of its measured
+    /// turn, so they keep their last target here.
     pub(crate) fn capture(
         &self,
         pending: Option<Capture>,
@@ -1248,8 +1270,26 @@ impl Lean {
                 }
             }
         }
+        if pending == Some(Capture::Whole) {
+            for &b in &self.thighs {
+                if let Some(q) = out.get_mut(b) {
+                    *q = None;
+                }
+            }
+        }
         out
     }
+}
+
+/// The thighs' pose slots (skin bone − 1): the parent of each leg's
+/// contact part, the parts the original's classification gives the femur
+/// flag.
+fn thigh_slots(body: &Ragdoll) -> Vec<usize> {
+    body.legs()
+        .iter()
+        .filter_map(|leg| body.parts.get(leg.shin).and_then(|p| p.parent))
+        .filter_map(|thigh| body.parts.get(thigh).and_then(|p| p.bone.checked_sub(1)))
+        .collect()
 }
 
 /// One tick of a living body's clip clock: a start since the last tick
@@ -3365,6 +3405,7 @@ pub(crate) mod tests {
     fn a_capture_half_leans_the_lumbar_and_thorax() {
         let lean = Lean {
             bones: vec![8],
+            thighs: Vec::new(),
             before: Quat::from_rotation_y(0.6),
             now: Quat::IDENTITY,
         };
@@ -3381,6 +3422,27 @@ pub(crate) mod tests {
         let whole = lean.capture(Some(Capture::Whole), &physical, lean.before);
         assert_eq!(whole, plain);
         assert_eq!(lean.capture(None, &physical, lean.before), physical);
+    }
+
+    /// The whole capture leaves the thighs (the femur-flagged parts) out,
+    /// so they keep their last target; the plain capture passes them on
+    /// (its lower body keeps its targets in the animator).
+    #[test]
+    fn a_whole_capture_keeps_the_thighs_targets() {
+        let lean = Lean {
+            bones: Vec::new(),
+            thighs: vec![1, 4],
+            before: Quat::IDENTITY,
+            now: Quat::IDENTITY,
+        };
+        let physical = vec![Some(Quat::from_rotation_x(0.3)); 6];
+        let whole = lean.capture(Some(Capture::Whole), &physical, lean.before);
+        assert_eq!(whole[1], None);
+        assert_eq!(whole[4], None);
+        assert_eq!(whole[0], physical[0]);
+        assert_eq!(whole[2], physical[2]);
+        let plain = lean.capture(Some(Capture::Plain), &physical, lean.before);
+        assert_eq!(plain, physical);
     }
 
     /// The ground placement stands a body on props and on other bodies'

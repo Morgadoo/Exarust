@@ -294,7 +294,9 @@ pub fn face(req: &mut Locomotion, yaw: f32) {
 
 /// Gives every fighter whose body has muscles the original's locomotion
 /// request, facing as its model faces, and the driver's state: from then on
-/// its body's movement decision turns it and walks it.
+/// its body's movement decision turns it and walks it. The facing is the
+/// spawn placement's (`Locomotor::placed`): the model's forward flattened,
+/// normalised approximately, its yaw by the original's arc cosine.
 #[allow(clippy::type_complexity)]
 pub fn add_locomotion(
     mut commands: Commands,
@@ -309,8 +311,12 @@ pub fn add_locomotion(
         if body.drive.is_none() {
             continue;
         }
-        let yaw = exa_physics::body::locomotion::yaw_of(t.rotation * Vec3::Z);
-        let (req, motor) = Locomotion::facing(yaw);
+        // The frame stays the model's own turn until the body tick
+        // rebuilds it.
+        let forward = t.rotation * Vec3::Z;
+        let (mut req, mut motor) =
+            Locomotion::facing(exa_physics::body::locomotion::yaw_of(forward));
+        motor.placed(&mut req, forward);
         commands
             .entity(entity)
             .insert((req, motor, Driven::default()));

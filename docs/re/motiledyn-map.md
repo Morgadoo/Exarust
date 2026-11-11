@@ -25,19 +25,21 @@ the flat-floor setter, the player's jolt and rumble, the swing's first clash rin
 checked unreachable), and after the kernel carry lane (the support pins' goals set once a tick, the
 thorax lead's long branch and exertion, the leads' rate factor, the attack and engage block audited), and after
 the kernel2 lane (round 157: the class's approximate normalisations, the keyless walk start, the whole capture's
-lean, the full tone reset's call checked unreachable).
+lean, the full tone reset's call checked unreachable), and after the kernel3 lane (round 170: the balance routine
+audited block by block, its grip reset and its floor clear; the placements' facing; the whole capture's femur-flag
+exception; the stab drive's normalisation).
 
 ## Totals
 
 | status | routines | bytes |
 |---|---|---|
-| done | 53 | 21,549 |
-| partial | 39 | 100,371 |
+| done | 54 | 22,102 |
+| partial | 38 | 99,818 |
 | missing | 3 | 903 |
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **100,150 of 122,823 needed bytes (82 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 78,601 of their 100,371 bytes). Counting only what the running game calls, about **86,040 bytes (70 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below plus the kernel carry lane of round 138; earlier lanes' additions are in the paragraphs that follow. The kernel2 lane of round 157 adds about 1,000 B, live or equivalent: about 101,150 bytes (82 %) reproduced, 87,040 (71 %) live.)
+Weighted by the partial shares, about **100,150 of 122,823 needed bytes (82 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 78,601 of their 100,371 bytes). Counting only what the running game calls, about **86,040 bytes (70 %)**; the rest is tested but not wired. (Totals as of the round-127 rebuild below plus the kernel carry lane of round 138; earlier lanes' additions are in the paragraphs that follow. The kernel2 lane of round 157 adds about 1,000 B, live or equivalent: about 101,150 bytes (82 %) reproduced, 87,040 (71 %) live. The kernel3 lane of round 170 adds about 330 B reproduced, about 300 B of it live: about 101,480 bytes (83 %) reproduced, 87,340 (71 %) live.)
 The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live (about 80,400 B). The kernel lane then added about 1,670 B reproduced (the pain sounds and player jolt of #8, the feet modes of #50, the leg order of #73: tested only) and about 360 B live (the standing body's drive reset in #49, the golem link smoothing of #73, and the init's foot-mask union, which was live but not credited).
 The sampler lane added about 3,070 B reproduced, tested only: the pose-only sampler's key pick, root source and height tail (#76, about 890 B), the living sampler's height tail and queued-clip switch (#81, about 880 B), the down body's probe (#49, about 150 B) and the placement routines' part, anchor, pin and mean arithmetic (#62 about 715 B, #58 about 440 B). Its one live change, the living hunch moved onto the thorax's own placement (#81), corrects code that was already credited, so the live total stays.
 The muscles-off lane added about 900 B reproduced, tested only (the sampler is not scheduled): in #82 the bracket's branch order (the lead-in divides by the first key alone unless the blend is positive, no guard between the keys, a NaN clock between the keys), the progress (raw clock over the last key), the gait overlay by √run (from the capture's turn while it leads in) and the normalisation, the height target ((2·run + 2)·scale while walking, the −500 cm floor, the original's sum order) and the queued-clip switch (about 765 B); #84, the capture of the current targets, as `Animator::capture_targets` (about 140 B). Nothing live changed; #84's earlier live credit (about 70 B) was the living sampler's rebase, which is not this routine, so the live count drops to about 80,690 B (66 %).
@@ -184,19 +186,73 @@ twist and the half turn); a scripted exanima01 walk logged six resumed starts ke
 900 B newly reproduced and live (the normalisations about 700 B across ten routines, the walk start about 120 B, the
 whole capture's lean about 100 B) and about 100 B credited as equivalent (#21's call).
 
+The kernel3 lane (round 170) audited the balance routine (#18) block by block against the assembly (the table below)
+and ported two of its divergences, live. **The grip reset**: the feet centre's pass, which runs every tick for a body
+with two legs or more, also puts every leg's grip back at 1.0; the solver's iterations then zero it on an anchored foot
+and raise it 0.001 at a time (to 1) on a touching one. So a touching foot grips in full from the first iteration after
+each balance pass, and a lifted foot's servo runs at full gain; Exarust let the grip climb from 0 over 1,000 iterations
+after every landing (`exa_physics body_balance.rs`, the feet centre). **The floor clear**: with the balance under 0.2
+(compared in double; a NaN is not under it) the routine only clears the step's stepping byte, kind and out-of-balance
+bit, and the body tick, finding no step, skips its episode checks and the step's end; Exarust ended the step there
+(landing a foot and moving the standing place), for a knockback step and for any other (`body_steps.rs consider,
+below_floor`). The placements' facing (#58, #59, #62): each writes the matrix's forward flattened and normalised by the
+engine's `RSQRTSS` as the heading, copies it to the stance facing, takes the body's yaw as that heading's angle by the
+engine's arc cosine, and writes the raw forward as the cursor's smoothed and raw directions and the look
+(`body_locomotion.rs Locomotor::face, Locomotor::placed`); now live in the ground placement (the player's third
+behaviour tick, the AI's re-entry: `exa_game limp.rs place_on_ground`) and at the fighters' spawn (`exa_ai drive.rs
+add_locomotion`). The whole capture (#83) gives a part with the femur flag its stored clip turn instead of its measured
+one; the part classification (#74) sets that flag on the parent of each part with foot contacts, the thigh, so the whole
+capture leaves the thighs at their last target (`exa_game limp.rs Lean::capture, thigh_slots`). The stab drive (#32)
+normalises its guide with `RSQRTSS` (`exa_combat weapon.rs handling_pushes`); it is reached (the body tick calls it on
+attack clip 11 while the weapon's handling flag 8 is clear) but Exarust applies no handling push to a body, so it stays
+tested only. The armed parry's (#25) two normalisations were already the approximate ones (`parry.rs parry_point`); it
+is reached from the auto-parry (#27) and the swing tick (#34), but the armed parry is not modelled live.
+GPU (r169 beside this lane, two runs each, `context/artifacts/2026-10-30-kernel3`): exanima01, the plain duel and the
+sword duel are deterministic. exanima01 and both duels first differ from r169 at tick 1 in the turn rate of the
+fighters placed at spawn (the opponent; in exanima01 the duellist NPCs): the spawn facing's approximate yaw against the
+behaviour's exact heading; in exanima01 the frames built from that yaw then move the pelvis particles by about 0.001 cm
+the same tick. A build without the grip reset (kernel3a) splits the rest: the grip reset first changes the plain duel at
+tick 23 (the opponent's pelvis) and exanima01 at tick 1 (one body, 3.5 mm). No body in the three
+scenes falls, gets up or steps under balance 0.2, so the floor clear and the femur-flag exception are not exercised
+there. exanima01's bodies keep their pelvis heights (mean within 1 cm), minimum balance (within 0.1) and conditions;
+in the duels the mean pelvis heights stay within 0.3 cm, the lowest pelvis moves by at most 3.7 cm and the balance
+stays at or above 0.89.
+
+### Balance routine (#18) by block
+
+Audited against the research pack's assembly (round 170); byte counts are the blocks' code bytes.
+
+| block | bytes | state | notes |
+|---|---|---|---|
+| Prologue, feet centre, each leg's grip at 1 | 352 | done (round 170) | the grip reset was missing |
+| Landing momentum, fast lead, crouch back, support point, the half-way pull | 676 | done | |
+| Offset, normalise, h², the bad flag | 284 | done | |
+| Get-up branch | 231 | done | the posture wait's clear is not written (no effect found) |
+| R, q, vertical cut, counter, recovery | 809 | done | Exarust runs the jolt after the counter (the original's body tick runs it before) |
+| F, the 0.2 floor, imbalance, lead, target, start | 840 | partial (70 %) | floor clear done (round 170); a knockback step keeps its target in Exarust where the original re-targets every step; the lead's speed is horizontal (the original's is the 3-D fast chest velocity); the landing count's reset on every re-target past 10·scale; the trigger's writes while locomoting |
+| Leg array, stance matrix, stance origin and its clamp | 453 | done | |
+| Footwork entry, no-footwork branch | 403 | done | condition 0x4000 not modelled |
+| Landing pass, stalls, stay score | 400 | partial (80 %) | the slow-turn hold (exploration or idle) of a reached foot is not passed in |
+| Per-foot candidates and scores, choice | 1,100 | partial (85 %) | the reach term's reference is the pelvis eased toward the stance origin (Exarust: the frame's origin); the scores read the step length without the crouch factor |
+| Sound pass | 1,064 | done | wet step and the held voices: accepted gaps |
+| Other foot lands | 456 | partial (80 %) | the original only clears the stepping byte; its 200 ms guard reads a start clock the balance step does not write |
+| Queued step | 300 | partial (50 %) | taken only on a tick the footwork changed a foot, the chosen foot not started that tick; its countdown by the landing count |
+| Chosen foot start, re-target, clamp | 492 | done | |
+| Lift scale into the character | 152 | equivalent | dead store (round 73) |
+
 ## Largest remaining work
 
 | routine | size | left (est.) | role | missing |
 |---|---|---|---|---|
 | #49 | 20,293 | 4,355 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | some state flags; the sampler call's tail (the parts' matrices and foot contacts put on the frame: Exarust's carry and aim stand in); the posture block's remaining writes; the look point's smoothing is data only (its readers are the AI's and the camera's) |
 | #8 | 13,157 | 1,845 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; script hook and callbacks; the struck item's own sound (#4) in the clash branch not called |
-| #18 | 8,061 | 1,209 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | wet step (no water surface); nav calls; parity unverified block by block |
+| #18 | 8,061 | 1,050 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | wet step (no water surface); nav calls; the divergences of its block table (knockback re-target, step-end timing, slow-turn hold, queued step's trigger, the reach term's reference) |
 | #76 | 3,562 | 530 | Pose-only sampler (spawn and placement) | the walking target and the leg reach not called; the render nodes' locals |
 | #82 | 4,499 | 585 | Muscles-off sampler | every part's contacts in the height (legs only); not scheduled |
 | #50 | 7,185 | 835 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | the flat-floor bit only set by `--flat-floor`; the original's pelvis target (the carry's stands in); the leg relaxation runs in the muscle setter, gated on support, not per leg in reach; some thresholds unverified |
 | #73 | 5,423 | 1,247 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | leg swap ported but not called; ghoul head-part set-up; gait scale check |
-| #62 | 2,042 | 410 | Placement on the ground (teleport with snap) | its start (the probe set-up, the frame's ground), the extra part points, attached parts, cloth and attached bodies, behaviour hook; called only by the player's third behaviour tick |
-| #58 | 2,194 | 880 | Placement at a matrix (spawn, teleport, saves, arena) | re-placing a living body, field resets, cloth, behaviour hook; anchors and pins ported but not called |
+| #62 | 2,042 | 340 | Placement on the ground (teleport with snap) | its start (the probe set-up, the frame's ground), the extra part points, attached parts, cloth and attached bodies, behaviour hook; called only by the player's third behaviour tick |
+| #58 | 2,194 | 810 | Placement at a matrix (spawn, teleport, saves, arena) | re-placing a living body, field resets, cloth, behaviour hook; anchors and pins ported but not called |
 | #81 | 8,782 | 878 | Living sampler (muscles on) | exertion reads 0, dead jump branch, the queued-clip switch and the height tail ported but not called |
 
 ## Map
@@ -220,21 +276,21 @@ whole capture's lean about 100 B) and about 100 B credited as equivalent (#21's 
 | 15 | 1,814 | Locomoting leg IK (hip to anchor plus lag, speed-scaled easing) | `exa_physics body_bend.rs locomoting_leg, clip_hip_angle, target_hip_angle` | done | as routine #14 | yes |
 | 16 | 610 | Step end: plant the best-placed free foot and move the standing point onto it | `exa_physics body_balance.rs end_step`; `body_steps.rs end_query` | partial (75 %) | zero-leg branch, nav-mesh clamp, timers | yes |
 | 17 | 261 | Queued-step taker: target from the chest plus the queued step (bent at the target's circle), grid clamp and snap, stepping on, balance flag and landing count cleared, start clock, later stand-still stamp 0 | `exa_physics body_feet.rs step_end, queued_step, approach_bend`; `body_steps.rs take_queued`; `body_balance.rs measure_balance` (the take, the bend along the look at the body's target, `Ragdoll::aim_steps`, `look_steps`); `exa_game steering.rs Steering::queued_target`, `exa_ai lib.rs duellist` (the clamp) | partial (95 %) | the line walk and snap run on the behaviour's next tick from the chest then (the body has no grid) | yes (the player's and the AI's queue) |
-| 18 | 8,061 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | `exa_physics body_balance.rs measure_balance`; `body_steps.rs`; `body_feet.rs foot_cues, FootCue, FootSounded, anchor_rustle, release_step, rustle_clock, release_step_clock, wet_release_step`; `exa_audio footsteps.rs foot_sounds` | partial (85 %) | the wet step (no level water surface in Exarust); the footstep plays one-shot, not on the two alternating held voices; the walk step's write of the shared step clock; nav calls; parity unverified block by block | yes |
+| 18 | 8,061 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | `exa_physics body_balance.rs measure_balance`; `body_steps.rs`; `body_feet.rs foot_cues, FootCue, FootSounded, anchor_rustle, release_step, rustle_clock, release_step_clock, wet_release_step`; `exa_audio footsteps.rs foot_sounds` | partial (87 %) | audited block by block (round 170, block table under the kernel3 paragraph): the grip reset and the floor clear ported; open the knockback re-target, the step-end timing, the slow-turn hold, the queued step's trigger, the reach term's reference; the wet step (no level water surface in Exarust); the footstep plays one-shot, not on the two alternating held voices; the walk step's write of the shared step clock; nav calls | yes |
 | 19 | 945 | Stance score of a candidate foot placement | `exa_physics body_steps.rs stance_score, score_reference, foot_score, pick` | done | - | yes |
 | 20 | 389 | Anchor routine: standing point follows the pelvis past a tolerance (set directly while stepping) | `exa_physics body_frame.rs follow, anchored, Ragdoll::anchor_frame` | partial (95 %) | its 1.5 × step-length clamp is unreachable in the original (guarded by the opposite test) and is not needed | yes |
 | 21 | 85 | Full tone reset (stance factor kept, tone and stagger speed 1, decay 0, the get-up condition for motions 0x0E/0x0F) | `exa_physics body_feet.rs full_tone` | done | no caller, as in 0.9.5: its one caller is the body tick's upkeep on a tick the muscles-on byte is 0, which no living body reaches (round 157: the byte is set by the base constructor and the revive, and cleared only by the dying tick, which calls the death routine that sets the condition 0xA00 and returns before the upkeep, and by the character generator's corpse, written with 0xA00; a 0xA00 body returns at its tick's start) | equivalent (unreachable) |
 | 22 | 438 | Turn the heading toward a fall | `exa_game balance.rs fall_heading, turn_toward_fall` | done | - (round 157: the approximate normalisation and the engine's heading for the yaw) | yes |
 | 23 | 614 | Getting up: pick the rise clip by the pelvis axis, turn, anchor, clear feet, start | `exa_game balance.rs start_getting_up, pick_rise, rise_heading` | done | dead-body frame branch (round 157: the direction and the written facing each normalised approximately, the yaw the engine's heading) | yes |
 | 24 | 255 | Parry end and clinch clear (grip links off, hands' bit off, stance blend 40) | `exa_combat strike_body.rs clear_clinch`; `parry.rs ParryState::end` | done | clear_clinch has no caller: its links are the armed parry's grip links and the hands' bit 8, which Exarust never sets (the armed parry is not live), so the live end has nothing more to clear | partly |
-| 25 | 1,881 | Armed parry: parry point on the attacker's blade, falloff, weapon or shield grip, passed-blow path | `exa_combat parry.rs parry_blade_height, blade_point, parry_point, parry_distance, armed_grip` | partial (80 %) | writing the grip links and the refusal path into the game (the armed parry is not modelled live) | no |
+| 25 | 1,881 | Armed parry: parry point on the attacker's blade, falloff, weapon or shield grip, passed-blow path | `exa_combat parry.rs parry_blade_height, blade_point, parry_point, parry_distance, armed_grip` | partial (80 %) | writing the grip links and the refusal path into the game (the armed parry is not modelled live; reached in 0.9.5 from #27 and #34). Its two normalisations are the approximate ones already (round 170) | no |
 | 26 | 136 | Re-pick the parry clip for a new countered motion | `exa_combat parry.rs parry_repick` | done | - | yes |
 | 27 | 788 | Auto-parry and clinch check each tick | `exa_combat parry.rs parry_ends, parry_trigger, parry_counter, parry_start, run_parries` | partial (70 %) | armed success, arm bit 8, explicit target | yes |
 | 28 | 264 | Chest point (mean of the thorax pins) | `exa_physics body_balance.rs Ragdoll::chest_point`; `exa_combat stance.rs chest_point` | done | - | yes |
 | 29 | 469 | Leg routine: thigh factor and leg-limit strength by leg mode | `exa_physics body_muscle.rs leg_gains, tune_muscles` | done | one child write unseen | yes |
 | 30 | 67 | Can-act gate | `exa_ai combat.rs can_act`; `exa_physics motile.rs action_allowed` | done | - | yes |
 | 31 | 3,389 | Locomotion routine: run blend, gait columns, boost ramp, speed, clock | `exa_physics body_gait.rs locomote, clock_step, advance_clock, stand`; `exa_physics grip.rs tick_mode` (its mode write) | partial (88 %) | the start callback (registered by the script and scene routines, not by the body; Exarust's start notice stands in). The keyless and resumed starts keep the playing clip's jump-in key (round 157, `exa_game stages/movement.rs start_walk`); the routine calls only the exact normaliser (the earlier "approximate normalisation" gap was misread). The "gait audio mode" of earlier ratings is the grip mode, live since round 70; the jump branch is dead (its flag has no writer) | yes |
-| 32 | 1,375 | Stab arm drive: blade lift and bend push the weapon and forearm | `exa_combat weapon.rs blade_lift, blade_bend, handling_pushes` | done | not applied to any body | no |
+| 32 | 1,375 | Stab arm drive: blade lift and bend push the weapon and forearm | `exa_combat weapon.rs blade_lift, blade_bend, handling_pushes` | done | not applied to any body (reached in 0.9.5: the body tick calls it on attack clip 11 while the weapon's handling flag 8 is clear). Its guide's normalisation is the approximate one (round 170) | no |
 | 33 | 36 | Smoothstep | `exa_combat swing.rs smoothstep` | done | - | yes |
 | 34 | 6,380 | Swing tick: strike window, striker speeds, swing clock and stall, arm stiffness, sounds, weapon and hand pushes | `exa_combat swing.rs run_swings, pace_swings, attack_arm_stiffness, swing_sound`; `swing_voice.rs SwingVoice, SwingVoiceCue`; `exa_audio sounds.rs swing_voices`; `strike_body.rs fist_push, edge_push, overhead_pull, vertical_homing` | partial (80 %) | the pushes are not applied to bodies (tested only: most weapons are bone-attached, and a push on a gripped item body or a hand part is unverified against Exarust's solver); the armed-parry and clinch-clear branch at its top; down-attack arm flags; off-target countdown | yes (voice and rustle since round 29; pushes no) |
 | 35 | 86 | Mark a statue body's scene-node objects (flag 4, recursively) when its node lies in no sector | - | missing | whole routine: the body tick calls it only for a statue body (the slow-turn word's bits 2 and 4, set by the sentinel set-up) whose node's sector mask is 0; Exarust keeps no per-node sector mask, so its trigger has no counterpart (not the out-of-scene route slide, which is the AI's path follower's) | n.a. |
@@ -260,11 +316,11 @@ whole capture's lean about 100 B) and about 100 B credited as equivalent (#21's 
 | 55 | 67 | Clone | - | n.a. | - | n.a. |
 | 56 | 70 | Bind the clip table to the skeleton | `exa_anim lib.rs Motions, attach_body_parts` | done | - | yes |
 | 57 | 314 | Place parts at their nodes recursively | `exa_physics body.rs Ragdoll::place_at` | partial (40 %) | recursion into attached child bodies | yes |
-| 58 | 2,194 | Placement at a matrix (spawn, teleport, saves, arena) | `exa_game limp.rs spawn_pose`; `exa_physics Ragdoll::place_at, placement_target, Locomotor::placed, clear_leg_corrections`; `body_placement.rs placed_parts, SPAWN_PELVIS_DROP, matrix_foot_anchor, matrix_pin, mean_point` | partial (60 %) | re-placing a living body, field resets, cloth, behaviour hook; the matrix anchors and pins are not called | spawn only (pose lowered onto the feet plus the target less 8 cm) |
-| 59 | 1,549 | Init-time placement from the model nodes | (as routine #58) | partial (35 %) | field resets, contact offsets, the full capture step | yes |
+| 58 | 2,194 | Placement at a matrix (spawn, teleport, saves, arena) | `exa_game limp.rs spawn_pose`; `exa_physics Ragdoll::place_at, placement_target, Locomotor::placed, clear_leg_corrections`; `body_placement.rs placed_parts, SPAWN_PELVIS_DROP, matrix_foot_anchor, matrix_pin, mean_point`; `exa_ai drive.rs add_locomotion` (the facing) | partial (63 %) | re-placing a living body, field resets, cloth, behaviour hook; the matrix anchors and pins are not called. The facing (heading normalised by `RSQRTSS`, stance facing, yaw by the engine's arc cosine, cursor and look from the raw forward) and the twist and reach resets are live at the fighters' spawn (round 170) | spawn only (pose lowered onto the feet plus the target less 8 cm; the fighters' facing) |
+| 59 | 1,549 | Init-time placement from the model nodes | (as routine #58; its facing is `Locomotor::face`) | partial (35 %) | field resets, contact offsets, the full capture step; its facing writes are the other placements' (round 170) but its path does not call them | yes |
 | 60 | 1,515 | Placement leg snap (probe, mean ground, reach pick, anchors) | `exa_physics body_balance.rs snap_placement, leg_reach_cm, placement_feet`; `body_bend.rs snap_legs` | partial (88 %) | second query mode (the mesh and body sweep); the shin heights | yes (the player's third behaviour tick; the AI's re-entry, `exa_game limp.rs place_entering`; the frame now starts afresh: root aim, anchor and frame cleared) |
 | 61 | 513 | Body reset when brought back into the scene | `exa_ai presence.rs` (the clip snapped to the stance, no capture); `exa_physics body.rs reset_presence` | partial (65 %) | part bit, callback, counters | yes |
-| 62 | 2,042 | Placement on the ground (teleport with snap) | `exa_physics body_balance.rs Ragdoll::place_on_ground, Balance::placed` (snap in routine #60); `body_placement.rs placed_parts, ground_foot_anchor, mean_point`; `exa_game limp.rs GroundPlacement, place_on_ground` | partial (80 %) | its start (the probe set-up, the frame's ground and the standing points), the extra part points and attached parts, cloth and attached bodies, behaviour hook; the other callers (teleports, summons, saves, the AI's push out of a blocked region, the session's end). The pins and their mean are equivalent (the body tick takes both anew from the frame before any reader) | yes (player's third behaviour tick) |
+| 62 | 2,042 | Placement on the ground (teleport with snap) | `exa_physics body_balance.rs Ragdoll::place_on_ground, Balance::placed` (snap in routine #60); `body_placement.rs placed_parts, ground_foot_anchor, mean_point`; `exa_game limp.rs GroundPlacement, place_on_ground` | partial (80 %) | its start (the probe set-up, the frame's ground and the standing points), the extra part points and attached parts, cloth and attached bodies, behaviour hook; the other callers (teleports, summons, saves, the AI's push out of a blocked region, the session's end). The pins and their mean are equivalent (the body tick takes both anew from the frame before any reader). The facing from the frame's forward is live (round 170, `Locomotor::face`) | yes (player's third behaviour tick, the AI's re-entry) |
 | 63 | 648 | Head and limb set-up: mask backup, head gains, arm and hand factors, cloth | `exa_physics body.rs pose_share`; `body_muscle.rs HEAD_SHARE` | partial (40 %) | mask backup, arm ×1.25 and hand ×1.5, hand masks, cloth | yes |
 | 64 | 33 | Set max health and fill both bars | `exa_combat fighter.rs Fighter::of_stats` | done | - | yes |
 | 65 | 685 | Technique word from learnt skills | `exa_formats characters.rs CharacterRecord::perks, Perks::body_word` | done | held-item refresh call | yes |
@@ -285,7 +341,7 @@ whole capture's lean about 100 B) and about 100 B credited as equivalent (#21's 
 | 80 | 668 | Gait floors | `exa_game limp.rs gait_floor`; `stages/movement.rs measure_ground` | done | one floor a tick instead of three | yes |
 | 81 | 8,782 | Living sampler (muscles on) | `exa_game stages/sampler.rs`; `limp.rs clip_tick, run_overlay`; `exa_anim clock.rs` (and `switches_to_queued`); `exa_physics body_pose_heights.rs stand_heights, living_pelvis_target`; `body_gait.rs` (exertion, head tilt) | partial (90 %) | the height tail and the queued-clip switch are not called (Exarust's carry aims the pelvis from the feet; clips start at once). Exertion is kept by the locomotion routine (`body_gait.rs`, ×0.98 capped, ×0.99, ×0.95 standing) and its head tilt is the sign of it; the twist's tilt field has no writer (equivalent); the jump branch is dead. The lumbar's half turn and the hunch's basis normalise approximately (round 157) | yes (heights and switch no) |
 | 82 | 4,499 | Muscles-off sampler | `exa_game limp.rs sample_limp, limp_height_target, limp_foot`; `exa_anim clock.rs Animator::sample_ragdoll, ragdoll_bracket, ragdoll_overlay, RagdollSample` | partial (87 %) | the height reads the legs' contact points only (the original every part's contacts); the muscles-on root branch (unreachable behind the body tick's gate); the looping past-end share reads a register the routine never sets (taken as the clock); no caller, as in the original (the body tick skips it for every muscles-off body: traced for C8), and nothing queues a clip | equivalent (unreachable) |
-| 83 | 553 | Full capture | `exa_anim clock.rs take_capture, capture_whole`; `exa_game limp.rs Lean::capture` | partial (85 %) | the femur-flag exception (a part whose parent the part classification flags keeps its stored turn in the capture). The half lean on whole captures is live (round 157), with the approximate normalisations, the engine's quaternion of the matrix and its four-lane normaliser | yes |
+| 83 | 553 | Full capture | `exa_anim clock.rs take_capture, capture_whole`; `exa_game limp.rs Lean::capture, thigh_slots` | done | the femur-flag exception is live (round 170): the part classification flags the parent of each part with foot contacts (the thigh), and the whole capture gives it its stored clip turn (the target before the femur posture), so the thighs keep their last target. The half lean on whole captures is live (round 157), with the approximate normalisations, the engine's quaternion of the matrix and its four-lane normaliser | yes |
 | 84 | 230 | Capture the current targets (the samplers' switch to a queued clip) | `exa_anim clock.rs Animator::capture_targets` (called by `sample_ragdoll`'s switch) | partial (90 %) | the flags come from the feet only (the original's from every part with contacts); the living sampler's switch does not call it (it keeps no queued clip) | no |
 | 85 | 280 | Physical hold pose | `exa_anim clock.rs Animator::hold_pose`; `limp.rs physical_turns` | done | - | yes |
 | 86 | 380 | Daze pose | `exa_anim clock.rs shock_hold`; `exa_game stages/sampler.rs daze_pose`, `balance.rs ShockHeld` | done | - (round 157: the axis normalised approximately, the engine's axis-angle quaternion, the four-lane normaliser) | yes |
@@ -422,3 +478,13 @@ Byte counts are estimated from block landmarks in the research notes.
   step under −6 cm, a 5 cm sphere 2000 cm down, then the fall-death call) is unreachable:
   the same word returns the tick before the posture block, and nothing between the two tests
   writes it.
+- The feet's grip (round 170): the notes read it as a hold that rises to full over 1,000 solver
+  iterations after a landing. The balance routine's feet centre puts every leg's grip back at 1.0
+  every tick, so the rise only runs within a tick, from full: a touching foot grips in full and a
+  lifted foot's servo runs at full gain.
+- The whole capture's exception (routine #83) is on the part that carries the femur flag itself, the
+  thigh (the parent of the part with foot contacts), not on a part whose parent is flagged.
+- The armed parry's (routine #25) normalisations were listed open; both were already the approximate
+  ones. The armed parry and the stab drive (routine #32) were described as not live because they
+  were unreachable; both are reached in 0.9.5 (the auto-parry and swing tick, attack clip 11), and
+  are not live because Exarust does not model the armed parry or apply the handling pushes.

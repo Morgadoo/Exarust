@@ -719,7 +719,10 @@ choice uses it.
 
 `weapon` is the held weapon's handling: the blade lift and bend curves and
 their two guide pushes (the weapon's and the forearm's), with the weapon's
-balance W7 term, using `exa_physics::body::push_fraction`'s point weighting.
+balance W7 term, using `exa_physics::body::push_fraction`'s point weighting;
+the guide is normalised by the engine's `RSQRTSS`. Nothing applies the
+pushes to a body yet (the original's body tick runs them on the stab, attack
+clip 11).
 
 `burn` is fire's damage over time, worked in double as the original does:
 the timer gains 0.03 of the strength (cap 20) or loses 0.1; yellow loses

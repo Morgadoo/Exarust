@@ -443,17 +443,35 @@ impl Locomotor {
 
     /// The placement's reset of the locomotion, as the original's
     /// placement at a matrix does before it samples the first clip: the
-    /// twist back to the identity, the move vector's reach 0, and the yaw
-    /// that of the matrix's forward (`forward`, its z axis) flattened and
-    /// normalised (a zero one kept zero), by the original's arc cosine
-    /// ([`heading_of`]). Returns that flattened heading, which the
-    /// original also takes as the behaviour's heading and its last.
-    pub fn placed(&mut self, forward: Vec3) -> Vec3 {
+    /// twist back to the identity, the move vector's reach 0, then the
+    /// facing every placement writes ([`Locomotor::face`]). Returns the
+    /// flattened, normalised heading.
+    pub fn placed(&mut self, req: &mut Locomotion, forward: Vec3) -> Vec3 {
         self.twist = Quat::IDENTITY;
         self.twist_before = Quat::IDENTITY;
         self.reach = 0.0;
-        let heading = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
-        self.yaw = heading_of(heading);
+        self.face(req, forward)
+    }
+
+    /// The facing the original's three placements (at a matrix, from the
+    /// model's nodes, on the ground) write from the matrix's forward
+    /// (`forward`, its z axis): the heading is that forward flattened and
+    /// normalised by the engine's approximate normaliser (`RSQRTSS`; a zero
+    /// one kept zero), the stance facing a copy of it, and the body's yaw
+    /// the heading's angle by the original's arc cosine ([`heading_of`]);
+    /// the request's heading takes that yaw too. The cursor's smoothed and
+    /// raw directions and the look take the forward as it is (their yaws,
+    /// [`heading_of`] of the unflattened forward). Returns the heading.
+    pub fn face(&mut self, req: &mut Locomotion, forward: Vec3) -> Vec3 {
+        let heading = crate::engine_math::normalize_approx(Vec3::new(forward.x, 0.0, forward.z));
+        let yaw = heading_of(heading);
+        self.yaw = yaw;
+        self.stance_facing = yaw;
+        req.heading = yaw;
+        let raw = heading_of(forward);
+        req.cursor = raw;
+        req.desired = raw;
+        req.look = raw;
         heading
     }
 }
