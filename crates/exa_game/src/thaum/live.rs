@@ -123,7 +123,7 @@ impl Plugin for ThaumEffectsPlugin {
             .add_systems(
                 PostUpdate,
                 (
-                    draw_arcs,
+                    (drop_orphan_arc_voxels, draw_arcs).chain(),
                     draw_barricades,
                     draw_wisps,
                     (
@@ -713,6 +713,14 @@ fn apply_arc_hum(voice: &mut exa_audio::Voice, gain: f32, pitch: Option<f32>, at
 #[derive(Component, Debug, Clone, Copy)]
 struct HeldVoxel(Entity);
 
+/// An arc emitter's voxel light names its emitter instead of being its
+/// child: the light is the frame's, placed in world space each frame, and
+/// a child link would cross the simulation's bridge to an emitter the
+/// simulation may have ended already. A light whose emitter is gone leaves
+/// with it ([`drop_orphan_arc_voxels`]).
+#[derive(Component, Debug, Clone, Copy)]
+struct ArcVoxelOf(Entity);
+
 /// Bits the frame sets on a voxel light's flag word after the colour update.
 const VOXEL_FRAME_FLAGS: u32 = 9;
 
@@ -759,7 +767,7 @@ fn drive_arc_voxel(
                     light,
                     place,
                     GlobalTransform::from(place),
-                    ChildOf(entity),
+                    ArcVoxelOf(entity),
                 ))
                 .id();
             commands.entity(entity).insert(HeldVoxel(id));
@@ -1436,6 +1444,21 @@ fn camera_axis(cameras: &Query<&GlobalTransform, exa_render::supersample::SceneC
         .map_or(Vec3::NEG_Z, |c| c.forward().as_vec3())
 }
 
+/// Despawns the arc voxel lights whose emitter is gone (the emitter's own
+/// end drops its light in [`drive_arc_voxel`]; this covers an emitter
+/// despawned elsewhere).
+fn drop_orphan_arc_voxels(
+    mut commands: Commands,
+    lights: Query<(Entity, &ArcVoxelOf)>,
+    emitters: Query<(), With<LiveArcs>>,
+) {
+    for (light, of) in &lights {
+        if !emitters.contains(of.0) {
+            commands.entity(light).despawn();
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw_arcs(
     mut commands: Commands,
@@ -1958,6 +1981,20 @@ mod tests {
         app.update();
         assert!(app.world().get::<HeldVoxel>(arc).is_none());
         assert!(app.world().get::<VoxelLight>(held).is_none());
+        // The light is not the emitter's child (no link crosses to the
+        // simulation); an emitter despawned elsewhere drops its light too.
+        app.add_systems(Update, drop_orphan_arc_voxels.before(draw_arcs));
+        {
+            let mut live = app.world_mut().get_mut::<LiveArcs>(arc).unwrap();
+            live.arcs.ending = false;
+            live.arcs.total = live.arcs.segments * live.arcs.tendrils.len() as i32;
+        }
+        app.update();
+        let held = app.world().get::<HeldVoxel>(arc).expect("a new light").0;
+        assert!(app.world().get::<ChildOf>(held).is_none());
+        app.world_mut().despawn(arc);
+        app.update();
+        assert!(app.world().get_entity(held).is_err());
     }
 
     /// A held weapon whose strike chain meets the wall breaks the holder's

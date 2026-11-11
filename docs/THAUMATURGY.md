@@ -440,7 +440,12 @@ cost, which the load then takes three quarters of with the technique.
   and its stamina `(1 − 0.3·decay)·(1 − 0.2·load)·80·build`. Either way its
   yellow and red health become 0.5 and 1. Command Dead also places the
   marker 0x10010D and runs the caster's power; cast on a standing body the
-  caster commands, it ends the command.
+  caster commands, it ends the command. In the running game the bar copies
+  the target's condition, rules, feral level and health onto its mind
+  before the cast, and a started cast raises the corpse at the next step:
+  the revival, then the body's revive (the AI manager's rise: knocked out,
+  muscled again, it gets up), then yellow 0.5 and red 1. Command Dead's end
+  starts a collapse on the raised body, which dies again.
 - **Sense Minds and Mask Mind**: the instant Sense lasts 4000 ms, or the
   focus's share of it (rounded to even), on the real clock, and shows the
   overlay that long; the instant Mask stamps its class with the scene clock

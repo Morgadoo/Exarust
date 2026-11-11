@@ -289,3 +289,76 @@ fn the_rise_runs_alike_behind_the_bridge() {
         assert_eq!(run(Some(mode)), alone, "{mode:?}");
     }
 }
+
+/// Raise Dead's raise of a corpse without decay: the revival leaves the
+/// feral level 0.2 and the decayed rules bit, the revive knocks the body
+/// out with its muscles back, and its yellow and red become a half and
+/// full over the revive's own yellow; the death clock goes. Command Dead's
+/// end then lays the risen body down again: it collapses.
+#[test]
+fn a_raised_corpse_gets_up_and_command_dead_lays_it_down() {
+    use crate::mind::casts::{self, MindBody};
+    let mut app = app();
+    let (_root, body) = spawn_dead(&mut app, 0.0, 0, RaceMuscles::HUMAN);
+    app.insert_resource(BodyTicks(100));
+    // The cast's own revival values (no decay, the character allows it).
+    let revival = casts::revive(&mut MindBody::new(0), 0.0, 1.0);
+    app.world_mut()
+        .run_system_cached_with(crate::mind::runtime::raise_corpse, (body, Some(revival)))
+        .unwrap();
+    app.world_mut().flush();
+    let world = app.world();
+    assert_eq!(*world.get::<Condition>(body).unwrap(), Condition::DOWN);
+    let f = world.get::<Fighter>(body).unwrap();
+    assert_eq!((f.health.yellow, f.health.red), (0.5, 1.0));
+    assert_eq!(f.stats.feral, 0.2);
+    assert_ne!(f.stats.rules.0 & casts::DECAYED_RULE, 0);
+    assert_eq!(f.stats.max_energy, revival.most_energy);
+    assert!(world.get::<DeathClock>(body).is_none());
+    assert!(world.get::<Ragdoll>(body).unwrap().drive.is_some());
+    // The go-limp undo gives the clips back; then the end lays it down.
+    app.update();
+    assert!(app.world().get::<Animator>(body).is_some());
+    app.world_mut()
+        .run_system_cached_with(crate::mind::runtime::lay_down, body)
+        .unwrap();
+    app.world_mut().flush();
+    assert_eq!(
+        *app.world().get::<Condition>(body).unwrap(),
+        Condition::COLLAPSING
+    );
+    assert!(
+        app.world()
+            .get::<exa_combat::collapse::Collapse>(body)
+            .is_some()
+    );
+}
+
+/// A raise without a revival (the body had decay) keeps the feral level;
+/// a body that is no longer dead does not rise.
+#[test]
+fn a_raise_without_decay_left_keeps_the_feral_level() {
+    let mut app = app();
+    let (_root, body) = spawn_dead(&mut app, 0.4, 0, RaceMuscles::HUMAN);
+    app.world_mut()
+        .get_mut::<Fighter>(body)
+        .unwrap()
+        .stats
+        .feral = 0.6;
+    app.world_mut()
+        .run_system_cached_with(crate::mind::runtime::raise_corpse, (body, None))
+        .unwrap();
+    let f = app.world().get::<Fighter>(body).unwrap();
+    assert_eq!(f.stats.feral, 0.6);
+    assert_eq!((f.health.yellow, f.health.red), (0.5, 1.0));
+    assert_eq!(
+        *app.world().get::<Condition>(body).unwrap(),
+        Condition::DOWN
+    );
+    // Raised again while down: nothing happens.
+    app.world_mut().get_mut::<Fighter>(body).unwrap().health.red = 0.7;
+    app.world_mut()
+        .run_system_cached_with(crate::mind::runtime::raise_corpse, (body, None))
+        .unwrap();
+    assert_eq!(app.world().get::<Fighter>(body).unwrap().health.red, 0.7);
+}
