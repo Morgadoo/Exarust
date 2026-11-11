@@ -1188,12 +1188,16 @@ impl HubShop<'_, '_> {
             .iter()
             .zip(&career.company.roster)
             .map(|(employee, member)| {
-                let worn = member.loadouts.iter().map(|l| l.worn.len()).collect();
+                let worn = member
+                    .loadouts
+                    .iter()
+                    .map(|l| l.worn.len() + l.hands.iter().filter(|h| h.id != 0).count())
+                    .collect();
                 (member.name.as_str(), &employee.kit, worn)
             })
             .collect();
         bevy::log::info!(
-            "arena trade: sold {:x?} left the arsenal and its holders; bought (copy, shelf) {went:x?} stowed; shelves hold {shelf_counts:?}; stash {:x?}; staff (name, kit, worn per loadout) {kits:x?}",
+            "arena trade: sold {:x?} left the arsenal and its holders; bought (copy, shelf) {went:x?} stowed; shelves hold {shelf_counts:?}; stash {:x?}; staff (name, kit, items held and worn per loadout) {kits:x?}",
             trade.sold,
             stash
         );
