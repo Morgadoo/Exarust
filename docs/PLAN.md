@@ -2483,6 +2483,8 @@ Round 144 savechars: the story save writes the live scene characters into the le
 
 Round 148 effects: tendril arcs hit limbs through the swept mesh query and draw with the original electricity program.
 
+Round 161 saves2: a story save after an NPC death no longer loses its level section; saves write live poses, motions, AI homes and roles.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
