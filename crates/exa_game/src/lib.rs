@@ -20,6 +20,7 @@ pub mod arena_tables;
 pub mod arsenal;
 pub mod arsenal_view;
 pub mod balance;
+pub mod base_form;
 pub mod bindings;
 pub mod body_inventory;
 pub mod body_overlay;

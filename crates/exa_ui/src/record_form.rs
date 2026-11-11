@@ -256,6 +256,10 @@ pub struct RecordForm {
     /// A screen place the form's owner gave it (a child form placed in its
     /// parent's client), kept over a rebuild.
     pub at: Option<(i32, i32)>,
+    /// The client's top inside the form when the skin the form keeps
+    /// measures one of its own (a titled form under the draw skin's own
+    /// measures: [`crate::skin::BASE_TITLED_CLIENT_TOP`]); else the border.
+    pub client_top: Option<i32>,
     held: Option<usize>,
     hovered: Option<usize>,
 }
@@ -270,6 +274,7 @@ impl RecordForm {
             amounts: spec.records.iter().map(|r| r.amount).collect(),
             title: spec.title.to_string(),
             at: None,
+            client_top: None,
             held: None,
             hovered: None,
         }
@@ -321,7 +326,8 @@ impl RecordForm {
     /// The records' origin on the screen: the client's top left.
     pub fn origin(&self) -> (i32, i32) {
         let b = self.geometry.border;
-        (self.geometry.form.x + b, self.geometry.form.y + b)
+        let top = self.client_top.unwrap_or(b);
+        (self.geometry.form.x + b, self.geometry.form.y + top)
     }
 
     /// A child pane on the screen.

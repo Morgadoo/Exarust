@@ -4512,6 +4512,45 @@ pub fn scale_palette_alpha(palette: &mut SkinPalette, first_scale: f32, second_s
     palette.accent_mix[3][3] = first;
 }
 
+/// The colour scheme the draw skin's own default instance loads when it is
+/// first asked for (the skin a form keeps when it is made without an owner
+/// and nothing sets another): blue-grey form and control colours, a grey
+/// label group and a blue highlight, a dark blue accent at 0.6 and the
+/// alpha bytes 224 and 125. The original keeps it with the GUI's data.
+pub const BASE_SCHEME: SkinScheme = SkinScheme {
+    groups: [
+        ([39, 40, 46, 196], 1.3, 0.4),
+        ([35, 36, 41, 196], 1.5, 0.4),
+        ([150, 150, 150, 255], 1.2, 0.1),
+        ([25, 70, 255, 196], 1.2, 0.4),
+    ],
+    accent: [22, 20, 60, 196],
+    accent_scale: 0.6,
+    first_alpha: 224,
+    second_alpha: 125,
+};
+
+/// The palette the draw skin's default instance holds once its scheme is
+/// loaded ([`BASE_SCHEME`]).
+pub fn base_palette() -> SkinPalette {
+    let mut palette = SkinPalette::filled(SKIN_INK);
+    load_scheme(&mut palette, &BASE_SCHEME);
+    palette
+}
+
+/// The default instance's palette as a shown form draws with it: the form's
+/// fade handed to the skin as its alpha and fade, which scale the two alpha
+/// ramps ([`scale_palette_alpha`]).
+pub fn shown_base_palette(fade: f32) -> SkinPalette {
+    let mut palette = base_palette();
+    scale_palette_alpha(&mut palette, fade, fade);
+    palette
+}
+
+/// A titled form's client top under the draw skin's own measures: the
+/// title bar its constructor stores (24) and the border metric (2).
+pub const BASE_TITLED_CLIENT_TOP: i32 = 24 + 2;
+
 /// The skin's layout metrics: the border, padding, title and row sizes the
 /// constructor stores, and the reach that follows the GUI unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7697,6 +7736,26 @@ pub fn textured_skin_draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_instance_loads_its_own_scheme() {
+        // The record's floats as the executable stores them.
+        assert_eq!(BASE_SCHEME.groups[0].1.to_bits(), 0x3fa6_6666);
+        assert_eq!(BASE_SCHEME.groups[1].1.to_bits(), 0x3fc0_0000);
+        assert_eq!(BASE_SCHEME.groups[2].1.to_bits(), 0x3f99_999a);
+        assert_eq!(BASE_SCHEME.groups[2].2.to_bits(), 0x3dcc_cccd);
+        assert_eq!(BASE_SCHEME.accent_scale.to_bits(), 0x3f19_999a);
+        let palette = base_palette();
+        assert_eq!(palette.first_alpha, 224);
+        assert_eq!(palette.second_alpha, 125);
+        assert_eq!(palette.form_hot, palette.form);
+        // A shown form at fade 1 hands the ramps their full bytes.
+        let shown = shown_base_palette(1.0);
+        assert_eq!(shown.form[0][3], 224);
+        assert_eq!(shown.control[4][3], 125);
+        assert_eq!(shown.text[5][3], 125);
+        assert_ne!(shown.form, crate::line_skin::shown_palette(1.0).form);
+    }
 
     #[test]
     fn the_base_skin_hooks_are_empty() {

@@ -430,7 +430,11 @@ the rail and the bar's corner pieces). The line skin's own control draws are in
 the skin's whole record table `LINE_SAMPLE_RECORDS`), the
 check box and its mark (`check_box_quads`) and the textured batch they go
 into (`line_skin_batch`, `push_line_quads`); `line_skin::shown_palette` is
-the palette a shown form draws with (alpha ramps 170 and 125) and
+the palette a shown form draws with (alpha ramps 170 and 125);
+`skin::BASE_SCHEME` and `skin::shown_base_palette` are the draw skin's own
+default instance's (alphas 224 and 125), which a form made without an owner
+keeps, and `record_form::RecordForm::client_top` its titled client top;
+and
 `line_control_inks` the skin's disabled, idle and on inks (alpha 80, 104
 and 128 times the fade).
 Its controller-mode switch feeds the saved bindings' controller flag and the

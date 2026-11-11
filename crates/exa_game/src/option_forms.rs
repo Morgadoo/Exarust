@@ -266,6 +266,9 @@ impl HubWindows {
         if !picker.name.is_empty() {
             form.title = String::from_utf8_lossy(&picker.name).into_owned();
         }
+        // The picker keeps the draw skin's default instance, whose title
+        // bar puts the client's top under it.
+        form.client_top = Some(exa_ui::skin::BASE_TITLED_CLIENT_TOP);
         let state = PickerState { picker, swatch };
         sync_picker(&mut form, &state);
         info!(
@@ -1256,28 +1259,6 @@ pub fn picker_gradient(picker: &ColourPicker, record: usize) -> Option<Vec<[u8; 
         r if r == picker_records::HSV_BARS[2] => Some(picker.corners[2..].to_vec()),
         _ => None,
     }
-}
-
-/// A horizontal gradient over a rectangle through `stops`.
-pub(crate) fn gradient_layer(rect: GuiRect, stops: &[[u8; 4]]) -> exa_ui::gui_draw::GuiLayer {
-    let mut batch = exa_ui::skin::SkinBatch::new();
-    batch.select(1, 0, false);
-    batch.begin();
-    let n = stops.len().max(2) - 1;
-    let (top, bottom) = (rect.top as f32, (rect.top + rect.height()) as f32);
-    for i in 0..n {
-        let x0 = rect.left as f32 + rect.width() as f32 * i as f32 / n as f32;
-        let x1 = rect.left as f32 + rect.width() as f32 * (i + 1) as f32 / n as f32;
-        let (a, b) = (stops[i], stops[(i + 1).min(stops.len() - 1)]);
-        batch.set_ink(a);
-        batch.vertex(x0, top);
-        batch.vertex(x0, bottom);
-        batch.set_ink(b);
-        batch.vertex(x1, bottom);
-        batch.vertex(x1, top);
-    }
-    batch.end_quads();
-    exa_ui::gui_draw::GuiLayer::new(batch, exa_ui::gui_draw::LayerTexture::None)
 }
 
 /// A vertical shade over a rectangle, top ink to bottom ink.

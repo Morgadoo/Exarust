@@ -2390,6 +2390,31 @@ leaves behind.
   (a start of 0 is now) and clears the fade bit once it passes 1.
 
 
+### Which skin a form keeps
+
+The base form constructor gives every form the draw skin's own default
+instance (`TGUIDrawSkin`), then its owner's skin when it has an owner. At
+start the game gives the desktop the textured skin and makes the message
+box maker ask for the line skin. The game's screens set the line skin
+(inventory, journal, settings, the hub's windows, the shop, the creator,
+the manual) or the textured skin (dialogue choices, skill selector,
+divination card, item parchment). The line skin overrides the draw skin's
+form draw, hit test, panel, shell, slider and scroll bar, so those four
+control draws of the draw skin run only on forms that keep the default
+instance or the textured skin.
+
+The colour picker is made with no owner and sets no skin, so it keeps the
+default instance (`exa_game::base_form`): the default instance's own
+scheme (`exa_ui::skin::BASE_SCHEME`: blue-grey form and control groups, a
+grey label group, a blue highlight, alphas 224 and 125), the default
+background with the title bar (its client starts 26 pixels down,
+`BASE_TITLED_CLIENT_TOP`), buttons through the skin's shell and label
+slot, and its six channel trackbars through the style frames, the skin's
+slider (a marker trackbar: the striped colour list, the picker's ramps or
+the hue table, and the one-unit bar at the value) and the plain label.
+Its spinners, swatches and colour image draw through their own classes in
+the same palette. Not drawn: the close mark's icon.
+
 ### Line skin
 
 The game's GUI skin is the original's `TGSLines`, a thin-line subclass
@@ -2398,6 +2423,15 @@ the opening, the vertical scale, the hit test, the slider and scroll bar,
 the frame, the chip, the rail, the shade, the four-unit square, the
 capped and plain span bars, the label and the widget dispatcher
 (`dispatch_form`). `exa_ui::line_skin` holds the remaining methods.
+The slider (one method for the flat and marker modes) is checked against
+the assembly: the flat mode's caps, track and thumb at
+`unit + round((w − 6·unit)·value)`; the marker mode's stripes over the
+trough, its twelve edge quads with the two-unit lip the line skin's form
+draw stores on entry, and its two-bar thumb; the inks (state 0x10 the
+disabled ink, 0x200000 the highlight colour at two thirds of the GUI alpha
+for the marker, else the label group's seventh shade; a hovered thumb the
+highlight colour at the GUI alpha). No line-skinned screen outside the
+creator has a marker trackbar.
 
 - **Lengths.** The skin keeps five unit lengths, 2, 1, 2, 2 and 4 units.
   The parent constructor calls the setter through the object's table and

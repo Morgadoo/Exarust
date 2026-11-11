@@ -1244,6 +1244,10 @@ dialog with the emblem form (the name field, the picture steps and number
 fields, the mirror boxes, the colour swatches through the palette swatch
 popup, Randomise, Previous, BACK and NEXT, and the emblem preview), and the
 colour picker form; `--open-hub-window merchant|company|picker` opens them.
+The colour picker keeps the draw skin's default instance (`base_form`): its
+default background and title bar, buttons through the skin's shell and label
+slot, and marker trackbars with the picker's striped colour lists and the
+value bar, in the default instance's palette.
 The focus follows the pointer to the record under it, and a focused text
 field or combo box takes the keys through its own handler
 (`exa_ui::field_edit`): typing at the caret, Backspace, Delete, the arrows,
