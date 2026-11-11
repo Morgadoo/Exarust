@@ -143,11 +143,15 @@ The body-in-way test SHALL skip dead bodies, the body already remembered as in t
 - **THEN** the second is returned
 
 ### Requirement: Look writes on leaving and settling
-Leaving combat SHALL set the look, the heading and the eased offset to the body's look yaw and keep the head look, its target and the sway timer. The settle after a room walk SHALL set the look, the heading and the head look to the body's look yaw, keep the eased offset and draw the next sway 1–4 s out. The aim snap SHALL also set the body's look, look smoothing and heading directions.
+Leaving combat SHALL set the look, the heading and the eased offset to the body's look yaw and keep the head look, its target and the sway timer. The settle after a room walk SHALL set the look, the heading and the head look to the yaw of the body's heading direction, keep the eased offset and draw the next sway 1–4 s out. The aim snap SHALL copy the body's facing vector into the body's look, look smoothing and heading directions, and take its heading as the yaws.
 
 #### Scenario: Leaving combat
 - **WHEN** combat is left with the body's look yaw 0.75
 - **THEN** the look, heading and offset are 0.75 and the head look and the sway timer are unchanged
+
+#### Scenario: The snap copies the facing
+- **WHEN** the aim snap takes a body facing along yaw −0.5
+- **THEN** the body's look, smoothing and heading directions are that facing vector and the AI's yaws its heading
 
 ### Requirement: The idle room walk
 The room walk SHALL mark the current cell visited; the candidates are the exits not leading to the previous cell nor to an exhausted cell. With no unexcluded candidate and the current cell not exhausted it SHALL mark the cell exhausted when there is no candidate at all, clear the exclusion word and go back through the previous cell's exit. Otherwise it SHALL draw among every unvisited unexcluded exit (the previous cell's included), or among the candidates when none is unvisited.
@@ -243,3 +247,17 @@ When combat, a flight or the scene takes a roaming character's body, a leg of it
 #### Scenario: A fighter chasing
 - **WHEN** an engaged fighter's chase has its driver driving and its idle walk has no route
 - **THEN** after the idle walk's tick the driver still drives and the stopping bit is not set
+
+### Requirement: The AI reads body directions through the engine
+The AI's look, turn, snap, settle, leave and search routines SHALL take the yaw of a body direction by the engine's fast heading, build a direction from a yaw by its fast sine and cosine, and take the idle look's yaw by its fast two-argument arctangent of the look's x and z (the heading while a look target still runs).
+
+#### Scenario: A body facing one radian
+- **WHEN** the AI reads a body facing along yaw 1.0
+- **THEN** it reads the engine's heading of that direction, within 5e-4 of 1.0, and a direction it builds from a yaw equals the engine's direction of that yaw
+
+### Requirement: A standing body keeps its facing
+The stand-in that turns an NPC's model to the AI's eased yaw SHALL remember that yaw, and the facing the AI reads SHALL be that yaw while the model keeps the rotation the stand-in wrote, and the engine's heading of the model's forward once anything else moved it.
+
+#### Scenario: An idle brain stands for 200 ticks
+- **WHEN** an idle brain placed facing yaw 1.0, with no sway, ticks 201 times
+- **THEN** its model faces the engine's heading of the placed facing after the first tick and the same yaw, within 1e-6, after the last
