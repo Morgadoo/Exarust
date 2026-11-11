@@ -2501,6 +2501,8 @@ Round 167 skins: the colour picker draws on the base draw skin as an ownerless f
 
 Round 168 thaumunits: force domes knock, drain and stop the characters they push, and Control Mind possession works behind the simulation bridge.
 
+Round 170 arena2: arena purchases go into the arsenal and sales strip it, and generated fighters use the original outfit table pass.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
