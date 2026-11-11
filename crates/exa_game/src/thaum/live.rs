@@ -148,7 +148,11 @@ impl Plugin for ThaumEffectsPlugin {
                             super::shell_hum::sound_shell_hums
                                 .after(super::effect_draw::draw_rigid_auras),
                             crate::effects::dome_draw::drop_dome_draws,
-                            super::vanish_live::draw_vanishes,
+                            (
+                                super::vanish_live::draw_vanishes,
+                                super::vanish_live::fade_vanish_bodies,
+                            )
+                                .chain(),
                             super::vanish_live::drop_vanish_copies,
                         ),
                         (
@@ -203,6 +207,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_copy::<crate::thaum::live::ShockReady>()
         .bridge_copy::<crate::thaum::torrent_live::LiveTorrent>()
         .bridge_copy::<crate::thaum::user_stamp::UserStamp>()
+        .bridge_copy::<crate::thaum::vanish_live::ConstantShell>()
         .bridge_copy::<crate::thaum::vanish_live::LiveVanish>()
         .bridge_copy::<crate::thaum::wave_live::LiveWave>()
         .bridge_copy::<exa_physics::grip::GripRelease>()

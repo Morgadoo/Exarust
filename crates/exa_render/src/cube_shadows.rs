@@ -82,7 +82,13 @@ impl Plugin for CubeShadowsPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (apply_failures, needed_faces, assign_slots, build_jobs)
+                (
+                    apply_failures,
+                    dirty_dithered_casters,
+                    needed_faces,
+                    assign_slots,
+                    build_jobs,
+                )
                     .chain()
                     .in_set(LightsSystems::Cubes)
                     .after(VisibilitySystems::UpdateFrusta),
@@ -184,6 +190,16 @@ impl CubeShadow {
 /// as the original refreshes a moved light's links.
 #[derive(Component, Clone, Debug, Default)]
 pub struct CubeCasters(pub EntityHashMap<CasterFaces>);
+
+/// A caster drawn dithered into the cube faces, as the original's caster
+/// pass draws a node whose fade bit (bit 4 of its cut-away word) is set: a
+/// texel of the face is dropped when `fract(3.555713358·x + 0.309269245·y)`
+/// of its pixel position is below the value, the node's fade. A vanishing
+/// body sets it ([`ShadowDither`] at one less its shown amount), so its
+/// shadow thins out and comes back with it. Changing or removing it puts
+/// the caster's faces out of date.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShadowDither(pub f32);
 
 /// A caster's sphere (world, metres) and the faces it touches from its light.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -321,7 +337,8 @@ struct GpuDraw {
     clip_from_world: [f32; 16],
     light: [f32; 4],
     /// x: the first of a skinned caster's joint matrices in the frame's
-    /// joint buffer.
+    /// joint buffer; y: the caster's dither ([`ShadowDither`], 0 for none)
+    /// as the bits of a float.
     joints: [u32; 4],
 }
 
@@ -383,6 +400,26 @@ fn add_cube_shadows(
         let light = at.translation();
         for c in casters.0.values_mut() {
             c.faces = sphere_faces(light, c.centre, c.radius);
+        }
+    }
+}
+
+/// Puts out of date the faces of the casters whose dither came, changed or
+/// went this frame.
+fn dirty_dithered_casters(
+    changed: Query<Entity, Changed<ShadowDither>>,
+    mut removed: RemovedComponents<ShadowDither>,
+    mut lights: Query<(&CubeCasters, &mut CubeShadow)>,
+) {
+    let casters: Vec<Entity> = changed.iter().chain(removed.read()).collect();
+    if casters.is_empty() {
+        return;
+    }
+    for (list, mut cube) in &mut lights {
+        for caster in &casters {
+            if let Some(c) = list.0.get(caster) {
+                cube.mark(c.faces);
+            }
         }
     }
 }
@@ -526,6 +563,7 @@ type CasterData<'w, 's> = Query<
         Option<&'static ShadowBias>,
         Option<&'static MeshMaterial3d<ExaMaterial>>,
         Option<&'static SkinnedMesh>,
+        Option<&'static ShadowDither>,
     ),
 >;
 
@@ -607,7 +645,7 @@ fn build_jobs(
                 if c.faces & (1 << face) == 0 {
                     continue;
                 }
-                let Ok((mesh, at, bias, material, skin)) = casters.get(caster) else {
+                let Ok((mesh, at, bias, material, skin, dither)) = casters.get(caster) else {
                     continue;
                 };
                 let joint_offset = match skin {
@@ -630,7 +668,12 @@ fn build_jobs(
                         world_from_local: at.to_matrix().to_cols_array(),
                         clip_from_world: clip_from_world.to_cols_array(),
                         light: position.extend(1.0 / (slot.radius * k_c)).to_array(),
-                        joints: [joint_offset.unwrap_or(0), 0, 0, 0],
+                        joints: [
+                            joint_offset.unwrap_or(0),
+                            dither.map_or(0.0f32, |d| d.0).to_bits(),
+                            0,
+                            0,
+                        ],
                     },
                     // The original turns culling off for its alpha-tested
                     // casters, with or without a texture to cut with.

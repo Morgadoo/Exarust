@@ -658,8 +658,11 @@ phase table with its stage, reveal, show and hide entries, run live by
 `thaum::vanish_live` (a Long Door's move also puts the body's held items back in its hands, `exa_physics::grip::ReplaceHeld`): a Vanish or Long Door cast draws the body's
 displacement shell over copies of its skinned meshes, follows the power's
 state writes into the shell, runs the table's segment pass as a
-depth-only copy and hides the caster's meshes while the vanish draws the
-body). `effects::scan_draw` draws a scan node's `_ScanAura01` aura
+depth-only copy and hides the caster's meshes while only that copy draws
+them, draws them blended at the shown amount on the fade half's frames,
+and dithers their cube shadows while the fade bit is set; a Constant
+Displacement cast keeps its own shell on the body (`ConstantShell`),
+which a vanish or Long Door cast meanwhile takes and gives back). `effects::scan_draw` draws a scan node's `_ScanAura01` aura
 (`effectscan_f`) over its body's skinned copies and drops them when the
 node leaves; `--debug-cast slot@frame[~release]` and `--debug-scan
 <frame>` script a cast and a device scan for screenshots.
