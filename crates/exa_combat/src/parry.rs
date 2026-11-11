@@ -1581,15 +1581,22 @@ pub fn chooser_clip(
 
 /// The parry each fighter would pick against its foe's attack, kept on its
 /// attacker each fixed step before the attacks start, for the original's
-/// attack starters ([`crate::attack::aimed_side`]). The original reads its
-/// target's; Exarust takes the nearest other fighter in combat (condition
-/// 2), as the parry check takes the nearest attacking foe. Its parry is the
-/// chooser's ([`chooser_clip`]) against the motion the foe's chain carries
-/// on, none while the foe plays no attack.
+/// attack starters ([`crate::attack::aimed_side`]). The starters read the
+/// fighter's combat target ([`crate::CombatTarget`]) when it is in combat
+/// (condition 2), and none when it is not or there is no target; a fighter
+/// with no target component takes the nearest other fighter in combat
+/// [Exarust's]. Its parry is the chooser's ([`chooser_clip`]) against the
+/// motion the foe's chain carries on, none while the foe plays no attack.
 #[allow(clippy::type_complexity)]
 pub fn aim_foe_parries(
     mut attackers: Query<
-        (Entity, &mut Attacker, &GlobalTransform, Option<&Ragdoll>),
+        (
+            Entity,
+            &mut Attacker,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            Option<&crate::CombatTarget>,
+        ),
         With<Fighter>,
     >,
     foes: Query<
@@ -1613,16 +1620,21 @@ pub fn aim_foe_parries(
             (e, stance::chest_point(gt, body), forward(gt), motion)
         })
         .collect();
-    for (entity, mut attacker, gt, body) in &mut attackers {
+    for (entity, mut attacker, gt, body, target) in &mut attackers {
         let chest = stance::chest_point(gt, body);
-        let foe = fighting
-            .iter()
-            .filter(|(e, ..)| *e != entity)
-            .min_by(|a, b| {
-                let da = (a.1 - chest).length_squared();
-                let db = (b.1 - chest).length_squared();
-                da.total_cmp(&db).then(a.0.cmp(&b.0))
-            });
+        let foe = match target {
+            Some(&crate::CombatTarget(target)) => target
+                .filter(|&t| t != entity)
+                .and_then(|t| fighting.iter().find(|(e, ..)| *e == t)),
+            None => fighting
+                .iter()
+                .filter(|(e, ..)| *e != entity)
+                .min_by(|a, b| {
+                    let da = (a.1 - chest).length_squared();
+                    let db = (b.1 - chest).length_squared();
+                    da.total_cmp(&db).then(a.0.cmp(&b.0))
+                }),
+        };
         let aim = foe.and_then(|&(_, foe_chest, foe_forward, motion)| {
             let (chooser, foe_motion) = motion?;
             let clip = chooser_clip(chooser?, chest, foe_chest, foe_forward)?;
@@ -1646,11 +1658,12 @@ pub fn aim_foe_parries(
 ///
 /// A check ends the parry for a helpless condition, the break-tangle clip or
 /// yellow under 0.01 (into its stance), and for a blow that fails the
-/// trigger. The attacker is the nearest foe attacking with a swing the
-/// trigger accepts (the original keeps an explicit target; the player's is
-/// the cursor's, which Exarust does not keep as a component). A body that
-/// does not fight, or has no foe attacking, does no more than read its own
-/// state.
+/// trigger. The attacker is the fighter's combat target
+/// ([`crate::CombatTarget`]) when it attacks (condition 2) with a swing the
+/// trigger accepts, as the original's check reads its target; a fighter
+/// with no target component takes the nearest such foe [Exarust's]. A body
+/// that does not fight, or has no foe attacking, does no more than read
+/// its own state.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn run_parries(
     mut commands: Commands,
@@ -1681,6 +1694,7 @@ pub(crate) fn run_parries(
     )>,
     shields: Query<(), With<crate::block::ShieldHold>>,
     mut grips: Query<&mut exa_physics::grip::HeldGrip>,
+    targets: Query<&crate::CombatTarget>,
 ) {
     let Some(motions) = motions else { return };
     let now = ticks.as_ref().map_or(0, |t| t.millis());
@@ -1770,11 +1784,16 @@ pub(crate) fn run_parries(
             )
         };
         pick_def_chest = def_chest;
-        // The nearest foe attacking with a swing the trigger accepts.
+        // The target, or (with no target component) the nearest foe,
+        // attacking with a swing the trigger accepts.
+        let target = targets.get(entity).ok().map(|t| t.0);
         let mut best = f32::INFINITY;
         let foes = bodies.p1();
         for (e, condition, fighter, anim, swing, attacking, gt, body) in foes.iter() {
-            if e == entity || *condition != Condition::ATTACKING {
+            if e == entity
+                || *condition != Condition::ATTACKING
+                || target.is_some_and(|t| t != Some(e))
+            {
                 continue;
             }
             let Some(attacking) = attacking else { continue };
@@ -2551,6 +2570,42 @@ mod wiring_tests {
         d.foe_rests();
         d.app.world_mut().run_schedule(FixedPreUpdate);
         assert_eq!(d.get::<Attacker>().foe_parry, None);
+    }
+
+    /// A fighter with a combat target aims at and parries only that
+    /// target: its foe as the target gives the same parry, no target (or
+    /// another one) neither the starters' aim nor a parry.
+    #[test]
+    fn the_combat_target_picks_the_foe() {
+        let mut d = Duel::high();
+        let foe = d.foe;
+        let me = d.me;
+        d.app
+            .world_mut()
+            .entity_mut(me)
+            .insert(crate::CombatTarget(Some(foe)));
+        d.app.world_mut().run_schedule(FixedPreUpdate);
+        assert_eq!(
+            d.get::<Attacker>().foe_parry,
+            Some(crate::attack::FoeParry {
+                clip: LEFT,
+                foe_motion: 5
+            })
+        );
+        d.tick();
+        assert!(d.parrying());
+        for target in [None, Some(me)] {
+            let mut d = Duel::high();
+            let me = d.me;
+            d.app
+                .world_mut()
+                .entity_mut(me)
+                .insert(crate::CombatTarget(target));
+            d.app.world_mut().run_schedule(FixedPreUpdate);
+            assert_eq!(d.get::<Attacker>().foe_parry, None, "{target:?}");
+            d.tick();
+            assert!(!d.parrying(), "{target:?}");
+        }
     }
 
     /// The trigger's clock window is 0.3 through 0.9 of the foe's clip,

@@ -50,7 +50,9 @@ class 3) with Ward, or with Synchrony unless the start chains, and a
 fighter with a weapon in each hand pick the side attack that answers the
 parry they would make against their foe's attack (the parry chooser with
 them as the defender, kept each fixed step by `parry::aim_foe_parries` on
-`Attacker::foe_parry` against the nearest fighter in combat), and mark the
+`Attacker::foe_parry` against the fighter's combat target, `CombatTarget`,
+when it is in combat; a fighter with no target component takes the
+nearest fighter in combat), and mark the
 foe's motion as countered (the parry state's countered motion, which
 every attack start writes, none for an unaimed one); without an answer
 their own parry pick of the last 500 ms steers the side (`ParryState::
@@ -167,8 +169,19 @@ a muscled limb of another fighter is the classifier's wound
 striking part's frame, once a target a swing, refused while a clash or
 block waits and on the hand holding the struck fighter's shield; a clash
 or block in the same tick replaces it, and it replaces nothing. There is no
-speed gate. The blade sweep is left to the fists and to a held model with
-no body, and never wounds the hand holding a shield. The whole hit chain
+speed gate. A fist strikes the same way, through its own hand: the
+unarmed set-up gives both hands the weapon bit, and while the swing's
+window is open for a slot its hand part carries the strike-chain bit
+(`impact::sync_fist_striking`, written only when the window opens or shuts,
+cleared when the fist leaves), so the hand's pair contacts take the hit
+event and `block::strike_held` classifies them as the original's striking
+part does (every contact faces the striking side, the character wielding
+nothing): a muscled limb is a wound at the contact point, measured along
+the fist from the hand's frame; a held shield or torch a block; a held
+weapon, or another fighter's fist (its hand carries the weapon bit), a
+clash, whose struck item is that fist. The blade sweep is left to a held
+model with no body and a fist on no body part, and never wounds the hand
+holding a shield. The whole hit chain
 runs every body tick, in the fixed step's post-step, as the original's
 post-step deals a character's pending hit every 12 ms step: the strikers
 are tracked from the bodies the tick left (`striker_frame`: a held body's
@@ -671,16 +684,16 @@ ended the parry returns to the stance. A failed check ends the parry
 passing the trigger); it returns to the Defence stance when the fighter is
 dying or dazed, else the combat idle, with a 40-frame smooth blend, unless
 the condition's clip stands still. A parry the fighter is not allowed to
-hold (its hands empty) only drops the flag. The attacker is the nearest
-attacking foe whose size, cleaving bit, progress, reach, chests and facing
-pass the trigger; a swing carrying the continuation flag skips the clock
+hold (its hands empty) only drops the flag. The attacker is the
+fighter's combat target (`CombatTarget`) when it attacks and its size,
+cleaving bit, progress, reach, chests and facing pass the trigger (a
+fighter with no target component takes the nearest such foe); a swing carrying the continuation flag skips the clock
 window. The picked clip, the countered motion and the last-check time are
 kept; the clip starts looped with its blend and the fast ease, and the hit
 path reads `Guard::Parry`, raised only while the fighter parries or still
 counters a motion and never over a shield's guard. Not yet: the armed
 parry (a weapon-holder does not parry: its speed and grip links come from
-the weapon's handling), the explicit target (the nearest attacker stands
-in for it), the Fend entry, the player's request-an-attack, which clears
+the weapon's handling), the Fend entry, the player's request-an-attack, which clears
 the permission, the race and claw forbids of the permission, and the
 previous-motion record of a continued swing (nothing sets the continuation
 flag yet).
