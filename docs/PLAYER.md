@@ -114,9 +114,9 @@ decides from it each tick (below). Outside combat:
   ground, its chest shifts 10 cm back and its footwork's stance narrows.
   Above a crouch of 0.1 the locomotion clip clock runs × (1 − 0.1·crouch)
   (the float crouch widened to a double, so 0.1 itself already slows);
-  above 0.5 the body turns at 0.6 of its rate and the footwork's steps are
-  0.7 of the step length; a crouched attacker always picks the first side
-  attack.
+  above 0.5 the body turns at 0.6 of its rate (its footwork's step length
+  stays the stored reach, as the original's balance routine reads it); a
+  crouched attacker always picks the first side attack.
 - **The head looks** 30 % of the way from the heading toward the smoothed
   cursor while walking by the keys, along the heading walking by the
   mouse; standing it eases 5 % a tick toward the heading moved 40 % toward

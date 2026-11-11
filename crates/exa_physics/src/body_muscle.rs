@@ -309,6 +309,11 @@ pub struct Bearing {
     /// It plays its Idle clip: the thorax lead's clip share is 0.4 then,
     /// and 0.7 otherwise.
     pub idle: bool,
+    /// Its slow-turn word is set: the exploration behaviour or an AI idle
+    /// state drives it (or it is a resting statue). The balance routine's
+    /// footwork holds a reached foot's step and the other foot's landing
+    /// stamp a little longer then.
+    pub slow_turn: bool,
     /// Its head looks this tick (its sampler's head look ran): the head's
     /// link anchors are placed relative to the thorax where it physically
     /// is, not where its pose puts it. While it does not, they follow its
@@ -393,6 +398,7 @@ impl Default for Bearing {
             off_feet: false,
             progress: 0.0,
             idle: false,
+            slow_turn: false,
             head_looks: false,
             push: Vec3::ZERO,
             push_gain: 0.0,

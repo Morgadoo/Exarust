@@ -91,6 +91,10 @@ pub(crate) fn take_bearing(
     // down and its limbs keep the dormant share of their retention.
     let dormant = state == Condition::DORMANT || statue.is_some_and(|s| s.0);
     bearing.dormant = dormant;
+    // The slow-turn word: the exploration behaviour's and the AI idle
+    // states' slow turn (1), or a resting statue's (2).
+    bearing.slow_turn =
+        locomotion.is_some_and(|(walk, _)| walk.slow_turn) || statue.is_some_and(|s| s.0);
     if let Some(drive) = body.drive.as_mut() {
         drive.dormant = dormant;
     }

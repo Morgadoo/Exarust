@@ -277,7 +277,7 @@ The system SHALL read movement, primary attack, alternate attack, combat toggle,
 - **THEN** the player runs
 
 ### Requirement: Crouch
-The system SHALL set the player's crouch amount to 1 while the Crouch binding is held and the body is not moving or is down, and SHALL lower it by 0.02 each tick while it is above 0. The body's bearing SHALL carry the amount. Above a crouch of 0.1 the locomotion clip clock SHALL run × (1 − 0.1 × crouch); above 0.5 the footwork's step length SHALL be × 0.7; a crouched attacker SHALL pick the first side attack.
+The system SHALL set the player's crouch amount to 1 while the Crouch binding is held and the body is not moving or is down, and SHALL lower it by 0.02 each tick while it is above 0. The body's bearing SHALL carry the amount. Above a crouch of 0.1 the locomotion clip clock SHALL run × (1 − 0.1 × crouch); a crouched attacker SHALL pick the first side attack. The footwork's step length SHALL not change with the crouch.
 
 #### Scenario: Crouch in place
 - **WHEN** the player holds X while standing
@@ -1028,11 +1028,15 @@ From 300 ms after a step's start any nonzero raw word SHALL queue the next step:
 - **THEN** at 1300 ms the forward word is queued with an 80 cm step vector
 
 ### Requirement: Queued step taken on landing
-A landing with a queued step waiting SHALL take it by the body's queue rule: the target becomes the chest plus the queued vector, the step starts anew (no balance step, plain kind), the queue count −2 before the episode's first landing, −1 after. On the next behaviour tick the taken target SHALL be clamped by the line walk from the chest and moved onto the grid's nearest walkable point, and the movement word SHALL take the queued word back, clear its tap flag and restart its change clocks.
+A tick on which the footwork changes a foot (a reached or stalled foot lands, or the other foot lands) with a queued step waiting SHALL check it by the body's queue rule; taken, the step starts anew (no balance step, plain kind), the queue count −2 before the episode's first landing, −1 after, and the chosen foot SHALL not start that tick. The behaviour SHALL then clamp and snap the target and take the queued word back.
 
 #### Scenario: A landing takes the queue
-- **WHEN** a queued forward step waits and the body lands a foot
-- **THEN** the body's new target is the chest plus 80 cm ahead, the queue count is −1, and on the next tick the target is clamped and the word is forward with no tap
+- **WHEN** a queued step 10 cm along the line to the target waits and the other foot lands
+- **THEN** the step is taken with the count −2 and the chosen foot does not start
+
+#### Scenario: Nothing changed
+- **WHEN** the same step waits and no foot changes
+- **THEN** it waits and the chosen foot starts
 
 ### Requirement: Combat mode word
 Each combat tick the behaviour SHALL set its mode word: down or dazed (energy under 0.85, a NaN reading as enough) is idle and keeps the button word; switching held items or casting is idle and clears it; the right button walks; the left button's press attacks, a held left button keeps the mode and a swing makes it idle.

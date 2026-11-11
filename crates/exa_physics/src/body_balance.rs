@@ -1062,23 +1062,42 @@ impl Ragdoll {
                     forward,
                     bearing.crouch,
                 ),
-                root: frame,
+                // The reach term's reference: the pelvis eased a quarter
+                // of the way toward the stance origin.
+                root: pelvis,
                 origin: stance_origin,
                 side,
-                step_cm: steps::foot_step_length(drive.stats.foot_reach(), bearing.crouch),
+                // The stored reach, whatever the crouch: the foot scores
+                // and the anchor's clamp read it as the stance origin's
+                // clamp does.
+                step_cm: drive.stats.foot_reach(),
                 episode: drive.steps.stepping,
                 episode_ms: if drive.steps.stepping {
                     steps::elapsed_ms(&drive.steps)
                 } else {
                     0.0
                 },
-                chest_to_target_cm: cm((chest - drive.steps.target).with_y(0.0)).length(),
+                chest_to_target2_cm: {
+                    let d = cm(drive.steps.target - chest);
+                    d.z * d.z + d.x * d.x + 0.0
+                },
                 size: drive.stats.size.max(1.0),
                 still_at: drive.steps.still_at,
                 still_plus: drive.steps.still_plus,
                 attacking: bearing.attacking,
                 loudness: drive.steps.loudness,
                 cues: Vec::new(),
+                hold: bearing.slow_turn,
+                queue: Some(steps::QueueView {
+                    queue: drive.steps.queue,
+                    queued: drive.steps.queued,
+                    chest,
+                    target: drive.steps.target,
+                    look: drive.steps.look.unwrap_or(forward),
+                    aim: drive.steps.aim,
+                    landed: b.landings.saturating_sub(drive.steps.landed_from),
+                }),
+                taken: None,
             };
             // The feet's states, from last tick's support.
             let met: Vec<bool> = legs
@@ -1105,6 +1124,30 @@ impl Ragdoll {
             drive.steps.still_plus = work.still_plus;
             drive.steps.loudness = work.loudness;
             drive.foot_cues.append(&mut work.cues);
+            // The other foot's landing near the target only clears the
+            // stepping byte: the body tick's episode checks and the step's
+            // end are then skipped.
+            if foot_ended {
+                drive.steps.stepping = false;
+            }
+            // A queued footwork step the footwork took on a tick a foot
+            // changed: the queue becomes its countdown, the taker starts
+            // the step (no balance step, no landing yet, its start clock
+            // now, its later stand-still stamp 0) and the step's kind
+            // clears. The vector stays (only the queue word says it waits).
+            drive.steps.told_ai = false;
+            if let Some(step) = work.taken {
+                let s = &mut drive.steps;
+                s.queue = step.countdown;
+                s.knockback = false;
+                s.target = step.target;
+                s.stepping = true;
+                s.balance_step = false;
+                s.started = s.clock;
+                s.landed_from = b.landings;
+                s.still_plus = 0.0;
+                s.told_ai = step.tell_ai;
+            }
             if drive.steps.stepping {
                 // The body tick's use counter for the movement rises every
                 // tick a step runs past the balance routine: 0.005 in a long
@@ -1122,17 +1165,19 @@ impl Ragdoll {
                 let any = legs.iter().any(|l| l.state.has(FootState::ANCHORED));
                 drive.steps.near = steps::note_near(drive.steps.near, dist, scale);
                 let landed = b.landings.saturating_sub(drive.steps.landed_from);
-                if foot_ended
-                    || steps::episode_over(
-                        steps::elapsed_ms(&drive.steps),
-                        any,
-                        dist,
-                        toward,
-                        drive.steps.near,
-                        landed,
-                        scale,
-                    )
-                {
+                if landed > 1 {
+                    // The landing count's end puts the count back at 0.
+                    drive.steps.landed_from = b.landings;
+                }
+                if steps::episode_over(
+                    steps::elapsed_ms(&drive.steps),
+                    any,
+                    dist,
+                    toward,
+                    drive.steps.near,
+                    landed,
+                    scale,
+                ) {
                     end_step(
                         &mut drive.steps,
                         legs,
@@ -1142,38 +1187,6 @@ impl Ragdoll {
                         chest,
                         fast,
                     );
-                }
-            }
-
-            // A queued footwork step, taken at the landing after the episode
-            // that was running when it was requested (the original's balance
-            // routine calls its queued-step taker there). A step along the
-            // look is bent at the body's target's circle, and the AI told.
-            let landed = b.landings != drive.steps.landings_seen;
-            drive.steps.landings_seen = b.landings;
-            drive.steps.told_ai = false;
-            if landed {
-                // The queued step is taken through the body's own rule, so its
-                // target and its notice to the AI are one place: the queue
-                // becomes its countdown, the step kind and the balance flag
-                // clear, and the step starts with its later stand-still stamp
-                // at 0. The vector stays (only the queue word says it waits).
-                let s = &mut drive.steps;
-                let landings = if b.landings < 1 { 0 } else { 1 };
-                let look = s.look.unwrap_or(forward);
-                if let Some(step) = steps::take_queued(
-                    s.queue, s.queued, chest, s.target, look, s.aim, scale, landings,
-                ) {
-                    s.queue = step.countdown;
-                    s.knockback = false;
-                    s.target = step.target;
-                    s.stepping = true;
-                    s.balance_step = false;
-                    s.started = s.clock;
-                    s.near = 0;
-                    s.landed_from = b.landings;
-                    s.still_plus = 0.0;
-                    s.told_ai = step.tell_ai;
                 }
             }
         }
@@ -1847,7 +1860,6 @@ fn end_step(
     steps.out_of_balance = false;
     steps.balance_step = false;
     steps.knockback = false;
-    steps.near = 0;
     let q = steps::end_query(chest, fast);
     let mut best: (usize, f32) = (0, NO_DISTANCE);
     for (i, leg) in legs.iter().enumerate() {

@@ -620,13 +620,16 @@ pub fn walk_stagger(
         step_cm,
         episode: true,
         episode_ms: 0.0,
-        chest_to_target_cm: cm((target - frame).with_y(0.0)).length(),
+        chest_to_target2_cm: cm((target - frame).with_y(0.0)).length_squared(),
         size: 1.0,
         still_at: f32::NAN,
         still_plus: f32::NAN,
         attacking: false,
         loudness: 0.0,
         cues: Vec::new(),
+        hold: false,
+        queue: None,
+        taken: None,
     };
     let ended = footwork(legs, ankles, &shifted, &mut work);
     let foot = legs
@@ -642,15 +645,37 @@ pub fn walk_stagger(
 }
 
 /// The footwork of a body standing with support: the landing pass, then the
-/// stance score moves at most one foot ([`plant`]). A reached foot lands
-/// at once. Returns whether the other foot's landing ended the recovery
-/// step (it had run for more than 200 ms and the chest was within 20·scale
-/// cm of the target).
+/// stance score moves at most one foot ([`plant`]), as the original's
+/// balance routine runs it.
+///
+/// The landing pass: a reached foot lands at once, unless the body's
+/// slow-turn word is set (`work.hold`), when it lands only once the later
+/// stand-still stamp is more than 100 ms old; either way its change stamp
+/// is written and the tick counts as one that changed a foot. An anchored
+/// foot whose approach has stalled lands where it is (a change too).
+///
+/// When a foot is chosen and the other foot is anchored, the other foot
+/// lands where it is (a change): the later stand-still stamp becomes now +
+/// 100 ms (300 ms with the slow-turn word outside an episode), and an
+/// episode whose start clock is more than 200 ms old ends when the chest
+/// is within 20·scale cm of the target (squared, strictly); the return
+/// says so, and the caller only clears the stepping byte.
+///
+/// On a tick that changed a foot a waiting queued step is checked
+/// ([`steps::take_queued`]); taken (`work.taken`), the chosen foot is not
+/// started this tick.
 fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mut Work) -> bool {
+    let mut changed = false;
     for (leg, &at) in legs.iter_mut().zip(ankles) {
         if leg.state.has(FootState::REACHED) {
-            leg.state.0 &= !(FootState::ANCHORED | FootState::REACHED);
+            // The stamp's compare is the original's integer one: a stamp
+            // that is not a number (never written) lets the foot land.
+            let held = work.hold && work.still_plus + 100.0 >= work.now_ms;
+            if !held {
+                leg.state.0 &= !(FootState::ANCHORED | FootState::REACHED);
+            }
             leg.changed_ms = work.now_ms;
+            changed = true;
         } else if leg.state.has(FootState::ANCHORED) && f64::from(leg.approach) < STALLED_BELOW {
             leg.state.0 =
                 leg.state.0 & FootState::RAMP_SLOW | FootState::TOUCHING | FootState::STALLED;
@@ -659,6 +684,7 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mu
             // once: the later stamp is the landing time itself.
             work.still_plus = work.now_ms;
             leg.changed_ms = work.now_ms;
+            changed = true;
         }
     }
     if legs.len() != 2 {
@@ -694,28 +720,53 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mu
     // The sound pass, after the stance pick and before the landing and the
     // start: each foot's anchored bit against the state last compared.
     foot_cues(legs, ankles, work);
+    let mut ended = false;
+    if let Some(k) = chosen {
+        let other = 1 - k;
+        if legs[other].state.has(FootState::ANCHORED) {
+            // The landing writes the body's later stand-still stamp (now +
+            // 100 ms, which the trailing plant also writes; 200 ms more
+            // with the slow-turn word outside an episode) and the foot's
+            // own change stamp; the earlier stamp is the last step start's.
+            work.still_plus = work.now_ms + 100.0;
+            if work.hold && !work.episode {
+                work.still_plus += 200.0;
+            }
+            legs[other].changed_ms = work.now_ms;
+            let reach = 20.0 * work.scale;
+            ended =
+                work.episode && work.episode_ms > 200.0 && work.chest_to_target2_cm < reach * reach;
+            if !legs[other].state.has(FootState::REACHED) {
+                legs[other].anchor = ankles[other];
+            }
+            let keep = legs[other].state.0 & (FootState::RAMP_HELD | FootState::RAMP_SLOW);
+            legs[other].state = FootState(FootState::TOUCHING | keep);
+            changed = true;
+        }
+    }
+    // The queued step, checked on a tick that changed a foot: taken, it
+    // replaces this tick's start.
+    if changed
+        && let Some(q) = work.queue
+        && let Some(step) = steps::take_queued(
+            q.queue,
+            q.queued,
+            q.chest,
+            q.target,
+            q.look,
+            q.aim,
+            work.scale,
+            i32::try_from(q.landed).unwrap_or(i32::MAX),
+        )
+    {
+        work.taken = Some(step);
+        return ended;
+    }
     let Some(k) = chosen else {
-        return false;
-    };
-    let Some(spot) = spots.get(k).copied().flatten() else {
-        return false;
+        return ended;
     };
     let other = 1 - k;
-    let mut ended = false;
-    if legs[other].state.has(FootState::ANCHORED) {
-        // The landing writes the body's later stand-still stamp (now +
-        // 100 ms, which the trailing plant also writes) and the foot's own
-        // change stamp; the earlier stamp is the last step start's.
-        work.still_plus = work.now_ms + 100.0;
-        legs[other].changed_ms = work.now_ms;
-        if !legs[other].state.has(FootState::REACHED) {
-            legs[other].anchor = ankles[other];
-        }
-        let keep = legs[other].state.0 & (FootState::RAMP_HELD | FootState::RAMP_SLOW);
-        legs[other].state = FootState(FootState::TOUCHING | keep);
-        ended =
-            work.episode && work.episode_ms > 200.0 && work.chest_to_target_cm <= 20.0 * work.scale;
-    }
+    let spot = pair[k];
     let unpulled = Vec3::new(spot.x, ankles[k].y, spot.z);
     let anchor = steps::clamp_anchor(unpulled, ankles[other], work.step_cm);
     if !legs[k].state.has(FootState::ANCHORED) {

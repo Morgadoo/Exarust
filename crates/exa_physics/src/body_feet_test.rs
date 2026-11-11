@@ -541,6 +541,152 @@ fn a_footwork_landing_stamps_the_stand_still_clocks() {
     assert_eq!(body.legs[1].changed_ms, 500.0);
 }
 
+/// The slow-turn word holds a reached foot's step until the later
+/// stand-still stamp is more than 100 ms old; without it the foot lands at
+/// once. Either way the foot's change stamp is written.
+#[test]
+fn the_slow_turn_holds_a_reached_foot() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let ankles = [Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.1, 0.0)];
+    let spots = ankles.map(Some);
+    let reached = FootState(FootState::ANCHORED | FootState::REACHED | FootState::TOUCHING);
+    let run = |legs: &mut [Leg], hold: bool, plus: f32| {
+        for (leg, ankle) in legs.iter_mut().zip(ankles) {
+            leg.state = FootState(FootState::TOUCHING);
+            leg.anchor = ankle;
+        }
+        legs[0].state = reached;
+        let mut work = super::super::steps::Work::plain(1.0);
+        work.now_ms = 1000.0;
+        work.still_plus = plus;
+        work.hold = hold;
+        plant(
+            legs,
+            &ankles,
+            &spots,
+            &[Vec3::ZERO; 2],
+            &Bearing::default(),
+            true,
+            &[true; 2],
+            &mut work,
+        );
+        (legs[0].state, legs[0].changed_ms)
+    };
+    assert_eq!(
+        run(&mut body.legs, false, 950.0),
+        (FootState(FootState::TOUCHING), 1000.0)
+    );
+    assert_eq!(run(&mut body.legs, true, 900.0), (reached, 1000.0));
+    assert_eq!(
+        run(&mut body.legs, true, 899.0),
+        (FootState(FootState::TOUCHING), 1000.0)
+    );
+    assert_eq!(
+        run(&mut body.legs, true, f32::NAN).0,
+        FootState(FootState::TOUCHING)
+    );
+}
+
+/// The other foot's landing ends an episode more than 200 ms old only with
+/// the chest strictly within 20·scale cm of the target; with the slow-turn
+/// word and no episode its later stamp is held 200 ms more.
+#[test]
+fn the_other_foot_lands_near_the_target() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let ankles = [Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.1, 0.0)];
+    let spots = ankles.map(|a| Some(a + Vec3::new(0.0, 0.0, 0.3)));
+    let run = |legs: &mut [Leg], episode: bool, age: f32, d2: f32, hold: bool| {
+        for (leg, ankle) in legs.iter_mut().zip(ankles) {
+            leg.state = FootState(FootState::ANCHORED | FootState::TOUCHING);
+            leg.anchor = ankle;
+            leg.approach = 1.0;
+        }
+        legs[1].anchor = ankles[1] + Vec3::new(0.0, 0.0, -0.1);
+        let mut work = super::super::steps::Work::plain(1.0);
+        work.now_ms = 500.0;
+        work.episode = episode;
+        work.episode_ms = age;
+        work.chest_to_target2_cm = d2;
+        work.hold = hold;
+        let ended = plant(
+            legs,
+            &ankles,
+            &spots,
+            &[Vec3::ZERO; 2],
+            &Bearing::default(),
+            true,
+            &[true; 2],
+            &mut work,
+        );
+        (ended, work.still_plus)
+    };
+    assert_eq!(
+        run(&mut body.legs, true, 250.0, 399.0, false),
+        (true, 600.0)
+    );
+    assert!(!run(&mut body.legs, true, 250.0, 400.0, false).0);
+    assert!(!run(&mut body.legs, true, 200.0, 0.0, false).0);
+    assert_eq!(run(&mut body.legs, false, 0.0, 0.0, true), (false, 800.0));
+    assert_eq!(run(&mut body.legs, true, 0.0, 0.0, true), (false, 600.0));
+}
+
+/// A waiting queued step is checked on a tick the footwork changed a foot:
+/// taken, it replaces the chosen foot's start (that foot stays as it was).
+/// On a tick that changed nothing it waits.
+#[test]
+fn a_queued_step_is_taken_on_a_tick_a_foot_changed() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let ankles = [Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.1, 0.0)];
+    let spots = ankles.map(|a| Some(a + Vec3::new(0.0, 0.0, 0.3)));
+    let run = |legs: &mut [Leg], other_anchored: bool| {
+        for (leg, ankle) in legs.iter_mut().zip(ankles) {
+            leg.state = FootState(FootState::TOUCHING);
+            leg.anchor = ankle;
+            leg.approach = 1.0;
+        }
+        if other_anchored {
+            legs[1].state = FootState(FootState::ANCHORED | FootState::TOUCHING);
+            legs[1].anchor = ankles[1] + Vec3::new(0.0, 0.0, -0.1);
+        }
+        let mut work = super::super::steps::Work::plain(1.0);
+        work.now_ms = 500.0;
+        work.queue = Some(super::super::steps::QueueView {
+            queue: 1,
+            queued: Vec3::new(0.0, 0.0, 0.5),
+            chest: Vec3::new(0.0, 1.0, 0.0),
+            target: Vec3::new(0.0, 0.0, 0.1),
+            look: Vec3::Z,
+            aim: None,
+            landed: 0,
+        });
+        plant(
+            legs,
+            &ankles,
+            &spots,
+            &[Vec3::ZERO; 2],
+            &Bearing::default(),
+            true,
+            &[true; 2],
+            &mut work,
+        );
+        (work.taken, legs[0].state)
+    };
+    let (taken, foot) = run(&mut body.legs, true);
+    let taken = taken.expect("the queued step is taken");
+    assert_eq!(taken.countdown, -2);
+    assert_eq!(
+        foot,
+        FootState(FootState::TOUCHING),
+        "the chosen foot did not start"
+    );
+    let (taken, foot) = run(&mut body.legs, false);
+    assert!(taken.is_none());
+    assert!(
+        foot.has(FootState::ANCHORED),
+        "no change: the chosen foot starts"
+    );
+}
+
 /// Before the feet are measured: a body that is not walking plants a foot
 /// that does not touch where it is, once it meets the level. Walking, each
 /// foot plants or lifts by its phase. Standing, lying down no foot touches; getting up its feet

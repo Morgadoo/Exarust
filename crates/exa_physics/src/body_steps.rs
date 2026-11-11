@@ -85,16 +85,15 @@ const FRESH_MS: f32 = 100.0;
 const EARLY_MS: f32 = 300.0;
 const LATE_MS: f32 = 600.0;
 const CHANGE_MS: f32 = 200.0;
-/// The reach penalty starts past this share of the leg, measured from this
-/// blend of the frame and the stance origin, and from this share of the
-/// step length.
+/// The reach penalty starts past this share of the leg, measured from the
+/// pelvis eased this far toward the stance origin, and from this share of
+/// the step length.
 const REACH_SHARE: f32 = 0.6;
 const REACH_FROM: f32 = 0.65;
 const REACH_WEIGHT: f32 = 0.1;
 /// A wide crouch loses this (double) per centimetre past its span.
 const CROUCH_WEIGHT: f64 = 0.1;
 const ORIGIN_BLEND: f32 = 0.25;
-const ROOT_BLEND: f32 = 0.75;
 /// Thorax lead's clip share: Idle, and every other clip.
 pub(super) const LEAD_IDLE: f32 = 0.4;
 pub(super) const LEAD_GAIN: f32 = 0.7;
@@ -177,12 +176,8 @@ pub(super) struct Steps {
     /// the body took it (before or after the episode's first landing), 0
     /// for none. The player's behaviour clears a taken queue.
     pub queue: i32,
-    /// A queued footwork step's vector (m), and the landings seen when it
-    /// was queued.
+    /// A queued footwork step's vector (m).
     pub queued: Vec3,
-    pub queued_landings: u32,
-    /// The landings the feet last reported, so a new landing is recognised.
-    pub landings_seen: u32,
     /// The AI was told about the queued step this tick (its vector pointed
     /// along the look and was bent at the target's circle).
     pub told_ai: bool,
@@ -224,8 +219,6 @@ impl Default for Steps {
             balance_step: false,
             queue: 0,
             queued: Vec3::ZERO,
-            queued_landings: 0,
-            landings_seen: 0,
             told_ai: false,
             aim: None,
             look: None,
@@ -238,8 +231,11 @@ impl Default for Steps {
     }
 }
 
-/// Starts a knockback step whose target is already the chest plus the push.
-pub(super) fn begin_knockback(steps: &mut Steps, target: Vec3) {
+/// Starts a knockback step whose target is already the chest plus the push:
+/// its start clock is now and its episode has seen no landing
+/// (`landings` is the body's count so far). The near-target count is not
+/// touched: only the body tick's episode checks write it.
+pub(super) fn begin_knockback(steps: &mut Steps, target: Vec3, landings: u32) {
     steps.knockback = true;
     steps.stepping = true;
     steps.out_of_balance = false;
@@ -251,7 +247,7 @@ pub(super) fn begin_knockback(steps: &mut Steps, target: Vec3) {
         steps.placed = true;
     }
     steps.started = steps.clock;
-    steps.near = 0;
+    steps.landed_from = landings;
 }
 
 /// What the trigger reads this tick.
@@ -341,38 +337,22 @@ pub fn step_length(scale: f32, extension: f32) -> f32 {
     STEP_LENGTH * scale.max(0.0).sqrt() * extension.max(0.0)
 }
 
-/// The footwork's own reach (cm): the body's reach times the crouch's
-/// stride, with no leg extension. The original's stance-origin clamp, its
-/// foot scores and its step lift read this length.
-pub fn foot_step_length(reach: f32, crouch: f32) -> f32 {
-    reach * crouch_stride(crouch)
-}
-
-/// Crouched deeper than this, the footwork's steps are shorter.
-const CROUCH_SHORTENS_FROM: f32 = 0.5;
-/// A crouched step's share of the step length.
-const CROUCHED_STRIDE: f64 = 0.7;
-
-/// The footwork's step length factor at `crouch`: 0.7 above 0.5, else 1.
-pub fn crouch_stride(crouch: f32) -> f32 {
-    if crouch > CROUCH_SHORTENS_FROM {
-        CROUCHED_STRIDE as f32
-    } else {
-        1.0
-    }
-}
-
-/// The target's horizontal offset from the chest (m), from the fast
-/// velocity (m a tick).
+/// The target's offset from the chest (m), from the fast velocity (m a
+/// tick), the whole 3-D velocity: at or under 2·scale cm a tick (squared,
+/// summed x, y, z; a NaN takes this branch) 15·scale·k ticks of it, faster
+/// (30·scale / |v|)·k of it, the products in that order. The caller keeps
+/// only its horizontal part (the target takes the height it is measured
+/// from).
 pub(super) fn lead(fast: Vec3, support: f32, energy: f32, scale: f32) -> Vec3 {
     let factor = energy.powi(4) * support;
     let k = (2.0 - support) * (2.0 - factor);
-    let flat = fast.with_y(0.0);
-    let speed = cm(flat).length();
-    if speed <= LEAD_FAST * scale {
-        flat * (LEAD_TICKS * scale * k)
+    let v = cm(fast);
+    let v2 = v.z * v.z + (v.y * v.y + v.x * v.x);
+    let slow = LEAD_FAST * scale;
+    if slow * slow < v2 {
+        fast * (LEAD_REACH * scale / v2.sqrt() * k)
     } else {
-        flat.normalize_or_zero() * (LEAD_REACH * scale * k / CM)
+        fast * (LEAD_TICKS * scale * k)
     }
 }
 
@@ -387,16 +367,30 @@ pub(super) fn next_base(base: f32, down: bool) -> f32 {
 }
 
 /// One tick of the trigger. Advances the step clock.
+///
+/// As the original's balance routine: the out-of-balance bit is cleared
+/// first; getting up or under the balance floor clears the step. Otherwise
+/// the chest past the trigger sets the bit and, whatever the step's kind
+/// (a knockback step is re-targeted as any other), a target is measured
+/// from the running target, or from the standing position when no step
+/// runs (the running target is first reset to it). A target more than
+/// 10·scale cm from that point is taken: the episode's landing count
+/// starts again, and a body that does not locomote starts stepping (a
+/// balance step when it was not already stepping). A balance step writes
+/// no start clock, no near-target count and no stand-still stamp. While
+/// the body locomotes Exarust's movement section has already ended the
+/// step this tick (`Plan::Ended`), and the trigger still writes its bit,
+/// its target and the landing count.
 pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
     steps.clock = steps.clock.saturating_add(1);
     steps.radius_base = next_base(steps.radius_base, t.down || t.getting_up);
+    steps.out_of_balance = false;
     // Getting up clears the step and places no foot from its footwork: the
     // original returns before the game tick's footwork block (the feet
     // still follow their stance spots in `feet::plant`).
     if t.getting_up {
         steps.knockback = false;
         steps.stepping = false;
-        steps.out_of_balance = false;
         return Plan::Idle;
     }
     // Under the balance floor the original's balance routine only clears
@@ -406,24 +400,17 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
     if below_floor(t.balance) {
         steps.knockback = false;
         steps.stepping = false;
-        steps.out_of_balance = false;
         return Plan::Idle;
     }
-    if steps.knockback {
-        // The stance is clamped by the plain step length, as for any step.
-        let length = foot_step_length(t.reach, 0.0);
-        return Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale));
-    }
-    steps.out_of_balance = false;
     if !steps.placed {
         steps.standing = t.frame;
         steps.target = t.frame;
         steps.placed = true;
     }
+    // Exarust's movement section: a locomoting body ends its step.
+    let ended = t.locomoting && steps.stepping;
     if t.locomoting {
-        let ended = steps.stepping;
         steps.stepping = false;
-        return if ended { Plan::Ended } else { Plan::Idle };
     }
     let distance = trigger_distance(
         t.energy,
@@ -438,32 +425,32 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
     let wants = t.supported && !t.shock_stagger && t.h_cm * t.h_cm > distance * distance;
     steps.out_of_balance = wants;
     if wants {
-        let from = if steps.stepping {
-            steps.target
-        } else {
-            steps.standing
-        };
+        if !steps.stepping {
+            steps.target = steps.standing;
+        }
+        let from = steps.target;
         let offset = lead(t.fast, t.support, t.energy, t.scale);
-        // The target keeps the height of the point it is measured from: the
-        // running target while stepping, else the standing position.
+        // The target keeps the height of the point it is measured from.
         let new_target = Vec3::new(t.chest.x + offset.x, from.y, t.chest.z + offset.z);
-        let clear = cm((new_target - from).with_y(0.0)).length();
-        if clear > TARGET_CLEAR * t.scale {
-            if !steps.stepping {
+        // The squared distance summed x, y, z (the heights are equal).
+        let d = cm(new_target - from);
+        let clear2 = d.z * d.z + (d.y * d.y + d.x * d.x);
+        let clear = TARGET_CLEAR * t.scale;
+        if clear * clear < clear2 {
+            if !t.locomoting {
+                if !steps.stepping {
+                    steps.balance_step = true;
+                }
                 steps.stepping = true;
-                steps.balance_step = true;
-                steps.started = steps.clock;
-                steps.near = 0;
-                steps.landed_from = t.landings;
-                // A step's start closes the later stand-still stamp.
-                steps.still_plus = f32::NAN;
             }
+            steps.landed_from = t.landings;
             steps.target = new_target;
         }
     }
-    if steps.stepping {
-        let length = foot_step_length(t.reach, 0.0);
-        Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale))
+    if ended {
+        Plan::Ended
+    } else if steps.stepping {
+        Plan::Stepping(stance_origin(steps.target, t.frame, t.reach, t.scale))
     } else {
         Plan::Idle
     }
@@ -694,7 +681,8 @@ pub(super) struct Work {
     pub now_ms: f32,
     pub scale: f32,
     pub crouch: f32,
-    /// The score's chest reference, the frame origin and the stance origin.
+    /// The score's chest reference, the pelvis (the reach term's
+    /// reference, eased toward the stance origin) and the stance origin.
     pub reference: Vec3,
     pub root: Vec3,
     pub origin: Vec3,
@@ -704,8 +692,9 @@ pub(super) struct Work {
     pub step_cm: f32,
     pub episode: bool,
     pub episode_ms: f32,
-    /// The chest's horizontal distance to the step target (cm).
-    pub chest_to_target_cm: f32,
+    /// The chest's squared horizontal distance to the step target (cm²,
+    /// summed z² + x²).
+    pub chest_to_target2_cm: f32,
     pub size: f32,
     /// The body's stand-still stamps (ms), which the footwork writes back
     /// as feet start and land.
@@ -719,6 +708,29 @@ pub(super) struct Work {
     pub loudness: f32,
     /// The foot sounds the footwork's sound pass found this tick.
     pub cues: Vec<super::feet::FootCue>,
+    /// The body's slow-turn word is set (the exploration behaviour and the
+    /// AI's idle states, a resting statue): a reached foot keeps its step
+    /// until 100 ms past the later stand-still stamp, and the other foot's
+    /// landing outside an episode holds that stamp 200 ms more.
+    pub hold: bool,
+    /// The step queue as the footwork's queued-step check reads it.
+    pub queue: Option<QueueView>,
+    /// The queued step the footwork took this tick.
+    pub taken: Option<super::feet::QueuedStep>,
+}
+
+/// What the footwork's queued-step check reads: the queue word and
+/// vector, the chest and the step target (m), the look, the body's target
+/// (its chest, m, and scale) and the landings in the running episode.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct QueueView {
+    pub queue: i32,
+    pub queued: Vec3,
+    pub chest: Vec3,
+    pub target: Vec3,
+    pub look: Vec3,
+    pub aim: Option<(Vec3, f32)>,
+    pub landed: u32,
 }
 
 impl Work {
@@ -736,13 +748,16 @@ impl Work {
             step_cm: step_length(scale, 1.0),
             episode: false,
             episode_ms: 0.0,
-            chest_to_target_cm: f32::MAX,
+            chest_to_target2_cm: f32::MAX,
             size: 1.0,
             still_at: f32::NAN,
             still_plus: f32::NAN,
             attacking: false,
             loudness: 0.0,
             cues: Vec::new(),
+            hold: false,
+            queue: None,
+            taken: None,
         }
     }
 }
@@ -988,7 +1003,9 @@ fn common(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx) -> 
     if recent(feet[i].changed_ms, ctx.now_ms, window) {
         score -= FRESH_BONUS;
     }
-    let g = (ctx.root * ROOT_BLEND + ctx.origin * ORIGIN_BLEND - feet[i].anchor).with_y(0.0);
+    // The engine's blend, a + (b − a)·t: the pelvis eased a quarter of the
+    // way toward the stance origin, less the anchor, across the ground.
+    let g = (ctx.root + (ctx.origin - ctx.root) * ORIGIN_BLEND - feet[i].anchor).with_y(0.0);
     score += reach_penalty(g.length(), feet[i].leg, ctx.step);
     let (a, b) = if i == 0 {
         (spots[0], feet[1].point)

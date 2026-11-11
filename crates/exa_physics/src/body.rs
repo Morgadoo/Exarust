@@ -2604,12 +2604,12 @@ impl Drive {
         self.steps.stepping
     }
 
-    /// Queues a footwork step whose vector is `vector` (m) for the landing
-    /// after the step that is running (the original's step queue).
+    /// Queues a footwork step whose vector is `vector` (m) (the original's
+    /// step queue): the balance routine's footwork takes it on a tick it
+    /// changes a foot.
     pub fn queue_step(&mut self, vector: Vec3) {
         self.steps.queue = 1;
         self.steps.queued = vector;
-        self.steps.queued_landings = self.balance.landings();
     }
 
     /// The queued step taken this tick told the AI its vector points along
@@ -3155,7 +3155,6 @@ impl Ragdoll {
             s.balance_step = false;
             s.landed_from = landings;
             s.started = s.clock;
-            s.near = 0;
             s.still_plus = 0.0;
         }
     }
@@ -3212,8 +3211,8 @@ impl Ragdoll {
         release
     }
 
-    /// Queues a footwork step whose vector is `vector` (m) for the landing
-    /// after the step that is running.
+    /// Queues a footwork step whose vector is `vector` (m), taken on a tick
+    /// the footwork changes a foot.
     pub fn queue_step(&mut self, vector: Vec3) {
         if let Some(drive) = self.drive.as_mut() {
             drive.queue_step(vector);
@@ -4831,9 +4830,12 @@ impl Ragdoll {
             .map_or(Vec3::X, |f| Vec3::from(f.matrix3.x_axis).with_y(0.0));
         let walked = feet::walk_stagger(&mut self.legs, &ankles, spots, target, frame, side, scale);
         if let Some(drive) = self.drive.as_mut() {
+            // The collapse's stagger step: stepping, its landing count
+            // back at 0, its kind cleared.
             drive.steps.stepping = true;
             drive.steps.target = target;
             drive.steps.knockback = false;
+            drive.steps.landed_from = drive.balance.landings();
         }
         walked
     }
@@ -4844,7 +4846,8 @@ impl Ragdoll {
             return;
         };
         let chest = drive.balance.chest().unwrap_or(Vec3::ZERO);
-        steps::begin_knockback(&mut drive.steps, chest + offset);
+        let landings = drive.balance.landings();
+        steps::begin_knockback(&mut drive.steps, chest + offset, landings);
     }
 
     /// The grip list holds a second entry: a shock's cry is the short groan.
@@ -4865,7 +4868,8 @@ impl Ragdoll {
             .map(|frame| Vec3::from(frame.translation))
             .unwrap_or_else(|| drive.standing_point());
         let target = origin + direction * (crate::shock::STEP_PUSH / 100.0);
-        steps::begin_knockback(&mut drive.steps, target);
+        let landings = drive.balance.landings();
+        steps::begin_knockback(&mut drive.steps, target, landings);
     }
 
     /// Gives every particle a velocity (m/s) by placing its previous

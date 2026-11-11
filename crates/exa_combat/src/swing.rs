@@ -1316,13 +1316,14 @@ struct StabHeld<'a> {
     class: u32,
 }
 
-/// One tick of the stab drive on `body` ([`crate::stab::stab_drive`]):
-/// the weapon point's push goes to the item's own body, and the left
-/// hand's to that hand (a factory weapon's assembled body included). A
-/// held model with no body of its own takes its push through the hand
-/// that grips it, at that hand's centre. [Exarust's: the original pushes
-/// its item body, which its grip links tie to the hand. Turning the hand
-/// about the grip instead made a spear flail in the GPU runs.]
+/// One tick of the stab drive on `body`: the body tick's handling pushes
+/// ([`crate::weapon::handling_pushes`]) from the frame's anchor toward the
+/// aim point. The weapon point's push goes to the item's own body, and the
+/// right hand's (the original's first hand slot) to that hand. A held model
+/// with no body of its own takes its push through the hand that grips it,
+/// at that hand's centre. [Exarust's: the original pushes its item body,
+/// which its grip links tie to the hand. Turning the hand about the grip
+/// instead made a spear flail in the GPU runs.]
 fn drive_stab(
     body: &mut Ragdoll,
     item_bodies: &mut Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
@@ -1334,28 +1335,33 @@ fn drive_stab(
         return;
     };
     let bone_part = |body: &Ragdoll, bone: usize| body.parts.iter().position(|p| p.bone == bone);
-    let Some(left) = bone_part(body, LEFT_HAND_BONE) else {
+    let Some(right) = bone_part(body, RIGHT_HAND_BONE) else {
         return;
     };
-    let Some(hand) = body.part_centre(left) else {
+    let Some(hand) = body.part_centre(right) else {
         return;
     };
     let anchor = frame.transform_point3(crate::stab::ANCHOR_CM / CM) * CM;
     let item = held
         .at
         .transform_point(Vec3::Y * held.blade.length * crate::stab::ITEM_POINT_SHARE);
-    let Some(push) = crate::stab::stab_drive(
+    let Some([item_push, hand_push]) = crate::weapon::handling_pushes(
         clock,
+        held.blade.record.balance,
         anchor,
         aim_cm,
         item * CM,
         hand * CM,
-        held.blade.record.balance,
     ) else {
         return;
     };
+    // [Exarust's guard: an aim on the anchor gives no direction, and the
+    // original's NaN pushes would poison the bodies.]
+    if !(item_push.is_finite() && hand_push.is_finite()) {
+        return;
+    }
     match item_bodies.get_mut(held.item) {
-        Ok(mut own) => own.push_at(0, item, push.item / CM),
+        Ok(mut own) => own.push_at(0, item, item_push / CM),
         Err(_) => {
             let grip_bone =
                 match crate::grip::grip(held.class & 0xFFFF, Slot::First).map(|g| g.hand) {
@@ -1365,19 +1371,20 @@ fn drive_stab(
             if let Some(i) = bone_part(body, grip_bone)
                 && let Some(at) = body.part_centre(i)
             {
-                body.push_at(i, at, push.item / CM);
+                body.push_at(i, at, item_push / CM);
             }
         }
     }
-    body.push_at(left, hand, push.hand / CM);
+    body.push_at(right, hand, hand_push / CM);
     trace!(
-        "stab drive at clock {clock:.2}: weapon point {:.1} cm off the line, its axis {:.1} deg \
-         off it",
-        push.item_to_line.length(),
+        "stab drive at clock {clock:.2}: weapon push {:.2} cm, hand push {:.2} cm, the blade's \
+         axis {:.1} deg off the guide",
+        item_push.length(),
+        hand_push.length(),
         held.at
             .rotation()
             .mul_vec3(Vec3::Y)
-            .angle_between(push.dir)
+            .angle_between(aim_cm - anchor)
             .to_degrees()
     );
 }

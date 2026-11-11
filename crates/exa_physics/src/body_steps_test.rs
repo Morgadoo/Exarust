@@ -62,24 +62,78 @@ fn the_trigger_is_one_and_a_half_radii() {
     assert!(close(step_length(1.0, 1.0), 80.0));
 }
 
-/// A knockback step keeps the target the blow set, including while the body
-/// is walking. Balance under 0.2 clears it without the step's end.
+/// A knockback step is re-targeted as any step while the chest is past the
+/// trigger (the original re-targets every step), its landing count starting
+/// again; a walking body's step ends. Balance under 0.2 clears it without
+/// the step's end.
 #[test]
-fn a_knockback_step_keeps_the_blow_target() {
+fn a_knockback_step_is_re_targeted_like_any_step() {
     let mut steps = Steps::default();
-    begin_knockback(&mut steps, Vec3::new(0.2, 1.0, 0.0));
-    let mut walk = trigger(1.0, true, 0.0);
-    walk.locomoting = true;
-    match consider(&mut steps, &walk) {
-        Plan::Stepping(origin) => assert!(close(origin.x, 0.2), "{origin}"),
+    begin_knockback(&mut steps, Vec3::new(0.2, 1.0, 0.0), 3);
+    assert_eq!(steps.landed_from, 3);
+    // The chest 1 m out, past the trigger: the target follows it.
+    let mut out = trigger(1.0, true, 100.0);
+    out.landings = 5;
+    match consider(&mut steps, &out) {
+        Plan::Stepping(origin) => assert!(close(origin.x, 0.88), "{origin}"),
         other => panic!("expected the knockback step, got {other:?}"),
     }
-    assert!(steps.knockback);
-    let mut down = trigger(0.1, true, 0.0);
-    down.locomoting = true;
-    assert!(matches!(consider(&mut steps, &down), Plan::Idle));
+    assert!(close(steps.target.x, 1.0) && close(steps.target.y, 1.0));
+    assert!(steps.knockback && steps.out_of_balance);
+    assert_eq!(steps.landed_from, 5);
+    let mut walk = trigger(1.0, true, 0.0);
+    walk.locomoting = true;
+    assert!(matches!(consider(&mut steps, &walk), Plan::Ended));
+    let mut steps = Steps::default();
+    begin_knockback(&mut steps, Vec3::new(0.2, 1.0, 0.0), 0);
+    assert!(matches!(
+        consider(&mut steps, &trigger(0.1, true, 0.0)),
+        Plan::Idle
+    ));
     assert!(!steps.knockback);
     assert!(!steps.stepping);
+}
+
+/// While the body locomotes the trigger still writes: the out-of-balance
+/// bit, the target (from the standing position) and the landing count, but
+/// no step starts.
+#[test]
+fn a_locomoting_trigger_writes_its_target_but_starts_no_step() {
+    let mut steps = Steps {
+        placed: true,
+        standing: Vec3::new(0.0, 0.5, 0.0),
+        target: Vec3::new(3.0, 0.0, 3.0),
+        ..Steps::default()
+    };
+    let mut walk = trigger(1.0, true, 100.0);
+    walk.locomoting = true;
+    walk.landings = 4;
+    assert!(matches!(consider(&mut steps, &walk), Plan::Idle));
+    assert!(!steps.stepping && !steps.balance_step);
+    assert!(steps.out_of_balance);
+    assert!(close(steps.target.x, 1.0) && close(steps.target.y, 0.5));
+    assert_eq!(steps.landed_from, 4);
+}
+
+/// A balance step from rest sets the stepping and balance-step bytes and
+/// starts the landing count again; it writes no start clock, no near-target
+/// count and no stand-still stamp.
+#[test]
+fn a_balance_step_writes_no_start_clock() {
+    let mut steps = Steps {
+        placed: true,
+        started: 7,
+        near: 40,
+        still_plus: 123.0,
+        clock: 99,
+        ..Steps::default()
+    };
+    let mut out = trigger(1.0, true, 100.0);
+    out.landings = 2;
+    assert!(matches!(consider(&mut steps, &out), Plan::Stepping(_)));
+    assert!(steps.stepping && steps.balance_step);
+    assert_eq!((steps.started, steps.near, steps.landed_from), (7, 40, 2));
+    assert_eq!(steps.still_plus, 123.0);
 }
 
 /// A step running when the balance falls under 0.2 is cleared, not ended
@@ -112,7 +166,7 @@ fn a_step_under_the_balance_floor_is_cleared_not_ended() {
 fn a_knockback_stance_takes_the_plain_clamp() {
     for (scale, out, at) in [(1.0, 1.0, 0.88), (2.0, 2.0, 1.76)] {
         let mut steps = Steps::default();
-        begin_knockback(&mut steps, Vec3::new(out, 0.0, 0.0));
+        begin_knockback(&mut steps, Vec3::new(out, 0.0, 0.0), 0);
         let mut t = trigger(1.0, true, 0.0);
         t.scale = scale;
         match consider(&mut steps, &t) {
@@ -158,13 +212,20 @@ fn starts(balance: f32, supported: bool, h_cm: f32) -> bool {
 }
 
 /// Slow chest velocity leads by 15 ticks; faster than 2 cm a tick, by 30 cm
-/// along it. k = (2 − S)(2 − E⁴S) is 1 for an alert supported body.
+/// along it. k = (2 − S)(2 − E⁴S) is 1 for an alert supported body. The
+/// speed is the whole 3-D velocity's: 1.5 cm a tick across and 1.5 down is
+/// fast, and the horizontal lead is 1.5·30/√4.5 cm.
 #[test]
 fn the_target_leads_the_chest() {
     let slow = lead(Vec3::X * 0.01, 1.0, 1.0, 1.0);
     assert!(close(cm(slow).x, 15.0), "{}", cm(slow).x);
     let fast = lead(Vec3::X * 0.05, 1.0, 1.0, 1.0);
     assert!(close(cm(fast).x, 30.0), "{}", cm(fast).x);
+    let falling = lead(Vec3::new(0.015, -0.015, 0.0), 1.0, 1.0, 1.0);
+    assert!(
+        close(cm(falling).x, 1.5 * 30.0 / 4.5f32.sqrt()),
+        "{falling}"
+    );
     assert_eq!(next_base(30.0, false), 30.0);
     assert_eq!(next_base(30.0, true), 65.0);
     assert!(close(next_base(65.0, false), 64.5));
@@ -536,16 +597,6 @@ fn the_carry_keeps_the_pin_mean_and_the_lead_exertion() {
     assert_eq!(body.take_lead_exertion(), None);
 }
 
-/// Crouched deeper than half, the footwork's steps are 0.7 of the step
-/// length; at half or less they are whole.
-#[test]
-fn a_deep_crouch_shortens_the_steps() {
-    assert_eq!(crouch_stride(0.0), 1.0);
-    assert_eq!(crouch_stride(0.5), 1.0);
-    assert!(close(crouch_stride(0.51), 0.7));
-    assert!(close(crouch_stride(1.0) * step_length(1.0, 1.0), 56.0));
-}
-
 /// The imbalance accumulator gains (h − R·E⁴S)/(5·scale)·0.005 a tick
 /// past the trigger, caps at 1 (a NaN stays), and decays 0.01 a tick in
 /// double precision to 0.
@@ -561,7 +612,7 @@ fn the_imbalance_accumulates_and_decays() {
 }
 
 /// The footwork's reach is 80·√scale·(1 − 0.2·encumbrance)·(1 − 0.3·feral),
-/// and its step length is that reach times the crouch's stride.
+/// the step length its clamps and foot scores read whatever the crouch.
 #[test]
 fn the_footworks_reach_narrows_with_armour_and_feral() {
     let reach = |scale: f32, encumbrance: f32, feral: f32| {
@@ -577,8 +628,6 @@ fn the_footworks_reach_narrows_with_armour_and_feral() {
     assert!(close(reach(1.0, 0.5, 0.0), 72.0));
     assert!(close(reach(1.0, 0.0, 1.0), 56.0));
     assert!(close(reach(4.0, 0.0, 0.0), 160.0));
-    assert!(close(foot_step_length(80.0, 0.6), 56.0));
-    assert!(close(foot_step_length(80.0, 0.0), 80.0));
 }
 
 /// The step trigger compares squared distances: a NaN offset never wants

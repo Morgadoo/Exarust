@@ -241,26 +241,31 @@ impl GripLinks {
         self
     }
 
-    /// The parry's end on this item. The parry grip is the main link, and
-    /// only when its index is past the pivot: that link's flags become the
-    /// disabled bit alone. The pivot link is left as it is.
+    /// The parry's end on this item: its parry link, the soft world weld
+    /// the attach builds for a holder that may parry (the original's link
+    /// index the attach stores, -1 without one), takes the disabled bit
+    /// alone. The hand grips are left as they are.
     pub fn release_parry(&mut self) {
-        if self.main > 0
-            && let Some(link) = self.links.get_mut(self.main)
-        {
+        if let Some(link) = self.world_soft.and_then(|i| self.links.get_mut(i)) {
             link.flags = DISABLED;
         }
     }
 
-    /// The parry's hold on this item: the same link the end disables, past
-    /// the pivot, loses the disabled bit and takes the enabled one. The
-    /// pivot link is left as it is.
-    pub fn hold_parry(&mut self) {
-        if self.main > 0
-            && let Some(link) = self.links.get_mut(self.main)
-        {
-            link.flags = (link.flags & !DISABLED) | ENABLED;
+    /// The armed parry's hold on this item: its parry link becomes a plain
+    /// world link (every flag cleared, so it is enabled) to the parry point
+    /// `point` (m) with strength `strength`. An item without the link is
+    /// left alone.
+    pub fn aim_parry(&mut self, point: Vec3, strength: f32) {
+        if let Some(link) = self.world_soft.and_then(|i| self.links.get_mut(i)) {
+            link.flags = 0;
+            link.anchor = Some(point);
+            link.strength = strength;
         }
+    }
+
+    /// The item has a parry link.
+    pub fn has_parry_link(&self) -> bool {
+        self.world_soft.is_some()
     }
 }
 
@@ -1278,22 +1283,28 @@ mod tests {
         }
     }
 
-    /// The parry grip, past the pivot, loses every flag but the disabled bit.
-    /// A pivot at index 0 is not the parry grip and stays.
+    /// The parry's end disables the soft world weld (the attach's parry
+    /// link) and leaves the hand grips; the armed parry's hold makes that
+    /// link a plain world link to the parry point. An item without the
+    /// link is left alone.
     #[test]
-    fn a_parry_end_disables_the_grip_past_the_pivot() {
+    fn the_parry_drives_the_soft_weld_not_the_grip() {
         let mut links = links_of(1, PIVOT | ENABLED);
+        links.links.push(links.links[1].clone());
+        links.links[2].flags = RUNTIME | DISABLED;
+        links.world_soft = Some(2);
+        links.aim_parry(Vec3::new(1.0, 2.0, 3.0), 0.25);
+        assert_eq!(links.links[1].flags, PIVOT | ENABLED);
+        assert_eq!(links.links[2].flags, 0);
+        assert_eq!(links.links[2].anchor, Some(Vec3::new(1.0, 2.0, 3.0)));
+        assert_eq!(links.links[2].strength, 0.25);
         links.release_parry();
-        assert_eq!(links.links[0].flags, PIVOT);
-        assert_eq!(links.links[1].flags, DISABLED);
-        links.links[1].flags = DISABLED;
-        links.hold_parry();
-        assert_eq!(links.links[0].flags, PIVOT);
-        assert_eq!(links.links[1].flags, ENABLED);
-        let mut pivot = links_of(0, PIVOT);
-        pivot.links[0].flags = PIVOT | ENABLED;
-        pivot.release_parry();
-        assert_eq!(pivot.links[0].flags, PIVOT | ENABLED);
+        assert_eq!(links.links[1].flags, PIVOT | ENABLED);
+        assert_eq!(links.links[2].flags, DISABLED);
+        let mut none = links_of(1, PIVOT | ENABLED);
+        none.release_parry();
+        none.aim_parry(Vec3::ZERO, 1.0);
+        assert_eq!(none.links[1].flags, PIVOT | ENABLED);
     }
 
     fn body_at(translation: Vec3) -> Ragdoll {
