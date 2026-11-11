@@ -17,7 +17,9 @@ it: the roles and the player's rating, the target pass's turn
 AI tick, the duellists' combat state (`DuelSystems`), the flight, the
 entering turn and the idle walk, and the game's AI-tick parts (the follow
 and search, the sentry, the encounter scripts, the duellists' powers).
-Only the removal forget is a frame system. The brains run over every brain
+Only the removal forget is a frame system. The profiler's clock over the
+chain (`BrainTickClock`, present with `--profiler` or `--perf-log`) only
+adds up, and crosses the simulation bridge as a snapshot the frame reads. The brains run over every brain
 ahead of the character ticks, not inside each body's tick, and read the
 frame's propagated transforms (they do not move between one frame's
 ticks).

@@ -332,8 +332,9 @@ impl Plugin for ProfilerPlugin {
                       ticks: Res<ProbeTicks>,
                       history: ResMut<FrameHistory>,
                       render: Res<RenderTime>,
-                      brains: Option<ResMut<exa_ai::BrainTickClock>>| {
-                    probe(i, probes, &ticks, history, render, brains)
+                      brains: Option<Res<exa_ai::BrainTickClock>>,
+                      mut seen: Local<exa_ai::BrainTickClock>| {
+                    probe(i, probes, &ticks, history, render, brains, &mut seen)
                 },
             );
         }
@@ -367,7 +368,8 @@ fn probe(
     ticks: &ProbeTicks,
     mut history: ResMut<FrameHistory>,
     render: Res<RenderTime>,
-    brains: Option<ResMut<exa_ai::BrainTickClock>>,
+    brains: Option<Res<exa_ai::BrainTickClock>>,
+    seen: &mut exa_ai::BrainTickClock,
 ) {
     let now = Instant::now();
     if i == 0 {
@@ -387,15 +389,18 @@ fn probe(
                 render: render.0.load(Ordering::Relaxed) as f32 / 1000.0,
                 ..Default::default()
             };
-            if let Some(mut brains) = brains {
-                record.brains = brains.spent.as_secs_f32() * 1000.0;
-                record.brain_runs = brains.runs;
-                for (ms, part) in record.brain_parts.iter_mut().zip(&brains.parts) {
-                    *ms = part.as_secs_f32() * 1000.0;
+            // The clock's totals since the last frame's (it is the fixed
+            // step's: the frame reads it, never clears it).
+            if let Some(brains) = brains {
+                let ms = |now: std::time::Duration, was: std::time::Duration| {
+                    now.saturating_sub(was).as_secs_f32() * 1000.0
+                };
+                record.brains = ms(brains.spent, seen.spent);
+                record.brain_runs = brains.runs.saturating_sub(seen.runs);
+                for (k, out) in record.brain_parts.iter_mut().enumerate() {
+                    *out = ms(brains.parts[k], seen.parts[k]);
                 }
-                brains.spent = Default::default();
-                brains.runs = 0;
-                brains.parts = Default::default();
+                *seen = brains.clone();
             }
             if history.frames.len() == HISTORY {
                 history.frames.remove(0);

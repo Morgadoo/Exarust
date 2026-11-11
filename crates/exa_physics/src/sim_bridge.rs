@@ -127,6 +127,12 @@ pub trait BridgeHalf: Send + Sync + 'static {
     /// insert there (the navigation grid's movers, when the grid's async
     /// build finishes) took an id among the level's or the characters'.
     fn register(&self, _world: &mut World) {}
+    /// Frame side: the frame's world never holds a live value of this type
+    /// behind the bridge (`free`: the simulation runs free), so a frame
+    /// system that reads it sees nothing ([`audit`]).
+    fn frame_absent(&self, _free: bool) -> bool {
+        false
+    }
 }
 
 /// Frame side: an entity the simulation's world holds, because a bridged
@@ -1037,6 +1043,11 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
         world.register_component::<T>();
     }
 
+    fn frame_absent(&self, free: bool) -> bool {
+        // A lent resource stays with the simulation when it runs free.
+        self.lend && free
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1458,6 +1469,10 @@ impl<T: Resource> BridgeHalf for MoveResourceHalf<T> {
         world.register_component::<T>();
     }
 
+    fn frame_absent(&self, _: bool) -> bool {
+        true
+    }
+
     fn drain_removed(&mut self, _: &World) {}
 
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
@@ -1516,6 +1531,12 @@ impl<T: Component> BridgeType for SimOnly<T> {
 impl<T: Component> BridgeHalf for SimOnlyHalf<T> {
     fn name(&self) -> &'static str {
         type_name::<T>()
+    }
+
+    fn frame_absent(&self, _: bool) -> bool {
+        // The frame keeps a queue of its own of the simulation's writes
+        // (listed here only to cover the simulation's).
+        TypeId::of::<T>() != TypeId::of::<crate::sim_app::FrameCommands>()
     }
 
     fn init(&mut self, world: &mut World) -> ComponentId {
@@ -1634,6 +1655,9 @@ pub struct SimBridgeTypes {
     seen: HashSet<TypeId>,
     /// Makers of each digestible type's digester (`crate::sim_digest`).
     digests: Vec<DigestMaker>,
+    /// Frame systems allowed to read a type the frame's world does not
+    /// hold ([`audit`]).
+    allowed: Vec<audit::AllowedRead>,
 }
 
 /// Makes a digester for one bridged type.
@@ -2474,6 +2498,8 @@ pub struct FrameBridge {
     pub free: bool,
     /// Free mode: the last step whose packet the frame applied.
     pub applied_step: u64,
+    /// The frame's readers of types its world does not hold ([`audit`]).
+    pub audit: audit::FrameReadAudit,
 }
 
 impl FrameBridge {
@@ -2601,9 +2627,10 @@ impl Plugin for SimBridgePlugin {
                 coverage: None,
                 free,
                 applied_step: 0,
+                audit: default(),
             })
-            .add_systems(First, count_frame)
-            .add_systems(Last, drain_frame_removals);
+            .add_systems(First, (count_frame, audit::audit_frame_reads))
+            .add_systems(Last, (drain_frame_removals, audit::audit_frame_reads));
         // The frame hands out every id, the simulation's included: its
         // resources' entities take theirs at a fixed moment.
         app.add_plugins(crate::resource_hold::ResourceHoldPlugin);
@@ -3142,6 +3169,9 @@ fn report_coverage(c: &BridgeCoverage) {
         );
     }
 }
+
+#[path = "sim_bridge_audit.rs"]
+pub mod audit;
 
 #[cfg(test)]
 #[path = "sim_bridge_test.rs"]

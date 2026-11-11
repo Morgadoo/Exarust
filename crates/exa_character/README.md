@@ -505,7 +505,10 @@ words). Nothing builds that node yet.
   longer shows (a world reset cleans the weapon) the passes go. The gradient
   `BldGr02D` loads the first time a weapon that can be stained exists.
   `blood::DebugWeaponBlood` (`--weapon-blood`) registers the player's weapon
-  in the weapons' blood list and gives its spot blood from the start.
+  in the weapons' blood list and gives its spot blood from the start, at the
+  next fixed step (`stain_debug_weapon`: the list is the step's; behind the
+  simulation bridge the frame's world does not hold it, and the weapon took
+  the blood in no spot).
 - Blood sprays (`spray`): each `exa_combat::wounds::Spray` starts a `Jet`
   in the scene's one `BloodSprays` (a resource): fixed to the struck part's
   frame (where the body's last tick left it, else where the frame draws

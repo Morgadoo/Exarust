@@ -872,3 +872,94 @@ fn a_bridged_resource_is_held_by_the_frames_hold() {
     world.insert_resource(MovedOnly);
     assert_eq!(world.entities().len(), before);
 }
+
+/// A resource the frame inserts and the bridge moves to the simulation.
+#[derive(Resource, Debug, Default)]
+struct MovedGrid;
+/// Counts the fixed step's reads of [`MovedGrid`] (copied back).
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+struct GridReads(u32);
+
+fn frame_reads_grid(grid: Option<Res<MovedGrid>>, mut reads: ResMut<GridReads>) {
+    if grid.is_some() {
+        reads.0 += 100;
+    }
+}
+
+fn step_reads_grid(grid: Option<Res<MovedGrid>>, mut reads: ResMut<GridReads>) {
+    if grid.is_some() {
+        reads.0 += 1;
+    }
+}
+
+/// A frame reader of a type, by schedule and system name and type name.
+type Readers = BTreeSet<(String, String)>;
+
+fn audit_run(allow: bool) -> (u32, Readers, Readers) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / crate::STEP_HZ,
+        )))
+        .insert_resource(MovedGrid)
+        .init_resource::<GridReads>()
+        .add_systems(Update, frame_reads_grid)
+        .add_systems(FixedUpdate, step_reads_grid);
+    crate::sim_app::add_fixed_commands(&mut app);
+    crate::sim_app::add_frame_commands(&mut app);
+    app.add_plugins((
+        SimShellPlugin {
+            mode: SimMode::Inline,
+        },
+        SimBridgePlugin { extra: vec![] },
+    ))
+    .bridge_move_resource::<MovedGrid>()
+    .bridge_copy_resource::<GridReads>();
+    if allow {
+        use audit::FrameReadAuditAppExt;
+        app.allow_frame_read::<MovedGrid>(
+            "exa_physics::sim_bridge::tests::frame_reads_grid",
+            "test",
+        );
+    }
+    for _ in 0..6 {
+        app.update();
+    }
+    let world = app.world();
+    let audit = &world.resource::<FrameBridge>().audit;
+    (
+        world.resource::<GridReads>().0,
+        audit.found.clone(),
+        audit.refused.clone(),
+    )
+}
+
+/// The audit names a frame system that reads a moved resource (it sees the
+/// value only before the bridge starts; the fixed step sees it every step),
+/// and lets an allowed one pass.
+#[test]
+fn the_audit_names_a_frame_reader_of_a_moved_resource() {
+    let (reads, found, refused) = audit_run(true);
+    // The frame read it on the first update only (the bridge starts at
+    // the first step, which takes it).
+    assert_eq!(reads / 100, 1, "{reads}");
+    assert!(reads % 100 > 0, "{reads}");
+    assert!(
+        found
+            .iter()
+            .any(|(s, t)| s.contains("frame_reads_grid") && t.ends_with("MovedGrid")),
+        "{found:?}"
+    );
+    assert!(!found.iter().any(|(s, _)| s.contains("step_reads_grid")));
+    assert!(refused.is_empty(), "{refused:?}");
+}
+
+/// A debug build stops at a frame reader of a moved resource no one
+/// allowed.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "frame systems read types the frame's world does not hold")]
+fn the_audit_stops_a_debug_build_at_an_unallowed_reader() {
+    audit_run(false);
+}

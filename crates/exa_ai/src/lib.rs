@@ -179,7 +179,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_message::<crate::brain::StatueByte>()
         .bridge_message::<crate::presence::Entered>()
         .bridge_message::<exa_combat::AttackAskedHook>()
-        .bridge_lend_resource::<crate::BrainTickClock>()
+        .bridge_snapshot_resource::<crate::BrainTickClock>()
         .bridge_copy::<crate::Duellist>()
         .bridge_copy::<crate::drive::Driven>()
         .bridge_move_resource::<crate::brain::BrainClock>()
@@ -203,9 +203,11 @@ fn bridge_ai_types(app: &mut App) {
 /// A debug clock over the brains' tick: while this resource exists, the
 /// wall time from the start to the end of each run of [`BrainTick`] is
 /// added up, with the runs, and split at marks in the chain
-/// ([`BrainTickClock::PARTS`]). The frame profiler reads and clears it each
-/// frame.
-#[derive(Resource, Debug, Default)]
+/// ([`BrainTickClock::PARTS`]). The totals only grow: the frame profiler
+/// reads them each frame and takes the difference from the last frame's
+/// (behind the simulation bridge the clock is the fixed step's, a snapshot
+/// for the frame, which the frame cannot clear).
+#[derive(Resource, Debug, Default, Clone)]
 pub struct BrainTickClock {
     pub spent: std::time::Duration,
     pub runs: u32,

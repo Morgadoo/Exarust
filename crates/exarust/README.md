@@ -23,7 +23,10 @@ cannot break an output stream into a log-filling error loop.
 `--perf-log` (`src/profiler.rs`) adds to each report the assets added or
 changed since the last one (`assets:`, a steady stream after the load is a
 re-upload loop) and the speed of a write into a fresh upload buffer
-(`staging write:`). The workspace patches gpu-allocator
+(`staging write:`). Its `brains` line is the brains' tick's time and runs
+since the last frame, the difference of `exa_ai::BrainTickClock`'s totals:
+the clock is the fixed step's, a snapshot for the frame (lent before, it
+stayed in the free-running simulation and the line read zero). The workspace patches gpu-allocator
 ([`patches/gpu-allocator/EXARUST.md`](../../patches/gpu-allocator/EXARUST.md))
 so those buffers stay out of a small BAR window: several games sharing the
 GPU no longer leave one of them writing its uploads at 0.5 GB/s. It grows into

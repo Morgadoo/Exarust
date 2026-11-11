@@ -66,6 +66,8 @@ pub struct BloodPlugin;
 
 impl Plugin for BloodPlugin {
     fn build(&self, app: &mut App) {
+        // The debug weapon's stain is posted to the fixed step.
+        exa_physics::sim_app::add_fixed_commands(app);
         app.add_message::<PaintWound>()
             .add_message::<Bleed>()
             .init_resource::<WoundRng>()
@@ -637,33 +639,48 @@ impl DebugWeaponBlood {
 
 /// Gives a [`DebugWoundTarget`]'s new weapon its [`DebugWeaponBlood`]: it
 /// registers in the weapons' blood list as a first wound would and its
-/// spot takes the blood.
+/// spot takes the blood. The list belongs to the fixed step (behind the
+/// simulation bridge the frame's world does not hold it), so the stain is
+/// posted to the next step ([`stain_debug_weapon`]).
 fn bloody_debug_weapons(
     blood: Res<DebugWeaponBlood>,
-    mut list: Option<ResMut<exa_combat::WeaponBlood>>,
-    mut weapons: Query<(Entity, &Blade, &mut BladeBlood), Added<BladeBlood>>,
+    weapons: Query<(Entity, &Blade), Added<BladeBlood>>,
     targets: Query<(), With<DebugWoundTarget>>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
-    for (weapon, blade, mut held) in &mut weapons {
+    for (weapon, blade) in &weapons {
         if targets.contains(blade.wielder) {
             let amount = blood.0.clamp(0.0, 1.0);
-            match list.as_deref_mut() {
-                Some(list) => {
-                    if held.1 == 0 {
-                        held.1 =
-                            list.add(weapon.to_bits() as usize, blade.length * 100.0, 0.0, false);
-                    }
-                    list.add_amount(held.1, amount);
-                    held.0 = list.amount(held.1).unwrap_or(amount);
-                }
-                None => held.0 = amount,
-            }
-            info!(
-                "debug weapon blood: {weapon:?} holds {:.3} (spot {})",
-                held.0, held.1
-            );
+            fixed.run(stain_debug_weapon, (weapon, blade.length * 100.0, amount));
         }
     }
+}
+
+/// [`bloody_debug_weapons`]' stain of `weapon` (tip `length_cm`) with
+/// `amount`, run at the start of a fixed step, in the world that holds the
+/// weapons' blood list.
+pub fn stain_debug_weapon(
+    In((weapon, length_cm, amount)): In<(Entity, f32, f32)>,
+    mut list: Option<ResMut<exa_combat::WeaponBlood>>,
+    mut weapons: Query<&mut BladeBlood>,
+) {
+    let Ok(mut held) = weapons.get_mut(weapon) else {
+        return;
+    };
+    match list.as_deref_mut() {
+        Some(list) => {
+            if held.1 == 0 {
+                held.1 = list.add(weapon.to_bits() as usize, length_cm, 0.0, false);
+            }
+            list.add_amount(held.1, amount);
+            held.0 = list.amount(held.1).unwrap_or(amount);
+        }
+        None => held.0 = amount,
+    }
+    info!(
+        "debug weapon blood: {weapon:?} holds {:.3} (spot {})",
+        held.0, held.1
+    );
 }
 
 /// Test wounds painted on every [`DebugWoundTarget`] body once it is
@@ -1647,11 +1664,13 @@ mod tests {
     }
 
     /// `--weapon-blood` gives the debug body's new weapon its blood, kept
-    /// within 0..=1, and no other weapon.
+    /// within 0..=1, and no other weapon; at the next fixed step, where the
+    /// weapon registers in the weapons' blood list.
     #[test]
     fn the_debug_weapon_starts_bloody() {
         let mut app = staining();
         app.insert_resource(DebugWeaponBlood(2.0))
+            .init_resource::<exa_combat::WeaponBlood>()
             .add_plugins(BloodPlugin);
         let player = app.world_mut().spawn(DebugWoundTarget).id();
         let foe = app.world_mut().spawn_empty().id();
@@ -1665,7 +1684,12 @@ mod tests {
             .spawn((Blade::new(foe, 0.9, record), BladeBlood::default()))
             .id();
         app.update();
-        assert_eq!(app.world().get::<BladeBlood>(mine).unwrap().0, 1.0);
+        app.update();
+        let held = *app.world().get::<BladeBlood>(mine).unwrap();
+        assert_eq!(held.0, 1.0);
+        assert_eq!(held.1, 1, "the first spot of the list");
+        let list = app.world().resource::<exa_combat::WeaponBlood>();
+        assert_eq!(list.amount(held.1), Some(1.0));
         assert_eq!(app.world().get::<BladeBlood>(theirs).unwrap().0, 0.0);
         assert_eq!(DebugWeaponBlood::parse(" 0.4"), Some(DebugWeaponBlood(0.4)));
         assert_eq!(DebugWeaponBlood::parse("1"), Some(DebugWeaponBlood(1.0)));

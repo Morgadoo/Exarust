@@ -106,7 +106,17 @@ crosses too and whose `Children` order follows, `bridge_lend` for one moved
 across for the step and back, the same for resources (a lent resource swaps
 with a kept spare), `bridge_message` for a message type forwarded both ways,
 `bridge_move_resource` for one the frame opens and only the step uses (the
-trace files), `bridge_sim_only` for data only the step touches). Every step
+trace files), `bridge_sim_only` for data only the step touches). The frame's
+world never holds a moved or simulation-only type (nor a lent resource while
+the simulation runs free), so a frame system reading one sees `None`: the
+bridge's audit (`sim_bridge::audit`, run in the frame's `First` and `Last`)
+checks every frame schedule as it is built for systems whose access names
+such a type, logs the list of those types and each reader as an error, and
+stops a debug build unless the reader was allowed (`allow_frame_read`, with
+a reason). The start-up schedules, which ran before the bridge started, are
+skipped; exclusive systems and run conditions are not seen. Work on such data
+is posted to the next fixed step (`FixedCommands::run`), and data the frame
+reports is a snapshot of the step's. Every step
 the frame sends what changed in its world since the last step (values with
 a newer change tick, removals, despawns, messages), the simulation applies
 it, runs, and sends its own changes back the same way; each side's own
