@@ -29,6 +29,7 @@ use std::ops::RangeInclusive;
 
 use bevy::prelude::*;
 use exa_formats::rsq::Clip;
+use exa_physics::engine_math;
 
 use super::{Animator, ClipPose, to_quat};
 
@@ -836,9 +837,12 @@ pub fn ragdoll_bracket(clip: &Clip, time: f32, looping: bool, blend: f32) -> Opt
 /// pelvis and legs (1 to 7) keep the captured pose unless the body is down
 /// (its condition has the off-feet bit); every other bone takes a random
 /// turn of a random axis, each component drawn from 0..1 less 0.5 and
-/// normalised, an angle drawn from 0..1, blended half way from the
-/// Defence stance's first key without a short-way sign check and
-/// normalised. The caller supplies the draws in order (axis x, y, z, then
+/// normalised by the approximate reciprocal square root (`RSQRTSS`; a zero
+/// axis stays zero), an angle drawn from 0..1 made the engine's quaternion
+/// (its fast sine and cosine of the half angle; a zero axis keeps only the
+/// cosine), blended half way from the Defence stance's first key without a
+/// short-way sign check and normalised by the engine's four-lane
+/// normaliser. The caller supplies the draws in order (axis x, y, z, then
 /// the angle), one bone after another, as the original's random generator
 /// does.
 pub fn shock_hold(
@@ -854,21 +858,18 @@ pub fn shock_hold(
                 capture.get(i).copied().unwrap_or(Quat::IDENTITY)
             } else {
                 let axis = Vec3::new(rng() - 0.5, rng() - 0.5, rng() - 0.5);
+                let axis = engine_math::normalize_approx(axis);
                 let angle = rng();
-                let q = if axis.length_squared() > EPSILON {
-                    Quat::from_axis_angle(axis.normalize(), angle)
-                } else {
-                    Quat::IDENTITY
-                };
+                let q = engine_math::quaternion_from_axis_angle(axis, angle);
                 let base = defence_first.get(i).copied().unwrap_or(Quat::IDENTITY);
                 // The engine's component lerp: base + (turn − base) · 0.5.
-                Quat::from_xyzw(
+                let blended = Quat::from_xyzw(
                     base.x + (q.x - base.x) * 0.5,
                     base.y + (q.y - base.y) * 0.5,
                     base.z + (q.z - base.z) * 0.5,
                     base.w + (q.w - base.w) * 0.5,
-                )
-                .normalize()
+                );
+                engine_math::normalize_quat(blended)
             }
         })
         .collect()

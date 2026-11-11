@@ -349,7 +349,7 @@ axis and look-at turns (the look basis normalised with `RSQRTSS`), the
 signed XZ heading through the fast arc cosine, the
 yaw and elevation directions, the 2D, 3D and ground-plane lengths in the
 original's x-and-z-first association, the per-component and folded minimum
-and maximum with the SSE NaN rule (which `intersect` folds its slabs with), the approximate vector reciprocal (`RCPPS` on x, y, z and 0; the oriented-box slab tests scale by it), the approximate normalisation (`RSQRTSS`, zero kept), and the projection onto and removal
+and maximum with the SSE NaN rule (which `intersect` folds its slabs with), the approximate vector reciprocal (`RCPPS` on x, y, z and 0; the oriented-box slab tests scale by it), the approximate normalisation (`RSQRTSS`, zero kept), the four-lane quaternion normaliser (`(y² + w²) + (x² + z²)`, its exact reciprocal root: `normalize_quat`), and the projection onto and removal
 along a unit vector (the dot summed x and z, then y), component-wise row scaling, Euler angles with the runtime library's
 arcsine and arctangent rules, the Gauss-Jordan 4×4 inverse (pivoting
 against the diagonal) and the OpenGL frustum, perspective (with the
@@ -360,7 +360,13 @@ re-exported from it. Every crate that may depend on this one uses these
 functions rather than its own copy: the fast logarithm and exponential
 (the mesh vertex cache, the damage model, the item randomiser) and the
 approximate reciprocal square root (the renderer's mipmaps, the AI's
-units, the world's scene environment, the combat's collapse step). Only
+units, the world's scene environment, the combat's collapse step, and the
+body class's own normalisations: the torso twist's first one, the midline's
+half turn in the samplers and captures, the thorax hunch, the femur
+posture's axis, the daze pose's axis, the turn toward a fall, the get-up's
+direction and the dying heading, each read in the assembly as a call to the
+engine's `RSQRTSS` normaliser; the leg IK's normalisations are the exact
+ones, as the original's). Only
 `exa_formats`, which this crate depends on, keeps local mirrors.
 
 `kdtree` holds the pieces of the original's background kd-tree unit that

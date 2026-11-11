@@ -156,8 +156,14 @@ fn lying_bodies_wait_100_ticks_for_support() {
 fn get_ups_face_the_way_they_rise() {
     let pelvis = Vec3::new(1.0, 0.15, 2.0);
     let chest = Vec3::new(1.0, 0.25, 2.6);
-    assert_eq!(rise_heading(chest, pelvis, Rise::FaceDown), Some(Vec3::Z));
-    assert_eq!(rise_heading(chest, pelvis, Rise::FaceUp), Some(-Vec3::Z));
+    let near = |got: Option<Vec3>, want: Vec3| got.is_some_and(|d| (d - want).length() < 1e-3);
+    // Normalised by the approximate reciprocal square root.
+    assert!(near(rise_heading(chest, pelvis, Rise::FaceDown), Vec3::Z));
+    assert!(near(rise_heading(chest, pelvis, Rise::FaceUp), -Vec3::Z));
+    let d = rise_heading(chest, pelvis, Rise::FaceDown).unwrap();
+    let z = chest.z - pelvis.z;
+    let r = exa_physics::engine_math::reciprocal_sqrt(z * z);
+    assert_eq!(d.z.to_bits(), (z * r).to_bits());
     assert_eq!(rise_heading(pelvis + Vec3::Y, pelvis, Rise::FaceUp), None);
     let off = |deg: f32| Quat::from_rotation_y(deg.to_radians()) * Vec3::Z;
     assert!(turns_to_rise(off(18.3), Vec3::Z));
@@ -175,20 +181,21 @@ fn falls_turn_the_heading() {
     let chest = Vec3::new(0.0, 0.5, 0.5);
     let animated = Vec3::Z;
     let up = Vec3::new(0.0, 0.9, 0.436);
-    assert_eq!(
+    let near = |got: Option<Vec3>, want: Vec3| got.is_some_and(|d| (d - want).length() < 1e-3);
+    assert!(near(
         fall_heading(animated, up, pelvis, chest, Vec3::X),
-        Some(-Vec3::Z)
-    );
+        -Vec3::Z
+    ));
     let down = Vec3::new(0.0, -0.9, 0.436);
-    assert_eq!(
+    assert!(near(
         fall_heading(animated, down, pelvis, chest, Vec3::X),
-        Some(Vec3::Z)
-    );
+        Vec3::Z
+    ));
     let side = Vec3::X;
-    assert_eq!(
+    assert!(near(
         fall_heading(animated, side, pelvis, chest, -Vec3::X),
-        Some(Vec3::X)
-    );
+        Vec3::X
+    ));
     // Within 45° of its clip's: the heading stays.
     let near = Quat::from_rotation_x(44f32.to_radians()) * Vec3::Z;
     assert!(animated.dot(near) > 0.7);

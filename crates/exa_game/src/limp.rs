@@ -1198,7 +1198,7 @@ impl Hold {
     }
 }
 
-/// What a plain start capture half-leans
+/// What a start capture, plain or whole, half-leans
 /// (`exa_physics::body::locomotion::half_lean`): the midline bones above
 /// the legs and below the head (the lumbar and the thorax, bone − 1
 /// indexed), against the twist before this tick's twist block for a start
@@ -1229,9 +1229,11 @@ impl Lean {
         Self { bones, before, now }
     }
 
-    /// The turns a pending capture takes: a plain capture's midline
-    /// bones half-leaned against `twist`, every other turn (and a whole
-    /// capture's) as measured.
+    /// The turns a pending capture takes: its midline bones half-leaned
+    /// against `twist`, every other turn as measured. The whole capture
+    /// half-leans them as the plain one does (the original's two capture
+    /// routines run the same correction on the twist-flagged parts under
+    /// the head).
     pub(crate) fn capture(
         &self,
         pending: Option<Capture>,
@@ -1239,7 +1241,7 @@ impl Lean {
         twist: Quat,
     ) -> Vec<Option<Quat>> {
         let mut out = physical.to_vec();
-        if pending == Some(Capture::Plain) {
+        if pending.is_some() {
             for &b in &self.bones {
                 if let Some(Some(q)) = out.get_mut(b) {
                     *q = half_lean(*q, twist);
@@ -3356,11 +3358,11 @@ pub(crate) mod tests {
         assert_ne!(thigh, body.parts[1].positions, "the next sample moves it");
     }
 
-    /// A plain capture half-leans the midline bones it names (the thorax,
-    /// index 8, here) against the twist it is given and leaves every other
-    /// turn; a whole capture, or none pending, takes the turns as measured.
+    /// A plain or whole capture half-leans the midline bones it names (the
+    /// thorax, index 8, here) against the twist it is given and leaves
+    /// every other turn; with none pending the turns are as measured.
     #[test]
-    fn a_plain_capture_half_leans_the_lumbar_and_thorax() {
+    fn a_capture_half_leans_the_lumbar_and_thorax() {
         let lean = Lean {
             bones: vec![8],
             before: Quat::from_rotation_y(0.6),
@@ -3375,10 +3377,9 @@ pub(crate) mod tests {
         assert!(plain[8].unwrap().dot(want).abs() > 1.0 - 1e-6);
         assert_eq!(plain[9], Some(arm));
         assert_eq!(plain[0], None);
-        assert_eq!(
-            lean.capture(Some(Capture::Whole), &physical, lean.before),
-            physical
-        );
+        // The whole capture half-leans the same bones.
+        let whole = lean.capture(Some(Capture::Whole), &physical, lean.before);
+        assert_eq!(whole, plain);
         assert_eq!(lean.capture(None, &physical, lean.before), physical);
     }
 

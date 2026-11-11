@@ -253,9 +253,11 @@ pub struct Stride {
 pub enum Start {
     /// From this key: its clock is the key before it's.
     Key(usize),
-    /// With no start key (turning left beyond 1 rad): from the clip's
-    /// start (inferred: the original reads its clock from before the key
-    /// list, a value of about 0).
+    /// With no start key (turning beyond 1 rad the other way): the
+    /// original leaves the jump-in key the playing clip left (the key it
+    /// still leads in to from its capture, or none once past it) and reads
+    /// the clock at that key less one, from before the key times (0) when
+    /// it is 0 or none; `exa_game`'s walk start applies it.
     Unkeyed,
     /// Within 600 ms of the last locomotion: from where its clock was.
     Resume(f32),

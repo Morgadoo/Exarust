@@ -699,7 +699,9 @@ saying so (posture; a body that dies there skips the later stages); the
 original's movement decision from its character's locomotion request
 (walk or stop, brake, the gates, the turn by the table of rates, the
 alignment), then the original's locomotion routine (run blend, gait
-columns, the walk's start key or resume, drive, clock step) or the
+columns, the walk's start key or resume, a keyless or resumed start
+keeping the jump-in key the playing clip left or none (`start_walk`),
+drive, clock step) or the
 standing run blend's fall, and the torso twist toward the look (its
 capsule carries the decision out at Exarust's speeds), its walk's
 lowest ankle while it moves and its balance against the level

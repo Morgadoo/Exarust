@@ -857,9 +857,11 @@ pub enum FemurPosture {
 }
 
 /// The turn the original multiplies into leg `leg`'s thigh over the clip's
-/// (after the clip's turn, `clip * turn`): about the axis
-/// normalized((0, 0, 1) lerped 0.4 toward (−1, 0, 0)), the angle by
-/// `posture`, its sign alternating by leg.
+/// (after the clip's turn, `clip * turn`): about the axis (0, 0, 1) lerped
+/// 0.4 toward (−1, 0, 0) (`a + (b − a)·0.4`) and normalised by the
+/// approximate reciprocal square root, the angle by `posture`, its sign
+/// alternating by leg; the quaternion is the engine's (its fast sine and
+/// cosine of the half angle, over the axis's exact length).
 pub fn femur_posture_turn(posture: FemurPosture, leg: usize) -> Quat {
     const DEGREE: f32 = 0.017_453_292;
     let angle = match posture {
@@ -867,9 +869,10 @@ pub fn femur_posture_turn(posture: FemurPosture, leg: usize) -> Quat {
         FemurPosture::Splayed => 5.0 * DEGREE,
         FemurPosture::Combat { height } => (1.0 - height) * -1.5 * DEGREE,
     };
-    let axis = Vec3::new(0.0, 0.0, 1.0).lerp(Vec3::new(-1.0, 0.0, 0.0), 0.4);
+    let (from, to) = (Vec3::new(0.0, 0.0, 1.0), Vec3::new(-1.0, 0.0, 0.0));
+    let axis = crate::engine_math::normalize_approx(from + (to - from) * 0.4);
     let sign = if leg.is_multiple_of(2) { 1.0 } else { -1.0 };
-    Quat::from_axis_angle(axis.normalize(), sign * angle)
+    crate::engine_math::quaternion_from_axis_angle(axis, sign * angle)
 }
 
 #[cfg(test)]

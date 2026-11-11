@@ -19,6 +19,9 @@ use bevy::prelude::*;
 
 use super::{Locomotor, forward};
 pub use crate::engine_math::{acos_approx, asin_approx, euler_of, from_euler, look_rotation, sign};
+use crate::engine_math::{
+    direction_from_yaw, mat3_to_quaternion, normalize_approx, normalize_quat,
+};
 
 /// The twist holds below this tone (single precision, its compare).
 const TWIST_TONE: f32 = 0.85;
@@ -106,15 +109,17 @@ pub fn twist(body: &mut Locomotor, by: &TwistBy) {
     } else {
         yaw
     };
-    let flat = forward(body.twist_yaw);
+    // The followed yaw's direction by the engine's sine and cosine.
+    let flat = direction_from_yaw(body.twist_yaw);
     let mut y = by.tilt;
     y = if by.attack.is_some() {
         (f64::from(y) - f64::from(by.crouch) * CROUCH_ATTACK) as f32
     } else {
         y - CROUCH_LOWER * by.crouch
     };
-    // The first normalisation's length (the height is set after it).
-    let n = Vec3::new(flat.x, y, flat.z).normalize_or_zero();
+    // The first normalisation is the approximate one (`RSQRTSS`, zero
+    // stays zero); the height is set after it.
+    let n = normalize_approx(Vec3::new(flat.x, y, flat.z));
     let y = if by.casting && !(0.0 < n.y) {
         -(n.y * n.y)
     } else {
@@ -143,10 +148,7 @@ pub fn twist_spine(parts: &mut [Affine3A], spine: &[(usize, bool)], twist: Quat)
         let pose = p.matrix3;
         let mut m = turn * pose;
         if half {
-            let z = (m.z_axis + (pose.z_axis - m.z_axis) * 0.5).normalize_or_zero();
-            let y = without(m.y_axis, z).normalize_or_zero();
-            let x = y.cross(z).normalize_or_zero();
-            m = Mat3A::from_cols(x, y, z);
+            m = square_half(m, pose.z_axis);
         }
         p.matrix3 = m;
     }
@@ -160,15 +162,30 @@ pub fn twist_spine(parts: &mut [Affine3A], spine: &[(usize, bool)], twist: Quat)
 /// result back to a unit rotation. The sampler turns the spine by the
 /// twist again, so the capture keeps only half of it. The original runs
 /// the correction whatever the twist (the identity merely squares the
-/// turn's axes); its normalisations are approximate (rsqrtss), Exarust's
-/// exact, as in [`twist_spine`].
+/// turn's axes). The normalisations are the approximate ones
+/// ([`square_half`]), the quaternion is the engine's of the matrix and its
+/// normalisation the engine's four-lane one.
 pub fn half_lean(turn: Quat, twist: Quat) -> Quat {
     let m = Mat3A::from_quat(turn);
     let untwisted = Mat3A::from_quat(twist).transpose() * m;
-    let z = (m.z_axis + (untwisted.z_axis - m.z_axis) * 0.5).normalize_or_zero();
-    let y = without(m.y_axis, z).normalize_or_zero();
-    let x = y.cross(z).normalize_or_zero();
-    Quat::from_mat3a(&Mat3A::from_cols(x, y, z)).normalize()
+    normalize_quat(mat3_to_quaternion(&square_half(m, untwisted.z_axis)))
+}
+
+/// The midline's half turn, as the samplers and the captures write it: the
+/// forward row moved halfway from `m`'s toward `toward` (`a + (b − a)·0.5`)
+/// and normalised, the up row made square to it and normalised, the side
+/// row their cross product, normalised. Every normalisation is the
+/// approximate one (`RSQRTSS`; a zero row stays zero).
+fn square_half(m: Mat3A, toward: Vec3A) -> Mat3A {
+    let z = approx(m.z_axis + (toward - m.z_axis) * 0.5);
+    let y = approx(without(m.y_axis, z));
+    let x = approx(y.cross(z));
+    Mat3A::from_cols(x, y, z)
+}
+
+/// [`normalize_approx`] on a 16-byte vector.
+fn approx(v: Vec3A) -> Vec3A {
+    Vec3A::from(normalize_approx(Vec3::from(v)))
 }
 
 /// The head's look yaw is clamped to this (rad, double), × 0.8, and
