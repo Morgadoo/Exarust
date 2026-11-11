@@ -708,6 +708,7 @@ fn dress_doll(
         Transform::from_translation(DOLL_ORIGIN),
         Visibility::default(),
         exa_anim::Animator::new("Default", "Idle"),
+        exa_anim::FrameClips,
         Outfit::clone(&outfit),
         body.clone(),
         exa_character::WearsUnderwear,

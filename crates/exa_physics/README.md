@@ -79,8 +79,12 @@ as the lockstep frame draws one tick behind. Data both sides write meets a frame
 against an older step: a drawn copy (`bridge_copy_drawn`: transforms, the
 drawn controller) keeps the simulation's newer value; any other keeps the
 frame's, as in lockstep; both are counted in the log every 1000 steps
-("frame values after a newer simulation write"); `EXA_BRIDGE_WRITES=<type
-name part>` logs what the frame changed in those values. A frame system
+("frame values after a newer simulation write"; a frame value equal to
+the simulation's newer one undoes nothing and is not counted);
+`EXA_BRIDGE_WRITES=<type name part>` logs what the frame changed in those
+values (frame side) and what each applied value undid of the simulation's
+(simulation side: the entity, the step the frame's copy was based on, the
+step of the simulation's write). A frame system
 should not write simulation data as a whole copy: it posts the write to
 the step (`FixedCommands::write`, `post`) and keeps its draw-only state in
 a component of its own. A lent resource moves to

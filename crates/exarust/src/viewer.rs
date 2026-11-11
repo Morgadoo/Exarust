@@ -283,6 +283,7 @@ fn setup(
                 let root = exa_world::spawn_model(&mut commands, &body, None);
                 commands.entity(root).insert((
                     exa_anim::Animator::new(moveset, action),
+                    exa_anim::FrameClips,
                     exa_character::Outfit::of_models(&options.outfit),
                     exa_character::blood::DebugWoundTarget,
                     exa_assets::BodyModel(body_name.clone()),
@@ -3333,16 +3334,19 @@ fn autowalk(
 /// `--arena-fell <frame>`: at that frame after the load every arena
 /// opponent (a scene body off the company's side) drops dead, so the match
 /// tick ends the round and the end screen opens. A debug tool: the bodies
-/// do not collapse, only their condition and health change.
+/// do not collapse, only their condition and health change. The change is
+/// a write to simulation data: it is posted to the start of the next fixed
+/// step ([`drop_dead`]), wherever the step runs.
+#[allow(clippy::type_complexity)]
 fn fell_arena_opponents(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut frames: Local<u32>,
-    mut bodies: Query<(
-        &mut exa_combat::Condition,
-        &mut exa_combat::Fighter,
-        &exa_game::scene_bodies::SceneFighter,
-    )>,
+    bodies: Query<
+        (Entity, &exa_game::scene_bodies::SceneFighter),
+        (With<exa_combat::Condition>, With<exa_combat::Fighter>),
+    >,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
     let Some(at) = options.arena_fell else {
         return;
@@ -3354,17 +3358,28 @@ fn fell_arena_opponents(
     if *frames != at {
         return;
     }
-    let mut felled = 0;
-    for (mut condition, mut fighter, body) in &mut bodies {
-        if body.company {
-            continue;
+    let felled: Vec<Entity> = bodies
+        .iter()
+        .filter(|(_, body)| !body.company)
+        .map(|(e, _)| e)
+        .collect();
+    info!("arena fell: {} opponents drop dead", felled.len());
+    fixed.run(drop_dead, felled);
+}
+
+/// `--arena-fell`'s drop of `bodies` (run at the start of a fixed step):
+/// dead, with no health left.
+fn drop_dead(
+    In(bodies): In<Vec<Entity>>,
+    mut fighters: Query<(&mut exa_combat::Condition, &mut exa_combat::Fighter)>,
+) {
+    for entity in bodies {
+        if let Ok((mut condition, mut fighter)) = fighters.get_mut(entity) {
+            *condition = exa_combat::Condition::DEAD;
+            fighter.health.red = 0.0;
+            fighter.health.yellow = 0.0;
         }
-        *condition = exa_combat::Condition::DEAD;
-        fighter.health.red = 0.0;
-        fighter.health.yellow = 0.0;
-        felled += 1;
     }
-    info!("arena fell: {felled} opponents drop dead");
 }
 
 /// `--give`: the player starts with the listed items in its pack, given as

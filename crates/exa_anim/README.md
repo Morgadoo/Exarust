@@ -49,10 +49,17 @@ gait overlay, the Run clip slerped over the Walk at the same keys; the
 hold; the pose kept as the targets), so a physical body's sampler can put
 its own steps between them; each tick keeps the frames it added and
 whether its end test fired. A physical body's tick sets the clock rate
-and the capture (`exa_game::limp`); other bodies tick by the same body
-clock (83 a second, counted from the frames' time, what is under a tick
-owed to the next frame), 0.6 × the race's base a tick, added in double
-([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback).
+and the capture (`exa_game::limp`); other bodies tick 0.6 × the race's
+base a tick, added in double
+([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback):
+a body in the simulation once a fixed step, at its end
+(`tick_standing_clips`, `FixedLast`; the frames place its parts from the
+pose that tick kept and leave the clip player alone, so a free-running
+simulation's writes to it are never undone by a frame copy), and a
+presentation figure (`FrameClips`: the character creator's, the
+inventory's doll, the character view's) by the same body clock counted
+from the frames' time (83 a second, what is under a tick owed to the
+next frame), menus and pauses included.
 
 ## Scope
 

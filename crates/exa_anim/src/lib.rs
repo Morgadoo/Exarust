@@ -6,9 +6,12 @@
 //! rotation and the pelvis translation. Every clip clock counts frames per
 //! body tick, [`TICKS_PER_SECOND`] a second: living physical bodies' clips
 //! are advanced and sampled by their body's tick ([`TickedClips`]) at the
-//! original's clocks for what the body does, every other body's by the
-//! same ticks, counted from the frames' time ([`play_clips`]). A clip
-//! starts from where the body is and blends to its first key ([`clock`]).
+//! original's clocks for what the body does, every other body's by one
+//! tick a fixed step at the end of the step ([`tick_standing_clips`], posed
+//! by the frames from the pose it kept, [`pose_standing_clips`]), and a
+//! presentation figure's ([`FrameClips`]) by the same ticks, counted from
+//! the frames' time ([`play_clips`]). A clip starts from where the body is
+//! and blends to its first key ([`clock`]).
 
 use std::sync::{Arc, RwLock};
 
@@ -41,12 +44,26 @@ pub struct AnimPlugin;
 
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(tracks::TracksPlugin).add_systems(
-            Update,
-            (attach_body_parts, bind_skins, play_clips)
-                .chain()
-                .in_set(AnimSystems),
-        );
+        use exa_physics::sim_bridge::SimBridgeAppExt;
+        // The step's clip tick reads these (the bridge's registration
+        // rule; the game's stages register them too).
+        app.bridge_copy::<Animator>()
+            .bridge_copy::<TickedClips>()
+            .bridge_copy::<FrameClips>()
+            .bridge_copy_opaque_resource::<Motions>();
+        app.add_plugins(tracks::TracksPlugin)
+            .add_systems(
+                Update,
+                (
+                    attach_body_parts,
+                    bind_skins,
+                    play_clips,
+                    pose_standing_clips,
+                )
+                    .chain()
+                    .in_set(AnimSystems),
+            )
+            .add_systems(FixedLast, tick_standing_clips);
     }
 }
 
@@ -243,8 +260,8 @@ pub struct Animator {
     /// The race's clip-rate base of a body without a body tick (a human's
     /// 1.0): its clock gains [`STANDING_PACE`] times it a tick.
     pub base: f32,
-    /// Seconds of the frames' time a body without a body tick has not
-    /// ticked its clock for yet (under a tick).
+    /// Seconds of the frames' time a presentation figure ([`FrameClips`])
+    /// has not ticked its clock for yet (under a tick).
     pub owed: f32,
     /// Frames the clock gained in its last tick.
     pub rate: f32,
@@ -367,6 +384,12 @@ impl Animator {
 /// (a living physical body): frames leave its clips alone.
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct TickedClips;
+
+/// A presentation figure (the character creator's, the inventory's doll,
+/// the character view's): no simulated body, so the frames advance its
+/// clips from their own time ([`play_clips`]), menus and pauses included.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct FrameClips;
 
 /// A body model root whose skinned meshes bind without an animator: a body
 /// a level placed from its saved pose has no clips to sample, but its skin
@@ -676,48 +699,110 @@ fn to_quat(r: [f32; 4]) -> Quat {
     Quat::from_xyzw(r[0], r[1], r[2], r[3]).normalize()
 }
 
-/// Advances and poses, once a frame, the clips of every body that its body
-/// does not tick: the frame's time is counted in body ticks (what is under
-/// a tick is owed to the next frame), each ticking the clock a standing
-/// body's [`STANDING_PACE`] times the race's base, as a body of the
-/// original that only stands; a start blends from the last pose (such a
-/// body has no physical pose).
+/// One tick of a standing body's clips: a pending start is taken with no
+/// physical pose (the start blends from the last pose kept), the clock
+/// gains a standing body's [`STANDING_PACE`] times the race's base, as a
+/// body of the original that only stands. Returns whether the clip was
+/// found.
+fn tick_standing(motions: &Motions, anim: &mut Animator) -> bool {
+    anim.take_capture(&[]);
+    let Some(clip) = motions.clip(anim, &anim.action) else {
+        return false;
+    };
+    let ending = motions.0.action_index(&anim.action);
+    let frames = standing_frames(anim.base);
+    if anim.tick_double(clip, frames, follow_up_blend(ending, 0)) {
+        anim.take_capture(&[]);
+    }
+    true
+}
+
+/// Samples a standing body's clip at its clock (the pose kept, its root
+/// unscaled; a start blends from the last pose: such a body has no
+/// physical pose).
+fn sample_standing(motions: &Motions, anim: &mut Animator) -> Option<ClipPose> {
+    let clip = motions.clip(anim, &anim.action)?;
+    let still = in_place(motions.0.action_index(&anim.action));
+    anim.sample(clip, still, None)
+}
+
+/// Poses a body's parts from `pose`, its root scaled by the body's stature.
+fn place_parts(
+    root: Entity,
+    pose: ClipPose,
+    stature: Option<&Stature>,
+    children: &Query<&Children>,
+    parts: &mut Query<(&BodyPart, &mut Transform)>,
+) {
+    let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
+    for e in children.iter_descendants(root) {
+        if let Ok((part, mut t)) = parts.get_mut(e) {
+            pose.place(part, &mut t);
+        }
+    }
+}
+
+/// The clips of every body that neither its body tick
+/// ([`TickedClips`]) nor the frames ([`FrameClips`]) advance, at the end
+/// of each fixed step: one standing tick ([`tick_standing`]) and the
+/// sample, kept for the frames to pose ([`pose_standing_clips`]). The
+/// step is the only writer of such a body's clip player, as the
+/// original's every body is ticked by its step.
+pub fn tick_standing_clips(
+    motions: Option<Res<Motions>>,
+    mut animators: Query<&mut Animator, (Without<TickedClips>, Without<FrameClips>)>,
+) {
+    let Some(motions) = motions else { return };
+    for mut anim in &mut animators {
+        if tick_standing(&motions, &mut anim) {
+            sample_standing(&motions, &mut anim);
+        }
+    }
+}
+
+/// Poses, once a frame, the parts of every body the step's standing tick
+/// advances ([`tick_standing_clips`]) from the pose its last sample kept;
+/// the frame leaves the clip player itself alone.
+#[allow(clippy::type_complexity)]
+fn pose_standing_clips(
+    animators: Query<
+        (Entity, &Animator, Option<&Stature>),
+        (Without<TickedClips>, Without<FrameClips>),
+    >,
+    children: Query<&Children>,
+    mut parts: Query<(&BodyPart, &mut Transform)>,
+) {
+    for (root, anim, stature) in &animators {
+        if let Some(pose) = anim.pose.clone() {
+            place_parts(root, pose, stature, &children, &mut parts);
+        }
+    }
+}
+
+/// Advances and poses, once a frame, the clips of every presentation
+/// figure ([`FrameClips`]): the frame's time is counted in body ticks
+/// (what is under a tick is owed to the next frame), each a standing tick
+/// ([`tick_standing`]).
 fn play_clips(
     time: Res<Time>,
     motions: Option<Res<Motions>>,
-    mut animators: Query<(Entity, &mut Animator, Option<&Stature>), Without<TickedClips>>,
+    mut animators: Query<(Entity, &mut Animator, Option<&Stature>), With<FrameClips>>,
     children: Query<&Children>,
     mut parts: Query<(&BodyPart, &mut Transform)>,
 ) {
     let Some(motions) = motions else { return };
-    let set = &*motions.0;
     for (root, mut anim, stature) in &mut animators {
         anim.take_capture(&[]);
         anim.owed += time.delta_secs();
         let ticks = (anim.owed * TICKS_PER_SECOND).floor();
         anim.owed -= ticks / TICKS_PER_SECOND;
         for _ in 0..ticks as u32 {
-            let Some(clip) = motions.clip(&anim, &anim.action) else {
+            if !tick_standing(&motions, &mut anim) {
                 break;
-            };
-            let ending = set.action_index(&anim.action);
-            let frames = standing_frames(anim.base);
-            if anim.tick_double(clip, frames, follow_up_blend(ending, 0)) {
-                anim.take_capture(&[]);
             }
         }
-        let Some(clip) = motions.clip(&anim, &anim.action) else {
-            continue;
-        };
-        let still = in_place(set.action_index(&anim.action));
-        let Some(pose) = anim.sample(clip, still, None) else {
-            continue;
-        };
-        let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
-        for e in children.iter_descendants(root) {
-            if let Ok((part, mut t)) = parts.get_mut(e) {
-                pose.place(part, &mut t);
-            }
+        if let Some(pose) = sample_standing(&motions, &mut anim) {
+            place_parts(root, pose, stature, &children, &mut parts);
         }
     }
 }
@@ -929,13 +1014,8 @@ mod tests {
         }
     }
 
-    /// Frames tick the clips of bodies without a body tick by the body
-    /// clock: two 50 ms frames (the first has no time) are 8.3 ticks, so 8
-    /// tick 0.6 frames each (0.9 for a base of 1.5) and 0.3 of a tick is
-    /// owed; the clips of bodies their body ticks are left alone.
-    #[test]
-    fn frames_tick_by_the_body_clock() {
-        use bevy::time::TimeUpdateStrategy;
+    /// The one-moveset library of a Walk clip.
+    fn walk_library() -> Motions {
         let set = MotionSet {
             bone_count: 1,
             actions: vec![exa_formats::rsq::Action {
@@ -948,21 +1028,36 @@ mod tests {
                 clips: vec![Some(walk())],
             }],
         };
+        Motions::new(Arc::new(set), Arc::default(), 0.0)
+    }
+
+    /// Frames tick the clips of presentation figures by the body clock:
+    /// two 50 ms frames (the first has no time) are 8.3 ticks, so 8 tick
+    /// 0.6 frames each (0.9 for a base of 1.5) and 0.3 of a tick is owed;
+    /// the clips of bodies their body tick or the step ticks are left
+    /// alone.
+    #[test]
+    fn frames_tick_by_the_body_clock() {
+        use bevy::time::TimeUpdateStrategy;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_millis(50),
             ))
-            .insert_resource(Motions::new(Arc::new(set), Arc::default(), 0.0))
+            .insert_resource(walk_library())
             .add_systems(Update, play_clips);
-        let framed = app.world_mut().spawn(Animator::new("Default", "Walk")).id();
+        let framed = app
+            .world_mut()
+            .spawn((Animator::new("Default", "Walk"), FrameClips))
+            .id();
         let mut ghoul = Animator::new("Default", "Walk");
         ghoul.base = 1.5;
-        let ghoul = app.world_mut().spawn(ghoul).id();
+        let ghoul = app.world_mut().spawn((ghoul, FrameClips)).id();
         let ticked = app
             .world_mut()
             .spawn((Animator::new("Default", "Walk"), TickedClips))
             .id();
+        let standing = app.world_mut().spawn(Animator::new("Default", "Walk")).id();
         for _ in 0..3 {
             app.update();
         }
@@ -979,6 +1074,37 @@ mod tests {
             "{}",
             anim(ghoul).time
         );
+        assert_eq!(anim(ticked).time, 0.0);
+        assert_eq!(anim(standing).time, 0.0);
+    }
+
+    /// The step ticks the clips of bodies neither their body tick nor the
+    /// frames tick: one standing tick a step (0.6 frames, 0.9 for a base
+    /// of 1.5), the sample kept as the pose the frames place; presentation
+    /// figures and ticked bodies are left alone.
+    #[test]
+    fn the_step_ticks_standing_bodies_once_a_step() {
+        let mut world = World::new();
+        world.insert_resource(walk_library());
+        let standing = world.spawn(Animator::new("Default", "Walk")).id();
+        let mut ghoul = Animator::new("Default", "Walk");
+        ghoul.base = 1.5;
+        let ghoul = world.spawn(ghoul).id();
+        let framed = world
+            .spawn((Animator::new("Default", "Walk"), FrameClips))
+            .id();
+        let ticked = world
+            .spawn((Animator::new("Default", "Walk"), TickedClips))
+            .id();
+        for _ in 0..3 {
+            world.run_system_cached(tick_standing_clips).unwrap();
+        }
+        let anim = |e: Entity| world.get::<Animator>(e).unwrap().clone();
+        assert!((anim(standing).time - 1.8).abs() < 1e-5);
+        assert!((anim(ghoul).time - 2.7).abs() < 1e-5);
+        assert_eq!(anim(standing).owed, 0.0);
+        assert!(anim(standing).pose.is_some());
+        assert_eq!(anim(framed).time, 0.0);
         assert_eq!(anim(ticked).time, 0.0);
     }
 
