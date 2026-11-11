@@ -815,9 +815,11 @@ fn wrap(a: f32) -> f32 {
     }
 }
 
-/// The yaw of a direction (x, z).
+/// The yaw of a direction (x, z): the engine's heading
+/// ([`exa_physics::engine_math::heading`]), which the original's look
+/// routine calls for the head's direction and for the object's offset.
 pub fn yaw_of(v: Vec3) -> f32 {
-    v.x.atan2(v.z)
+    exa_physics::engine_math::heading(v)
 }
 
 /// The engine's quick arcsine.

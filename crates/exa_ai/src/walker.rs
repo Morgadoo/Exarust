@@ -173,7 +173,8 @@ pub struct RoamStep {
 /// One roam or patrol step after the idle head let it through: on its
 /// planning turn the wander (or, for a roam's second leg, the forced
 /// home-side) goal is picked and routed; a walk whose route is no longer
-/// followed settles the look ([`motion::settle_look`], its draw before the
+/// followed settles the look on the yaw of the body's heading direction
+/// ([`motion::settle_look`], its draw before the
 /// pause's) and the phase goes on ([`idle::tick`]). Both draw from `roll`,
 /// the brain's generator (the original's shared one). Any other routine
 /// does nothing.
@@ -230,7 +231,7 @@ pub fn roam_step(
     }
     let walking = matches!(routine.phase, Phase::WalkWander | Phase::WalkHome);
     if walking && walk.route.is_empty() {
-        motion::settle_look(gaze, turn, motion::yaw_of(gaze.body_look), now_ms, roll);
+        motion::settle_look(gaze, turn, motion::yaw_of(gaze.body_heading), now_ms, roll);
         step.settled = true;
     }
     routine.roll = *roll;

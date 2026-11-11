@@ -536,7 +536,8 @@ fn the_sweep_looks_both_ways_then_turns() {
         &mut roll
     ));
     assert_eq!((s.phase, timer, gaze.look_until), (7, 1234, 1234));
-    assert!((gaze.turn_to - 0.1f32.atan()).abs() < 1e-6);
+    // The object's yaw is the engine's heading of its offset.
+    assert_eq!(gaze.turn_to, exa_physics::engine_math::heading(target));
 }
 
 /// A 9 × 9 grid with the world origin at cell (4, 4).
