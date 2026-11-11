@@ -507,6 +507,12 @@ impl ConstantShell {
     }
 }
 
+/// The debug hold's length (ms) and each effect's first step.
+type VanishHold = (
+    Option<u32>,
+    bevy::platform::collections::HashMap<Entity, u32>,
+);
+
 /// Each fixed step after the casters' tick: every constant displacement's
 /// shell steps, then every vanish follows its power's phase and runs its
 /// frame (a vanish over a lent shell runs that shell and hands it back).
@@ -521,12 +527,7 @@ pub(crate) fn step_vanishes(
     casters: Query<&PowerCaster>,
     mut vanishes: Query<(Entity, &mut LiveVanish)>,
     mut constants: Query<(Entity, &mut ConstantShell)>,
-    mut hold: Local<
-        Option<(
-            Option<u32>,
-            bevy::platform::collections::HashMap<Entity, u32>,
-        )>,
-    >,
+    mut hold: Local<Option<VanishHold>>,
 ) {
     let Some(clock) = clock else {
         return;
