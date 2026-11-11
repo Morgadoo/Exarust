@@ -482,3 +482,84 @@ fn a_feral_body_is_dazed_under_its_own_most() {
     assert!(close(d.energy_share(), 0.5, 1e-6));
     assert!(close(d.hold_weight(), 0.9375, 1e-6));
 }
+
+/// A plain part of a living body (a node the skeleton has no bone for)
+/// takes the rigid body's own step, as the original's living step hands
+/// it on: its motion kept by the retention of its own speed and then
+/// gravity, with no carry and no living retention; the muscled parts keep
+/// the living step.
+#[test]
+fn a_plain_part_steps_as_a_rigid_body() {
+    let (setup, pose) = humanoid(Vec3::ZERO);
+    let mut body = Ragdoll::new(&setup).with_drive();
+    body.aim(Affine3A::IDENTITY, pose);
+    let i = body.parts.iter().position(|p| p.bone == 8).unwrap();
+    let j = body.parts.iter().position(|p| p.bone == 1).unwrap();
+    let mass = body.parts[i].inverse_mass;
+    body.make_plain(i, mass, &[]);
+    // Slow enough for the rigid step's resting retention, which the
+    // living one does not take.
+    body.set_velocity(Vec3::new(0.001, 0.0, 0.0));
+    let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+    body.integrate();
+    let gravity = lift::gravity_per_tick();
+    let rigid = |part: &Part, at: &[Vec3; 4]| -> [Vec3; 4] {
+        // Every particle moved alike, so the fastest one's speed is any.
+        let keep = limp_retention(part.moved[0].length() * CM);
+        let mut out = *at;
+        for ((x, v), w) in out.iter_mut().zip(part.moved).zip(part.gravity) {
+            *x += v * keep;
+            *x += gravity * w;
+        }
+        out
+    };
+    assert_eq!(body.parts[i].positions, rigid(&body.parts[i], &before[i]));
+    assert_ne!(body.parts[j].positions, rigid(&body.parts[j], &before[j]));
+}
+
+/// The pose drive leaves a plain part alone: turned off its pose, it is
+/// not turned back.
+#[test]
+fn the_pose_drive_skips_a_plain_part() {
+    let (setup, pose) = humanoid(Vec3::ZERO);
+    let mut body = Ragdoll::new(&setup).with_drive();
+    body.aim(Affine3A::IDENTITY, pose);
+    let i = body.parts.iter().position(|p| p.bone == 8).unwrap();
+    let mass = body.parts[i].inverse_mass;
+    body.make_plain(i, mass, &[]);
+    turn_part(&mut body.parts[i], Quat::from_rotation_y(0.3));
+    let at = body.parts[i].positions;
+    let Ragdoll { parts, drive, .. } = &mut body;
+    assert!(drive.as_ref().unwrap().pose_gain(8) > 0.0);
+    drive_parts(parts, drive.as_ref().unwrap());
+    assert_eq!(body.parts[i].positions, at);
+}
+
+/// Add-to-world re-scales a part's pins by the character's size: a tall
+/// human's (size 1.05) chest pins sit 5 % further from the thorax's
+/// origin, an average one's (size 1) stay as stored.
+#[test]
+fn joining_the_world_scales_the_pins_by_the_size() {
+    let (mut setup, _) = humanoid(Vec3::ZERO);
+    let i = setup.iter().position(|s| s.bone == 8).unwrap();
+    setup[i].pins = vec![Vec3::new(0.15, 0.4, 0.0), Vec3::new(-0.15, 0.4, 0.0)];
+    let mut average = setup[i].clone();
+    average.scale_pins(1.0);
+    assert_eq!(average.pins, setup[i].pins);
+    setup[i].scale_pins(1.05);
+    assert_eq!(
+        setup[i].pins,
+        vec![
+            Vec3::new(0.15, 0.4, 0.0) * 1.05,
+            Vec3::new(-0.15, 0.4, 0.0) * 1.05
+        ]
+    );
+    let body = Ragdoll::new(&setup);
+    let chest = body.chest_point().unwrap();
+    let origin = body.parts[i].point(&body.parts[i].own_origin);
+    let stored = Vec3::new(0.0, 0.4, 0.0);
+    assert!(
+        ((chest - origin).length() - stored.length() * 1.05).abs() < 1e-5,
+        "{chest} from {origin}"
+    );
+}

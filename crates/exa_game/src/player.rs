@@ -667,6 +667,10 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 FixedPreUpdate,
+                pick_player_target.before(exa_combat::parry::aim_foe_parries),
+            )
+            .add_systems(
+                FixedPreUpdate,
                 (
                     pad_aim_cursor,
                     crate::player_practice::tick_player_practice,
@@ -1736,6 +1740,119 @@ const WALK_END_BLEND: u32 = 20;
 /// The exploration steering's looping gaits, which only it ends.
 const GAITS: [&str; 3] = ["Walk", "Run", "Backpedal"];
 
+/// The behaviour's auto-target: of the `candidates` (entity, scale, chest
+/// point), the visible opponent within 5 m of the player's chest `from`
+/// with the best (500 − d)·(cursor·dir + 0.5), the cursor along `aim`. Its
+/// visibility is a ray at the fixed level between the two chests; the
+/// original also asks its behaviour's own can-see callback, which Exarust
+/// does not have.
+fn player_auto_target(
+    physics: Option<&Physics>,
+    from: Vec3,
+    aim: f32,
+    candidates: &[(Entity, f32, Vec3)],
+) -> Option<Entity> {
+    let cursor = forward(aim);
+    crate::player_behaviour::auto_target(
+        from * 100.0,
+        cursor,
+        candidates.iter().map(|(_, _, chest)| {
+            let to = *chest - from;
+            let visible = to.length() < 1e-4
+                || physics.is_none_or(|physics| {
+                    physics
+                        .fixed_hit(from, to.normalize_or_zero(), to.length())
+                        .is_none()
+                });
+            crate::player_behaviour::AimCandidate {
+                at: *chest * 100.0,
+                visible,
+                skipped: false,
+            }
+        }),
+    )
+    .map(|index| candidates[index].0)
+}
+
+/// The other living fighters the player's stance and auto-target choose
+/// from (the dead a level places lie limp): each with its body's scale and
+/// its chest point.
+#[allow(clippy::type_complexity)]
+fn target_candidates(
+    me: Entity,
+    others: &Query<
+        (
+            Entity,
+            &Condition,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            Option<&Stature>,
+        ),
+        (With<Fighter>, Without<GoLimp>),
+    >,
+) -> Vec<(Entity, f32, Vec3)> {
+    others
+        .iter()
+        .filter(|(e, c, _, b, _)| *e != me && !c.is_dead() && b.is_none_or(|b| b.drive.is_some()))
+        .map(|(e, _, gt, b, scale)| (e, scale.map_or(1.0, |s| s.0), stance::chest_point(gt, b)))
+        .collect()
+}
+
+/// The player's combat target as its behaviour tick picks it, before the
+/// attack starters aim: the original's behaviour tick runs its auto-target
+/// right before its attack executor, so an attack started this tick aims
+/// at this tick's pick. It is written to the player's
+/// [`exa_combat::CombatTarget`], which the starters' aim reads
+/// ([`exa_combat::parry::aim_foe_parries`]); the behaviour's own stored
+/// target, which its steering reads before the pick, is still taken with
+/// the stance ([`take_player_stance`]). None out of combat mode.
+#[allow(clippy::type_complexity)]
+pub(crate) fn pick_player_target(
+    physics: Option<Res<Physics>>,
+    mut bodies: Query<(
+        Entity,
+        &PlayerBody,
+        &Condition,
+        &GlobalTransform,
+        Option<&Ragdoll>,
+        Option<&mut exa_combat::CombatTarget>,
+    )>,
+    others: Query<
+        (
+            Entity,
+            &Condition,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            Option<&Stature>,
+        ),
+        (With<Fighter>, Without<GoLimp>),
+    >,
+    mut commands: Commands,
+) {
+    for (me, pb, condition, gt, body, target) in &mut bodies {
+        if condition.dying() {
+            continue;
+        }
+        let picked = if pb.combat {
+            let from = stance::chest_point(gt, body);
+            let candidates = target_candidates(me, &others);
+            player_auto_target(physics.as_deref(), from, pb.aim, &candidates)
+        } else {
+            None
+        };
+        match target {
+            Some(mut target) => {
+                if target.0 != picked {
+                    target.0 = picked;
+                }
+            }
+            None => {
+                commands.entity(me).insert(exa_combat::CombatTarget(picked));
+            }
+        }
+    }
+}
+
 /// The player's stance, each behaviour tick: Idle out of combat mode (the
 /// clip follows when it was the old stance's); in combat mode the guard,
 /// or the combat idle with a target within 3.5 m or within 3 s of its last
@@ -1787,15 +1904,7 @@ fn take_player_stance(
             continue;
         }
         let from = stance::chest_point(gt, body);
-        // The other living fighters (the dead a level places lie limp), with
-        // their bodies' scale and their chest points.
-        let candidates: Vec<(Entity, f32, Vec3)> = others
-            .iter()
-            .filter(|(e, c, _, b, _)| {
-                *e != me && !c.is_dead() && b.is_none_or(|b| b.drive.is_some())
-            })
-            .map(|(e, _, gt, b, scale)| (e, scale.map_or(1.0, |s| s.0), stance::chest_point(gt, b)))
-            .collect();
+        let candidates = target_candidates(me, &others);
         let target = stance::pick_target(
             from,
             forward(pb.aim),
@@ -1804,30 +1913,10 @@ fn take_player_stance(
                 .map(|(e, scale, chest)| ((*e, *scale), *chest)),
         )
         .map(|((_, scale), d)| (d, scale));
-        // The behaviour's auto-target: the visible opponent within 5 m with
-        // the best (500 − d)·(cursor·dir + 0.5). Its visibility is a ray at
-        // the fixed level between the two chests; the original also asks its
-        // behaviour's own can-see callback, which Exarust does not have.
-        let cursor = forward(pb.aim);
-        pb.target = crate::player_behaviour::auto_target(
-            from * 100.0,
-            cursor,
-            candidates.iter().map(|(_, _, chest)| {
-                let to = *chest - from;
-                let visible = to.length() < 1e-4
-                    || physics.as_ref().is_none_or(|physics| {
-                        physics
-                            .fixed_hit(from, to.normalize_or_zero(), to.length())
-                            .is_none()
-                    });
-                crate::player_behaviour::AimCandidate {
-                    at: *chest * 100.0,
-                    visible,
-                    skipped: false,
-                }
-            }),
-        )
-        .map(|index| candidates[index].0);
+        // The behaviour's auto-target ([`player_auto_target`]); the
+        // attack starters read the same pick, taken earlier in the step
+        // ([`pick_player_target`]).
+        pb.target = player_auto_target(physics.as_deref(), from, pb.aim, &candidates);
         // Dazed, its energy more than 0.05 under its most, it guards.
         let dazed = body
             .and_then(|b| b.drive.as_ref())
@@ -3074,6 +3163,41 @@ mod tests {
         let mut world = World::new();
         let body = world.spawn(PlayerBody::new(0.0)).id();
         assert_eq!(world.entity(body).get::<Stance>(), Some(&Stance::Idle));
+    }
+
+    /// The behaviour's auto-target is taken before the attack starters aim
+    /// and written to the player's combat target: an opponent 2 m ahead is
+    /// the target in the same step; out of combat mode there is none.
+    #[test]
+    fn the_target_is_picked_before_the_starters_aim() {
+        let mut app = App::new();
+        app.add_systems(Update, pick_player_target);
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let player = app
+            .world_mut()
+            .spawn((pb, Fighter::default(), GlobalTransform::IDENTITY))
+            .id();
+        let foe = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+            ))
+            .id();
+        app.update();
+        let target = |app: &App| {
+            app.world()
+                .get::<exa_combat::CombatTarget>(player)
+                .map(|t| t.0)
+        };
+        assert_eq!(target(&app), Some(Some(foe)));
+        app.world_mut()
+            .get_mut::<PlayerBody>(player)
+            .unwrap()
+            .set_combat(false);
+        app.update();
+        assert_eq!(target(&app), Some(None));
     }
 
     #[test]

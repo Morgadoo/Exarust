@@ -939,7 +939,11 @@ attack stage keeps the body's engagement target as its combat target
 auto-target, else the brain's target pass pick, else a brainless
 duellist's foe while it is in combat with it (`exa_ai::Duellist::
 combat_target`); the attack starters' aim and the parry check read it,
-and the side swing's homing reads its chest. Each behaviour tick, before the attack request, `player_practice`
+and the side swing's homing reads its chest. The player's is also written
+before the starters aim in each fixed step (`player::pick_player_target`,
+as its behaviour tick runs the auto-target right before its attack
+executor), while its steering reads the target the stance stored the tick
+before. Each behaviour tick, before the attack request, `player_practice`
 rebuilds the contact list, runs the late-swing check (an attack past 0.6
 of its clock, once a swing: the swing's state word gains `0x100000` with an
 engaged enemy in front, else `0x200000`) and one practice tick

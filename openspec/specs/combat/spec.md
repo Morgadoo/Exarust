@@ -1205,3 +1205,14 @@ A stab past clock 0.1 (a double compare) that does not cleave SHALL push the ite
 #### Scenario: Half the clip
 - **WHEN** the clock is 0.5 with a balance of 0.5, the weapon point (3, 4, 5) cm and the hand (1.5, 2, 2.5) cm from the anchor and the guide up +z
 - **THEN** the weapon's push is about (−6.586, −8.782, 17.472) cm and the hand's (−0.274, −0.366, 1.092) cm
+
+### Requirement: Player target before the attack starters
+The player's combat target SHALL be picked by its behaviour's auto-target in each fixed step before the attack starters aim, so an attack started in that step aims at that step's pick. Out of combat mode the target SHALL be none. The behaviour's steering SHALL keep reading the target stored with the stance.
+
+#### Scenario: Opponent ahead
+- **WHEN** the player in combat mode has an opponent 2 m ahead in the cursor's direction
+- **THEN** its combat target is that opponent in the same step
+
+#### Scenario: Combat mode off
+- **WHEN** the player leaves combat mode
+- **THEN** its combat target is none in that step

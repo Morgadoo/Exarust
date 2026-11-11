@@ -714,7 +714,9 @@ joint's range (`body::Ragdoll::new`); a model node with its own body chunk and n
 tail and wings, `body::OwnPartBody`) is a plain part: its stored spheres
 and links (their strength, smoothing and soft welds), links that are never
 muscles (the init's tone of 0.01) and its own mobility over the init's limb
-mass factor (`body::Ragdoll::make_plain`); a limp body's links also damp each
+mass factor (`body::Ragdoll::make_plain`), and in a living body it takes
+the rigid body's own step (the retention of its speed band and gravity, no
+carry, no pose drive), as the original's living step hands it on; a limp body's links also damp each
 joint inside its range through their smoothed lengths, reset when the
 body goes limp (`body::Ragdoll::go_limp`). In a living body every slack
 link is a link muscle that turns its joint toward the clip's angle (its
@@ -853,7 +855,7 @@ built from the group the index list starts with:
 the original's query takes a mesh's hit only above index 0; the dropped hit
 also hides that piece's farther faces. A grid cell's merged floor is not one
 mesh in Exarust, so its first triangle is not reproduced.
-A ghoul's thorax pins are scaled about the thorax origin by half its character size (`RaceMuscles::chest_pins`, `Ragdoll::scale_chest_pins`, the character init's re-scale for race classes 6 and 7); other races keep the stored pins, as the original's in-game bodies do (its full re-scale runs only in the creator's preview).
+Every body's pins are scaled about their part's origin by its character's size as it joins the world (`PartSetup::scale_pins`, the original's add-to-world re-scale, which runs for every race; a size of 1 keeps the stored pins). A ghoul's thorax pins are then scaled again by half its character size (`RaceMuscles::chest_pins`, `Ragdoll::scale_chest_pins`, the character init's re-scale for race classes 6 and 7).
 `Physics::line_cast` / `contact::line_cast` is the original's line cast
 (front faces of every fixed solid collider, any triangle counting), walked
 over the colliders whole so the frame's replica answers before the step has
