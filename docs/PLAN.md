@@ -1920,6 +1920,8 @@ Round 162 shell: torches draw the small fire texture, Constant Displacement wear
 
 Round 173 gamegui: entering combat mode closes the open game screens and saves store the open screens first, as the original does.
 
+Round 175 sweep: a reusable feature smoke sweep (64 scenes, free and lockstep) found no panics; the held load no longer stalls every fire-lit level 60 s on the GI (the arena loads in about 4 s, not 63), and the summoned demon shell takes its body size. Left: Raise Dead and Command Dead refused, Spirit Form sometimes not ending in free mode, an orphaned arc light link, an intermittent late free-mode exit.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
