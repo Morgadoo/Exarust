@@ -257,6 +257,50 @@ pub struct PowerCaster {
     /// id of the demon it brought in, kept once the demon has arrived and
     /// never cleared (the AI's summoning advice refuses while it is set).
     pub summoned: Option<u32>,
+    /// The body's two weapon hook slots, by the power id that set them
+    /// last ([`HookSlots`]).
+    pub hooks: HookSlots,
+}
+
+/// The body's weapon hook slots Force Strikes and Shock Weapons share: the
+/// item hook (a weapon taken or put away) and the strike hook (a landed
+/// blow). Strikes' activation takes both; Shock Weapons' takes the item
+/// hook; either's end clears both, whoever set them. A power acts on a
+/// weapon change or a blow only while the slot is its own, so a second of
+/// the two cast over the first takes its weapon changes, and ending either
+/// leaves the other deaf to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HookSlots {
+    pub item: Option<u32>,
+    pub strike: Option<u32>,
+}
+
+impl HookSlots {
+    /// Force Strikes' activation.
+    pub fn take_strikes(&mut self) {
+        self.item = Some(super::force::STRIKES);
+        self.strike = Some(super::force::STRIKES);
+    }
+
+    /// Shock Weapons' activation.
+    pub fn take_shock_weapons(&mut self) {
+        self.item = Some(super::energy::SHOCK_WEAPONS);
+    }
+
+    /// Either power's end.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether `power` holds the item hook.
+    pub fn item_is(&self, power: u32) -> bool {
+        self.item == Some(power)
+    }
+
+    /// Whether `power` holds the strike hook.
+    pub fn strike_is(&self, power: u32) -> bool {
+        self.strike == Some(power)
+    }
 }
 
 /// The status-effect broadcast's events: a body that starts to collapse or
@@ -312,6 +356,7 @@ impl PowerCaster {
             broadcast: None,
             was_dying: false,
             summoned: None,
+            hooks: HookSlots::default(),
         }
     }
 
@@ -1791,6 +1836,7 @@ fn create_force(
                 body.cast_hook = Some(super::force::STRIKES_HOOK);
                 held
             };
+            caster.hooks.take_strikes();
             power.held = held;
             let spec = creator(
                 EffectKind::Strikes,
@@ -1850,6 +1896,7 @@ fn create_energy(
                 PowerBase::new(super::energy::SHOCK_WEAPONS).accrue(&mut caster.body, cost);
             let armed = spawn_weapon_arcs(commands, caster_entity, weapons, draws);
             power.count = armed.len();
+            caster.hooks.take_shock_weapons();
             push_active(
                 caster,
                 super::energy::SHOCK_WEAPONS,
@@ -2302,6 +2349,10 @@ fn follow_weapon_changes(
     mut draws: ResMut<EffectDraws>,
 ) {
     for (caster_entity, mut caster) in &mut casters {
+        // The weapon changes reach the power holding the item hook.
+        if !caster.hooks.item_is(super::energy::SHOCK_WEAPONS) {
+            continue;
+        }
         let Some(index) = caster
             .active
             .iter()
@@ -2646,6 +2697,7 @@ pub(crate) fn tick_casters(
             bar,
             broadcast,
             was_dying,
+            hooks,
             ..
         } = caster;
         let was_casting = body.condition == casting::CASTING;
@@ -2797,8 +2849,10 @@ pub(crate) fn tick_casters(
                         let shells: Vec<u64> = power.auras.iter().filter_map(|a| a.shell).collect();
                         let step = power.control(event, body);
                         result = step.result;
-                        // Its end closes every aura.
+                        // Its end closes every aura and clears the
+                        // shared weapon hooks.
                         if result & 2 != 0 {
+                            hooks.clear();
                             for shell in shells.into_iter().filter_map(Entity::try_from_bits) {
                                 if let Ok(mut aura) = auras.get_mut(shell) {
                                     aura.0.start_fade();
@@ -2849,6 +2903,10 @@ pub(crate) fn tick_casters(
                     ActiveClass::ShockWeapons(power) => {
                         let step = power.control(event, body);
                         result = step.result;
+                        // Its end clears the shared weapon hooks.
+                        if result & 2 != 0 {
+                            hooks.clear();
+                        }
                     }
                     ActiveClass::Vanish(power) => {
                         power.answer_hook(body);

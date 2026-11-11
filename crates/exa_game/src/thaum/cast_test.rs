@@ -2019,3 +2019,22 @@ fn a_kinesis_out_of_combat_keeps_waiting_for_its_pick() {
         );
     }
 }
+
+/// Force Strikes and Shock Weapons share the body's weapon hooks: the
+/// later activation takes the item hook, and either end clears both.
+#[test]
+fn strikes_and_shock_weapons_share_the_weapon_hooks() {
+    use crate::thaum::cast::HookSlots;
+    use crate::thaum::energy::SHOCK_WEAPONS;
+    use crate::thaum::force::STRIKES;
+    let mut hooks = HookSlots::default();
+    hooks.take_strikes();
+    assert!(hooks.item_is(STRIKES) && hooks.strike_is(STRIKES));
+    hooks.take_shock_weapons();
+    assert!(hooks.item_is(SHOCK_WEAPONS));
+    // Strikes keeps the strike hook: Shock Weapons does not take it.
+    assert!(hooks.strike_is(STRIKES));
+    // Shock Weapons' end leaves Strikes deaf to weapon changes and blows.
+    hooks.clear();
+    assert!(!hooks.item_is(STRIKES) && !hooks.strike_is(STRIKES));
+}
