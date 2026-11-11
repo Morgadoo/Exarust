@@ -1725,6 +1725,8 @@ Round 172 kernel3: every foot grips at full strength each balance tick as in the
 
 Round 174 balance: stepping, knockback re-targets and the armed parry follow the original, and parry ends no longer drop the weapon grip.
 
+Round 181 renderer: doorway sectors clip their see-through surfaces on the super-sampled view and states draw in registration order, as the original walk does.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
