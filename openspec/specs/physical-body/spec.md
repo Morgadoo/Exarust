@@ -2808,7 +2808,7 @@ A body model node that carries its own body chunk and has no skeleton bone SHALL
 - **THEN** its seven tail parts and two wings are plain parts, and its eighteen skeleton parts are limbs
 
 ### Requirement: Body normalisations
-The body class's routines SHALL normalise as the original's do. The torso twist's first normalisation, the midline's half turn (in the living and pose-only samplers and in the plain and whole captures), the thorax hunch's rebuilt basis, the femur posture's axis, the daze pose's random axis, the turn toward a fall, the get-up's direction and the facing it writes, and the dying tick's wandering heading SHALL scale by the processor's approximate reciprocal square root (`RSQRTSS`) of the squared length summed `(x² + z²) + y²`, a zero vector staying zero.
+The body class's routines SHALL normalise as the original's do: the torso twist's first normalisation, the midline's half turn (both samplers and both captures), the hunch's basis, the femur posture's axis, the daze pose's axis, the fall turn, the get-up's direction and facing, and the dying heading SHALL scale by the processor's approximate reciprocal square root (`RSQRTSS`) of the squared length summed `(x² + z²) + y²`, a zero vector staying zero.
 
 #### Scenario: A get-up's direction
 - **WHEN** a body gets up facing down with its chest 0.6 cm ahead of its pelvis across the ground
@@ -2819,7 +2819,7 @@ The body class's routines SHALL normalise as the original's do. The torso twist'
 - **THEN** its axis is (−0.4, 0, 0.6) scaled by RSQRTSS(0.52) and its turn the engine's quaternion of 5° about it
 
 ### Requirement: Body quaternions and headings
-The captures' and the daze pose's quaternions SHALL be normalised by the engine's four-lane normaliser (`(y² + w²) + (x² + z²)`, its exact reciprocal root); the femur posture's and the daze pose's turns SHALL be the engine's quaternion of an axis and angle; the twist's followed yaw SHALL take its direction from the engine's sine and cosine; and a turn toward a fall or a get-up SHALL take its yaw from the engine's heading of the written facing. The standing and locomoting leg IK SHALL keep their exact normalisations.
+The captures' and the daze pose's quaternions SHALL be normalised by the engine's four-lane normaliser (`(y² + w²) + (x² + z²)`, its exact reciprocal root); the femur posture's and the daze pose's turns SHALL be the engine's axis-angle quaternion; the twist's followed yaw SHALL take its direction from the engine's sine and cosine; and a turn toward a fall or a get-up SHALL take its yaw from the engine's heading of the written facing.
 
 #### Scenario: A daze pose
 - **WHEN** a body takes a daze pose
