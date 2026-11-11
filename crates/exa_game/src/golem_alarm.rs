@@ -426,6 +426,9 @@ fn wake_one(
             if let Some(ticks) = change.wake_ticks {
                 body.wake_to(ticks as i32);
             }
+            // Then its node tree is unmarked: a statue parked out of view
+            // is simulated again (`crate::park`).
+            body.unpark();
             // The sleep scales the sentry put on the statue come off: every
             // part takes its contact base back, each held fist fifty times
             // what it had.

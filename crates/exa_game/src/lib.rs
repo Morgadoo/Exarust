@@ -117,6 +117,7 @@ pub mod os_pointer;
 pub mod pair_trace;
 pub mod panel_live;
 pub mod parchment;
+pub mod park;
 pub mod path_probe;
 pub mod pick;
 pub mod player;
@@ -208,6 +209,7 @@ impl Plugin for GamePlugin {
             zone_scripts::ZoneScriptsPlugin,
             character_use::CharacterUsePlugin,
             cut_away_live::CutAwayPlugin,
+            park::ParkPlugin,
         ))
         .init_resource::<prelude::Tips>()
         .init_resource::<os_clipboard::SystemClipboard>()

@@ -125,6 +125,7 @@ fn bridge_character_tick_types(app: &mut App) {
         .bridge_copy::<exa_combat::swing::SwingState>()
         .bridge_copy::<crate::balance::ShockHeld>()
         .bridge_copy::<crate::golem_body::StatueRest>()
+        .bridge_copy::<exa_physics::body::InView>()
         .bridge_copy::<crate::item_effects::WornEffects>()
         .bridge_move_resource::<sampler::SampledPose>()
         .bridge_message::<exa_physics::body::Footstep>()

@@ -82,9 +82,10 @@ pub const DORMANT_LINK_ITERATIONS: i32 = 5;
 /// to even (`motile::cadence_target`): 20 for a body that is not feral,
 /// 15 for a fully feral one.
 ///
-/// The original's dormant branch also keeps a mark bit and raises a
-/// scene-graph flag on the owning object depending on a word of the owner;
-/// neither has a reader in Exarust and they are not modelled.
+/// The original's dormant branch also parks a body nothing drew
+/// ([`crate::body::Ragdoll::park_unseen`], called after this) and keeps a
+/// hidden bit in the pose word, whose readers only change a parked body's
+/// tick (not modelled).
 pub fn link_iteration_step(count: i32, dormant: bool, feral: f32) -> i32 {
     if dormant {
         return DORMANT_LINK_ITERATIONS;

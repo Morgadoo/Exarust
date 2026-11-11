@@ -1140,7 +1140,12 @@ by going limp or by a contact with an awake body (a sleeper woken by a
 contact takes that tick's post-step, so one woken to a countdown under 2
 sleeps again at once); a living body never
 sleeps, though a dormant statue or golem counts down one a tick and
-sleeps 255 ticks after going dormant. A body a level placed from its saved
+sleeps 255 ticks after going dormant. A dormant body nothing drew in the
+last frame (`body::InView`) is parked by its body tick
+(`body::Ragdoll::park_unseen`, the original's state bit 4): the solver
+leaves it out, each tick only rolls its particle sets and takes one off its
+countdown, and a wake does not unpark it; the AI manager's frame
+(`exa_game::park`) and the golem wake unpark it (`Ragdoll::unpark`). A body a level placed from its saved
 pose is built limp and registered at rest
 (`body::Ragdoll::register_placed`, the `body::PlacedCorpse` request): every
 velocity zero and the countdown at 0, so it runs one tick and that tick's
