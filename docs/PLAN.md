@@ -1902,6 +1902,8 @@ Round 153 effects3: a teleporter or reconstruction device click reads the device
 
 Round 157 portal: leaving through a portal dissolves the player in the original particle burst, and level portals spray their sparks.
 
+Round 160 aitrig: the AI reads its directions through the engine routines as the original does, and the story revive brain reset finally moves roaming brains (it read the nav grid from the wrong world).
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
