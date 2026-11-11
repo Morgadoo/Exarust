@@ -676,13 +676,18 @@ flashes its colour at three times the shown value when it loops; a bubble
 grows over 1800 ms, rests 500 ms or holds and charges over 7000 ms
 (flashing at 5600), then shrinks in 400 ms around a 120 cm sphere; the
 domain wheel is a 280 px form of six domains (Mind, Force, Body, Energy,
-Light, Displacement) clockwise from the top of a 76 px ring, with a
-20.8 px hit, its hover, label, open ease, choice flash and confirm rules,
-and its constructor's form (`effects::wheel::wheel_form`, 280 square, the
-child form word 0x10), its three program objects (`WHEEL_PROGRAMS`, the
-backdrop, sector and glow sources with their uniforms and the `Tex`
-sampler on unit 0) and the flamelets sheet's mip chain its programs sample
-trilinearly.
+Light, Displacement) clockwise from the top of a ring of 76 px times the
+GUI scale (the interface unit over four), with a hit reach of 0.65 of its
+size word (eight units: 20.8 px at unit 4), its hover, label, open ease,
+choice flash and confirm rules (refused while the tree's domain fade-out
+bit is set; the click adds that bit), and its constructor's form
+(`effects::wheel::wheel_form`, 280 square, the child form word 0x10; the
+tree builds its child from it), its three program objects
+(`WHEEL_PROGRAMS`, the backdrop, sector and glow sources with their
+uniforms and the `Tex` sampler on unit 0; engine-replaced by the tree
+canvas's software fragments) and the flamelets sheet's mip chain its
+programs sample trilinearly (the level per triangle, standing in for the
+GL sampler's per-pixel rule).
 Rules of the Mind casts and sight and the two force effects:
 [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind casts, Force blast
 and torrent).

@@ -37,11 +37,12 @@ pub const DEFAULT_FADE: f32 = 0.5;
 /// to be placed by the parent form.
 pub const FORM_CLIENT: [i32; 4] = [0, 0, SIZE_PX, SIZE_PX];
 
-/// The GUI scale the ring's radii are multiplied by. The original reads a
-/// global whose shipped value is one.
+/// The GUI scale at the four-pixel interface unit. The original's scale
+/// global is the unit times a quarter ([`gui_scale`]): one only at unit 4.
 pub const GUI_SCALE: f32 = 1.0;
-/// The icon unit (32 px): the hit radius and the icons' sizes are built
-/// from it.
+/// The icon unit (32 px) at the four-pixel interface unit: the wheel's
+/// shared size word, eight interface units ([`size_word`]). The hit radius
+/// and the icons' sizes are built from it.
 pub const UNIT_PX: i32 = 32;
 /// The text unit (4 px): the label's drop, padding and height are built
 /// from it.
@@ -71,8 +72,9 @@ pub const HOVER_MS: u32 = 200;
 pub const HOVER_PER_MS: f64 = 0.005;
 /// The open animation's length.
 pub const SHOW_MS: u32 = 300;
-/// A confirmed choice holds its button for 256 ms (the original reads the
-/// hold from a global whose shipped value is 256).
+/// A confirmed choice starts the parent tree's 256 ms domain fade-out (the
+/// original reads the length from the GUI's close-time global, shipped
+/// 256); the tree's fade-out bit then refuses another confirm.
 pub const CONFIRM_MS: u32 = 256;
 /// The modifier a confirm needs.
 pub const CONFIRM_MODIFIER: u32 = 0x2000;
@@ -138,10 +140,6 @@ pub struct Wheel {
     pub fade_deadline: u32,
     /// The wheel's overall show, 0..1.
     pub shown: f32,
-    /// The button's hold deadline (game clock).
-    pub confirm_deadline: u32,
-    /// The icon the button carries.
-    pub confirm_choice: i32,
     /// When the last choice was made, real clock.
     pub chosen_at: u32,
 }
@@ -159,16 +157,34 @@ impl Default for Wheel {
             fade_start: 0.0,
             fade_deadline: 0,
             shown: 1.0,
-            confirm_deadline: 0,
-            confirm_choice: 0,
             chosen_at: 0,
         }
     }
 }
 
+/// The GUI scale global at the interface unit `unit`: the unit in double
+/// times a quarter, stored in single precision (the GUI level switch
+/// writes it with the unit).
+pub fn gui_scale(unit: i32) -> f32 {
+    (f64::from(unit) * 0.25) as f32
+}
+
+/// The wheel's shared size word at the interface unit `unit`: eight units
+/// (the wheel texture's load writes it).
+pub fn size_word(unit: i32) -> i32 {
+    unit << 3
+}
+
 /// The ring's radius in whole pixels: 76 px × the GUI scale, rounded.
-fn ring_px() -> i32 {
-    (RING_PX * GUI_SCALE).round_ties_even() as i32
+fn ring_px(scale: f32) -> i32 {
+    (RING_PX * scale).round_ties_even() as i32
+}
+
+/// The squared hit radius for the size word `word`: `word × 0.65` squared
+/// in double and rounded half to even (433 at the four-pixel unit).
+pub fn hit_radius_squared(word: i32) -> i64 {
+    let r = f64::from(word) * HIT_RADIUS_SCALE;
+    (r * r).round_ties_even() as i64
 }
 
 impl Wheel {
@@ -178,23 +194,28 @@ impl Wheel {
         (index + 2) as f32 * std::f32::consts::TAU * (1.0 / 6.0)
     }
 
-    /// The icon's place: `centre.x − r·sin a`, `r·cos a + centre.y`, each
-    /// rounded to whole pixels. The centre is half the form's size.
-    pub fn icon_at(centre: (i32, i32), index: i32) -> (i32, i32) {
+    /// The icon's place at the GUI scale `scale`: `centre.x − r·sin a`,
+    /// `r·cos a + centre.y` with `r` the rounded ring, each rounded to whole
+    /// pixels. The centre is half the form's size.
+    pub fn icon_at(centre: (i32, i32), index: i32, scale: f32) -> (i32, i32) {
         let (sin, cos) = Self::sector_angle(index).sin_cos();
-        let r = ring_px() as f32;
+        let r = ring_px(scale) as f32;
         let x = centre.0 as f32 - r * sin;
         let y = r * cos + centre.1 as f32;
         (x.round_ties_even() as i32, y.round_ties_even() as i32)
     }
 
-    /// The sector under `mouse`, or zero.
-    pub fn hit_test(centre: (i32, i32), mouse: (i32, i32)) -> i32 {
+    /// The sector under `mouse` at the interface unit `unit`, or zero: the
+    /// ring follows the GUI scale and the hit radius the size word, as the
+    /// original's hit method reads both globals.
+    pub fn hit_test(centre: (i32, i32), mouse: (i32, i32), unit: i32) -> i32 {
+        let scale = gui_scale(unit);
+        let reach = hit_radius_squared(size_word(unit));
         for index in 1..=SECTORS as i32 {
-            let (x, y) = Self::icon_at(centre, index);
+            let (x, y) = Self::icon_at(centre, index, scale);
             let dx = i64::from(x) - i64::from(mouse.0);
             let dy = i64::from(y) - i64::from(mouse.1);
-            if dy * dy + dx * dx < HIT_RADIUS_SQUARED {
+            if dy * dy + dx * dx < reach {
                 return index;
             }
         }
@@ -244,7 +265,7 @@ impl Wheel {
     /// width and is four text units high, and its text is centred on the
     /// icon.
     pub fn label_at(centre: (i32, i32), index: i32, text_width: u32) -> LabelBox {
-        let r = ring_px() as f32;
+        let r = ring_px(GUI_SCALE) as f32;
         let angle = ((f64::from(index) + 2.0) * std::f64::consts::PI * (1.0 / 3.0)) as f32;
         let (sin, cos) = angle.sin_cos();
         let x = centre.0 as f32 + -r * sin;
@@ -342,15 +363,16 @@ impl Wheel {
 
     /// Confirm the icon under the mouse. A press needs a hot icon, the
     /// modifier, a choice different from the current one, a known domain
-    /// and a free button. A confirmed choice holds the button 256 ms on the
-    /// game clock, shifts the choices, stamps the real clock and plays the
-    /// confirm sound. The button's flag is modelled as that hold (guess:
-    /// its clearing code is outside this group).
+    /// and a parent tree whose domain fade-out bit (`switching`) is clear.
+    /// A confirmed choice shifts the choices and stamps the real clock; the
+    /// caller sets the tree's fade-out bit with its 256 ms deadline on the
+    /// game clock and the chosen domain, and plays the confirm sound
+    /// ([`crate::thaum::tree::TreeScreen::wheel_click`]).
     pub fn confirm(
         &mut self,
         modifiers: u32,
         known: &[bool; SECTORS as usize],
-        game_now: u32,
+        switching: bool,
         real_now: u32,
     ) -> bool {
         let Some(slot) = usize::try_from(self.hot - 1)
@@ -359,15 +381,10 @@ impl Wheel {
         else {
             return false;
         };
-        if modifiers & CONFIRM_MODIFIER == 0
-            || self.hot == self.chosen
-            || !known[slot]
-            || self.confirm_deadline > game_now
+        if modifiers & CONFIRM_MODIFIER == 0 || self.hot == self.chosen || !known[slot] || switching
         {
             return false;
         }
-        self.confirm_deadline = game_now.wrapping_add(CONFIRM_MS);
-        self.confirm_choice = self.hot;
         self.before = self.chosen;
         self.chosen = self.hot;
         self.chosen_at = real_now;
@@ -446,12 +463,12 @@ mod tests {
 
     #[test]
     fn the_icons_run_clockwise_from_the_top() {
-        assert_eq!(Wheel::icon_at(CENTRE, 1), (100, 24));
-        assert_eq!(Wheel::icon_at(CENTRE, 2), (166, 62));
-        assert_eq!(Wheel::icon_at(CENTRE, 3), (166, 138));
-        assert_eq!(Wheel::icon_at(CENTRE, 4), (100, 176));
-        assert_eq!(Wheel::icon_at(CENTRE, 5), (34, 138));
-        assert_eq!(Wheel::icon_at(CENTRE, 6), (34, 62));
+        assert_eq!(Wheel::icon_at(CENTRE, 1, GUI_SCALE), (100, 24));
+        assert_eq!(Wheel::icon_at(CENTRE, 2, GUI_SCALE), (166, 62));
+        assert_eq!(Wheel::icon_at(CENTRE, 3, GUI_SCALE), (166, 138));
+        assert_eq!(Wheel::icon_at(CENTRE, 4, GUI_SCALE), (100, 176));
+        assert_eq!(Wheel::icon_at(CENTRE, 5, GUI_SCALE), (34, 138));
+        assert_eq!(Wheel::icon_at(CENTRE, 6, GUI_SCALE), (34, 62));
         assert!((Wheel::sector_angle(1) - std::f32::consts::PI).abs() < 1e-6);
         assert_eq!(HIT_RADIUS_SQUARED, {
             let r = f64::from(UNIT_PX) * HIT_RADIUS_SCALE;
@@ -460,17 +477,40 @@ mod tests {
     }
 
     #[test]
+    fn the_ring_and_the_hit_follow_the_interface_unit() {
+        // The scale global is the unit over four; the size word 8 units.
+        assert_eq!(gui_scale(4), 1.0);
+        assert_eq!(gui_scale(5), 1.25);
+        assert_eq!(gui_scale(8), 2.0);
+        assert_eq!(hit_radius_squared(size_word(4)), HIT_RADIUS_SQUARED);
+        // 26² = 676 at unit 5; 41.6² = 1730.56 rounds to 1731 at unit 8.
+        assert_eq!(hit_radius_squared(size_word(5)), 676);
+        assert_eq!(hit_radius_squared(size_word(8)), 1731);
+        // Unit 5: the ring is round(95) and icon 1 sits 95 px above the
+        // centre; 25 px off is inside, 26 px is not.
+        assert_eq!(Wheel::icon_at(CENTRE, 1, gui_scale(5)), (100, 5));
+        assert_eq!(Wheel::hit_test(CENTRE, (125, 5), 5), 1);
+        assert_eq!(Wheel::hit_test(CENTRE, (126, 5), 5), 0);
+        // Unit 8: the ring is 152 px, the reach 41 px.
+        assert_eq!(Wheel::icon_at(CENTRE, 4, gui_scale(8)), (100, 252));
+        assert_eq!(Wheel::hit_test(CENTRE, (141, 252), 8), 4);
+        assert_eq!(Wheel::hit_test(CENTRE, (142, 252), 8), 0);
+        // The four-pixel icon place misses at unit 8.
+        assert_eq!(Wheel::hit_test(CENTRE, (100, 176), 8), 0);
+    }
+
+    #[test]
     fn a_hit_is_within_208_pixels_of_an_icon() {
-        assert_eq!(Wheel::hit_test(CENTRE, (100, 24)), 1);
+        assert_eq!(Wheel::hit_test(CENTRE, (100, 24), 4), 1);
         // 20² = 400 < 433; 21² = 441 is not.
-        assert_eq!(Wheel::hit_test(CENTRE, (120, 24)), 1);
-        assert_eq!(Wheel::hit_test(CENTRE, (121, 24)), 0);
+        assert_eq!(Wheel::hit_test(CENTRE, (120, 24), 4), 1);
+        assert_eq!(Wheel::hit_test(CENTRE, (121, 24), 4), 0);
         // 12² + 17² = 433 is not under 433; 12² + 16² = 400 is.
-        assert_eq!(Wheel::hit_test(CENTRE, (112, 41)), 0);
-        assert_eq!(Wheel::hit_test(CENTRE, (112, 40)), 1);
-        assert_eq!(Wheel::hit_test(CENTRE, (100, 100)), 0);
-        assert_eq!(Wheel::hit_test(CENTRE, (166, 62)), 2);
-        assert_eq!(Wheel::hit_test(CENTRE, (34, 62)), 6);
+        assert_eq!(Wheel::hit_test(CENTRE, (112, 41), 4), 0);
+        assert_eq!(Wheel::hit_test(CENTRE, (112, 40), 4), 1);
+        assert_eq!(Wheel::hit_test(CENTRE, (100, 100), 4), 0);
+        assert_eq!(Wheel::hit_test(CENTRE, (166, 62), 4), 2);
+        assert_eq!(Wheel::hit_test(CENTRE, (34, 62), 4), 6);
     }
 
     #[test]
@@ -582,30 +622,29 @@ mod tests {
         let mut known = [false; SECTORS as usize];
         known[1] = true;
         // The modifier is required.
-        assert!(!wheel.confirm(0, &known, 1_000, 50));
+        assert!(!wheel.confirm(0, &known, false, 50));
         // An unknown domain is refused.
         let nothing = [false; SECTORS as usize];
-        assert!(!wheel.confirm(CONFIRM_MODIFIER, &nothing, 1_000, 50));
-        assert!(wheel.confirm(CONFIRM_MODIFIER, &known, 1_000, 50));
+        assert!(!wheel.confirm(CONFIRM_MODIFIER, &nothing, false, 50));
+        assert!(wheel.confirm(CONFIRM_MODIFIER, &known, false, 50));
         assert_eq!((wheel.chosen, wheel.before), (2, 1));
-        assert_eq!(wheel.confirm_deadline, 1_256);
-        assert_eq!(wheel.confirm_choice, 2);
         // The choice is stamped on the real clock.
         assert_eq!(wheel.chosen_at, 50);
-        // The button is held for 256 ms; another icon may then be chosen.
+        // While the tree's domain fade-out runs nothing is confirmed; once
+        // its bit is clear another icon may be chosen.
         wheel.hot = 3;
         known[2] = true;
-        assert!(!wheel.confirm(CONFIRM_MODIFIER, &known, 1_255, 60));
-        assert!(wheel.confirm(CONFIRM_MODIFIER, &known, 1_256, 60));
+        assert!(!wheel.confirm(CONFIRM_MODIFIER, &known, true, 60));
+        assert!(wheel.confirm(CONFIRM_MODIFIER, &known, false, 60));
         assert_eq!((wheel.chosen, wheel.before), (3, 2));
         // Choosing the current domain again does nothing.
-        assert!(!wheel.confirm(CONFIRM_MODIFIER, &known, 2_000, 70));
+        assert!(!wheel.confirm(CONFIRM_MODIFIER, &known, false, 70));
         // Nor does a hot icon off the ring.
         let mut out = Wheel {
             hot: 99,
             ..Wheel::default()
         };
-        assert!(!out.confirm(CONFIRM_MODIFIER, &[true; SECTORS as usize], 0, 0));
+        assert!(!out.confirm(CONFIRM_MODIFIER, &[true; SECTORS as usize], false, 0));
         assert_eq!((CONFIRM_VOLUME, CONFIRM_PITCH), (0.25, 1.0));
     }
 
@@ -643,7 +682,6 @@ mod tests {
         );
         assert_eq!((wheel.fade, wheel.fade_start, wheel.shown), (0.5, 0.0, 1.0));
         assert_eq!((wheel.hover_stamp, wheel.chosen_at), (0, 0));
-        assert_eq!((wheel.confirm_deadline, wheel.confirm_choice), (0, 0));
         assert!((wheel.swell() - 1.0).abs() < 1e-6);
     }
 
