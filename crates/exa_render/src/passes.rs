@@ -133,8 +133,42 @@ pub const PASS_ORDER: [Pass; 13] = [
 
 /// The depth bias the decal class draws with: added to the projection's
 /// `[2][2]` term of every view from the decals to the end of the blended
-/// lists.
-pub const DECAL_DEPTH_BIAS: f32 = 2.0e-5;
+/// lists. The scene pass widens the first view's term to double, adds this
+/// and stores the sum back in single precision ([`biased_depth_term`]).
+pub const LIST_PROJECTION_BIAS: f64 = 2.0e-5;
+
+/// A view projection's `[2][2]` term while the decal and blended lists
+/// draw: `term + 2·10⁻⁵`, added in double and stored in single. Every view
+/// gets the first view's term biased (the pass reads it once), and the
+/// unbiased first-view term is written back to every view after the
+/// blended lists.
+pub fn biased_depth_term(term: f32) -> f32 {
+    (f64::from(term) + LIST_PROJECTION_BIAS) as f32
+}
+
+/// The original camera's near and far planes, engine units (centimetres).
+const ORIGINAL_NEAR_CM: f32 = 100.0;
+const ORIGINAL_FAR_CM: f32 = 12_500.0;
+
+/// What the list bias does to a surface's depth, as a change of its inverse
+/// view distance (per metre), for the original camera's planes.
+///
+/// In the GL projection (`w = −z`) raising `[2][2]` by δ lowers the
+/// normalized depth by δ, i.e. the window depth `f/(f−n)·(1 − n/d)` by
+/// δ/2, the same as a surface whose `1/d` is larger by
+/// `(δ/2)·(f − n)/(f·n)`. δ is the stored single-precision difference
+/// ([`biased_depth_term`] of the frustum's term `−(f+n)/(f−n)`), about
+/// 2.0027·10⁻⁵, so the shift is about 9.93·10⁻⁶ per metre. Exarust's
+/// surface vertex stage (`exa_vertex.wesl`) adds the same shift to Bevy's
+/// reverse depth, `near/d`, scaled by Bevy's own near plane.
+pub fn list_depth_shift() -> f64 {
+    let (near, far) = (ORIGINAL_NEAR_CM, ORIGINAL_FAR_CM);
+    let term =
+        exa_physics::engine_math::frustum(-1.0, 1.0, -1.0, 1.0, near, far).to_cols_array()[10];
+    let delta = f64::from(biased_depth_term(term)) - f64::from(term);
+    let (near_m, far_m) = (f64::from(near) / 100.0, f64::from(far) / 100.0);
+    delta * 0.5 * (far_m - near_m) / (far_m * near_m)
+}
 
 impl Pass {
     /// Whether the pass draws with depth writes on. The original draws both
@@ -663,6 +697,43 @@ pub fn blended_ranks(states: &[BlendState]) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bias is added in double and stored in single: on the original
+    /// camera's term −12 600/12 400 it moves the term by 2.0027·10⁻⁵, not
+    /// exactly 2·10⁻⁵.
+    #[test]
+    fn the_list_bias_is_added_in_double_and_stored_in_single() {
+        let term = -(12_500.0f32 + 100.0) / (12_500.0 - 100.0);
+        let biased = biased_depth_term(term);
+        assert_eq!(biased, (f64::from(term) + 2.0e-5) as f32);
+        let delta = f64::from(biased) - f64::from(term);
+        assert!((delta - 2.002_716e-5).abs() < 1e-11, "{delta}");
+        assert_eq!(biased_depth_term(-1.0), (-1.0f64 + 2.0e-5) as f32);
+    }
+
+    /// The shift the surface vertex stage applies is the one the original's
+    /// planes give: (δ/2)·(f − n)/(f·n) per metre, and the shader's copy of
+    /// it matches.
+    #[test]
+    fn the_vertex_stage_carries_the_list_shift() {
+        let shift = list_depth_shift();
+        assert!((shift - 9.933_47e-6).abs() < 1e-11, "{shift}");
+        let src = include_str!("exa_vertex.wesl");
+        let line = src
+            .lines()
+            .find(|l| l.starts_with("const LIST_DEPTH_SHIFT"))
+            .expect("the shader keeps the shift");
+        let value: f64 = line
+            .trim_end_matches(';')
+            .rsplit('=')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!((value - shift).abs() < 1e-10, "{value} vs {shift}");
+        assert!(src.contains("@if(VERTEX_POSITIONS && EXA_LIST_DEPTH_BIAS)"));
+    }
 
     fn entry(layer: u8, opacity: f32, material: u32) -> RenderEntry {
         RenderEntry {

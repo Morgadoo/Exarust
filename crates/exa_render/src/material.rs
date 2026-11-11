@@ -21,6 +21,7 @@ impl Plugin for MaterialsPlugin {
         bevy::shader::load_shader_library!(app, "shadesmk.wesl");
         bevy::shader::load_shader_library!(app, "sun_caster.wesl");
         embedded_asset!(app, "exa.wesl");
+        embedded_asset!(app, "exa_vertex.wesl");
         embedded_asset!(app, "exa_prepass.wesl");
         embedded_asset!(app, "sun_caster_prepass.wesl");
         crate::sun_casters::load_caster_shaders(app);
@@ -849,7 +850,16 @@ pub struct ExaMaterialKey {
     /// above zero): the original lays the faded mesh's depth first, so
     /// only its nearest layer shows.
     cut_away_depth: bool,
+    /// The surface sits in the decal or blended list, which the original
+    /// draws under its projection depth bias ([`LIST_DEPTH_BIAS`]).
+    list_depth_bias: bool,
 }
+
+/// Whether the decal and blended lists draw with the original's projection
+/// depth bias (`crate::passes::biased_depth_term`); `--no-list-depth-bias`
+/// turns it off, to compare. Read when a material's pipeline key is built.
+pub static LIST_DEPTH_BIAS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 impl From<&ExaMaterial> for ExaMaterialKey {
     fn from(m: &ExaMaterial) -> Self {
@@ -859,6 +869,8 @@ impl From<&ExaMaterial> for ExaMaterialKey {
             cuts_shadow: m.cuts_shadow(),
             cut_away_depth: m.params.flags2 & flags2::CUT_AWAY_BLEND != 0
                 && m.params.cut_away_opacity > 0.0,
+            list_depth_bias: m.blend_state.is_some()
+                && LIST_DEPTH_BIAS.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 }
@@ -871,6 +883,14 @@ impl ExaMaterialKey {
 }
 
 impl Material for ExaMaterial {
+    /// Bevy's mesh vertex stage plus the decal and blended lists' depth
+    /// bias (`exa_vertex.wesl`).
+    fn vertex_shader() -> ShaderRef {
+        ShaderRef::Path(
+            AssetPath::from_path_buf(embedded_path!("exa_vertex.wesl")).with_source("embedded"),
+        )
+    }
+
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Path(
             AssetPath::from_path_buf(embedded_path!("exa.wesl")).with_source("embedded"),
@@ -909,6 +929,12 @@ impl Material for ExaMaterial {
             data.cuts_shadow,
         ) {
             return Ok(());
+        }
+        if data.list_depth_bias {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("EXA_LIST_DEPTH_BIAS".into());
         }
         if data.cut_away_depth
             && let Some(depth) = descriptor.depth_stencil.as_mut()

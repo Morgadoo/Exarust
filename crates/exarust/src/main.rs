@@ -27,6 +27,7 @@
 //!          --no-cube-lids             debug: the room's lid stays out of its lights' cube shadows (to compare)
 //!          --no-sector-cull           debug: the scene's visible pass leaves the main view's list alone (to compare)
 //!          --no-sector-scissor        debug: surfaces seen through doorways are not clipped to the doorways' rectangle (to compare)
+//!          --no-list-depth-bias       debug: decal and blended surfaces draw without the original's projection depth bias (to compare)
 //!          --no-registration-order    debug: one blended state in one room keeps Bevy's distance order (to compare)
 //!          --no-room-lights           debug: lights reach meshes in rooms they have no alias in (to compare)
 //!          --bevy-sun-cascades        the sun keeps Bevy's cascades instead of the original's fitted map
@@ -355,6 +356,9 @@ pub struct Options {
     pub no_sector_cull: bool,
     /// Debug: no portal scissor on the decal and blended surfaces.
     pub no_sector_scissor: bool,
+    /// Debug: decal and blended surfaces draw without the original's
+    /// projection depth bias.
+    pub no_list_depth_bias: bool,
     /// Debug: one state in one sector keeps Bevy's distance order.
     pub no_registration_order: bool,
     /// Debug: lights reach meshes in rooms they have no alias in.
@@ -1033,6 +1037,7 @@ fn main() -> AppExit {
             "--no-cube-lids" => options.no_cube_lids = true,
             "--no-sector-cull" => options.no_sector_cull = true,
             "--no-sector-scissor" => options.no_sector_scissor = true,
+            "--no-list-depth-bias" => options.no_list_depth_bias = true,
             "--no-registration-order" => options.no_registration_order = true,
             "--no-room-lights" => options.no_room_lights = true,
             "--bevy-sun-cascades" => options.bevy_sun_cascades = true,
@@ -2048,6 +2053,10 @@ fn main() -> AppExit {
     } else {
         app.add_plugins(plugins);
     }
+    exa_render::material::LIST_DEPTH_BIAS.store(
+        !options.no_list_depth_bias,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     // `--debug-lights` lists around the camera in a level view.
     let level_view = matches!(view, View::Level(_));
     app.add_plugins(exa_game::GamePlugin)

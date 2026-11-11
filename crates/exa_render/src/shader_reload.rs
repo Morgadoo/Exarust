@@ -21,6 +21,7 @@ pub const SHADERS: &[&str] = &[
     "cube_shadow.wesl",
     "exa.wesl",
     "exa_prepass.wesl",
+    "exa_vertex.wesl",
     "flame.wesl",
     "gi.wesl",
     "glow.wesl",
@@ -55,7 +56,7 @@ mod tests {
             assert!(name.ends_with(".wesl"));
             assert_eq!(path(name), format!("embedded://exa_render/{name}"));
         }
-        assert_eq!(SHADERS.len(), 12);
+        assert_eq!(SHADERS.len(), 13);
         assert!(!SHADERS.contains(&"shading.wesl"));
     }
 }
