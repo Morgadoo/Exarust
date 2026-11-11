@@ -236,8 +236,9 @@ impl Default for EffectDraws {
 #[derive(Resource, Default, Debug)]
 pub struct EffectRoll(pub Roll);
 
-/// The draws of the effects the frame runs (their drawing, the GUI's casts,
-/// the items' abilities): the original's run-time stream and engine
+/// The draws of the effects the frame runs (their drawing, the items'
+/// abilities; the bar's casts behind the bridge run in the step and draw
+/// from [`EffectDraws`], in one world from these): the original's run-time stream and engine
 /// generator are process-wide, drawn from by its main thread and its
 /// simulation thread with no order between them, so each side keeps its
 /// own sequence here, in its own order. [Exarust: the original interleaves
@@ -783,6 +784,7 @@ fn drive_arc_voxel(
 /// The frame's tendril light for arcs that gather light points. A point light
 /// and a voxel light are not this. An empty frame, or one that has ended,
 /// drops the light.
+#[allow(clippy::too_many_arguments)]
 fn drive_arc_light(
     commands: &mut Commands,
     entity: Entity,
@@ -792,13 +794,14 @@ fn drive_arc_light(
         &mut exa_render::gi::ShapeVolume,
     )>,
     arcs: &ArcEmitter,
+    glow: &super::arcs::ArcGlow,
     strength: f32,
     stop: bool,
 ) {
     if arcs.light_kind != ArcLight::Points {
         return;
     }
-    if stop || arcs.lights.is_empty() {
+    if stop || glow.lights.is_empty() {
         if let Some(held) = held {
             commands.entity(held.0).despawn();
             commands
@@ -807,7 +810,7 @@ fn drive_arc_light(
         }
         return;
     }
-    let points: Vec<_> = arcs.lights.iter().map(|p| (p.at, p.weight)).collect();
+    let points: Vec<_> = glow.lights.iter().map(|p| (p.at, p.weight)).collect();
     let Some(placed) =
         super::effect_light::arc_shape(&points, strength, super::effect_light::GI_LIGHT_SCALE)
     else {
@@ -1470,6 +1473,7 @@ fn draw_arcs(
     mut arcs: Query<(
         Entity,
         &mut LiveArcs,
+        Option<&mut super::arcs::ArcGlow>,
         Option<&EffectMesh>,
         Option<&MeshMaterial3d<ArcMaterial>>,
         Option<&super::effect_light::EffectLight>,
@@ -1488,12 +1492,33 @@ fn draw_arcs(
     mut look: ArcLook,
     mut audio: ShockAudio,
     mut hums: Local<bevy::platform::collections::HashMap<Entity, Option<u32>>>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let eye = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
-    for (entity, mut live, drawn, material, light) in &mut arcs {
+    for (entity, mut live, glow, drawn, material, light) in &mut arcs {
         let voxel = held_voxels.get(entity).ok();
-        let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0.0);
+        // The frame's flickers and light points are its own
+        // ([`super::arcs::ArcGlow`]); the draw writes nothing of the
+        // emitter, and its one write to it, the drawn tendrils' first
+        // points put back at their origins, goes to the simulation's copy
+        // for its next step, as the original's draw writes the emitter its
+        // simulation thread steps.
+        let mut fresh = None;
+        let glow = match glow {
+            Some(glow) => glow.into_inner(),
+            None => fresh.insert(super::arcs::ArcGlow::default()),
+        };
+        let frame = live
+            .arcs
+            .frame(glow, alpha, eye, 0.0, |p| p, &mut draws.0.0);
+        if !frame.removed {
+            let settle = |live: &mut LiveArcs| live.arcs.settle_origins();
+            match fixed.as_deref_mut() {
+                Some(fixed) => fixed.write(entity, &mut live, settle),
+                None => settle(&mut live),
+            }
+        }
         let at = live.arcs.anchor.map(|p| p / CM).unwrap_or(Vec3::ZERO);
         drive_arc_hum(
             &mut audio,
@@ -1510,6 +1535,7 @@ fn draw_arcs(
             light,
             &mut shapes,
             &live.arcs,
+            glow,
             frame.light,
             frame.removed,
         );
@@ -1522,6 +1548,9 @@ fn draw_arcs(
             frame.light,
             frame.removed,
         );
+        if let Some(glow) = fresh {
+            commands.entity(entity).insert(glow);
+        }
         if frame.removed && !live.keep {
             commands.entity(entity).despawn();
             continue;
@@ -1865,7 +1894,8 @@ mod tests {
         assert_eq!(placed.atten, 16_000.0);
         let got = placed.points.clone();
         let live = app.world().get::<LiveArcs>(arc).unwrap();
-        let points: Vec<_> = live.arcs.lights.iter().map(|p| (p.at, p.weight)).collect();
+        let glow = app.world().get::<crate::thaum::arcs::ArcGlow>(arc).unwrap();
+        let points: Vec<_> = glow.lights.iter().map(|p| (p.at, p.weight)).collect();
         let strength = live.arcs.tendrils[0].life * live.arcs.light;
         let (expect, _) = crate::thaum::effect_light::arc_shape(
             &points,
@@ -1972,7 +2002,12 @@ mod tests {
         let fill = (live.arcs.total as f32
             / (live.arcs.segments as f32 * live.arcs.tendrils.len() as f32))
             * 2.0;
-        let expect = live.arcs.light * fill * live.arcs.light_flicker * 1.5;
+        let flicker = app
+            .world()
+            .get::<crate::thaum::arcs::ArcGlow>(arc)
+            .unwrap()
+            .light_flicker;
+        let expect = live.arcs.light * fill * flicker * 1.5;
         assert!((intensity - expect).abs() < 1e-4, "{intensity}");
         assert_eq!(
             app.world().get::<Transform>(held).unwrap().translation,

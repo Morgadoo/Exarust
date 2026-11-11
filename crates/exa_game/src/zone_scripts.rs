@@ -339,20 +339,37 @@ type StayCharacter<'a> = (
 
 /// The stay check the character tick runs once a trailing-foot request has
 /// lapsed: for the player, every stay zone it is inside runs its routine.
+#[allow(clippy::too_many_arguments)]
 pub fn check_stay_zones(
     volumes: Res<StayVolumes>,
     scripts: Option<Res<exa_script::Scripts>>,
     conversations: Option<ResMut<exa_script::Conversations>>,
     time: Option<Res<Time<Virtual>>>,
-    mut characters: Query<StayCharacter>,
+    mut characters: Query<(Entity, StayCharacter)>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    mut consumed: Local<bevy::ecs::entity::EntityHashMap<u64>>,
 ) {
     let mut work = Vec::new();
-    for (gt, id, body, player, mut locomotor) in &mut characters {
+    for (entity, (gt, id, body, player, mut locomotor)) in &mut characters {
         if !locomotor.stay_check_due {
             continue;
         }
-        locomotor.stay_check_due = false;
+        // A free-running simulation's steps computed before the clear
+        // landed still carry the raised latch: one lapsed request (its
+        // deadline) runs the check once.
+        if consumed.insert(entity, locomotor.plant_deadline) == Some(locomotor.plant_deadline) {
+            continue;
+        }
+        // The latch is the simulation's: its clear goes to the
+        // simulation's copy at the next step, not as the frame's whole
+        // locomotor, which a free-running simulation's newer steps would
+        // lose.
+        let clear = |locomotor: &mut Locomotor| locomotor.stay_check_due = false;
+        match fixed.as_deref_mut() {
+            Some(fixed) => fixed.write(entity, &mut locomotor, clear),
+            None => clear(&mut locomotor),
+        }
         if !player {
             continue;
         }

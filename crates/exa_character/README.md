@@ -420,7 +420,10 @@ tested rules of their own.
   second weapon once, so `choose_held_movesets` picks the moveset again
   from the new main weapon (a two-hander and a one-hander trade "Two
   Handed" for the two-weapon moveset) (`condition::swap_due`,
-  `swap_on_switch`).
+  `swap_on_switch`). The choice runs in the frame; behind the simulation
+  bridge its switch of the animator's config is queued for the
+  simulation's copy (`FixedCommands::write`), not sent as the frame's whole
+  animator.
 - The off hand's item is attached by `offhand` after the dresser: a shield
   from either hand (its own model, body, a back pivot to its forearm and two face
   pivots to the left hand, and its soft weld, turned −5° about z on the hand) or a second

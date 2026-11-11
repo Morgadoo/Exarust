@@ -106,7 +106,9 @@ unlock a novice practice win records, and the story-background unlock the
 plot events would record — go through `user_settings::write_flow_settings`,
 which writes and flushes the entry as the original's settings writer does.
 With `--opponent` the fight starts when the level shows: the duellist enters
-combat and, in a practice or arena level, the player's combat mode turns on.
+combat and, in a practice or arena level, the player's combat mode turns on
+(both written through `FixedCommands::write`, so the simulation's copies
+take them at its next step).
 In an arena level the match is ticked as the original ticks a career match
 (its first second, then who stands), and the music is the arena track the
 original's match start draws, at its own volume. The round's fighters are

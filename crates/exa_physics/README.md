@@ -79,7 +79,11 @@ as the lockstep frame draws one tick behind. Data both sides write meets a frame
 against an older step: a drawn copy (`bridge_copy_drawn`: transforms, the
 drawn controller) keeps the simulation's newer value; any other keeps the
 frame's, as in lockstep; both are counted in the log every 1000 steps
-("frame values after a newer simulation write"). A lent resource moves to
+("frame values after a newer simulation write"); `EXA_BRIDGE_WRITES=<type
+name part>` logs what the frame changed in those values. A frame system
+should not write simulation data as a whole copy: it posts the write to
+the step (`FixedCommands::write`, `post`) and keeps its draw-only state in
+a component of its own. A lent resource moves to
 the simulation for good in free mode; `--fixed-frames` keeps lockstep. The
 pause key holds a free simulation, the step key takes a single step while
 it is held and the speed keys scale its clock (`SimPause`; Exarust's debug

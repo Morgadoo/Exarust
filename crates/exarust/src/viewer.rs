@@ -3191,8 +3191,9 @@ fn start_fight(
     loading: Option<Res<exa_ui::LoadingStatus>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     mut started: Local<bool>,
-    mut duellists: Query<&mut exa_ai::Duellist, Without<exa_ai::brain::Npc>>,
-    mut players: Query<&mut exa_game::player::PlayerBody>,
+    mut duellists: Query<(Entity, &mut exa_ai::Duellist), Without<exa_ai::brain::Npc>>,
+    mut players: Query<(Entity, &mut exa_game::player::PlayerBody)>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let View::Play(level) = &*view else { return };
     if *started || loading.is_some() || duellists.is_empty() {
@@ -3200,18 +3201,33 @@ fn start_fight(
     }
     *started = true;
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis());
-    for mut duellist in &mut duellists {
-        if duellist.reaction_ms == 0 {
-            duellist.engaged = true;
-        } else {
-            // The original's practice opponent waits its reaction delay in
-            // the AI's two millisecond timers.
-            duellist.engage_at_ms = Some(now.saturating_add(u64::from(duellist.reaction_ms)));
+    // Both writes land on the simulation's copies at its next step, not as
+    // the frame's whole copies, which a free-running simulation's newer
+    // steps (the duellist's roll, the player's aim) would lose.
+    for (entity, mut duellist) in &mut duellists {
+        let engage = move |duellist: &mut exa_ai::Duellist| {
+            if duellist.reaction_ms == 0 {
+                duellist.engaged = true;
+            } else {
+                // The original's practice opponent waits its reaction delay
+                // in the AI's two millisecond timers.
+                duellist.engage_at_ms = Some(now.saturating_add(u64::from(duellist.reaction_ms)));
+            }
+        };
+        match fixed.as_deref_mut() {
+            Some(fixed) => fixed.write(entity, &mut duellist, engage),
+            None => engage(&mut duellist),
         }
     }
     if fight_level(level) {
-        for mut player in &mut players {
-            player.set_combat(true);
+        for (entity, mut player) in &mut players {
+            let combat = |player: &mut exa_game::player::PlayerBody| {
+                player.set_combat(true);
+            };
+            match fixed.as_deref_mut() {
+                Some(fixed) => fixed.write(entity, &mut player, combat),
+                None => combat(&mut player),
+            }
         }
         info!("the fight starts: combat mode on");
     } else {

@@ -254,6 +254,56 @@ pub struct LightPoint {
     pub count: i32,
 }
 
+/// What the arcs' frame keeps from one draw to the next: the light's and
+/// the hum's flickers and the light points the ribbon feeds. The tick never
+/// reads them, so they live on the frame's side alone (not bridged): a frame
+/// write to the bridged emitter would be sent whole to a free-running
+/// simulation and undo its newer steps.
+#[derive(bevy::prelude::Component, Debug, Clone, Default, PartialEq)]
+pub struct ArcGlow {
+    pub light_flicker: f32,
+    pub gain_flicker: f32,
+    pub pitch_flicker: f32,
+    pub lights: Vec<LightPoint>,
+}
+
+impl ArcGlow {
+    fn light_point(&mut self, at: Vec3, weight: f32) {
+        let weight = (2.0 - weight) * weight;
+        if self.lights.is_empty() {
+            self.lights.push(LightPoint {
+                at,
+                weight,
+                count: 1,
+            });
+            return;
+        }
+        let mut nearest = None;
+        let mut best = 6400.0;
+        for (k, light) in self.lights.iter().enumerate() {
+            let d = dist_sq(light.at, at);
+            if d < best {
+                nearest = Some(k);
+                best = d;
+            }
+        }
+        if LIGHT_POINTS - 1 < self.lights.len() || best <= 1600.0 {
+            if let Some(k) = nearest {
+                let light = &mut self.lights[k];
+                light.count += 1;
+                light.at = lerp(light.at, at, 1.0 / light.count as f32);
+                light.weight += weight;
+            }
+        } else {
+            self.lights.push(LightPoint {
+                at,
+                weight,
+                count: 1,
+            });
+        }
+    }
+}
+
 /// The arcs' simulation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArcEmitter {
@@ -288,9 +338,6 @@ pub struct ArcEmitter {
     pub voxel: Option<VoxelLamp>,
     /// The texture scroll before and after the last tick.
     pub scroll: [f32; 2],
-    pub light_flicker: f32,
-    pub gain_flicker: f32,
-    pub pitch_flicker: f32,
     pub centre: Vec3,
     pub extent: Vec3,
     pub radius: f32,
@@ -308,7 +355,6 @@ pub struct ArcEmitter {
     pub frame: Quat,
     /// Characters already shocked (with [`SHOCK_ONCE`]).
     pub shocked: Vec<u64>,
-    pub lights: Vec<LightPoint>,
 }
 
 /// Up to this many light points.
@@ -360,9 +406,6 @@ impl ArcEmitter {
             light_kind: ArcLight::None,
             voxel: None,
             scroll: [0.0, 0.0],
-            light_flicker: 0.0,
-            gain_flicker: 0.0,
-            pitch_flicker: 0.0,
             centre: Vec3::ZERO,
             extent: Vec3::ZERO,
             radius: 0.0,
@@ -372,7 +415,6 @@ impl ArcEmitter {
             source_spheres: Vec::new(),
             frame: Quat::IDENTITY,
             shocked: Vec::new(),
-            lights: Vec::new(),
         }
     }
 
@@ -985,7 +1027,8 @@ impl ArcEmitter {
     /// emitter's frame, `fade` the node's fade, `to_world` the emitter's
     /// frame placed in the world.
     pub fn frame(
-        &mut self,
+        &self,
+        glow: &mut ArcGlow,
         alpha: f32,
         eye: Vec3,
         fade: f32,
@@ -1001,7 +1044,7 @@ impl ArcEmitter {
         let fill = (self.total as f32
             / (i64::from(self.segments) * self.tendrils.len() as i64) as f32)
             * 2.0;
-        for light in &mut self.lights {
+        for light in &mut glow.lights {
             light.weight = 0.0;
             light.count = 1;
         }
@@ -1010,35 +1053,35 @@ impl ArcEmitter {
             ..ArcFrame::default()
         };
         if matches!(self.light_kind, ArcLight::Voxel | ArcLight::Point) {
-            let f = self.light_flicker;
-            self.light_flicker = ((draws.unit() - 0.5) * 0.5 + f64::from(f)) as f32;
-            self.light_flicker = self.light_flicker.clamp(0.75, 1.2);
+            let f = glow.light_flicker;
+            glow.light_flicker = ((draws.unit() - 0.5) * 0.5 + f64::from(f)) as f32;
+            glow.light_flicker = glow.light_flicker.clamp(0.75, 1.2);
             out.light = if self.light_kind == ArcLight::Voxel {
-                (1.0 - fade) * self.light * fill * self.light_flicker * 1.5
+                (1.0 - fade) * self.light * fill * glow.light_flicker * 1.5
             } else {
-                self.light * fill * self.light_flicker
+                self.light * fill * glow.light_flicker
             };
         }
         if self.sound.is_some() {
-            let g = self.gain_flicker;
-            self.gain_flicker = ((draws.unit() - 0.5) * 0.2 + f64::from(g)) as f32;
-            self.gain_flicker = self.gain_flicker.clamp(0.5, 1.5);
-            out.gain = fill * fill * self.gain_flicker * self.volume;
-            let p = self.pitch_flicker;
-            self.pitch_flicker = ((draws.unit() - 0.5) * 0.05 + f64::from(p)) as f32;
-            self.pitch_flicker = self.pitch_flicker.clamp(0.8, 1.1);
-            out.pitch = (EPSILON < fill).then_some(fill * self.pitch_flicker * 0.5 + 0.5);
+            let g = glow.gain_flicker;
+            glow.gain_flicker = ((draws.unit() - 0.5) * 0.2 + f64::from(g)) as f32;
+            glow.gain_flicker = glow.gain_flicker.clamp(0.5, 1.5);
+            out.gain = fill * fill * glow.gain_flicker * self.volume;
+            let p = glow.pitch_flicker;
+            glow.pitch_flicker = ((draws.unit() - 0.5) * 0.05 + f64::from(p)) as f32;
+            glow.pitch_flicker = glow.pitch_flicker.clamp(0.8, 1.1);
+            out.pitch = (EPSILON < fill).then_some(fill * glow.pitch_flicker * 0.5 + 0.5);
         }
         out.scroll = self.scroll[1] * alpha + (1.0 - alpha) * self.scroll[0];
-        let (ribbon, life_sum) = self.ribbon(eye, &to_world);
+        let (ribbon, life_sum) = self.ribbon(glow, eye, &to_world);
         out.ribbon = ribbon;
         if self.light_kind == ArcLight::Points {
             let mut i = 0;
-            while i < self.lights.len() {
-                if 1.0 <= self.lights[i].weight {
+            while i < glow.lights.len() {
+                if 1.0 <= glow.lights[i].weight {
                     i += 1;
                 } else {
-                    self.lights.swap_remove(i);
+                    glow.lights.swap_remove(i);
                 }
             }
             out.light = (1.0 - fade) * life_sum * self.light;
@@ -1046,42 +1089,30 @@ impl ArcEmitter {
         out
     }
 
-    fn light_point(&mut self, at: Vec3, weight: f32) {
-        let weight = (2.0 - weight) * weight;
-        if self.lights.is_empty() {
-            self.lights.push(LightPoint {
-                at,
-                weight,
-                count: 1,
-            });
+    /// The ribbon's write to the tendrils: each drawn tendril's first point
+    /// is put back at its origin, as the original's draw does on the
+    /// emitter it shares with the simulation thread. The frame's draw
+    /// itself reads the origin without writing ([`Self::frame`]); this is
+    /// the write, which the frame posts to the simulation's next step.
+    pub fn settle_origins(&mut self) {
+        if self.ending && self.total == 0 {
             return;
         }
-        let mut nearest = None;
-        let mut best = 6400.0;
-        for (k, light) in self.lights.iter().enumerate() {
-            let d = dist_sq(light.at, at);
-            if d < best {
-                nearest = Some(k);
-                best = d;
+        for t in 0..self.tendrils.len() {
+            if self.tendrils[t].count < 2 || self.tendrils[t].life < self.branch_floor {
+                continue;
             }
-        }
-        if LIGHT_POINTS - 1 < self.lights.len() || best <= 1600.0 {
-            if let Some(k) = nearest {
-                let light = &mut self.lights[k];
-                light.count += 1;
-                light.at = lerp(light.at, at, 1.0 / light.count as f32);
-                light.weight += weight;
-            }
-        } else {
-            self.lights.push(LightPoint {
-                at,
-                weight,
-                count: 1,
-            });
+            let origin = self.origin_point(self.tendrils[t].origin);
+            self.tendrils[t].points[0] = origin;
         }
     }
 
-    fn ribbon(&mut self, eye: Vec3, to_world: &impl Fn(Vec3) -> Vec3) -> (ArcRibbon, f32) {
+    fn ribbon(
+        &self,
+        glow: &mut ArcGlow,
+        eye: Vec3,
+        to_world: &impl Fn(Vec3) -> Vec3,
+    ) -> (ArcRibbon, f32) {
         let capacity = ((self.segments * 4 + 2) * self.tendrils.len() as i32 * 3).max(0) as usize;
         let mut r = ArcRibbon {
             indices: vec![0; capacity],
@@ -1103,10 +1134,11 @@ impl ArcEmitter {
             let step = self.step;
             let first_quad = quads;
             let first_vertex = r.positions.len() as u16;
+            // The tendril's first point is drawn at its origin (the write
+            // itself is [`Self::settle_origins`]).
             let origin = self.origin_point(self.tendrils[t].origin);
-            self.tendrils[t].points[0] = origin;
-            let root = self.tendrils[t].points[0] + offset;
-            self.light_point(to_world(root), 1.0);
+            let root = origin + offset;
+            glow.light_point(to_world(root), 1.0);
             let mut b = Builder {
                 previous: root,
                 current: root,
@@ -1114,7 +1146,8 @@ impl ArcEmitter {
                 half: 0.0,
             };
             let count = self.tendrils[t].count as usize;
-            let points = self.tendrils[t].points[..count].to_vec();
+            let mut points = self.tendrils[t].points[..count].to_vec();
+            points[0] = origin;
             let width = self.width;
             let rounded = move |life: f32| (1.0 - (1.0 - life) * (1.0 - life)) * width;
             let mut narrow = rounded(life);
@@ -1135,7 +1168,7 @@ impl ArcEmitter {
                 b.half = narrow;
                 let at = points[i] + offset;
                 b.emit(at, eye, &mut r, &mut quads);
-                self.light_point(to_world(at), 1.0);
+                glow.light_point(to_world(at), 1.0);
                 b.u += half / (narrow + self.width);
             }
             b.emit(points[count - 1] + offset, eye, &mut r, &mut quads);
@@ -1273,9 +1306,9 @@ impl ArcEmitter {
 
     /// Leaves the world: the light (and its points) is freed and the hum
     /// stops.
-    pub fn remove_from_world(&mut self) -> ArcRemoval {
-        let lights = self.lights.len();
-        self.lights.clear();
+    pub fn remove_from_world(&mut self, glow: &mut ArcGlow) -> ArcRemoval {
+        let lights = glow.lights.len();
+        glow.lights.clear();
         self.in_world = false;
         ArcRemoval {
             sound: self.sound.is_some(),
@@ -1286,8 +1319,8 @@ impl ArcEmitter {
     /// Frees the emitter: it leaves the world, its sound is released and its
     /// shocked list and records are emptied. The strings the original
     /// releases are Exarust's own storage.
-    pub fn destroy(&mut self) -> ArcRemoval {
-        let removal = self.remove_from_world();
+    pub fn destroy(&mut self, glow: &mut ArcGlow) -> ArcRemoval {
+        let removal = self.remove_from_world(glow);
         self.tendrils.clear();
         self.shocked.clear();
         self.total = 0;
@@ -1644,7 +1677,14 @@ mod tests {
         }
         assert_eq!(arc.tendrils[0].count, 0);
         assert_eq!(arc.total, 0);
-        let frame = arc.frame(0.0, Vec3::Z, 0.0, |p| p, &mut draws);
+        let frame = arc.frame(
+            &mut ArcGlow::default(),
+            0.0,
+            Vec3::Z,
+            0.0,
+            |p| p,
+            &mut draws,
+        );
         assert!(frame.removed);
     }
 
@@ -1807,7 +1847,8 @@ mod tests {
         };
         let mut arc = ArcEmitter::allocate(1, 4, 1.0);
         arc.sound = Some("electricity01");
-        arc.lights.push(LightPoint {
+        let mut glow = ArcGlow::default();
+        glow.lights.push(LightPoint {
             at: Vec3::ZERO,
             weight: 1.0,
             count: 1,
@@ -1830,7 +1871,7 @@ mod tests {
         );
         assert!(arc.in_world);
         assert_eq!(arc.flags, 0, "the record flags are left alone");
-        let removal = arc.remove_from_world();
+        let removal = arc.remove_from_world(&mut glow);
         assert_eq!(
             removal,
             ArcRemoval {
@@ -1838,8 +1879,8 @@ mod tests {
                 lights: 1
             }
         );
-        assert!(arc.lights.is_empty() && !arc.in_world);
-        let teardown = arc.destroy();
+        assert!(glow.lights.is_empty() && !arc.in_world);
+        let teardown = arc.destroy(&mut glow);
         assert!(teardown.sound);
         assert!(arc.tendrils.is_empty());
         assert_eq!(arc.total, 0);
@@ -1857,12 +1898,13 @@ mod tests {
         arc.sound = Some("electricity01");
         arc.tendrils[0].count = 5;
         arc.total = 5;
-        let frame = arc.frame(0.5, Vec3::Z, 0.0, |p| p, &mut draws);
-        assert_eq!(arc.light_flicker, 0.75);
+        let mut glow = ArcGlow::default();
+        let frame = arc.frame(&mut glow, 0.5, Vec3::Z, 0.0, |p| p, &mut draws);
+        assert_eq!(glow.light_flicker, 0.75);
         assert_eq!(frame.fill, 1.0);
         assert_eq!(frame.light, 10.0 * 0.75 * 1.5);
-        assert_eq!(arc.gain_flicker, 0.5);
-        assert_eq!(arc.pitch_flicker, 0.8);
+        assert_eq!(glow.gain_flicker, 0.5);
+        assert_eq!(glow.pitch_flicker, 0.8);
         assert!((frame.gain - 0.05).abs() < 1e-7);
         assert!((frame.pitch.expect("a fill above zero") - 0.9).abs() < 1e-6);
     }
@@ -1885,7 +1927,8 @@ mod tests {
             t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
         }
         arc.total = 3;
-        let frame = arc.frame(1.0, Vec3::Z, 0.0, |p| p, &mut draws);
+        let mut glow = ArcGlow::default();
+        let frame = arc.frame(&mut glow, 1.0, Vec3::Z, 0.0, |p| p, &mut draws);
         let r = &frame.ribbon;
         // Two pairs a point: 3 points make 6 pairs.
         assert_eq!(r.positions.len(), 12);
@@ -1899,20 +1942,48 @@ mod tests {
         // The ribbon spans the width across the line from the eye.
         assert!((r.positions[0] - Vec3::new(0.0, 2.0, 0.0)).length() < 1e-5);
         assert!((r.positions[1] - Vec3::new(0.0, -2.0, 0.0)).length() < 1e-5);
-        assert!(!arc.lights.is_empty());
+        assert!(!glow.lights.is_empty());
+    }
+
+    /// The draw writes nothing; the origins it draws from are settled on
+    /// the emitter by the write the frame posts.
+    #[test]
+    fn the_draw_reads_the_origins_and_the_settle_writes_them() {
+        let mut draws = Fixed::new(&[0.5], &[1]);
+        let mut arc = ArcEmitter::allocate(1, 4, 1.0);
+        arc.source = Vec3::new(1.0, 2.0, 3.0);
+        let t = &mut arc.tendrils[0];
+        t.count = 3;
+        for k in 0..3 {
+            t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+        }
+        arc.total = 3;
+        let before = arc.clone();
+        arc.frame(
+            &mut ArcGlow::default(),
+            1.0,
+            Vec3::Z,
+            0.0,
+            |p| p,
+            &mut draws,
+        );
+        assert_eq!(arc, before);
+        arc.settle_origins();
+        assert_eq!(arc.tendrils[0].points[0], Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(arc.tendrils[0].points[1], before.tendrils[0].points[1]);
     }
 
     #[test]
     fn light_points_merge_within_forty_centimetres() {
-        let mut arc = ArcEmitter::allocate(1, 4, 1.0);
-        arc.light_point(Vec3::ZERO, 1.0);
-        arc.light_point(Vec3::new(30.0, 0.0, 0.0), 1.0);
-        assert_eq!(arc.lights.len(), 1);
-        assert_eq!(arc.lights[0].count, 2);
-        assert_eq!(arc.lights[0].at, Vec3::new(15.0, 0.0, 0.0));
-        assert_eq!(arc.lights[0].weight, 2.0);
-        arc.light_point(Vec3::new(100.0, 0.0, 0.0), 1.0);
-        assert_eq!(arc.lights.len(), 2);
+        let mut glow = ArcGlow::default();
+        glow.light_point(Vec3::ZERO, 1.0);
+        glow.light_point(Vec3::new(30.0, 0.0, 0.0), 1.0);
+        assert_eq!(glow.lights.len(), 1);
+        assert_eq!(glow.lights[0].count, 2);
+        assert_eq!(glow.lights[0].at, Vec3::new(15.0, 0.0, 0.0));
+        assert_eq!(glow.lights[0].weight, 2.0);
+        glow.light_point(Vec3::new(100.0, 0.0, 0.0), 1.0);
+        assert_eq!(glow.lights.len(), 2);
     }
 
     #[test]

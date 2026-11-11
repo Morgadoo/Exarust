@@ -258,6 +258,7 @@ pub struct BurningGrip(pub bool);
 pub(crate) fn choose_held_movesets(
     mut bodies: Query<
         (
+            Entity,
             Ref<Hands>,
             &mut HeldMoveset,
             Option<&mut Animator>,
@@ -272,8 +273,9 @@ pub(crate) fn choose_held_movesets(
             Added<exa_combat::Fighter>,
         )>,
     >,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
-    for (hands, mut held, anim, attacker, modifier, burning, fighter) in &mut bodies {
+    for (entity, hands, mut held, anim, attacker, modifier, burning, fighter) in &mut bodies {
         let redressed = hands.is_changed() && !hands.is_added();
         // A shield's style is the holder's techniques'.
         let styled = Hands {
@@ -297,10 +299,19 @@ pub(crate) fn choose_held_movesets(
             }
             chosen.config = chosen.config.with(MovesetConfig(modifier.0));
         }
+        // The animator is the simulation's (its clock and clips step
+        // there): the new config lands on its copy at the next step, not as
+        // the frame's whole animator, which a free-running simulation's
+        // newer steps would lose.
         if let Some(mut anim) = anim
             && anim.config != chosen.config
         {
-            anim.config = chosen.config;
+            let config = chosen.config;
+            let switch = move |anim: &mut Animator| anim.config = config;
+            match fixed.as_deref_mut() {
+                Some(fixed) => fixed.write(entity, &mut anim, switch),
+                None => switch(&mut anim),
+            }
         }
         held.set_if_neq(chosen);
         if let Some(mut attacker) = attacker {

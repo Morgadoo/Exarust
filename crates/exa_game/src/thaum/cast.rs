@@ -737,40 +737,99 @@ struct CastContext {
     barricade_ground: Option<Option<GroundHit>>,
 }
 
-/// One caster's bar command.
+/// What the frame reads for a bar's Use when the key is pressed: the
+/// player's picks under the cursor and the GUI's state. The cast itself
+/// runs on the simulation's data ([`cast_from_bar`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BarAim {
+    /// The hand holds something (the controls are busy).
+    busy: bool,
+    /// The throwable body and part under the cursor.
+    throw_pick: Option<Entity>,
+    /// The nearest-mesh pick's segment meets a running barricade.
+    cursor_on_barricade: bool,
+    /// The ground pick under the cursor (cm), every node accepted.
+    cursor: Option<CursorHit>,
+    /// The barricade's ground pick ([`CastPlace::barricade_ground`]).
+    barricade_ground: Option<Option<GroundHit>>,
+    /// The aim plane's point under the cursor (m).
+    ground: Option<Vec3>,
+    /// The mind pick and the dead powers' pick.
+    mind_pick: Option<Entity>,
+    dead_pick: Option<Entity>,
+    /// The spirit screen's state, if the screen exists.
+    spirit_screen: Option<i32>,
+}
+
+/// The frame's side of a bar's cast: what only the frame does with its
+/// result (the GUI's sound, the mind sounds and music, the spirit body's
+/// request, the control's end). Behind the bridge the simulation sends it
+/// back after its step ([`exa_physics::sim_app::FrameCommands::send`]).
+#[derive(Debug, Default)]
+struct BarAnswer {
+    screen_sound: Option<super::tree::TreeSound>,
+    end_control: bool,
+    mind_sounds: Vec<crate::mind::casts::MindSound>,
+    music: Option<exa_audio::MusicOverlay>,
+    spirit: Option<crate::mind::runtime::SpiritBodyAsked>,
+}
+
+impl BarAnswer {
+    /// Runs the answer on the frame's world.
+    fn deliver(self, world: &mut World) {
+        if let Some(sound) = self.screen_sound
+            && let Some(mut screen) = world.get_resource_mut::<PowerScreen>()
+        {
+            screen.sound = Some(sound);
+        }
+        for sound in self.mind_sounds {
+            info!("mind sound: {} at volume {}", sound.name, sound.volume);
+            world.write_message(exa_audio::PointSounded {
+                name: sound.name.to_string(),
+                position: Vec3::ZERO,
+                volume: sound.volume,
+                pitch: 1.0,
+                flags: crate::mind::runtime::MIND_SOUND_FLAGS,
+            });
+        }
+        if let Some(music) = self.music {
+            world.write_message(music);
+        }
+        if let Some(spirit) = self.spirit {
+            world.write_message(spirit);
+        }
+        if self.end_control {
+            info!("power cast while controlling another body: the control ends");
+            crate::mind::runtime::end_control(world);
+        }
+    }
+}
+
+/// The bar's commands for each caster, as the original's key handler runs
+/// its cast entry on the main thread, writing the body's power state
+/// directly; the simulation thread reads it in its next step.
+///
+/// - The bar's toggle, pick and step change the caster's bar and record
+///   only: each is written on the frame's copy at once and the same write
+///   is queued for the simulation's copy, run at the start of its next step
+///   ([`exa_physics::sim_app::FixedCommands::write`]).
+/// - A Use reads the frame's picks ([`BarAim`]) and the cast itself
+///   ([`cast_from_bar`]) is posted to the simulation's next step: the
+///   front ends, the active list, the focus and the Mind casts' writes to
+///   both bodies' minds run on the simulation's newest values. Behind a
+///   free-running simulation a whole frame copy of the caster or the minds,
+///   based on an older step, would otherwise undo the simulation's newer
+///   writes. In one world the cast runs at once.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn run_bar_commands(
     mut commands: Commands,
     mut commands_in: MessageReader<BarCommand>,
-    mut casters: Query<(
-        Entity,
-        &mut PowerCaster,
-        Option<&Condition>,
-        Option<&SwingState>,
-        Option<&Locomotion>,
-        Option<&Locomotor>,
-        Option<&mut Animator>,
-        Option<&HeldMoveset>,
-        Option<&Ragdoll>,
-    )>,
+    mut casters: Query<&mut PowerCaster>,
     hand: Option<Res<Hand>>,
     ground: Option<Res<CursorGround>>,
     throw_pick: Option<Res<super::throw_live::ThrowPick>>,
-    (physics, statics): (
-        Option<Res<exa_physics::collision_share::FramePhysics>>,
-        Option<Res<exa_physics::StaticColliders>>,
-    ),
     ticks: Option<Res<BodyTicks>>,
-    motions: Option<Res<Motions>>,
-    mut draws: ResMut<FrameEffectDraws>,
-    mut roll: ResMut<FrameEffectRoll>,
     mut screen: Option<ResMut<PowerScreen>>,
-    weapons: Query<(
-        Entity,
-        &exa_combat::Blade,
-        Option<&Ragdoll>,
-        Option<&GlobalTransform>,
-    )>,
     mut mind: MindBar,
     picker: super::cast_pick::CastPicker,
     walls: Query<&super::live::LiveBarricade>,
@@ -791,21 +850,10 @@ pub(crate) fn run_bar_commands(
             });
             continue;
         }
-        let Ok((
-            entity,
-            mut caster,
-            condition,
-            swing,
-            locomotion,
-            locomotor,
-            animator,
-            held,
-            ragdoll,
-        )) = casters.get_mut(command.caster)
-        else {
+        let entity = command.caster;
+        let Ok(mut caster) = casters.get_mut(entity) else {
             continue;
         };
-        let caster = &mut *caster;
         // While the tree form is open, its own key handler owns the bar's
         // toggle and step keys.
         if screen.as_deref().is_some_and(|s| s.open)
@@ -813,53 +861,62 @@ pub(crate) fn run_bar_commands(
         {
             continue;
         }
+        let mut fixed = mind.fixed.as_deref_mut();
         match command.action {
             BarAction::Toggle => {
-                if caster.bar_open {
-                    caster.bar.store(&mut caster.record, false);
-                    caster.bar_open = false;
-                } else if !caster.known.is_empty() {
-                    let running: Vec<RunningPower> =
-                        caster.active.iter().map(ActiveEntry::running).collect();
-                    let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-                    caster.bar.load_running(&caster.record, &running, now);
-                    caster.bar_open = true;
-                }
+                let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+                bar_write(
+                    fixed,
+                    entity,
+                    &mut caster,
+                    move |caster: &mut PowerCaster| {
+                        if caster.bar_open {
+                            caster.bar.store(&mut caster.record, false);
+                            caster.bar_open = false;
+                        } else if !caster.known.is_empty() {
+                            let running: Vec<RunningPower> =
+                                caster.active.iter().map(ActiveEntry::running).collect();
+                            caster.bar.load_running(&caster.record, &running, now);
+                            caster.bar_open = true;
+                        }
+                    },
+                );
             }
             BarAction::Pick(slot) => {
-                if caster.bar_open && caster.bar.select(slot) {
-                    caster.bar.store(&mut caster.record, false);
-                    if let Some(screen) = screen.as_deref_mut() {
-                        screen.sound = Some(crate::thaum::tree::SLOT_SELECT_SOUND);
-                    }
+                let picked = bar_write(
+                    fixed.as_deref_mut(),
+                    entity,
+                    &mut caster,
+                    move |caster: &mut PowerCaster| {
+                        let picked = caster.bar_open && caster.bar.select(slot);
+                        if picked {
+                            caster.bar.store(&mut caster.record, false);
+                        }
+                        picked
+                    },
+                );
+                if picked && let Some(screen) = screen.as_deref_mut() {
+                    screen.sound = Some(crate::thaum::tree::SLOT_SELECT_SOUND);
                 }
             }
             BarAction::Step(direction) => {
-                if caster.bar.cycle(direction, Some(&mut caster.record)) {
-                    caster.bar.store(&mut caster.record, false);
-                    if let Some(screen) = screen.as_deref_mut() {
-                        screen.sound = Some(crate::thaum::tree::SLOT_SELECT_SOUND);
-                    }
+                let stepped = bar_write(
+                    fixed.as_deref_mut(),
+                    entity,
+                    &mut caster,
+                    move |caster: &mut PowerCaster| {
+                        let stepped = caster.bar.cycle(direction, Some(&mut caster.record));
+                        if stepped {
+                            caster.bar.store(&mut caster.record, false);
+                        }
+                        stepped
+                    },
+                );
+                if stepped && let Some(screen) = screen.as_deref_mut() {
+                    screen.sound = Some(crate::thaum::tree::SLOT_SELECT_SOUND);
                 }
             }
             BarAction::Use => {
-                refresh_body(
-                    &mut caster.body,
-                    condition,
-                    swing,
-                    locomotion,
-                    locomotor,
-                    held,
-                );
-                let busy = hand
-                    .as_deref()
-                    .is_some_and(|h| h.holding != Holding::Nothing);
-                let possessing = caster.body.status_bits & CONTROLLING != 0;
-                let picked = throw_pick.as_deref().and_then(|p| p.0);
-                let kinesis_holds = caster.active.iter().any(|entry| {
-                    matches!(&entry.class, ActiveClass::Kinesis(k)
-                        if entry.state != ENDING && k.target.is_some())
-                });
                 // The barricade's cast asks the nearest-mesh pick: the
                 // segment from the eye to its point meeting a running
                 // barricade's node bounds ends that barricade.
@@ -880,13 +937,6 @@ pub(crate) fn run_bar_commands(
                                 })
                             })
                         });
-                let world = ForceWorld {
-                    controls_busy: busy,
-                    possessing,
-                    cursor_on_barricade,
-                    throw_pick: picked.is_some(),
-                    kinesis_holds,
-                };
                 // The long door and the summoning take the ground pick
                 // under the cursor, every node accepted. Without a cursor
                 // ray (a scripted `--debug-cast` without `--cursor`) the
@@ -908,156 +958,6 @@ pub(crate) fn run_bar_commands(
                     "cast picks: ground {:?}, on a barricade {cursor_on_barricade}",
                     cursor.map(|c| (c.point(), c.exact))
                 );
-                let aim = DisplacementAim {
-                    player: true,
-                    cursor,
-                    possessing,
-                };
-                let slot = chosen_slot(caster);
-                let Some(slot) = slot else {
-                    // A digit on the already chosen slot unpicks it (the
-                    // bar's select toggles), which leaves nothing to cast.
-                    info!("power cast: no slot chosen");
-                    continue;
-                };
-                let word_value = caster.record.slots[slot];
-                if word_value & word::INDEX == 0 {
-                    continue;
-                }
-                let asked = word_value & ID_MASK;
-                let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-                let mut tree = TreeScreen::empty(DOMAIN_FORCE, TreeMode::Play);
-                tree.bar_open = caster.bar_open;
-                let mut start = None;
-                let mut result_code = 0;
-                let mut mind_outcome = None;
-                let mut mind_ai = Vec::new();
-                let mind_scene = crate::mind::casts::MindScene {
-                    now_ms: now,
-                    real_ms: now,
-                    relation: 0.0,
-                    spirit_screen: mind.control.spirit_screen.map(|s| s.state),
-                    loud_music: false,
-                };
-                // The dead powers pick with the collapsed allowed.
-                let mind_target = match asked & ID_MASK {
-                    crate::mind::casts::RAISE_DEAD | crate::mind::casts::COMMAND_DEAD => {
-                        mind.dead_pick.0
-                    }
-                    _ => mind.pick.0,
-                };
-                // The casts read the target's condition, rules, feral level
-                // and health off its body.
-                let mind_live = mind_target.and_then(|t| {
-                    mind.live
-                        .get(t)
-                        .ok()
-                        .map(|(c, f, d, b)| crate::mind::runtime::MindLive::of(c, f, d, b))
-                });
-                let entry = tree.cast_slot(
-                    &mut caster.record,
-                    &mut caster.bar,
-                    Some(slot),
-                    &mut caster.body,
-                    now,
-                    |domain, asked, body| {
-                        if domain == DOMAIN_MIND {
-                            let answer = crate::mind::runtime::cast_mind(
-                                asked,
-                                body,
-                                entity,
-                                mind_target,
-                                mind_live,
-                                &mut mind.minds,
-                                &mind_scene,
-                            );
-                            mind_outcome = answer.outcome;
-                            mind_ai = answer.ai;
-                            result_code = answer.code;
-                            return answer.code;
-                        }
-                        let (result, begun) = dispatch_domain(domain, asked, body, &world, &aim);
-                        start = begun;
-                        result_code = result;
-                        result
-                    },
-                );
-                caster.bar_open = tree.bar_open;
-                caster.last_result = result_code;
-                if let Some(sound) = entry.sound {
-                    debug!("cast failed: {}", sound.name);
-                }
-                if entry.end_control {
-                    info!("power cast while controlling another body: the control ends");
-                    commands.queue(|world: &mut World| {
-                        crate::mind::runtime::end_control(world);
-                    });
-                }
-                if let Some(queued) = entry.queued_slot {
-                    debug!("cast queued on slot {queued}");
-                }
-                info!(
-                    "power cast {asked:#x} from slot {slot}: result {result_code} \
-                     (weapon class {:#x}, focus {:.3}, slots {}, condition {:#x})",
-                    caster.body.weapon_class,
-                    caster.body.focus,
-                    caster.body.slots,
-                    caster.body.condition
-                );
-                if let Some(outcome) = mind_outcome {
-                    info!(
-                        "mind cast {asked:#x} at {mind_target:?}: code {}, sound {:?}, request {:?}",
-                        outcome.code, outcome.sound, outcome.request
-                    );
-                    if let Some(sound) = outcome.sound {
-                        crate::mind::runtime::play_mind_sound(&mut mind.sounds, sound);
-                    }
-                    if let crate::mind::casts::MindRequest::SpiritForm { music_volume } =
-                        outcome.request
-                    {
-                        mind.music.write(exa_audio::MusicOverlay::In {
-                            name: crate::mind::casts::SPIRIT_MUSIC.to_string(),
-                            volume: music_volume,
-                        });
-                        // The spirit screen's start plays its own sound.
-                        crate::mind::runtime::play_mind_sound(
-                            &mut mind.sounds,
-                            crate::mind::casts::MindSound {
-                                name: crate::mind::sight::SPIRIT_SCREEN_SOUND,
-                                volume: crate::mind::sight::SPIRIT_SCREEN_VOLUME,
-                            },
-                        );
-                    }
-                    if let (crate::mind::casts::MindRequest::Raised { revival }, Some(target)) =
-                        (outcome.request, mind_target)
-                    {
-                        crate::mind::runtime::post_raise(
-                            mind.fixed.as_deref_mut(),
-                            &mut commands,
-                            target,
-                            revival,
-                        );
-                    }
-                    // The cast's changes to its target's AI reach the live
-                    // brain after the raise.
-                    if let Some(target) = mind_target {
-                        crate::mind::runtime::post_mind_ai(
-                            mind.fixed.as_deref_mut(),
-                            &mut commands,
-                            target,
-                            std::mem::take(&mut mind_ai),
-                        );
-                    }
-                    if crate::mind::runtime::spirit_asked(&outcome) {
-                        let feet = mind
-                            .places
-                            .get(entity)
-                            .map_or(Vec3::ZERO, GlobalTransform::translation);
-                        let yaw = locomotor.map_or(0.0, |l| l.yaw);
-                        mind.spirits
-                            .write(crate::mind::runtime::spirit_request(feet, yaw, entity));
-                    }
-                }
                 // The barricade's placement takes the ground pick under the
                 // cursor, its accept test taking the nodes without an
                 // object; without a cursor ray the aim plane's point stands
@@ -1072,42 +972,321 @@ pub(crate) fn run_bar_commands(
                     None
                 };
                 debug!("cast picks: the barricade's ground {barricade_ground:?}");
-                let place = CastPlace {
-                    now,
-                    ragdoll,
-                    yaw: locomotor.map_or(0.0, |l| l.yaw),
-                    cursor: ground.as_deref().and_then(|g| g.0).map(|p| p * CM),
-                    clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
-                    target: None,
-                    // The creators place the domes on the body's standing
-                    // point, its transform's place (as the duellists' casts
-                    // take it), not its first part.
-                    standing: mind.places.get(entity).ok().map(|at| at.translation() * CM),
-                    throw_pick: picked,
+                let aim = BarAim {
+                    busy: hand
+                        .as_deref()
+                        .is_some_and(|h| h.holding != Holding::Nothing),
+                    throw_pick: throw_pick.as_deref().and_then(|p| p.0),
+                    cursor_on_barricade,
+                    cursor,
                     barricade_ground,
+                    ground: ground.as_deref().and_then(|g| g.0),
+                    mind_pick: mind.pick.0,
+                    dead_pick: mind.dead_pick.0,
+                    spirit_screen: mind.control.spirit_screen.map(|s| s.state),
                 };
-                let armed = weapon_arcs_of(entity, &weapons);
-                begin_cast(
-                    &mut commands,
-                    entity,
-                    caster,
-                    entry.result > 0,
-                    start,
-                    &place,
-                    (physics.as_deref().map(|p| &p.0), statics.as_deref()),
-                    &armed,
-                    &mut draws,
-                    &mut roll,
-                );
-                if let Some(screen) = screen.as_deref_mut() {
-                    if let Some(sound) = entry.sound {
-                        screen.sound = Some(sound);
-                    }
-                    store_on_screen(screen, caster);
+                match fixed.filter(|f| f.bridged()) {
+                    Some(fixed) => fixed.post(move |world: &mut World| {
+                        cast_from_bar(world, entity, aim, true);
+                    }),
+                    None => commands.queue(move |world: &mut World| {
+                        cast_from_bar(world, entity, aim, false);
+                    }),
                 }
             }
         }
     }
+}
+
+/// A bar write to the caster ([`run_bar_commands`]): behind the bridge on
+/// the frame's copy at once and on the simulation's at its next step; in
+/// one world, or without the queue, a plain write.
+fn bar_write<R>(
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
+    entity: Entity,
+    caster: &mut Mut<PowerCaster>,
+    write: impl Fn(&mut PowerCaster) -> R + Send + Sync + 'static,
+) -> R {
+    match fixed {
+        Some(fixed) => fixed.write(entity, caster, write),
+        None => write(caster),
+    }
+}
+
+/// A bar's Use on the world that steps the powers: behind the bridge the
+/// simulation's, at the start of its next step (`in_step`), where the
+/// frame's other changes of that frame have landed already; in one world
+/// the frame's, at once. What only the frame does with the result goes
+/// back to it ([`BarAnswer`]).
+pub(crate) fn cast_from_bar(world: &mut World, entity: Entity, aim: BarAim, in_step: bool) {
+    let answer = match world.run_system_cached_with(cast_bar_slot, (entity, aim, in_step)) {
+        Ok(answer) => answer,
+        Err(e) => {
+            warn!("bar cast: {e}");
+            return;
+        }
+    };
+    let Some(answer) = answer else {
+        return;
+    };
+    if in_step
+        && let Some(mut frame) = world.get_resource_mut::<exa_physics::sim_app::FrameCommands>()
+    {
+        frame.send(move |world: &mut World| answer.deliver(world));
+        return;
+    }
+    answer.deliver(world);
+}
+
+/// What a bar's cast reads off the caster's body.
+type BarCaster = (
+    &'static mut PowerCaster,
+    Option<&'static Condition>,
+    Option<&'static SwingState>,
+    Option<&'static Locomotion>,
+    Option<&'static Locomotor>,
+    Option<&'static Animator>,
+    Option<&'static HeldMoveset>,
+    Option<&'static Ragdoll>,
+);
+
+/// One bar Use: the original's bar cast entry on the caster's slot, the
+/// domain's front end (a Mind word runs its cast at the picked body), and
+/// the started power's class. Behind the bridge it runs in the
+/// simulation's world with that world's level and random streams (the
+/// AI's casts draw from the same streams there).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn cast_bar_slot(
+    In((entity, aim, in_step)): In<(Entity, BarAim, bool)>,
+    mut commands: Commands,
+    mut casters: Query<BarCaster>,
+    (physics, frame_physics, statics): (
+        Option<Res<Physics>>,
+        Option<Res<exa_physics::collision_share::FramePhysics>>,
+        Option<Res<exa_physics::StaticColliders>>,
+    ),
+    ticks: Option<Res<BodyTicks>>,
+    motions: Option<Res<Motions>>,
+    (mut draws, mut roll, mut frame_draws, mut frame_roll): (
+        Option<ResMut<EffectDraws>>,
+        Option<ResMut<EffectRoll>>,
+        Option<ResMut<FrameEffectDraws>>,
+        Option<ResMut<FrameEffectRoll>>,
+    ),
+    weapons: Query<(
+        Entity,
+        &exa_combat::Blade,
+        Option<&Ragdoll>,
+        Option<&GlobalTransform>,
+    )>,
+    mut minds: Query<&mut crate::mind::runtime::MindBody>,
+    live: Query<MindLiveData>,
+    places: Query<&GlobalTransform>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+) -> Option<BarAnswer> {
+    let Ok((mut caster, condition, swing, locomotion, locomotor, animator, held, ragdoll)) =
+        casters.get_mut(entity)
+    else {
+        return None;
+    };
+    let caster = &mut *caster;
+    let mut answer = BarAnswer::default();
+    refresh_body(
+        &mut caster.body,
+        condition,
+        swing,
+        locomotion,
+        locomotor,
+        held,
+    );
+    let possessing = caster.body.status_bits & CONTROLLING != 0;
+    let kinesis_holds = caster.active.iter().any(|entry| {
+        matches!(&entry.class, ActiveClass::Kinesis(k)
+            if entry.state != ENDING && k.target.is_some())
+    });
+    let world = ForceWorld {
+        controls_busy: aim.busy,
+        possessing,
+        cursor_on_barricade: aim.cursor_on_barricade,
+        throw_pick: aim.throw_pick.is_some(),
+        kinesis_holds,
+    };
+    let displacement_aim = DisplacementAim {
+        player: true,
+        cursor: aim.cursor,
+        possessing,
+    };
+    let Some(slot) = chosen_slot(caster) else {
+        // A digit on the already chosen slot unpicks it (the bar's select
+        // toggles), which leaves nothing to cast.
+        info!("power cast: no slot chosen");
+        return None;
+    };
+    let word_value = caster.record.slots[slot];
+    if word_value & word::INDEX == 0 {
+        return None;
+    }
+    let asked = word_value & ID_MASK;
+    let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+    let mut tree = TreeScreen::empty(DOMAIN_FORCE, TreeMode::Play);
+    tree.bar_open = caster.bar_open;
+    let mut start = None;
+    let mut result_code = 0;
+    let mut mind_outcome = None;
+    let mut mind_ai = Vec::new();
+    let mind_scene = crate::mind::casts::MindScene {
+        now_ms: now,
+        real_ms: now,
+        relation: 0.0,
+        spirit_screen: aim.spirit_screen,
+        loud_music: false,
+    };
+    // The dead powers pick with the collapsed allowed.
+    let mind_target = match asked & ID_MASK {
+        crate::mind::casts::RAISE_DEAD | crate::mind::casts::COMMAND_DEAD => aim.dead_pick,
+        _ => aim.mind_pick,
+    };
+    // The casts read the target's condition, rules, feral level and health
+    // off its body.
+    let mind_live = mind_target.and_then(|t| {
+        live.get(t)
+            .ok()
+            .map(|(c, f, d, b)| crate::mind::runtime::MindLive::of(c, f, d, b))
+    });
+    let entry = tree.cast_slot(
+        &mut caster.record,
+        &mut caster.bar,
+        Some(slot),
+        &mut caster.body,
+        now,
+        |domain, asked, body| {
+            if domain == DOMAIN_MIND {
+                let reply = crate::mind::runtime::cast_mind(
+                    asked,
+                    body,
+                    entity,
+                    mind_target,
+                    mind_live,
+                    &mut minds,
+                    &mind_scene,
+                );
+                mind_outcome = reply.outcome;
+                mind_ai = reply.ai;
+                result_code = reply.code;
+                return reply.code;
+            }
+            let (result, begun) = dispatch_domain(domain, asked, body, &world, &displacement_aim);
+            start = begun;
+            result_code = result;
+            result
+        },
+    );
+    caster.bar_open = tree.bar_open;
+    caster.last_result = result_code;
+    if let Some(sound) = entry.sound {
+        debug!("cast failed: {}", sound.name);
+    }
+    answer.screen_sound = entry.sound;
+    answer.end_control = entry.end_control;
+    if let Some(queued) = entry.queued_slot {
+        debug!("cast queued on slot {queued}");
+    }
+    info!(
+        "power cast {asked:#x} from slot {slot}: result {result_code} \
+         (weapon class {:#x}, focus {:.3}, slots {}, condition {:#x})",
+        caster.body.weapon_class, caster.body.focus, caster.body.slots, caster.body.condition
+    );
+    if let Some(outcome) = mind_outcome {
+        info!(
+            "mind cast {asked:#x} at {mind_target:?}: code {}, sound {:?}, request {:?}",
+            outcome.code, outcome.sound, outcome.request
+        );
+        answer.mind_sounds.extend(outcome.sound);
+        if let crate::mind::casts::MindRequest::SpiritForm { music_volume } = outcome.request {
+            answer.music = Some(exa_audio::MusicOverlay::In {
+                name: crate::mind::casts::SPIRIT_MUSIC.to_string(),
+                volume: music_volume,
+            });
+            // The spirit screen's start plays its own sound.
+            answer.mind_sounds.push(crate::mind::casts::MindSound {
+                name: crate::mind::sight::SPIRIT_SCREEN_SOUND,
+                volume: crate::mind::sight::SPIRIT_SCREEN_VOLUME,
+            });
+        }
+        // In the step the raise and the AI changes run right after the
+        // cast, on this world; in one world they are posted to the next
+        // fixed step as before.
+        let post = if in_step { None } else { fixed.as_deref_mut() };
+        if let (crate::mind::casts::MindRequest::Raised { revival }, Some(target)) =
+            (outcome.request, mind_target)
+        {
+            crate::mind::runtime::post_raise(post, &mut commands, target, revival);
+        }
+        // The cast's changes to its target's AI reach the live brain after
+        // the raise.
+        if let Some(target) = mind_target {
+            let post = if in_step { None } else { fixed.as_deref_mut() };
+            crate::mind::runtime::post_mind_ai(
+                post,
+                &mut commands,
+                target,
+                std::mem::take(&mut mind_ai),
+            );
+        }
+        if crate::mind::runtime::spirit_asked(&outcome) {
+            let feet = places
+                .get(entity)
+                .map_or(Vec3::ZERO, GlobalTransform::translation);
+            let yaw = locomotor.map_or(0.0, |l| l.yaw);
+            answer.spirit = Some(crate::mind::runtime::spirit_request(feet, yaw, entity));
+        }
+    }
+    let place = CastPlace {
+        now,
+        ragdoll,
+        yaw: locomotor.map_or(0.0, |l| l.yaw),
+        cursor: aim.ground.map(|p| p * CM),
+        clip_ms: shot_clip_ms(motions.as_deref(), animator),
+        target: None,
+        // The creators place the domes on the body's standing point, its
+        // transform's place (as the duellists' casts take it), not its
+        // first part.
+        standing: places.get(entity).ok().map(|at| at.translation() * CM),
+        throw_pick: aim.throw_pick,
+        barricade_ground: aim.barricade_ground,
+    };
+    let armed = weapon_arcs_of(entity, &weapons);
+    // The step's level and streams; in one world the frame's, as before.
+    let level: Level = if in_step {
+        (physics.as_deref(), statics.as_deref())
+    } else {
+        (frame_physics.as_deref().map(|p| &p.0), statics.as_deref())
+    };
+    let streams = if in_step {
+        draws.as_deref_mut().zip(roll.as_deref_mut())
+    } else {
+        frame_draws
+            .as_deref_mut()
+            .map(|d| &mut d.0)
+            .zip(frame_roll.as_deref_mut().map(|r| &mut r.0))
+    };
+    let Some((draws, roll)) = streams else {
+        warn!("bar cast: no effect streams on this world");
+        return Some(answer);
+    };
+    begin_cast(
+        &mut commands,
+        entity,
+        caster,
+        entry.result > 0,
+        start,
+        &place,
+        level,
+        &armed,
+        draws,
+        roll,
+    );
+    Some(answer)
 }
 
 /// What a Mind cast reads off its target's body ([`crate::mind::runtime::MindLive`]).
@@ -1118,20 +1297,15 @@ type MindLiveData = (
     Option<&'static exa_physics::body::Ragdoll>,
 );
 
-/// What the bar's Mind casts read and write: the bodies' minds, the
-/// mind pick, the runtime's state, the spirit-body request and the bodies'
-/// places.
+/// What the bar's frame side reads of the minds: the bodies' minds (the
+/// control's end on a handed-over body), the picks, the runtime's state
+/// and the queue the cast is posted to.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct MindBar<'w, 's> {
-    minds: Query<'w, 's, &'static mut crate::mind::runtime::MindBody>,
+    minds: Query<'w, 's, &'static crate::mind::runtime::MindBody>,
     pick: Res<'w, crate::mind::runtime::MindPick>,
     dead_pick: Res<'w, crate::mind::runtime::MindDeadPick>,
-    sounds: MessageWriter<'w, exa_audio::PointSounded>,
-    music: MessageWriter<'w, exa_audio::MusicOverlay>,
     control: Res<'w, crate::mind::runtime::MindControl>,
-    spirits: MessageWriter<'w, crate::mind::runtime::SpiritBodyAsked>,
-    places: Query<'w, 's, &'static GlobalTransform>,
-    live: Query<'w, 's, MindLiveData>,
     fixed: Option<ResMut<'w, exa_physics::sim_app::FixedCommands>>,
 }
 
@@ -3248,17 +3422,6 @@ fn known_from(record: &PowerRecord) -> Vec<KnownPower> {
             word: KNOWN_WORD,
         })
         .collect()
-}
-
-/// Put a caster's bar and record on the screen resource.
-fn store_on_screen(screen: &mut PowerScreen, caster: &PowerCaster) {
-    if screen.open {
-        return;
-    }
-    screen.bar = caster.bar.clone();
-    screen.bar_open = caster.bar_open;
-    screen.record = caster.record.clone();
-    screen.dirty = true;
 }
 
 /// A body a test or a debug flag starts with no powers.
