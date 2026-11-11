@@ -61,10 +61,34 @@ background window uses winit's low-power reactive update, woken by the
 window's own events and otherwise every 32 ms (unattended screenshot and
 fixed-frame runs keep running at full speed). The rest of the tick's work
 is Bevy's schedules: the fixed 83 Hz ticks run up to four steps behind a
-slow frame (`exa_physics::MAX_STEPS_BEHIND`, 48 ms), and the timer table,
-the deferred-call ring and the redraw-driven wait are engine-internal in
-the original, modelled in `exa_game::frame` and not needed by Exarust's
-event-driven winit loop.
+slow frame (`exa_physics::MAX_STEPS_BEHIND`, 48 ms); the deferred-call
+ring and the redraw-driven wait are engine-internal in the original,
+modelled in `exa_game::frame` and not needed by Exarust's event-driven
+winit loop.
+
+- **The periodic timer table** is live (`exa_game::frame_timers`): it runs
+  once a frame in `First`, on the app's real clock, and every record due
+  by then is reported to its owner and armed `interval × 100` ms from that
+  frame time, so a slow frame runs a record once, never twice. The GUI's
+  start registers record 1, one unit (100 ms) for good: its tick is the
+  GUI timer, and only on those frames do the GUI screens (game screens,
+  manual, the Settings form's Controls page) show a requested tooltip once
+  its 400 ms delay has passed, hide one past its time, step a held scroll
+  arrow and delete closed forms. A press that starts an arrow's repeat
+  pushes the GUI timer 700 ms out (six units past its interval), so the
+  repeat starts after that pause and then runs every tick. The arena's
+  dormant auto rematch (`--arena-auto`) registers a 40-unit record on the
+  return to the hub and frees it when it fires. The item card's two-unit
+  delay keeps an inline due time, which is the same arithmetic for a
+  one-shot record checked once a frame. `EXA_TIMER_TRACE=1` logs every
+  record that comes due with the frame time
+  (`timer table: record 1 (Gui) at 81615 ms`).
+- **Engine-replaced main-unit routines.** The render-target and viewport
+  stacks, the GL error check, the vertical-sync switch and the GL start-up
+  (feature check, pixel-store alignment, texture quality) are wgpu's and
+  Bevy's; the shutdown hook chain the main unit dispatches when the window
+  is destroyed (the settings unit frees its GL objects there, the character
+  generator only passes it on) is replaced by wgpu dropping its resources.
 
 ### Window and platform rules
 

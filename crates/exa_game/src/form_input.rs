@@ -6,10 +6,13 @@
 //! hover and the focus follow it, a held form gets the drag), the left
 //! button's press and release go to [`GuiTask::press`] and
 //! [`GuiTask::release`] (the original's left button word 1), the wheel to
-//! the focused form ([`GuiTask::wheel`], 120 a notch), then every base form
-//! runs the GUI timer's repeat and the task's tick shows a requested
-//! tooltip once its 400-unit delay has passed. The clock is the frame's
-//! real time in milliseconds.
+//! the focused form ([`GuiTask::wheel`], 120 a notch). On the frames the
+//! GUI timer comes due ([`crate::frame_timers::FrameTimers`], every 100 ms)
+//! every base form runs its repeat and the task's tick shows a requested
+//! tooltip once its 400-unit delay has passed, hides one past its time and
+//! deletes closed forms; a press that starts an arrow's repeat pushes the
+//! GUI timer 700 ms out, as the original's form does. The clock is the
+//! frame's real time in milliseconds.
 //!
 //! The tooltip ([`ShownTooltip`]) is the default one: the record's text in
 //! the GUI level's main font, its box sized and placed by
@@ -127,15 +130,25 @@ impl FormTask {
     }
 
     /// Runs one frame: see [`drive`].
-    pub fn drive(&mut self, frame: &PointerFrame) -> TickResult {
-        drive(&mut self.task, frame)
+    pub fn drive(
+        &mut self,
+        frame: &PointerFrame,
+        timers: Option<&mut crate::frame_timers::FrameTimers>,
+    ) -> TickResult {
+        drive(&mut self.task, frame, timers)
     }
 }
 
 /// Feeds one frame to a task: the clock, the pointer's move, the left
-/// button's press and release, the wheel, the forms' repeat timer and the
-/// task's tick.
-pub fn drive(task: &mut GuiTask, frame: &PointerFrame) -> TickResult {
+/// button's press and release and the wheel; then, when the GUI timer came
+/// due (every frame without a timer table), the forms' repeat and the
+/// task's tick. A press that started an arrow's repeat reschedules the GUI
+/// timer [`crate::frame_timers::GUI_TIMER_ARROW_PAUSE`] units out.
+pub fn drive(
+    task: &mut GuiTask,
+    frame: &PointerFrame,
+    mut timers: Option<&mut crate::frame_timers::FrameTimers>,
+) -> TickResult {
     task.clock = frame.now;
     for id in task.draw_order() {
         if let Some(form) = task.form_mut(id).and_then(|f| f.base_mut()) {
@@ -146,7 +159,18 @@ pub fn drive(task: &mut GuiTask, frame: &PointerFrame) -> TickResult {
         task.update(false, at);
     }
     if frame.pressed {
+        let before = repeat_times(task);
         task.press(1);
+        let started = repeat_times(task)
+            .into_iter()
+            .any(|(id, at)| at.is_some() && !before.contains(&(id, at)));
+        if started && let Some(timers) = timers.as_deref_mut() {
+            timers.reschedule(timers.gui, crate::frame_timers::GUI_TIMER_ARROW_PAUSE);
+            info!(
+                "gui timer: an arrow's repeat pushes the GUI timer 700 ms out at {} ms",
+                timers.now_ms()
+            );
+        }
     }
     if frame.released {
         task.release(1);
@@ -154,12 +178,27 @@ pub fn drive(task: &mut GuiTask, frame: &PointerFrame) -> TickResult {
     if frame.wheel != 0 {
         task.wheel(frame.wheel);
     }
+    if !crate::frame_timers::gui_tick(timers.as_deref()) {
+        return TickResult::default();
+    }
     for id in task.draw_order() {
         if let Some(form) = task.form_mut(id).and_then(|f| f.base_mut()) {
             form.tick(frame.now);
         }
     }
     task.tick()
+}
+
+/// Every base form's next repeat time.
+fn repeat_times(task: &GuiTask) -> Vec<(FormId, Option<u32>)> {
+    task.draw_order()
+        .into_iter()
+        .filter_map(|id| {
+            task.form(id)
+                .and_then(|f| f.base())
+                .map(|f| (id, f.repeat_at))
+        })
+        .collect()
 }
 
 /// The default tooltip on the screen.

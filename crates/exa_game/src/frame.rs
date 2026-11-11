@@ -649,31 +649,36 @@ impl FrameClock {
     }
 }
 
-/// One record of the original's periodic timer table.
-struct Timer {
+/// One record of the original's periodic timer table: the interval, the
+/// next due time, the free flag and what the record stands for (the
+/// original keeps a callback and a data word there).
+#[derive(Debug, Clone)]
+struct Timer<T> {
     interval: u32,
     due_ms: u32,
     free: bool,
-    action: Box<dyn FnMut()>,
+    user: T,
 }
 
-/// The periodic timer table: fixed intervals, a next-due time and a callback
+/// The periodic timer table: fixed intervals, a next-due time and an owner
 /// for each record, re-armed from the current frame time so the table never
-/// drifts.
-pub struct PeriodicTimers {
-    slots: Vec<Timer>,
+/// drifts. A run returns the records that came due, in record order; their
+/// owners do the work the original's callbacks do.
+#[derive(Debug, Clone)]
+pub struct PeriodicTimers<T> {
+    slots: Vec<Timer<T>>,
     /// The multiplier applied to intervals, 100 (the original's time scale
     /// unit).
     pub multiplier: u32,
 }
 
-impl Default for PeriodicTimers {
+impl<T: Clone> Default for PeriodicTimers<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PeriodicTimers {
+impl<T: Clone> PeriodicTimers<T> {
     /// An empty table at the original's multiplier.
     pub fn new() -> Self {
         Self {
@@ -682,15 +687,15 @@ impl PeriodicTimers {
         }
     }
 
-    /// Registers `action` to run every `interval` units from the frame time
-    /// `now_ms`, taking the first free record or adding one. The returned id
-    /// is the record's one-based position.
-    pub fn add(&mut self, interval: u32, now_ms: u32, action: Box<dyn FnMut()>) -> u32 {
+    /// Registers `user` to come due every `interval` units from the frame
+    /// time `now_ms`, taking the first free record or adding one. The
+    /// returned id is the record's one-based position.
+    pub fn add(&mut self, interval: u32, now_ms: u32, user: T) -> u32 {
         let slot = Timer {
             interval,
             due_ms: self.multiplier.wrapping_mul(interval).wrapping_add(now_ms),
             free: false,
-            action,
+            user,
         };
         if let Some(index) = self.slots.iter().position(|t| t.free) {
             self.slots[index] = slot;
@@ -712,7 +717,9 @@ impl PeriodicTimers {
     }
 
     /// Moves a record's next run `elapsed` units closer: the next due time
-    /// is `(interval − elapsed) · multiplier` from `now_ms`.
+    /// is `(interval − elapsed) · multiplier` from `now_ms`, in wrapping
+    /// 32-bit arithmetic, so a negative `elapsed` (as `u32`) pushes the run
+    /// further out.
     pub fn reschedule(&mut self, id: u32, elapsed: u32, now_ms: u32) {
         if let Some(slot) = id
             .checked_sub(1)
@@ -726,19 +733,29 @@ impl PeriodicTimers {
         }
     }
 
-    /// Runs every record that is due at `now_ms`, in record order, and arms
-    /// each one a full interval from now. The comparison is unsigned.
-    pub fn run(&mut self, now_ms: u32) {
-        for slot in &mut self.slots {
+    /// Runs the table at the frame time `now_ms`: every record that is not
+    /// free and is due (an unsigned compare) is returned with its id, in
+    /// record order, and armed a full interval from now.
+    pub fn run(&mut self, now_ms: u32) -> Vec<(u32, T)> {
+        let mut fired = Vec::new();
+        for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.free || now_ms < slot.due_ms {
                 continue;
             }
-            (slot.action)();
+            fired.push((index as u32 + 1, slot.user.clone()));
             slot.due_ms = self
                 .multiplier
                 .wrapping_mul(slot.interval)
                 .wrapping_add(now_ms);
         }
+        fired
+    }
+
+    /// Whether record `id` exists and is not free.
+    pub fn is_live(&self, id: u32) -> bool {
+        id.checked_sub(1)
+            .and_then(|i| self.slots.get(i as usize))
+            .is_some_and(|slot| !slot.free)
     }
 
     /// The number of records, free ones included.
@@ -1105,43 +1122,47 @@ mod tests {
 
     #[test]
     fn the_timer_table_rearms_from_the_frame_time() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let count = Rc::new(RefCell::new(0u32));
         let mut timers = PeriodicTimers::new();
-        let n = count.clone();
-        let id = timers.add(
-            20,
-            1_000,
-            Box::new(move || {
-                *n.borrow_mut() += 1;
-            }),
-        );
+        let id = timers.add(20, 1_000, 'a');
         assert_eq!(id, 1);
         assert_eq!(timers.len(), 1);
         // 20 units at multiplier 100 fall due 2000 ms on, at 3000.
-        timers.run(2_999);
-        assert_eq!(*count.borrow(), 0);
-        timers.run(3_000);
-        assert_eq!(*count.borrow(), 1);
+        assert!(timers.run(2_999).is_empty());
+        assert_eq!(timers.run(3_000), vec![(1, 'a')]);
         // Re-armed from now, not from the old due time.
-        timers.run(4_999);
-        assert_eq!(*count.borrow(), 1);
-        timers.run(5_000);
-        assert_eq!(*count.borrow(), 2);
+        assert!(timers.run(4_999).is_empty());
+        assert_eq!(timers.run(5_000).len(), 1);
         // A reschedule by 15 of the 20 units: (20 - 15) * 100 = 500 ms on.
         timers.reschedule(id, 15, 5_000);
-        timers.run(5_499);
-        assert_eq!(*count.borrow(), 2);
-        timers.run(5_500);
-        assert_eq!(*count.borrow(), 3);
+        assert!(timers.run(5_499).is_empty());
+        assert_eq!(timers.run(5_500).len(), 1);
         timers.free(id);
-        timers.run(9_000);
-        assert_eq!(*count.borrow(), 3);
+        assert!(!timers.is_live(id));
+        assert!(timers.run(9_000).is_empty());
         // A freed record is reused, keeping its one-based id.
-        let again = timers.add(5, 9_000, Box::new(|| {}));
+        let again = timers.add(5, 9_000, 'b');
         assert_eq!(again, 1);
         assert_eq!(timers.len(), 1);
+        assert!(timers.is_live(again));
+    }
+
+    #[test]
+    fn a_negative_reschedule_pushes_the_run_out_and_records_fire_in_order() {
+        let mut timers = PeriodicTimers::new();
+        let gui = timers.add(1, 0, "gui");
+        let card = timers.add(2, 0, "card");
+        // The arrow press: -6 of a 1-unit interval is 7 units, 700 ms.
+        timers.reschedule(gui, (-6i32) as u32, 50);
+        assert_eq!(timers.run(200), vec![(card, "card")]);
+        // The card's record is one-shot: its owner frees it once it fired.
+        timers.free(card);
+        assert!(timers.run(749).is_empty());
+        assert_eq!(timers.run(750), vec![(gui, "gui")]);
+        assert_eq!(timers.run(850), vec![(gui, "gui")]);
+        // Both due in one frame: record order.
+        let card = timers.add(1, 850, "card");
+        assert_eq!(card, 2);
+        assert_eq!(timers.run(10_000), vec![(gui, "gui"), (card, "card")]);
     }
 
     fn counting(log: &std::rc::Rc<std::cell::RefCell<Vec<u32>>>, id: u32, runs: u32) -> Deferred {

@@ -2138,6 +2138,7 @@ fn screens_pointer(
     menu: Option<Res<MenuScreen>>,
     hint: Res<DebugRecordHint>,
     mut screens: ResMut<GameScreens>,
+    mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     if screens.open.is_empty() || menu.is_some_and(|menu| menu.open) {
@@ -2160,7 +2161,7 @@ fn screens_pointer(
     let now = time.elapsed().as_millis() as u32;
     let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
     let screens = &mut *screens;
-    let tick = crate::form_input::drive(&mut screens.task, &frame);
+    let tick = crate::form_input::drive(&mut screens.task, &frame, timers.as_deref_mut());
     crate::form_input::ShownTooltip::follow(
         &mut screens.tooltip,
         &tick,

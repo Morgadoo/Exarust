@@ -94,7 +94,10 @@ original's frame-rate cap (`FramePacer`: unfocused 32 ms, else the
 display's or the cap's period rounded to nearest with ties to even and
 1 ms early), the real/game clock with its paused-time accumulator
 (`FrameClock`), the periodic timer table (intervals scaled by the time
-multiplier, re-armed from the frame time, rescheduled from the interval),
+multiplier, re-armed from the frame time, rescheduled from the interval;
+`frame_timers` runs it live once a frame with the GUI timer as record 1,
+which gates the GUI screens' tooltip, repeat and form-deletion work, and
+the arena's auto rematch as a one-shot record),
 the 128-slot deferred-call ring (127 calls; once wrapped only its head runs
 a tick; a call carries the procedure and data tags its cancel routines
 match and can be dropped by either), the redraw-flag idle wait
