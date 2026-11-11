@@ -1717,6 +1717,8 @@ Round 158 kernel2: the body twist, spine, hunch and headings normalise with the 
 
 Round 172 kernel3: every foot grips at full strength each balance tick as in the original, and placements write the original facing.
 
+Round 174 balance: stepping, knockback re-targets and the armed parry follow the original, and parry ends no longer drop the weapon grip.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
