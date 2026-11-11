@@ -249,3 +249,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-11-11 | fb788b49d | clean | 81.6% | 5.0% | 73.1% | 87.0% | Rate round 171's lane |
 | 2026-11-11 | 1ff39793b | clean | 81.7% | 5.0% | 73.2% | 87.0% | Rate rounds 172 and 173 |
 | 2026-11-11 | d23de58b5 | clean | 81.7% | 5.0% | 73.2% | 87.0% | Rate round 174's lane |
+| 2026-11-11 | 92c646d1f | clean | 81.8% | 5.0% | 73.2% | 87.0% | Rate rounds 175 and 176 |
