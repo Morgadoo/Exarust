@@ -5,7 +5,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **81.3% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **81.4% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
 - Weighted by function count (zero-byte imported names left out): 72.9% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **87.0%** reproduced.
 
@@ -69,7 +69,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TMotilePart | Characters, motion & animation | 53 | 84% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TThaumTree | Thaumaturgy & effects | 38 | 89% | exa_game/src/thaum/tree.rs; exa_game/src/power_screen.rs |
-| TGUIDrawSkin | UI | 35 | 91% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
+| TGUIDrawSkin | UI | 35 | 93% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
 | TPathFinder | AI & behaviour | 32 | 91% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 96% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
 | TVXGIManager | Rendering & GPU | 29 | 97% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
@@ -80,7 +80,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TMesh | Rendering & GPU | 25 | 91% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 91% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 92% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
-| TGSLines | UI | 24 | 88% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
+| TGSLines | UI | 24 | 89% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
 | SG_Thaum_Mind | Thaumaturgy & effects | 21 | 91% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
 
 ## Combat rules
