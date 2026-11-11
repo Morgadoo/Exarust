@@ -2521,6 +2521,8 @@ Round 171 force2: the blast, bolt, wave and torrent meet the level real meshes t
 
 Round 178 raisedead: Raise Dead and Command Dead raise and lay down corpses, and Spirit Form always ends in free mode.
 
+Round 180 mind2: the Mind powers change the live NPC brains as the original does, and Control Mind and Spirit Form write their minds on the simulation world.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
