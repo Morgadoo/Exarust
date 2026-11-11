@@ -464,14 +464,22 @@ pub fn held_contact_mobility(
 }
 
 /// The arm setter's tail: every tick it is called, the held items' contact
-/// mobility is put at their base (the registered mobility, standing in for
-/// the original's weapon-mass base) times the holder's factor, the shield's
+/// mobility is put at their base times the holder's factor: a held
+/// weapon's base is its top part's contact mobility as the holding pass's
+/// mass redistribution left it
+/// ([`exa_physics::weapon_mass::WeaponMass::held_contact_base`]); another
+/// item's is its registered mobility [Exarust stand-in where no weapon
+/// mass ran]. The shield's
 /// whatever the holder holds, the other items' only when the holder is
 /// armed ([`crate::body_words::armed`]). An item its holder let go of is
 /// left alone. Runs after the character ticks wrote the factor, before the
 /// solver reads the contact mobilities.
 pub fn scale_held_contacts(
-    held: Query<(Entity, &HeldGrip)>,
+    held: Query<(
+        Entity,
+        &HeldGrip,
+        Option<&exa_physics::weapon_mass::WeaponMass>,
+    )>,
     mut bodies: Query<(Entity, &mut Ragdoll)>,
     hands: Query<&crate::held::Hands>,
 ) {
@@ -479,7 +487,7 @@ pub fn scale_held_contacts(
         return;
     }
     let holders = exa_physics::body::first_by_key(
-        held.iter().map(|(_, grip)| grip.holder_key),
+        held.iter().map(|(_, grip, _)| grip.holder_key),
         bodies.iter().map(|(entity, body)| {
             (
                 (entity, body.drive.as_ref().and_then(|d| d.held_contact())),
@@ -487,7 +495,7 @@ pub fn scale_held_contacts(
             )
         }),
     );
-    for (item, grip) in &held {
+    for (item, grip, mass) in &held {
         if grip.released {
             continue;
         }
@@ -503,12 +511,15 @@ pub fn scale_held_contacts(
         let Some(part) = body.parts.iter_mut().find(|p| p.parent.is_none()) else {
             continue;
         };
-        if let Some(m) = held_contact_mobility(part.inverse_mass, factor, grip.kind, armed)
+        let base = mass
+            .and_then(|m| m.held_contact_base())
+            .unwrap_or(part.inverse_mass);
+        if let Some(m) = held_contact_mobility(base, factor, grip.kind, armed)
             && m != part.pairing.mobility
         {
             debug!(
-                "held contact mobility: {item:?} ({:?}) of {owner:?}: {:.4} -> {m:.4} (base {:.4})",
-                grip.kind, part.pairing.mobility, part.inverse_mass
+                "held contact mobility: {item:?} ({:?}) of {owner:?}: {:.4} -> {m:.4} (base {base:.4})",
+                grip.kind, part.pairing.mobility
             );
             part.pairing.mobility = m;
         }
@@ -572,7 +583,8 @@ fn bridge_grip_runtime_types(app: &mut App) {
         .bridge_copy::<crate::grip_runtime::PendingGrip>()
         .bridge_copy::<crate::held::BurningGrip>()
         .bridge_copy::<exa_combat::Blade>()
-        .bridge_copy::<exa_physics::grip::HeldGrip>();
+        .bridge_copy::<exa_physics::grip::HeldGrip>()
+        .bridge_copy::<exa_physics::weapon_mass::WeaponMass>();
 }
 
 #[cfg(test)]

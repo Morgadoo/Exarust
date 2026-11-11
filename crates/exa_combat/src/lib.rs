@@ -39,6 +39,7 @@ pub mod grip;
 pub mod impact;
 pub mod pain;
 pub mod parry;
+pub mod record_chain;
 pub mod regen;
 pub mod remedy;
 pub mod sounds;
@@ -95,6 +96,7 @@ impl Plugin for CombatPlugin {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<StrikeHooked>()
+            .add_message::<OverheadWounded>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
@@ -201,6 +203,7 @@ fn bridge_combat_types(app: &mut App) {
     app.bridge_message::<crate::Hit>()
         // The hit chain's own (it runs in the simulation's frame start).
         .bridge_message::<crate::StrikeHooked>()
+        .bridge_message::<crate::OverheadWounded>()
         .bridge_message::<crate::bite::BiteTaken>()
         .bridge_message::<crate::block::ShieldRung>()
         .bridge_message::<crate::fighter::DamageTaken>()
@@ -433,8 +436,15 @@ pub enum Struck {
     /// A living limb (kind 1): the blade sweep's contact.
     Limb,
     /// A held weapon (kind 2): the item's body; `primary` when it is its
-    /// holder's primary striker (no counter clash then).
-    Weapon { primary: bool, item: Entity },
+    /// holder's primary striker (no counter clash then); `part` the item's
+    /// struck part (its body's index; 0 for a fist), whose own frame and
+    /// sound clock the clash's ring reads with the record its chain finds
+    /// ([`record_chain`]).
+    Weapon {
+        primary: bool,
+        item: Entity,
+        part: usize,
+    },
     /// A held shield or torch (kind 3, a block): the item's body.
     Shield { item: Entity },
 }
@@ -476,6 +486,15 @@ pub struct BlowNoticed {
     /// The struck body was down, collapsing or dead (its condition has a
     /// 0xA00 bit) at the call: a killing wound's collapse counts.
     pub down: bool,
+}
+
+/// A striker's overhead swing wounded flesh (the damage routine's last
+/// write in its wound tail): a striker in the heavy-claws state takes its
+/// two hands' contact mobility back to their base (the reader in the
+/// character crate tests the claws).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverheadWounded {
+    pub attacker: Entity,
 }
 
 /// The striker's own hook on a landed blow, which a power on the striker
@@ -673,6 +692,16 @@ pub fn striker_frame(
         return Some(carrier * local.compute_affine());
     }
     scene.map(GlobalTransform::affine)
+}
+
+/// An item body's part `index` (the part a contact was made with), else
+/// its first part.
+fn striking_part(body: &mut Ragdoll, index: usize) -> Option<&mut exa_physics::body::Part> {
+    if index < body.parts.len() {
+        body.parts.get_mut(index)
+    } else {
+        body.parts.first_mut()
+    }
 }
 
 /// Every striker's frame, grip and tip after the body tick, with the tip's
@@ -954,6 +983,8 @@ fn react_to_hits(
         mut notices,
         mut bites,
         mut hooks,
+        mut shells,
+        mut claw_hands,
     ): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
@@ -963,6 +994,8 @@ fn react_to_hits(
         MessageWriter<BlowNoticed>,
         MessageWriter<bite::BiteTaken>,
         MessageWriter<StrikeHooked>,
+        MessageWriter<impact::ShellHit>,
+        MessageWriter<OverheadWounded>,
     ),
     mut fighters: Query<(
         Entity,
@@ -1381,6 +1414,16 @@ fn react_to_hits(
                 kind: BlowKind::Wound,
                 down: condition.0 & DOWN_OR_DEAD != 0 || taken == Taken::Killed,
             });
+            // The struck body's damage callback, after its behaviour's
+            // notice: the only one 0.9.5 installs is Force Shell's, which
+            // ripples the shell at the contact with the yellow damage
+            // before its 0.75 ([`impact::ShellHit`]; a body without a shell
+            // is left alone by its reader).
+            shells.write(impact::ShellHit {
+                fighter: hit.target,
+                point: hit.point,
+                volume: outcome.yellow_unweighed,
+            });
             // The player's feedback, last in the routine's tail: the
             // striker's scale and swing are read where it is a fighter.
             let (scale, overhead) = (striker_scale, motion == OVERHEAD_MOTION);
@@ -1403,6 +1446,14 @@ fn react_to_hits(
                 point: hit.point,
                 strength: outcome.yellow_unweighed,
             });
+            // Then an overhead's wound puts a heavy-clawed striker's hands
+            // back at their base contact mobility (the attack start had
+            // quartered them); the character crate knows the claws.
+            if motion == OVERHEAD_MOTION {
+                claw_hands.write(OverheadWounded {
+                    attacker: hit.attacker,
+                });
+            }
             if taken == Taken::Weakened {
                 answer_low(
                     hit.target,
@@ -1701,9 +1752,11 @@ fn react_to_hits(
                         kind: None,
                     });
                 }
+                // The striking part's own sound clock: the item's part the
+                // contact was made with (its top part for a sweep's blade).
                 if (clash || ring.is_some())
                     && let Ok(mut weapon) = items.get_mut(hit.striker)
-                    && let Some(part) = weapon.parts.first_mut()
+                    && let Some(part) = striking_part(&mut weapon, hit.strike.part)
                 {
                     part.sound_ready_ms = sounds::ring_clock(now as u32, blow.volume);
                 }
@@ -1712,13 +1765,29 @@ fn react_to_hits(
                 // along it, else its own sound, at the blow's volume (no
                 // share) and 1.2 of its pitch, and stamps its sound clock
                 // whether or not it rang.
-                // [inf] The item's frame is its blade entity's, the grip at
-                // its origin and the item along its +Y, in centimetres as
-                // the record's length.
+                // The record is the one the struck part's chain finds (the
+                // item's top part's, its Blade's: [`record_chain`]); the
+                // frame and the sound clock are the struck part's own. A
+                // part past the item's body, or a fist (no body of its own),
+                // reads the Blade's frame (the grip at its origin, the item
+                // along its +Y), in centimetres as the record's length.
                 if clash
-                    && let Struck::Weapon { item, .. } = hit.struck
+                    && let Struck::Weapon { item, part, .. } = hit.struck
                     && let Ok(blade) = slots.get(item)
-                    && let Some(at) = striker_frame_of(item)
+                    && let Some(at) = items
+                        .get(item)
+                        .ok()
+                        .and_then(|body| {
+                            let parents: Vec<Option<usize>> =
+                                body.parts.iter().map(|p| p.parent).collect();
+                            let chain = record_chain::HeldChain {
+                                parents: &parents,
+                                hand_record: false,
+                            };
+                            chain.record_of(part)?;
+                            body.parts.get(part).map(|p| p.drawn(1.0))
+                        })
+                        .or_else(|| striker_frame_of(item))
                 {
                     let own = blade.record.hit_sound_name();
                     let struck = sounds::StruckItem {
@@ -1737,7 +1806,7 @@ fn react_to_hits(
                         now as u32,
                     );
                     if let Ok(mut body) = items.get_mut(item)
-                        && let Some(part) = body.parts.first_mut()
+                        && let Some(part) = striking_part(&mut body, part)
                     {
                         part.sound_ready_ms = ready;
                     }
@@ -1923,6 +1992,8 @@ mod tests {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<StrikeHooked>()
+            .add_message::<OverheadWounded>()
+            .add_message::<impact::ShellHit>()
             .add_message::<veto::BlowPhased>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()
@@ -2287,6 +2358,7 @@ mod tests {
                 struck: Struck::Weapon {
                     primary,
                     item: Entity::PLACEHOLDER,
+                    part: 0,
                 },
                 target: id,
                 bone: block::MAIN_HAND_BONE,
@@ -2353,6 +2425,7 @@ mod tests {
                     struck: Struck::Weapon {
                         primary: true,
                         item,
+                        part: 0,
                     },
                     target: id,
                     bone: block::MAIN_HAND_BONE,
@@ -2444,6 +2517,7 @@ mod tests {
                 Struck::Weapon {
                     primary: true,
                     item: Entity::PLACEHOLDER,
+                    part: 0,
                 },
                 BlowKind::Clash,
             ),
@@ -3564,6 +3638,8 @@ mod tests {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<StrikeHooked>()
+            .add_message::<OverheadWounded>()
+            .add_message::<impact::ShellHit>()
             .add_message::<veto::BlowPhased>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()

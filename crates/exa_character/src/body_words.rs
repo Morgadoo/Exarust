@@ -106,6 +106,32 @@ pub fn attack_hand_contacts(
     }
 }
 
+/// The damage routine's last write after an overhead's wound on flesh
+/// ([`exa_combat::OverheadWounded`]): a striker in the heavy-claws state
+/// takes both hands' contact mobility back to its base (its mass value),
+/// undoing the quarter its attack start gave them. Read on the next fixed
+/// tick, before the solver that would use the hands.
+pub fn overhead_claw_hands(
+    mut wounded: MessageReader<exa_combat::OverheadWounded>,
+    mut bodies: Query<(Option<&RaceWeaponry>, &mut Ragdoll), With<Fighter>>,
+) {
+    for w in wounded.read() {
+        let Ok((race, mut body)) = bodies.get_mut(w.attacker) else {
+            continue;
+        };
+        if !heavy_claws(race) {
+            continue;
+        }
+        for bone in [RIGHT_HAND, LEFT_HAND] {
+            body.set_contact_share(bone, |base| base);
+        }
+        debug!(
+            "{:?}'s overhead wound: its clawed hands back at their base",
+            w.attacker
+        );
+    }
+}
+
 /// The collapse's writes on the tick it starts: an unarmed character's
 /// hands are emptied, which puts both back at their base contact mobility
 /// ([`empty_hand_words`]; an armed one's drop runs the refresh instead,
@@ -155,6 +181,7 @@ impl Plugin for BodyWordsPlugin {
         app.add_systems(
             FixedUpdate,
             (
+                overhead_claw_hands,
                 refresh_hand_contacts,
                 attack_hand_contacts,
                 collapse_words,
@@ -325,6 +352,40 @@ mod tests {
         app.update();
         assert_eq!(mobility(&app, e, 1), base * 0.25);
         assert_eq!(mobility(&app, e, 2), base * 0.25);
+    }
+
+    /// An overhead's wound puts a heavy-clawed striker's quartered hands
+    /// back at their base; a striker without heavy claws keeps them.
+    #[test]
+    fn an_overhead_wound_restores_clawed_hands() {
+        let mut app = App::new();
+        app.add_message::<exa_combat::OverheadWounded>();
+        app.add_systems(Update, (overhead_claw_hands, refresh_hand_contacts).chain());
+        let body = arms();
+        let base = body.contact_base(1).unwrap();
+        let sir = RaceWeaponry {
+            index: 4,
+            ..RaceWeaponry::default()
+        };
+        let clawed = app
+            .world_mut()
+            .spawn((Fighter::default(), Hands::default(), sir, body.clone()))
+            .id();
+        let plain = app
+            .world_mut()
+            .spawn((Fighter::default(), Hands::default(), body))
+            .id();
+        app.update();
+        assert_eq!(mobility(&app, clawed, 1), base * 0.25);
+        assert_eq!(mobility(&app, plain, 1), base * 0.5);
+        for attacker in [clawed, plain] {
+            app.world_mut()
+                .write_message(exa_combat::OverheadWounded { attacker });
+        }
+        app.update();
+        assert_eq!(mobility(&app, clawed, 1), base);
+        assert_eq!(mobility(&app, clawed, 2), base);
+        assert_eq!(mobility(&app, plain, 1), base * 0.5);
     }
 
     /// Only a gobbler's collapse slackens its femur limits.

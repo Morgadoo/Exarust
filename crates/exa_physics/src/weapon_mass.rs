@@ -148,6 +148,58 @@ impl WeaponMass {
     }
 }
 
+/// What the holding pass hands a held weapon's body for its mass
+/// redistribution: the weapon's table mass (the scale) and the holder's
+/// size, which divides the top part's contact mobility. The item's body is
+/// registered later ([`crate::prop`]); its registration runs the
+/// redistribution then ([`WeaponMass::of_body`], [`WeaponMass::apply`]).
+#[derive(Debug, Clone, Copy, PartialEq, Component)]
+pub struct WeaponMassScale {
+    pub total: f32,
+    pub size: f32,
+}
+
+impl WeaponMass {
+    /// The redistribution over a registered body's parts, as the holding
+    /// pass runs it on the item's part tree: each part's contact mobility
+    /// is the live word, its link mobility the inverse word and its
+    /// registered mobility the saved mass value (registration latches it,
+    /// so the pass never takes the live word for it).
+    pub fn of_body(body: &crate::body::Ragdoll, scale: WeaponMassScale) -> Self {
+        let parts = body
+            .parts
+            .iter()
+            .map(|p| WeaponMassPart {
+                parent: p.parent,
+                mass: p.pairing.mobility,
+                inverse: p.link_mobility,
+                saved: p.inverse_mass,
+            })
+            .collect();
+        Self::new(parts, scale.total, scale.size)
+    }
+
+    /// Writes the result into the body: each part's link mobility (the
+    /// links' shares are taken from it) becomes the distributed inverse and
+    /// its contact mobility the live word (the top part's divided by the
+    /// holder's size). The registered mobility, the mass value, stays.
+    /// Parts past the list are left alone.
+    pub fn apply(&self, body: &mut crate::body::Ragdoll) {
+        for (part, w) in body.parts.iter_mut().zip(&self.parts) {
+            part.link_mobility = w.inverse;
+            part.pairing.mobility = w.mass;
+        }
+    }
+
+    /// The base the arm setter scales the held weapon's contact mobility
+    /// from: the top part's contact mobility as the holding pass left it.
+    pub fn held_contact_base(&self) -> Option<f32> {
+        tree_order(&self.parts)
+            .first()
+            .map(|&root| self.parts[root].mass)
+    }
+}
+
 /// The parent-before-children order a tree walk visits: roots in list
 /// order, each one's children in list order, depth first. A cycle in bad
 /// input is cut after every part has been visited once.
@@ -403,5 +455,76 @@ mod tests {
             (flat[0].mass / 1.25).to_bits()
         );
         assert_eq!(mass.parts[1], flat[1]);
+    }
+
+    fn rigid(entity: u32, parent: Option<usize>, mobility: f32) -> crate::body::RigidPart {
+        use bevy::math::{Affine3A, Vec3};
+        crate::body::RigidPart {
+            entity: bevy::prelude::Entity::from_raw_u32(entity).unwrap(),
+            parent,
+            world: Affine3A::IDENTITY,
+            rest: [
+                Vec3::new(-0.1, 0.0, -0.1),
+                Vec3::new(0.1, 0.0, -0.1),
+                Vec3::new(0.0, 0.0, 0.1),
+                Vec3::new(0.0, 0.2, 0.0),
+            ],
+            point_masses: [1.0; 4],
+            mobility,
+            parent_world: Affine3A::IDENTITY,
+            spheres: Vec::new(),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: None,
+            triangles: None,
+        }
+    }
+
+    /// The holding pass runs on the registered body: the registered
+    /// mobility is the latched mass value, the result goes into the link
+    /// and contact mobilities, and the mass value stays.
+    #[test]
+    fn a_registered_body_takes_the_redistribution() {
+        let mut body = crate::body::Ragdoll::rigid(&[rigid(1, None, 3.0), rigid(2, Some(0), 1.0)]);
+        let scale = WeaponMassScale {
+            total: 0.75,
+            size: 1.25,
+        };
+        let mass = WeaponMass::of_body(&body, scale);
+        let mut flat = vec![
+            WeaponMassPart {
+                parent: None,
+                mass: 3.0,
+                inverse: 3.0,
+                saved: 3.0,
+            },
+            WeaponMassPart {
+                parent: Some(0),
+                mass: 1.0,
+                inverse: 1.0,
+                saved: 1.0,
+            },
+        ];
+        distribute_tree(&mut flat, 0.75);
+        assert_eq!(mass.parts[1], flat[1]);
+        mass.apply(&mut body);
+        assert_eq!(
+            body.parts[0].link_mobility.to_bits(),
+            flat[0].inverse.to_bits()
+        );
+        assert_eq!(
+            body.parts[0].pairing.mobility.to_bits(),
+            (flat[0].mass / 1.25).to_bits()
+        );
+        assert_eq!(
+            body.parts[1].pairing.mobility.to_bits(),
+            flat[1].mass.to_bits()
+        );
+        assert_eq!(body.parts[0].inverse_mass, 3.0);
+        assert_eq!(mass.held_contact_base(), Some(flat[0].mass / 1.25));
+        // Inflated 3.75 and 1.25 (inverses 0.2667 and 0.8): the more
+        // mobile top part takes the smaller share of the mass, so it stays
+        // the more mobile.
+        assert!(body.parts[0].link_mobility > body.parts[1].link_mobility);
     }
 }

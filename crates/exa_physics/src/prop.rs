@@ -161,7 +161,11 @@ fn register_props(
     scrape_slots: Query<&PendingScrapes>,
     globals: Query<&GlobalTransform>,
     parents: Query<&ChildOf>,
-    (held, bodies): (Query<&crate::grip::HeldGrip>, Query<&Ragdoll>),
+    (held, bodies, scales): (
+        Query<&crate::grip::HeldGrip>,
+        Query<&Ragdoll>,
+        Query<&crate::weapon_mass::WeaponMassScale>,
+    ),
 ) {
     // In spawn order (the entity index), not the storage's: a body takes
     // its place in the sector's list when it is inserted
@@ -189,17 +193,39 @@ fn register_props(
             }
         }
         let mut body = Ragdoll::rigid(&parts);
+        // A held weapon's holding pass redistributes its table mass over
+        // the registered parts (their link and contact mobilities; the
+        // links its parts were registered with keep their shares) before
+        // its grip links are built from them.
+        let mass = scales.get(root).ok().map(|&scale| {
+            let mass = crate::weapon_mass::WeaponMass::of_body(&body, scale);
+            let registered: Vec<f32> = body.parts.iter().map(|p| p.inverse_mass).collect();
+            mass.apply(&mut body);
+            debug!(
+                "{root:?}: weapon mass {:.3} over {} parts (size {:.3}): link mobilities {:?} \
+                 (registered {registered:?}), held contact base {:?}",
+                scale.total,
+                mass.parts.len(),
+                scale.size,
+                mass.parts.iter().map(|p| p.inverse).collect::<Vec<_>>(),
+                mass.held_contact_base()
+            );
+            mass
+        });
         if let Ok(PendingScrapes(slots)) = scrape_slots.get(root) {
             for slot in slots {
                 body.add_scrape_on(slot.part, slot.point, slot.volume, slot.pitch);
             }
         }
         let placed = body.parts.iter().map(|p| p.transform()).collect();
-        commands
-            .entity(root)
+        let mut root_commands = commands.entity(root);
+        root_commands
             .remove::<PendingProp>()
             .remove::<PendingScrapes>()
             .insert((body, PropBody { placed }));
+        if let Some(mass) = mass {
+            root_commands.insert(mass);
+        }
     }
 }
 
