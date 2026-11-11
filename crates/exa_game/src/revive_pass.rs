@@ -17,7 +17,8 @@
 //! (its own plans do not pay for it) and stamps it again where the body
 //! ends, so the brains reset after it plan around it; before each round it
 //! moves the brain into the room of the point it plans from (the room
-//! bookkeeping the AI tick runs when the level has a room grid), so the
+//! bookkeeping the AI tick also runs, under a level flag; Exarust's tick
+//! runs it on every level with rooms), so the
 //! second round draws its exits from the room the first one ended in and
 //! avoids the room it came from.
 //!
