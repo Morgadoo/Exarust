@@ -1029,6 +1029,8 @@ Round 184 exitstall: the intermittent free-mode exit stall with Constant Displac
 
 the viewport frame-rate readout and the version line are drawn live as the original draws them; the title hides the readout and shows V 0.9.5.2g, as on the retail main menu.
 
+both AI and motion unit backlog premises were stale; the one live difference was the attack executor Break Tangle gate, now ported for the player and the AI (EXA_FORCE_TANGLE shows it).
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
