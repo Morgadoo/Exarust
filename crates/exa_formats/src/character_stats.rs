@@ -354,9 +354,10 @@ pub struct CharacterStats {
     /// whatever its race names, and its golem suit starts powered.
     pub golem: bool,
     /// What the character init scales its chest pins by (the thorax's two
-    /// pin points, about the part's origin): the ghouls' init re-scales
-    /// them at half the character size ([`Self::size`] × 0.5); every other
-    /// race keeps the pins as stored (1).
+    /// pin points, about the part's origin), on top of add-to-world's
+    /// re-scale by the character size: the ghouls' init re-scales them
+    /// again at half the character size ([`Self::size`] × 0.5); every
+    /// other race keeps the pins as add-to-world left them (1).
     pub chest_pin_scale: f32,
     /// The race's unarmed reach, metres (`races.rdb`, the reach while the
     /// character holds no weapon): the equip refresh makes it the

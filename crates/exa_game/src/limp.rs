@@ -211,6 +211,9 @@ fn build_bodies(
                     origin,
                     skeleton,
                 );
+                // Joining the world re-scales the pins by the character's
+                // size, as the original's add-to-world does.
+                part.scale_pins(stats.size);
                 // A node the skeleton has no bone for keeps its model's own
                 // body chunk: its spheres and its links to its parent.
                 if skeleton.is_none()
@@ -230,6 +233,12 @@ fn build_bodies(
                 part
             })
             .collect();
+        if stats.size != 1.0 && setup.iter().any(|s| !s.pins.is_empty()) {
+            info!(
+                "pins: {root:?} re-scaled by the character size {:.4} as it joins the world",
+                stats.size
+            );
+        }
         // The parts made plain bodies, with their mobility and welds.
         let plain: Vec<(usize, exa_physics::body::OwnPartBody)> = found
             .iter()

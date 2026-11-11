@@ -2865,6 +2865,24 @@ pub struct PartSetup {
     pub pins: Vec<Vec3>,
 }
 
+impl PartSetup {
+    /// Add-to-world's re-scale of the part's pins: each pin point, about
+    /// the part's origin, times the character's size (its race's size
+    /// times 1 − 0.05·height). The original's motile part does this to the
+    /// template's records every time it joins the world, before its muscle
+    /// setup, for every race: a human of average height (size 1) keeps the
+    /// pins as stored. The ghouls' character init then re-scales the thorax
+    /// pins again at half the size ([`Ragdoll::scale_chest_pins`]). The
+    /// same routine scales the part's level contacts by the part's own size
+    /// word; the muscle setup moves a leg's first contact to its foot's
+    /// origin afterwards, which is the only contact Exarust keeps.
+    pub fn scale_pins(&mut self, size: f32) {
+        for p in &mut self.pins {
+            *p *= size;
+        }
+    }
+}
+
 impl Ragdoll {
     /// Builds the body as the original registers it. Each part with a
     /// parent takes the skeleton's links, whose parent points are the
@@ -2890,6 +2908,11 @@ impl Ragdoll {
                 for (k, &(on_part, on_parent, slack)) in s.links.iter().chain([&pivot]).enumerate()
                 {
                     let origin = k == s.links.len();
+                    let flags = if origin {
+                        LINK_BODY | LINK_CODE
+                    } else {
+                        LINK_BODY
+                    };
                     links.push(Link {
                         part: i,
                         parent,
@@ -2897,14 +2920,17 @@ impl Ragdoll {
                         on_parent: weights(&parts[parent], on_parent + s.origin),
                         slack,
                         strength: 1.0,
-                        flags: if origin {
-                            LINK_BODY | LINK_CODE
-                        } else {
-                            LINK_BODY
-                        },
+                        flags,
                         softness: PIVOT_SOFTENING,
                         iteration_limit: None,
-                        smoothing: setup_smoothing(on_part),
+                        // The muscle setup smooths only the links that carry
+                        // the body bit, which registration gives every link
+                        // of a part with a parent.
+                        smoothing: if flags & LINK_BODY != 0 {
+                            setup_smoothing(on_part)
+                        } else {
+                            0.0
+                        },
                         length: 0.0,
                         shares,
                         origin,
@@ -3430,8 +3456,9 @@ impl Ragdoll {
     }
 
     /// The character init's pin re-scale on the chest part (the ghouls',
-    /// at half the character size): each thorax pin's point, about the
-    /// part's origin, times `by`, and its weights taken again over the
+    /// at half the character size, after add-to-world's re-scale by the
+    /// whole size, [`PartSetup::scale_pins`]): each thorax pin's point,
+    /// about the part's origin, times `by`, and its weights taken again over the
     /// part's rest. The original re-scales the point it keeps for the pin
     /// and derives the weights and world point from it.
     pub fn scale_chest_pins(&mut self, by: f32) {
@@ -5171,6 +5198,11 @@ impl Ragdoll {
         for p in &mut self.parts {
             p.start = p.positions;
             p.strain = 0.0;
+            // A plain part of a living body (a node with no bone of the
+            // skeleton) takes the rigid body's own step, as the original's
+            // living step hands it on: gravity, and the retention of how
+            // fast it moved, with no carry.
+            let carried = carried.filter(|_| !p.plain);
             let pull = carried
                 .and_then(|(tone, energy, carry, scale)| {
                     let a = lift::carry_share(p.bone, tone, energy, scale)?;
@@ -5198,6 +5230,7 @@ impl Ragdoll {
             let keep = match held {
                 Some(environment) => environment.retention(moved() * CM),
                 None => living
+                    .filter(|_| !p.plain)
                     .or(environment_keep)
                     .unwrap_or_else(|| limp_retention(moved() * CM)),
             };
@@ -5628,6 +5661,10 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
         let stance = drive.stance.max(muscle::MIN_STANCE);
         let vertical_only = drive.bearing.off_feet;
         for (p, target) in parts.iter_mut().zip(&drive.targets) {
+            // A plain part steps as a rigid body: no pose drive.
+            if p.plain {
+                continue;
+            }
             let gain = drive.pose_gain(p.bone);
             if gain.is_nan() || gain <= 0.0 {
                 continue;
