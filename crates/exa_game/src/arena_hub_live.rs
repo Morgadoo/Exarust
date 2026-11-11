@@ -188,7 +188,11 @@ impl Plugin for ArenaHubPlugin {
                     crate::hub_forms::hub_employee_kit_on_load,
                     crate::hub_forms::hub_arsenal_on_load,
                     crate::hub_forms::hub_stash_on_load,
-                    crate::hub_forms::hub_form_input,
+                    (
+                        crate::hub_forms::hub_form_input,
+                        crate::hub_forms::manage_table_script,
+                    )
+                        .chain(),
                     crate::loadout_kit::kit_input,
                     crate::loadout_kit::sync_kit,
                     hub_clicks,
@@ -1096,7 +1100,7 @@ impl HubShop<'_, '_> {
         &mut self,
         trade: &crate::hub_windows::ShopTrade,
         career: &mut crate::hub_windows::ArenaCareer,
-    ) {
+    ) -> Vec<(u32, Option<usize>)> {
         if career.goods_changed
             && let Some(mut possessions) = self.players.iter_mut().next()
         {
@@ -1107,7 +1111,7 @@ impl HubShop<'_, '_> {
             career.goods_changed = false;
         }
         let Some(stores) = self.stores.as_deref_mut() else {
-            return;
+            return Vec::new();
         };
         let kinds = self.kinds.as_deref();
         let objects = &mut *self.objects;
@@ -1179,11 +1183,21 @@ impl HubShop<'_, '_> {
             .iter()
             .map(|shelf| shelf.iter().map(Vec::len).sum())
             .collect();
+        let kits: Vec<(&str, &Vec<u32>, Vec<usize>)> = staff
+            .employees
+            .iter()
+            .zip(&career.company.roster)
+            .map(|(employee, member)| {
+                let worn = member.loadouts.iter().map(|l| l.worn.len()).collect();
+                (member.name.as_str(), &employee.kit, worn)
+            })
+            .collect();
         bevy::log::info!(
-            "arena trade: sold {:#x?} left the arsenal and its holders; bought (copy, shelf) {went:#x?} stowed; shelves hold {shelf_counts:?}; stash {:#x?}",
+            "arena trade: sold {:x?} left the arsenal and its holders; bought (copy, shelf) {went:x?} stowed; shelves hold {shelf_counts:?}; stash {:x?}; staff (name, kit, worn per loadout) {kits:x?}",
             trade.sold,
             stash
         );
+        went
     }
 
     /// Logs each copy the shelf holds with its own condition: an apparel
@@ -1381,10 +1395,13 @@ fn scripted_shop(
                 None
             };
             let done = traded.is_some();
-            if let Some(traded) = &traded {
-                shop.arena_trade(traded, &mut career);
-            }
+            // The card is the arsenal's copy (a level's item is promoted).
+            let copies = match &traded {
+                Some(traded) => shop.arena_trade(traded, &mut career),
+                None => Vec::new(),
+            };
             info!("shop script: trade {done} ({traded:x?})");
+            let id = copies.first().map_or(id, |&(copy, _)| copy);
             buy.bought = if done { id } else { 0 };
             buy.stage = if done && id != 0 { 2 } else { 0 };
             buy.wait = SHOP_SCRIPT_WAIT;
@@ -1523,7 +1540,7 @@ fn hub_clicks(
                         }
                         HubWindowKind::Shop => {
                             if let Some(trade) = windows.shop_click(local, &mut career) {
-                                shop.arena_trade(&trade, &mut career);
+                                let _ = shop.arena_trade(&trade, &mut career);
                             }
                         }
                         HubWindowKind::Manage | HubWindowKind::None => {}

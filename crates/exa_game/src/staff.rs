@@ -483,6 +483,17 @@ impl Staff {
         Some((trainer, students))
     }
 
+    /// The roster row a drop on `drop` (the row under the cursor counted
+    /// from 1, 0 for none) moves to: that row, the last row when there is
+    /// none, and never the manager's.
+    pub fn drop_target(&self, drop: i32) -> usize {
+        let target = match drop - 1 {
+            t if t < 0 => self.employees.len(),
+            t => (t as usize).max(1),
+        };
+        target.min(self.employees.len())
+    }
+
     /// Drag a roster row onto another. `row` is the dragged row (0 the
     /// manager, who does not move) and `drop` the row under the cursor
     /// counted from 1 (0 for none). The target is that row, the last row
@@ -500,11 +511,7 @@ impl Staff {
         if row == 0 || row > self.employees.len() {
             return false;
         }
-        let target = match drop - 1 {
-            t if t < 0 => self.employees.len(),
-            t => (t as usize).max(1),
-        };
-        let target = target.min(self.employees.len());
+        let target = self.drop_target(drop);
         let mut map: [u32; 11] = std::array::from_fn(|id| id as u32);
         let moved = self.employees.remove(row - 1);
         if row > target {
