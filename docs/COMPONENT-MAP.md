@@ -6,7 +6,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **81.2% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 72.7% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by function count (zero-byte imported names left out): 72.8% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **87.0%** reproduced.
 
 ## By section
@@ -74,7 +74,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TVCCloth | Physics, bodies & cloth | 30 | 96% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
 | TVXGIManager | Rendering & GPU | 29 | 97% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
 | TSimSector | Physics, bodies & cloth | 28 | 91% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
-| XA_SaveGames | Game modes, arena & session | 27 | 94% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
+| XA_SaveGames | Game modes, arena & session | 27 | 96% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
 | TGUIItemContainer | Items, materials & crafting | 26 | 90% | exa_game/src/item_container.rs; exa_items/src/card.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
 | TMesh | Rendering & GPU | 25 | 91% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
