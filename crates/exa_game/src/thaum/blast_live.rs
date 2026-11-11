@@ -80,8 +80,8 @@ use crate::effects::blast::{
     character_knock, contact_reach, contact_weight, hit_sim_points, limb_push, limb_terms,
     push_out, rebound,
 };
-use exa_physics::mesh_query::{self, Swept, front_push, swept_push, two_sided_point};
 use crate::player::CursorGround;
+use exa_physics::mesh_query::{self, Swept, front_push, swept_push, two_sided_point};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;

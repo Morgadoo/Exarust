@@ -260,6 +260,10 @@ pub struct PowerCaster {
     /// The body's two weapon hook slots, by the power id that set them
     /// last ([`HookSlots`]).
     pub hooks: HookSlots,
+    /// A character's Concentration as its record holds it (the skill's
+    /// word and its technique picks), from which its persistent slots are
+    /// counted again when the focus item comes or goes.
+    pub concentration: Option<(u16, Vec<u8>)>,
 }
 
 /// The body's weapon hook slots Force Strikes and Shock Weapons share: the
@@ -357,6 +361,7 @@ impl PowerCaster {
             was_dying: false,
             summoned: None,
             hooks: HookSlots::default(),
+            concentration: None,
         }
     }
 
@@ -391,7 +396,31 @@ impl PowerCaster {
             &concentration.techniques,
             caster.record.focus_item,
         );
+        caster.concentration = Some((concentration.points, concentration.techniques.to_vec()));
         Some(caster)
+    }
+
+    /// The focus-item check's result on the caster ([`crate::item_effects::focus_slot`]):
+    /// the body's slot bit follows the hands, a character's persistent
+    /// slots are counted again with or without the focus item, and when the
+    /// bit went the running powers past the slots are told to end
+    /// ([`super::tree::limit_running_powers`]). Returns whether one was.
+    /// [inf: the original assigns the whole item word (0x100 or 0); Exarust
+    /// keeps the word's other bits, which its armour pass sets apart.]
+    pub fn take_focus_slot(&mut self, slot: crate::item_effects::FocusSlot) -> bool {
+        use crate::item_effects::FOCUS_SLOT_BIT;
+        self.body.item_flags = (self.body.item_flags & !FOCUS_SLOT_BIT) | slot.word;
+        if let Some((points, picks)) = &self.concentration {
+            self.record.focus_item = slot.word & FOCUS_SLOT_BIT != 0;
+            self.body.slots = casting::slot_count(*points, picks, self.record.focus_item);
+        }
+        if !slot.lost {
+            return false;
+        }
+        self.sync_body();
+        let kept = super::tree::limit_running_powers(&mut self.body.powers, self.body.slots);
+        self.take_states();
+        !kept
     }
 
     /// What the armour pass's worn specials do to the caster's body: the
@@ -684,7 +713,10 @@ fn dispatch_domain(
 
 /// The level a cast's creators read: the physics world and the static
 /// colliders' records.
-type Level<'a> = (Option<&'a Physics>, Option<&'a exa_physics::StaticColliders>);
+type Level<'a> = (
+    Option<&'a Physics>,
+    Option<&'a exa_physics::StaticColliders>,
+);
 
 /// The context a cast's creator reads besides the body.
 struct CastContext {

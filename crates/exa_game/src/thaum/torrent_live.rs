@@ -59,8 +59,8 @@ use super::casting::{self, CastBody, CastHook, spend_tick};
 use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon};
 use crate::effects::blast::{EPSILON, HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
-    POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION,
-    Torrent, TorrentEvents, TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
+    POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION, Torrent,
+    TorrentEvents, TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
 };
 use crate::player::CursorGround;
 use crate::thaum::engine::lerp;
@@ -274,7 +274,12 @@ pub(crate) fn walk_torrent_mesh(
                         limb(&mut gathered, world, &point);
                     }
                     let sounds = &mut torrent.sounds;
-                    let hit = torrent_hit(point.life, point_life, sounds.loop_volume, sounds.loop_pitch);
+                    let hit = torrent_hit(
+                        point.life,
+                        point_life,
+                        sounds.loop_volume,
+                        sounds.loop_pitch,
+                    );
                     sounds.loop_volume = hit.left;
                     sounds.loop_pitch = hit.right;
                     let point = &mut torrent.records[index].points[k];
@@ -531,7 +536,8 @@ pub(crate) fn tick_torrents(
             // The sector's contacts in its step's order: the level, then
             // the bodies' parts.
             if let (Some(physics), Some(statics)) = (physics.as_deref(), statics.as_deref()) {
-                let hits = strike_level(&mut live.torrent, statics, physics, &places, &mut triangles);
+                let hits =
+                    strike_level(&mut live.torrent, statics, physics, &places, &mut triangles);
                 if 0 < hits {
                     debug!("torrent {entity:?} meets the level: {hits} meshes");
                 }
@@ -828,7 +834,10 @@ mod tests {
         let head = torrent.records[0].head;
         let at = torrent.records[0].points[head].at;
         let pushed = 30.0 + reach;
-        assert!((at.x - (35.0 + (pushed - 35.0) * ease)).abs() < 1e-3, "{at:?}");
+        assert!(
+            (at.x - (35.0 + (pushed - 35.0) * ease)).abs() < 1e-3,
+            "{at:?}"
+        );
         assert!(impulse.x < 0.0, "{impulse:?}");
         let moved: f32 = body.parts[0]
             .positions

@@ -2038,3 +2038,36 @@ fn strikes_and_shock_weapons_share_the_weapon_hooks() {
     hooks.clear();
     assert!(!hooks.item_is(STRIKES) && !hooks.strike_is(STRIKES));
 }
+
+/// The focus item's going tells the running powers past the slots to end:
+/// a character with Concentration's technique 3 keeps three with the item
+/// and two without, the third told to end (2).
+#[test]
+fn losing_the_focus_item_ends_the_powers_past_the_slots() {
+    use crate::item_effects::{FOCUS_ITEM_KIND, FOCUS_SLOT_BIT, focus_slot};
+    let mut caster = PowerCaster::new(&[]);
+    caster.concentration = Some((15_000, vec![3, 1, 4]));
+    let held = focus_slot(0, [Some(FOCUS_ITEM_KIND), None]);
+    assert!(!caster.take_focus_slot(held));
+    assert_eq!(caster.body.item_flags & FOCUS_SLOT_BIT, FOCUS_SLOT_BIT);
+    assert_eq!(caster.body.slots, 4);
+    for id in [0x10205, 0x20206, 0x20207, 0x2020B] {
+        push_active(
+            &mut caster,
+            id,
+            id,
+            READY,
+            ActiveClass::Vanish(crate::thaum::power::displacement::Vanish::new(
+                0, false, false, 0.0,
+            )),
+            0.0,
+            None,
+        );
+    }
+    let gone = focus_slot(caster.body.item_flags, [None, None]);
+    assert!(gone.lost);
+    assert!(caster.take_focus_slot(gone));
+    assert_eq!(caster.body.slots, 3);
+    let states: Vec<i32> = caster.active.iter().map(|e| e.state).collect();
+    assert_eq!(states, vec![READY, READY, READY, 2]);
+}

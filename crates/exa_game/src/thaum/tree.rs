@@ -94,7 +94,9 @@
 //! - **The slot budget** ([`limit_running_powers`]): the highest Concentration
 //!   technique of 2 to 4 among the skill's levels, one less without the
 //!   focus item, is how many running powers a body may keep; the rest are
-//!   told to end.
+//!   told to end. The focus-item check calls it when the hands' focus item
+//!   goes (`crate::item_ability::check_focus_items`, through
+//!   [`PowerCaster::take_focus_slot`](super::cast::PowerCaster::take_focus_slot)).
 //!
 //! - **Granting** ([`grant_power`]): the game's grant routine adds a power
 //!   to a record that holds Insight's seventh technique when its node's

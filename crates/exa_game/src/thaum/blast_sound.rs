@@ -122,7 +122,9 @@ pub(crate) fn sound_blasts(
             None => {
                 let charge = state
                     .charge
-                    .get_or_insert_with(|| bank.load_buffer(game, sources, BLAST_SETUP.charge_sound))
+                    .get_or_insert_with(|| {
+                        bank.load_buffer(game, sources, BLAST_SETUP.charge_sound)
+                    })
                     .map(|buffer| {
                         let handle = env.new_handle();
                         if env.play_buffer_attached(
@@ -162,14 +164,16 @@ pub(crate) fn sound_blasts(
                 .entry(name)
                 .or_insert_with(|| bank.load_set(game, sources, name));
             let played = env.play_set_attached(bank, set, voices.release, at, 0.0, pitch);
-            info!("blast {entity:?}: {name} at {:?} cm, pitch {pitch:.3}, played {played}", live.blast.centre);
+            info!(
+                "blast {entity:?}: {name} at {:?} cm, pitch {pitch:.3}, played {played}",
+                live.blast.centre
+            );
         }
         let frame = live.blast.frame(alpha);
         if let Some(charge) = voices.charge {
             match frame.charge_volume {
                 Some(volume) => {
-                    if let Some(voice) = env.handle_voice(charge).and_then(|id| env.voice_mut(id))
-                    {
+                    if let Some(voice) = env.handle_voice(charge).and_then(|id| env.voice_mut(id)) {
                         voice.position = at;
                         voice.gain = volume;
                     }
