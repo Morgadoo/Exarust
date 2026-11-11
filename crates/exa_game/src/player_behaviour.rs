@@ -227,8 +227,11 @@ pub struct Contact {
 /// within 12 m (`at` the positions, cm, compared across the ground): the
 /// closeness falls from 1 by `d · 0.00083333335` (d in cm) and stops at
 /// 0.99; the facing weight is `0.75 · (0.5 − 0.5·facing·dir) + 0.25 ·
-/// (0.5 − 0.5·cursor·dir)²` with `facing` the body's forward axis and
-/// `cursor` the cursor's direction; the score is half of each. The list
+/// (0.5 − 0.5·cursor·dir)²` with `facing` the body's forward axis,
+/// `cursor` the cursor's direction and `dir` the unit vector from the
+/// other to the player (the original subtracts the other's position from
+/// the player's), so a character straight ahead weighs 1 and one behind 0;
+/// the score is half of each. The list
 /// holds twelve: a new character takes the place of the lowest scoring one
 /// (the first of equals) when it scores higher.
 pub fn contacts(
@@ -240,7 +243,7 @@ pub fn contacts(
     let mut out: Vec<Contact> = Vec::with_capacity(CONTACTS);
     let dot = |a: Vec3, b: Vec3| (a.y * b.y + a.x * b.x) + a.z * b.z;
     for (body, at) in others {
-        let mut delta = at - player;
+        let mut delta = player - at;
         delta.y = 0.0;
         let d2 = (delta.y * delta.y + delta.x * delta.x) + delta.z * delta.z;
         if !(d2 < CONTACT_RANGE_CM * CONTACT_RANGE_CM) {
@@ -806,23 +809,24 @@ mod tests {
     fn the_contact_list_weighs_closeness_and_facing() {
         let here = Vec3::ZERO;
         let forward = Vec3::Z;
-        // 100 cm ahead of both: closeness 1 − 0.083333335; both weights 0.
+        // 100 cm ahead of both: closeness 1 − 0.083333335; both weights
+        // full (0.75 + 0.25).
         let c = contacts(here, forward, forward, [(1, Vec3::new(0.0, 0.0, 100.0))])[0];
         assert!((c.closeness - 0.916_666_7).abs() < 1e-6, "{c:?}");
-        assert!(c.facing.abs() < 1e-6, "{c:?}");
-        assert!((c.score - 0.458_333_35).abs() < 1e-6, "{c:?}");
-        // Behind both: 0.75 + 0.25.
+        assert!((c.facing - 1.0).abs() < 1e-6, "{c:?}");
+        assert!((c.score - 0.958_333_35).abs() < 1e-6, "{c:?}");
+        // Behind both: 0.
         let behind = contacts(here, forward, forward, [(1, Vec3::new(0.0, 0.0, -100.0))])[0];
-        assert!((behind.facing - 1.0).abs() < 1e-6, "{behind:?}");
-        // Behind the body, ahead of the cursor: 0.75; the other way round
+        assert!(behind.facing.abs() < 1e-6, "{behind:?}");
+        // Ahead of the body, behind the cursor: 0.75; the other way round
         // 0.25 (the cursor's part squared).
-        let c = contacts(here, -forward, forward, [(1, Vec3::new(0.0, 0.0, 100.0))])[0];
-        assert!((c.facing - 0.75).abs() < 1e-6, "{c:?}");
         let c = contacts(here, forward, -forward, [(1, Vec3::new(0.0, 0.0, 100.0))])[0];
+        assert!((c.facing - 0.75).abs() < 1e-6, "{c:?}");
+        let c = contacts(here, -forward, forward, [(1, Vec3::new(0.0, 0.0, 100.0))])[0];
         assert!((c.facing - 0.25).abs() < 1e-6, "{c:?}");
-        // Beside the cursor: (0.5)²·0.25 = 0.0625.
+        // Ahead of the body, beside the cursor: 0.75 + (0.5)²·0.25.
         let c = contacts(here, forward, Vec3::X, [(1, Vec3::new(0.0, 0.0, 100.0))])[0];
-        assert!((c.facing - 0.0625).abs() < 1e-6, "{c:?}");
+        assert!((c.facing - 0.8125).abs() < 1e-6, "{c:?}");
         // 12 m is the end of the list: it is not held.
         assert!(contacts(here, forward, forward, [(1, Vec3::Z * 1200.0)]).is_empty());
         assert_eq!(

@@ -180,7 +180,8 @@ pub struct Player;
     Stance,
     Locomotion,
     exa_items::possession::Possessions,
-    crate::player_practice::PlayerPractice
+    crate::player_practice::PlayerPractice,
+    exa_ai::combatant::PlayerContacts
 )]
 pub struct PlayerBody {
     pub combat: bool,
@@ -722,7 +723,8 @@ fn bridge_player_types(app: &mut App) {
         .bridge_copy_in::<crate::player::ChaseCamera>()
         .bridge_copy_in_resource::<crate::player_controls::PlaySession>()
         .bridge_copy_in_resource::<crate::player_controls::PlayerControl>()
-        .bridge_copy::<crate::player_practice::PlayerPractice>();
+        .bridge_copy::<crate::player_practice::PlayerPractice>()
+        .bridge_copy::<exa_ai::combatant::PlayerContacts>();
 }
 
 /// The start of play: the controls run and the AI's activation centre is

@@ -974,7 +974,10 @@ before the starters aim in each fixed step (`player::pick_player_target`,
 as its behaviour tick runs the auto-target right before its attack
 executor), while its steering reads the target the stance stored the tick
 before. Each behaviour tick, before the attack request, `player_practice`
-rebuilds the contact list, runs the late-swing check (an attack past 0.6
+rebuilds the contact list (also kept as `exa_ai::combatant::PlayerContacts`,
+the player's contacts the NPC perception's threat estimate reads; the facing
+weight is 1 for a character straight ahead, as the original subtracts the
+other's position from the player's), runs the late-swing check (an attack past 0.6
 of its clock, once a swing: the swing's state word gains `0x100000` with an
 engaged enemy in front, else `0x200000`) and one practice tick
 (`exa_ai::combat::practise`), keeping the paid practice count on
