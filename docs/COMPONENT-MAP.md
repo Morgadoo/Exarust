@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **81.6% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 73.1% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **81.7% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 73.2% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **87.0%** reproduced.
 
 ## By section
@@ -18,7 +18,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 82% | 1% |  |
 | World, levels & terrain | 454 | 174 | 31 | 81% | 0% |  |
-| Physics, bodies & cloth | 363 | 242 | 13 | 92% | 0% |  |
+| Physics, bodies & cloth | 363 | 242 | 13 | 93% | 0% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 84% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 82% | 0% | TArsenalContFrame |
@@ -27,7 +27,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Audio | 59 | 18 | 4 | 90% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 90% | 0% |  |
-| UI | 959 | 312 | 63 | 85% | 0% |  |
+| UI | 959 | 312 | 63 | 86% | 0% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -62,7 +62,7 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
-| TMotileDynamics | Physics, bodies & cloth | 121 | 95% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
+| TMotileDynamics | Physics, bodies & cloth | 121 | 96% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
 | XA_Arena | Game modes, arena & session | 71 | 96% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 99% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 99% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
@@ -81,7 +81,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Skinning | Characters, motion & animation | 25 | 91% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 92% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
 | TGSLines | UI | 24 | 89% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
-| SG_Thaum_Mind | Thaumaturgy & effects | 21 | 92% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
+| SG_GameGUI | UI | 22 | 90% | exa_ui/src/game_gui.rs; exa_ui/src/game_gui_test.rs |
 
 ## Combat rules
 
