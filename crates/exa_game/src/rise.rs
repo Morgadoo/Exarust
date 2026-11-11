@@ -168,56 +168,39 @@ pub fn rise_the_dead(
             exa_ai::manager::Frame::Rise => {}
             _ => continue,
         }
-        let Some(drive) = body.revival_drive() else {
-            debug!("{entity:?} is due to rise but its body never had muscles");
-            continue;
-        };
-        let mut word = flags.as_deref().copied().unwrap_or_default();
-        let empty = weapon_slots_empty(possessions, hands.as_deref());
         let red = fighter.health.red;
-        let Some(revival) = revive(&mut condition, &mut word, red, empty, now) else {
+        let parts = RevivedParts {
+            flags,
+            knock,
+            voice,
+            hands,
+            npc,
+            roles,
+            possessions,
+        };
+        let Some(revived) = revive_corpse(
+            &mut commands,
+            entity,
+            now,
+            &mut condition,
+            &mut fighter,
+            &mut body,
+            parts,
+        ) else {
             continue;
         };
-        fighter.health.yellow = revival.yellow;
-        match flags {
-            Some(mut f) => *f = word,
-            None => {
-                commands.entity(entity).insert(word);
-            }
-        }
-        match knock {
-            Some(mut k) => *k = revival.knock,
-            None => {
-                commands.entity(entity).insert(revival.knock);
-            }
-        }
-        let volume = fighter.stats.voice_volume;
-        if let Some(mut voice) = voice {
-            voice.volume = volume;
-        }
-        let (stance, scale) = (drive.race.stance, drive.stats.scale);
-        body.revive(drive);
-        // The unarmed set-up: the hands' refresh halves the fists' contact
-        // mobility and gives them the weapon bit again.
-        if revival.rearm
-            && let Some(mut hands) = hands
-        {
-            hands.set_changed();
-        }
-        // An AI brain applies its roles again (the original calls its
-        // controller's role hook only for an AI controller).
-        if let (Some(mut npc), Some(roles)) = (npc, roles) {
-            npc.roles_key = !exa_ai::brain::roles_key(roles);
-        }
         // The collapse is over: a later one starts afresh (its drop and its
         // collapse-start writes run again).
         commands.entity(entity).remove::<(DeathClock, Collapse)>();
         info!(
             "{entity:?} rises at {now} ms ({} ms after its death): red {red:.3}, yellow {:.3}, \
-             race stance {stance}, scale {scale}, voice volume {volume}, unarmed set-up {}",
+             race stance {}, scale {}, voice volume {}, unarmed set-up {}",
             now.wrapping_sub(clock.died_at_ms),
-            revival.yellow,
-            revival.rearm
+            revived.yellow,
+            revived.stance,
+            revived.scale,
+            revived.volume,
+            revived.rearm
         );
         debug!(
             "{entity:?} rise: glow material {:#06x} faded to {RISE_GLOW} (not drawn: no live \
@@ -225,6 +208,99 @@ pub fn rise_the_dead(
             RISE_GLOW_MATERIAL
         );
     }
+}
+
+/// The parts of a character the revive writes besides its condition, its
+/// fighter and its body.
+pub struct RevivedParts<'a> {
+    pub flags: Option<Mut<'a, StateFlags>>,
+    pub knock: Option<Mut<'a, KnockOut>>,
+    pub voice: Option<Mut<'a, CharacterVoice>>,
+    pub hands: Option<Mut<'a, Hands>>,
+    pub npc: Option<Mut<'a, exa_ai::brain::Npc>>,
+    pub roles: Option<&'a exa_ai::roles::Roles>,
+    pub possessions: Option<&'a Possessions>,
+}
+
+/// What a revive did, for the log.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Revived {
+    pub yellow: f32,
+    pub stance: f32,
+    pub scale: f32,
+    pub volume: f32,
+    pub rearm: bool,
+}
+
+/// The original's revive of a dead character, shared by the AI manager's
+/// rise and the Raise Dead and Command Dead casts: the character is
+/// knocked out at once ([`revive`]), its voice volume comes back, its limbs
+/// are muscled again with the drive the body had, empty hands are set up
+/// unarmed again and an AI brain applies its roles again. `None` when the
+/// body is not dead or never had muscles.
+pub fn revive_corpse(
+    commands: &mut Commands,
+    entity: Entity,
+    now: u32,
+    condition: &mut Condition,
+    fighter: &mut Fighter,
+    body: &mut Ragdoll,
+    parts: RevivedParts,
+) -> Option<Revived> {
+    let Some(drive) = body.revival_drive() else {
+        debug!("{entity:?} is to be revived but its body never had muscles");
+        return None;
+    };
+    let RevivedParts {
+        flags,
+        knock,
+        voice,
+        hands,
+        npc,
+        roles,
+        possessions,
+    } = parts;
+    let mut word = flags.as_deref().copied().unwrap_or_default();
+    let empty = weapon_slots_empty(possessions, hands.as_deref());
+    let revival = revive(condition, &mut word, fighter.health.red, empty, now)?;
+    fighter.health.yellow = revival.yellow;
+    match flags {
+        Some(mut f) => *f = word,
+        None => {
+            commands.entity(entity).insert(word);
+        }
+    }
+    match knock {
+        Some(mut k) => *k = revival.knock,
+        None => {
+            commands.entity(entity).insert(revival.knock);
+        }
+    }
+    let volume = fighter.stats.voice_volume;
+    if let Some(mut voice) = voice {
+        voice.volume = volume;
+    }
+    let (stance, scale) = (drive.race.stance, drive.stats.scale);
+    body.revive(drive);
+    // The unarmed set-up: the hands' refresh halves the fists' contact
+    // mobility and gives them the weapon bit again.
+    if revival.rearm
+        && let Some(mut hands) = hands
+    {
+        hands.set_changed();
+    }
+    // An AI brain applies its roles again (the original calls its
+    // controller's role hook only for an AI controller).
+    if let (Some(mut npc), Some(roles)) = (npc, roles) {
+        npc.roles_key = !exa_ai::brain::roles_key(roles);
+    }
+    Some(Revived {
+        yellow: revival.yellow,
+        stance,
+        scale,
+        volume,
+        rearm: revival.rearm,
+    })
 }
 
 /// Undoes go-limp on a body whose muscles came back (a rise, or the story

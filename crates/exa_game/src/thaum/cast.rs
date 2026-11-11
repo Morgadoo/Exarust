@@ -945,6 +945,14 @@ pub(crate) fn run_bar_commands(
                     }
                     _ => mind.pick.0,
                 };
+                // The casts read the target's condition, rules, feral level
+                // and health off its body.
+                let mind_live = mind_target.and_then(|t| {
+                    mind.live
+                        .get(t)
+                        .ok()
+                        .map(|(c, f)| crate::mind::runtime::MindLive::of(c, f))
+                });
                 let entry = tree.cast_slot(
                     &mut caster.record,
                     &mut caster.bar,
@@ -958,6 +966,7 @@ pub(crate) fn run_bar_commands(
                                 body,
                                 entity,
                                 mind_target,
+                                mind_live,
                                 &mut mind.minds,
                                 &mind_scene,
                             );
@@ -1015,6 +1024,16 @@ pub(crate) fn run_bar_commands(
                                 name: crate::mind::sight::SPIRIT_SCREEN_SOUND,
                                 volume: crate::mind::sight::SPIRIT_SCREEN_VOLUME,
                             },
+                        );
+                    }
+                    if let (crate::mind::casts::MindRequest::Raised { revival }, Some(target)) =
+                        (outcome.request, mind_target)
+                    {
+                        crate::mind::runtime::post_raise(
+                            mind.fixed.as_deref_mut(),
+                            &mut commands,
+                            target,
+                            revival,
                         );
                     }
                     if crate::mind::runtime::spirit_asked(&outcome) {
@@ -1092,6 +1111,8 @@ pub(crate) struct MindBar<'w, 's> {
     control: Res<'w, crate::mind::runtime::MindControl>,
     spirits: MessageWriter<'w, crate::mind::runtime::SpiritBodyAsked>,
     places: Query<'w, 's, &'static GlobalTransform>,
+    live: Query<'w, 's, (&'static Condition, Option<&'static exa_combat::Fighter>)>,
+    fixed: Option<ResMut<'w, exa_physics::sim_app::FixedCommands>>,
 }
 
 /// Where a cast starts: the clock, the caster's body and heading (yaw,

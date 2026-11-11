@@ -310,6 +310,40 @@ pub struct MindCastAnswer {
     pub outcome: Option<MindOutcome>,
 }
 
+/// What a cast reads off its target's body, as the original's casts read
+/// it straight from the body: the condition word, the rules, the feral
+/// level (the dead powers' decay) and the yellow and red health. The mind
+/// keeps a copy, which the bar refreshes before each cast.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindLive {
+    pub condition: u32,
+    pub rules: u32,
+    pub decay: f32,
+    pub yellow: f32,
+    pub red: f32,
+}
+
+impl MindLive {
+    pub fn of(condition: &Condition, fighter: Option<&Fighter>) -> Self {
+        Self {
+            condition: condition.0,
+            rules: fighter.map_or(0, |f| f.stats.rules.0),
+            decay: fighter.map_or(0.0, |f| f.stats.feral),
+            yellow: fighter.map_or(1.0, |f| f.health.yellow),
+            red: fighter.map_or(1.0, |f| f.health.red),
+        }
+    }
+
+    /// Writes the values on the target's mind.
+    pub fn write(&self, mind: &mut MindBody) {
+        mind.cast.condition = self.condition;
+        mind.rules = self.rules;
+        mind.decay = self.decay;
+        mind.yellow = self.yellow;
+        mind.red = self.red;
+    }
+}
+
 /// The bar's Mind dispatch: the front end (while the caster runs Control
 /// Mind only Control Mind is cast, which ends it) and the row's cast on the
 /// caster's body `body` at the picked `target`. The caster's mind list is
@@ -319,6 +353,7 @@ pub fn cast_mind(
     body: &mut CastBody,
     caster: Entity,
     target: Option<Entity>,
+    live: Option<MindLive>,
     minds: &mut Query<&mut MindBody>,
     scene: &MindScene,
 ) -> MindCastAnswer {
@@ -338,6 +373,9 @@ pub fn cast_mind(
             let Ok([mut mind, mut other]) = minds.get_many_mut([caster, target]) else {
                 return refused;
             };
+            if let Some(live) = live {
+                live.write(&mut other);
+            }
             std::mem::swap(body, &mut mind.cast);
             let outcome = casts::mind_cast(&row, cost, &mut mind, Some(&mut other), scene);
             std::mem::swap(body, &mut mind.cast);
@@ -798,14 +836,191 @@ pub fn tick_minds(
                 });
             }
             MindAction::LayDown(target) => {
-                let target = entity_of(target);
-                info!(
-                    "command dead: the raised body {target:?} lies down again \
-                     [not wired: the running game raises no corpse]"
-                );
+                if let Some(target) = entity_of(target) {
+                    commands.queue(move |world: &mut World| {
+                        if let Err(e) = world.run_system_cached_with(lay_down, target) {
+                            warn!("command dead: {e}");
+                        }
+                    });
+                }
             }
         }
     }
+}
+
+/// A raise the bar's cast asked for, run on the world that steps the
+/// bodies at the start of the next fixed step (the simulation's behind the
+/// bridge, where the bodies' condition, health and muscles live).
+pub fn post_raise(
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
+    commands: &mut Commands,
+    target: Entity,
+    revival: Option<casts::Revival>,
+) {
+    match fixed {
+        Some(fixed) => fixed.run(raise_corpse, (target, revival)),
+        None => commands.queue(move |world: &mut World| {
+            if let Err(e) = world.run_system_cached_with(raise_corpse, (target, revival)) {
+                warn!("raise dead: {e}");
+            }
+        }),
+    }
+}
+
+/// The dead powers' raise of a corpse, in the original's order: the loot
+/// panel open on the body closes (Exarust opens none on a corpse: logged),
+/// a body without decay is revived (its record's and its character's feral
+/// level become the revival's 0.2, its rules gain the decayed bit and its
+/// most energy follows), the body is revived as the AI manager's rise
+/// revives it ([`crate::rise::revive_corpse`]: knocked out at once, its
+/// muscles back, so it gets up), and its yellow and red health become a
+/// half and full, written over the revive's own yellow.
+#[allow(clippy::type_complexity)]
+pub fn raise_corpse(
+    In((entity, revival)): In<(Entity, Option<casts::Revival>)>,
+    mut commands: Commands,
+    ticks: Option<Res<BodyTicks>>,
+    mut bodies: Query<(
+        &mut Condition,
+        Option<&mut exa_combat::StateFlags>,
+        Option<&mut exa_combat::condition::KnockOut>,
+        &mut Fighter,
+        &mut exa_physics::body::Ragdoll,
+        Option<&mut exa_combat::voice::CharacterVoice>,
+        Option<&mut exa_character::held::Hands>,
+        Option<&mut Npc>,
+        Option<&exa_ai::roles::Roles>,
+        Option<&exa_items::possession::Possessions>,
+        Option<&mut exa_character::record::CharacterData>,
+    )>,
+) {
+    let now = ticks.map_or(0, |t| t.millis() as u32);
+    let Ok((
+        mut condition,
+        flags,
+        knock,
+        mut fighter,
+        mut body,
+        voice,
+        hands,
+        npc,
+        roles,
+        possessions,
+        data,
+    )) = bodies.get_mut(entity)
+    else {
+        warn!("raise dead: {entity:?} has no body to raise");
+        return;
+    };
+    if *condition != Condition::DEAD {
+        info!(
+            "raise dead: {entity:?} is no longer dead ({:#x}); nothing rises",
+            condition.0
+        );
+        return;
+    }
+    debug!("raise dead: no loot panel is open on {entity:?} (Exarust opens none on a corpse)");
+    if let Some(revival) = revival {
+        if let Some(mut data) = data {
+            data.record.feral = revival.decay;
+        }
+        fighter.stats.feral = revival.decay;
+        fighter.stats.rules.0 |= casts::DECAYED_RULE;
+        fighter.stats.max_energy = revival.most_energy;
+        info!(
+            "raise dead: {entity:?} is revived with decay {}: gait scale {}, pace {} ticks, \
+             most energy {}, stamina {} (the gait, pace and stamina are not wired)",
+            revival.decay,
+            revival.gait_scale,
+            revival.pace_ticks,
+            revival.most_energy,
+            revival.stamina
+        );
+    }
+    let parts = crate::rise::RevivedParts {
+        flags,
+        knock,
+        voice,
+        hands,
+        npc,
+        roles,
+        possessions,
+    };
+    let Some(revived) = crate::rise::revive_corpse(
+        &mut commands,
+        entity,
+        now,
+        &mut condition,
+        &mut fighter,
+        &mut body,
+        parts,
+    ) else {
+        return;
+    };
+    fighter.health.yellow = casts::RAISED_YELLOW;
+    fighter.health.red = casts::RAISED_RED;
+    commands.entity(entity).remove::<(
+        exa_combat::condition::DeathClock,
+        exa_combat::collapse::Collapse,
+    )>();
+    info!(
+        "raise dead: {entity:?} rises at {now} ms: yellow {} red {} (the revive's yellow {:.3}), \
+         race stance {}, scale {}, unarmed set-up {}",
+        casts::RAISED_YELLOW,
+        casts::RAISED_RED,
+        revived.yellow,
+        revived.stance,
+        revived.scale,
+        revived.rearm
+    );
+}
+
+/// Command Dead's end lays the raised body down again: it collapses as a
+/// lethal wound starts a collapse ([`exa_combat::collapse::start_collapse`]
+/// at its energy), and its dying tick then lets it die. The original also
+/// clears a body word beside it whose use is not traced (not reproduced).
+#[allow(clippy::type_complexity)]
+pub fn lay_down(
+    In(entity): In<Entity>,
+    mut commands: Commands,
+    mut bodies: Query<(
+        &mut Condition,
+        Option<&mut exa_combat::StateFlags>,
+        Option<&mut exa_anim::Animator>,
+        &mut exa_physics::body::Ragdoll,
+        Option<&mut exa_combat::collapse::Hands>,
+    )>,
+) {
+    let Ok((mut condition, flags, anim, mut body, hands)) = bodies.get_mut(entity) else {
+        return;
+    };
+    let Some(mut anim) = anim else {
+        info!("command dead: {entity:?} has no clip player yet; it does not lie down");
+        return;
+    };
+    let energy = body.drive.as_ref().map_or(0.0, |d| d.energy);
+    let mut word = flags.as_deref().copied().unwrap_or_default();
+    if !exa_combat::collapse::start_collapse(
+        &mut condition,
+        &mut word,
+        &mut anim,
+        Some(&mut body),
+        energy,
+        hands.map(Mut::into_inner),
+    ) {
+        info!("command dead: {entity:?} is collapsing or dead already");
+        return;
+    }
+    match flags {
+        Some(mut f) => *f = word,
+        None => {
+            commands.entity(entity).insert(word);
+        }
+    }
+    commands
+        .entity(entity)
+        .insert(exa_combat::collapse::Collapse::default());
+    info!("command dead: the raised body {entity:?} lies down again (energy {energy:.3})");
 }
 
 /// Ends the first entry `id` on `body` that `matches` (the original's
@@ -1375,26 +1590,50 @@ pub fn spirit_asked(outcome: &MindOutcome) -> bool {
     matches!(outcome.request, MindRequest::SpiritForm { .. })
 }
 
-/// The bar's Use on a body the player was handed (its status has the
-/// control bit `0x20_0000`): the original's cast entry casts nothing and
-/// asks its caller to end the control, which ends the held body's Control
-/// Mind or the spirit's Spirit Form.
+/// The control's end a cast while controlling another body asks for: the
+/// held body's Control Mind, or else the Spirit Form of the spirit that
+/// left it, is told to end. The two bodies are found on this world (the
+/// frame's: the player's control is the frame's), and the end is posted to
+/// the world that walks the powers, run at the start of its next step after
+/// that step's copies in. A write on the frame's copy of the power list
+/// could be overtaken there by a newer copy out of a free-running
+/// simulation and the end lost. Answers whether a body was found.
 pub fn end_control(world: &mut World) -> bool {
     let Some(held) = world.resource::<MindControl>().held else {
+        info!("mind: the control's end finds no held body");
         return false;
     };
-    if end_power(world, held, CONTROL_MIND) {
-        return true;
-    }
     let mut spirits = world.query::<(Entity, &SpiritOf)>();
-    let Some(spirit) = spirits
+    let spirit = spirits
         .iter(world)
         .find(|(_, of)| of.body == held)
-        .map(|(e, _)| e)
-    else {
-        return false;
+        .map(|(e, _)| e);
+    let run = move |world: &mut World| {
+        end_control_of(world, held, spirit);
     };
-    end_power(world, spirit, SPIRIT_FORM)
+    match world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
+        Some(mut fixed) => fixed.post(run),
+        None => run(world),
+    }
+    true
+}
+
+/// Ends the held body's Control Mind, or else its spirit's Spirit Form.
+pub fn end_control_of(world: &mut World, held: Entity, spirit: Option<Entity>) -> bool {
+    if end_power(world, held, CONTROL_MIND) {
+        info!("mind: {held:?}'s Control Mind is told to end");
+        return true;
+    }
+    if let Some(spirit) = spirit
+        && end_power(world, spirit, SPIRIT_FORM)
+    {
+        info!("mind: the Spirit Form of {spirit:?} (left {held:?}) is told to end");
+        return true;
+    }
+    warn!(
+        "mind: the control's end finds no Control Mind on {held:?} and no Spirit Form on {spirit:?}"
+    );
+    false
 }
 
 #[cfg(test)]
@@ -1715,6 +1954,40 @@ mod tests {
             world.get::<MindBody>(caster).unwrap().powers[0].state(),
             ENDING
         );
+    }
+
+    /// A cast while in the spirit asks the control's end: it is posted to
+    /// the world that walks the powers (behind the bridge the
+    /// simulation's), not written on this world's copy, and ends the
+    /// spirit's Spirit Form when it runs.
+    #[test]
+    fn the_control_end_is_posted_to_the_power_walk() {
+        let mut world = world();
+        world.init_resource::<exa_physics::sim_app::FixedCommands>();
+        let body = character(&mut world, true);
+        let spirit = character(&mut world, false);
+        world.entity_mut(spirit).insert(SpiritOf { body });
+        let entry = MindPower::new(
+            SPIRIT_FORM,
+            MindClass::Spirit(crate::thaum::power::mind::SpiritPower::new(0.001)),
+        );
+        world
+            .get_mut::<MindBody>(spirit)
+            .unwrap()
+            .powers
+            .push(entry);
+        world.resource_mut::<MindControl>().held = Some(body);
+        assert!(end_control(&mut world));
+        let state = |world: &World| world.get::<MindBody>(spirit).unwrap().powers[0].state();
+        assert_ne!(state(&world), ENDING);
+        let posts = world
+            .resource_mut::<exa_physics::sim_app::FixedCommands>()
+            .take_posts();
+        assert_eq!(posts.len(), 1);
+        for post in posts {
+            post(&mut world);
+        }
+        assert_eq!(state(&world), ENDING);
     }
 
     #[test]
