@@ -165,9 +165,14 @@ impl Plugin for EngineLogPlugin {
             PostUpdate,
             draw_overlay.before(exa_ui::gui_draw::render_frames),
         );
+        // The probe is captured by its system, not kept as a resource, so a
+        // probed run spawns the same entities as any other.
         if let Some(probe) = LogProbe::from_env() {
-            app.insert_resource(probe)
-                .add_systems(Update, run_log_probe);
+            app.add_systems(Update, move |frames: Res<bevy::diagnostic::FrameCount>| {
+                if frames.0 == probe.frame {
+                    log(probe.level, &probe.title, &probe.text);
+                }
+            });
         }
     }
 }
@@ -175,7 +180,7 @@ impl Plugin for EngineLogPlugin {
 /// A debug probe: `EXA_LOG_PROBE=<level>:<title>:<text>` logs that message
 /// through the hook on frame `EXA_LOG_PROBE_FRAME` (default 30), so the
 /// overlay, the status history, the log file and the boxes can be seen live.
-#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogProbe {
     pub level: i32,
     pub title: String,
@@ -205,12 +210,6 @@ impl LogProbe {
             .and_then(|f| f.parse().ok())
             .unwrap_or(30);
         Self::parse(&spec, frame)
-    }
-}
-
-fn run_log_probe(probe: Res<LogProbe>, frames: Res<bevy::diagnostic::FrameCount>) {
-    if frames.0 == probe.frame {
-        log(probe.level, &probe.title, &probe.text);
     }
 }
 
