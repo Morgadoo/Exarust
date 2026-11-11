@@ -85,6 +85,118 @@ pub fn refresh_encumbrance(
     }
 }
 
+/// The armour pass's worn-item rules, run again when a body's possessions
+/// change (an equip, an unequip or a swap) as the original runs the whole
+/// pass on every equipment refresh; the spawn ran them first:
+/// - the special kinds ([`exa_formats::encumbrance::WornSpecials`]): kind 2
+///   grants the second wind, 3/4/6 register their item effects, 4 marks
+///   the golem suit, 5 wards the mind, 7 quickens the focus;
+/// - the item-effect list: the pass first drops every worn item's entry,
+///   then registers the worn ones in wearing order; an item still worn
+///   keeps the bytes its entry carries;
+/// - the golem fix: a golem race's red regeneration is blocked unless it
+///   wears its core item, an item without an apparel section
+///   ([`exa_formats::character_stats::golem_rules`]).
+///
+/// A body's first frame keeps what its spawn set.
+#[allow(clippy::type_complexity)]
+pub fn refresh_worn_specials(
+    mut commands: Commands,
+    catalogue: Option<Res<ItemCatalogue>>,
+    mut bodies: Query<
+        (
+            Entity,
+            Ref<Possessions>,
+            &mut exa_combat::Fighter,
+            Option<&mut crate::item_effects::WornEffects>,
+            Option<&mut crate::thaum::cast::PowerCaster>,
+        ),
+        Changed<Possessions>,
+    >,
+) {
+    let Some(catalogue) = catalogue.as_deref() else {
+        return;
+    };
+    for (entity, possessions, mut fighter, effects, caster) in &mut bodies {
+        if possessions.is_added() {
+            continue;
+        }
+        let worn: Vec<(u32, Option<exa_formats::objdb::Burden>)> = possessions
+            .worn
+            .iter()
+            .map(|w| (w.id, catalogue.burden(w.id & ID_MASK)))
+            .collect();
+        let specials = exa_formats::encumbrance::WornSpecials::of_worn(
+            worn.iter().filter_map(|&(id, b)| Some((id, b?))),
+        );
+        let rules = exa_formats::character_stats::golem_rules(
+            fighter.stats.rules,
+            fighter.stats.golem_core,
+            worn.iter().filter(|(_, b)| b.is_none()).map(|&(id, _)| id),
+        );
+        if fighter.stats.rules != rules || fighter.second_wind.granted != specials.second_wind {
+            fighter.stats.rules = rules;
+            fighter.second_wind.granted = specials.second_wind;
+        }
+        let fresh = crate::item_effects::WornEffects::of_specials(&specials, rules.0);
+        match (effects, fresh) {
+            (Some(mut old), Some(mut new)) => {
+                for item in &mut new.items {
+                    if let Some(kept) = old.items.iter().find(|o| o.id == item.id) {
+                        *item = *kept;
+                    }
+                }
+                new.list.impacts = old.list.impacts;
+                new.list.ticks = old.list.ticks;
+                new.next_run_ms = old.next_run_ms;
+                if *old != new {
+                    *old = new;
+                }
+            }
+            (Some(mut old), None) => {
+                // Every worn item's entry is dropped; the list stays, empty.
+                if !old.list.entries.is_empty() || !old.items.is_empty() {
+                    old.list.entries.clear();
+                    old.items.clear();
+                }
+            }
+            (None, Some(new)) => {
+                commands.entity(entity).insert(new);
+            }
+            (None, None) => {}
+        }
+        let suit = specials
+            .effects
+            .iter()
+            .any(|item| item.special == exa_formats::objdb::Burden::GOLEM_SUIT);
+        if suit {
+            commands.entity(entity).insert(exa_combat::GolemSuit);
+        } else {
+            commands.entity(entity).remove::<exa_combat::GolemSuit>();
+        }
+        if specials.mind_ward {
+            commands.entity(entity).insert(exa_ai::brain::MindWarded);
+        } else {
+            commands
+                .entity(entity)
+                .remove::<exa_ai::brain::MindWarded>();
+        }
+        if let Some(mut caster) = caster {
+            let before = (caster.body.item_flags, caster.body.regen_bonus.to_bits());
+            let mut next = caster.clone();
+            next.apply_worn(&specials);
+            if (next.body.item_flags, next.body.regen_bonus.to_bits()) != before {
+                *caster = next;
+            }
+        }
+        debug!(
+            "armour pass on {entity:?}: rules {:#x}, second wind {}, ward {}, suit {suit}, \
+             focus bonus {}",
+            rules.0, specials.second_wind, specials.mind_ward, specials.focus_regen
+        );
+    }
+}
+
 /// The eleventh body slot: the armour pass reads a worn piece's display only
 /// while walking that node. A body without it still takes the physique offset.
 const HEAD_SLOT: usize = 10;
@@ -269,6 +381,7 @@ impl Plugin for EquipPlugin {
                 .before(refresh_encumbrance),
         )
         .add_systems(Update, refresh_encumbrance)
+        .add_systems(Update, refresh_worn_specials.after(refresh_encumbrance))
         .add_systems(Update, forget_collapsed_hands.before(refresh_encumbrance))
         .add_systems(
             FixedUpdate,
@@ -450,6 +563,60 @@ mod tests {
         }
         app.update();
         assert!((encumbrance(&app) - 0.525).abs() < 1e-6);
+    }
+
+    /// Putting on a worn item of special kind 2 grants the second wind,
+    /// taking it off takes it away; a golem's core (an item without an
+    /// apparel section) unblocks its red regeneration while it is worn.
+    #[test]
+    fn the_armour_pass_reruns_its_worn_rules_on_a_change() {
+        let mut body = vec![0u8; 0x220];
+        // The special kind byte of the item body.
+        body[0x214] = exa_formats::objdb::Burden::SECOND_WIND;
+        let mut file = Vec::new();
+        let mut section = Vec::new();
+        section.extend_from_slice(&0x1000u32.to_le_bytes());
+        section.extend_from_slice(&((8 + body.len()) as u32).to_le_bytes());
+        section.extend_from_slice(&body);
+        file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
+        for word in [10u32, 0, 0, section.len() as u32] {
+            file.extend_from_slice(&word.to_le_bytes());
+        }
+        file.extend_from_slice(&[0; 16]);
+        file.extend_from_slice(&section);
+        let db = exa_formats::rdb::Database::parse(&file).unwrap();
+        let catalogue = ItemCatalogue::of_database(&db);
+        let mut app = App::new();
+        app.insert_resource(catalogue).add_plugins(EquipPlugin);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.stats.golem_core = Some(500);
+        fighter.stats.rules = exa_formats::character_stats::BodyRules(0x160);
+        let e = app
+            .world_mut()
+            .spawn((Possessions::default(), fighter))
+            .id();
+        app.update();
+        let state = |app: &App| {
+            let f = app.world().get::<exa_combat::Fighter>(e).unwrap();
+            (f.second_wind.granted, f.stats.rules.0)
+        };
+        // The spawn's values stand on the first frame.
+        assert_eq!(state(&app), (false, 0x160));
+        let wear = |app: &mut App, ids: &[u32]| {
+            let mut entity = app.world_mut().entity_mut(e);
+            let mut possessions = entity.get_mut::<Possessions>().unwrap();
+            possessions.worn = ids
+                .iter()
+                .map(|&id| exa_formats::characters::ItemRef { id, flags: 0 })
+                .collect();
+        };
+        wear(&mut app, &[10, 500]);
+        app.update();
+        assert_eq!(state(&app), (true, 0x60));
+        wear(&mut app, &[]);
+        app.update();
+        assert_eq!(state(&app), (false, 0x160));
     }
 
     #[test]

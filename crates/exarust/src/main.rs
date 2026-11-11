@@ -1900,6 +1900,12 @@ fn main() -> AppExit {
     }
     let schedule_ambiguities = options.schedule_ambiguities;
     let mut app = App::new();
+    if exa_physics::exit_trace::enabled() {
+        // Dropped first with the frame's world: where its teardown starts.
+        app.insert_resource(exa_physics::exit_trace::ExitTraceMarker::<0>(
+            exa_physics::exit_trace::DropStage("the frame world's first resource"),
+        ));
+    }
     // The original holds a background window to 32 ms a frame (about 31 a
     // second) and runs the foreground one as fast as its pacing allows.
     // Winit's low-power reactive mode wakes on the window's own events and
@@ -1963,6 +1969,17 @@ fn main() -> AppExit {
     // The original's level-6 box for a graphics device that cannot run
     // the renderer, captioned with the window's title.
     message_box::install_gpu_failure_box(WINDOW_TITLE, !unattended);
+    // The engine's message hook: its level-6 and level-7 boxes, and the
+    // log file beside the settings files.
+    message_box::install_log_boxes(!unattended);
+    if !options.no_settings
+        && let Some(folder) = user_settings::folder()
+    {
+        exa_game::engine_log::set_log_file(Some(exa_game::engine_log::log_file_path(
+            &folder,
+            &data.project().name,
+        )));
+    }
     let offscreen = options.offscreen.clone();
     let mut plugins = DefaultPlugins
             .set(WindowPlugin {
@@ -2313,10 +2330,22 @@ fn main() -> AppExit {
             std::time::Duration::from_secs_f64(1.0 / 60.0),
         ));
     }
+    if exa_physics::exit_trace::enabled() {
+        use exa_physics::exit_trace::{DropStage, ExitTraceMarker, mark_exit_read};
+        app.insert_resource(ExitTraceMarker::<1>(DropStage(
+            "the frame world's last resource",
+        )))
+        .add_systems(Last, mark_exit_read);
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render.insert_resource(ExitTraceMarker::<2>(DropStage("the render world")));
+        }
+    }
     let exit = app.run();
+    exa_physics::exit_trace::stage("main: the app's run returned");
     if let Some(user) = &user {
         user.save_store_at_exit();
     }
+    exa_physics::exit_trace::stage("main: returns");
     exit
 }
 

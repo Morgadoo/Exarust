@@ -30,7 +30,11 @@ the clock is the fixed step's, a snapshot for the frame (lent before, it
 stayed in the free-running simulation and the line read zero). The workspace patches gpu-allocator
 ([`patches/gpu-allocator/EXARUST.md`](../../patches/gpu-allocator/EXARUST.md))
 so those buffers stay out of a small BAR window: several games sharing the
-GPU no longer leave one of them writing its uploads at 0.5 GB/s. It grows into
+GPU no longer leave one of them writing its uploads at 0.5 GB/s. It also patches rodio
+([`patches/rodio/EXARUST.md`](../../patches/rodio/EXARUST.md)): its
+resampler's u32 products wrapped for a pitched voice and sent the audio thread
+through 2^32 frames, and the output stream's drop at exit waited 80-125 s for
+it (`EXA_EXIT_TRACE=1` traces the exit, `exa_physics::exit_trace`). It grows into
 the full game as `exa_game` gains modes (see `docs/PLAN.md`). `--frames n`
 without `--screenshot` ends a run after n frames from the end of the load
 (a grid quadrant's game then exits). The debug
@@ -82,7 +86,9 @@ framed window's size and position restored, and minimises a full-screen
 window that loses the focus (not in unattended runs). `src/message_box.rs`
 shows the original's modal message box through `zenity` or `kdialog`: the
 level-6 "minimum requirements" box when Bevy's renderer finds no usable
-graphics adapter. A background window runs on
+graphics adapter, and every level-6 or level-7 message of the engine's
+message hook (`exa_game::engine_log`), whose log file the binary names
+at start-up: `<project>.log` in the user folder, unless `--no-settings`. A background window runs on
 winit's low-power 32 ms update. A launch full screen is a borderless window
 over the primary display; the settings' `ScreenWidth`/`ScreenHeight` can
 ask for an exclusive display mode instead (`exa_game::hw_config`). The

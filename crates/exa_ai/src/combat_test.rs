@@ -1225,6 +1225,7 @@ fn every_place_costs_its_ground_its_danger_and_its_closeness() {
         &d,
         &mut contacts,
         &mut Crowded,
+        &mut 0,
     );
     // Ground 1, danger 0.5 × 3, closeness 1 × 2; where it stands the
     // contact is weighed as the foe, whose closeness is added once.
@@ -1288,6 +1289,7 @@ fn a_step_change_costs_less_once_a_foot_has_landed() {
             &drives,
             &mut contacts,
             &mut Crowded,
+            &mut 0,
         )
         .places
     };
@@ -1378,6 +1380,7 @@ fn a_nearer_character_is_the_foe_for_the_steps_after() {
         &d,
         &mut contacts,
         &mut Beside,
+        &mut 0,
     );
     assert_eq!(found.switched, Some(1));
     assert!(!contacts[0].is_foe);
@@ -1920,6 +1923,65 @@ fn a_fighter_with_powers_casts_at_the_first_place_and_stops_the_cast() {
     assert!(t.cast_stopped);
     assert!(!mind.casting);
     assert_eq!(t.cast, None);
+}
+
+/// The cast sits at the first place, after its contact pass: a pass that
+/// keeps the foe may cast (the attack drive is cleared for the places), a
+/// pass that drops it (nothing pressed) casts nothing, and a search that
+/// starts past the first place casts nothing either.
+#[test]
+fn a_first_place_that_drops_the_foe_casts_nothing() {
+    let (mut me, foe) = duel();
+    me.power_slots[0] = 1;
+    me.power_slots[1] = 2;
+    me.power_pool = 1.0;
+    let d = Drives {
+        attack: 3.0,
+        strike: 0.0,
+        spacing: 0.0,
+        committed: false,
+        set_flags: 0,
+    };
+    let plan = |first| Footwork {
+        first,
+        last: 1,
+        mode: 0,
+        change: 5.0,
+        queue_taken: false,
+    };
+    let mut field = Casting { running: false };
+    let mut roll = 0;
+    let run = |contacts: &mut [Contact], first, roll: &mut u32, field: &mut Casting| {
+        let mut mind = CombatMind {
+            level: 3,
+            ..CombatMind::default()
+        };
+        search(
+            &mut mind,
+            &me,
+            Some(&foe),
+            NOVICE,
+            plan(first),
+            &d,
+            contacts,
+            field,
+            roll,
+        )
+    };
+    let cast = (0..400).find_map(|_| {
+        let found = run(&mut [foe_contact(3)], 0, &mut roll, &mut field);
+        found.cast.is_some().then_some(found)
+    });
+    let found = cast.expect("a cast in 400 searches");
+    assert_eq!(found.attack, 0.0);
+    for _ in 0..400 {
+        let found = run(&mut [], 0, &mut roll, &mut field);
+        assert_eq!(found.retarget, Some(None));
+        assert!(found.cast.is_none());
+        assert_eq!(found.attack, 3.0);
+        let found = run(&mut [foe_contact(3)], 1, &mut roll, &mut field);
+        assert!(found.cast.is_none());
+    }
 }
 
 #[test]

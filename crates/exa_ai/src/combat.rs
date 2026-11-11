@@ -49,6 +49,11 @@
 //!   change from the step it is in, every contact's danger and closeness,
 //!   and against the foe the strike drive and the approach; the cheapest
 //!   place to stand and the cheapest place to strike from compete.
+//! - **The cast.** At the first place, after its contact pass (which may
+//!   take a new foe or drop it), a fighter that is not attacking and still
+//!   has a foe may choose a power, which clears the attack drive for the
+//!   places; the footwork's plan was made with the drive before it. A
+//!   search that starts past the first place casts nothing.
 //! - **The attack.** A strike place wins when it is cheaper than standing
 //!   by at least 2 (1 committed), no friend stands in the way and, outside
 //!   a swing, a skilled fighter does not step in further than its skill
@@ -1337,8 +1342,13 @@ pub struct Search {
     /// A character contact that replaced the foe during the place loop, so
     /// the places after the first are scored against it.
     pub switched: Option<usize>,
-    /// The attack drive after the search (a long side step halves it).
+    /// The attack drive after the search (a long side step halves it, a
+    /// cast clears it).
     pub attack: f32,
+    /// A power the first place chose to cast.
+    pub cast: Option<cast::Choice>,
+    /// The cast in progress ended at the first place.
+    pub cast_stopped: bool,
 }
 
 /// Weighs the places. `contacts` are the brain's; the foe's is marked.
@@ -1352,8 +1362,11 @@ pub fn search(
     drives: &Drives,
     contacts: &mut [Contact],
     field: &mut dyn Field,
+    roll: &mut u32,
 ) -> Search {
     let k = traits.skill;
+    let mut cast = None;
+    let mut cast_stopped = false;
     let side = side_of(me.look);
     let mut attack = drives.attack;
     let mut places = vec![Place::default(); 17];
@@ -1500,6 +1513,41 @@ pub fn search(
                 places[at].total += s.close * 2.0;
             }
         }
+        if i == 0 {
+            // The cast, at the first place after its contact pass (a
+            // fighter whose search starts past it casts nothing this
+            // tick): only a body that is not attacking and still has a foe
+            // looks at it, so a contact pass that dropped the foe (nothing
+            // pressed, or a barricade or a blast took its place) casts
+            // nothing. A cast running for more than a second (64-bit
+            // compare, no wrap) is torn down once the power system is done
+            // with it; otherwise a fighter not yet casting may choose one,
+            // which clears the attack drive for the places.
+            let has_foe = match retarget {
+                Some(Some(c)) => contacts[c].character,
+                Some(None) => false,
+                None => foe.is_some(),
+            };
+            if me.condition != ATTACKING && has_foe {
+                if me.condition == CASTING {
+                    if u64::from(mind.cast_start_ms) + 1000 < u64::from(me.now_ms)
+                        && !field.cast_running()
+                    {
+                        mind.casting = false;
+                        cast_stopped = true;
+                    }
+                } else if !mind.casting
+                    && let Some(powers) = field.powers()
+                    && let Some(choice) =
+                        cast::choose(&mut mind.casts, &me.power_slots, me, powers, roll)
+                {
+                    mind.casting = true;
+                    mind.cast_start_ms = me.now_ms;
+                    cast = Some(choice);
+                    attack = 0.0;
+                }
+            }
+        }
         if foe_seen {
             if foe_unreachable {
                 places[at].approach = 0.0;
@@ -1576,6 +1624,8 @@ pub fn search(
         retarget,
         switched,
         attack,
+        cast,
+        cast_stopped,
     }
 }
 
@@ -2148,39 +2198,24 @@ pub fn tick(
         out.exit = Some(Exit::Charge);
         return out;
     }
-    // The cast, at the first place in the original, after that place's
-    // contact pass: no place term before it reads the attack drive, so
-    // clearing the drive here is the same. Only a body that is not
-    // attacking and has a foe looks at it. A cast running for more than a
-    // second (64-bit compare, no wrap) is torn down once the power system
-    // is done with it; otherwise a fighter not yet casting may choose one.
-    // [Not kept: the original's place pass may drop the foe first, and then
-    // casts nothing.]
-    if me.condition != ATTACKING && foe.is_some() {
-        if me.condition == CASTING {
-            if u64::from(mind.cast_start_ms) + 1000 < u64::from(me.now_ms)
-                && !world.field.cast_running()
-            {
-                mind.casting = false;
-                out.cast_stopped = true;
-            }
-        } else if !mind.casting
-            && let Some(powers) = world.field.powers()
-            && let Some(choice) = cast::choose(&mut mind.casts, &me.power_slots, me, powers, roll)
-        {
-            mind.casting = true;
-            mind.cast_start_ms = me.now_ms;
-            out.cast = Some(choice);
-        }
-    }
-    let d = if out.cast.is_some() {
-        Drives { attack: 0.0, ..d }
-    } else {
-        d
-    };
+    // The footwork's plan reads the attack drive as the drives left it; the
+    // cast, at the first place of the search, clears it for the places
+    // ([`search`]).
     let plan = footwork(mind, me, &d, k, roll);
     out.marks.queue_taken = plan.queue_taken;
-    let found = search(mind, me, foe, traits, plan, &d, world.contacts, world.field);
+    let found = search(
+        mind,
+        me,
+        foe,
+        traits,
+        plan,
+        &d,
+        world.contacts,
+        world.field,
+        roll,
+    );
+    out.cast = found.cast;
+    out.cast_stopped = found.cast_stopped;
     if let Some(c) = found.switched {
         let contact = &world.contacts[c];
         // A new foe, already the one the remaining places were scored

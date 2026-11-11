@@ -70,11 +70,46 @@ pub const WRAITH: u8 = 14;
 const GOLEM_BOSS: u8 = 17;
 /// Race bytes with this bit are golems.
 const GOLEM_BIT: u8 = 0x10;
-/// Race flag bits (first word) that make a golem, for the armour pass,
-/// and the worn item (without armour) that lets each kind regenerate red
-/// health: item 500 for `0x2000` golems, 431 for `0x1000` ones.
-const GOLEM_FLAGS: u32 = 0x3000;
-const GOLEM_CORES: [(u32, u32); 2] = [(0x2000, 500), (0x1000, 431)];
+/// The race flag bits (first word `0x3000`) that make a golem for the
+/// armour pass, and the worn item (without armour) that lets each kind
+/// regenerate red health: the `0x2000` golems' core item, and the `0x1000` golems' (tested only
+/// when the race lacks `0x2000`).
+const GOLEM_CORE_2000: u32 = 500;
+const GOLEM_CORE_1000: u32 = 431;
+
+/// The worn item whose presence lets a golem race regenerate red health, as
+/// the armour pass tests it: a race with flag `0x2000` needs item 500,
+/// otherwise one with `0x1000` needs item 431; any other race has none.
+pub fn golem_core(race_flags: u32) -> Option<u32> {
+    if race_flags & 0x2000 != 0 {
+        Some(GOLEM_CORE_2000)
+    } else if race_flags & 0x1000 != 0 {
+        Some(GOLEM_CORE_1000)
+    } else {
+        None
+    }
+}
+
+/// The armour pass's golem fix on `rules`, run on every equip refresh: a
+/// golem race (`core` is its [`golem_core`]) has its red regeneration
+/// blocked ([`BodyRules::NO_RED_REGENERATION`]) unless it wears its core
+/// item; `bare` are the worn item ids that have no apparel section (the
+/// pass tests the id only for such an item, by the full id word). Another
+/// race keeps its rules.
+pub fn golem_rules(
+    rules: BodyRules,
+    core: Option<u32>,
+    bare: impl IntoIterator<Item = u32>,
+) -> BodyRules {
+    let Some(core) = core else {
+        return rules;
+    };
+    let mut bits = rules.0 | BodyRules::NO_RED_REGENERATION;
+    if bare.into_iter().any(|id| id == core) {
+        bits &= !BodyRules::NO_RED_REGENERATION;
+    }
+    BodyRules(bits)
+}
 /// First race flag word: may rise again (with the story), steadfast.
 const RACE_MAY_RISE: u32 = 0x8;
 const RACE_STEADFAST: u32 = 0x20;
@@ -319,6 +354,10 @@ pub struct CharacterStats {
     pub yellow: f32,
     pub red: f32,
     pub rules: BodyRules,
+    /// The worn item that lets its golem race regenerate red health
+    /// ([`golem_core`]); `None` for a race that is no golem. The armour
+    /// pass re-tests it on every equip refresh ([`golem_rules`]).
+    pub golem_core: Option<u32>,
     /// Deflection is learnt: worn armour covers more of each part.
     pub deflection: bool,
     /// Encumbrance (0…1) from what it wears and the shield it holds, which
@@ -460,6 +499,7 @@ impl CharacterStats {
             yellow: Pools::restore(pools.yellow, max_health),
             red: Pools::restore(pools.red, max_health),
             rules: rules(byte, f, flags, stats.flags2, spawn.story, &record.worn),
+            golem_core: golem_core(flags),
             deflection: record.deflection(),
             encumbrance: 0.0,
             quadruped: stats.flags2 & QUADRUPED != 0,
@@ -627,16 +667,14 @@ fn rules(
         bits &= !(BodyRules::TAKES_REMEDIES | BodyRules::MAY_RISE);
         bits |= BodyRules::NO_LASTING_WOUNDS;
     }
-    if flags & GOLEM_FLAGS != 0 {
-        bits |= BodyRules::NO_RED_REGENERATION;
-        let cored = GOLEM_CORES
-            .iter()
-            .any(|&(kind, core)| flags & kind != 0 && worn.iter().any(|item| item.id == core));
-        if cored {
-            bits &= !BodyRules::NO_RED_REGENERATION;
-        }
-    }
-    BodyRules(bits)
+    // The spawn's armour pass: the record's worn ids (the item database is
+    // not at hand here, so every worn item is taken as having no apparel
+    // section; the cores have none).
+    golem_rules(
+        BodyRules(bits),
+        golem_core(flags),
+        worn.iter().map(|item| item.id),
+    )
 }
 
 #[cfg(test)]

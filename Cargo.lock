@@ -2534,6 +2534,7 @@ version = "0.0.1"
 dependencies = [
  "bevy",
  "exa_formats",
+ "libc",
  "rapier3d",
 ]
 
@@ -4800,8 +4801,6 @@ checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 [[package]]
 name = "rodio"
 version = "0.22.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0a536bb79db59098ef71a4dd4246c02eb87b316deceb1b68e0cde7167ec01eb"
 dependencies = [
  "cpal",
  "dasp_sample",

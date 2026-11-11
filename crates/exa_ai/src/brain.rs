@@ -143,6 +143,19 @@ pub struct Unseen;
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct MindWarded;
 
+/// A flee start that began a flight (for the log).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FleeStarted {
+    /// The contact it flees.
+    pub from: u64,
+    pub level_before: i32,
+    /// Its courage and alarm before and after the start.
+    pub courage: (f32, f32),
+    pub alarm: (f32, f32),
+    /// The threat's room (−1 unknown).
+    pub threat_room: i32,
+}
+
 /// A level character's brain.
 #[derive(Component, Debug, Clone)]
 pub struct Npc {
@@ -196,6 +209,18 @@ pub struct Npc {
     pub nearby: Vec<u64>,
     /// The rooms a flight has left through (eight at most).
     pub fled: crate::flee::FledRooms,
+    /// The threat's room the flee start remembered (−1 unknown).
+    pub flee_threat_room: i32,
+    /// The last flee start that began a flight (the brain was not at level
+    /// 4): its courage and alarm before and after, for the log.
+    pub flee_started: Option<FleeStarted>,
+    /// The object a flight runs from (the flee start's object focus, for a
+    /// threat that is not a character); a character threat is the
+    /// duellist's target instead.
+    pub flee_focus: Option<u64>,
+    /// The clock (ms) the flee state's end sets 10-20 s out [?: what reads
+    /// it is not ported].
+    pub flee_calm_until_ms: u32,
     /// The contact sense its race uses ([`personality::Sense`]).
     pub sense: personality::Sense,
     /// The attach found a statue: its contact sense clears what it sees.
@@ -382,6 +407,10 @@ impl Npc {
             room: RoomCell::default(),
             nearby: Vec::new(),
             fled: crate::flee::FledRooms::default(),
+            flee_threat_room: -1,
+            flee_started: None,
+            flee_focus: None,
+            flee_calm_until_ms: 0,
             sense: personality::Sense::Base,
             statue: false,
             guard_home: None,
@@ -582,7 +611,13 @@ impl Npc {
                 morale: &mut morale,
                 level: self.integration.level,
                 fresh: self.integration.fresh,
-                foe: if in_combat { sight.foe } else { None },
+                // The body's target: the foe while in combat, and the
+                // threat a flight runs from (the flee start writes it).
+                foe: if in_combat || self.integration.level == 4 {
+                    sight.foe
+                } else {
+                    None
+                },
                 asleep,
                 in_combat,
                 attended: None,
@@ -597,6 +632,39 @@ impl Npc {
             &mut way_out,
         );
         self.fled = fled;
+        let mut report = report;
+        if let contacts::Outcome::Flee { id, .. } = report.outcome {
+            // The pass's flee outcome calls the flee start with the level
+            // the brain had before the pass (the pass keeps its pick's level
+            // apart and writes none itself): a fresh flight halves the
+            // courage and adds 2 to the alarm the pass has just raised; the
+            // target is fresh and the threat's room remembered.
+            let level_before = self.integration.level;
+            let mut level = level_before;
+            let mut flight = contacts::Morale {
+                courage: self.morale.courage,
+                stress: report.stress,
+                ..contacts::Morale::default()
+            };
+            let threat_room = visible
+                .iter()
+                .find(|s| s.contact.id == id)
+                .map_or(-1, |s| s.room);
+            self.flee_threat_room = crate::flee::start(&mut level, &mut flight, threat_room);
+            if level_before != 4 {
+                self.flee_started = Some(FleeStarted {
+                    from: id,
+                    level_before,
+                    courage: (self.morale.courage, flight.courage),
+                    alarm: (report.stress, flight.stress),
+                    threat_room,
+                });
+            }
+            self.morale.courage = flight.courage;
+            report.stress = flight.stress;
+            report.level = level;
+            self.integration.fresh = true;
+        }
         self.integration.level = report.level;
         // The alarm mean raises the alarm the next drift decays.
         self.integration.alarm = report.stress;
@@ -794,6 +862,7 @@ pub fn perceive_all(
             (
                 Option<&exa_physics::body::locomotion::Locomotor>,
                 Option<&StateFlags>,
+                Option<&combatant::PlayerContacts>,
             ),
         )>,
         Query<(
@@ -836,7 +905,7 @@ pub fn perceive_all(
                 child,
                 npc,
                 hidden,
-                (locomotor, flags),
+                (locomotor, flags, player_contacts),
             )| {
                 let phase = anim
                     .zip(motions.as_deref())
@@ -872,7 +941,14 @@ pub fn perceive_all(
                         combatant.is_some_and(|c| c.movement.flags & 0x4 != 0),
                     ),
                     speed,
-                    contacts: combatant.map_or_else(Vec::new, |c| c.contacts.clone()),
+                    // A brain's contacts, or the player behaviour's list
+                    // (the original's player behaviour is a combatant too,
+                    // and the threat estimate reads its contacts).
+                    contacts: match (combatant, player_contacts) {
+                        (Some(c), _) => c.contacts.clone(),
+                        (None, Some(p)) => p.0.clone(),
+                        (None, None) => Vec::new(),
+                    },
                     roles: roles.cloned(),
                     ai: npc.is_some_and(|n| n.race_ai),
                 }
@@ -1197,6 +1273,37 @@ pub fn perceive_all(
     }
 }
 
+/// Takes into the brain the concern and the hostility written on its
+/// combatant's contacts since the AI tick last copied the brain's there
+/// ([`Contact::mirrored`]): a hit reaction ([`Combatant::react_to_hit`]), a
+/// blast's, torrent's or stamped body's `AddConcern`. A contact the brain
+/// does not hold keeps the value on the combatant, which a later admission
+/// takes. Bit-exact compares: a NaN written is a change.
+pub fn adopt_contact_writes(npc: &mut Npc, combatant: &Combatant, talking: &str) {
+    for theirs in &combatant.contacts {
+        let concern_changed = theirs.concern.to_bits() != theirs.mirrored[0].to_bits();
+        let hostility_changed = theirs.hostility.to_bits() != theirs.mirrored[1].to_bits();
+        if !concern_changed && !hostility_changed {
+            continue;
+        }
+        let id = theirs.character.to_bits();
+        let Some(c) = npc.contacts.iter_mut().find(|c| c.id == id) else {
+            continue;
+        };
+        if concern_changed && c.concern.to_bits() != theirs.concern.to_bits() {
+            debug!(
+                target: "exa_ai::pass",
+                "{talking}: concern for {:?} written {:.3} -> {:.3}",
+                theirs.character, c.concern, theirs.concern
+            );
+            c.concern = theirs.concern;
+        }
+        if hostility_changed {
+            c.hostility = theirs.hostility;
+        }
+    }
+}
+
 /// The body's statue byte changed: the sleep entry sets it (with the gait
 /// word 2), a knock-out clears it (with the gait word 0). The game keeps
 /// the two as the body's statue rest, which the posture stage turns into
@@ -1281,6 +1388,7 @@ pub fn ai_tick(
             Option<&mut StateFlags>,
             Option<&mut exa_physics::body::Ragdoll>,
             Option<&mut Roles>,
+            Option<&CharacterId>,
         ),
         Option<&GlobalTransform>,
         &Fighter,
@@ -1289,6 +1397,7 @@ pub fn ai_tick(
         Option<&mut Transform>,
         Option<&crate::presence::Presence>,
     )>,
+    mut ends: Option<ResMut<Messages<exa_script::EndConversationsOf>>>,
 ) {
     // One pass a tick: a second frame on the same body tick does nothing
     // (the original's AI tick is called from the body tick).
@@ -1319,7 +1428,7 @@ pub fn ai_tick(
         mut npc,
         mut combatant,
         mut duellist,
-        (mut flags, mut body, mut roles),
+        (mut flags, mut body, mut roles, character_id),
         gt,
         fighter,
         mut condition,
@@ -1365,6 +1474,12 @@ pub fn ai_tick(
         if condition.0 & combatant::CONDITION_OUT != 0 {
             continue;
         }
+        // The original keeps one contact record, which a hit reaction, a
+        // blast's or a stamped body's concern and a script write in place.
+        // Exarust writes those on the combatant's contact, so a concern or
+        // hostility there that differs from what this tick copied last is
+        // taken into the brain before it integrates and classifies.
+        adopt_contact_writes(&mut npc, &combatant, talking);
         let target = duellist
             .as_deref()
             .map(|d| foe_of(d.target, |e| fighters.contains(e), &children))
@@ -1517,6 +1632,91 @@ pub fn ai_tick(
                 &mut roll,
                 &place,
             );
+            debug!(
+                target: "exa_ai::pass",
+                "{talking}: target pass {:?}, level {}, courage {:.3}, stress {:.3}, alarm {:.3}, \
+                 most concern {:.3}, most concern target {:.3}, most contact alarm {:.3}, \
+                 room {} with {} exits",
+                npc.pass.outcome,
+                npc.integration.level,
+                npc.morale.courage,
+                npc.morale.stress,
+                npc.morale.alarm,
+                npc.contacts.iter().map(|c| c.concern).fold(0.0f32, f32::max),
+                npc.contacts
+                    .iter()
+                    .map(|c| c.concern_target)
+                    .fold(0.0f32, f32::max),
+                npc.contacts.iter().map(|c| c.alarm).fold(0.0f32, f32::max),
+                npc.level_room,
+                exits.len()
+            );
+            // The flight's room graph as the classify's way out reads it
+            // (`RUST_LOG=exa_ai::flee_way=debug`).
+            debug!(
+                target: "exa_ai::flee_way",
+                "{talking}: at ({:.0}, {:.0}) cm, target at ({:.0}, {:.0}) cm, room {} (home {}), \
+                 exits {:?}, fled {:?}",
+                observer_cm.x,
+                observer_cm.z,
+                target_cm.x,
+                target_cm.z,
+                npc.level_room,
+                npc.previous_room,
+                exits
+                    .iter()
+                    .map(|e| (e.room, e.point.x as i32, e.point.y as i32, e.shut))
+                    .collect::<Vec<_>>(),
+                npc.fled
+            );
+            // The pass's flee outcome, in the original's order: the body's
+            // conversations end, the contact is attended (the report's
+            // attention) and the flee start writes the body's target (a
+            // character) or the object focus, the flee state replacing the
+            // combat state.
+            if let contacts::Outcome::Flee { id, .. } = npc.pass.outcome {
+                if let (Some(ends), Some(who)) = (ends.as_deref_mut(), character_id) {
+                    ends.write(exa_script::EndConversationsOf(who.0));
+                }
+                let character = visible
+                    .iter()
+                    .find(|s| s.contact.id == id)
+                    .is_none_or(|s| s.character);
+                if let Some(threat) = Entity::try_from_bits(id) {
+                    if character {
+                        npc.flee_focus = None;
+                        if let Some(duellist) = duellist.as_deref_mut() {
+                            if duellist.target != threat {
+                                info!("{talking}: the flee start targets {threat}");
+                            }
+                            duellist.target = threat;
+                            if duellist.engaged || duellist.fighting() {
+                                duellist.leave();
+                                info!("{talking}: the flee state replaces the combat state");
+                            }
+                        }
+                        combatant.target = Some(threat);
+                    } else {
+                        npc.flee_focus = Some(id);
+                        combatant.target = None;
+                        combatant.other_target = Some(threat);
+                    }
+                }
+            }
+            if let Some(started) = npc.flee_started.take() {
+                info!(
+                    "{talking}: the target pass starts a flight from {:?} at level {} \
+                     (was {}): courage {:.3} -> {:.3}, alarm {:.3} -> {:.3}, threat room {}",
+                    Entity::try_from_bits(started.from),
+                    npc.integration.level,
+                    started.level_before,
+                    started.courage.0,
+                    started.courage.1,
+                    started.alarm.0,
+                    started.alarm.1,
+                    started.threat_room
+                );
+            }
         } else {
             npc.tick_between_passes(
                 sight,
@@ -1622,6 +1822,7 @@ pub fn ai_tick(
             if let Some(c) = npc.contacts.iter().find(|c| c.id == id) {
                 theirs.concern = c.concern;
                 theirs.hostility = c.hostility;
+                theirs.mirrored = [c.concern, c.hostility];
                 theirs.concern_target = c.concern_target;
                 theirs.noticed = c.noticed;
                 // The contact's elapsed count, which the sense's
@@ -2047,6 +2248,43 @@ pub fn flee_walk(
             continue;
         }
         let was_fleeing = npc.flight.is_some();
+        // The flee state's head: a flight whose threat is no longer fresh
+        // and stands in another room than the brain's and its home (or one
+        // with neither a target nor an object focus) ends at level 0, the
+        // calm clock 10-20 s out, and the idle state takes over.
+        if npc.pass.level == 4
+            && npc.integration.level == 4
+            && presence.is_none_or(|p| p.moves())
+            && condition.0 & combatant::CONDITION_OUT == 0
+        {
+            let flight = crate::flee::Flight {
+                now_ms: now,
+                fresh: npc.integration.fresh,
+                threat_room: npc.flee_threat_room,
+                room: npc.level_room,
+                home: npc.previous_room,
+                has_foe: npc.flee_focus.is_none(),
+                has_focus: npc.flee_focus.is_some(),
+                route_goal: npc.flight,
+                position: gt.translation() * 100.0,
+            };
+            let mut level = 4;
+            let mut roll = npc.roll;
+            if let crate::flee::FleeAct::End { calm_until_ms } =
+                crate::flee::tick(&flight, &mut level, &mut roll)
+            {
+                npc.roll = roll;
+                npc.pass.level = level;
+                npc.integration.level = level;
+                npc.flee_focus = None;
+                npc.flee_calm_until_ms = calm_until_ms;
+                info!(
+                    "{entity}: the flight ends in room {} (threat room {}, home {}, fresh {}): \
+                     level 0, calm until {calm_until_ms} ms",
+                    flight.room, flight.threat_room, flight.home, flight.fresh
+                );
+            }
+        }
         if presence.is_some_and(|p| !p.moves())
             || condition.0 & combatant::CONDITION_OUT != 0
             || duellist.engaged
@@ -2083,8 +2321,15 @@ pub fn flee_walk(
         };
         let feet = root_gt.translation();
         let at_cm = gt.translation() * 100.0;
+        // The threat: the object focus the flee start wrote, else the
+        // body's target (the duellist's).
+        let threat = npc
+            .flee_focus
+            .and_then(Entity::try_from_bits)
+            .filter(|&e| targets.contains(e))
+            .unwrap_or(duellist.target);
         let threat_cm = targets
-            .get(duellist.target)
+            .get(threat)
             .map_or(at_cm, |g| g.translation() * 100.0);
         let level_room = level
             .as_deref()
@@ -2159,6 +2404,17 @@ pub fn flee_walk(
                     npc.flight_walk.route = points;
                 }
             }
+            debug!(
+                target: "exa_ai::flee_way",
+                "{entity}: the flight plans from ({:.0}, {:.0}) cm in room {level_room} away \
+                 from ({:.0}, {:.0}) cm in room {threat_room}: {:?}, route of {} points",
+                at_cm.x,
+                at_cm.z,
+                threat_cm.x,
+                threat_cm.z,
+                way.map(|w| (w.room, w.goal.x as i32, w.goal.z as i32)),
+                npc.flight_walk.route.len()
+            );
             npc.flight = way.map(|way| way.goal);
         }
         match npc.flight {
@@ -2997,6 +3253,107 @@ mod tests {
         );
         assert_eq!(level, 3);
         assert!(npc.contacts[0].hostility < 2.0);
+    }
+
+    /// The target pass's flee outcome runs the flee start: a fresh flight
+    /// halves the courage and adds 2 to the alarm the pass raised, and the
+    /// threat's room is remembered; a brain already fleeing keeps both.
+    /// A concern written on the combatant's contact (a hit reaction) since
+    /// the AI tick last copied the brain's there is taken into the brain;
+    /// an untouched contact keeps the brain's value.
+    #[test]
+    fn a_hit_written_concern_reaches_the_brain() {
+        let mut world = World::new();
+        let (a, b) = (world.spawn_empty().id(), world.spawn_empty().id());
+        let mut npc = Npc::new([0.0; 4]);
+        for id in [a, b] {
+            npc.contacts.push(ContactRecord {
+                id: id.to_bits(),
+                concern: 0.25,
+                ..ContactRecord::default()
+            });
+        }
+        let mut combatant = Combatant::default();
+        for e in [a, b] {
+            let c = combatant.contact_mut(e);
+            c.concern = 0.25;
+            c.mirrored = [0.25, 0.0];
+        }
+        let hit = combatant.react_to_hit(a, 1, || 0.5).expect("below the cap");
+        adopt_contact_writes(&mut npc, &combatant, "test");
+        assert_eq!(npc.contacts[0].concern, hit);
+        assert!(hit > 0.25);
+        assert_eq!(npc.contacts[1].concern, 0.25);
+    }
+
+    #[test]
+    fn the_flee_outcome_starts_the_flight() {
+        let mut npc = Npc::new([0.0; 4]);
+        let mut roll = 0;
+        npc.personality = Some(personality::personality(
+            50.0, [0.0; 4], 0.0, false, &mut roll,
+        ));
+        let contact = ContactRecord {
+            id: 1,
+            sighting: 1.0,
+            seen: 1.0,
+            alarm: 1.0,
+            ..ContactRecord::default()
+        };
+        npc.contacts.push(contact);
+        // Stress well past 3 and an alarm past 0.75 flee.
+        npc.morale.stress = 10.0;
+        let sighting = contacts::Sighting {
+            contact,
+            character: true,
+            position_cm: bevy::math::Vec3::new(100.0, 0.0, 0.0),
+            room: 2,
+        };
+        let exits = [
+            crate::flee::RoomExit {
+                point: bevy::math::Vec2::new(-500.0, 0.0),
+                room: 1,
+                shut: false,
+            },
+            crate::flee::RoomExit {
+                point: bevy::math::Vec2::new(0.0, 500.0),
+                room: 4,
+                shut: false,
+            },
+        ];
+        let place = FleePlace {
+            at_cm: bevy::math::Vec3::ZERO,
+            room: 0,
+            home: -1,
+            exits: &exits,
+        };
+        let pass = |npc: &mut Npc, roll: &mut u32, now| {
+            npc.run_pass(
+                &[sighting],
+                contacts::FoeSight::default(),
+                &|_| 300.0 * 300.0,
+                false,
+                false,
+                (1.0, 1.0),
+                false,
+                now,
+                roll,
+                &place,
+            )
+        };
+        assert_eq!(pass(&mut npc, &mut roll, 0), 4);
+        let started = npc.flee_started.take().expect("a flight starts");
+        assert_eq!(started.level_before, 0);
+        assert_eq!(started.courage.1, started.courage.0 * 0.5);
+        assert_eq!(started.alarm.1, started.alarm.0 + 2.0);
+        assert_eq!(started.threat_room, 2);
+        assert_eq!(npc.flee_threat_room, 2);
+        assert_eq!(npc.morale.alarm, started.alarm.1);
+        assert_eq!(npc.morale.courage, started.courage.1);
+        assert!(npc.integration.fresh);
+        // Fleeing already: no second halving.
+        assert_eq!(pass(&mut npc, &mut roll, 1), 4);
+        assert_eq!(npc.flee_started, None);
     }
 
     /// An idle activity of 6 creates the search; one of 0 drops it.

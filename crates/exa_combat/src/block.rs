@@ -54,7 +54,7 @@ use exa_physics::grip::{HeldGrip, HeldKind};
 use exa_physics::part::{Contact, ContactKind, PartState, classify, faces};
 
 use crate::attack::{Attacker, Slot};
-use crate::damage::ShieldGuard;
+use crate::damage::{ShieldGuard, Strike};
 use crate::swing::{LARGE_STRIKER, SwingState};
 use crate::{Attacking, Blade, Fighter, Hit, Motions, PowerFactors, Struck};
 
@@ -154,6 +154,8 @@ struct Accepted {
     /// The striking part is the wielder's own hand (a fist or a claw): the
     /// striker's frame is that hand's, so the contact is read where it is.
     fist: bool,
+    /// The striking part's index in the held item's body (0 for a fist).
+    part: usize,
 }
 
 /// A fist carried by a part of its wielder's body: the hand part strikes
@@ -397,8 +399,10 @@ pub fn strike_events(events: &[HitEvent], p: &mut StrikeParams) {
         } else {
             frame.transform_point3(contact.local)
         };
-        let strike =
-            crate::blade_strike(blade, &frame, on_blade, &attack, progress, wielder, powers);
+        let strike = Strike {
+            part: contact.part,
+            ..crate::blade_strike(blade, &frame, on_blade, &attack, progress, wielder, powers)
+        };
         let by = if contact.fist { "fist" } else { "weapon" };
         if contact.struck == Struck::Limb {
             debug!(
@@ -473,6 +477,28 @@ fn side_contact(
     let (_, other_body, ..) = p.held.get(other_root).ok()?;
     let own_part = own_body.parts.get(own)?;
     let other_part = other_body.parts.get(other)?;
+    // The striking part's record, up its chain ([`crate::record_chain`]):
+    // a held item's part finds its top part's (the item's Blade); a fist is
+    // its own hand's. Without one the damage routine reports that it cannot
+    // retrieve the weapon's values and deals nothing.
+    let parents: Vec<Option<usize>> = own_body.parts.iter().map(|q| q.parent).collect();
+    if !fist
+        && (crate::record_chain::HeldChain {
+            parents: &parents,
+            hand_record: false,
+        })
+        .record_of(own)
+        .is_none()
+    {
+        debug!("held contact on part {own} of {own_root:?}: unable to retrieve weapon values");
+        return None;
+    }
+    // The struck item's part: a held item's own part, a fist none of its
+    // own (its hand's frame is the fist Blade's).
+    let struck_part = match struck {
+        StruckSide::Held(_) => other,
+        StruckSide::Limb { .. } => 0,
+    };
     let (_, _, defender, defender_attacker, condition, shielded) = p.fighters.get(victim).ok()?;
     let (attack, swing, ..) = p.attackers.get(attacker).ok()?;
     let local = own_part.transform().inverse().transform_point3(point);
@@ -514,6 +540,7 @@ fn side_contact(
         (ContactKind::Clash, _) => Struck::Weapon {
             primary: contact.other_is_primary,
             item: item?,
+            part: struck_part,
         },
         (ContactKind::Wound, StruckSide::Limb { .. })
             if !condition.is_some_and(|c| c.is_dead()) =>
@@ -553,6 +580,7 @@ fn side_contact(
             bone,
             local,
             fist,
+            part: if fist { 0 } else { own },
         },
     ))
 }
@@ -775,7 +803,8 @@ mod tests {
             hits[0].struck,
             Struck::Weapon {
                 primary: false,
-                item: struck_fist
+                item: struck_fist,
+                part: 0,
             }
         );
         assert_eq!(hits[0].bone, MAIN_HAND_BONE);
@@ -789,7 +818,8 @@ mod tests {
             struck_bone(
                 Struck::Weapon {
                     primary: true,
-                    item
+                    item,
+                    part: 0,
                 },
                 Some(Slot::First)
             ),
@@ -799,7 +829,8 @@ mod tests {
             struck_bone(
                 Struck::Weapon {
                     primary: false,
-                    item
+                    item,
+                    part: 0,
                 },
                 Some(Slot::Second)
             ),

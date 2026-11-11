@@ -488,6 +488,11 @@ pub fn channel_bytes(materials: usize, mut weigh: impl FnMut(usize, usize) -> Ve
 /// `2·radius + 1` entries. The sigma is a third of the radius in double,
 /// rounded to single; the exponential is the runtime library's double one
 /// (here the platform's).
+///
+/// Not wired: the original's texture unit builds it once at init (radius
+/// 120) with its two scratch planes, and no code in 0.9.5 reads the kernel
+/// or those planes; the plane its rule input 2 reads is never written
+/// (`docs/formats/TERRAIN.md`).
 pub fn gaussian_kernel(radius: i32) -> Vec<f32> {
     let count = (radius * 2 + 1).max(1) as usize;
     let mut kernel = vec![0.0f32; count];
@@ -812,6 +817,8 @@ mod tests {
         assert_eq!(inputs[3], 137.0 * BYTE_SHARE);
         assert_eq!(inputs[6], inputs[3]);
         assert_eq!(inputs[4], 156.0 * BYTE_SHARE);
+        // Input 2 reads a plane the original never writes (no blur fills it).
+        assert_eq!(inputs[2], 0.0);
     }
 
     #[test]

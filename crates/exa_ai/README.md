@@ -257,8 +257,11 @@ is pending (`Locomotor::plant_request`, up to 500 ms after a clip
 replaced Walk or Run). The combat state leaves its stance motion alone while
 the body's auto-parry holds (`Fighter::parry`'s parrying flag). A running body
 stops its run before the drives (the step goal pulled to `8·speed + 20`
-cm along its facing). The cast chooser runs at the first place for a body
-not attacking with a foe, and a cast running past a second is torn down
+cm along its facing). The cast chooser runs at the first place of the search, after its
+contact pass, for a body not attacking that still has a foe (a pass that
+dropped the foe casts nothing, nor does a search that starts past the
+first place), after the footwork's plan has read the attack drive; a
+cast clears the drive for the places, and a cast running past a second is torn down
 once the power system is done (`cast`). A duellist with `DuelPowers`
 asks it as its power system: the game answers its slots before
 `DuelSystems` and casts the chosen power after it
@@ -287,8 +290,37 @@ does not resist makes it follow).
 (base + stress − courage) passes 3 with an alarm above 0.75 and a way out;
 then it engages past `7b² + (2 + b)` (`2 + b` for b ≤ 0) plus the
 stress; then a concern above 1 flees past 8 less the stress, or watches;
-else it is noticed. A flight halves the courage and adds 2 to the stress;
-a cornered fighter fights on with its courage doubled. The way out is the
+else it is noticed. A flight halves the courage and adds 2 to the stress
+(the pass's flee outcome runs `flee::start` with the level the brain had
+before the pass, after the alarm mean's raise: a fresh flight halves the
+morale's courage, adds 2 to its alarm, marks the target fresh and remembers
+the threat's room, logged `the target pass starts a flight`);
+on every flee outcome the brain's conversations end
+(`exa_script::EndConversationsOf`, the engine's `leave`), the flee start
+writes the body's target (the duellist's target, which leaves the combat
+state) or, for an object, the object focus (`Npc::flee_focus`, the flight's
+threat), and while at level 4 the pass keeps the threat as its foe. The
+flee state's head ends a flight whose threat is not fresh and stands in
+another room than the brain's and its previous one (or with neither a
+target nor a focus): level 0, a 10-20 s calm clock (`flee::tick`, logged
+`the flight ends`); a cornered fighter fights on with its courage doubled
+[the cornered branch is not wired].
+
+**Where the concern comes from.** The perception's threat estimate walks
+the observed character's own contacts. The player's are its behaviour's
+12 m list (`combatant::PlayerContacts`, written by `exa_game`'s player
+tick: closeness, the facing weight as the view, the score in the concern
+word), so a hostile NPC's concern target and contact alarm rise as the
+player approaches, faces and attacks it. The brain keeps the integration's
+concern apart from the combatant's contact, which the AI tick overwrites
+with the brain's each tick (`Contact::mirrored` keeps what it wrote); a hit
+reaction, a blast's, torrent's or stamped body's `AddConcern` and a script
+write the combatant's contact, and the next AI tick takes any value that
+differs from the copy into the brain (`brain::adopt_contact_writes`,
+logged `concern for … written` at `exa_ai::pass=debug`). The pass's debug
+line (`RUST_LOG=exa_ai::pass=debug`) gives the outcome, morale, the most
+concern, concern target and contact alarm and the room's exits;
+`exa_ai::flee_way=debug` gives the way-out inputs and each flight plan. The way out is the
 open exit most opposite the threat (cosine under 0.2), and fled rooms are
 remembered (eight). A combatant's contact is classified through
 `ContactRecord::of`; both lists admit as the original does: a full list

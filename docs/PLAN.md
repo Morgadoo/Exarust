@@ -136,6 +136,8 @@ Round 105 os: the original's pointer warp hold and full-screen confinement act o
 
 Round 139 osgui: the hub shows the original message box (hire refusals, company name), the GUI pointer starts unknown, and the viewport action removal keys on the handler code.
 
+Round 183 runtime: the run-time library random generator the game calls in over 150 places is one shared port with the original reseed rule, and SysUtils is shown unreachable from engine code.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
@@ -308,6 +310,8 @@ Round 159 roomlights: a dungeon mesh is lit only by the lights its room lists, a
 Round 166 terrain3: terrain blocks cull by the original descriptors and the sun casts only drawn blocks.
 
 Round 169 stream: level characters are built on the content stream thread nearest the player first, and mip chains filter the pixel word own channels.
+
+Round 186 texrender: point-light shadows skip terrain blocks the view did not draw, and the texture unit blur is dead code in 0.9.5.
 
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
@@ -1021,6 +1025,8 @@ Round 163 bridgeaudit: a bridge audit checks every frame schedule for systems th
 
 Round 179 rbd: a body part that changes collision cells moves to the head of its new cell list, as the original grid step does.
 
+Round 184 exitstall: the intermittent free-mode exit stall with Constant Displacement was the rodio resampler wrapping a u32 product for the phasing sound ratio and walking 2^32 frames on the audio thread, which the audio output drop at exit waited on; a patched rodio computes in u64 and exits went from 6 of 40 stalled to 48 of 48 under a second; EXA_EXIT_TRACE traces each exit stage. The AI flee start now runs from the target pass flee outcome as the original does, but no live scene reaches a flight yet because the contacts concern and alarm are never written.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1437,6 +1443,8 @@ Round 176 palette: levels read from the archive roll their apparel colours, vari
 
 Round 177 motilepart4: bodies scale their pins by the character size as they join the world, and the player picks its target before attacks aim.
 
+Round 182 combat2: the weapon stat record is fetched up the body chain, the holding pass mass redistribution runs on the registered weapon body (every armed body moves from tick 1; a debug flag restores main), the worn rules re-run on every possessions change with the original golem core nesting, the Force Shell damage callback and the clawed overhead hand restore are wired, and the NPC cast runs at the first place after its contact pass; weapons stay held in the GPU duels.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1725,6 +1733,8 @@ Round 172 kernel3: every foot grips at full strength each balance tick as in the
 
 Round 174 balance: stepping, knockback re-targets and the armed parry follow the original, and parry ends no longer drop the weapon grip.
 
+Round 181 renderer: doorway sectors clip their see-through surfaces on the super-sampled view and states draw in registration order, as the original walk does.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1927,6 +1937,8 @@ Round 162 shell: torches draw the small fire texture, Constant Displacement wear
 Round 173 gamegui: entering combat mode closes the open game screens and saves store the open screens first, as the original does.
 
 Round 175 sweep: a reusable feature smoke sweep (64 scenes, free and lockstep) found no panics; the held load no longer stalls every fire-lit level 60 s on the GI (the arena loads in about 4 s, not 63), and the summoned demon shell takes its body size. Left: Raise Dead and Command Dead refused, Spirit Form sometimes not ending in free mode, an orphaned arc light link, an intermittent late free-mode exit.
+
+concern and contact alarm now come from the player contact list, and hit and AddConcern writes reach the brain. Brains enter combat earlier (tick 82, level 1), and with Fear plus attacks a story NPC flees (exanima01). Lockstep matches main except in brain scenes.
 
 ### Phase 7 — Game modes and content
 
@@ -2772,4 +2784,6 @@ Round 49 gibright: the reported outdoor overbright did not reproduce on main; th
 Round 55 arenaweather (S4): no career state reaches the arena's weather draw and the shipped game never drives the time of day; the day was drawn twice per load and now once.
 
 Round 56 nightlook: the night environment already matched the original; the arenao3 moon "octagon" is the tower roofs' real shadow; the warm o3/o4 nights are fire light and GI (a GI warmth calibration question).
+
+Round 185 mainview: the engine message hook writes the log file, shows the timed overlay and opens message boxes as the original does.
 

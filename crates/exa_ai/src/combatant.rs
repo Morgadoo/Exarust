@@ -284,6 +284,12 @@ pub struct Contact {
     /// A bad route's mark holds until this clock (ms); the target pass
     /// clears the unreachable flag once it passes.
     pub unreachable_until_ms: u32,
+    /// The concern and the hostility the brain last copied here
+    /// (`brain::ai_tick`). The original keeps one contact record; Exarust
+    /// keeps the brain's integration apart, so a write that leaves this
+    /// contact's words different from the copy (a hit, a blast, a script)
+    /// is taken back into the brain on its next tick. Not the original's.
+    pub mirrored: [f32; 2],
 }
 
 impl Contact {
@@ -311,6 +317,7 @@ impl Contact {
             distance_cm: 0.0,
             died_ms: None,
             unreachable_until_ms: 0,
+            mirrored: [0.0; 2],
         }
     }
 
@@ -833,6 +840,30 @@ pub fn clamp_move_point(position_cm: Vec3, forward: Vec3, point_cm: Vec3, speed_
         position_cm + forward * limit
     } else {
         point_cm
+    }
+}
+
+/// The player behaviour's contact list, as another character's perception
+/// reads it: the player's behaviour is a combatant in the original, and the
+/// perception's threat estimate walks the observed character's contacts
+/// for their closeness and view. The game rebuilds it each player tick
+/// (every character within 12 m, `exa_game::player_behaviour::contacts`):
+/// each contact holds the closeness, the facing weight as its view and the
+/// list's score in its concern word; nothing else is written.
+#[derive(Component, Debug, Clone, Default)]
+pub struct PlayerContacts(pub Vec<Contact>);
+
+impl PlayerContacts {
+    /// A contact of the player's list toward `character`: kind 1, the
+    /// closeness, the facing weight as the view and the score as the
+    /// concern.
+    pub fn contact(character: Entity, closeness: f32, facing: f32, score: f32) -> Contact {
+        Contact {
+            closeness,
+            view: facing,
+            concern: score,
+            ..Contact::new(character)
+        }
     }
 }
 
@@ -1763,6 +1794,27 @@ mod tests {
         theirs.died_ms = Some(1000);
         look(&o, &observed(them, 600.0), &[theirs], &mut mine, 0.0, 50.0);
         assert_eq!(mine[0].attitude, 0.0);
+    }
+
+    /// The player's behaviour list is what the perception's threat estimate
+    /// walks for the player: a player 300 cm away facing the observer
+    /// (closeness 0.75, view 1) raises the hostile observer's concern target
+    /// and threat; an empty list (the player's before this lane) gives 0.
+    #[test]
+    fn the_player_behaviours_list_feeds_the_threat_estimate() {
+        let (me, player, ..) = ids();
+        let o = observer(me);
+        let seen = observed(player, 300.0);
+        let listed = PlayerContacts::contact(me, 0.75, 1.0, 0.875);
+        assert_eq!((listed.kind, listed.concern), (1, 0.875));
+        let mut mine = [Contact::new(player)];
+        look(&o, &seen, &[listed], &mut mine, -50.0, 0.0);
+        assert!(mine[0].concern_target > 0.0, "{:?}", mine[0]);
+        assert!(mine[0].threat > 0.0, "{:?}", mine[0]);
+        assert_eq!(mine[0].selected, Some(me));
+        let mut none = [Contact::new(player)];
+        look(&o, &seen, &[], &mut none, -50.0, 0.0);
+        assert_eq!((none[0].concern_target, none[0].threat), (0.0, 0.0));
     }
 
     #[test]

@@ -254,3 +254,10 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-11-11 | 8aee52e04 | clean | 81.8% | 5.0% | 73.2% | 87.0% | Rate round 178's lane |
 | 2026-11-11 | 46d4195fe | clean | 81.9% | 5.0% | 73.3% | 87.0% | Rate round 179's lane |
 | 2026-11-11 | cb6d0a569 | clean | 81.9% | 5.0% | 73.3% | 87.0% | Rate round 180's lane |
+| 2026-11-11 | 536b35894 | clean | 81.9% | 5.0% | 73.3% | 87.0% | Rate round 181's lane |
+| 2026-11-11 | 7bb24aa84 | clean | 81.9% | 5.0% | 73.3% | 90.6% | Rate round 182's combat rules |
+| 2026-11-11 | 6abcaadeb | clean | 86.2% | 0.8% | 84.2% | 90.6% | Rate round 183's lane |
+| 2026-11-11 | 638c2fd4f | clean | 81.9% | 5.1% | 73.3% | 90.6% | Keep the runtime library engine-provided |
+| 2026-11-11 | 9b4f876bd | clean | 81.9% | 5.1% | 73.4% | 90.6% | Rate rounds 184 and 185 |
+| 2026-11-11 | 017b55c11 | clean | 81.9% | 5.1% | 73.4% | 90.6% | Rate round 186's lane |
+| 2026-11-11 | 19e8e1fa2 | clean | 82.0% | 5.1% | 73.4% | 90.6% | Rate round 187's lane |

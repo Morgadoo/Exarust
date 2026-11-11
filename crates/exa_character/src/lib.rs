@@ -667,55 +667,6 @@ pub(crate) fn held_record(
     record
 }
 
-/// A weapon model's parts, for the mass redistribution the holding pass runs
-/// on a held weapon's body tree: each rigid node is a part, its parent the
-/// nearest rigid ancestor, and its initial mass the reciprocal of the
-/// mobility the body solver gives it (`1 / mobility`, as `Ragdoll::rigid`
-/// takes a rigid part's inverse mass). `total` is the weapon's table mass
-/// and `size` the holder's, which divides the root part's mass word.
-fn weapon_mass_of(
-    model: &model::Model,
-    total: f32,
-    size: f32,
-) -> exa_physics::weapon_mass::WeaponMass {
-    use exa_physics::weapon_mass::{WeaponMass, WeaponMassPart};
-    let rigid: Vec<usize> = (0..model.nodes.len())
-        .filter(|&i| model.nodes[i].rigid.is_some())
-        .collect();
-    let index: HashMap<usize, usize> = rigid
-        .iter()
-        .enumerate()
-        .map(|(k, &node)| (node, k))
-        .collect();
-    let mut parts = Vec::with_capacity(rigid.len());
-    for &node in &rigid {
-        let mut parent = model.nodes[node].parent;
-        let mut nearest = None;
-        while let Some(at) = parent {
-            if let Some(&k) = index.get(&at) {
-                nearest = Some(k);
-                break;
-            }
-            parent = model.nodes.get(at).and_then(|n| n.parent);
-        }
-        // A rigid part's inverse mass is its mobility, so its mass is the
-        // reciprocal (the shape builder's initial mass word is the same
-        // reciprocal of the mobility the body solver gives the part).
-        let inverse = model.nodes[node]
-            .rigid
-            .as_ref()
-            .map_or(0.0, |body| body.mobility());
-        parts.push(WeaponMassPart::new(nearest, 1.0 / inverse));
-    }
-    // An assembled factory weapon is one merged part in the original; its
-    // assembled model stores no rigid node, so its tree starts as that one
-    // part with the weapon's table mass.
-    if parts.is_empty() {
-        parts.push(WeaponMassPart::new(None, total));
-    }
-    WeaponMass::new(parts, total, size)
-}
-
 /// The rigid nodes of a held item's model that the original registers, in
 /// the model's order, each with its parent part: the index among the
 /// model's rigid nodes of its immediate parent when that parent is a rigid
@@ -1911,11 +1862,16 @@ fn equip_outfits(
                 holder.size,
                 holder.scale
             );
-            // The holding pass hands the weapon's table mass to its part
-            // tree's redistribution; the result waits for the body solver.
+            // The holding pass hands the weapon's table mass and the
+            // holder's size to its part tree's redistribution, which runs
+            // on the item's registered body
+            // (`exa_physics::weapon_mass::WeaponMass::of_body`).
             let mass = record
                 .mass()
-                .map(|total| weapon_mass_of(&weapon, total, holder.size));
+                .map(|total| exa_physics::weapon_mass::WeaponMassScale {
+                    total,
+                    size: holder.size,
+                });
             // The one held weapon is the primary striker from the equip.
             if let Some(mut attacker) = attacker {
                 attacker.primary = Some(Slot::First);
@@ -2389,9 +2345,9 @@ mod tests {
     }
 
     /// The holding pass's mass redistribution runs over the rigid nodes of
-    /// shipped weapon models: every part keeps a finite, positive inverse
-    /// mass, and the saved masses are latched once (skipped without the
-    /// game).
+    /// shipped weapon models, each latched at its registered mobility:
+    /// every part keeps finite, positive mobility words (skipped without
+    /// the game).
     #[test]
     fn shipped_weapons_get_their_mass_distributed() {
         use exa_physics::weapon_mass::{WeaponMass, WeaponMassPart};
@@ -2435,10 +2391,14 @@ mod tests {
                     .as_ref()
                     .and_then(|body| body.as_ref().ok())
                     .map_or(0.0, |body| body.mobility);
-                parts.push(WeaponMassPart::new(
-                    nearest,
-                    if mobility > 0.0 { 1.0 / mobility } else { 0.0 },
-                ));
+                // Registration latches the registered mobility as the
+                // part's mass value and gives it to both mobility words.
+                parts.push(WeaponMassPart {
+                    parent: nearest,
+                    mass: mobility,
+                    inverse: mobility,
+                    saved: mobility,
+                });
             }
             let record = held_record(
                 &game,

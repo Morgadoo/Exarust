@@ -7,7 +7,7 @@ body solver (`body`), its level contacts (`contact`), props and items as bodies 
 character's place (`lib`, `CharacterBody`), the dynamics world unit (`dynamics`), the rigid-body shape
 builders (`shape`), the shared intersection maths (`intersect`), the engine's own maths unit (`engine_math`) and the weapon part tree's mass redistribution (`weapon_mass`).
 
-`weapon_mass` redistributes a weapon's part tree in two passes, parent before children. A saved mass of zero is latched from the live mass. The live mass becomes 1.25 times that saved mass and the inverse word its reciprocal. Both words then become the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale. A second pass inflates the saved mass again. The equip pass calls it over a held weapon model's rigid nodes, with the record's table mass as the scale, divides the root part's mass word by the holder's size, and keeps the distributed parts as `WeaponMass` for the solver (`exa_character::weapon_mass_of`); no solver stage reads it yet.
+`weapon_mass` redistributes a weapon's part tree in two passes, parent before children. A saved mass of zero is latched from the live mass. The live mass becomes 1.25 times that saved mass and the inverse word its reciprocal. Both words then become the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale. A second pass inflates the saved mass again. The equip pass hands the record's table mass and the holder's size to the item (`WeaponMassScale`); the item's registration (`prop`) runs the redistribution over the registered parts, each latched at its registered mobility, divides the top part's contact word by the size, and writes the result into the body: each part's link mobility (which the grip links' shares are taken from) and contact mobility. The parts' own registration links keep their shares, and the top part's contact word is the base the arm setter scales (`WeaponMass::held_contact_base`).
 
 `step_driver` is the original's simulation step clock, without a thread:
 wrapping 32-bit milliseconds from a base, a step due once the time since the
@@ -40,6 +40,19 @@ for it, and `LockstepCheck` counts the steps against the snapshots' ticks
 (logged every 1000 steps). Without the bridge the simulation's world holds
 only its clock, so a body's every pose is the same bit for bit with or
 without the shell (`body_floor_test`). `EXA_ORPHAN_TRACE=1` (environment) logs, on either world, a `ChildOf` inserted with a parent that world does not hold (`sim_app::trace_orphans`).
+
+`exit_trace` is a debug trace of the process's exit (`EXA_EXIT_TRACE=1`):
+each teardown stage (the `--frames` exit message, the last frame reading it,
+the frame world's first and last resources and the render world dropping,
+`SimShell`'s channel closing and its thread joined, the simulation's world
+dropped, `main` returning) is logged with the time since the exit began, and
+a watchdog thread reports a stage that lasts longer than
+`EXA_EXIT_TRACE_DUMP` seconds (10 by default): every thread's name, state
+and kernel wait channel, three in-process stack samples two seconds apart
+(each thread takes its own with glibc's `backtrace` on a signal; the
+addresses are logged as module + address from its load base, for
+`addr2line -f -C -i -e` on a `--profile profiling` build), then `eu-stack`
+or `gdb` here or on the host when one is found.
 
 With `SimMode::Free` (the game's default; `--sim-lockstep`, `--fixed-frames`,
 `--sim-inline` and `--no-sim-bridge` step in lockstep) the

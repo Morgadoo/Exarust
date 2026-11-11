@@ -133,6 +133,13 @@ operating-system error report (level 5, "Windows Error"), which the save
 writer logs after "IO Error : Failed to create package file." when a
 package file cannot be opened; `hw_config` logs "Display mode not
 supported." for a full-screen size the display does not list.
+`engine_log` is the original's message hook, live: every message goes to
+the session's log buffer, which rewrites `<user folder>/<project>.log`
+(every level but 5), then to the status history (1–3), the timed overlay
+(4, 5; drawn after the interface in the window's top-left corner) or a
+message box (6, 7, shown by the binary's handler). The script reports,
+the display-mode refusal and the save writer's package failure log
+through it; `EXA_LOG_PROBE` logs a chosen message on a chosen frame.
 Tests pin the arithmetic and the orders. `hw_config` applies the full-screen
 rule and the present mode, `exarust::frame_loop` the pacing, the focus key
 release, Alt+Enter and the minimise; the other models document the original's loop, which
@@ -971,7 +978,10 @@ before the starters aim in each fixed step (`player::pick_player_target`,
 as its behaviour tick runs the auto-target right before its attack
 executor), while its steering reads the target the stance stored the tick
 before. Each behaviour tick, before the attack request, `player_practice`
-rebuilds the contact list, runs the late-swing check (an attack past 0.6
+rebuilds the contact list (also kept as `exa_ai::combatant::PlayerContacts`,
+the player's contacts the NPC perception's threat estimate reads; the facing
+weight is 1 for a character straight ahead, as the original subtracts the
+other's position from the player's), runs the late-swing check (an attack past 0.6
 of its clock, once a swing: the swing's state word gains `0x100000` with an
 engaged enemy in front, else `0x200000`) and one practice tick
 (`exa_ai::combat::practise`), keeping the paid practice count on
@@ -1645,7 +1655,10 @@ window queues its icon handles and the manager frees their references and
 atlas cells. A body whose `Possessions` changed has its `Physical` stats'
 encumbrance recomputed by `equip::refresh_encumbrance` from the worn
 burdens, the held shield and its record's techniques (both the physical
-and the fighter copy; a new body keeps its spawn value). A double click
+and the fighter copy; a new body keeps its spawn value), and the armour
+pass's worn rules run again (`equip::refresh_worn_specials`): the second
+wind, the item-effect list (an item still worn keeps its bytes), the golem
+suit, the mind ward, the focus charm and the golem core's red regeneration. A double click
 classifies a container's open, a card close and a use; a popup's inner
 panel and top are `open_container`'s, but no live container popup is drawn
 yet. The inventory screen still has no bound item list.

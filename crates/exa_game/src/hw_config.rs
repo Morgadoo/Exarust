@@ -819,7 +819,7 @@ fn apply_window(
         let modes = monitor.map(|m| m.video_modes.as_slice()).unwrap_or(&[]);
         if crate::window::display_mode_refused(config.screen_size, desktop, modes) {
             let (title, text) = crate::window::DISPLAY_MODE_REFUSED;
-            warn!("{}", crate::frame::overlay_text(title, text));
+            crate::engine_log::log(4, title, text);
         }
         crate::window::fullscreen_mode(
             config.screen_size,

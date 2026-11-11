@@ -384,7 +384,7 @@ fn apply(
             // message hook logs it.
             for report in reports {
                 if let exa_script::dialogue::Effect::Report(title, text) = report {
-                    warn!("{}", crate::frame::overlay_text(&title, &text));
+                    crate::engine_log::log(4, &title, &text);
                 }
             }
         }

@@ -81,9 +81,7 @@ pub trait Draws {
 
 impl Draws for Mt19937 {
     fn below(&mut self, n: i32) -> i32 {
-        let n = if n < 0 { n + 1 } else { n };
-        let product = (i64::from(self.next_u32())).wrapping_mul(i64::from(n));
-        ((product as u64) >> 32) as u32 as i32
+        Mt19937::random(self, n)
     }
 
     fn unit(&mut self) -> f64 {

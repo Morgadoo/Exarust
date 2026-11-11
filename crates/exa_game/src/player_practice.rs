@@ -5,7 +5,9 @@
 //! Each behaviour tick, as the original's does before it polls the input:
 //!
 //! - **Contacts.** The player's contact list is rebuilt over every other
-//!   character within 12 m ([`player_behaviour::contacts`]).
+//!   character within 12 m ([`player_behaviour::contacts`]) and kept as
+//!   the player's contacts the NPC perception reads
+//!   ([`exa_ai::combatant::PlayerContacts`]).
 //! - **Late-swing check.** While the player attacks and its swing is past
 //!   0.6 of its clock, once a swing, the strongest engaged enemy in front
 //!   among the contacts ([`player_behaviour::strongest_engaged`]: within
@@ -93,6 +95,7 @@ pub(crate) fn tick_player_practice(
         Option<&mut SwingState>,
         Option<&Animator>,
         Option<&mut CharacterData>,
+        Option<&mut exa_ai::combatant::PlayerContacts>,
     )>,
     (mut story, mut frame): (
         Option<ResMut<crate::experience_live::StoryExperience>>,
@@ -111,7 +114,7 @@ pub(crate) fn tick_player_practice(
         Without<PlayerBody>,
     >,
 ) {
-    for (me, root, pb, mut kept, gt, (req, body), condition, swing, anim, mut record) in
+    for (me, root, pb, mut kept, gt, (req, body), condition, swing, anim, mut record, shared) in
         &mut players
     {
         let condition = condition.copied().unwrap_or_default();
@@ -126,6 +129,22 @@ pub(crate) fn tick_player_practice(
                 .iter()
                 .map(|(e, o, ..)| (e.to_bits(), o.translation() * CM)),
         );
+        // The same list is the player's contacts as the NPC perception's
+        // threat estimate reads them.
+        if let Some(mut shared) = shared {
+            shared.0 = kept
+                .contacts
+                .iter()
+                .map(|c| {
+                    exa_ai::combatant::PlayerContacts::contact(
+                        Entity::from_bits(c.body),
+                        c.closeness,
+                        c.facing,
+                        c.score,
+                    )
+                })
+                .collect();
+        }
         if let Some(mut swing) = swing {
             let clock = anim
                 .zip(motions.as_deref())
