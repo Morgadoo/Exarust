@@ -395,7 +395,7 @@ fn insert_scissors(
         stats.most = stats.most.max(clipped);
         stats.switches = stats.switches.max(changes.len());
     }
-    if stats.frames % 240 == 0 {
+    if stats.frames.is_multiple_of(240) {
         info!(
             "sector scissor: {} of the last 240 frames clipped transparent surfaces to a doorway rectangle (at most {} surfaces and {} switches in a frame); now {} of {} surfaces, {} rectangles, the first {:?} (x, y, width, height) in the viewport {:?}",
             stats.clipping,
