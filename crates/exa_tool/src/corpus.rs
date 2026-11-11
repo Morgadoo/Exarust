@@ -1776,6 +1776,10 @@ pub fn materials(game: &GameData) -> Result<()> {
             .find_map(|archive| Material::parse(archive.get(name)?).ok())
     };
     let mut rows: BTreeMap<&'static str, BTreeMap<u32, usize>> = BTreeMap::new();
+    // Group uses per plug-in mask, and the records whose diffuse and
+    // opacity layers both reach the shared colour slot.
+    let mut masks: BTreeMap<u32, (usize, String)> = BTreeMap::new();
+    let mut shared: BTreeMap<String, (String, usize)> = BTreeMap::new();
     for (kind, pack) in game.packs() {
         for e in pack.entries() {
             let b = pack.bytes(e);
@@ -1797,6 +1801,31 @@ pub fn materials(game: &GameData) -> Result<()> {
                         continue;
                     };
                     let ty = mat.kind & 0xFF;
+                    masks
+                        .entry(mat.plugin_mask)
+                        .or_insert_with(|| (0, g.material.clone()))
+                        .0 += 1;
+                    if let Some(slot) = exa_render::material_state::colour_slot(&mat)
+                        && slot.both
+                    {
+                        let words = exa_render::shader_program::state_words(&mat, 5);
+                        let line = format!(
+                            "type {ty} flags {:#x} key {:#x} words {words:x?} diffuse {} opacity {} slot {} ({:?}) at {:.2?}",
+                            mat.flags,
+                            exa_render::shader_program::feature_key(&mat),
+                            mat.texture(exa_formats::material::TextureSlot::Diffuse)
+                                .unwrap_or("-"),
+                            mat.texture(exa_formats::material::TextureSlot::Opacity)
+                                .unwrap_or("-"),
+                            slot.texture,
+                            slot.from,
+                            node_position(&scene, node),
+                        );
+                        shared
+                            .entry(format!("{}/{} {}", kind.file_stem(), e.name, g.material))
+                            .or_insert((line, 0))
+                            .1 += 1;
+                    }
                     *rows
                         .entry(kind.file_stem())
                         .or_default()
@@ -1834,7 +1863,35 @@ pub fn materials(game: &GameData) -> Result<()> {
             .collect();
         println!("{pack:<12} {}", line.join(", "));
     }
+    println!();
+    println!("plug-in masks (group uses, first material; the default builder serves 0x5):");
+    for (mask, (n, first)) in &masks {
+        println!("  {mask:#010x}: {n} ({first})");
+    }
+    println!();
+    println!(
+        "records with both a diffuse and an opacity layer ({}; the shared colour slot keeps the later one):",
+        shared.len()
+    );
+    for (name, (line, n)) in &shared {
+        println!("  {name}: {line} uses {n}");
+    }
     Ok(())
+}
+
+/// A node's origin in its scene (metres): its translation carried through
+/// every parent's rotation rows and translation.
+fn node_position(scene: &Scene, node: &exa_formats::rfc::Node) -> [f32; 3] {
+    let mut p = node.transform[3];
+    let mut parent = node.parent;
+    while let Some(i) = parent.and_then(|i| i.checked_sub(1))
+        && let Some(n) = scene.nodes.get(i)
+    {
+        let t = &n.transform;
+        p = std::array::from_fn(|k| p[0] * t[0][k] + p[1] * t[1][k] + p[2] * t[2][k] + t[3][k]);
+        parent = n.parent;
+    }
+    p
 }
 
 #[cfg(test)]

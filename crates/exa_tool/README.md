@@ -25,7 +25,7 @@
 | `mechanisms [level]` | the door and operative records of `objdb.rdb`, or of a level's own database (`mechanisms exanima01`), with the body class each gives its model |
 | `corpus bodies` | per model pack: models with bodies, undecodable bodies, models with links and hung from the world, slider bodies, cloth markers |
 | `corpus tracks` | every node keyframe track of every chunk tree, nested packs included: file, node and parent, mode, duration and keys (s, cm) |
-| `corpus materials` | every material record a mesh group draws with, tallied per pack by material type; type-2 (smoke) users listed with their flags, fall-off, layers and key words |
+| `corpus materials` | every material record a mesh group draws with, tallied per pack by material type; type-2 (smoke) users listed with their flags, fall-off, layers and key words; the plug-in masks (all 1); the records with both a diffuse and an opacity layer, which image the shared colour slot keeps and where the node is |
 | `corpus meshes` | decode every chunk tree; per-pack table and reasons for unsupported records |
 | `corpus levels` | grids, props and placed characters of every level; placed humans covered at the groin and their worn items with a `Characters.rpk` model |
 | `corpus images` | every image by format word and storage; decodes the uncompressed ones and checks that RGB8 normal maps hold z in blue |

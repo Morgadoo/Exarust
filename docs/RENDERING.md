@@ -279,8 +279,11 @@ bucket and programs. `exa_render::shader_cache` holds the rules, and
 `exa-tool shader --warmup` prints the table and the resulting cache.
 
 **Bindings.** `Global` sits on uniform block 0 and `Material` on block 1.
-The map units pack from 0 in declaration order (diffuse or, when the
-colour-slot word is exactly the opacity bit, the opacity map; then
+The map units pack from 0 in declaration order (the colour slot, one
+image: the later of the record's diffuse and opacity layers, so the
+opacity layer's in every shipped record with both, read for the colour
+and the opacity alike; an unlit record with the diffuse bit binds nothing
+there; then
 emissive, specular, normal, gloss, height, dirt), except that the
 environment cube takes unit 5, the GI volume 6, the screen copy 7 (a
 record with the specular bit, which the engine's refraction path binds)

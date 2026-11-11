@@ -11,8 +11,10 @@
 //! part's flags from its material ([`PartFlags::of`]), raises the node's
 //! `0x10000` when the part casts and the node is not external (`0x80000`),
 //! clears the option word's `0x10` when the material has a blend class, and
-//! raises the bound to the material's (ordered compares, so a NaN is not
-//! taken). Then a node with any of `0x70000000` and `0x1000000` drops
+//! raises the bound, per channel, to the material's shared colour (the
+//! specular colour times its level plus the diffuse,
+//! `exa_formats::material::Material::shared_colour`; ordered compares, so a
+//! NaN is not taken). Then a node with any of `0x70000000` and `0x1000000` drops
 //! `0x1000000` unless its parent is a geometry node; the threshold becomes
 //! 1 with `0x8000000`, else 0.5; and a non-external node whose squared bound
 //! exceeds the engine's epsilon gains `0x20000`.
@@ -24,9 +26,11 @@
 //!   `0x4000`, or an opacity map (`0x400000`) with an opacity above 0.75;
 //! - the part's material word gets `0x40` when the material class's low
 //!   nibble is set, and `0x80000` when the class is zero;
-//! - the part's mode word starts at 1 and follows the material's extra
-//!   flags (`2` → `2`, `0x10` → `0x10`, `4` → `8`, `0x100` → `4`), plus
-//!   `0x40` when the node word has `0x8000` (the vertex-delta stream);
+//! - the part's mode word starts at 1 and follows the render-state word
+//!   the material loader derives
+//!   ([`exa_render::material_state::loaded_render_state`]: `2` → `2`,
+//!   `0x10` → `0x10`, `4` → `8`, `0x100` → `4`), plus `0x40` when the node
+//!   word has `0x8000` (the vertex-delta stream);
 //! - the part culls back faces unless the material is two-sided (`0x10`).
 //!
 //! The per-part bits whose draw-side meaning is not established are kept
@@ -115,17 +119,17 @@ pub struct PartFlags {
     pub cull: bool,
     /// The material has a blend class (non-zero class word).
     pub has_class: bool,
-    /// The runtime material's per-axis bound the node's bound takes the
-    /// maximum of (its units are the material's; not traced further).
+    /// The material's shared colour (specular × level + diffuse, per
+    /// channel), which the node's bound takes the maximum of.
     pub bound: [f32; 3],
 }
 
 impl PartFlags {
     /// Derives a part's flags from its material's words. `class` is the
-    /// material class word, `flags` its render flags, `extra` its extra
-    /// flags, `opacity` its opacity, `casts_shadow` the material's shadow
-    /// byte (false when zero) and `bound` its displacement bound.
-    /// `node_word` is the geometry node's own word.
+    /// material class word, `flags` its loaded flags, `extra` the loader's
+    /// render-state word, `opacity` its opacity, `casts_shadow` the
+    /// material's shadow byte (false when zero) and `bound` its shared
+    /// colour. `node_word` is the geometry node's own word.
     pub fn of(
         class: u32,
         flags: u32,
@@ -168,6 +172,23 @@ impl PartFlags {
             has_class: class != 0,
             bound,
         }
+    }
+}
+
+impl PartFlags {
+    /// A part's flags from its material record, with the words the loader
+    /// leaves: the class after its late opaque rewrite, the loaded flags, the render-state word, the
+    /// shadow byte and the shared colour.
+    pub fn of_material(material: &exa_formats::material::Material, node_word: u32) -> Self {
+        Self::of(
+            exa_render::material_state::late_class(material),
+            exa_render::shader_program::loaded_flags(material),
+            exa_render::material_state::loaded_render_state(material),
+            material.opacity,
+            exa_render::material_state::draws_translucent(material),
+            material.shared_colour(),
+            node_word,
+        )
     }
 }
 
@@ -331,6 +352,42 @@ mod tests {
 
     fn part(class: u32, casts: bool, bound: [f32; 3]) -> PartFlags {
         PartFlags::of(class, 0, 0, 1.0, casts, bound, 0)
+    }
+
+    /// A part read from its record takes the late-rewritten class, the
+    /// loader's render-state word and the shared colour as its bound.
+    #[test]
+    fn a_part_reads_its_material_record() {
+        use exa_formats::material::{Material, TextureLayer, TextureSlot};
+        let m = Material {
+            kind: 1,
+            class: 0x0203,
+            flags: 0x3,
+            opacity: 1.0,
+            diffuse: [0.1, 0.2, 0.3, 1.0],
+            specular: [1.0, 0.0, 0.0, 0.0],
+            specular_level: 0.5,
+            layers: vec![TextureLayer {
+                slot: TextureSlot::Normal,
+                texture: "n".into(),
+                parameter: 0,
+                amount: 1.0,
+            }],
+            ..Default::default()
+        };
+        let p = PartFlags::of_material(&m, VERTEX_DELTAS);
+        // Lit (2), normal map (4 -> 8), the delta stream (0x40).
+        assert_eq!(p.word, 1 | 2 | 8 | 0x40);
+        // The late rewrite left class 0x100: no blend nibble, still a class.
+        assert_eq!(p.material_word, 0);
+        assert!(p.has_class);
+        assert!(p.casts);
+        assert!(p.cull);
+        assert_eq!(p.bound, m.shared_colour());
+        let mut g = GeometryState::new();
+        g.activate(&[p], true);
+        assert_eq!(g.bounds, [0.6, 0.2, 0.3]);
+        assert_ne!(g.word & HAS_BOUNDS, 0);
     }
 
     #[test]

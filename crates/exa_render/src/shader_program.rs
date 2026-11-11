@@ -179,13 +179,6 @@ pub fn material_type(material: &Material) -> u32 {
     material.kind & 0xFF
 }
 
-/// The plug-in index of a record's type. Types past the five built-in
-/// plug-ins are taken as type 0 [guess: no shipped record has one].
-fn plugin(material: &Material) -> usize {
-    let index = material_type(material) as usize;
-    if index < PLUGIN_MASKS.len() { index } else { 0 }
-}
-
 fn has_layer(material: &Material, slot: TextureSlot) -> bool {
     material.layer(slot).is_some()
 }
@@ -234,7 +227,10 @@ pub fn loaded_class(material: &Material) -> u32 {
 /// still has an opacity above zero, and returns no state (`0`) when it does
 /// not.
 pub fn feature_key(material: &Material) -> u32 {
-    let mut key = loaded_flags(material) & PLUGIN_MASKS[plugin(material)];
+    if !crate::material_state::builds_default(material) {
+        return 0;
+    }
+    let mut key = loaded_flags(material) & crate::material_state::record_type(material).mask;
     if key & 0xF == 0 {
         if material.opacity <= 0.0 || material.opacity.is_nan() {
             return 0;
@@ -269,7 +265,6 @@ pub fn wants_normal_map(material_word: u32) -> bool {
 /// normal map), the dirt modes, and the translucent (class 7 with `NegNdL`)
 /// and liquid material modes.
 pub fn state_words(material: &Material, quality: u32) -> Option<(u32, u32)> {
-    let plugin = plugin(material);
     let key = feature_key(material);
     if key == 0 {
         return None;
@@ -278,7 +273,7 @@ pub fn state_words(material: &Material, quality: u32) -> Option<(u32, u32)> {
     let class = loaded_class(material);
     let normal = material.layer(TextureSlot::Normal);
     let mut mat = key & 0x8000_0010;
-    let mut shd = PLUGIN_CLASSES[plugin];
+    let mut shd = crate::material_state::record_type(material).base;
     let lit = key & 3 != 0;
     if lit {
         mat |= key & 3;
@@ -443,7 +438,10 @@ pub fn height_map(material: u32, shader: u32, height: (u32, u32), amount: f32) -
 
 /// The program class nibble the material factory gives a record.
 pub fn program_class(material: &Material, quality: u32) -> u32 {
-    state_words(material, quality).map_or(PLUGIN_CLASSES[plugin(material)], |(_, shd)| shd & 0xF)
+    state_words(material, quality).map_or(
+        crate::material_state::record_type(material).base,
+        |(_, shd)| shd & 0xF,
+    )
 }
 
 /// The dirt mode the factory selects: 0 none, 1 grime, 2 worn, 3 another
