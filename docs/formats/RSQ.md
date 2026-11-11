@@ -569,6 +569,21 @@ prop). Rules in cm and ticks:
   character's feet never meet other parts (the original puts a foot out of
   body–body contacts when it is registered and every tick its leg finds
   the ground; nothing takes it back).
+- **Order.** A sector appends each part to its body list when it joins
+  the world, a node before its children (the scene scan and the drain of
+  nodes added later both walk the node tree that way; a node added during
+  play joins at the next simulation upkeep, in the order it was added),
+  and stores the part's list index in the low half of the part's key word,
+  under the order key round(100/mobility). The step walks the list from
+  its end into the awake list, which the iterations, the detection, the
+  friction and the post-step walk from its start: the last part to join
+  first. A grid sector's detection takes each awake part in that order, and
+  for it the parts of its nine cells (its own first) from each cell's
+  list head (a part joins a cell at the head, and moves to the head of a
+  new cell when it changes cells), skipping the parts already walked; of
+  the two, the one with the smaller key word brings its spheres, so on a
+  key tie the one that joined first. An all-pairs sector walks the list
+  from its start, each awake part against every later part.
 - **Group masks** (two parts of one tree). From the root, with a bit
   counter from 0 (wrapping at 32), a part with children takes the next
   bit, its parent's bit and the two bits its parent was given; a leaf takes

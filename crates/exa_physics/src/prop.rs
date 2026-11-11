@@ -163,7 +163,13 @@ fn register_props(
     parents: Query<&ChildOf>,
     (held, bodies): (Query<&crate::grip::HeldGrip>, Query<&Ragdoll>),
 ) {
-    for (root, PendingProp(parts)) in &pending {
+    // In spawn order (the entity index), not the storage's: a body takes
+    // its place in the sector's list when it is inserted
+    // ([`Ragdoll::list_place`]), and the original adds a level's props in
+    // its node order.
+    let mut pending: Vec<_> = pending.iter().collect();
+    pending.sort_unstable_by_key(|(root, _)| root.index());
+    for (root, PendingProp(parts)) in pending {
         if let Ok(grip) = held.get(root)
             && !holder_built(grip, &bodies)
         {

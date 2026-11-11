@@ -31,9 +31,12 @@
 //! # Exarust
 //!
 //! [`SectorBodies`] is rebuilt every fixed tick after the body step from
-//! every body's parts, in the bodies' query order (a body that did not
-//! change since the last rebuild keeps its cells, as the original keeps its
-//! grids as the bodies move); its cells are world
+//! every body's parts, in the solver's walk order (the last body to join
+//! first, each body's root last: the order a cell's list holds bodies that
+//! joined it at its head; the original also moves a body to the head of
+//! its new cell when it changes cells, which the rebuild does not keep).
+//! A body that did not change since the last rebuild keeps its cells, as
+//! the original keeps its grids as the bodies move. Its cells are world
 //! cells (the grid's origin cell at the world origin). The level's static
 //! meshes are Exarust's physics-world colliders; their records keep the
 //! mesh entity they came from ([`crate::StaticColliders::mesh_of`]). The
@@ -156,13 +159,16 @@ impl SectorBodies {
         self.spare = listed;
     }
 
-    /// Body `body`'s parts with the cells their mesh box centres fall in.
+    /// Body `body`'s parts with the cells their mesh box centres fall in,
+    /// the last in the body's list order first (the root last): the parts
+    /// joined the list root first, and each joined its cell at the head.
     fn entries(body: Entity, ragdoll: &Ragdoll) -> Vec<((i32, i32), BodyEntry)> {
         let disabled = ragdoll.disabled();
         ragdoll
-            .parts
+            .list_parts()
             .iter()
-            .enumerate()
+            .rev()
+            .map(|&part| (part, &ragdoll.parts[part]))
             .map(|(part, p)| {
                 let centre = p.transform().transform_point3(p.pairing.mesh.centre);
                 (
@@ -191,10 +197,12 @@ pub fn rebuild_sector_bodies(
     mut grid: ResMut<SectorBodies>,
     bodies: Query<(Entity, Ref<Ragdoll>)>,
 ) {
-    // In entity order, as the solver walks them; a body whose pose did not
-    // change since the last rebuild keeps its cells.
+    // In the solver's walk order ([`crate::body::walk_order`]: the last
+    // body to join first), which is each cell's order when the bodies
+    // joined it at its head; a body whose pose did not change since the
+    // last rebuild keeps its cells.
     let mut ordered: Vec<(Entity, Ref<Ragdoll>)> = bodies.iter().collect();
-    ordered.sort_unstable_by_key(|(e, _)| *e);
+    ordered.sort_unstable_by(|(a, ra), (b, rb)| crate::body::walk_order((*a, ra), (*b, rb)));
     grid.rebuild_changed(ordered.iter().map(|(e, r)| (*e, &**r, r.is_changed())));
 }
 

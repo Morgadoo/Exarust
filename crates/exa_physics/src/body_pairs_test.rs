@@ -1419,3 +1419,56 @@ fn an_arc_segment_touches_a_part_through_its_swept_mesh_query() {
         assert!(!touches(-0.5, -0.1));
     }
 }
+
+/// Of two equally mobile parts the one earlier in the sector's list brings
+/// its spheres (the original compares the order key with the list index
+/// under it), whichever of the two the awake walk meets first.
+#[test]
+fn the_earlier_listed_part_brings_its_spheres_on_a_tie() {
+    for (place_a, place_b) in [(1, 2), (2, 1)] {
+        let mut a = ball(1, 11, Vec3::new(-0.09, 2.0, 0.0), 0.1);
+        let mut b = ball(2, 11, Vec3::new(0.09, 2.0, 0.0), 0.1);
+        a.set_list_place(place_a);
+        b.set_list_place(place_b);
+        assert_eq!(a.parts[0].pairing.key(), b.parts[0].pairing.key());
+        let mut stages = pairs();
+        step(&mut [&mut a, &mut b], NONE, &mut stages);
+        let touches = the_pairs(&stages).touches();
+        assert_eq!(touches.len(), 1);
+        let first = if place_a < place_b {
+            entity(1)
+        } else {
+            entity(2)
+        };
+        assert_eq!(touches[0].a.0, first, "{place_a} {place_b}");
+    }
+}
+
+/// The all-pairs sector walks its list from the start and an awake part
+/// meets only the parts after it: a sleeper listed before an awake part
+/// is not met by it.
+#[test]
+fn the_all_pairs_sector_meets_only_later_parts() {
+    let ground = floor_quad(0.0, 5.0);
+    let mut sleeper = ball(1, 11, Vec3::new(0.0, 0.1, 0.0), 0.1);
+    while sleeper.sleep != Sleep::Deep {
+        sleeper.tick(ground.as_slice());
+    }
+    for (sleeper_place, met) in [(1, false), (3, true)] {
+        let mut asleep = sleeper.clone();
+        asleep.set_list_place(sleeper_place);
+        let mut faller = ball(2, 11, Vec3::new(0.05, 0.28, 0.0), 0.1);
+        faller.set_list_place(2);
+        let mut stages: Vec<Box<dyn SolverStage>> = vec![Box::new(Pairs::all_pairs())];
+        step(
+            &mut [&mut faller, &mut asleep],
+            ground.as_slice(),
+            &mut stages,
+        );
+        assert_eq!(
+            !the_pairs(&stages).touches().is_empty(),
+            met,
+            "{sleeper_place}"
+        );
+    }
+}

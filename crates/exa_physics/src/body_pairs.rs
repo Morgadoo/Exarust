@@ -365,6 +365,10 @@ fn meets(p: &Part) -> bool {
 struct Seen {
     body: usize,
     part: usize,
+    /// Where the part stands in the sector's body list: its body's place
+    /// ([`Ragdoll::list_place`]) and its own place in the body's list
+    /// order ([`Ragdoll::list_parts`]).
+    list: (u64, usize),
     /// The grid cell of its mesh box's world centre.
     cell: (i32, i32),
     /// Its sphere bound's world centre (from the particle weights).
@@ -376,11 +380,12 @@ struct Seen {
 }
 
 impl Seen {
-    fn of(body: usize, part: usize, p: &Part) -> Self {
+    fn of(body: usize, part: usize, list: (u64, usize), p: &Part) -> Self {
         let pose = p.pose((0, 0));
         Self {
             body,
             part,
+            list,
             cell: pose.cell,
             sphere: pose.sphere_centre,
             mesh: pose.box_centre,
@@ -825,33 +830,25 @@ impl Pairs {
     fn find_with(&mut self, bodies: &mut [&mut Ragdoll], awake: usize, s: &mut Scratch) {
         let found = &mut s.found;
         found.clear();
-        // Awake parts first, body by body, then (all, or those in the cells
-        // around them) the sleeping parts.
+        if self.phase == BroadPhase::AllPairs {
+            self.find_all_pairs(bodies, awake, found);
+            return;
+        }
+        // The original's grid sector walks its awake list, which the step
+        // filled from the end of the sector's body list: the last body to
+        // join first, and in each body its parts from the last in list
+        // order to the root. `bodies` come in that order (`step_bodies`).
         for (b, body) in bodies[..awake].iter().enumerate() {
-            for (k, p) in body.parts.iter().enumerate() {
+            let place = body.list_place;
+            for (slot, &k) in body.list_parts().iter().enumerate().rev() {
+                let p = &body.parts[k];
                 if meets(p) {
-                    found.push(Seen::of(b, k, p));
+                    found.push(Seen::of(b, k, (place, slot), p));
                 }
             }
         }
         let movers = found.len();
         if movers == 0 {
-            return;
-        }
-        if self.phase == BroadPhase::AllPairs {
-            for (b, body) in bodies.iter().enumerate().skip(awake) {
-                for (k, p) in body.parts.iter().enumerate() {
-                    if meets(p) {
-                        found.push(Seen::of(b, k, p));
-                    }
-                }
-            }
-            let _span = bevy::log::info_span!("pairs: meet all").entered();
-            for x in 0..movers {
-                for y in x + 1..found.len() {
-                    self.meet(bodies, found, x, y, true);
-                }
-            }
             return;
         }
         let near = &mut s.near;
@@ -866,36 +863,79 @@ impl Pairs {
         }
         let span = bevy::log::info_span!("pairs: gather sleepers").entered();
         for (b, body) in bodies.iter().enumerate().skip(awake) {
-            for (k, p) in body.parts.iter().enumerate() {
+            let place = body.list_place;
+            for (slot, &k) in body.list_parts().iter().enumerate().rev() {
+                let p = &body.parts[k];
                 // The cell first: most sleepers lie far from every awake
                 // part, and the rest of their pose is not needed.
                 if meets(p) && near.contains(&p.cell((0, 0))) {
-                    found.push(Seen::of(b, k, p));
+                    found.push(Seen::of(b, k, (place, slot), p));
                 }
             }
         }
         drop(span);
         let _span = bevy::log::info_span!("pairs: meet").entered();
+        // Each cell's list as the original keeps it: a body joins its cell
+        // at the head, so the cell holds its parts last-joined first, the
+        // order the awake list walks in. (The original also moves a part
+        // to the head of its new cell when it changes cells; Exarust keeps
+        // no lists from tick to tick, so the cell keeps the joining order.)
+        let others = &mut s.others;
+        others.clear();
+        others.extend(0..found.len());
+        others.sort_by_key(|&i| {
+            let (place, slot) = found[i].list;
+            (
+                place == 0,
+                std::cmp::Reverse(place),
+                std::cmp::Reverse(slot),
+                i,
+            )
+        });
         let grid = &mut s.grid;
         grid.clear();
-        for (i, seen) in found.iter().enumerate() {
-            grid.insert(seen.cell, i);
+        for &i in others.iter() {
+            grid.insert(found[i].cell, i);
         }
         // Each awake part in turn meets the parts of its 3 × 3 cells it has
-        // not met yet: every pair once.
+        // not met yet, cell by cell in the original's order (its own first)
+        // and each cell's list from its head: every pair once.
         let met = &mut s.met;
         met.clear();
         met.resize(found.len(), false);
-        let others = &mut s.others;
         for x in 0..movers {
             met[x] = true;
             others.clear();
-            for (_, list) in grid.near(found[x].cell) {
-                others.extend(list.iter().copied().filter(|&y| !met[y]));
-            }
-            others.sort_unstable();
+            others.extend(grid.around(found[x].cell).filter(|&y| !met[y]));
             for &y in others.iter() {
                 self.meet(bodies, found, x, y, false);
+            }
+        }
+    }
+
+    /// The original's all-pairs sector: its body list walked from the
+    /// start, each part that is awake against every later part, awake or
+    /// asleep. (A sleeper before an awake part in the list is never met by
+    /// it, as in the original.) Bodies without a place keep their order
+    /// in `bodies`.
+    fn find_all_pairs(&mut self, bodies: &mut [&mut Ragdoll], awake: usize, found: &mut Vec<Seen>) {
+        for (b, body) in bodies.iter().enumerate() {
+            let place = body.list_place;
+            for (slot, &k) in body.list_parts().iter().enumerate() {
+                let p = &body.parts[k];
+                if meets(p) {
+                    found.push(Seen::of(b, k, (place, slot), p));
+                }
+            }
+        }
+        found.sort_by_key(|seen| (seen.list.0 == 0, seen.list.0, seen.body, seen.list.1));
+        let _span = bevy::log::info_span!("pairs: meet all").entered();
+        for x in 0..found.len() {
+            if found[x].body >= awake {
+                continue;
+            }
+            for y in x + 1..found.len() {
+                self.meet(bodies, found, x, y, true);
             }
         }
     }
@@ -905,7 +945,7 @@ impl Pairs {
     /// in the all-pairs walk, also each part's sphere centre within its
     /// own sphere radius of the other's mesh box; then the original's
     /// two-way box meet test, and contacts with the more mobile one's
-    /// spheres (on a tie, the first part's).
+    /// spheres (on a tie, the one earlier in the sector's list).
     fn meet(
         &mut self,
         bodies: &mut [&mut Ragdoll],
@@ -959,7 +999,12 @@ impl Pairs {
                 return;
             }
         }
-        let (a, b) = if py.pairing.key() < px.pairing.key() {
+        // The original compares one word per part: the order key in its
+        // high half, the part's index in the sector's list in its low half,
+        // so of two equally mobile parts the one that joined first brings
+        // its spheres. (The list index is 16 bits there; Exarust compares
+        // the whole place.)
+        let (a, b) = if (py.pairing.key(), sy.list) < (px.pairing.key(), sx.list) {
             (y, x)
         } else {
             (x, y)

@@ -152,12 +152,34 @@ names. `EXA_BRIDGE_WIDE=1` scans every entity again (a debug aid). Every plugin 
 `bridge_*_types` function next to its build); bodies are copied when they
 change, the collision world, the navigation grid, the cloths and the
 solver's stages are lent. The game runs its fixed step this way by default
-(`--no-sim-bridge` keeps it in the frame's world). The solver, the sector lists and the character tick walk their
-bodies in entity order, so neither world's table layout decides it. A body's
+(`--no-sim-bridge` keeps it in the frame's world). The solver and the
+sector lists walk their bodies in the original's sector-list order (below),
+the character tick in entity order, so neither world's table layout
+decides it. A body's
 every pose is the same bit for bit behind the bridge, inline and on the
 thread (`body_floor_test`), and a scripted run logs the same changes,
 removals, spawns, children and messages on both sides as one world
 (`sim_bridge_test`).
+
+Walk order. The original appends each body (each part is one there) to
+its sector's list when it joins the world, a node before its children, a
+node added later (a spawned character, an item put on) at the next
+simulation upkeep in the order it was added. Its step walks that list from
+the end, filling the awake list the iterations, detection, friction and
+post-step all walk; so the last body to join comes first and a tree's
+root last. Exarust gives each `Ragdoll` its place (`Ragdoll::list_place`)
+when it is first inserted on an entity (a bridged body keeps it), and the
+character and prop builders insert their bodies in spawn order (entity
+index). `body::walk_order` sorts the solver's bodies (`step_bodies`) and
+the body grid (`sector_lists::rebuild_sector_bodies`) by it; the pair
+stage walks each body's parts in reverse list order (`Ragdoll::list_parts`,
+the tree's node order) and meets the parts of each cell (own cell first)
+in the order a cell's list holds them, last joined first. Of two equally
+mobile parts, the one earlier in the list brings its spheres: the
+original's key word holds the list index under the order key. Not kept:
+the original moves a body to the head of its new cell's list when it
+changes cells, and its list index is 16 bits; the all-pairs sector walks
+its list from the start, each awake part against every later part.
 
 Stage 4 turns the frame's writers of simulation data into work the
 simulation does itself and the copies out into snapshots, group by group.
@@ -453,7 +475,8 @@ the plugin) keeps body parts out of each other as the original's pairs
 do: after the iterations every awake part meets the parts near it (awake
 or asleep) by the original's group masks within a body and layer masks
 between bodies (`body::Pairing` on each part), the more mobile one's
-spheres against the other part's collision mesh (`body::Pairs`, the
+spheres against the other part's collision mesh (on a tie, the part
+that joined the sector's list first; see the walk order below) (`body::Pairs`, the
 original's mesh query: the swept/static choice on 0.1 cm² of travel, the
 mesh-box and mesh-sphere pre-tests, the one-sided per-triangle tests with
 the sphere re-read after every hit; a mesh with a kd-tree, `Part::tree`, is

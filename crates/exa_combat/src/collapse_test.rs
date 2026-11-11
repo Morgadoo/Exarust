@@ -976,8 +976,10 @@ fn the_dropped_weapon_meets_another_body() {
         .unwrap()
         .touches();
     assert_eq!(touches.len(), 1);
-    assert_eq!(touches[0].a.0, weapon_entity);
-    assert_eq!(touches[0].b.0, other_entity);
+    // Equally mobile: the sleeper joined the sector's list before the
+    // dropped weapon, so it brings its spheres.
+    assert_eq!(touches[0].a.0, other_entity);
+    assert_eq!(touches[0].b.0, weapon_entity);
     assert_eq!(touches[0].hits, 1);
     assert_eq!(touches[0].deepest.to_bits(), 0x3ec3_9cd9);
     let moved = {
@@ -1013,9 +1015,10 @@ fn the_dropped_weapon_meets_another_body() {
         })
         .unwrap();
     assert_ne!(at, alone);
-    assert_eq!(at.x.to_bits(), 0xbda3_ae15);
+    // (x and z one bit off the weapon-first push: the sides round apart.)
+    assert_eq!(at.x.to_bits(), 0xbda3_ae16);
     assert_eq!(at.y.to_bits(), 0x3f7e_43be);
-    assert_eq!(at.z.to_bits(), 0xbe49_2d0c);
+    assert_eq!(at.z.to_bits(), 0xbe49_2d0b);
 }
 
 /// A collapse's start asks for its groan once, from its own roll's first

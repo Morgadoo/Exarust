@@ -326,6 +326,7 @@ impl Ragdoll {
         let (outward, inward) = tree_orders(&parts);
         Self {
             parts,
+            list_place: 0,
             links,
             world,
             links_of,

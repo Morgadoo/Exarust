@@ -1763,8 +1763,12 @@ pub(crate) fn plain_law(gap: Vec3, slack: f32, strength: f32) -> Option<(Vec3, O
 /// A simulated body: limp, or driven by its muscles when it has a
 /// [`Drive`].
 #[derive(Component, Debug)]
+#[component(on_insert = join_sector_list)]
 pub struct Ragdoll {
     pub parts: Vec<Part>,
+    /// The body's place in the sector's body list ([`Ragdoll::list_place`]):
+    /// 0 until the body is first inserted on an entity.
+    list_place: u64,
     /// Every part's links, the skeleton's then its origin pivot, part by part.
     pub links: Vec<Link>,
     /// The links of a hung root body to its node (the world), solved with the
@@ -1915,6 +1919,13 @@ impl Ragdoll {
             .collect();
         Self {
             parts,
+            // The original's clone is a new body, which joins the list when
+            // it is added; a full copy keeps its template's place.
+            list_place: if drop_runtime_links {
+                0
+            } else {
+                self.list_place
+            },
             links,
             world: self.world.clone(),
             links_of,
@@ -1977,6 +1988,69 @@ impl Ragdoll {
     pub fn runtime_clone(&self) -> Self {
         self.copy(true)
     }
+}
+
+/// The next place a body takes in the sector's body list. One count for
+/// the process: the frame's and the simulation's worlds hand bodies the
+/// same places (a body lent across keeps its own), and only the order of
+/// the places matters.
+static NEXT_LIST_PLACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The original appends a body to its sector's body list when it joins
+/// the world, the scene node first and its child nodes after (both the
+/// scene scan and the pending-node drain walk the node tree that way), and
+/// a node added later (a spawned character, an item put on) at the next
+/// simulation upkeep, in the order the nodes were added. Exarust gives a
+/// body its place when its [`Ragdoll`] is first inserted; one inserted
+/// again (the simulation bridge lends bodies to the simulation's world and
+/// back) keeps it.
+fn join_sector_list(
+    mut world: bevy::ecs::world::DeferredWorld,
+    ctx: bevy::ecs::lifecycle::HookContext,
+) {
+    if let Some(mut body) = world.get_mut::<Ragdoll>(ctx.entity)
+        && body.list_place == 0
+    {
+        body.bypass_change_detection().list_place =
+            NEXT_LIST_PLACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Ragdoll {
+    /// The body's place in the sector's body list: a later body has a
+    /// larger place; 0 for a body never inserted on an entity. The
+    /// original's list holds each part (each is a body there), the parts
+    /// of a tree one after another, the root first ([`Ragdoll::list_parts`]).
+    pub fn list_place(&self) -> u64 {
+        self.list_place
+    }
+
+    /// Sets the body's place (tests and tools that build lists by hand).
+    pub fn set_list_place(&mut self, place: u64) {
+        self.list_place = place;
+    }
+
+    /// The parts in the order the original's list holds them: the tree's
+    /// root first, then its children depth first (the node tree's order).
+    pub fn list_parts(&self) -> &[usize] {
+        &self.outward
+    }
+}
+
+/// The order the original's sector step walks its bodies in, which every
+/// stage after the integration keeps (the solver's awake list is filled
+/// in this order): the list from its end, so the body that joined last
+/// first. A body without a place (never inserted) comes after the placed
+/// ones, by entity index.
+pub fn walk_order(a: (Entity, &Ragdoll), b: (Entity, &Ragdoll)) -> std::cmp::Ordering {
+    let key = |(e, r): (Entity, &Ragdoll)| {
+        (
+            r.list_place == 0,
+            std::cmp::Reverse(r.list_place),
+            e.index(),
+        )
+    };
+    key(a).cmp(&key(b))
 }
 
 /// Cloning a body copies its whole state, links included, as the tests and
@@ -2889,6 +2963,7 @@ impl Ragdoll {
         let (chest, legs, sole) = balance::build(setup, &mut parts);
         Self {
             parts,
+            list_place: 0,
             links,
             world: Vec::new(),
             links_of,
@@ -5776,12 +5851,12 @@ pub fn step_bodies(
 ) {
     let (mut awake, mut sleeping): (Vec<Mut<Ragdoll>>, Vec<Mut<Ragdoll>>) =
         (Vec::new(), Vec::new());
-    // The bodies in entity order (the order they were spawned, as the
-    // original's list keeps its registrations), not the storage's: the
-    // solver's results then do not depend on how either world lays its
+    // The bodies in the original's walk order ([`walk_order`]: the sector
+    // list from its end, the last body to join first), not the storage's:
+    // the solver's results then do not depend on how either world lays its
     // tables out (`crate::sim_bridge`).
     let mut ordered: Vec<(Entity, Mut<Ragdoll>)> = bodies.iter_mut().collect();
-    ordered.sort_unstable_by_key(|(e, _)| *e);
+    ordered.sort_unstable_by(|(a, ra), (b, rb)| walk_order((*a, ra), (*b, rb)));
     for (_, mut body) in ordered {
         match body.sleep {
             Sleep::Awake => awake.push(body),

@@ -129,7 +129,13 @@ fn build_bodies(
     ),
 ) {
     let Some(motions) = motions else { return };
-    for (root, mut physical, mut limp, mut placed) in &mut requests {
+    // In spawn order (the entity index), not the storage's: a body takes
+    // its place in the sector's list when it is inserted
+    // ([`exa_physics::body::Ragdoll::list_place`]), and the original adds
+    // its characters in the order it creates them.
+    let mut requests: Vec<_> = requests.iter_mut().collect();
+    requests.sort_unstable_by_key(|(root, ..)| root.index());
+    for (root, mut physical, mut limp, mut placed) in requests {
         // Behind the loading screen a body is built once it is dressed, as
         // the original builds a character whole: dressing is spread over
         // frames by a time budget, so a body built before its clothes in one

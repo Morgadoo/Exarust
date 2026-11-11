@@ -395,3 +395,33 @@ fn a_frozen_body_holds_still_and_counts_down_by_one() {
     body.tick(NONE);
     assert!(body.parts[0].positions[0].y < held[0].y);
 }
+
+/// A body takes its place in the sector's list when it is first inserted,
+/// keeps it when inserted again, and the solver walks the list from its
+/// end: the last body to join first.
+#[test]
+fn bodies_are_walked_from_the_last_to_join() {
+    let mut world = World::new();
+    let body = || Ragdoll::new(&[]);
+    let first = world.spawn(body()).id();
+    let second = world.spawn(body()).id();
+    let place = |w: &World, e: Entity| w.get::<Ragdoll>(e).unwrap().list_place();
+    let (one, two) = (place(&world, first), place(&world, second));
+    assert!(one > 0 && two > one);
+    // Lent away and back, as the simulation bridge does: the same place.
+    let lent = world.entity_mut(first).take::<Ragdoll>().unwrap();
+    world.entity_mut(first).insert(lent);
+    assert_eq!(place(&world, first), one);
+    let a = world.get::<Ragdoll>(first).unwrap();
+    let b = world.get::<Ragdoll>(second).unwrap();
+    assert_eq!(
+        super::walk_order((second, b), (first, a)),
+        std::cmp::Ordering::Less
+    );
+    // A body never inserted comes after the placed ones.
+    let loose = body();
+    assert_eq!(
+        super::walk_order((first, a), (Entity::PLACEHOLDER, &loose)),
+        std::cmp::Ordering::Less
+    );
+}
