@@ -2159,6 +2159,33 @@ pub struct LoadedStory(pub Session);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live roles replace a version 7 record's list; an older record
+    /// keeps its own.
+    #[test]
+    fn the_flush_writes_the_live_roles_into_the_record() {
+        let roles = exa_ai::roles::Roles(vec![exa_formats::roles::HeldRole {
+            id: 31,
+            weight: 0.5,
+            explicit: true,
+            inherited: 0,
+            values: vec![7],
+        }]);
+        let record = record_with_roles(CharacterRecord::reset(), &roles);
+        assert_eq!(record.roles.len(), 1);
+        assert_eq!(
+            (
+                record.roles[0].id,
+                record.roles[0].weight,
+                record.roles[0].explicit
+            ),
+            (31, 0.5, true)
+        );
+        assert_eq!(record.roles[0].variables, [7]);
+        let mut old = CharacterRecord::reset();
+        old.version = 6;
+        assert!(record_with_roles(old, &roles).roles.is_empty());
+    }
     use crate::arsenal::{SHIELDS, WEAPONS};
     use exa_formats::save_package::SlotKind;
 
