@@ -1865,6 +1865,15 @@ fn create_energy(
     }
 }
 
+/// Whether the caster's power list holds a running Constant Displacement,
+/// whose shell a vanish or a Long Door then takes.
+fn constant_running(caster: &PowerCaster) -> bool {
+    caster
+        .active
+        .iter()
+        .any(|entry| entry.id == super::displacement::CONSTANT)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_displacement(
     commands: &mut Commands,
@@ -1878,7 +1887,9 @@ fn create_displacement(
 ) -> Option<Entity> {
     match start {
         DisplacementStart::Vanish { cost } => {
-            let mut power = Vanish::new(context.now, false, false, cost);
+            // A running constant displacement lends the vanish its shell.
+            let shared = constant_running(caster);
+            let mut power = Vanish::new(context.now, shared, false, cost);
             power.take_hook(&mut caster.body);
             let input = visual_input(context, ragdoll, 0.0);
             // The creator adds its own node unless its activation made one.
@@ -1896,8 +1907,13 @@ fn create_displacement(
             );
             if let Some(entity) = entity {
                 // The vanish effect builds the body's displacement shell,
-                // whose constructor draws its two texture positions.
-                let tex_pos = [roll.0.unit(), roll.0.unit()];
+                // whose constructor draws its two texture positions, unless
+                // it takes the constant displacement's.
+                let tex_pos = if shared {
+                    [0.0; 2]
+                } else {
+                    [roll.0.unit(), roll.0.unit()]
+                };
                 commands
                     .entity(entity)
                     .insert(super::vanish_live::LiveVanish::waiting(
@@ -1917,6 +1933,9 @@ fn create_displacement(
             // navigation grid from its first phase (`long_door_live`).
             let ai = to.is_none();
             let mut power = LongDoor::new(context.now, to.map(|p| p.to_array()), ai, tick_cost);
+            // A running constant displacement lends the door its shell.
+            let shared = constant_running(caster);
+            power.base.shared = shared;
             if let Some(head) = ragdoll.and_then(|r| r.parts.first()) {
                 let at = head.transform().translation * CM;
                 power.follow(Vec3::from_array([at.x, at.y, at.z]));
@@ -1940,7 +1959,11 @@ fn create_displacement(
             );
             if let Some(entity) = entity {
                 // The Long Door runs the same vanish effect and shell.
-                let tex_pos = [roll.0.unit(), roll.0.unit()];
+                let tex_pos = if shared {
+                    [0.0; 2]
+                } else {
+                    [roll.0.unit(), roll.0.unit()]
+                };
                 commands
                     .entity(entity)
                     .insert(super::vanish_live::LiveVanish::waiting(
@@ -1955,6 +1978,14 @@ fn create_displacement(
             let mut power = ConstantDisplacement::new();
             power.held =
                 PowerBase::new(super::displacement::CONSTANT).accrue(&mut caster.body, cost);
+            // The start makes the body's displacement shell first (its
+            // constructor's two draws), then the tendril image.
+            let tex_pos = [roll.0.unit(), roll.0.unit()];
+            commands.spawn((
+                Name::new("_EffectShell01 constant"),
+                super::vanish_live::ConstantShell::waiting(caster_entity, tex_pos),
+                ChildOf(caster_entity),
+            ));
             let entity =
                 ragdoll.map(|body| spawn_body_wisps(commands, caster_entity, body, draws, roll));
             if let Some(entity) = entity {

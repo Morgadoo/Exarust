@@ -6,6 +6,9 @@
 // as the original's alpha-tested caster does, whatever their opacity.
 // Skinned casters (characters) are posed by their joints: each vertex is
 // the weighted sum of its joints' matrices (joint × inverse bind pose).
+// A dithered caster (a vanishing body, the original's fade bit) drops the
+// texels whose hash of the face's pixel position falls below its fade, as
+// the original's dithered caster program does.
 // Rules: docs/RENDERING.md (Cached cube shadows).
 
 struct Draw {
@@ -13,7 +16,8 @@ struct Draw {
     clip_from_world: mat4x4<f32>,
     // xyz the light (metres), w 1 / (R·k_c).
     light: vec4<f32>,
-    // x: a skinned caster's first joint matrix in `joints`.
+    // x: a skinned caster's first joint matrix in `joints`; y: the dither
+    // fade's bits (0 for none).
     joints: vec4<u32>,
 }
 
@@ -68,6 +72,10 @@ fn vertex(v: Vertex) -> Varyings {
 @fragment
 fn fragment(in: Varyings) -> @builtin(frag_depth) f32 {
     let d = &draws[in.draw];
+    let fade = bitcast<f32>((*d).joints.y);
+    if fract(in.clip.x * 3.555713358 + in.clip.y * 0.309269245) < fade {
+        discard;
+    }
 @if(ALPHA_CUT) {
     if textureSample(cut_texture, cut_sampler, in.uv).a < CUTOFF {
         discard;

@@ -752,9 +752,31 @@ body's displacement shell (`effects::shell::Shell`, drawn with
   (colour writes off), bit 0x400 draws them blended at the shown amount.
   A body whose show call left bits 0x30 set (the stage 0x10, reveal 0x20
   and show 0x30 calls) is out of the scene's own draw; a hide (0) gives it
-  back. Exarust hides the caster's meshes (keeping their visibility) while
-  the vanish draws the body and the pass does not show it; the fade half
-  shows the body above one half [guess for the 100–200 ms blend].
+  back. The fade half sets each part's material opacity to the shown
+  amount (a plain stage switched to its blended one) over the depth half,
+  so only the body's nearest layer shows. Exarust hides the caster's
+  meshes (keeping their visibility) while only the depth half draws them;
+  for the fade half each part takes a blended copy of its material at the
+  shown amount that writes its own depth (the depth copy steps aside on
+  those frames), and a part without a material of the original's kind
+  shows while the amount is above one half.
+- **The body's shadow.** The staging entries (the stage call) set the body
+  nodes' fade bit and the hide clears it; while it is set the shadow
+  passes draw the body dithered at the node fade, which each fade-half
+  frame sets to one less the shown amount. So the shadow thins out with
+  the body over 350–450 ms, stays gone while it is hidden, and comes back
+  with it over the come-back's 200–400 ms (the cube shadows'
+  `ShadowDither`; RENDERING.md, Cached cube shadows).
+- **A Constant Displacement's shell.** The constant's start makes the
+  body's shell (its creation draws come before the tendril image's), with
+  leave-to-finish cleared: it opens over 400 ms, rests open while the
+  power runs, and the power's end asks it to close; nothing lets it finish,
+  so the closed shell stays drawing nothing (Exarust removes it once
+  closed). A Vanish or Long Door cast while it runs finds the constant in
+  the caster's power list, takes that shell (no shell of its own, no
+  creation draws, its own phased body lent), runs it through the phases,
+  and leaves it open at its end (the shared power writes no closing
+  state); the shell goes back to the constant.
 - **The shell follows the power.** It opens over 400 ms from the cast;
   the power writes state 2 (closing over 300 ms from where it is) as the
   body vanishes, state 1 stamped now as it comes back, and state 2 with

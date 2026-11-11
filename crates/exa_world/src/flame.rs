@@ -54,6 +54,14 @@ const SMALL_TEXTURE: &str = "FirePrt02";
 /// The larger fires' texture: the same atlas layout.
 const LARGE_TEXTURE: &str = "FirePrt01";
 
+/// Whether a fire's particle texture is the small fire's. The fire presets
+/// name the original's built-in materials (`_FirePrt02` for fires up to
+/// 0.35, `_FirePrt01` above), whose textures are the `.rfi` files without
+/// the underscore; either spelling selects the small fire's material.
+fn is_small_fire(texture: &str) -> bool {
+    texture.strip_prefix('_').unwrap_or(texture) == SMALL_TEXTURE
+}
+
 /// The shared particle materials, once loaded: the fires' two, and each
 /// additive flame's texture (the level portals'), loaded the first time
 /// one asks for it (`None` once its texture failed to load).
@@ -202,7 +210,7 @@ fn attach_flames(
     let Some(mut assets) = assets else { return };
     for (e, flame) in &flames {
         let material = match (flame.texture, flame.additive) {
-            (SMALL_TEXTURE, false) => assets.small.clone(),
+            (texture, false) if is_small_fire(texture) => assets.small.clone(),
             (_, false) => assets.large.clone(),
             (texture, additive) => {
                 let loaded = assets.others.entry((texture, additive)).or_insert_with(|| {
@@ -370,6 +378,22 @@ fn build_meshes(
 mod tests {
     use super::*;
     use crate::fire;
+
+    #[test]
+    fn small_fires_draw_the_small_texture() {
+        // A torch (0.2) and the largest small fire (0.35) draw FirePrt02;
+        // every larger fire and its bed draw FirePrt01.
+        for size in [0.2, 0.35] {
+            assert!(is_small_fire(fire::preset(size).flame.texture));
+        }
+        for size in [0.36, 0.5, 1.0, 2.0] {
+            let p = fire::preset(size);
+            assert!(!is_small_fire(p.flame.texture), "{size}");
+            assert!(!is_small_fire(p.base.unwrap().texture), "{size}");
+        }
+        assert!(is_small_fire(SMALL_TEXTURE));
+        assert!(!is_small_fire(LARGE_TEXTURE));
+    }
 
     #[test]
     fn a_torch_flame_rises_and_stays_near_its_node() {

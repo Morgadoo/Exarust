@@ -2588,6 +2588,11 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
     a carried torch's casters otherwise kept the faces of where the torch
     had been, and a caster that crossed into another face was left out of
     it, its shadow cut at the face's edge;
+  - a caster carrying `ShadowDither` (a vanishing body while its fade bit
+    is set) drops the texels where `fract(3.555713358·x + 0.309269245·y)`
+    of the face's pixel position is below its fade, as the original's
+    dithered caster program does; a dither that comes, changes or goes
+    dirties the caster's faces;
   - characters' skinned meshes are posed in the caster shader: each vertex
     is the weighted sum of its joints' world transforms times their inverse
     bind poses, computed once a frame for a character drawn into any face;
@@ -3217,7 +3222,8 @@ the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectsmoke_f`,
   `ColourInt`), the `Gradient` dimming and no colour limit on the alpha.
 - **Displacement shell** (`DispShellMaterial`, `disp_shell.wesl`): the
   shipped `dispshell_v`/`dispshell_f` over a copy of a vanishing body's
-  skinned meshes (Vanish, the Long Door), each vertex 2 cm out along its
+  skinned meshes (Vanish, the Long Door, Constant Displacement), each
+  vertex 2 cm out along its
   skinned normal. `LclMat` is the inverse of the body node's frame (cm),
   `EmiTex` the `_EffectShell01` record's emissive layer `FlameletsA3`
   (read raw), `TexPos` the shell's two creation draws and `TexOfs`
