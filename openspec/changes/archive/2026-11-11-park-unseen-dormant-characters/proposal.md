@@ -35,16 +35,25 @@ So a dormant character nothing draws is taken out of the simulation where it lie
 - `exa_physics::body::Ragdoll` keeps the mark: `park`, `unpark`, `parked`, `park_unseen` (the dormant branch) and the
   parked tick in `step_bodies` (out of the solver: no integration, no stage; the roll and the countdown, then deep).
 - `exa_physics::body::InView`: whether the renderer drew the body last frame, bridged to the simulation.
-- `exa_game::park`: the frame's note (any mesh under the body among an active 3D camera's visible meshes, read in
-  `First`, written only for dormant or parked bodies and only when it changes), the manager frame's wake in `SimPreStep` before the rise,
+- `exa_game::park`: the frame's note (any of the body's spheres inside the frustum of an active 3D camera drawing the
+  world, as the last frame left it, read in `First`, written only for dormant or parked bodies and only on change).
+  Bevy's mesh culling was tried first: its result on the first frames depends on when each mesh finished loading,
+  and four lockstep runs parked a statue at tick 1, 2 or not at all; the sphere test does not depend on loading, the manager frame's wake in `SimPreStep` before the rise,
   `EXA_NO_PARK=1` to turn the note off.
 - The posture stage calls `park_unseen` after the body's timers; the golem wake unparks after its wake.
+
+## Determinism
+
+The note makes the simulation read the camera, as the original's body tick reads its renderer's word. Exarust's chase
+camera is not repeatable tick for tick between lockstep runs (its wall probe's tilt differs by a few thousandths of a
+radian), so a parked body at the edge of the view can be unparked a tick apart in two runs of the same scene.
+`EXA_NO_PARK=1` turns the note off; such a run is byte-identical to one without this change.
 
 ## Out of scope
 
 - The pose word's bit 8: its readers (the dormant lift lead, which compares the word with 2) only change a parked
   body's tick, which the solver leaves out.
-- The culling's own test: Exarust asks Bevy's camera culling. The manager's sun-shadow bit: a body only the sun's
+- The culling's own test (node bounds, zones): Exarust tests the body's spheres against the camera frustum. The manager's sun-shadow bit: a body only the sun's
   shadow pass saw is unmarked by the frame and marked again by its body tick in the same step, before the solver, so
   it stays out; Exarust leaves it parked. A body never noted yet counts as drawn (the original's word starts at 0).
 - Marks of other bodies under the character's node: Exarust's character is one body; held items are their own

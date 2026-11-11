@@ -750,8 +750,8 @@ effect with their 0.9/0.1 hysteresis, the skin material fade (the square of
 the value, first match) and the focus-item power slot. The golem guardians
 are in `exa_ai::golem`. `park` takes a dormant character nothing draws
 out of the simulation: the frame notes, before the fixed loop, whether
-an active 3D camera's culling kept any mesh under a dormant or parked body
-in the last frame (`exa_physics::body::InView`), the posture stage parks an
+any sphere of a dormant or parked body was inside an active world
+camera's frustum in the last frame (`exa_physics::body::InView`), the posture stage parks an
 undrawn dormant body (`Ragdoll::park_unseen`) and the AI manager's frame
 unparks a drawn one before its rise (`park::wake_parked`);
 `EXA_NO_PARK=1` turns the note off. `golem_alarm` runs their alarm zones live: the AI

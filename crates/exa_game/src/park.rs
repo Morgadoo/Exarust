@@ -3,12 +3,15 @@
 //!
 //! - **Drawn.** Each frame, before the fixed loop, every dormant or parked
 //!   character's body learns whether the renderer drew it in the frame
-//!   before: whether any mesh under its entity was in an active 3D
-//!   camera's visible meshes ([`InView`]). The original's body tick reads
-//!   the low bits of its node's render-visibility word, which its scene
-//!   culling sets every frame for a node in view; a node no frame has drawn
-//!   yet reads as not drawn. Exarust's first frame has no value yet and
-//!   counts as drawn.
+//!   before: whether any of its collision spheres was inside the frustum
+//!   of an active 3D camera drawing the world ([`InView`]). The original's
+//!   body tick reads the low bits of its node's render-visibility word,
+//!   which its scene culling sets every frame for a node in view; a node no
+//!   frame has drawn yet reads as not drawn. Exarust's first frame has no
+//!   value yet and counts as drawn. The test is geometric (the bodies'
+//!   ticks and the camera's place), not Bevy's mesh culling, whose result
+//!   depends on when each mesh finished loading and would make lockstep
+//!   runs differ.
 //! - **Park.** The body tick's dormant branch (a lying sleeper or a resting
 //!   statue, the pose word the AI's sleep and the sentry set) parks a body
 //!   that was not drawn unless it already is
@@ -37,16 +40,22 @@
 //! the sun's shadow bit the manager's frame also accepts (a body only the
 //! sun's shadow pass saw is unmarked there and marked again by its body
 //! tick in the same step, before the solver, so it stays out; Exarust
-//! leaves it parked), the scene culling's own test (Exarust asks Bevy's
-//! camera culling) and the marks of other
+//! leaves it parked), the scene culling's own test (its node bounds and
+//! zones; Exarust tests the body's spheres against the frustum) and the
+//! marks of other
 //! bodies under the character's node (Exarust's character is one body;
 //! held items are bodies of their own, linked by their grips).
 //! `EXA_NO_PARK=1` turns the drawn test off, so nothing is parked.
+//!
+//! The note makes the simulation read the camera, as the original's body
+//! tick reads its renderer's word. Exarust's chase camera is not repeatable
+//! tick for tick between runs (its wall probe's tilt differs by a few
+//! thousandths of a radian), so a parked body at the edge of the view can
+//! be unparked a tick apart in two lockstep runs of the same scene;
+//! `EXA_NO_PARK=1` gives back a simulation that does not read the camera.
 
-use std::any::TypeId;
-
-use bevy::camera::visibility::VisibleEntities;
-use bevy::ecs::entity::EntityHashSet;
+use bevy::camera::primitives::{Frustum, Sphere};
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use exa_physics::body::{InView, OutOfScene, Ragdoll};
 
@@ -75,33 +84,44 @@ fn bridge_park_types(app: &mut App) {
         .bridge_copy::<InView>();
 }
 
+/// Whether any of the body's collision spheres, where its last tick left
+/// them, is inside `frustum`.
+fn in_frustum(body: &Ragdoll, frustum: &Frustum) -> bool {
+    body.parts.iter().any(|p| {
+        let t = p.transform();
+        p.spheres.iter().any(|&(centre, radius)| {
+            let sphere = Sphere {
+                center: t.transform_point3(centre).into(),
+                radius,
+            };
+            frustum.intersects_sphere(&sphere, true)
+        })
+    })
+}
+
 /// The frame's note of which dormant or parked bodies the renderer drew in
-/// the last frame: whether the entity or any entity under it is among the
-/// meshes an active 3D camera's culling kept, as the last frame left them.
-/// Written only when it changes.
+/// the last frame: whether any of the body's spheres is inside the frustum
+/// of an active 3D camera that draws the world's layer, as the last frame
+/// left the frustum. Written only when it changes.
 pub fn note_in_view(
     mut commands: Commands,
     bodies: Query<(Entity, &Ragdoll, Option<&InView>)>,
-    children: Query<&Children>,
-    cameras: Query<(&Camera, &VisibleEntities), With<Camera3d>>,
-    mut seen: Local<EntityHashSet>,
+    cameras: Query<(&Camera, &Frustum, Option<&RenderLayers>), With<Camera3d>>,
 ) {
-    let watched: Vec<_> = bodies
+    let world = RenderLayers::default();
+    let frusta: Vec<&Frustum> = cameras
         .iter()
-        .filter(|(_, body, _)| body.parked() || body.drive.as_ref().is_some_and(|d| d.dormant))
+        .filter(|(camera, _, layers)| {
+            camera.is_active && layers.is_none_or(|l| l.intersects(&world))
+        })
+        .map(|(_, frustum, _)| frustum)
         .collect();
-    if watched.is_empty() {
-        return;
-    }
-    seen.clear();
-    for (camera, visible) in &cameras {
-        if camera.is_active {
-            seen.extend(visible.get(TypeId::of::<Mesh3d>()).iter().copied());
+    for (entity, body, was) in &bodies {
+        let watched = body.parked() || body.drive.as_ref().is_some_and(|d| d.dormant);
+        if !watched {
+            continue;
         }
-    }
-    for (entity, _, was) in watched {
-        let now =
-            seen.contains(&entity) || children.iter_descendants(entity).any(|e| seen.contains(&e));
+        let now = frusta.iter().any(|f| in_frustum(body, f));
         if was.map(|w| w.0) != Some(now) {
             debug!("body {entity:?} drawn: {now}");
             commands.entity(entity).try_insert(InView(now));

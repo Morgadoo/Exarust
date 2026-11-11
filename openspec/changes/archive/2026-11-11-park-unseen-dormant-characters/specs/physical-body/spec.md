@@ -4,7 +4,7 @@
 The body tick SHALL park the body of a dormant character (a lying sleeper or a resting statue) that the renderer did not draw in the last frame, unless it is parked already; a body never noted counts as drawn.
 
 #### Scenario: A statue out of view
-- **WHEN** no camera's culling kept a resting statue's meshes in the last frame
+- **WHEN** none of a resting statue's spheres was inside a world camera's frustum in the last frame
 - **THEN** its body is parked in the next tick and stays where it lies, with no velocity
 
 ### Requirement: Parked body tick

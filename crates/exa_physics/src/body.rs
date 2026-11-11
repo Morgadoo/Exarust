@@ -2742,9 +2742,9 @@ pub struct BodyTicks(pub u64);
 pub struct OutOfScene;
 
 /// Whether the renderer drew a character's body in its last frame: one of
-/// the meshes under the body's entity was kept by an active 3D camera's
-/// culling (the original's render-visibility word on the character's node,
-/// whose low bits its scene culling sets each frame). The frame writes it; the body tick and the AI manager's frame
+/// the body's spheres was inside an active world camera's frustum (the
+/// original's render-visibility word on the character's node, whose low
+/// bits its scene culling sets each frame). The frame writes it; the body tick and the AI manager's frame
 /// read it ([`Ragdoll::park_unseen`], [`Ragdoll::unpark`]). A body without
 /// it counts as drawn.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
