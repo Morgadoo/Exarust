@@ -420,9 +420,14 @@ pub struct TerrainPart;
 /// first −21.
 ///
 /// Activation sets the node visible, gives it the floor's shadow-bias
-/// level (3) and its light-link distances 1, then builds its kd-tree;
-/// Exarust's room visibility is the activation, and its shadow bias is the
-/// same floor level.
+/// level (3) and its light-link distances 1, then builds its triangle list
+/// and kd-tree: a block with holes keeps its own list
+/// ([`patch::hole_triangles`], built into the tile mesh by `build_tile`),
+/// whose tree is a fresh one (none under 200 triangles, where the mesh
+/// queries test every triangle), and a full block the shared patch with a
+/// copy of the manager's block tree. Exarust's collider is the block's
+/// drawn triangles either way. Exarust's room visibility is the
+/// activation, and its shadow bias is the same floor level.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct TerrainBlock {
     pub bx: u32,
@@ -2082,8 +2087,12 @@ fn build_tile(
 
     // Each 6 m block draws the original's shared block patch (serpentine
     // rows, quads split along their low-to-high diagonal) from its first
-    // vertex; holes' quads are left out, and absent blocks are not built.
-    // At the tile's edge the skirt below joins its block's mesh.
+    // vertex; a block with holes draws the list its activation builds
+    // instead (`patch::hole_triangles`: the other diagonal, a triangle
+    // left out when one of its vertices is a hole), and absent blocks are
+    // not built. The block's collider is its drawn triangles, as the
+    // original's block tree is built from the same list. At the tile's
+    // edge the skirt below joins its block's mesh.
     let side = TileBlocks::SIDE;
     let block_at = |i: usize, j: usize| TileBlocks::of(i, j, n);
     let present = |bx: usize, by: usize| blocks.is_none_or(|b| b.has(bx, by));
@@ -2097,14 +2106,13 @@ fn build_tile(
             }
             let first = (by * n + bx) * cells;
             let group = groups[by * side + bx].get_or_insert_with(Vec::new);
-            for quad in shared.as_chunks::<6>().0 {
-                // A quad's smallest index is its low corner.
-                let low = first + *quad.iter().min().unwrap_or(&0) as usize;
-                if tile.is_hole(low % n, low / n) {
-                    continue;
-                }
-                group.extend(quad.iter().map(|&v| (first + v as usize) as u32));
-            }
+            let holed = patch::hole_triangles(
+                |i, j| tile.is_hole(i as usize, j as usize),
+                bx as u32,
+                by as u32,
+            );
+            let list = holed.as_deref().unwrap_or(&shared);
+            group.extend(list.iter().map(|&v| (first + v as usize) as u32));
         }
     }
     // A skirt hanging from the tile's edge hides cracks where neighbouring
@@ -2874,6 +2882,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The shipped hole masks cut 34 of exanima01's blocks below the full
+    /// 1800 triangles; tile (1, 0)'s block (2, 5) keeps 1794 (skipped
+    /// without the game).
+    #[test]
+    fn shipped_holed_blocks() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let terrain = Terrain::parse(pack.get("exanima01.rft").unwrap()).unwrap();
+        let mut holed = 0;
+        for tile in &terrain.tiles {
+            for (bx, by) in (0..8).flat_map(|by| (0..8).map(move |bx| (bx, by))) {
+                let hole = |i: u32, j: u32| tile.is_hole(i as usize, j as usize);
+                let Some(list) = patch::hole_triangles(hole, bx, by) else {
+                    continue;
+                };
+                holed += 1;
+                if (tile.x, tile.y, bx, by) == (1, 0, 2, 5) {
+                    assert_eq!(list.len() / 3, 1794);
+                }
+            }
+        }
+        assert_eq!(holed, 34);
     }
 
     /// All 17 installed levels with a terrain have a tile grid, and none
