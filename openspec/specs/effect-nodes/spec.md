@@ -88,11 +88,18 @@ The rain colour SHALL be the environment's colour times 2.2, times 0.075·intens
 - **THEN** the red is 2.2·0.15/255 and the alpha 1
 
 ### Requirement: Portal spray particle
-The level portal effect's spawn SHALL move the ring index on before it fills a slot; past the capacity it SHALL clear the state word's `0x2` bit and start again at slot 0 unless the ring's head is at slot 1, which parks the index at the capacity and spawns nothing; an index landing just before the head SHALL step back and spawn nothing. Each particle SHALL lie on an ellipse of 80·s·scale by 115·s·scale cm (s = 0.8 + 0.4·r) at the node's place, its previous position the point and its position 1.0015 times the point.
+The level portal effect's spawn SHALL move the ring index on before it fills a slot; past the capacity it SHALL clear the state word's `0x2` bit and start again at slot 0 unless the ring's head is at slot 1, which parks the index at the capacity and spawns nothing; an index landing just before the head SHALL step back and spawn nothing.
 
 #### Scenario: The first particles
 - **WHEN** a ring of capacity three with its head at 0 spawns four times
 - **THEN** it fills slots 1, 2, 3 and then 0
+
+### Requirement: Portal spray placement
+Each portal spray particle SHALL lie on an ellipse of 80·s·scale by 115·s·scale cm (s = 0.8 + 0.4·r) at the node's place, its previous position the point and its position 1.0015 times the point.
+
+#### Scenario: A spark at scale 1
+- **WHEN** a portal spark spawns with r = 0.5 at scale 1
+- **THEN** it lies on the 80 by 115 cm ellipse around the node
 
 ### Requirement: Dome ripples
 A strike on a dome SHALL be capped at 5 and SHALL go to the ripple whose target lies strictly nearest within the reach, adding its point to that ripple's sum and keeping the larger strength, or else open a new ripple at the point while fewer than 8 exist. Each tick SHALL set the reach to 30 + 1.25 per ripple, move a struck ripple's target to the mean of its strikes (half way once shown), step every ripple and replace one with both values under 0.07 by the last.
