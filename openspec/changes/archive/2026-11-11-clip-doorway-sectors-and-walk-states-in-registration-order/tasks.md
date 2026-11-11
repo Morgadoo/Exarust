@@ -1,0 +1,4 @@
+- [x] Trace the list walks, the sub-frame regions and the queue flush's scissor flag (REA).
+- [x] Order one state in one sector by registration on the transparent phase.
+- [x] Scissor the decal and blended entries of doorway sectors on the super-sampled view.
+- [x] Before/after grids (shots, FPS) and lockstep traces.
