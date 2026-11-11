@@ -574,6 +574,11 @@ pub struct PlacedCharacter {
     pub specials: exa_formats::encumbrance::WornSpecials,
     /// The pose the level saved with it, if any.
     pub pose: exa_formats::characters::SavedPose,
+    /// The motion state a save stored with it (its current motion and
+    /// that motion's progress), if any.
+    pub motion: Option<exa_formats::characters::MotionState>,
+    /// The AI home a save stored with it (an awake guardian's), if any.
+    pub ai_home: Option<exa_formats::characters::AiHome>,
     /// Spawn the dead from their built pose and let them collapse. Only the
     /// command line's synthetic corpse does; a level's dead are placed from
     /// their saved pose and never fall.
@@ -719,6 +724,8 @@ pub fn placed_characters(
                 encumbrance: exa_formats::encumbrance::of_record(record, find),
                 specials: exa_formats::encumbrance::WornSpecials::of_record(record, find),
                 pose: p.pose.clone(),
+                motion: p.motion,
+                ai_home: p.ai_home,
                 fall: false,
             })
         })

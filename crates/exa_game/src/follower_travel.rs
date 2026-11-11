@@ -139,6 +139,7 @@ pub fn collect_followers(
             data.unwrap_or(&reset),
             possessions,
             fighter.map(|f| (f, flags.copied(), condition.copied(), caster)),
+            Some(roles),
         );
         records.push(record);
         travelling_motiles.push(motiles[at]);
@@ -200,6 +201,8 @@ pub fn collect_followers(
                 specials: exa_formats::encumbrance::WornSpecials::of_record(&record, find),
                 record,
                 pose: exa_formats::characters::SavedPose::None,
+                motion: None,
+                ai_home: None,
                 fall: false,
             },
             roles,

@@ -286,7 +286,16 @@ over the world store's player slot) and then writes the section's
 characters from the live scene (`level_save::characters_after`: moved and
 dead characters where they stand, a departed follower left out, an arrived
 one added with its world id) with the live local store as its character
-database, so a load places a saved follower again.
+database, so a load places a saved follower again. The flush also writes
+each character's live roles into its record (`save_live::record_with_roles`),
+so a recruit's follow survives a load. Each placement carries the live body
+(`level_save::live_state`): a death since the load writes the ragdoll's live
+pose tree (`level_save::live_pose_tree`), a living character with a brain its
+pose tree and motion state (action number and progress), an awake guardian
+its AI home; the load puts the motion (an attack becomes the defence stance)
+and the home back (`level_save::restore_saved_state`). Each load also fills
+the save unit's node-hook lists (`save_level::track_scene_content`: door-side
+volumes, zones and markers, scripted devices).
 The save's writers have the pieces the original exports: the world
 databases (`slots::export_world_databases`: the character database
 flushed and saved, the object world tier and its string library, each
@@ -2051,7 +2060,10 @@ its in-game page in a session; while the page is open the flow's dialogue
 and session hook are held, as the original's frame task does. The page is
 painted through the GUI draw path with the menu font's sheet, and the
 selected row runs `menu_text` through `exa_ui::skin::SkinMode::MenuText`.
-`end_menu_screen` draws the end-of-session menu over the game the same way;
+`end_menu_screen` draws the end-of-session menu over the game the same way
+(the pad's Select plays the menus' `MenuClick` with a drawn pitch, then
+confirms the row; a window height that moves the GUI scale lays the menus
+out again through `flow::notify_gui_scale`);
 its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
 mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
 the story respawn or exit, and the returns to the title behind the

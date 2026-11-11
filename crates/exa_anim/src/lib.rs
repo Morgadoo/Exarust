@@ -146,6 +146,16 @@ impl Motions {
             .map(|action| action.name.as_str())
     }
 
+    /// The action number (the original's motion id) of the action named
+    /// `name`: what a save stores as a character's current motion.
+    pub fn action_index(&self, name: &str) -> Option<u32> {
+        self.0
+            .actions
+            .iter()
+            .position(|action| action.name == name)
+            .and_then(|i| u32::try_from(i).ok())
+    }
+
     /// The motion library: `humanoid.rsq` parsed with the human body's leg
     /// length and each bone's physical body. Without the file the original
     /// falls back on one unnamed action and one `Default` moveset with no

@@ -137,6 +137,11 @@ impl MenuScreen {
         self.dirty = true;
     }
 
+    /// Lays the menu out again at its next draw (the GUI scale moved).
+    pub fn relayout(&mut self) {
+        self.dirty = true;
+    }
+
     /// Sets the flag a manual opened from the menu covers it with.
     pub fn set_covered(&mut self, covered: bool) {
         self.covered = covered;

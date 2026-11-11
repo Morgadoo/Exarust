@@ -1938,6 +1938,8 @@ fn spawn_players(
             encumbrance: 0.0,
             specials: Default::default(),
             pose: exa_formats::characters::SavedPose::None,
+            motion: None,
+            ai_home: None,
             fall: true,
         })
         .collect();
@@ -1996,6 +1998,8 @@ fn spawn_players(
                     specials: exa_formats::encumbrance::WornSpecials::of_record(&record, find),
                     record,
                     pose: exa_formats::characters::SavedPose::None,
+                    motion: None,
+                    ai_home: None,
                     fall: false,
                 }
             })
@@ -2169,6 +2173,8 @@ fn story_companion(
         specials: exa_formats::encumbrance::WornSpecials::of_record(&record, find),
         record,
         pose: exa_formats::characters::SavedPose::None,
+        motion: None,
+        ai_home: None,
         fall: false,
     })
 }
@@ -3717,6 +3723,17 @@ fn spawn_placed_characters(
         let root_at = placed_pose
             .as_ref()
             .map_or(c.position + Vec3::Y * 0.05, |p| Vec3::from_array(p.frame));
+        if let Some(placed) = &placed_pose {
+            let records = match &c.pose {
+                exa_formats::characters::SavedPose::Tree(t) => t.len(),
+                exa_formats::characters::SavedPose::Flat(f) => f.len(),
+                exa_formats::characters::SavedPose::None => 0,
+            };
+            info!(
+                "{} lies dead on its saved pose ({records} records), its frame at {:?} (placed at {:?})",
+                c.name, placed.frame, c.position
+            );
+        }
         let mut root = commands.spawn((
             Transform::from_translation(root_at),
             Visibility::default(),
@@ -3889,6 +3906,16 @@ fn spawn_placed_characters(
                 ),
             ));
         }
+        if !c.dead && (c.motion.is_some() || c.ai_home.is_some()) {
+            // A save's motion state and AI home, put back once the body is
+            // in.
+            commands
+                .entity(model)
+                .insert(exa_game::level_save::SavedCharacterState {
+                    motion: c.motion,
+                    ai_home: c.ai_home,
+                });
+        }
         if let Some((model_name, weapon)) = &c.held {
             commands.entity(model).insert(exa_character::Wielded {
                 model: model_name.clone(),
@@ -4002,6 +4029,8 @@ fn spawn_spirit_bodies(
             encumbrance: 0.0,
             specials: Default::default(),
             pose: exa_formats::characters::SavedPose::None,
+            motion: None,
+            ai_home: None,
             fall: false,
         };
         let placing = Placing {
@@ -4119,6 +4148,8 @@ fn spawn_summoned_demons(
             specials: exa_formats::encumbrance::WornSpecials::of_record(&record, find),
             record,
             pose: exa_formats::characters::SavedPose::None,
+            motion: None,
+            ai_home: None,
             fall: false,
         };
         let placing = Placing {

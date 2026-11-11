@@ -346,6 +346,9 @@ impl Plugin for SaveLivePlugin {
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             )
             .add_systems(Update, crate::follower_travel::restore_arrivals)
+            .add_systems(Update, crate::level_save::restore_saved_state)
+            .init_resource::<crate::save_level::SceneContentLists>()
+            .add_systems(Update, crate::save_level::track_scene_content)
             .add_systems(
                 Update,
                 crate::world_characters::track_local_characters
@@ -686,6 +689,32 @@ pub fn record_with_health(
     data.into_record()
 }
 
+/// A record with the character's live roles written back, as the
+/// original's role list lives in the record itself: a role added while
+/// the level ran (the follow a recruit takes) is saved with the record,
+/// and the spawn reads it back ([`exa_ai::roles::Roles::of_record`]).
+/// Only a version 7 record keeps its list as held; an older one is left
+/// alone (its roles are rebuilt from the list at every spawn).
+pub fn record_with_roles(
+    mut record: CharacterRecord,
+    roles: &exa_ai::roles::Roles,
+) -> CharacterRecord {
+    if record.version >= exa_formats::characters::RECORD_VERSION {
+        record.roles = roles
+            .0
+            .iter()
+            .map(|r| exa_formats::characters::Role {
+                id: r.id,
+                weight: r.weight,
+                explicit: r.explicit,
+                inherited: r.inherited,
+                variables: r.values.clone(),
+            })
+            .collect();
+    }
+    record
+}
+
 /// What a fighting body's health is read from: its fighter, state flags,
 /// condition and caster.
 pub type FightingBody<'a> = (
@@ -697,16 +726,21 @@ pub type FightingBody<'a> = (
 
 /// A scene character's record as the save's flush stores it: the body's
 /// record with its live possessions written back and, for a body that
-/// fights, its health ([`body_health`], [`record_with_health`]); the
-/// door's follower flush stores the same.
+/// fights, its health ([`body_health`], [`record_with_health`]), and its
+/// live roles ([`record_with_roles`]); the door's follower flush stores the
+/// same.
 pub fn scene_character_record(
     data: &exa_character::record::CharacterData,
     possessions: Option<&exa_items::possession::Possessions>,
     body: Option<FightingBody<'_>>,
+    roles: Option<&exa_ai::roles::Roles>,
 ) -> CharacterRecord {
     let mut record = data.record.clone();
     if let Some(possessions) = possessions {
         record = record_with_possessions(record, possessions);
+    }
+    if let Some(roles) = roles {
+        record = record_with_roles(record, roles);
     }
     if let Some((fighter, flags, condition, caster)) = body {
         let focus = caster.map_or(record_focus(&record), |caster| caster.body.focus);
@@ -2125,6 +2159,33 @@ pub struct LoadedStory(pub Session);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live roles replace a version 7 record's list; an older record
+    /// keeps its own.
+    #[test]
+    fn the_flush_writes_the_live_roles_into_the_record() {
+        let roles = exa_ai::roles::Roles(vec![exa_formats::roles::HeldRole {
+            id: 31,
+            weight: 0.5,
+            explicit: true,
+            inherited: 0,
+            values: vec![7],
+        }]);
+        let record = record_with_roles(CharacterRecord::reset(), &roles);
+        assert_eq!(record.roles.len(), 1);
+        assert_eq!(
+            (
+                record.roles[0].id,
+                record.roles[0].weight,
+                record.roles[0].explicit
+            ),
+            (31, 0.5, true)
+        );
+        assert_eq!(record.roles[0].variables, [7]);
+        let mut old = CharacterRecord::reset();
+        old.version = 6;
+        assert!(record_with_roles(old, &roles).roles.is_empty());
+    }
     use crate::arsenal::{SHIELDS, WEAPONS};
     use exa_formats::save_package::SlotKind;
 
