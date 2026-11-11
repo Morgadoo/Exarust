@@ -108,51 +108,8 @@ pub trait Draws {
     fn unit(&mut self) -> f64;
 }
 
-/// The run-time library's MT19937 generator, standard seeding.
-#[derive(Debug, Clone)]
-pub struct Mt19937 {
-    state: Box<[u32; 624]>,
-    index: usize,
-}
-
-impl Mt19937 {
-    pub fn new(seed: u32) -> Self {
-        let mut state = Box::new([0u32; 624]);
-        state[0] = seed;
-        for i in 1..624 {
-            state[i] = 1_812_433_253u32
-                .wrapping_mul(state[i - 1] ^ (state[i - 1] >> 30))
-                .wrapping_add(i as u32);
-        }
-        Self { state, index: 624 }
-    }
-
-    fn twist(&mut self) {
-        for i in 0..624 {
-            let y = (self.state[i] & 0x8000_0000) | (self.state[(i + 1) % 624] & 0x7fff_ffff);
-            let mut next = self.state[(i + 397) % 624] ^ (y >> 1);
-            if y & 1 != 0 {
-                next ^= 0x9908_b0df;
-            }
-            self.state[i] = next;
-        }
-        self.index = 0;
-    }
-
-    /// The next tempered 32-bit output.
-    pub fn next_u32(&mut self) -> u32 {
-        if self.index >= 624 {
-            self.twist();
-        }
-        let mut y = self.state[self.index];
-        self.index += 1;
-        y ^= y >> 11;
-        y ^= (y << 7) & 0x9d2c_5680;
-        y ^= (y << 15) & 0xefc6_0000;
-        y ^= y >> 18;
-        y
-    }
-}
+/// The run-time library's twister, shared with the rest of the engine.
+pub use exa_formats::rtl_random::Mt19937;
 
 /// The default streams: the engine's integer LCG and the run-time
 /// library's twister.
@@ -178,7 +135,7 @@ impl Draws for Rng {
     }
 
     fn unit(&mut self) -> f64 {
-        f64::from(self.floats.next_u32()) * (1.0 / 4_294_967_296.0)
+        self.floats.unit()
     }
 }
 
@@ -1865,14 +1822,6 @@ mod tests {
         let mut e = Emitter::new(SMALL.scaled(0.2), 0.2, vec![Source::at_node()]);
         e.enter(NodeFrame::default());
         e
-    }
-
-    #[test]
-    fn the_mersenne_twister_matches_its_reference_outputs() {
-        let mut mt = Mt19937::new(5489);
-        assert_eq!(mt.next_u32(), 3_499_211_612);
-        assert_eq!(mt.next_u32(), 581_869_302);
-        assert_eq!(mt.next_u32(), 3_890_346_734);
     }
 
     #[test]
