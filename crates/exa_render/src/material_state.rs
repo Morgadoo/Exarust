@@ -18,7 +18,7 @@
 //!
 //! Rules: `docs/RENDERING.md` (Surfaces) and `docs/formats/FLB.md`.
 
-use exa_formats::material::Material;
+use exa_formats::material::{Material, TextureSlot};
 
 use crate::material::linear_rgb;
 
@@ -218,6 +218,198 @@ pub fn builder_gloss(material: &Material) -> f32 {
     }
 }
 
+/// The material's shared colour slot: one texture holds both the diffuse
+/// and the opacity layer's image. The record loader loads each of the two
+/// layers into the same slot as it meets them, so the later layer in the
+/// record wins (and a failed load leaves the slot empty).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColourSlot<'a> {
+    /// The texture the slot keeps.
+    pub texture: &'a str,
+    /// The layer it came from ([`TextureSlot::Diffuse`] or
+    /// [`TextureSlot::Opacity`]).
+    pub from: TextureSlot,
+    /// The record has both layers, so the earlier one's image is dropped.
+    pub both: bool,
+}
+
+impl ColourSlot<'_> {
+    /// The slot holds the opacity layer's image, which the loader loads in
+    /// plain colour mode (a diffuse layer may skip the LOD bias).
+    pub fn from_opacity(&self) -> bool {
+        self.from == TextureSlot::Opacity
+    }
+}
+
+/// The record's shared colour slot ([`ColourSlot`]), or `None` when it has
+/// neither a diffuse nor an opacity layer.
+pub fn colour_slot(material: &Material) -> Option<ColourSlot<'_>> {
+    let mut slot: Option<ColourSlot<'_>> = None;
+    let (mut diffuse, mut opacity) = (false, false);
+    for layer in &material.layers {
+        match layer.slot {
+            TextureSlot::Diffuse => diffuse = true,
+            TextureSlot::Opacity => opacity = true,
+            _ => continue,
+        }
+        slot = Some(ColourSlot {
+            texture: &layer.texture,
+            from: layer.slot,
+            both: false,
+        });
+    }
+    slot.map(|s| ColourSlot {
+        both: diffuse && opacity,
+        ..s
+    })
+}
+
+/// What the default builder binds from the shared colour slot for a record
+/// with feature word `key` (see [`crate::shader_program::feature_key`]).
+/// With the diffuse bit (`0x20000`) a lit record (`key & 3`) binds the slot
+/// as its colour, and the opacity bit (`0x400000`) then reads the same
+/// image; an unlit record binds nothing there, even with the opacity bit.
+/// Without the diffuse bit, the opacity bit binds the slot as the opacity
+/// map alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ColourBinding {
+    /// The slot is the surface's diffuse map.
+    pub colour: bool,
+    /// The slot is the surface's opacity map.
+    pub opacity: bool,
+}
+
+/// The builder's binding of the shared colour slot ([`ColourBinding`]);
+/// `has_slot` is whether the slot holds an image.
+pub fn colour_binding(key: u32, has_slot: bool) -> ColourBinding {
+    if !has_slot {
+        return ColourBinding::default();
+    }
+    if key & 0x2_0000 != 0 {
+        let colour = key & 3 != 0;
+        ColourBinding {
+            colour,
+            opacity: colour && key & 0x40_0000 != 0,
+        }
+    } else {
+        ColourBinding {
+            colour: false,
+            opacity: key & 0x40_0000 != 0,
+        }
+    }
+}
+
+/// Whether the record's plug-in mask (`0x94`) calls the default builder
+/// ([`DEFAULT_FACTORY`], the only factory record the shipped game
+/// registers): material activation runs every factory record whose mask
+/// meets the record's, so a record whose mask misses bits 1 and 4 gets no
+/// render state and draws nothing. Every shipped record has mask 1.
+pub fn builds_default(material: &Material) -> bool {
+    STARTUP
+        .factories
+        .for_mask(material.plugin_mask)
+        .any(|r| *r == DEFAULT_FACTORY)
+}
+
+/// The type a record selects (the low byte of its kind word) in the table
+/// the start-up hook leaves. A type past the table is taken as type 0 [guess:
+/// the original reads past its table; no shipped record has one].
+pub fn record_type(material: &Material) -> MaterialType {
+    STARTUP
+        .types
+        .get((material.kind & 0xFF) as usize)
+        .unwrap_or(BUILTIN_TYPES[0])
+}
+
+/// The factory's two tables as its start-up hook leaves them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterialFactory {
+    /// The type table, reset to the five built-ins.
+    pub types: MaterialTypes,
+    /// The factory list, with the default builder's record.
+    pub factories: FactoryList,
+}
+
+impl MaterialFactory {
+    /// The tables after the factory's start-up hook: it resets the type
+    /// table and registers the default builder's record. The effect units
+    /// that register more types (electricity, fire, the thaumaturgy forces
+    /// and dispersals, the selection marker) build their records in code
+    /// and draw them with their own programs in Exarust, so their types are
+    /// not registered here.
+    pub fn startup() -> Self {
+        let mut types = MaterialTypes::empty();
+        types.reset();
+        let mut factories = FactoryList::default();
+        factories.register(DEFAULT_FACTORY);
+        Self { types, factories }
+    }
+}
+
+/// The tables every record build reads ([`MaterialFactory::startup`]).
+static STARTUP: std::sync::LazyLock<MaterialFactory> =
+    std::sync::LazyLock::new(MaterialFactory::startup);
+
+/// The record's class after the loader's late opaque rewrite: a loaded
+/// class whose destination nibble is 3 (the transparent class) becomes
+/// source ONE / destination ZERO (`class & 0xFFFFC0F0 | 0x100`) in
+/// refraction mode (loaded flags `0x300` = `0x200`), or when its opacity is
+/// above 0.99 and its fall-off amount below 0.01 (both widened to double)
+/// and its loaded flags lack the opacity layer (`0x400000`). It starts from
+/// the alpha-test rewrite ([`crate::shader_program::loaded_class`]); NaN
+/// fails both comparisons. The shipped `0.99` is above the bound and
+/// `0.01` below it once widened.
+pub fn late_class(material: &Material) -> u32 {
+    let mut class = crate::shader_program::loaded_class(material);
+    let flags = crate::shader_program::loaded_flags(material);
+    if class & 0xF == 3
+        && (flags & 0x300 == 0x200
+            || ((material.opacity as f64) > 0.99
+                && (material.falloff_amount as f64) < 0.01
+                && flags & 0x40_0000 == 0))
+    {
+        class = class & 0xFFFF_C0F0 | 0x100;
+    }
+    class
+}
+
+/// The render-state word the record loader derives (the material's
+/// stream needs, which a geometry part's mode word copies): the record's
+/// word (`0x90`) keeps only `0x20` and gains `1`; `2` when the record is lit
+/// or has a positive fall-off; `0x100` for extra flags `0x4002`; `2` and
+/// `0x100` for a type-2 (smoke) record; `4` with a normal layer; `0x100`
+/// with a dirt layer; and `0x10` when the loaded flags have any of
+/// `0xFEF0000` (the texture-layer bits but the reflection one).
+pub fn loaded_render_state(material: &Material) -> u32 {
+    let early = material.flags
+        | if material.falloff_amount > 0.0 {
+            0x800
+        } else {
+            0
+        };
+    let mut word = material.render_state & 0x20 | 1;
+    if early & 3 != 0 || early & 0x800 != 0 {
+        word |= 2;
+    }
+    if material.extra & 0x4002 != 0 {
+        word |= 0x100;
+    }
+    if material.kind & 0xFF == SMOKE_TYPE {
+        word |= 2 | 0x100;
+    }
+    for layer in &material.layers {
+        match layer.slot {
+            TextureSlot::Normal => word |= 4,
+            TextureSlot::Dirt => word |= 0x100,
+            _ => {}
+        }
+    }
+    if crate::shader_program::loaded_flags(material) & 0x0FEF_0000 != 0 {
+        word |= 0x10;
+    }
+    word
+}
+
 /// The blend class each built-in type starts from, derived from
 /// [`BUILTIN_TYPES`] so the table and the program classes cannot drift.
 pub const BUILTIN_MASKS: [u32; 5] = [
@@ -262,6 +454,148 @@ mod tests {
             diffuse: [0.5, 0.5, 0.5, 1.0],
             ..Default::default()
         }
+    }
+
+    fn layered(kind: u32, flags: u32, slots: &[(TextureSlot, &str)]) -> Material {
+        Material {
+            kind,
+            flags,
+            opacity: 1.0,
+            layers: slots
+                .iter()
+                .map(|&(slot, texture)| exa_formats::material::TextureLayer {
+                    slot,
+                    texture: texture.into(),
+                    parameter: 0,
+                    amount: 1.0,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_colour_slot_keeps_the_later_of_diffuse_and_opacity() {
+        use TextureSlot::*;
+        assert_eq!(colour_slot(&layered(1, 3, &[(Normal, "n")])), None);
+        let d = layered(1, 3, &[(Diffuse, "d"), (Normal, "n")]);
+        let slot = colour_slot(&d).unwrap();
+        assert_eq!((slot.texture, slot.from, slot.both), ("d", Diffuse, false));
+        assert!(!slot.from_opacity());
+        // The shipped order: the opacity layer after the diffuse one (an
+        // arenao4 awning names two different images; the opacity one wins).
+        let both = layered(1, 3, &[(Diffuse, "d"), (Normal, "n"), (Opacity, "o")]);
+        let slot = colour_slot(&both).unwrap();
+        assert_eq!((slot.texture, slot.from, slot.both), ("o", Opacity, true));
+        assert!(slot.from_opacity());
+        let back = layered(1, 3, &[(Opacity, "o"), (Diffuse, "d")]);
+        assert_eq!(colour_slot(&back).unwrap().texture, "d");
+        assert!(colour_slot(&back).unwrap().both);
+        let twice = layered(1, 3, &[(Opacity, "a"), (Opacity, "b")]);
+        let slot = colour_slot(&twice).unwrap();
+        assert_eq!((slot.texture, slot.both), ("b", false));
+    }
+
+    #[test]
+    fn the_builder_binds_the_colour_slot_by_the_diffuse_and_opacity_bits() {
+        let bind = |key| colour_binding(key, true);
+        let none = ColourBinding::default();
+        let colour = ColourBinding {
+            colour: true,
+            opacity: false,
+        };
+        let both = ColourBinding {
+            colour: true,
+            opacity: true,
+        };
+        let opacity = ColourBinding {
+            colour: false,
+            opacity: true,
+        };
+        assert_eq!(bind(0x2_0003), colour);
+        assert_eq!(bind(0x62_0001), both);
+        // Unlit with the diffuse bit: nothing, even with the opacity bit.
+        assert_eq!(bind(0x2_0008), none);
+        assert_eq!(bind(0x62_0008), none);
+        // No diffuse bit: the opacity bit binds it alone, lit or not.
+        assert_eq!(bind(0x40_0008), opacity);
+        assert_eq!(bind(0x40_0003), opacity);
+        assert_eq!(bind(0x3), none);
+        assert_eq!(colour_binding(0x62_0003, false), none);
+    }
+
+    #[test]
+    fn the_start_up_tables_hold_the_builtins_and_the_default_builder() {
+        let f = MaterialFactory::startup();
+        assert_eq!(f.types, MaterialTypes::builtin());
+        assert_eq!(f.factories.records(), [DEFAULT_FACTORY]);
+        let mut m = record(0x102);
+        assert_eq!(record_type(&m), BUILTIN_TYPES[2]);
+        m.kind = 9;
+        assert_eq!(record_type(&m), BUILTIN_TYPES[0]);
+        // Every shipped mask is 1; bit 4 is the builder's too; a mask
+        // without either builds nothing, so the record has no feature word.
+        for (mask, builds) in [(1, true), (4, true), (5, true), (0x20, false), (0, false)] {
+            m.plugin_mask = mask;
+            assert_eq!(builds_default(&m), builds, "{mask:#x}");
+        }
+        m.kind = 1;
+        m.flags = 3;
+        m.plugin_mask = 0x20;
+        assert_eq!(crate::shader_program::feature_key(&m), 0);
+        assert_eq!(crate::shader_program::state_words(&m, 5), None);
+        m.plugin_mask = 1;
+        assert_eq!(crate::shader_program::feature_key(&m), 3);
+    }
+
+    #[test]
+    fn the_loader_derives_the_render_state_word() {
+        use TextureSlot::*;
+        let mut m = layered(1, 0, &[]);
+        m.render_state = 0x7F;
+        assert_eq!(loaded_render_state(&m), 0x21);
+        m.flags = 0x1;
+        assert_eq!(loaded_render_state(&m), 0x23);
+        m.flags = 0;
+        m.falloff_amount = 0.5;
+        assert_eq!(loaded_render_state(&m), 0x23);
+        m.falloff_amount = -0.5;
+        m.extra = 0x4000;
+        assert_eq!(loaded_render_state(&m), 0x121);
+        // A smoke record and its layers.
+        let smoke = layered(2, 0, &[(Opacity, "o")]);
+        assert_eq!(loaded_render_state(&smoke), 0x113);
+        let lit = layered(1, 3, &[(Normal, "n"), (Specular, "s")]);
+        assert_eq!(loaded_render_state(&lit), 0x7);
+        // The specular layer adds no loaded flag; the record's own bit does.
+        let spec = layered(1, 0x4_0003, &[]);
+        assert_eq!(loaded_render_state(&spec), 0x13);
+        let dirt = layered(1, 3, &[(Dirt, "g")]);
+        assert_eq!(loaded_render_state(&dirt), 0x113);
+        // The reflection bit alone is not a texture-layer bit here.
+        let reflect = layered(1, 0x10_0003, &[(Reflection, "r")]);
+        assert_eq!(loaded_render_state(&reflect), 0x3);
+    }
+
+    #[test]
+    fn the_late_rewrite_makes_a_full_transparent_record_opaque() {
+        let mut m = record(1);
+        m.class = 0x0203;
+        m.opacity = 1.0;
+        assert_eq!(late_class(&m), 0x0100);
+        m.opacity = 0.99;
+        // The stored single widens above 0.99.
+        assert_eq!(late_class(&m), 0x0100);
+        m.opacity = 0.98;
+        assert_eq!(late_class(&m), 0x0203);
+        m.flags = 0x200;
+        assert_eq!(late_class(&m), 0x0100);
+        m.flags = 0x40_0000;
+        m.opacity = 1.0;
+        assert_eq!(late_class(&m), 0x0203);
+        m.flags = 0;
+        m.falloff_amount = f32::NAN;
+        assert_eq!(late_class(&m), 0x0203);
     }
 
     #[test]

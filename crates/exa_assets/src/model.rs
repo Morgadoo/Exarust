@@ -1293,15 +1293,36 @@ impl ModelLoader<'_> {
         let data_flags = base_flags | texture::flags::DATA | texture::flags::NO_LOD_BIAS;
         let bias_skipped = base_flags | texture::flags::NO_LOD_BIAS;
         let mut cut_out = false;
-        if maps.diffuse
-            && let Some(t) = m.texture(TextureSlot::Diffuse)
+        // The diffuse and opacity layers share the colour slot: one image,
+        // the later layer's, serves as the colour and the opacity. A
+        // diffuse layer with a secondary colour loads it skipping the LOD
+        // bias; the opacity layer loads it in plain colour mode.
+        let slot = exa_render::material_state::colour_slot(m);
+        if let Some(slot) = slot
+            && slot.both
+            && m.texture(TextureSlot::Diffuse)
+                .is_some_and(|d| !d.eq_ignore_ascii_case(slot.texture))
         {
-            let flags = if m.has_secondary_colour() {
+            debug!(
+                "colour slot: a record draws {} in place of its diffuse layer {:?} (colour {}, opacity {})",
+                slot.texture,
+                m.texture(TextureSlot::Diffuse),
+                maps.diffuse,
+                maps.opacity
+            );
+        }
+        if maps.diffuse
+            && let Some(slot) = slot
+        {
+            let flags = if !slot.from_opacity() && m.has_secondary_colour() {
                 bias_skipped
             } else {
                 base_flags
             };
-            if let Some(info) = self.texture_info(t, ColorSpace::Srgb, flags) {
+            if let Some(info) = self.texture_info(slot.texture, ColorSpace::Srgb, flags) {
+                if maps.opacity {
+                    mat.opacity_map = Some(info.image.clone());
+                }
                 mat.diffuse_map = Some(info.image);
                 cut_out = info.alpha;
                 mat.params.flags |= diffuse_shading_flags(flags, info.grey);
@@ -1340,10 +1361,11 @@ impl ModelLoader<'_> {
             mat.params.flags |= grey_slot_flag(info.grey, flags::GREY_EMISSIVE);
         }
         if maps.opacity
-            && let Some(t) = m.texture(TextureSlot::Opacity)
+            && !maps.diffuse
+            && let Some(slot) = slot
         {
             mat.opacity_map = self
-                .texture_with_flags(t, ColorSpace::Linear, base_flags)
+                .texture_with_flags(slot.texture, ColorSpace::Linear, base_flags)
                 .map(|t| t.0);
         }
         if maps.gloss
@@ -2871,9 +2893,13 @@ fn program_flags(lit: bool, material_word: u32, shader_word: u32) -> u32 {
 /// Which of Exarust's texture maps the original's material factory would
 /// bind for a record. Every map needs the layer and the feature bit its
 /// type's plug-in keeps; the normal map also needs a surface the factory
-/// shades (`0x100807`), and the height map needs the normal layer loaded. The
-/// colour slot binds only a lit record's diffuse map (`key & 3`); an unlit
-/// record's diffuse layer is left unbound.
+/// shades (`0x100807`), and the height map needs the normal layer loaded.
+/// The diffuse and opacity layers share one colour slot, which keeps the
+/// later of the two ([`exa_render::material_state::colour_slot`]); the
+/// builder binds it as the colour of a lit record with the diffuse bit, then
+/// also as its opacity, or as the opacity alone without the diffuse bit
+/// ([`exa_render::material_state::colour_binding`]). An unlit record with
+/// the diffuse bit binds nothing there.
 /// A type-2 record keeps only `MatEmi`, two-sided and the colour/opacity
 /// slot, so nothing but `opacity` can be set for it.
 struct FactoryMaps {
@@ -2889,11 +2915,13 @@ struct FactoryMaps {
 /// The factory's map bindings for a record with feature word `key` and
 /// material word `material_word` (see [`FactoryMaps`]).
 fn factory_maps(m: &Material, key: u32, material_word: u32) -> FactoryMaps {
+    let colour = exa_render::material_state::colour_binding(
+        key,
+        exa_render::material_state::colour_slot(m).is_some(),
+    );
     FactoryMaps {
-        diffuse: key & 0x2_0000 != 0
-            && key & material_flags::LIT != 0
-            && m.texture(TextureSlot::Diffuse).is_some(),
-        opacity: key & OPACITY_FLAG != 0 && m.texture(TextureSlot::Opacity).is_some(),
+        diffuse: colour.colour,
+        opacity: colour.opacity,
         emissive: key & 0x8_0000 != 0
             && key & 0x8 != 0
             && m.texture(TextureSlot::Emissive).is_some(),
@@ -2910,29 +2938,10 @@ fn factory_maps(m: &Material, key: u32, material_word: u32) -> FactoryMaps {
     }
 }
 
-/// The blend word after the material loader's late opaque rewrite: a
-/// record whose loaded destination nibble is 3 (the transparent class)
-/// becomes source ONE / destination ZERO when it is in refraction mode
-/// (loaded flags `0x300` = `0x200`, whatever its type), or when its opacity
-/// is above 0.99 in double precision, its fall-off amount below 0.01 and its
-/// loaded flags lack the opacity layer (`0x400000`, which a record's own
-/// flag or a loaded opacity layer sets). The rewrite starts from the class
-/// the alpha-test rewrite left ([`exa_render::shader_program::loaded_class`])
-/// and NaN fails both comparisons, as the original's COMISD branches do. The
-/// comparisons widen the stored f32 to f64: `0.99` stored as f32 is above
-/// the bound and `0.01` is below it.
+/// The blend word after the material loader's late opaque rewrite
+/// ([`exa_render::material_state::late_class`]).
 fn blended_class(m: &Material) -> u32 {
-    let mut class = exa_render::shader_program::loaded_class(m);
-    let flags = exa_render::shader_program::loaded_flags(m);
-    if class & 0xF == 3
-        && (flags & MODE_MASK == REFRACTION_MODE
-            || ((m.opacity as f64) > LATE_OPAQUE_OPACITY
-                && (m.falloff_amount as f64) < LATE_OPAQUE_FALLOFF
-                && flags & OPACITY_FLAG == 0))
-    {
-        class = class & 0xFFFF_C0F0 | 0x100;
-    }
-    class
+    exa_render::material_state::late_class(m)
 }
 
 /// Whether the record casts shadows: refraction mode (loaded flags) always
@@ -3369,12 +3378,6 @@ const NO_SHADOWS: u32 = 0x4;
 const MODE_MASK: u32 = 0x300;
 /// The refraction material mode (`0x48`).
 const REFRACTION_MODE: u32 = 0x200;
-/// A transparent record above this opacity, with a fall-off below
-/// [`LATE_OPAQUE_FALLOFF`] and no opacity flag, is rewritten opaque. The
-/// original narrows the stored f32 to f64 for the compare.
-const LATE_OPAQUE_OPACITY: f64 = 0.99;
-/// See [`LATE_OPAQUE_OPACITY`].
-const LATE_OPAQUE_FALLOFF: f64 = 0.01;
 /// A record above this opacity casts shadows (unless refraction mode or the
 /// destination nibble is ONE). The original narrows the stored f32 to f64.
 const SHADOW_OPACITY: f64 = 0.8;

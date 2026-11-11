@@ -175,7 +175,8 @@ pub struct Material {
     /// its own bits.
     pub render_state: u32,
     /// Plug-in mask (`0x94`): the factory records (and plug-ins) a record
-    /// calls are those whose mask meets it.
+    /// calls are those whose mask meets it. Every shipped record has
+    /// [`DEFAULT_PLUGIN_MASK`].
     pub plugin_mask: u32,
     /// Words `0x98`, `0x9C`, `0xA0` and `0xA8`: kept whole, no reader found
     /// for them in the shipped data.
@@ -212,6 +213,10 @@ pub mod flags {
     pub const OPACITY_FALLOFF: u32 = 0x800;
 }
 
+/// The plug-in mask every shipped record carries (`0x94`): bit 1, which
+/// the default material builder serves.
+pub const DEFAULT_PLUGIN_MASK: u32 = 1;
+
 impl Default for Material {
     fn default() -> Self {
         Self {
@@ -238,7 +243,9 @@ impl Default for Material {
             uv_offset: [0.0; 2],
             uv_scale: [0.0; 2],
             render_state: 0,
-            plugin_mask: 0,
+            // Every shipped record's mask: the default material builder's
+            // bit, so a record built in code draws like a loaded one.
+            plugin_mask: DEFAULT_PLUGIN_MASK,
             reserved: [0; 4],
             physical_divisor: 0.0,
             tail: [0; 2],
@@ -435,8 +442,8 @@ impl Material {
     /// in single precision in that order. A legacy (type 0) record's diffuse
     /// is already scaled by 1.5, as [`crate::material`]'s loader rule has
     /// it. The original keeps this slot beside the unscaled specular copy and
-    /// the scaled one; the surface builder reads it for the record's
-    /// combined diffuse-and-reflection colour.
+    /// the scaled one, in the stored (not linearised) space; a geometry
+    /// node's activation takes the per-channel maximum over its parts.
     pub fn shared_colour(&self) -> [f32; 3] {
         let scale = if self.kind & 0xFF == 0 { 1.5 } else { 1.0 };
         [
