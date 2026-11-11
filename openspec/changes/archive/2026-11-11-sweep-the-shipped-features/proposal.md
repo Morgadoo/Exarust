@@ -26,9 +26,12 @@ reusable grid script (`context/tools/feature_sweep.sh` and its scene list, outsi
 - The summon's arrival reads the demon's size from its built body's muscles (`Drive::stats`), and logs it.
 - `--debug-slot` logs how many devices took a crystal; the power tree's key logs that it opened the tree.
 - `exarust grid --exit-when-done` ends the host once every scene's game has exited.
+- `EXA_ORPHAN_TRACE=1` logs a `ChildOf` inserted with a parent its world does not hold, on either side of the bridge
+  (the duellist's Energy Shock showed one: a frame-spawned arc voxel light parented to arcs the simulation does not
+  hold).
 
 ## Impact
 
 - `exa_world::flame`, `exa_world::fire` (the settle count), `exa_game::thaum::summon_live`,
-  `exa_game::teleporters`, `exa_game::power_screen`, `exarust::grid`.
+  `exa_game::teleporters`, `exa_game::power_screen`, `exarust::grid`, `exa_physics::sim_app`.
 - The body traces of lockstep runs are unchanged (the flames are not simulated bodies); the arena loads in about 3 s.

@@ -9,6 +9,7 @@
 - [x] 2.2 Read the summoned demon's size from its built body
 - [x] 2.3 Log the debug slot's devices and the power tree's key
 - [x] 2.4 `grid --exit-when-done`
+- [x] 2.5 `EXA_ORPHAN_TRACE`
 
 ## 3. Checks
 
