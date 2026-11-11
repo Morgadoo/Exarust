@@ -1904,6 +1904,8 @@ Round 157 portal: leaving through a portal dissolves the player in the original 
 
 Round 160 aitrig: the AI reads its directions through the engine routines as the original does, and the story revive brain reset finally moves roaming brains (it read the nav grid from the wrong world).
 
+Round 162 shell: torches draw the small fire texture, Constant Displacement wears its shell, and a vanishing body fades blended while its shadow dithers away.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
