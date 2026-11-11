@@ -47,7 +47,7 @@ pack at the bottom of the client area and the equipment panel above it; a
 drag off the body drops a held weapon, or takes the item off the record,
 marks the character when it was the golem's core crystal and rebuilds
 apparel; the equipment panel accepts only a core crystal the body takes
-(`possession::takes_core`), and Power Crystal AL (500) runs the body's
+(`possession::takes_core`, by the first flag word of the race the race byte plus one names, `exa_game::panel_live`), and Power Crystal AL (500) runs the body's
 "Activate" dialogue. The inventory (`inventory_window`) has its
 constructor geometry, the pack's place at the client bottom, bind and close
 plans, drag permissions, drop-back rules and position memory; the arsenal

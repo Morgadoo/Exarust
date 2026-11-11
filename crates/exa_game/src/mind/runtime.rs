@@ -401,6 +401,13 @@ pub fn cast_mind(
             let outcome = casts::mind_cast(&row, cost, &mut mind, Some(&mut other), scene);
             std::mem::swap(body, &mut mind.cast);
             ai = other.ai.take_changes();
+            info!(
+                "mind cast {:#x} on {target:?}: race mind word {} ({:?}), answer {}",
+                row.id,
+                other.record_kind,
+                casts::mind_kind(other.record_kind),
+                outcome.code
+            );
             outcome
         }
         None => {
