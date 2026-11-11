@@ -12,8 +12,10 @@
 //!
 //! Evidence: the colour picker's constructor and the four dialogs'
 //! constructors and click handlers, with the constructor's data read from
-//! the retail image (`docs/UI.md`). The layout-element records themselves
-//! are not ported.
+//! the retail image (`docs/UI.md`). The reset dialog's control records
+//! ([`RESET_RECORDS`]) are ported and drawn by the saves' screen
+//! (`exa_game::save_screen`); the other dialogs' layout-element records are
+//! not.
 
 /// A gradient record the colour window's constructor installs: whether it
 /// is live and the RGBA of the two ends.
@@ -115,6 +117,9 @@ pub struct Dialog {
     pub title: &'static str,
     pub width: i32,
     pub height: i32,
+    /// The word the constructor passes with its record table: the table's
+    /// high index (2 for the reset dialog's three records, an open array's
+    /// last index).
     pub layout_elements: usize,
 }
 
@@ -133,6 +138,39 @@ pub const RESET_TO_PORTAL: Dialog = Dialog {
     height: DIALOG_HEIGHT,
     layout_elements: 2,
 };
+/// The "Reset to portal" dialog's control records (its constructor's
+/// table, three records): the question label, `Yes` (whose callback
+/// resets the slot to the portal, [`reset_box::YES`]) and `No` (whose
+/// callback closes the dialog with result 0). The same shape as the
+/// delete box, with `Yes` 8 pixels further right than `Delete`.
+pub const RESET_RECORDS: [crate::creation_forms::FormRecord; 3] = [
+    crate::creation_forms::FormRecord {
+        text: Some(RESET_QUESTION),
+        style: 0x3b00,
+        ..crate::creation_forms::record(5, 0, 4, 4, 352, 0)
+    },
+    crate::creation_forms::FormRecord {
+        text: Some("Yes"),
+        reports: true,
+        ..crate::creation_forms::record(1, 0, 0x74, 0x8005, 76, 0)
+    },
+    crate::creation_forms::FormRecord {
+        text: Some("No"),
+        reports: true,
+        ..crate::creation_forms::record(1, 0, 0x8008, 0x8000, 76, 0)
+    },
+];
+
+/// The reset dialog's question.
+pub const RESET_QUESTION: &str = "Do you wish to reset all progress after the portal?";
+
+/// The reset dialog's records by role.
+pub mod reset_box {
+    pub const QUESTION: usize = 0;
+    pub const YES: usize = 1;
+    pub const NO: usize = 2;
+}
+
 /// The character list's "Delete Character" dialog.
 pub const DELETE_CHARACTER: Dialog = Dialog {
     title: "Delete Character",
@@ -186,6 +224,27 @@ pub fn status_emblem_place(client_width: i32, unit: i32) -> (i32, i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reset_dialog_asks_and_answers_yes_or_no() {
+        assert_eq!(RESET_RECORDS.len(), RESET_TO_PORTAL.layout_elements + 1);
+        assert_eq!(
+            RESET_RECORDS[reset_box::QUESTION].text,
+            Some(RESET_QUESTION)
+        );
+        assert_eq!(RESET_RECORDS[reset_box::QUESTION].style, 0x3b00);
+        let yes = RESET_RECORDS[reset_box::YES];
+        let no = RESET_RECORDS[reset_box::NO];
+        assert_eq!(
+            (yes.text, yes.x, yes.y, yes.w),
+            (Some("Yes"), 0x74, 0x8005, 76)
+        );
+        assert_eq!(
+            (no.text, no.x, no.y, no.w),
+            (Some("No"), 0x8008, 0x8000, 76)
+        );
+        assert!(yes.reports && no.reports);
+    }
 
     #[test]
     fn the_colour_window_has_its_gradients() {

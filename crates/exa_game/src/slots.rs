@@ -244,6 +244,26 @@ impl LoadedSave {
     }
 }
 
+/// Whether the character screen asks "Do you wish to reset all progress
+/// after the portal?" over the save it just read (the original's check
+/// after each select and when the screen opens): only in the story (game
+/// mode 4), over the save's package and its player data's third flags byte
+/// (the byte every 0.9.5 writer sets, [`save_package::STORY_STARTED_FLAG`])
+/// as [`save_package::story_start_incompatible`] reads them: an
+/// `exanima06` section, or `exanima04` with a world object database whose
+/// magic is not [`save_package::WORLD_OBJECT_DB_MAGIC`]. Only saves older
+/// than the writers of 0.9.5 can ask.
+pub fn offers_portal_reset(game_mode: i32, loaded: &LoadedSave) -> bool {
+    if game_mode != 4 {
+        return false;
+    }
+    let save_package::PlayerHeader::Story(header) = &loaded.data.header else {
+        return false;
+    };
+    let started = (header.flags >> 16) & 0xff != 0;
+    save_package::story_start_incompatible(&loaded.package, started)
+}
+
 impl Slots {
     /// The story's slots in `dir`.
     pub fn story(dir: impl Into<PathBuf>) -> Self {
@@ -1244,6 +1264,36 @@ impl SlotList {
             Err(error) => return Err(error),
         }
         if self.slots.has_checkpoint(number) {
+            return Ok(false);
+        }
+        if let Some(at) = self.numbers.iter().position(|&seen| seen == number) {
+            self.numbers.remove(at);
+            self.names.remove(at);
+            self.count -= 1;
+        }
+        self.current = 0;
+        Ok(true)
+    }
+
+    /// The reset to the portal's answer (the "Reset to portal" box's Yes,
+    /// [`crate::save_screen`]): the file the character screen's select
+    /// opened (`opened`) is closed and deleted; then, unless the slot's
+    /// checkpoint (`.rcp`) still opens, the slot leaves the list (its
+    /// number and name, the count down by one) and the current slot is 0.
+    /// With no current slot nothing happens. Returns whether the slot left
+    /// the list. The stored order is not rewritten, as the original's
+    /// routine does not write it.
+    pub fn reset_to_portal(&mut self, opened: SlotKind) -> io::Result<bool> {
+        if self.current <= 0 {
+            return Ok(false);
+        }
+        let number = self.current as u32;
+        match fs::remove_file(self.slots.file(number, opened)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if self.slots.opens(number, SlotKind::Checkpoint) {
             return Ok(false);
         }
         if let Some(at) = self.numbers.iter().position(|&seen| seen == number) {

@@ -116,6 +116,37 @@ impl PlayerPlacement {
     }
 }
 
+/// The story continue's exit nudge, pending: the next [`PlayerPlacement`]
+/// is moved out of the level exit that holds it ([`nudge_out_of_exits`])
+/// before the player is stood on the floor, and the marker goes with the
+/// placement.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NudgeOutOfExits;
+
+/// The original's story-continue nudge over a level's exits: the first exit
+/// zone, in placement order, that holds the player at `position` (metres)
+/// moves it out ([`crate::flow::exit_nudge`], in centimetres: past the
+/// zone's nearer side along its own axis, 75 cm clear). Every zone the
+/// level lists is an exit marker (the volume's exit bit, the bit the
+/// original tests on each trigger's object). Returns the new position in
+/// metres and the zone, or `None` when no exit holds the player.
+pub fn nudge_out_of_exits(
+    position: Vec3,
+    exits: &[exa_world::ExitVolume],
+) -> Option<(Vec3, &exa_world::ExitVolume, crate::flow::ExitNudge)> {
+    let at = position * 100.0;
+    exits.iter().find_map(|volume| {
+        let trigger = crate::flow::ExitTrigger {
+            centre: volume.bounds.centre,
+            radius: volume.radius,
+            extent: volume.bounds.half_extents,
+            rotation: volume.bounds.axes.map(|row| row.to_array()),
+            exit_marker: true,
+        };
+        crate::flow::exit_nudge(at, trigger).map(|nudge| (nudge.position * 0.01, volume, nudge))
+    })
+}
+
 /// Queues the flow's level change. With no level it is a plain teardown.
 pub fn request(
     writer: &mut MessageWriter<LevelChangeRequest>,
@@ -216,5 +247,34 @@ mod tests {
         app.update();
         assert!(app.world().get::<OutOfScene>(body).is_some());
         assert!(app.world().get::<OutOfWorld>(body).is_none());
+    }
+
+    /// The continue's nudge: a player in an exit moves 75 cm past the
+    /// zone's nearer side along its axis (metres in, metres out); a player
+    /// clear of every exit stays.
+    #[test]
+    fn a_continued_player_in_an_exit_is_nudged_out() {
+        let exit = exa_world::ExitVolume {
+            bounds: exa_physics::intersect::Obb::axis_aligned(
+                Vec3::new(1000.0, 0.0, 0.0),
+                Vec3::new(100.0, 100.0, 50.0),
+            ),
+            radius: 150.0,
+            exit: exa_formats::objdb::LevelExit {
+                level: 2,
+                entrance: 1,
+                flagged: false,
+            },
+            destination: Some("exanima02".into()),
+            name: ">exanima02".into(),
+        };
+        let exits = [exit];
+        // 20 cm inside the zone along z (the nearer side): out past +z.
+        let (at, _, nudge) = nudge_out_of_exits(Vec3::new(10.0, 0.0, 0.2), &exits).unwrap();
+        assert_eq!(nudge.axis, 2);
+        assert!((nudge.distance - (50.0 - 20.0 + 75.0)).abs() < 1e-3);
+        assert!((at - Vec3::new(10.0, 0.0, 1.25)).length() < 1e-4);
+        assert!(nudge_out_of_exits(Vec3::new(20.0, 0.0, 0.0), &exits).is_none());
+        assert!(nudge_out_of_exits(Vec3::ZERO, &[]).is_none());
     }
 }

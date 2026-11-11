@@ -2149,6 +2149,14 @@ the original's world reset, also sends `WorldReset`, even when a load in the
 batch does the teardown). The viewer loads
 the destination through the same staged `LevelLoad` as a start-up load, and
 `PlacePlayer` is carried across it in `level_change::PlayerPlacement`.
+A story continue's `ExitNudge` rides with it (`level_change::NudgeOutOfExits`):
+the placement is moved out of the first exit zone that holds it
+(`level_change::nudge_out_of_exits` over `flow::exit_nudge`, 75 cm past the
+zone's nearer side) before the floor cast. The saves' screen raises the
+`Reset to portal` box over a pre-0.9.5 story save past the portal
+(`slots::offers_portal_reset`); its Yes deletes the file the select read and
+drops a slot left without a checkpoint (`SlotList::reset_to_portal`), and
+`--portal-reset yes|no` answers it.
 A plain teardown (the menu's creator or save screens, a session leave)
 takes the surviving player's body out of the scene (`level_change::OutOfWorld`:
 out of the solver and the character ticks, hidden) until a level is in

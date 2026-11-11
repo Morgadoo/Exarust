@@ -2349,10 +2349,13 @@ fn log_encumbrance(who: &str, stats: &CharacterStats) {
 /// carries the body's parts by the same offset. Without it a loaded save's
 /// player stayed at the level's start in the simulation while the frame
 /// drew it at the saved place, and fell to its death there.
+#[allow(clippy::too_many_arguments)]
 fn apply_player_placement(
     mut commands: Commands,
     mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
     placement: Option<Res<exa_game::level_change::PlayerPlacement>>,
+    nudge: Option<Res<exa_game::level_change::NudgeOutOfExits>>,
+    exits: Option<Res<exa_game::zone_scripts::ExitVolumes>>,
     frame_physics: Res<exa_physics::collision_share::FramePhysics>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut players: Query<(Entity, &mut Transform), With<exa_game::player::Player>>,
@@ -2374,12 +2377,33 @@ fn apply_player_placement(
         // A new player (a loaded save's) is still being spawned.
         return;
     }
-    let at = exa_game::save_level::landing_feet(placement.position, |from, dir, reach| {
+    // The story continue's nudge out of a level exit comes before the
+    // floor: the original moves the player, then stands it on the ground.
+    let mut position = placement.position;
+    if nudge.is_some() {
+        commands.remove_resource::<exa_game::level_change::NudgeOutOfExits>();
+        let listed = exits.as_ref().map_or(&[][..], |exits| exits.0.as_slice());
+        match exa_game::level_change::nudge_out_of_exits(position, listed) {
+            Some((moved, volume, nudge)) => {
+                info!(
+                    "level placement: the continued player at {position} stands in exit {} \
+                     (level {:?}); nudged {:.1} cm along its axis {} to {moved}",
+                    volume.name, volume.destination, nudge.distance, nudge.axis
+                );
+                position = moved;
+            }
+            None => info!(
+                "level placement: the continued player at {position} stands in none of the \
+                 level's {} exits; no nudge",
+                listed.len()
+            ),
+        }
+    }
+    let at = exa_game::save_level::landing_feet(position, |from, dir, reach| {
         frame_physics.0.line_cast(from, dir, reach)
     });
     info!(
-        "level placement: the player placed at {} stands at {at} (the line cast's floor)",
-        placement.position
+        "level placement: the player placed at {position} stands at {at} (the line cast's floor)"
     );
     let mut by = Vec3::ZERO;
     for (_, mut transform) in &mut players {

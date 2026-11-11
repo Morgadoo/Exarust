@@ -842,7 +842,7 @@ bound colour), keys and physique cross, the physique picker's
 constructor, the point's body-shape weights and the press, release and
 change steps.
 `popups` has the item card, the container popup (its close saves the panel's contents into the container record; `GameScreen::Container` is its screen kind, tagged `0xce1c2013`, closed by a right click) and the parchment (its size, alpha hit test with the factor divided in double precision, and its draw: one textured white quad at the GUI's alpha, the fade step first and the alpha scales reset after a finished fade). `dialogs` has the colour window's
-gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack`,
+gradients and hue table and the confirmation dialogs (the reset-to-portal dialog's control records, `RESET_RECORDS`, drawn by `exa_game::save_screen`). `help_screen`, `task_stack`,
 `game_tips` (its eighteen tips and six indexed messages), `colour_swatch`, `view_helpers` (the viewport's super-sample
 and cursor-action list, removed by the handler's code) and the journal close and the opener's combat-mode rule (`journal_leaves_combat`) in `game_gui` complete the
 unit. The draw records are plain data; no new form is painted by the
