@@ -16,7 +16,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% |  |
-| Rendering & GPU | 823 | 334 | 63 | 82% | 1% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% |  |
 | World, levels & terrain | 454 | 174 | 31 | 81% | 0% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 84% | 0% |  |
@@ -53,7 +53,6 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | functions | KB | coverage |
 |---|---|---:|---:|---:|
-| Shading-mask GLSL snippets | Rendering & GPU | 6 | 2 | 10% |
 | Steam API glue | Runtime & platform | 16 | 1 | 7% |
 | TArsenalContFrame | Items, materials & crafting | 1 | 0 | 0% |
 | Win32 imports misc | Runtime & platform | 25 | 0 | 14% |
