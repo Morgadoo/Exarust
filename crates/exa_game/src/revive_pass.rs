@@ -13,13 +13,22 @@
 //! point and placed again. It then leaves combat, stops following, and its
 //! idle state restarts (the idle return).
 //!
+//! A roaming reset lifts the body's navigation footprint before it plans
+//! (its own plans do not pay for it) and stamps it again where the body
+//! ends, so the brains reset after it plan around it; before each round it
+//! moves the brain into the room of the point it plans from (the room
+//! bookkeeping the AI tick runs when the level has a room grid), so the
+//! second round draws its exits from the room the first one ended in and
+//! avoids the room it came from.
+//!
 //! Exarust's differences: the plans start from the character root's ground
 //! point and are routed at its height, as the roam's own plans are; the
 //! nearest walkable point is asked from the root's point (the original
-//! asks from the standing point at the pelvis's height); the footprint's
-//! lift and re-stamp, the neighbour list refresh a 0x2000000 roles flag
-//! asks, the bodies' wake and the removed bodies' contact drop the pass
-//! also runs are not reproduced.
+//! asks from the standing point at the pelvis's height); a body with no
+//! footprint recorded is not stamped (the next fixed tick's footprint pass
+//! stamps it); the reset of the AI's walk-ahead flags, the bodies' wake
+//! and the removed bodies' contact drop the pass also runs are not
+//! reproduced.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -65,7 +74,8 @@ pub fn reset_brains(
     mut roots: Roots,
     mut bodies: Query<(Entity, &mut Ragdoll)>,
     level: Option<Res<LevelRooms>>,
-    nav: Option<Res<exa_world::nav::NavGrid>>,
+    mut nav: Option<ResMut<exa_world::nav::NavGrid>>,
+    mut prints: Option<ResMut<exa_world::nav::NavFootprints>>,
     mut fixed: ResMut<FixedCommands>,
 ) {
     let Some(at) = queued
@@ -85,16 +95,38 @@ pub fn reset_brains(
             .applied
             .as_ref()
             .is_some_and(|a| a.activity == exa_ai::activity::activities::ROAM);
-        let room = npc.level_room;
-        let avoid = npc.previous_room;
-        let exits = || match level.as_deref() {
-            Some(level) if room >= 0 => exa_ai::rooms::wander_exits(&level.rooms, room as u16),
-            _ => Vec::new(),
+        let dormant = flags.is_some_and(|f| f.has(StateFlags::DORMANT));
+        // A roaming reset lifts the body's footprint off the grid before it
+        // plans, so its own plans do not pay for it.
+        let roams = !condition.dying() && !dormant && roaming && !npc.statue;
+        let lifted = match (roams, nav.as_deref_mut(), prints.as_deref_mut()) {
+            (true, Some(grid), Some(prints)) => {
+                let at = prints.of(entity);
+                prints.lift(grid, entity);
+                at
+            }
+            _ => None,
         };
-        let mut roll = npc.roll;
-        let toward = std::cell::Cell::new(npc.walk.toward);
+        let grid = nav.as_deref();
+        let brain = std::cell::RefCell::new(&mut *npc);
+        // Each round first moves the brain into the room of the point it
+        // plans from (the room bookkeeping the AI tick also runs), so the
+        // second round draws its exits from the room the first one ended
+        // in, avoiding the room it came from.
+        let exits = |from: Vec3| -> (i32, i32, Vec<exa_ai::idle::Exit>) {
+            let mut b = brain.borrow_mut();
+            if let Some(level) = level.as_deref() {
+                b.enter_room(exa_ai::rooms::level_room(&level.rooms, from));
+            }
+            let (room, avoid) = (b.level_room, b.previous_room);
+            let exits = match level.as_deref() {
+                Some(level) if room >= 0 => exa_ai::rooms::wander_exits(&level.rooms, room as u16),
+                _ => Vec::new(),
+            };
+            (room, avoid, exits)
+        };
         let route = |from: Vec3, goal: Vec3| -> Vec<Vec3> {
-            nav.as_deref().map_or_else(Vec::new, |grid| {
+            grid.map_or_else(Vec::new, |grid| {
                 use exa_ai::route::Router;
                 exa_ai::route::NavRouter { grid, size: 0 }
                     .route(from, Vec3::new(goal.x, from.y, goal.z))
@@ -104,28 +136,38 @@ pub fn reset_brains(
             (points.len() > 1).then(|| (*points.last().unwrap(), span2(&points)))
         };
         let mut wander = |from: Vec3| {
-            let picked = exa_ai::idle::pick_wander(room, &exits(), avoid, &mut roll)?;
-            toward.set(picked.node);
+            let (room, avoid, exits) = exits(from);
+            let mut b = brain.borrow_mut();
+            let picked = exa_ai::idle::pick_wander(room, &exits, avoid, &mut b.roll)?;
+            b.walk.toward = picked.node;
+            drop(b);
             plan(route(from, picked.goal))
         };
         let mut home = |from: Vec3| {
-            let picked = exa_ai::idle::pick_home(room, &exits(), toward.get())?;
+            let (room, toward) = {
+                let b = brain.borrow();
+                (b.level_room, b.walk.toward)
+            };
+            let exits = match level.as_deref() {
+                Some(level) if room >= 0 => exa_ai::rooms::wander_exits(&level.rooms, room as u16),
+                _ => Vec::new(),
+            };
+            let picked = exa_ai::idle::pick_home(room, &exits, toward)?;
             plan(route(from, picked.goal))
         };
+        let statue = brain.borrow().statue;
         let from = gt.translation() * 100.0;
         let done = exa_ai::presence::reenter(
             condition.dying(),
-            flags.is_some_and(|f| f.has(StateFlags::DORMANT)),
+            dormant,
             roaming,
-            npc.statue,
+            statue,
             &mut fighter,
             &mut combatant,
             from,
             &mut wander,
             &mut home,
         );
-        npc.roll = roll;
-        npc.walk.toward = toward.get();
         if done.cleared {
             reset += 1;
         }
@@ -147,7 +189,7 @@ pub fn reset_brains(
             let others = bodies.iter();
             exa_physics::sector_lists::space_taken(entity, body, &worlds, others)
         });
-        if taken && let Some(grid) = nav.as_deref() {
+        if taken && let Some(grid) = grid {
             let free = exa_world::nav::walkable::nearest_walkable(grid, target);
             shift = Vec3::new(free.x, gt.translation().y, free.z) - gt.translation();
             refused += 1;
@@ -167,6 +209,13 @@ pub fn reset_brains(
                     body.place_at(&worlds);
                 });
             }
+        }
+        // The footprint is stamped again where the body now stands, so the
+        // brains reset after it plan around it.
+        if let (Some(at), Some(grid), Some(prints)) =
+            (lifted, nav.as_deref_mut(), prints.as_deref_mut())
+        {
+            prints.stamp(grid, entity, at + shift);
         }
         // It leaves combat, stops following and its idle state restarts.
         if let Some(mut duellist) = duellist {
@@ -246,6 +295,75 @@ mod tests {
         assert!(combatant.contacts.is_empty() && !combatant.in_combat);
         assert_eq!(world.get::<Fighter>(falling).unwrap().health.yellow, 0.2);
         assert_eq!(world.get::<Combatant>(falling).unwrap().contacts.len(), 1);
+    }
+
+    /// A roaming reset lifts its footprint before it plans and stamps it
+    /// again where it ends (here where it stood: the level has no rooms to
+    /// plan in); a brain that does not roam keeps its footprint as it was.
+    #[test]
+    fn a_roaming_reset_lifts_and_stamps_its_footprint() {
+        use exa_world::nav::source::grid_base;
+        use exa_world::nav::{Columns, NavFootprints, NavGrid};
+        let mut c = Columns::new(40, 40, grid_base(3.4));
+        for z in 0..40 {
+            for x in 0..40 {
+                c.fill_ground(x, z, 0.0);
+            }
+        }
+        let mut app = App::new();
+        exa_physics::sim_app::add_fixed_commands(&mut app);
+        app.init_resource::<crate::flow::FlowSteps>()
+            .insert_resource(NavGrid::from_columns(&c))
+            .init_resource::<NavFootprints>()
+            .add_systems(Update, reset_brains);
+        app.world_mut()
+            .resource_mut::<crate::flow::FlowSteps>()
+            .steps = vec![crate::flow::Step::ReviveBrains];
+        let spawn = |app: &mut App, roam: bool| {
+            let mut npc = Npc::new([0.5; 4]);
+            if roam {
+                npc.applied = Some(exa_ai::activity::Applied {
+                    activity: exa_ai::activity::activities::ROAM,
+                    idle_activity: 0,
+                    state: exa_ai::activity::IdleState::Roam,
+                    leaves_party: false,
+                    follow_band_cm: None,
+                    phase_word: 0,
+                    create_idle: None,
+                    drop_idle: false,
+                    skipped: Vec::new(),
+                });
+            }
+            app.world_mut()
+                .spawn((
+                    GlobalTransform::from_translation(Vec3::new(1.0, 0.0, 2.0)),
+                    npc,
+                    Fighter::default(),
+                    Combatant::default(),
+                    Condition::default(),
+                ))
+                .id()
+        };
+        let roamer = spawn(&mut app, true);
+        let waiter = spawn(&mut app, false);
+        let feet = Vec3::new(1.0, 0.0, 2.0);
+        let world = app.world_mut();
+        world.resource_scope(|world, mut grid: Mut<NavGrid>| {
+            let mut prints = world.resource_mut::<NavFootprints>();
+            prints.stamp(&mut grid, roamer, feet);
+            prints.stamp(&mut grid, waiter, feet + Vec3::X);
+        });
+        let cost = |app: &App, at: Vec3| {
+            exa_world::nav::walkable::cost_at(app.world().resource::<NavGrid>(), at)
+        };
+        let before = [cost(&app, feet), cost(&app, feet + Vec3::X)];
+        assert!(before[0].1 > 0.0, "the footprint is on the penalty bytes");
+        app.update();
+        let prints = app.world().resource::<NavFootprints>();
+        assert_eq!(prints.of(roamer), Some(feet));
+        assert_eq!(prints.of(waiter), Some(feet + Vec3::X));
+        // Lifted and stamped again at the same point: the grid is as it was.
+        assert_eq!([cost(&app, feet), cost(&app, feet + Vec3::X)], before);
     }
 
     #[test]
