@@ -14,7 +14,10 @@
 //! the pointer drives ([`crate::form_input`]): a title press drags a window,
 //! a release over its close mark closes it, a pressed window draws on top,
 //! the frame marks and the records take their hover inks and a record that
-//! asks for it shows the default tooltip. Escape closing the focused
+//! asks for it shows the default tooltip. Entering combat mode closes
+//! every screen and the power tree, Control Mind's handover the container
+//! family ([`sweep_screens`]); a game save first saves the open screens
+//! ([`save_open_screens_for_saves`]). Escape closing the focused
 //! screen is Exarust's (the original closes them through their frame marks
 //! and the keys again). The skills key's screen
 //! and the power tree are outside this unit; the technique selector opens
@@ -27,10 +30,10 @@ use bevy::window::PrimaryWindow;
 use exa_ui::base_form::BaseForm;
 use exa_ui::form::{ClientRect, UNPLACED, place_unset};
 use exa_ui::game_gui::{
-    CONTAINER_FAMILY, GameScreen, INVENTORY_PLACE, INVENTORY_TITLE, InventoryInput, JOURNAL_TEXT,
-    JOURNAL_TITLE, Journal, JournalInput, LOOT_PLACE, LOOT_TITLE, OpenContainers, ScreenAction,
-    forms_with_tag, inventory_place, inventory_screen, journal_screen, loot_screen,
-    tagged_container,
+    CONTAINER_FAMILY, GAME_SCREEN_FAMILY, GameScreen, INVENTORY_PLACE, INVENTORY_TITLE,
+    InventoryInput, JOURNAL_TEXT, JOURNAL_TITLE, Journal, JournalInput, LOOT_PLACE, LOOT_TITLE,
+    OpenContainers, ScreenAction, forms_with_tag, inventory_place, inventory_screen,
+    journal_screen, loot_screen, tagged_container,
 };
 use exa_ui::gui_controls::{Control, LayoutClient, layout_records};
 use exa_ui::gui_core::{FormId, GuiRect, GuiTask, NO_CONTROL};
@@ -1350,21 +1353,125 @@ impl GameScreens {
         self.close_at(index)
     }
 
-    /// Closes the container and journal family, front to back.
+    /// Closes the container and journal family (the inventory, container,
+    /// journal and loot windows), front to back.
     pub fn close_container_family(&mut self) -> usize {
+        self.close_tagged(CONTAINER_FAMILY, true)
+    }
+
+    /// Saves what the open screens hold, front to back, without closing
+    /// them (what every game save does first): an open container popup
+    /// saves its panel into its record (queued in
+    /// [`Self::saved_containers`]) and the journal stores its text. The
+    /// inventory's and a loot window's loaded panels ask for their save
+    /// too; their items already live in the body's possessions in Exarust,
+    /// so there is nothing more to write. Returns the saves asked for.
+    pub fn save_open_screens(&mut self) -> Vec<exa_ui::game_gui::SaveAction> {
+        use exa_ui::game_gui::{SaveAction, save_action};
+        let mut actions = Vec::new();
+        for index in 0..self.open.len() {
+            let screen = self.open[index];
+            let Some(tag) = screen.kind.tag() else {
+                continue;
+            };
+            let loaded = match screen.kind {
+                GameScreen::Inventory => self.pack.loaded,
+                GameScreen::Loot => self
+                    .loot
+                    .iter()
+                    .find(|window| window.form == screen.form)
+                    .is_some_and(|window| window.pack.loaded),
+                _ => false,
+            };
+            let Some(action) = save_action(tag, loaded) else {
+                continue;
+            };
+            match action {
+                SaveAction::Container => {
+                    if let Some(popup) = self.popups.iter().find(|p| p.form == screen.form)
+                        && let Some(saved) = popup.panel.save_record(&popup.stored)
+                    {
+                        self.saved_containers.push((popup.object, popup.id, saved));
+                    }
+                }
+                SaveAction::Journal => self.journal.store_text(&self.journal_text),
+                SaveAction::Inventory | SaveAction::Loot => {}
+            }
+            actions.push(action);
+        }
+        actions
+    }
+
+    /// Closes every in-game screen (the whole 0xce1 family), back to front:
+    /// what entering combat mode and the session's ends do.
+    pub fn close_game_screens(&mut self) -> usize {
+        self.close_tagged(GAME_SCREEN_FAMILY, false)
+    }
+
+    /// Closes the open screens whose tag has all of `family`'s bits, in
+    /// the order [`forms_with_tag`] gives, each by its own form (the
+    /// original calls each form's close in turn).
+    fn close_tagged(&mut self, family: u32, front_to_back: bool) -> usize {
         let tags: Vec<u32> = self
             .open
             .iter()
             .map(|screen| screen.kind.tag().unwrap_or(0))
             .collect();
-        let kinds: Vec<GameScreen> = forms_with_tag(&tags, CONTAINER_FAMILY, true)
+        let forms: Vec<FormId> = forms_with_tag(&tags, family, front_to_back)
             .into_iter()
-            .map(|i| self.open[i].kind)
+            .map(|i| self.open[i].form)
             .collect();
-        for kind in &kinds {
-            self.close(*kind);
+        let mut closed = 0;
+        for form in forms {
+            if let Some(index) = self.open.iter().position(|screen| screen.form == form)
+                && self.close_at(index)
+            {
+                closed += 1;
+            }
         }
-        kinds.len()
+        closed
+    }
+}
+
+/// Which screens a GUI sweep closes before the power screen's part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenSweep {
+    /// The container and journal family; the shown power bar falls too
+    /// (Control Mind's handover and hand-back).
+    ContainerFamily,
+    /// Every in-game screen; the bar stays (entering combat mode).
+    Every,
+}
+
+impl ScreenSweep {
+    /// The bar bit the sweep hands the power screen's part.
+    pub fn bar_mask(self) -> u8 {
+        match self {
+            ScreenSweep::ContainerFamily => 1,
+            ScreenSweep::Every => 0,
+        }
+    }
+}
+
+/// The GUI unit's screen sweeps: the screens of `sweep` close, then the
+/// power tree closes (or, with the sweep's bar bit, the shown bar falls)
+/// through [`crate::power_screen::sweep_forms`]. Run on the world holding
+/// the screens, else after the fixed step on the frame's.
+pub fn sweep_screens(world: &mut World, sweep: ScreenSweep) {
+    if let Some(mut screens) = world.get_resource_mut::<GameScreens>() {
+        let closed = match sweep {
+            ScreenSweep::ContainerFamily => screens.close_container_family(),
+            ScreenSweep::Every => screens.close_game_screens(),
+        };
+        if closed > 0 {
+            info!("GUI sweep {sweep:?}: {closed} screen(s) closed");
+        }
+        crate::power_screen::sweep_forms(world, sweep.bar_mask());
+    } else if let Some(mut frame) = world.get_resource_mut::<exa_physics::sim_app::FrameCommands>()
+    {
+        frame.send(move |world: &mut World| sweep_screens(world, sweep));
+    } else {
+        crate::power_screen::sweep_forms(world, sweep.bar_mask());
     }
 }
 
@@ -1740,9 +1847,22 @@ fn store_saved_containers(
     mut items: ResMut<crate::doll_view::DollItems>,
     mut live: ResMut<exa_assets::live_objects::LiveObjects>,
 ) {
+    store_containers(&mut screens, &mut objects, Some(&mut items), &mut live);
+}
+
+/// Writes the queued container records into their objects' sections (or,
+/// for a bag inside an item, the item's record).
+fn store_containers(
+    screens: &mut GameScreens,
+    objects: &mut Query<&mut exa_world::ObjectSections>,
+    mut items: Option<&mut crate::doll_view::DollItems>,
+    live: &mut exa_assets::live_objects::LiveObjects,
+) {
     for (object, id, record) in screens.saved_containers.drain(..) {
         if object == Entity::PLACEHOLDER {
-            items.store_container(&mut live, id, &record);
+            if let Some(items) = items.as_deref_mut() {
+                items.store_container(live, id, &record);
+            }
             continue;
         }
         if let Ok(mut sections) = objects.get_mut(object)
@@ -1751,6 +1871,37 @@ fn store_saved_containers(
             store_record(section, &record);
         }
     }
+}
+
+/// A game save first saves the open screens ([`GameScreens::save_open_screens`]):
+/// when a save to a new slot or a writing save step is asked for this
+/// frame, the open popups' contents go into their records (and from there
+/// into the level section the save writes) and the journal keeps its text.
+#[allow(clippy::too_many_arguments)]
+pub fn save_open_screens_for_saves(
+    mut new_slots: MessageReader<crate::save_live::SaveToNewSlot>,
+    mut steps: MessageReader<crate::save_live::SaveStep>,
+    screens: Option<ResMut<GameScreens>>,
+    mut objects: Query<&mut exa_world::ObjectSections>,
+    mut items: Option<ResMut<crate::doll_view::DollItems>>,
+    live: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
+) {
+    let new_slot = new_slots.read().count() > 0;
+    let writes = steps
+        .read()
+        .any(|step| !matches!(step, crate::save_live::SaveStep::Drop));
+    if !new_slot && !writes {
+        return;
+    }
+    let (Some(mut screens), Some(mut live)) = (screens, live) else {
+        return;
+    };
+    if screens.open.is_empty() {
+        return;
+    }
+    let actions = screens.save_open_screens();
+    info!("save: the open screens save first: {actions:?}");
+    store_containers(&mut screens, &mut objects, items.as_deref_mut(), &mut live);
 }
 
 /// Gives the icon manager back the handles of the panels the screens
@@ -2976,6 +3127,63 @@ mod tests {
         assert_eq!(screens.focused(), Some(GameScreen::Inventory));
         assert_eq!(screens.close_container_family(), 2);
         assert!(screens.open.is_empty());
+    }
+
+    #[test]
+    fn entering_combat_closes_every_game_screen() {
+        let mut screens = GameScreens::default();
+        screens.open_inventory(true, true, 4);
+        screens.open_journal(true, true);
+        assert_eq!(screens.open_loot(7, 0, 4), ScreenAction::Opened);
+        assert_eq!(screens.open_loot(9, 0, 4), ScreenAction::Opened);
+        assert_eq!(screens.open.len(), 4);
+        assert_eq!(screens.close_game_screens(), 4);
+        assert!(screens.open.is_empty());
+        assert!(screens.loot.is_empty());
+        assert_eq!(screens.task.active, None);
+        // The journal's close stored its text and place on the way.
+        assert!(screens.journal.place.is_some());
+        assert_eq!(screens.close_game_screens(), 0);
+    }
+
+    #[test]
+    fn a_save_saves_the_open_screens_without_closing_them() {
+        use exa_ui::game_gui::SaveAction;
+        let mut screens = GameScreens::default();
+        assert!(screens.save_open_screens().is_empty());
+        screens.open_journal(true, true);
+        screens.open_inventory(true, true, 4);
+        screens.journal_text = "The well is dry.".into();
+        // The inventory's unloaded panel asks for nothing; the journal
+        // stores its text.
+        assert_eq!(screens.save_open_screens(), vec![SaveAction::Journal]);
+        assert_eq!(screens.journal.entries[0].text, "The well is dry.");
+        assert_eq!(screens.open.len(), 2);
+        screens.pack.loaded = true;
+        assert_eq!(
+            screens.save_open_screens(),
+            vec![SaveAction::Journal, SaveAction::Inventory]
+        );
+        assert!(screens.saved_containers.is_empty());
+    }
+
+    #[test]
+    fn the_sweeps_close_the_screens_in_the_screens_world() {
+        let mut world = World::new();
+        let mut screens = GameScreens::default();
+        screens.open_inventory(true, true, 4);
+        screens.open_journal(true, true);
+        world.insert_resource(screens);
+        sweep_screens(&mut world, ScreenSweep::ContainerFamily);
+        assert!(world.resource::<GameScreens>().open.is_empty());
+        let mut screens = world.resource_mut::<GameScreens>();
+        screens.open_journal(true, true);
+        sweep_screens(&mut world, ScreenSweep::Every);
+        assert!(world.resource::<GameScreens>().open.is_empty());
+        assert_eq!(ScreenSweep::ContainerFamily.bar_mask(), 1);
+        assert_eq!(ScreenSweep::Every.bar_mask(), 0);
+        // A world without the screens (or the frame's queue) is left alone.
+        sweep_screens(&mut World::new(), ScreenSweep::Every);
     }
 
     #[test]

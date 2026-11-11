@@ -558,6 +558,10 @@ fn the_preview_bars_and_journal_flag() {
         (journal_controls_flag(true), journal_controls_flag(false)),
         (0, 1)
     );
+    // The opener leaves combat mode only for a player in action and alive.
+    assert!(journal_leaves_combat(true, true));
+    assert!(!journal_leaves_combat(false, true));
+    assert!(!journal_leaves_combat(true, false));
 }
 
 #[test]
