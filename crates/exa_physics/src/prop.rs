@@ -152,6 +152,14 @@ fn holder_built(grip: &crate::grip::HeldGrip, bodies: &Query<&Ragdoll>) -> bool 
         .any(|b| b.parts.iter().any(|p| p.entity == *probe))
 }
 
+/// Debug aid: with `EXA_NO_WEAPON_MASS` set, a held weapon's body keeps its
+/// registered mobilities (the holding pass's redistribution is skipped), to
+/// tell its effect apart in a lockstep comparison.
+fn skip_weapon_mass() -> bool {
+    static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SKIP.get_or_init(|| std::env::var_os("EXA_NO_WEAPON_MASS").is_some())
+}
+
 /// Builds the bodies of props spawned this frame, at their nodes' world
 /// transforms, asleep. A held item's body waits for its holder's
 /// ([`holder_built`]).
@@ -197,21 +205,25 @@ fn register_props(
         // the registered parts (their link and contact mobilities; the
         // links its parts were registered with keep their shares) before
         // its grip links are built from them.
-        let mass = scales.get(root).ok().map(|&scale| {
-            let mass = crate::weapon_mass::WeaponMass::of_body(&body, scale);
-            let registered: Vec<f32> = body.parts.iter().map(|p| p.inverse_mass).collect();
-            mass.apply(&mut body);
-            debug!(
-                "{root:?}: weapon mass {:.3} over {} parts (size {:.3}): link mobilities {:?} \
+        let mass = scales
+            .get(root)
+            .ok()
+            .filter(|_| !skip_weapon_mass())
+            .map(|&scale| {
+                let mass = crate::weapon_mass::WeaponMass::of_body(&body, scale);
+                let registered: Vec<f32> = body.parts.iter().map(|p| p.inverse_mass).collect();
+                mass.apply(&mut body);
+                debug!(
+                    "{root:?}: weapon mass {:.3} over {} parts (size {:.3}): link mobilities {:?} \
                  (registered {registered:?}), held contact base {:?}",
-                scale.total,
-                mass.parts.len(),
-                scale.size,
-                mass.parts.iter().map(|p| p.inverse).collect::<Vec<_>>(),
-                mass.held_contact_base()
-            );
-            mass
-        });
+                    scale.total,
+                    mass.parts.len(),
+                    scale.size,
+                    mass.parts.iter().map(|p| p.inverse).collect::<Vec<_>>(),
+                    mass.held_contact_base()
+                );
+                mass
+            });
         if let Ok(PendingScrapes(slots)) = scrape_slots.get(root) {
             for slot in slots {
                 body.add_scrape_on(slot.part, slot.point, slot.volume, slot.pitch);
