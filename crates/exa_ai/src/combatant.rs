@@ -139,6 +139,9 @@ pub const MIND_BROKEN: u32 = 2;
 #[derive(Component, Debug, Clone, Default)]
 pub struct MindPowers {
     pub effects: Vec<Effect>,
+    /// The body resists mind control (its technique bit): applying its
+    /// roles ignores a binding marker.
+    pub resists_control: bool,
 }
 
 /// A raw attitude and the tolerance beside it, both from the role database.

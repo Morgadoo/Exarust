@@ -21,12 +21,13 @@
 //! - **Slots**: the persistent casts start from the body's slot count and
 //!   lose one per persistent power it runs; under 1 they refuse.
 //! - **The casts**: Calm moves each contact's concern and hostility (10 at
-//!   most, or three times what is left) into its regard (30 at most) and
-//!   lowers alert by 10, stress by 50 and fear by 1, floored at 0;
-//!   Confusion and Enrage add 50 alert and their timed status bit, and
-//!   Confusion clears the contacts and the AI's level and focus; Trust and
-//!   Suspicion place their timed marker (Trust halves the contact toward the
-//!   caster and sets its regard to 30); Fear adds 20 fear (40 at most) and
+//!   most, or three times what is left) into its noticed level (30 at most)
+//!   and lowers the panic by 10, the readiness by 50 and the alarm by 1,
+//!   floored at 0, and sets the calm to 1; Confusion and Enrage add 50
+//!   panic and their timed status bit, and Confusion clears the contacts,
+//!   the brain's level and the body's target; Trust and Suspicion place
+//!   their timed marker (Trust halves the contact toward the caster and
+//!   sets its noticed level to 30); Fear adds 20 alarm (40 at most) and
 //!   Embolden 50 courage (80 at most); Loyalty binds a living target, whose
 //!   strength is `((relation + 100)·0.005)²·100`, or unbinds the caster's
 //!   own; Raise Dead revives a corpse and Command Dead revives and binds
@@ -229,37 +230,73 @@ pub fn mind_kind(record_kind: u32) -> MindKind {
     }
 }
 
-/// What one AI keeps on another body (one 0x68-byte contact).
+/// What one AI keeps on another body (one of its contacts), the words the
+/// casts move, named as the brain names them (`exa_ai::contacts`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MindContact {
     /// The other body.
     pub body: BodyId,
-    /// The settled regard the casts move concern into [guess: name].
-    pub regard: f32,
+    /// The noticed level: Calm moves the concern and the hostility into it,
+    /// and Trust, Loyalty and Command Dead set it to 30.
+    pub noticed: f32,
     pub concern: f32,
     pub hostility: f32,
-    /// The contact's other words Confusion clears (they follow the regard
-    /// and the concern in the record).
+    /// The contact's other words Confusion clears: the sighting, the
+    /// attention, the concern target and the soothe term.
     pub others: [f32; 4],
 }
 
-/// The AI values the casts move.
+/// The AI values the casts move, named as the brain names them: the
+/// morale's panic, alarm and courage, the integration's readiness (the
+/// arousal), its calm (the soothe damping) and its level, and the body's
+/// target.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MindAi {
     pub contacts: Vec<MindContact>,
-    pub alert: f32,
-    pub fear: f32,
-    /// What Calm lowers by 50 [guess: name].
-    pub stress: f32,
+    /// The panic: Calm lowers it by 10, Enrage and Confusion add 50.
+    pub panic: f32,
+    /// The alarm: Calm lowers it by 1, Fear adds 20 (40 at most).
+    pub alarm: f32,
+    /// The readiness (arousal): Calm lowers it by 50.
+    pub readiness: f32,
     pub courage: f32,
-    /// Calm's factor, set to 1.
-    pub calmed: f32,
-    /// The AI's engagement level, cleared by Confusion.
-    pub level: f32,
-    /// The AI's focus body, cleared by Confusion.
+    /// The calm the hostility drift is damped by: Calm sets it to 1.
+    pub calm: f32,
+    /// The brain's level, cleared by Confusion.
+    pub level: i32,
+    /// The body's target, cleared by Confusion.
     pub focus: Option<BodyId>,
-    /// Set when a cast re-arms the AI's behaviour.
+    /// Set when a cast re-arms the AI's behaviour (its roles are applied
+    /// again, the body's powers among what they read).
     pub rearm: bool,
+    /// The changes the casts made, in order, for the live brain: the cast
+    /// that made them hands them to the step's world, where they run on the
+    /// brain's own values ([`MindAi::apply`]).
+    pub changes: Vec<MindAiChange>,
+}
+
+/// A change a Mind cast makes to its target's AI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MindAiChange {
+    /// Calm: every contact's concern and hostility settle into its noticed
+    /// level; the panic, the readiness and the alarm drop; the calm is 1.
+    Calm,
+    /// Enrage: 50 panic.
+    Enrage,
+    /// Confusion: 50 panic, no target, level 0, every contact cleared.
+    Confusion,
+    /// Trust: the contact toward `caster` halves its concern and hostility
+    /// and its noticed level becomes 30.
+    Trust { caster: BodyId },
+    /// Loyalty and Command Dead: the contact toward `caster` loses its
+    /// concern and hostility and its noticed level becomes 30.
+    Bind { caster: BodyId },
+    /// Fear: 20 alarm, 40 at most.
+    Fear,
+    /// Embolden: 50 courage, 80 at most.
+    Embolden,
+    /// The AI re-arms its behaviour.
+    Rearm,
 }
 
 impl MindAi {
@@ -267,6 +304,79 @@ impl MindAi {
         self.contacts
             .iter_mut()
             .find(|contact| contact.body == body)
+    }
+
+    /// Makes `change` here and records it for the live brain.
+    pub fn change(&mut self, change: MindAiChange) {
+        self.apply(change);
+        self.changes.push(change);
+    }
+
+    /// Takes the recorded changes.
+    pub fn take_changes(&mut self) -> Vec<MindAiChange> {
+        std::mem::take(&mut self.changes)
+    }
+
+    /// Runs `change` on these values, as the casts write the AI. Calm's
+    /// walk visits one entry past the live contacts in the original (its
+    /// loop runs to the count inclusive), a slot no contact owns; it is
+    /// not reproduced.
+    pub fn apply(&mut self, change: MindAiChange) {
+        match change {
+            MindAiChange::Calm => {
+                for contact in &mut self.contacts {
+                    settle(&mut contact.concern, &mut contact.noticed);
+                    settle(&mut contact.hostility, &mut contact.noticed);
+                }
+                self.panic -= 10.0;
+                floor_zero(&mut self.panic);
+                self.readiness -= 50.0;
+                floor_zero(&mut self.readiness);
+                self.alarm -= 1.0;
+                floor_zero(&mut self.alarm);
+                self.calm = 1.0;
+            }
+            MindAiChange::Enrage => self.panic += 50.0,
+            MindAiChange::Confusion => {
+                self.panic += 50.0;
+                self.focus = None;
+                self.level = 0;
+                for contact in &mut self.contacts {
+                    let body = contact.body;
+                    *contact = MindContact {
+                        body,
+                        ..MindContact::default()
+                    };
+                }
+            }
+            MindAiChange::Trust { caster } => {
+                if let Some(contact) = self.contact_toward(caster) {
+                    contact.concern *= 0.5;
+                    contact.noticed = 30.0;
+                    contact.hostility *= 0.5;
+                }
+            }
+            MindAiChange::Bind { caster } => {
+                if let Some(contact) = self.contact_toward(caster) {
+                    contact.concern = 0.0;
+                    contact.noticed = 30.0;
+                    contact.hostility = 0.0;
+                }
+            }
+            MindAiChange::Fear => {
+                self.alarm += 20.0;
+                if 40.0 < self.alarm {
+                    self.alarm = 40.0;
+                }
+            }
+            MindAiChange::Embolden => {
+                self.courage += 50.0;
+                if 80.0 < self.courage {
+                    self.courage = 80.0;
+                }
+            }
+            MindAiChange::Rearm => self.rearm = true,
+        }
     }
 }
 
@@ -609,8 +719,8 @@ pub fn mind_cast(
     }
 }
 
-/// Calm: every contact's concern and hostility settle into its regard, and
-/// the AI's alert, stress and fear drop.
+/// Calm: every contact's concern and hostility settle into its noticed
+/// level, and the AI's panic, readiness and alarm drop.
 pub fn mind_calm(caster: &mut MindBody, target: Option<&mut MindBody>, cost: f32) -> MindOutcome {
     if !first_gate(caster.focus(), cost) {
         return MindOutcome::refused();
@@ -625,18 +735,7 @@ pub fn mind_calm(caster: &mut MindBody, target: Option<&mut MindBody>, cost: f32
         MindKind::Undead => return MindOutcome::of(SPENT, sound),
         MindKind::Living => {}
     }
-    for contact in &mut target.ai.contacts {
-        settle(&mut contact.concern, &mut contact.regard);
-        settle(&mut contact.hostility, &mut contact.regard);
-    }
-    let ai = &mut target.ai;
-    ai.alert -= 10.0;
-    floor_zero(&mut ai.alert);
-    ai.stress -= 50.0;
-    floor_zero(&mut ai.stress);
-    ai.fear -= 1.0;
-    floor_zero(&mut ai.fear);
-    ai.calmed = 1.0;
+    target.ai.change(MindAiChange::Calm);
     MindOutcome::of(STARTED, sound)
 }
 
@@ -705,7 +804,7 @@ fn reuse_or_add(
     &mut body.powers[index]
 }
 
-/// Enrage: 50 alert and the timed enraged bit.
+/// Enrage: 50 panic and the timed enraged bit.
 pub fn mind_enrage(
     caster: &mut MindBody,
     target: Option<&mut MindBody>,
@@ -726,13 +825,14 @@ pub fn mind_enrage(
     if let MindClass::Enrage(power) = &mut entry.class {
         power.start = scene.now_ms;
     }
-    target.ai.alert += 50.0;
+    target.ai.change(MindAiChange::Enrage);
     target.cast.status_bits |= ENRAGED;
     spend(&mut caster.cast, cost);
     MindOutcome::of(STARTED, Some(ENRAGE_SOUND))
 }
 
-/// Confusion: 50 alert, every contact and the AI's level and focus cleared,
+/// Confusion: 50 panic, every contact, the brain's level and the body's
+/// target cleared,
 /// and the timed confused bit.
 pub fn mind_confusion(
     caster: &mut MindBody,
@@ -754,17 +854,7 @@ pub fn mind_confusion(
     if let MindClass::Confusion(power) = &mut entry.class {
         power.start = scene.now_ms;
     }
-    let ai = &mut target.ai;
-    ai.alert += 50.0;
-    ai.focus = None;
-    ai.level = 0.0;
-    for contact in &mut ai.contacts {
-        let body = contact.body;
-        *contact = MindContact {
-            body,
-            ..MindContact::default()
-        };
-    }
+    target.ai.change(MindAiChange::Confusion);
     target.cast.status_bits |= CONFUSED;
     spend(&mut caster.cast, cost);
     MindOutcome::of(STARTED, Some(CONFUSION_SOUND))
@@ -772,7 +862,7 @@ pub fn mind_confusion(
 
 /// Trust: the timed marker toward the caster, unless the target is already
 /// loyal to it; the target's contact toward the caster halves its concern
-/// and hostility and takes a regard of 30.
+/// and hostility and takes a noticed level of 30.
 pub fn mind_trust(
     caster: &mut MindBody,
     target: Option<&mut MindBody>,
@@ -821,11 +911,7 @@ pub fn mind_trust(
     if let MindClass::Trust(power) = &mut entry.class {
         power.start = scene.now_ms;
     }
-    if let Some(contact) = target.ai.contact_toward(caster.id) {
-        contact.concern *= 0.5;
-        contact.regard = 30.0;
-        contact.hostility *= 0.5;
-    }
+    target.ai.change(MindAiChange::Trust { caster: caster.id });
     spend(&mut caster.cast, cost);
     MindOutcome::of(STARTED, Some(TRUST_SOUND))
 }
@@ -865,7 +951,7 @@ pub fn mind_suspicion(
     MindOutcome::of(STARTED, Some(SUSPICION_SOUND))
 }
 
-/// Fear: 20 fear, 40 at most.
+/// Fear: 20 alarm, 40 at most.
 pub fn mind_fear(caster: &mut MindBody, target: Option<&mut MindBody>, cost: f32) -> MindOutcome {
     if !first_gate(caster.focus(), cost) {
         return MindOutcome::refused();
@@ -881,10 +967,7 @@ pub fn mind_fear(caster: &mut MindBody, target: Option<&mut MindBody>, cost: f32
         }
         MindKind::Living => {}
     }
-    target.ai.fear += 20.0;
-    if 40.0 < target.ai.fear {
-        target.ai.fear = 40.0;
-    }
+    target.ai.change(MindAiChange::Fear);
     spend(&mut caster.cast, cost);
     MindOutcome::of(STARTED, Some(FEAR_SOUND))
 }
@@ -912,10 +995,7 @@ pub fn mind_embolden(
         }
         MindKind::Living => {}
     }
-    target.ai.courage += 50.0;
-    if 80.0 < target.ai.courage {
-        target.ai.courage = 80.0;
-    }
+    target.ai.change(MindAiChange::Embolden);
     spend(&mut caster.cast, cost);
     MindOutcome::of(STARTED, Some(EMBOLDEN_SOUND))
 }
@@ -930,7 +1010,7 @@ pub fn loyalty_strength(relation: f32) -> f32 {
 /// Loyalty: casting it on a body already bound to the caster ends the
 /// binding (2); bound to another caster it refuses. Otherwise, with a free
 /// slot and the whole cost, the target takes the bound marker and its
-/// contact toward the caster settles (regard 30, no concern or hostility),
+/// contact toward the caster settles (noticed 30, no concern or hostility),
 /// and the caster runs the power, which takes the cost.
 pub fn mind_loyalty(
     caster: &mut MindBody,
@@ -971,12 +1051,8 @@ pub fn mind_loyalty(
     let mut mark = MindPower::new(LOYALTY_MARK, MindClass::LoyaltyMark(marker));
     mark.caster = Some(caster.id);
     target.powers.push(mark);
-    target.ai.rearm = true;
-    if let Some(contact) = target.ai.contact_toward(caster.id) {
-        contact.concern = 0.0;
-        contact.regard = 30.0;
-        contact.hostility = 0.0;
-    }
+    target.ai.change(MindAiChange::Rearm);
+    target.ai.change(MindAiChange::Bind { caster: caster.id });
     // The cast builds the caster's power running (its constructor leaves
     // the state word 0); the ready state is the load's relink.
     let mut power = LoyaltyCaster::new();
@@ -1070,7 +1146,7 @@ pub const STAMINA_BASE: f32 = 80.0;
 /// [`DECAYED_RULE`], its AI re-arms, and the motion values follow the
 /// decay. `load` is the body's load and `build` its build factor.
 pub fn revive(body: &mut MindBody, load: f32, build: f32) -> Revival {
-    body.ai.rearm = true;
+    body.ai.change(MindAiChange::Rearm);
     body.decay = REVIVED_DECAY;
     let decay = body.decay;
     let gait_scale = if 0.0 < decay {
@@ -1211,12 +1287,8 @@ pub fn mind_command_dead(
     mark.caster = Some(caster.id);
     target.powers.push(mark);
     let raised = raise(target);
-    if let Some(contact) = target.ai.contact_toward(caster.id) {
-        contact.concern = 0.0;
-        contact.regard = 30.0;
-        contact.hostility = 0.0;
-    }
-    target.ai.rearm = true;
+    target.ai.change(MindAiChange::Bind { caster: caster.id });
+    target.ai.change(MindAiChange::Rearm);
     // Running from the cast, as Loyalty's (the ready state is the load's).
     let mut power = CommandDeadCaster::new();
     power.state = crate::thaum::power::RUNNING;
@@ -1530,33 +1602,33 @@ mod tests {
     }
 
     #[test]
-    fn calm_settles_concern_into_regard_and_floors_the_moods() {
+    fn calm_settles_concern_into_the_noticed_level_and_floors_the_moods() {
         let mut caster = living(1);
         let mut target = living(2);
         target.ai.contacts = vec![MindContact {
             body: 9,
-            regard: 1.0,
+            noticed: 1.0,
             concern: 12.0,
             hostility: 4.0,
             others: [0.0; 4],
         }];
-        target.ai.alert = 5.0;
-        target.ai.stress = 60.0;
-        target.ai.fear = 0.5;
+        target.ai.panic = 5.0;
+        target.ai.readiness = 60.0;
+        target.ai.alarm = 0.5;
         let outcome = mind_calm(&mut caster, Some(&mut target), 0.14);
         assert_eq!(outcome.code, STARTED);
         assert_eq!(outcome.sound, Some(CALM_SOUND));
         let c = target.ai.contacts[0];
         // 12 > 10: 2 left and 30 in; 4 ≤ 10: three times it in.
         assert_eq!(
-            (c.concern, c.hostility, c.regard),
+            (c.concern, c.hostility, c.noticed),
             (2.0, 0.0, 1.0 + 30.0 + 12.0)
         );
         assert_eq!(
-            (target.ai.alert, target.ai.stress, target.ai.fear),
+            (target.ai.panic, target.ai.readiness, target.ai.alarm),
             (0.0, 10.0, 0.0)
         );
-        assert_eq!(target.ai.calmed, 1.0);
+        assert_eq!(target.ai.calm, 1.0);
         assert_eq!(caster.cast.spent, 0.14);
         // Focus short of 0.3 of the cost refuses before the pick.
         caster.cast.focus = 0.04;
@@ -1595,13 +1667,13 @@ mod tests {
         let mut target = living(2);
         target.ai.contacts = vec![MindContact {
             body: 7,
-            regard: 3.0,
+            noticed: 3.0,
             concern: 4.0,
             hostility: 5.0,
             others: [1.0; 4],
         }];
         target.ai.focus = Some(7);
-        target.ai.level = 2.0;
+        target.ai.level = 2;
         let outcome = mind_confusion(&mut caster, Some(&mut target), 0.17, &scene());
         assert_eq!(outcome.code, STARTED);
         assert_eq!(
@@ -1612,8 +1684,8 @@ mod tests {
             }
         );
         assert_eq!(
-            (target.ai.alert, target.ai.level, target.ai.focus),
-            (50.0, 0.0, None)
+            (target.ai.panic, target.ai.level, target.ai.focus),
+            (50.0, 0, None)
         );
         assert_ne!(target.cast.status_bits & CONFUSED, 0);
         let entry = target.powers[0];
@@ -1628,12 +1700,12 @@ mod tests {
     }
 
     #[test]
-    fn enrage_adds_alert_and_its_bit() {
+    fn enrage_adds_panic_and_its_bit() {
         let mut caster = living(1);
         let mut target = living(2);
         let outcome = mind_enrage(&mut caster, Some(&mut target), 0.16, &scene());
         assert_eq!(outcome.sound, Some(ENRAGE_SOUND));
-        assert_eq!(target.ai.alert, 50.0);
+        assert_eq!(target.ai.panic, 50.0);
         assert_ne!(target.cast.status_bits & ENRAGED, 0);
         assert_eq!(target.powers[0].levels, [0.0, 1.0]);
         target.record_kind = 5;
@@ -1650,7 +1722,7 @@ mod tests {
         let mut target = living(2);
         target.ai.contacts = vec![MindContact {
             body: 1,
-            regard: 0.0,
+            noticed: 0.0,
             concern: 8.0,
             hostility: 6.0,
             others: [0.0; 4],
@@ -1658,7 +1730,7 @@ mod tests {
         let outcome = mind_trust(&mut caster, Some(&mut target), 0.19, &scene());
         assert_eq!(outcome.code, STARTED);
         let c = target.ai.contacts[0];
-        assert_eq!((c.concern, c.regard, c.hostility), (4.0, 30.0, 3.0));
+        assert_eq!((c.concern, c.noticed, c.hostility), (4.0, 30.0, 3.0));
         assert_eq!(target.powers[0].id, TRUST_MARK);
         assert_eq!(target.powers[0].caster, Some(1));
         let mut mark = MindPower::new(LOYALTY_MARK, MindClass::LoyaltyMark(LoyaltyTarget::new(1)));
@@ -1693,9 +1765,9 @@ mod tests {
     fn fear_and_embolden_cap_their_values() {
         let mut caster = living(1);
         let mut target = living(2);
-        target.ai.fear = 30.0;
+        target.ai.alarm = 30.0;
         mind_fear(&mut caster, Some(&mut target), 0.18);
-        assert_eq!(target.ai.fear, 40.0);
+        assert_eq!(target.ai.alarm, 40.0);
         target.ai.courage = 10.0;
         mind_embolden(&mut caster, Some(&mut target), 0.18);
         assert_eq!(target.ai.courage, 60.0);
@@ -1727,7 +1799,7 @@ mod tests {
         assert!((mark.strength - 36.0).abs() < 1e-4);
         assert!(target.ai.rearm);
         let c = target.ai.contacts[0];
-        assert_eq!((c.concern, c.regard, c.hostility), (0.0, 30.0, 0.0));
+        assert_eq!((c.concern, c.noticed, c.hostility), (0.0, 30.0, 0.0));
         assert_eq!(caster.powers[0].id, LOYALTY);
         assert_eq!(caster.cast.reserved, 0.29);
         assert_eq!(caster.cast.spent, 0.29);

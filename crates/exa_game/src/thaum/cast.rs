@@ -931,6 +931,7 @@ pub(crate) fn run_bar_commands(
                 let mut start = None;
                 let mut result_code = 0;
                 let mut mind_outcome = None;
+                let mut mind_ai = Vec::new();
                 let mind_scene = crate::mind::casts::MindScene {
                     now_ms: now,
                     real_ms: now,
@@ -951,7 +952,7 @@ pub(crate) fn run_bar_commands(
                     mind.live
                         .get(t)
                         .ok()
-                        .map(|(c, f)| crate::mind::runtime::MindLive::of(c, f))
+                        .map(|(c, f, d, b)| crate::mind::runtime::MindLive::of(c, f, d, b))
                 });
                 let entry = tree.cast_slot(
                     &mut caster.record,
@@ -971,6 +972,7 @@ pub(crate) fn run_bar_commands(
                                 &mind_scene,
                             );
                             mind_outcome = answer.outcome;
+                            mind_ai = answer.ai;
                             result_code = answer.code;
                             return answer.code;
                         }
@@ -1036,6 +1038,16 @@ pub(crate) fn run_bar_commands(
                             revival,
                         );
                     }
+                    // The cast's changes to its target's AI reach the live
+                    // brain after the raise.
+                    if let Some(target) = mind_target {
+                        crate::mind::runtime::post_mind_ai(
+                            mind.fixed.as_deref_mut(),
+                            &mut commands,
+                            target,
+                            std::mem::take(&mut mind_ai),
+                        );
+                    }
                     if crate::mind::runtime::spirit_asked(&outcome) {
                         let feet = mind
                             .places
@@ -1098,6 +1110,14 @@ pub(crate) fn run_bar_commands(
     }
 }
 
+/// What a Mind cast reads off its target's body ([`crate::mind::runtime::MindLive`]).
+type MindLiveData = (
+    &'static Condition,
+    Option<&'static exa_combat::Fighter>,
+    Option<&'static exa_character::record::CharacterData>,
+    Option<&'static exa_physics::body::Ragdoll>,
+);
+
 /// What the bar's Mind casts read and write: the bodies' minds, the
 /// mind pick, the runtime's state, the spirit-body request and the bodies'
 /// places.
@@ -1111,7 +1131,7 @@ pub(crate) struct MindBar<'w, 's> {
     control: Res<'w, crate::mind::runtime::MindControl>,
     spirits: MessageWriter<'w, crate::mind::runtime::SpiritBodyAsked>,
     places: Query<'w, 's, &'static GlobalTransform>,
-    live: Query<'w, 's, (&'static Condition, Option<&'static exa_combat::Fighter>)>,
+    live: Query<'w, 's, MindLiveData>,
     fixed: Option<ResMut<'w, exa_physics::sim_app::FixedCommands>>,
 }
 

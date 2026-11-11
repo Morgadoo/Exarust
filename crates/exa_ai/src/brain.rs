@@ -180,6 +180,11 @@ pub struct Npc {
     pub turn: Turning,
     /// The key of the roles the applied state was derived from.
     pub roles_key: u64,
+    /// The AI's re-arm byte: its roles are applied again at the next brain
+    /// tick even when they did not change (a Mind cast that binds, raises
+    /// or releases the body sets it; the applied state then reads the
+    /// body's powers, a Loyalty or Command Dead marker making it follow).
+    pub reapply: bool,
     /// The group-alert count the AI tick decays every 10 s.
     pub alert_count: i32,
     /// When the alert count is next checked (ms).
@@ -371,6 +376,7 @@ impl Npc {
             gaze: Gaze::default(),
             turn: Turning::default(),
             roles_key: 0,
+            reapply: false,
             alert_count: 1,
             alert_until_ms: u32::MAX,
             room: RoomCell::default(),
@@ -447,12 +453,29 @@ impl Npc {
 
     /// Applies the roles and installs the routine they choose.
     pub fn apply(&mut self, db: &RoleDatabase, roles: &Roles, now_ms: u32) -> &Applied {
+        self.apply_with(db, roles, now_ms, &[], false)
+    }
+
+    /// [`Npc::apply`] reading the codes of the body's powers (`effects`)
+    /// and whether it resists mind control, as the original's apply reads
+    /// the body's power list and technique bit: a Loyalty or Command Dead
+    /// marker on a body that does not resist makes it follow. Clears the
+    /// re-arm byte.
+    pub fn apply_with(
+        &mut self,
+        db: &RoleDatabase,
+        roles: &Roles,
+        now_ms: u32,
+        effects: &[u32],
+        resists: bool,
+    ) -> &Applied {
         self.roles_key = roles_key(roles);
+        self.reapply = false;
         let before = Before {
             activity: self.applied.as_ref().map_or(1, |a| a.activity),
             idle: self.search.as_ref().map(|_| activity::SEARCH),
-            effects: &[],
-            resists: false,
+            effects,
+            resists,
             marked: false,
         };
         let applied = activity::apply_roles(&db.book, roles, before);
@@ -526,9 +549,14 @@ impl Npc {
         // so the pass classifies the contacts as the perception left them,
         // as the original's tick does.
         contacts::aim(&mut self.integration, &sight);
+        // The classifier's stress is the morale's stress plus its alarm less
+        // the courage; the pass raises the alarm (the word the drift decays
+        // by 0.9999) to twice its alarm mean, as the original's target pass
+        // writes it.
         let mut morale = contacts::Morale {
             courage,
-            stress: self.integration.stress,
+            base: self.morale.stress,
+            stress: self.morale.alarm,
             ..contacts::Morale::default()
         };
         let attended = self.pass.attention;
@@ -570,9 +598,9 @@ impl Npc {
         );
         self.fled = fled;
         self.integration.level = report.level;
-        self.integration.stress = report.stress;
-        // The alarm mean raises the same stress the next drift decays.
-        self.morale.stress = report.stress;
+        // The alarm mean raises the alarm the next drift decays.
+        self.integration.alarm = report.stress;
+        self.morale.alarm = report.stress;
         if self.integration.fled_alarm < report.fled_alarm {
             self.integration.fled_alarm = report.fled_alarm;
         }
@@ -2474,20 +2502,39 @@ pub fn roles_key(roles: &Roles) -> u64 {
     key
 }
 
-/// Applies the roles of brains whose held roles changed (or that are new).
+/// Applies the roles of brains whose held roles changed (or that are new),
+/// or whose re-arm byte is set ([`Npc::reapply`]), reading the body's mind
+/// powers ([`crate::combatant::MindPowers`]).
 #[allow(clippy::type_complexity)]
 pub fn apply_new_roles(
     db: Option<Res<RoleDatabase>>,
     ticks: Option<Res<BodyTicks>>,
-    mut npcs: Query<(&Roles, &mut Npc, Option<&mut Mind>, Option<&Name>)>,
+    mut npcs: Query<(
+        &Roles,
+        &mut Npc,
+        Option<&mut Mind>,
+        Option<&Name>,
+        Option<&crate::combatant::MindPowers>,
+    )>,
 ) {
     let Some(db) = db else { return };
     let now = ticks.map_or(0, |t| t.millis() as u32);
-    for (roles, mut npc, mind, name) in &mut npcs {
-        if npc.roles_key == roles_key(roles) {
+    for (roles, mut npc, mind, name, powers) in &mut npcs {
+        let rearmed = npc.reapply;
+        if npc.roles_key == roles_key(roles) && !rearmed {
             continue;
         }
-        let applied = npc.apply(&db, roles, now).clone();
+        let effects: Vec<u32> =
+            powers.map_or_else(Vec::new, |p| p.effects.iter().map(|e| e.kind).collect());
+        let resists = powers.is_some_and(|p| p.resists_control);
+        let applied = npc.apply_with(&db, roles, now, &effects, resists).clone();
+        if rearmed {
+            info!(
+                "{}: the AI re-arms: roles applied again over powers {effects:#x?}: activity {}",
+                name.map_or("character", |n| n.as_str()),
+                applied.activity
+            );
+        }
         if let Some(mut mind) = mind {
             mind.asleep = applied.state == IdleState::Sleep;
         }
@@ -2887,7 +2934,7 @@ mod tests {
         assert_eq!(npc.pass.greet, Some(1));
         // The target pass's alarm mean and the integration's total reach
         // the next morale drift.
-        assert_eq!(npc.morale.stress, npc.integration.stress);
+        assert_eq!(npc.morale.alarm, npc.integration.alarm);
         assert_eq!(npc.morale.total, npc.integration.total);
         // The target pass reads the sightings as the perception left them,
         // so a calm tick is one whose contact has cooled.
@@ -2964,6 +3011,52 @@ mod tests {
         assert!(npc.search.is_some());
         npc.apply(&d, &held(&[9]), 0);
         assert!(npc.search.is_none());
+    }
+
+    /// A re-armed brain applies its roles again though they did not change,
+    /// reading the body's powers: a Command Dead marker makes it follow,
+    /// unless it resists mind control.
+    #[test]
+    fn a_rearmed_brain_applies_its_roles_over_its_powers() {
+        let mut app = App::new();
+        app.insert_resource(db());
+        app.add_systems(Update, apply_new_roles);
+        let marker = crate::combatant::MindPowers {
+            effects: vec![crate::combatant::Effect {
+                kind: 0x10_010D,
+                source: None,
+                target: None,
+                state: 1,
+            }],
+            resists_control: false,
+        };
+        let brain = app
+            .world_mut()
+            .spawn((held(&[9]), Npc::new([0.0; 4]), marker))
+            .id();
+        app.update();
+        let activity = |app: &App| {
+            let npc = app.world().get::<Npc>(brain).unwrap();
+            (npc.applied.as_ref().map(|a| a.activity), npc.reapply)
+        };
+        // Applied once when new, over the marker already.
+        assert_eq!(
+            activity(&app),
+            (Some(crate::activity::activities::FOLLOW), false)
+        );
+        app.world_mut()
+            .get_mut::<crate::combatant::MindPowers>(brain)
+            .unwrap()
+            .resists_control = true;
+        app.update();
+        assert_eq!(
+            activity(&app),
+            (Some(crate::activity::activities::FOLLOW), false)
+        );
+        app.world_mut().get_mut::<Npc>(brain).unwrap().reapply = true;
+        app.update();
+        assert_ne!(activity(&app).0, Some(crate::activity::activities::FOLLOW));
+        assert!(!activity(&app).1);
     }
 
     /// The AI tick runs the target pass once, keeps its report on the brain
