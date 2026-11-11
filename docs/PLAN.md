@@ -1735,6 +1735,8 @@ Round 174 balance: stepping, knockback re-targets and the armed parry follow the
 
 Round 181 renderer: doorway sectors clip their see-through surfaces on the super-sampled view and states draw in registration order, as the original walk does.
 
+the wraith skin and robe now draw as translucent dark smoke as in the original (the smoke unit start-up hook rewrites material type 2); the shipped smoke program fails to build under distance fog, so outdoor levels draw no wraith, and Exarust matches that.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
