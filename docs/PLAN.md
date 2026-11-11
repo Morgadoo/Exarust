@@ -2503,6 +2503,8 @@ Round 168 thaumunits: force domes knock, drain and stop the characters they push
 
 Round 170 arena2: arena purchases go into the arsenal and sales strip it, and generated fighters use the original outfit table pass.
 
+Round 171 force2: the blast, bolt, wave and torrent meet the level real meshes through the original leaf tests, and the blast plays its sounds.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
