@@ -41,6 +41,19 @@ for it, and `LockstepCheck` counts the steps against the snapshots' ticks
 only its clock, so a body's every pose is the same bit for bit with or
 without the shell (`body_floor_test`). `EXA_ORPHAN_TRACE=1` (environment) logs, on either world, a `ChildOf` inserted with a parent that world does not hold (`sim_app::trace_orphans`).
 
+`exit_trace` is a debug trace of the process's exit (`EXA_EXIT_TRACE=1`):
+each teardown stage (the `--frames` exit message, the last frame reading it,
+the frame world's first and last resources and the render world dropping,
+`SimShell`'s channel closing and its thread joined, the simulation's world
+dropped, `main` returning) is logged with the time since the exit began, and
+a watchdog thread reports a stage that lasts longer than
+`EXA_EXIT_TRACE_DUMP` seconds (10 by default): every thread's name, state
+and kernel wait channel, three in-process stack samples two seconds apart
+(each thread takes its own with glibc's `backtrace` on a signal; the
+addresses are logged as module + address from its load base, for
+`addr2line -f -C -i -e` on a `--profile profiling` build), then `eu-stack`
+or `gdb` here or on the host when one is found.
+
 With `SimMode::Free` (the game's default; `--sim-lockstep`, `--fixed-frames`,
 `--sim-inline` and `--no-sim-bridge` step in lockstep) the
 simulation runs on its own thread as the original's does

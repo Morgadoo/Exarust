@@ -15,6 +15,7 @@ pub mod controller;
 pub mod door;
 pub mod dynamics;
 pub mod engine_math;
+pub mod exit_trace;
 pub mod float_mode;
 pub mod grip;
 pub mod grip_solve;

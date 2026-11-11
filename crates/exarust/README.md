@@ -30,7 +30,11 @@ the clock is the fixed step's, a snapshot for the frame (lent before, it
 stayed in the free-running simulation and the line read zero). The workspace patches gpu-allocator
 ([`patches/gpu-allocator/EXARUST.md`](../../patches/gpu-allocator/EXARUST.md))
 so those buffers stay out of a small BAR window: several games sharing the
-GPU no longer leave one of them writing its uploads at 0.5 GB/s. It grows into
+GPU no longer leave one of them writing its uploads at 0.5 GB/s. It also patches rodio
+([`patches/rodio/EXARUST.md`](../../patches/rodio/EXARUST.md)): its
+resampler's u32 products wrapped for a pitched voice and sent the audio thread
+through 2^32 frames, and the output stream's drop at exit waited 80-125 s for
+it (`EXA_EXIT_TRACE=1` traces the exit, `exa_physics::exit_trace`). It grows into
 the full game as `exa_game` gains modes (see `docs/PLAN.md`). `--frames n`
 without `--screenshot` ends a run after n frames from the end of the load
 (a grid quadrant's game then exits). The debug
