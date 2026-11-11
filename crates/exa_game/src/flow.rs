@@ -4242,6 +4242,21 @@ fn apply_steps(
                 if let Some(logo) = logo.as_mut() {
                     logo.0 = shown;
                 }
+                // The return to the title sets the title flag with the
+                // logo: the version line shows and the frame-rate readout
+                // (cleared by the session's leave) does not.
+                if shown && let Some(overlays) = out.overlays.as_mut() {
+                    overlays.enter_title();
+                }
+            }
+            Step::SessionTask(true) => {
+                // Every session start and continue clears the title flag and
+                // hands the viewport's frame-rate flag the ShowFPS setting.
+                let show = out.show_fps.as_ref().is_none_or(|show| show.0);
+                if let Some(overlays) = out.overlays.as_mut() {
+                    overlays.start_session(show);
+                }
+                debug!("game flow step: SessionTask(true)");
             }
             Step::GameGui(shown) => {
                 if let Some(view) = view.as_mut() {
@@ -4741,6 +4756,10 @@ struct FlowOutputs<'w> {
     fixed: ResMut<'w, exa_physics::sim_app::FixedCommands>,
     /// The player-control singleton the block pair writes.
     control: Option<ResMut<'w, crate::player_controls::PlayerControl>>,
+    /// The viewport's frame-rate and title flags, and the ShowFPS setting a
+    /// session start hands the first.
+    overlays: Option<ResMut<'w, crate::view_overlay::ViewOverlays>>,
+    show_fps: Option<Res<'w, exa_ui::ShowFps>>,
 }
 
 /// The resources the story start's and the tips' steps write.

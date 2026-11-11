@@ -10,7 +10,7 @@ images the draw path shows, the divination cards' sheet cells and shadow
 mesh draw the same way, and the arena loadout's 27 control records are
 decoded (`loadout::CONTROLS`); the game's bitmap font
 (`font`), the interface scale from the window's height (`scale`), the
-frame-rate readout (`fps`), the loading screen (`loading`, whose camera
+ShowFPS setting (`fps`; the readout is `exa_game::view_overlay`), the loading screen (`loading`, whose camera
 draws the whole interface over the game's view, premultiplied), the
 character creator's labels and page captions (`creation`; the game crate
 owns the rules and places) and its three control-record tables with
@@ -695,7 +695,8 @@ and its first byte), caret from x, the horizontal scroll, the key and
 navigation handlers, clipboard copy/cut/paste, the caret and the draw's
 three paths, and the markup tags. `viewport` keeps the 3D viewport
 control's supersampling levels, jitter table and samples (both shares
-divided in double precision), camera scale, stereo eye, overlays, frame-rate counter,
+divided in double precision), camera scale, stereo eye, overlays, frame-rate counter
+(its text in the engine's number formatting),
 pixel/space conversions, cursor actions, view delegates and the draw
 slot's whole-or-progressive plan; the running world is `exa_render`'s.
 

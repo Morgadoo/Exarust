@@ -1934,8 +1934,12 @@ character body's possession routines; addresses are in the research notes.
   there; a camera freed by a double click starts from where it last
   looked. Not reproduced: the key gate's viewport field (not identified;
   Exarust reads the keys whenever the camera is free), the pad routine's
-  movement vector the original adds, the height offset the frame adds
-  (a vector easing toward a camera-node field nothing in Exarust sets).
+  movement vector the original adds. The height offset the frame adds is
+  a vector each tick eases toward a field of the camera node at the
+  zoom spring's rate; nothing in 0.9.5 writes that field (no store to
+  it and no routine handed its address outside the tick), so it stays
+  zero and the offset with it: left out, as the shipped game never
+  moves it.
   The follow-point spring (0.0653) and the area bounds belong to the
   editor preset's `0x400000` and the braking to `0x2000`, which the game's
   records leave clear.

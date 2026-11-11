@@ -587,6 +587,7 @@ fn tick_splash(
     game: Option<Res<Game>>,
     mut bank: Option<ResMut<exa_audio::SoundBank>>,
     mut sources: Option<ResMut<Assets<AudioSource>>>,
+    mut overlays: Option<ResMut<crate::view_overlay::ViewOverlays>>,
 ) {
     let Some(splash) = screen.0.as_mut() else {
         return;
@@ -635,6 +636,11 @@ fn tick_splash(
         }
         if let Some(menu) = menu.as_mut() {
             menu.open();
+        }
+        // The hand-over also sets the title flag: the version line shows
+        // and the frame-rate readout does not.
+        if let Some(overlays) = overlays.as_mut() {
+            overlays.enter_title();
         }
     }
     if frame.theme {

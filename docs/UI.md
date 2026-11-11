@@ -376,14 +376,38 @@ instead of about 150.)
 
 ## Frame rate
 
-The original shows the frame rate in the window's top-right corner, as in
-"57.25 FPS": light grey, in the base font at its 24-point size (0.47 window
-pixels per atlas pixel). The original draws in physical pixels whatever the
-display's scale factor, and Exarust does the same.
+The original's 3D viewport draws two overlay lines last in its draw, in
+physical pixels, in the GUI level's main font, each over a one-pixel black
+shadow at half alpha drawn a pixel up and left:
+- the frame-rate readout, as in "57.25 FPS": the rate in the engine's
+  number formatting with two decimals, trailing zeros kept. Its right end
+  sits at the view's inner right (its width less the border, 8) less the
+  border and a GUI unit, its width the main font's gap per byte; its
+  baseline a unit and a line height down. Its ink is the skin's seventh
+  label ink at alpha 0xa0. The frames are counted only while it is drawn;
+  once more than 250 ms have passed since the last reading, the rate is
+  the frames over the elapsed seconds and the count restarts. Hidden, its
+  text is cleared and the count and clock stand, so the first reading after
+  it shows again covers the hidden time.
+- the version line "V 0.9.5.2g": a unit in from the left, its baseline the
+  border and a unit up from the bottom, in the seventh label ink.
 
-Exarust:
-- shows the mean rate over each half second, with two decimals;
-- hides the readout with `--no-fps`.
+Two flags pick them. The game's title flag is set where it enters its
+title (the return to the title, the splash's hand-over) and cleared where a
+session starts or continues; it shows the version line and hides the
+readout. The viewport's frame-rate flag takes the ShowFPS setting where a
+session starts and whenever the setting changes, and is cleared by a
+session's leave. The readout is drawn while that flag is set and the
+title flag is clear.
+
+Exarust (`exa_game::view_overlay`):
+- rasterises each line with the GUI's rasteriser into a picture of its own
+  box, only when its text or place changes, over the interface, the splash
+  and the transition screen;
+- sets the frame-rate flag at start-up from ShowFPS, as its direct level
+  starts begin no session of the game flow; `--no-fps` turns ShowFPS off;
+- draws the lines with the base font's glyphs in the level font's metrics
+  when the level font's atlas is missing, as every GUI text does.
 
 ## Loading screen
 

@@ -352,9 +352,12 @@ pub fn fps_place(
     )
 }
 
-/// The frame-rate readout's text: two decimals and [`FPS_SUFFIX`].
+/// The frame-rate readout's text: the engine's number formatting with two
+/// decimals, trailing zeros kept, and [`FPS_SUFFIX`].
 pub fn fps_text(rate: f32) -> String {
-    format!("{rate:.2}{FPS_SUFFIX}")
+    let mut text = exa_formats::text::format_float(rate, 2, true);
+    text.push_str(FPS_SUFFIX);
+    text
 }
 
 /// The frame-rate counter: frames since the last readout, refreshed once
