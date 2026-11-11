@@ -272,9 +272,10 @@ fn the_capture_keeps_half_of_the_twist() {
     assert!(same_turn(half_lean(bent, Quat::IDENTITY), bent));
     let leaned = half_lean(Quat::from_rotation_x(0.5), twist);
     let m = Mat3A::from_quat(leaned);
-    assert!(m.y_axis.dot(m.z_axis).abs() < 1e-6);
+    // Square to the approximate reciprocal square root's 12 bits.
+    assert!(m.y_axis.dot(m.z_axis).abs() < 1e-3);
     let pitched_z = Vec3A::new(0.0, -(0.5f32.sin()), 0.5f32.cos());
     let untwisted_z = Mat3A::from_quat(twist).transpose() * pitched_z;
     let want = (pitched_z + (untwisted_z - pitched_z) * 0.5).normalize();
-    assert!((m.z_axis - want).length() < 1e-6, "{}", m.z_axis);
+    assert!((m.z_axis - want).length() < 1e-3, "{}", m.z_axis);
 }

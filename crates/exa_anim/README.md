@@ -13,6 +13,10 @@ follow-up with the original's blend table; the walk, run and backpedal
 play in place, every other clip keeps its root's travel; a pose the body
 holds pulls the sample by a weight, its quaternion components interpolated
 without the short-way sign check (two opposite turns half way give a NaN).
+The daze pose (`shock_hold`) takes its random axes, turns and
+normalisations from `exa_physics::engine_math` (the approximate
+normalisation, the engine's axis-angle quaternion and four-lane
+normaliser), as the original's.
 The smooth ease is (3 − 2f)·f²; the fast one 1 + 0.11f − 1/(1 + 8f), the
 first sum in double and the reciprocal single, as the original computes
 them. A start that replaces Walk or Run leaves a trailing-foot request

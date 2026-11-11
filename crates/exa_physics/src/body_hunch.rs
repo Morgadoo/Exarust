@@ -2,11 +2,12 @@
 //! scalar on its height, then the basis is rebuilt. The scalar rises while
 //! the body is on its feet and an attack clip takes more off it.
 //!
-//! Lengths are the original's. The original rebuilds the basis with the
-//! processor's reciprocal square root; this normalises exactly, as the
-//! torso twist does.
+//! Lengths are the original's. The basis is rebuilt with the processor's
+//! approximate reciprocal square root, as the original's.
 
 use bevy::prelude::*;
+
+use crate::engine_math::normalize_approx;
 
 /// On its feet the hunch rises by this much a tick (double); off its feet
 /// it falls by the same, and never below 0.
@@ -46,16 +47,18 @@ pub fn hunch_applies(feral: f32) -> bool {
 
 /// The local turn after the hunch: the forward axis loses `hunch` on its
 /// height, then the basis is rebuilt (that forward, the up axis with the
-/// forward taken out, then their cross). A zero axis stays zero.
+/// forward taken out, its dot summed `(x + z) + y`, then their cross), each
+/// row normalised by the approximate reciprocal square root (`RSQRTSS`). A
+/// zero axis stays zero.
 pub fn hunch_turn(turn: Quat, hunch: f32) -> Quat {
     let m = Mat3::from_quat(turn);
     let mut forward = m.z_axis;
     forward.y -= hunch;
-    forward = forward.normalize_or_zero();
-    let mut up = m.y_axis;
-    up -= forward * up.dot(forward);
-    up = up.normalize_or_zero();
-    let side = up.cross(forward).normalize_or_zero();
+    forward = normalize_approx(forward);
+    let up = m.y_axis;
+    let along = (up.x * forward.x + up.z * forward.z) + up.y * forward.y;
+    let up = normalize_approx(up - forward * along);
+    let side = normalize_approx(up.cross(forward));
     Quat::from_mat3(&Mat3::from_cols(side, up, forward))
 }
 
@@ -106,20 +109,21 @@ mod tests {
         assert!(!hunch_applies(f32::NAN));
     }
 
-    /// Identity pitched by 0.3 drops its forward axis and stays orthonormal.
-    /// A hunch of 0 leaves the turn.
+    /// Identity pitched by 0.3 drops its forward axis and stays
+    /// orthonormal, to the approximate reciprocal square root's 12 bits. A
+    /// hunch of 0 leaves the turn (to the same bits).
     #[test]
     fn the_forward_axis_drops_and_the_basis_stays_square() {
         let pitched = hunch_turn(Quat::IDENTITY, 0.3);
         let m = Mat3::from_quat(pitched);
         assert!(m.z_axis.y < -0.25, "{}", m.z_axis);
         assert!(m.z_axis.z > 0.9);
-        assert!((m.x_axis.length() - 1.0).abs() < 1e-5);
-        assert!((m.y_axis.length() - 1.0).abs() < 1e-5);
-        assert!((m.z_axis.length() - 1.0).abs() < 1e-5);
-        assert!(m.x_axis.dot(m.y_axis).abs() < 1e-5);
-        assert!(m.y_axis.dot(m.z_axis).abs() < 1e-5);
+        assert!((m.x_axis.length() - 1.0).abs() < 1e-3);
+        assert!((m.y_axis.length() - 1.0).abs() < 1e-3);
+        assert!((m.z_axis.length() - 1.0).abs() < 1e-3);
+        assert!(m.x_axis.dot(m.y_axis).abs() < 1e-3);
+        assert!(m.y_axis.dot(m.z_axis).abs() < 1e-3);
         assert!(m.z_axis.cross(m.x_axis).dot(m.y_axis) > 0.9);
-        assert!(hunch_turn(Quat::IDENTITY, 0.0).abs_diff_eq(Quat::IDENTITY, 1e-6));
+        assert!(hunch_turn(Quat::IDENTITY, 0.0).abs_diff_eq(Quat::IDENTITY, 1e-3));
     }
 }

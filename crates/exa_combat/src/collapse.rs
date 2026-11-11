@@ -25,7 +25,7 @@ use exa_physics::body::{
 use crate::condition::{Condition, DeathClock, StateFlags, settle_death, track_condition};
 use crate::fall::FallDeath;
 use crate::{Fighter, Roll};
-use exa_physics::engine_math::reciprocal_sqrt;
+use exa_physics::engine_math::{normalize_approx, reciprocal_sqrt};
 
 /// The clip a lethal wound starts.
 pub const FALL_BACKWARD: &str = "Fall Backward";
@@ -66,13 +66,15 @@ pub fn collapse_blend(energy: f32) -> u32 {
 /// The heading (x, z, a unit vector across the ground) after one dying
 /// tick, from two random draws `a` and `b` in 0..1: each component moves
 /// by (draw − 0.5) × 0.5, at most a quarter, then it is a unit vector
-/// again.
+/// again by the approximate reciprocal square root (`RSQRTSS`), as the
+/// original's (a zero vector stays zero).
 pub fn jitter_heading(heading: Vec2, a: f32, b: f32) -> Vec2 {
-    let moved = Vec2::new(
+    let moved = Vec3::new(
         heading.x + (a - 0.5) * JITTER,
+        0.0,
         heading.y + (b - 0.5) * JITTER,
     );
-    moved.try_normalize().unwrap_or(heading)
+    normalize_approx(moved).xz()
 }
 
 /// One dying tick of the tone: 0.003 less; at 0.25 or less the muscles go
