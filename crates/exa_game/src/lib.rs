@@ -49,6 +49,7 @@ pub mod drag;
 pub mod effects;
 pub mod emblem;
 pub mod end_menu_screen;
+pub mod engine_log;
 pub mod equip;
 pub mod experience;
 pub mod experience_live;
@@ -248,7 +249,11 @@ impl Plugin for GamePlugin {
                 item_ability::ItemAbilityPlugin,
                 socket_drag::SocketDragPlugin,
             ),
-            (hw_config::HardwareConfigPlugin, os_pointer::OsPointerPlugin),
+            (
+                hw_config::HardwareConfigPlugin,
+                os_pointer::OsPointerPlugin,
+                engine_log::EngineLogPlugin,
+            ),
             destination::DestinationPlugin,
             (
                 menu_screen::MenuScreenPlugin,
