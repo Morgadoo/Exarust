@@ -29,17 +29,20 @@
 //! its record in its store ([`LevelSaveScene::flush_characters`]), then the
 //! section's placements follow the live scene ([`characters_after`]) and its
 //! character database is the live local store
-//! ([`crate::world_characters::LocalCharacters`]). [Exarust's: the props,
-//! the doors' and levers' positions and the settings chunk's live words are
-//! the loaded section's; a character's pose, motion and AI home are the
-//! stored ones.]
+//! ([`crate::world_characters::LocalCharacters`]); each placement carries
+//! its live body ([`live_state`]: a new corpse's pose tree, a driven
+//! character's pose tree and motion state, an awake guardian's AI home).
+//! [Exarust's: the props, the doors' and levers' positions and the settings
+//! chunk's live words are the loaded section's; the living spawn does not
+//! restore a saved pose tree.]
 //!
 //! The original's character section (`0xCAC00001`): each character's health
 //! is stored into its record, the local character database is flushed and
 //! written (`0xCECDDB00`) when it holds a record, then each character's
 //! placement (`0xCAC0CA00`: the record's id, the body's x, floor and z, the
-//! heading and the condition word, then the pose for a dead body, and the
-//! AI home and motion in save mode).
+//! heading and the condition word, then the pose tree for a dead body, and
+//! in save mode the AI home of an awake guardian and, for an AI in its
+//! attached mode, the pose tree and the motion state).
 //!
 //! Evidence: the save unit's save routine (the section order, the
 //! exporter's call and the locale name) and the exporter's scene walk and
