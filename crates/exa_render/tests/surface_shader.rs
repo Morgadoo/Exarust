@@ -192,27 +192,6 @@ fn the_surface_shader_composes_and_validates() {
 }
 
 #[test]
-fn the_smoke_shader_composes_and_validates() {
-    let (mut cache, smoke) = cache_with_every_shader_and("embedded://exa_render/shadesmk.wesl");
-    let variants: [&[&'static str]; 2] = [
-        &["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_COLORS"],
-        &["VERTEX_UVS", "VERTEX_UVS_A"],
-    ];
-    for (pipeline, extra) in variants.iter().enumerate() {
-        let module = cache
-            .get(pipeline, smoke, &defs(extra))
-            .unwrap_or_else(|error| panic!("shadesmk.wesl with {extra:?}: {error}"));
-        assert!(
-            module
-                .entry_points
-                .iter()
-                .any(|entry| entry.stage == naga::ShaderStage::Fragment),
-            "shadesmk.wesl has a fragment entry point"
-        );
-    }
-}
-
-#[test]
 fn the_terrain_bake_shader_composes_and_validates() {
     let (mut cache, bake) = cache_with_every_shader_and("embedded://exa_render/terrain_bake.wesl");
     let module = cache

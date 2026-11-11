@@ -18,6 +18,7 @@ impl Plugin for MaterialsPlugin {
     fn build(&self, app: &mut App) {
         bevy::shader::load_shader_library!(app, "shading.wesl");
         bevy::shader::load_shader_library!(app, "hair.wesl");
+        bevy::shader::load_shader_library!(app, "shadesmk.wesl");
         bevy::shader::load_shader_library!(app, "sun_caster.wesl");
         embedded_asset!(app, "exa.wesl");
         embedded_asset!(app, "exa_prepass.wesl");
@@ -254,6 +255,14 @@ pub mod flags2 {
     /// 0.01, 0.99)²), the fast light loop (`lightsfst`: no Fresnel share in
     /// the diffuse, Fresnel 0.04) and three quarters of the specular sum.
     pub const GRASS: u32 = 128;
+    /// The original's smoke and mist program (`shading_v` + `shadesmk_f`),
+    /// which every type-2 record draws with
+    /// ([`crate::material_state::draws_smoke`]): black, its alpha
+    /// ([`crate::smoke::smoke_alpha`]) from the facing ratio, the opacity map
+    /// read twice at the scrolled offset ([`crate::smoke::smoke_uv_offset`])
+    /// and the vertex alpha; nothing under the level's distance fog, where
+    /// the shipped program does not build ([`crate::smoke::program_builds`]).
+    pub const SMOKE: u32 = 256;
 }
 
 /// The original's dirt modes 1 and 2, which only its PBR program

@@ -209,7 +209,8 @@ program:
 | 7 | `shadetrl_f` (translucent) | `shading_v` |
 
 The selector is: 7 → translucent; bit 2 → subsurface; `& 7 == 3` → hair;
-bit 0 → PBR; else legacy. Grass (`shadegrs_f`), smoke (`shadesmk_f`), the
+bit 0 → PBR; else legacy. Grass (`shadegrs_f`), smoke (`shadesmk_f`, every
+type-2 record: the smoke unit takes over that type's draw), the
 terrain (`shadetrn_f/v`) and the effect programs are chosen by their own
 draw paths, not this word.
 
@@ -228,7 +229,8 @@ The factory starts from the record's loaded feature bits: its flags
 (`0x48`), plus `0x800` for a positive fall-off amount, the slot bit of a
 loaded diffuse, opacity, height, gloss, `0x4000000` or dirt layer, and
 `MatEmi` for an opacity-only record without lit bits; masked by the type's
-plug-in (`0x01FE001F` type 0, `0x09FE031F` 1, `0x00400018` 2, `0x09FE001F`
+plug-in (`0x01FE001F` type 0, `0x09FE031F` 1, `0x00400008` 2 as the smoke
+unit rewrites it, `0x09FE001F`
 3 and 4). With no lit, specular or emissive bit left, a record with an
 opacity above zero draws as emission only (material word `0x8`), otherwise
 nothing. The shader word starts at the plug-in's class (0, 1, 2, 3, 6).

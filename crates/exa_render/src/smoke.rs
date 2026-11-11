@@ -1,59 +1,58 @@
-//! Smoke and mist: the original's `shadesmk_f` draw.
+//! Smoke and mist: the original's `shadesmk_f` draw, the material type it
+//! takes over, and the rules of its program.
 //!
-//! The draw binds the program built from `shading_v` + `shadesmk_f` for
-//! the material's state (compiled once per state key, the state's bits
-//! under [`STATE_KEY_MASK`]), sets its `UVOfst` uniform and draws the mesh:
-//! `UVOfst = (0.5, t + 0.5, t)` with `t = parent node scale + (scene ms
-//! mod 80 000) / 80 000`, the sum in double precision. The program reads
-//! the opacity texture once shifted by `t` down and again shifted by
-//! `(0.5, t + 0.5)` more, multiplies the two alphas, and adds the surface's
-//! facing ratio and the vertex alpha (`shadesmk.wesl`). With the
-//! supersampled quad passes on, the original repeats the draw in each pass
-//! once per sub-view, with that sub-view's viewport and matrix
-//! ([`pass_draws`]); Exarust's supersampled camera draws the scene once.
-//! The program cache ([`ProgramCache`]) keeps one program per key; a
-//! failed build is kept as −1 and the mesh is then skipped.
+//! The smoke unit's start-up hook rewrites the third slot of the material
+//! type table in place: type 2 gets the smoke draw, a key routine and the
+//! mask `0x400008` ([`crate::material_state::BUILTIN_TYPES`]). The hook
+//! runs with the program's unit initialisation, before the factory's reset
+//! copies the table, so in 0.9.5 every type-2 record draws here; the only
+//! one shipped is the wraith's `wraithskin` (its skin and robe).
 //!
-//! Nothing spawns a smoke mesh yet: the material plug-in that routes a
-//! record here is registered at run time and not ported.
+//! The key routine keeps the render state's material and shader words
+//! under [`STATE_KEY_MASK`] and adds the shading-quality bits. The draw
+//! sets the object word from the state's (plus `VrtCol` while the colour
+//! attribute is on and `VrtDlt` for a deformed mesh), builds
+//! `shading_v` + `shadesmk_f` once per object and environment word pair
+//! ([`ProgramCache`]; a failed build is kept as −1 and the mesh is then
+//! skipped), sets `UVOfst` ([`smoke_uv_offset`]) and draws the mesh; with
+//! the supersampled quad passes on it repeats the draw in each pass once
+//! per sub-view ([`pass_draws`]). The program's alpha is
+//! [`smoke_alpha`] over a black colour.
+//!
+//! Exarust draws a type-2 record with the surface material's smoke branch
+//! ([`crate::material::flags2::SMOKE`], `exa.wesl` and `shadesmk.wesl`).
+//! The shipped program uses identifiers only some words declare
+//! ([`program_builds`]); under the level's distance fog it never builds, so
+//! the smoke draws nothing there.
 //!
 //! Rules: `docs/RENDERING.md` (Smoke and mist).
 
-use bevy::asset::{AssetPath, embedded_asset, embedded_path};
-use bevy::mesh::MeshVertexBufferLayoutRef;
-use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
-use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
-};
-use bevy::shader::ShaderRef;
 
-pub struct SmokePlugin;
+use crate::shader_program::{environment, object, shader};
 
-impl Plugin for SmokePlugin {
-    fn build(&self, app: &mut App) {
-        embedded_asset!(app, "shadesmk.wesl");
-        app.add_plugins(MaterialPlugin::<SmokeMaterial>::default())
-            .add_systems(Update, scroll_smoke);
-    }
-}
-
-/// The bits of a material state that select a smoke program.
+/// The bits of the render state's material word (low half) and shader word
+/// (high half) the smoke's key routine keeps: `MatEmi`, `TexEmi` and
+/// `TexOpc`; the class nibble, `AlphaTst`, the blend-mode bit, `UseNrm` and
+/// `TngtNrm`.
 pub const STATE_KEY_MASK: u64 = 0x0003_C00F_0048_0008;
 /// The texture scroll's cycle, milliseconds.
 pub const SCROLL_PERIOD_MS: u64 = 80_000;
+/// The owner node's scale the scroll starts from: the node's default (the
+/// wraith's body is not rescaled).
+pub const NODE_SCALE: f32 = 1.0;
 
-/// A cached smoke program: the state key it was built for, and the program
-/// id (0 when the build is still running, `-1` when it failed).
+/// A cached smoke program: the object and environment words it was built
+/// for, and the program id (0 while the build runs, `-1` when it failed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CachedProgram {
     pub state: u64,
     pub program: i32,
 }
 
-/// The smoke program cache: one entry per state key, created on first use.
-/// The original's entry also holds the program's uniform locations, which
-/// Exarust's material binding supplies instead.
+/// The smoke program cache: one entry per object and environment word pair,
+/// created on first use. The original's entry also holds the program's
+/// uniform locations, which Exarust's material binding supplies instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProgramCache {
     entries: Vec<CachedProgram>,
@@ -100,15 +99,38 @@ impl ProgramCache {
 /// How many times one smoke mesh is drawn in each supersampling pass: once
 /// per sub-view the pass draws, each with that sub-view's viewport and
 /// matrix (the level's first-pass count, at most four; one without
-/// supersampling). Exarust's supersampled camera draws the scene once, so
-/// nothing repeats the draw yet.
+/// supersampling). Exarust's supersampled camera draws the scene once.
 pub fn pass_draws(level: crate::view::SupersampleLevel) -> u32 {
     level.subviews().min(crate::view::SUBVIEWS_PER_PASS) as u32
 }
 
-/// The smoke program's state key from a material state's 64-bit word.
+/// The key routine's words from a render state's material word (low half)
+/// and shader word (high half), before the shading-quality bits.
 pub fn smoke_state_key(state: u64) -> u64 {
     state & STATE_KEY_MASK
+}
+
+/// The smoke program's words: the material and shader words under the key
+/// mask, the shader word with the builder's shading-quality bits added as
+/// they are (`ShadeQual` from quality 4 up, `FastLgt` up to quality 4).
+pub fn program_words(material: u32, shader_word: u32, quality_bits: u32) -> (u32, u32) {
+    let key = smoke_state_key(u64::from(material) | (u64::from(shader_word) << 32));
+    (key as u32, (key >> 32) as u32 | quality_bits)
+}
+
+/// Whether the shipped `shadesmk_f` builds for these words. Its normal
+/// include reads `vrNrm`, which the generated interface declares only with
+/// `UseNrm`; it reads `vrCol.a`, declared only with `VrtCol`; and its fog
+/// include's distance-fog branch (fog mode 1) reads `amb` and `b`, which
+/// the program never declares. The other fog modes and the fog-free one
+/// build (`exa-tool shader --smoke` expands the shipped text and lists
+/// what it leaves undeclared). Exarust applies the fog rule; the wraith's
+/// skin is taken to carry a colour stream, as every character's body does
+/// once built (their stored meshes have none, yet wounds paint its alpha).
+pub fn program_builds(shader_word: u32, object_word: u32, environment_word: u32) -> bool {
+    shader_word & shader::USE_NORMAL != 0
+        && object_word & object::VERTEX_COLOR != 0
+        && environment_word & environment::FOG_MODE_MASK != 1
 }
 
 /// `UVOfst` at scene time `time_ms` under a parent node of scale `scale`.
@@ -118,71 +140,14 @@ pub fn smoke_uv_offset(scale: f32, time_ms: u32) -> Vec3 {
     Vec3::new(0.5, 0.5 + t, t)
 }
 
-/// A smoke or mist mesh: its material and its parent node's scale.
-#[derive(Component, Debug, Clone, PartialEq)]
-pub struct SmokeMist {
-    pub material: Handle<SmokeMaterial>,
-    pub scale: f32,
-}
-
-/// The program's uniforms.
-#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
-pub struct SmokeParams {
-    /// `UVOfst`.
-    pub uv_offset: Vec3,
-    /// 1 with an opacity texture (`Mat.TexOpc`).
-    pub has_opacity: u32,
-}
-
-/// A smoke or mist surface: alpha-blended, both faces drawn (the program
-/// takes the facing ratio's magnitude).
-#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
-pub struct SmokeMaterial {
-    #[uniform(0)]
-    pub params: SmokeParams,
-    #[texture(1)]
-    #[sampler(2)]
-    pub opacity: Handle<Image>,
-}
-
-fn smoke_shader() -> ShaderRef {
-    ShaderRef::Path(
-        AssetPath::from_path_buf(embedded_path!("shadesmk.wesl")).with_source("embedded"),
-    )
-}
-
-impl Material for SmokeMaterial {
-    fn fragment_shader() -> ShaderRef {
-        smoke_shader()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn specialize(
-        _pipeline: &MaterialPipeline,
-        descriptor: &mut RenderPipelineDescriptor,
-        _layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        descriptor.primitive.cull_mode = None;
-        Ok(())
-    }
-}
-
-/// Sets each smoke mesh's `UVOfst` for the frame.
-fn scroll_smoke(
-    time: Res<Time>,
-    mist: Query<&SmokeMist>,
-    mut materials: ResMut<Assets<SmokeMaterial>>,
-) {
-    let now = time.elapsed().as_millis() as u32;
-    for smoke in &mist {
-        if let Some(mut material) = materials.get_mut(&smoke.material) {
-            material.params.uv_offset = smoke_uv_offset(smoke.scale, now);
-        }
-    }
+/// The program's alpha (mirrors `shadesmk.wesl`): `|N·V|·1.5 − 1` plus the
+/// opacity term (the product of the two scrolled opacity reads, or 0.25
+/// without an opacity texture), then `(a − 1 + vertex alpha)·0.8`. The
+/// colour is black, so over the record's premultiplied blend the surface
+/// darkens what is behind it by that alpha.
+pub fn smoke_alpha(ndv: f32, opacity: f32, colour_alpha: f32) -> f32 {
+    let a = ndv * 1.5 - 1.0 + opacity;
+    (a - 1.0 + colour_alpha) * 0.8
 }
 
 #[cfg(test)]
@@ -212,6 +177,49 @@ mod tests {
             smoke_state_key(0x0002_0000_0040_0000),
             0x0002_0000_0040_0000
         );
+    }
+
+    /// The wraith's skin: material word `0x400808` (emission, its opacity
+    /// map and the fall-off), shader word `0x10002` (class 2 with `UseNrm`
+    /// from the fall-off). The key drops the fall-off; the quality lift
+    /// joins the shader word.
+    #[test]
+    fn the_wraiths_program_words() {
+        assert_eq!(
+            program_words(0x0040_0808, 0x0001_0002, 0x20_0000),
+            (0x0040_0008, 0x0021_0002)
+        );
+        // Below shading quality 5 the builder's word carries `FastLgt`.
+        assert_eq!(program_words(0x8, 0x2, 0x200).1, 0x202);
+    }
+
+    #[test]
+    fn the_program_builds_only_with_its_inputs_declared_and_no_distance_fog() {
+        let shd = 0x0021_0002;
+        let obj = object::VERTEX_COLOR;
+        assert!(program_builds(shd, obj, 0x10));
+        // Fade to black (fog mode 2) declares what it reads.
+        assert!(program_builds(shd, obj, 0x12));
+        // Distance fog reads `amb` and `b`.
+        assert!(!program_builds(shd, obj, 0x11));
+        // `vrNrm` needs `UseNrm`; `vrCol` needs a colour stream.
+        assert!(!program_builds(0x0020_0002, obj, 0x10));
+        assert!(!program_builds(shd, 0, 0x10));
+    }
+
+    #[test]
+    fn the_alpha_follows_the_facing_ratio_and_the_opacity() {
+        // Facing the eye with a full opacity term and a white vertex: past
+        // one, which the target clamps.
+        assert!((smoke_alpha(1.0, 1.0, 1.0) - 1.2).abs() < 1e-6);
+        // Without an opacity texture.
+        assert!((smoke_alpha(1.0, 0.25, 1.0) - 0.6).abs() < 1e-6);
+        // Edge on, a full opacity term leaves nothing; the quarter falls
+        // below zero.
+        assert!(smoke_alpha(0.0, 1.0, 1.0).abs() < 1e-6);
+        assert!((smoke_alpha(0.0, 0.25, 1.0) + 0.6).abs() < 1e-6);
+        // The vertex alpha lowers it one for one, × 0.8.
+        assert!((smoke_alpha(1.0, 1.0, 0.5) - 0.8).abs() < 1e-6);
     }
 
     #[test]
@@ -255,5 +263,18 @@ mod tests {
         assert_eq!(pass_draws(SupersampleLevel(3)), 4);
         // Eight sub-views take two passes of four draws each.
         assert_eq!(pass_draws(SupersampleLevel(4)), 4);
+    }
+
+    /// The shader library parses and validates as plain WGSL.
+    #[test]
+    fn the_smoke_library_validates() {
+        let source = include_str!("shadesmk.wesl");
+        let module = naga::front::wgsl::parse_str(source).expect("shadesmk.wesl parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("shadesmk.wesl validates");
     }
 }

@@ -1273,6 +1273,11 @@ impl ModelLoader<'_> {
             ..default()
         };
         mat.params.texture_bias = self.cache.textures.settings().lod_bias();
+        // A type-2 record draws with the smoke and mist program, which the
+        // smoke unit's start-up hook puts in the type table's third slot.
+        if exa_render::material_state::draws_smoke(m) {
+            mat.params.flags2 |= exa_render::material::flags2::SMOKE;
+        }
         // The factory's local reflection (`Shd.LocalRef`: a reflection
         // layer and extra flag `0x800` above shading quality 4); the low
         // field is bound by `exa_render::local_reflection`.

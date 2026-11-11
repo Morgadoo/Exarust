@@ -94,7 +94,6 @@ impl Plugin for RenderPlugin {
             cube_shadows::CubeShadowsPlugin,
             shell::ShellPlugin,
             (glow::GlowPlugin, mind_sight::MindSightPlugin),
-            smoke::SmokePlugin,
             (
                 terrain_composite::TerrainCompositePlugin,
                 sector_walk::SectorWalkPlugin,

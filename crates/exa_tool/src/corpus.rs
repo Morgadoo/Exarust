@@ -1755,6 +1755,88 @@ pub fn colours(game: &GameData) -> Result<()> {
     Ok(())
 }
 
+/// `corpus materials`: every material record a mesh group draws with (the
+/// library's, else the file's own), tallied per pack by material type (the
+/// low byte of the kind word). The type-2 users are listed one per line
+/// with their record's flags, opacity and layers: the original routes type
+/// 2 to its smoke and mist draw (`exa_render::smoke`).
+pub fn materials(game: &GameData) -> Result<()> {
+    use exa_formats::material::Material;
+    let archives: Vec<exa_rpk::Archive> = game
+        .project()
+        .material_libraries
+        .iter()
+        .map(String::as_str)
+        .chain(["humanbase.rml"])
+        .filter_map(|lib| exa_rpk::Archive::parse(game.resource_file(lib)?).ok())
+        .collect();
+    let library = |name: &str| {
+        archives
+            .iter()
+            .find_map(|archive| Material::parse(archive.get(name)?).ok())
+    };
+    let mut rows: BTreeMap<&'static str, BTreeMap<u32, usize>> = BTreeMap::new();
+    for (kind, pack) in game.packs() {
+        for e in pack.entries() {
+            let b = pack.bytes(e);
+            if !matches!(
+                FileKind::detect(b),
+                FileKind::ChunkTree | FileKind::ChunkTreeAlt
+            ) {
+                continue;
+            }
+            let Ok(scene) = Scene::parse(b) else { continue };
+            for node in &scene.nodes {
+                let NodeBody::Mesh(m) = &node.body else {
+                    continue;
+                };
+                for g in &m.groups {
+                    let Some(mat) =
+                        library(&g.material).or_else(|| scene.material(&g.material).cloned())
+                    else {
+                        continue;
+                    };
+                    let ty = mat.kind & 0xFF;
+                    *rows
+                        .entry(kind.file_stem())
+                        .or_default()
+                        .entry(ty)
+                        .or_default() += 1;
+                    if ty == 2 {
+                        let layers: Vec<String> =
+                            mat.layers.iter().map(|l| format!("{:?}", l.slot)).collect();
+                        let words = exa_render::shader_program::state_words(&mat, 5);
+                        println!(
+                            "{}/{}:{} material {} flags {:#x} class {:#x} extra {:#x} opacity {} fall-off {} colours {} layers [{}] words {:x?}",
+                            kind.file_stem(),
+                            e.name,
+                            node.name,
+                            g.material,
+                            mat.flags,
+                            mat.class,
+                            mat.extra,
+                            mat.opacity,
+                            mat.falloff_amount,
+                            m.colors.is_some(),
+                            layers.join(", "),
+                            words
+                        );
+                    }
+                }
+            }
+        }
+    }
+    println!();
+    for (pack, types) in &rows {
+        let line: Vec<String> = types
+            .iter()
+            .map(|(ty, n)| format!("type {ty}: {n}"))
+            .collect();
+        println!("{pack:<12} {}", line.join(", "));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1736,21 +1736,57 @@ file's wrap flags); the rules are pinned by tests.
 
 ## Smoke and mist
 
-`exa_render::smoke` is the original's `shadesmk_f` draw. The original
-compiles `shading_v` + `shadesmk_f` once per state key (the material
-state's 64-bit word under `0x0003_C00F_0048_0008`), sets `UVOfst =
-(0.5, t + 0.5, t)` with `t` = the parent node's scale plus the scene time's
-milliseconds mod 80 000 over 80 000 (summed in double precision), and draws
-the mesh; with the supersampled quad passes on it repeats the draw in each
-pass once per sub-view the pass draws (the level's first-pass count, at most
-four), each with that sub-view's viewport and matrix (`smoke::pass_draws`).
-`smoke::ProgramCache` holds one program per key; a failed build is kept as
-−1 and the mesh is skipped. The program (`shadesmk.wesl`, line
-for line): `a = |N·V|·1.5 − 1`;
-with an opacity texture `a += A(uv + (0, z))·A(uv + (0, z) + (x, y))` for
-`UVOfst = (x, y, z)`, else `a += 0.25`; then `a = (a − 1 + vertex
-alpha)·0.8` over a black colour. The original's fog and dither snippets
-follow; Exarust's surfaces have neither. Nothing spawns a smoke mesh yet.
+`exa_render::smoke` is the original's `shadesmk_f` draw. Its unit's
+start-up hook rewrites the material type table's third slot in place: type
+2 gets the smoke draw, a key routine and the mask `0x400008` (stored as
+`0x400018`; the two-sided bit is the difference). The hook runs with the
+program's unit initialisation, before the factory's reset copies the table,
+so every type-2 record draws as smoke (`material_state::draws_smoke`). The
+only ones shipped are the wraith's `wraithskin` (its skin and robe in
+`wraithhabase.rfc`; `exa-tool corpus materials`): emission with its
+opacity map and a fall-off of −1, so its material word is `0x400808` and
+its shader word `0x10002` (class 2, `UseNrm` from the fall-off).
+
+The key routine keeps the render state's words under
+`0x0003_C00F_0048_0008` (material `MatEmi`, `TexEmi`, `TexOpc`; shader
+class, `AlphaTst`, blend bit, `UseNrm`, `TngtNrm`) and adds the builder's
+shading-quality bits as they are (`ShadeQual`, `FastLgt` up to quality 4).
+The draw adds `VrtCol` to the object word while the colour attribute is on
+(`VrtDlt` for a deformed mesh), builds `shading_v` + `shadesmk_f` once per
+object and environment word pair (`smoke::ProgramCache`; a failed build is
+kept as −1 and the mesh skipped), sets `UVOfst = (0.5, t + 0.5, t)` with
+`t` the owner node's scale (1 by default) plus the scene time's
+milliseconds mod 80 000 over 80 000 (summed in double precision), and
+draws; with the supersampled quad passes on it repeats the draw in each
+pass once per sub-view (`smoke::pass_draws`).
+
+The program (`shadesmk.wesl` and the surface shader's `smoke` branch,
+`flags2::SMOKE`): `a = |N·V|·1.5 − 1`; with an opacity texture
+`a += A(uv + (0, z))·A(uv + (0, z) + (x, y))` for `UVOfst = (x, y, z)`,
+else `a += 0.25`; then `a = (a − 1 + vertex alpha)·0.8` over a black
+colour, which under the record's premultiplied blend (class `0x103`)
+darkens what is behind by `a`. The surface shader takes the scroll from
+the frame time (`fract(time / 80 s)`) and the vertex alpha as 1 without a
+colour stream.
+
+The shipped text reads identifiers only some words declare
+(`smoke::program_builds`, `exa-tool shader common.rml wraithskin --scene
+Resource:wraithhabase.rfc --smoke`): `vrNrm` needs `UseNrm`, `vrCol` needs
+`VrtCol`, and its fog include's distance-fog branch (fog mode 1) reads
+`amb` and `b`, which it never declares. The GL compile then fails
+silently and the draw is skipped. So under the level's distance fog (the
+outdoor levels) the wraith draws nothing; Exarust's smoke branch discards
+there. Indoors (fog mode 0) and under the fade to black it builds; the
+wraith's body is taken to carry a colour stream, as every character's does
+once built (the stored meshes have none, yet wounds paint its alpha). The
+dither include is never on (`UseDither` is not a flag).
+
+**Evidence**: reverse engineering of `Exanima.exe` 0.9.5 (the smoke unit's
+start-up hook and its place in the unit-initialisation table, the type
+table and its reset, the default factory's render-state build, the key
+routine, the draw, the program compile with its silent failure, the
+builder's quality bits) and the shipped `shadesmk_f`, `normal` and `fog`
+text of `shading.flb`; the rules are pinned by tests.
 
 ## Pixel-space 2-D batcher
 

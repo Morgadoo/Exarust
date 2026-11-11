@@ -32,6 +32,21 @@ pub struct MaterialType {
     pub base: u32,
 }
 
+/// The material type the smoke and mist draw takes over (the low byte of a
+/// record's kind word).
+pub const SMOKE_TYPE: u32 = 2;
+
+/// The mask the stored table gives type 2 before the smoke unit's start-up
+/// rewrites the slot (the two-sided bit `0x10` is the difference).
+pub const STORED_SMOKE_SLOT_MASK: u32 = 0x0040_0018;
+
+/// Whether a record draws with the smoke and mist program: every record of
+/// type 2 ([`SMOKE_TYPE`]). In 0.9.5 only the wraith's skin and robe
+/// (`wraithskin` in `wraithhabase.rfc`) are of that type.
+pub fn draws_smoke(material: &Material) -> bool {
+    material.kind & 0xFF == SMOKE_TYPE
+}
+
 impl MaterialType {
     pub const fn new(mask: u32, base: u32) -> Self {
         Self { mask, base }
@@ -39,10 +54,17 @@ impl MaterialType {
 }
 
 /// The built-in types, in the order the original's table resets to.
+///
+/// Type 2 is the smoke and mist type ([`SMOKE_TYPE`]): the table is stored
+/// with mask `0x400018` there ([`STORED_SMOKE_SLOT_MASK`]), but the smoke
+/// unit's start-up hook, which runs with the program's unit
+/// initialisation before anything resets the table, rewrites that slot in
+/// place with the smoke draw ([`crate::smoke`]) and mask `0x400008`, so
+/// every reset copies the rewritten slot.
 pub const BUILTIN_TYPES: [MaterialType; 5] = [
     MaterialType::new(0x01FE_001F, 0),
     MaterialType::new(0x09FE_031F, 1),
-    MaterialType::new(0x0040_0018, 2),
+    MaterialType::new(0x0040_0008, 2),
     MaterialType::new(0x09FE_001F, 3),
     MaterialType::new(0x09FE_001F, 6),
 ];
@@ -248,13 +270,24 @@ mod tests {
         assert_eq!(types.len(), 5);
         assert_eq!(types.get(0), Some(MaterialType::new(0x01FE_001F, 0)));
         assert_eq!(types.get(1), Some(MaterialType::new(0x09FE_031F, 1)));
-        assert_eq!(types.get(2), Some(MaterialType::new(0x0040_0018, 2)));
+        // Slot 2 as the smoke unit's start-up hook rewrites it.
+        assert_eq!(types.get(2), Some(MaterialType::new(0x0040_0008, 2)));
+        assert_eq!(STORED_SMOKE_SLOT_MASK & !types.get(2).unwrap().mask, 0x10);
         assert_eq!(types.get(3), Some(MaterialType::new(0x09FE_001F, 3)));
         assert_eq!(types.get(4), Some(MaterialType::new(0x09FE_001F, 6)));
         // The shader-word tables agree with the registry.
         for (i, ty) in BUILTIN_TYPES.iter().enumerate() {
             assert_eq!(crate::shader_program::PLUGIN_MASKS[i], ty.mask);
             assert_eq!(crate::shader_program::PLUGIN_CLASSES[i], ty.base);
+        }
+    }
+
+    #[test]
+    fn only_type_two_draws_smoke() {
+        assert!(draws_smoke(&record(2)));
+        assert!(draws_smoke(&record(0x8000_0102)));
+        for kind in [0, 1, 3, 4, 0x200] {
+            assert!(!draws_smoke(&record(kind)), "kind {kind:#x}");
         }
     }
 
