@@ -307,6 +307,8 @@ Round 159 roomlights: a dungeon mesh is lit only by the lights its room lists, a
 
 Round 166 terrain3: terrain blocks cull by the original descriptors and the sun casts only drawn blocks.
 
+Round 169 stream: level characters are built on the content stream thread nearest the player first, and mip chains filter the pixel word own channels.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
