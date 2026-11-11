@@ -1118,6 +1118,69 @@ fn sync_held_striking(
     }
 }
 
+/// Opens and shuts each fist's strike window from its wielder's swing
+/// window, as the original's swing routine writes the strike-chain bit
+/// (0x10000) on its strikers: an unarmed character's strikers are its hand
+/// parts themselves, which the unarmed set-up gave the weapon bit
+/// ([`exa_physics::body::Ragdoll::set_fist`]). Only that hand part takes
+/// the bit (the routine ORs it into the striker's own class word, not a
+/// chain), and only the change is written. While it strikes, the hand's
+/// contacts with hittable bodies take the hit event
+/// ([`crate::block::strike_held`]) instead of the impact path. `open`
+/// remembers each open fist's wielder and hand; a fist that leaves the
+/// world (the hands are dressed again) shuts its hand's window.
+pub fn sync_fist_striking(
+    fists: Query<(Entity, &Blade, &ChildOf), Without<Ragdoll>>,
+    swings: Query<(&SwingState, Option<&Attacking>)>,
+    mut bodies: Query<&mut Ragdoll>,
+    mut open: Local<bevy::ecs::entity::EntityHashMap<(Entity, Entity)>>,
+) {
+    fn write(bodies: &mut Query<&mut Ragdoll>, wielder: Entity, hand: Entity, on: bool) {
+        let Ok(mut body) = bodies.get_mut(wielder) else {
+            return;
+        };
+        if let Some(part) = body.parts.iter_mut().find(|q| q.entity == hand) {
+            part.state = if on {
+                part.state.with(PartState::STRIKE_CHAIN)
+            } else {
+                part.state.without(PartState::STRIKE_CHAIN)
+            };
+        }
+    }
+    for (entity, blade, parent) in &fists {
+        if blade.record.armed() {
+            continue;
+        }
+        let now_open = swings.get(blade.wielder).is_ok_and(|(swing, attack)| {
+            attack.is_some_and(|a| crate::attack::is_striker(false, a.weapon_class))
+                && swing.open[blade.slot.index()]
+        });
+        match (now_open, open.get(&entity).copied()) {
+            (true, None) => {
+                debug!(
+                    "{:?}'s fist {:?} starts striking",
+                    blade.wielder, blade.slot
+                );
+                write(&mut bodies, blade.wielder, parent.parent(), true);
+                open.insert(entity, (blade.wielder, parent.parent()));
+            }
+            (false, Some((wielder, hand))) => {
+                debug!("{wielder:?}'s fist {:?} stops striking", blade.slot);
+                write(&mut bodies, wielder, hand, false);
+                open.remove(&entity);
+            }
+            _ => {}
+        }
+    }
+    open.retain(|&entity, &mut (wielder, hand)| {
+        if fists.contains(entity) {
+            return true;
+        }
+        write(&mut bodies, wielder, hand, false);
+        false
+    });
+}
+
 /// Wires the limb impacts after each tick of the body solver.
 pub(crate) fn plugin(app: &mut App) {
     app.add_message::<LimbImpact>()
@@ -1129,7 +1192,8 @@ pub(crate) fn plugin(app: &mut App) {
         .add_message::<ShellHit>()
         .add_systems(
             FixedUpdate,
-            sync_held_striking
+            (sync_held_striking, sync_fist_striking)
+                .chain()
                 .after(exa_physics::body::TickBehaviour)
                 .before(BodySystems),
         )

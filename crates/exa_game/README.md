@@ -907,7 +907,13 @@ gamepad's aim runs through the eased world cursor each behaviour tick
 stores its opponent on the player body each tick for the aim point's bone
 lock, which `player::cursor_ground` reads together with the raised surface
 (the bone lock reads the opponent's head, belly and pelvis part origins, a
-stand-in for the original's own three points). Each behaviour tick, before the attack request, `player_practice`
+stand-in for the original's own three points). Each character tick's
+attack stage keeps the body's engagement target as its combat target
+(`exa_combat::CombatTarget`, `stages::note_strike_chests`): the player's
+auto-target, else the brain's target pass pick, else a brainless
+duellist's foe while it is in combat with it (`exa_ai::Duellist::
+combat_target`); the attack starters' aim and the parry check read it,
+and the side swing's homing reads its chest. Each behaviour tick, before the attack request, `player_practice`
 rebuilds the contact list, runs the late-swing check (an attack past 0.6
 of its clock, once a swing: the swing's state word gains `0x100000` with an
 engaged enemy in front, else `0x200000`) and one practice tick

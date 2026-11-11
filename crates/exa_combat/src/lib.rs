@@ -234,6 +234,7 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy_in_resource::<crate::remedy::WorldClock>()
         .bridge_copy::<crate::stab::StabAim>()
         .bridge_copy::<crate::strike_body::StrikeChest>()
+        .bridge_copy::<crate::CombatTarget>()
         .bridge_copy::<crate::strike_body::TangleCount>()
         .bridge_copy::<crate::swing_voice::SwingVoice>();
 }
@@ -336,6 +337,19 @@ impl Blade {
         Self { slot, ..self }
     }
 }
+
+/// The character a fighter is engaged with: the original's combat target
+/// on the character, which its attack starters (the aimed pick against the
+/// target's attack, [`parry::aim_foe_parries`]) and its parry check
+/// ([`parry::run_parries`]) read. The player's is its behaviour's
+/// auto-target (the visible character within 5 m with the best (500 − d)
+/// times the cosine to the cursor plus 0.5, picked every behaviour tick in
+/// combat mode); an AI's is the one its target pass or combat entry set,
+/// none out of combat. Written each tick by the character's behaviour;
+/// a fighter without the component (one with no behaviour) takes the
+/// nearest fighter in combat instead [Exarust's].
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CombatTarget(pub Option<Entity>);
 
 /// Positions a blade sweep is tested at between two frames.
 const SWEEP_STEPS: usize = 6;
@@ -693,7 +707,13 @@ pub(crate) fn track_blades(
 #[allow(clippy::type_complexity)]
 fn detect_hits(
     motions: Option<Res<Motions>>,
-    blades: Query<(Entity, &Blade, Option<&GlobalTransform>, Option<&Ragdoll>)>,
+    blades: Query<(
+        Entity,
+        &Blade,
+        Option<&GlobalTransform>,
+        Option<&Ragdoll>,
+        Option<&ChildOf>,
+    )>,
     mut attackers: Query<(
         &Animator,
         &mut Attacking,
@@ -710,11 +730,19 @@ fn detect_hits(
     mut hits: MessageWriter<Hit>,
 ) {
     let Some(motions) = motions else { return };
-    for (striker, blade, scene, item_body) in &blades {
+    for (striker, blade, scene, item_body, parent) in &blades {
         // A held weapon that is its own body wounds where that body touches
         // a limb, in the pair stage ([`block::strike_held`]), as the
-        // original's striking part does.
-        if item_body.is_some_and(|b| b.held_by.is_some()) {
+        // original's striking part does; so does a fist carried by a part
+        // of its wielder's body (the hand itself strikes).
+        if item_body.is_some_and(|b| b.held_by.is_some())
+            || (!blade.record.armed()
+                && parent.is_some_and(|p| {
+                    bodies
+                        .get(blade.wielder)
+                        .is_ok_and(|b| b.parts.iter().any(|q| q.entity == p.parent()))
+                }))
+        {
             continue;
         }
         let Ok((anim, mut attack, swing, wielder, powers)) = attackers.get_mut(blade.wielder)

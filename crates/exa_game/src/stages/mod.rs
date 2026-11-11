@@ -112,6 +112,8 @@ fn bridge_character_tick_types(app: &mut App) {
         .bridge_copy_drawn::<CharacterBody>()
         .bridge_copy::<exa_ai::brain::Npc>()
         .bridge_copy::<exa_ai::combatant::Combatant>()
+        .bridge_copy::<exa_ai::Duellist>()
+        .bridge_copy::<exa_combat::CombatTarget>()
         .bridge_copy::<exa_combat::Attacking>()
         .bridge_copy::<exa_combat::attack::Attacker>()
         .bridge_copy::<exa_combat::Condition>()
@@ -129,28 +131,47 @@ fn bridge_character_tick_types(app: &mut App) {
         .bridge_message::<exa_physics::body::FootSounded>();
 }
 
-/// The ticked body's engagement target, as the swing's homing reads it:
-/// the player's auto-target, otherwise the brain's combat target. The
-/// chest height is the target body's, in centimetres. No target removes
-/// the mark, and a side swing then does not home.
+/// The ticked body's engagement target (the original's combat target on
+/// the character): the player's auto-target, otherwise the brain's combat
+/// target, otherwise a brainless duellist's foe while it is in combat with
+/// it. It is kept on the body as its [`exa_combat::CombatTarget`], which the
+/// attack starters' aim and the parry check read, and the swing's homing
+/// reads its chest height (the target body's, in centimetres). No target
+/// removes the chest mark, and a side swing then does not home.
+#[allow(clippy::type_complexity)]
 fn note_strike_chests(
     ticked: Res<exa_physics::body::TickedCharacter>,
     players: Query<&crate::player::PlayerBody>,
     npcs: Query<&exa_ai::brain::Npc>,
+    duellists: Query<&exa_ai::Duellist>,
     bodies: Query<&Ragdoll>,
+    mut targets: Query<Option<&mut exa_combat::CombatTarget>, With<exa_combat::Fighter>>,
     mut commands: Commands,
 ) {
-    let foe = players
-        .get(ticked.body)
-        .ok()
-        .and_then(|player| player.foe())
-        .or_else(|| {
-            let brain = ticked.character.unwrap_or(ticked.body);
-            npcs.get(brain)
+    let brain = ticked.character.unwrap_or(ticked.body);
+    let foe = match players.get(ticked.body) {
+        Ok(player) => player.foe(),
+        Err(_) => match npcs.get(brain) {
+            Ok(npc) => npc.pass.target.and_then(Entity::try_from_bits),
+            Err(_) => duellists
+                .get(ticked.body)
                 .ok()
-                .and_then(|npc| npc.pass.target)
-                .and_then(Entity::try_from_bits)
-        });
+                .and_then(exa_ai::Duellist::combat_target),
+        },
+    };
+    match targets.get_mut(ticked.body) {
+        Ok(Some(mut target)) => {
+            if target.0 != foe {
+                target.0 = foe;
+            }
+        }
+        Ok(None) => {
+            commands
+                .entity(ticked.body)
+                .insert(exa_combat::CombatTarget(foe));
+        }
+        Err(_) => {}
+    }
     let chest = foe
         .and_then(|foe| bodies.get(foe).ok())
         .and_then(|body| body.chest_point());
