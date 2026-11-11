@@ -143,6 +143,19 @@ pub struct Unseen;
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct MindWarded;
 
+/// A flee start that began a flight (for the log).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FleeStarted {
+    /// The contact it flees.
+    pub from: u64,
+    pub level_before: i32,
+    /// Its courage and alarm before and after the start.
+    pub courage: (f32, f32),
+    pub alarm: (f32, f32),
+    /// The threat's room (−1 unknown).
+    pub threat_room: i32,
+}
+
 /// A level character's brain.
 #[derive(Component, Debug, Clone)]
 pub struct Npc {
@@ -196,6 +209,11 @@ pub struct Npc {
     pub nearby: Vec<u64>,
     /// The rooms a flight has left through (eight at most).
     pub fled: crate::flee::FledRooms,
+    /// The threat's room the flee start remembered (−1 unknown).
+    pub flee_threat_room: i32,
+    /// The last flee start that began a flight (the brain was not at level
+    /// 4): its courage and alarm before and after, for the log.
+    pub flee_started: Option<FleeStarted>,
     /// The contact sense its race uses ([`personality::Sense`]).
     pub sense: personality::Sense,
     /// The attach found a statue: its contact sense clears what it sees.
@@ -382,6 +400,8 @@ impl Npc {
             room: RoomCell::default(),
             nearby: Vec::new(),
             fled: crate::flee::FledRooms::default(),
+            flee_threat_room: -1,
+            flee_started: None,
             sense: personality::Sense::Base,
             statue: false,
             guard_home: None,
@@ -597,6 +617,39 @@ impl Npc {
             &mut way_out,
         );
         self.fled = fled;
+        let mut report = report;
+        if let contacts::Outcome::Flee { id, .. } = report.outcome {
+            // The pass's flee outcome calls the flee start with the level
+            // the brain had before the pass (the pass keeps its pick's level
+            // apart and writes none itself): a fresh flight halves the
+            // courage and adds 2 to the alarm the pass has just raised; the
+            // target is fresh and the threat's room remembered.
+            let level_before = self.integration.level;
+            let mut level = level_before;
+            let mut flight = contacts::Morale {
+                courage: self.morale.courage,
+                stress: report.stress,
+                ..contacts::Morale::default()
+            };
+            let threat_room = visible
+                .iter()
+                .find(|s| s.contact.id == id)
+                .map_or(-1, |s| s.room);
+            self.flee_threat_room = crate::flee::start(&mut level, &mut flight, threat_room);
+            if level_before != 4 {
+                self.flee_started = Some(FleeStarted {
+                    from: id,
+                    level_before,
+                    courage: (self.morale.courage, flight.courage),
+                    alarm: (report.stress, flight.stress),
+                    threat_room,
+                });
+            }
+            self.morale.courage = flight.courage;
+            report.stress = flight.stress;
+            report.level = level;
+            self.integration.fresh = true;
+        }
         self.integration.level = report.level;
         // The alarm mean raises the alarm the next drift decays.
         self.integration.alarm = report.stress;
@@ -1517,6 +1570,31 @@ pub fn ai_tick(
                 &mut roll,
                 &place,
             );
+            debug!(
+                target: "exa_ai::pass",
+                "{talking}: target pass {:?}, level {}, courage {:.3}, stress {:.3}, alarm {:.3}, \
+                 most concern {:.3}",
+                npc.pass.outcome,
+                npc.integration.level,
+                npc.morale.courage,
+                npc.morale.stress,
+                npc.morale.alarm,
+                npc.contacts.iter().map(|c| c.concern).fold(0.0f32, f32::max)
+            );
+            if let Some(started) = npc.flee_started.take() {
+                info!(
+                    "{talking}: the target pass starts a flight from {:?} at level {} \
+                     (was {}): courage {:.3} -> {:.3}, alarm {:.3} -> {:.3}, threat room {}",
+                    Entity::try_from_bits(started.from),
+                    npc.integration.level,
+                    started.level_before,
+                    started.courage.0,
+                    started.courage.1,
+                    started.alarm.0,
+                    started.alarm.1,
+                    started.threat_room
+                );
+            }
         } else {
             npc.tick_between_passes(
                 sight,
@@ -2997,6 +3075,79 @@ mod tests {
         );
         assert_eq!(level, 3);
         assert!(npc.contacts[0].hostility < 2.0);
+    }
+
+    /// The target pass's flee outcome runs the flee start: a fresh flight
+    /// halves the courage and adds 2 to the alarm the pass raised, and the
+    /// threat's room is remembered; a brain already fleeing keeps both.
+    #[test]
+    fn the_flee_outcome_starts_the_flight() {
+        let mut npc = Npc::new([0.0; 4]);
+        let mut roll = 0;
+        npc.personality = Some(personality::personality(
+            50.0, [0.0; 4], 0.0, false, &mut roll,
+        ));
+        let contact = ContactRecord {
+            id: 1,
+            sighting: 1.0,
+            seen: 1.0,
+            alarm: 1.0,
+            ..ContactRecord::default()
+        };
+        npc.contacts.push(contact);
+        // Stress well past 3 and an alarm past 0.75 flee.
+        npc.morale.stress = 10.0;
+        let sighting = contacts::Sighting {
+            contact,
+            character: true,
+            position_cm: bevy::math::Vec3::new(100.0, 0.0, 0.0),
+            room: 2,
+        };
+        let exits = [
+            crate::flee::RoomExit {
+                point: bevy::math::Vec2::new(-500.0, 0.0),
+                room: 1,
+                shut: false,
+            },
+            crate::flee::RoomExit {
+                point: bevy::math::Vec2::new(0.0, 500.0),
+                room: 4,
+                shut: false,
+            },
+        ];
+        let place = FleePlace {
+            at_cm: bevy::math::Vec3::ZERO,
+            room: 0,
+            home: -1,
+            exits: &exits,
+        };
+        let pass = |npc: &mut Npc, roll: &mut u32, now| {
+            npc.run_pass(
+                &[sighting],
+                contacts::FoeSight::default(),
+                &|_| 300.0 * 300.0,
+                false,
+                false,
+                (1.0, 1.0),
+                false,
+                now,
+                roll,
+                &place,
+            )
+        };
+        assert_eq!(pass(&mut npc, &mut roll, 0), 4);
+        let started = npc.flee_started.take().expect("a flight starts");
+        assert_eq!(started.level_before, 0);
+        assert_eq!(started.courage.1, started.courage.0 * 0.5);
+        assert_eq!(started.alarm.1, started.alarm.0 + 2.0);
+        assert_eq!(started.threat_room, 2);
+        assert_eq!(npc.flee_threat_room, 2);
+        assert_eq!(npc.morale.alarm, started.alarm.1);
+        assert_eq!(npc.morale.courage, started.courage.1);
+        assert!(npc.integration.fresh);
+        // Fleeing already: no second halving.
+        assert_eq!(pass(&mut npc, &mut roll, 1), 4);
+        assert_eq!(npc.flee_started, None);
     }
 
     /// An idle activity of 6 creates the search; one of 0 drops it.

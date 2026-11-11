@@ -287,7 +287,11 @@ does not resist makes it follow).
 (base + stress − courage) passes 3 with an alarm above 0.75 and a way out;
 then it engages past `7b² + (2 + b)` (`2 + b` for b ≤ 0) plus the
 stress; then a concern above 1 flees past 8 less the stress, or watches;
-else it is noticed. A flight halves the courage and adds 2 to the stress;
+else it is noticed. A flight halves the courage and adds 2 to the stress
+(the pass's flee outcome runs `flee::start` with the level the brain had
+before the pass, after the alarm mean's raise: a fresh flight halves the
+morale's courage, adds 2 to its alarm, marks the target fresh and remembers
+the threat's room, logged `the target pass starts a flight`);
 a cornered fighter fights on with its courage doubled. The way out is the
 open exit most opposite the threat (cosine under 0.2), and fled rooms are
 remembered (eight). A combatant's contact is classified through
