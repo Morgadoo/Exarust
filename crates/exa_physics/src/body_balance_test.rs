@@ -1386,3 +1386,16 @@ fn the_step_end_plants_the_nearest_free_foot() {
         assert!(legs[0].state.has(FootState::TOUCHING));
     }
 }
+
+/// The balance routine's feet-centre pass puts every leg's grip back at
+/// full each tick, whatever the solver's iterations left it at.
+#[test]
+fn the_balance_pass_puts_each_grip_back_at_full() {
+    let mut body = biped();
+    bearing(&mut body, Bearing::default());
+    for leg in &mut body.legs {
+        leg.grip = 0.2;
+    }
+    body.measure_balance(floor().as_slice());
+    assert!(body.legs().iter().all(|l| l.grip == 1.0));
+}

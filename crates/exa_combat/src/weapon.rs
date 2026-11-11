@@ -12,6 +12,7 @@
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
+use exa_physics::engine_math::normalize_approx;
 
 /// The guide point's offset from the body's frame, in its space (cm).
 const GUIDE_OFFSET: Vec3 = Vec3::new(-20.0, 10.0, 0.0);
@@ -85,7 +86,9 @@ pub fn handling_pushes(
         return None;
     }
     let origin = frame.transform_point3(GUIDE_OFFSET);
-    let dir = (guide_point - origin).normalize_or_zero();
+    // The engine's approximate normaliser (`RSQRTSS` of (x² + z²) + y²),
+    // as the original's handling routine calls it on the guide.
+    let dir = normalize_approx(guide_point - origin);
     let lift = blade_lift(progress);
     let bend = blade_bend(progress);
     let p = progress;

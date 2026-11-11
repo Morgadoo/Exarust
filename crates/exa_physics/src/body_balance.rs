@@ -905,6 +905,13 @@ impl Ragdoll {
             // The lean, against the support point.
             let centre = contacts.iter().copied().sum::<Vec3>() / contacts.len() as f32;
             b.feet_centre = centre;
+            // The feet centre's pass also puts every leg's grip back at
+            // full: the solver's iterations then zero it on an anchored
+            // foot and raise it 0.001 at a time from there, so a touching
+            // foot grips in full from the first iteration of each tick.
+            for leg in legs.iter_mut() {
+                leg.grip = 1.0;
+            }
             let mut m = chest;
             // The landing's momentum fades by the double 0.05 a tick.
             if f64::from(b.landing) > LANDING_FADE {

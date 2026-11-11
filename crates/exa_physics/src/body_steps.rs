@@ -17,8 +17,14 @@ use super::balance::cm;
 /// Ticks in one second, and the milliseconds in one tick.
 const HZ: f32 = 83.0;
 pub(super) const MS_PER_TICK: f32 = 1000.0 / HZ;
-/// Balance below this ends a step and starts none.
-const BALANCE_FLOOR: f32 = 0.2;
+/// Balance below this (compared in double) clears a step and starts none.
+const BALANCE_FLOOR: f64 = 0.2;
+
+/// The balance is below the floor: the original's compare widens it to
+/// double, and a NaN balance is not below.
+fn below_floor(balance: f32) -> bool {
+    f64::from(balance) < BALANCE_FLOOR
+}
 /// The radius base (cm): the standing value, and the value after being down.
 const BASE_STANDING: f32 = 30.0;
 /// The radius base the body reset on re-entry sets (cm).
@@ -393,12 +399,17 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
         steps.out_of_balance = false;
         return Plan::Idle;
     }
+    // Under the balance floor the original's balance routine only clears
+    // the step (its stepping byte, its kind, its out-of-balance bit): the
+    // body tick then skips its episode checks and never calls the step's
+    // end, so no foot is landed and the standing place stays.
+    if below_floor(t.balance) {
+        steps.knockback = false;
+        steps.stepping = false;
+        steps.out_of_balance = false;
+        return Plan::Idle;
+    }
     if steps.knockback {
-        if t.balance < BALANCE_FLOOR {
-            steps.knockback = false;
-            steps.stepping = false;
-            return Plan::Ended;
-        }
         // The stance is clamped by the plain step length, as for any step.
         let length = foot_step_length(t.reach, 0.0);
         return Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale));
@@ -409,7 +420,7 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
         steps.target = t.frame;
         steps.placed = true;
     }
-    if t.balance < BALANCE_FLOOR || t.locomoting {
+    if t.locomoting {
         let ended = steps.stepping;
         steps.stepping = false;
         return if ended { Plan::Ended } else { Plan::Idle };

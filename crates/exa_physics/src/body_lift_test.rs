@@ -631,7 +631,15 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
         for _ in 0..800 {
             // The tick recovers the double 0.005 before the parts take the carry.
             body.drive.as_mut().unwrap().energy = energy - 0.005;
-            stand(&mut body, &pose, &floor);
+            // The balance pass puts the feet's grip at full, which would
+            // let the lifted feet's servo push them up to their anchors:
+            // with no grip only the lift holds the body.
+            body.measure_balance(floor.as_slice());
+            for leg in &mut body.legs {
+                leg.grip = 0.0;
+            }
+            body.aim(Affine3A::IDENTITY, pose.to_vec());
+            body.tick(floor.as_slice());
         }
         let lowest = body
             .parts
