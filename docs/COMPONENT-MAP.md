@@ -17,7 +17,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Core, math & threading | 282 | 37 | 11 | 85% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 83% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 82% | 1% |  |
-| World, levels & terrain | 454 | 174 | 31 | 80% | 0% |  |
+| World, levels & terrain | 454 | 174 | 31 | 81% | 0% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 92% | 0% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 84% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
@@ -79,7 +79,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
 | TMesh | Rendering & GPU | 25 | 91% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 91% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
-| RF_SceneNodes | World, levels & terrain | 24 | 91% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
+| RF_SceneNodes | World, levels & terrain | 24 | 92% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
 | TGSLines | UI | 24 | 88% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
 | SG_Thaum_Mind | Thaumaturgy & effects | 21 | 91% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
 
