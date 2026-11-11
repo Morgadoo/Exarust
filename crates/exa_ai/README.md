@@ -274,8 +274,14 @@ toward `max(2·(stress + alarm), 2·total, confidence + 0.5)` at that factor
 × 0.0003 (0.00015 from 1 up), or decays by 0.999 at or over it; panic
 takes 0.001 of the stress over the courage and decays by 0.995; the
 jitter walks a hundredth of a centred draw a tick and falls 0.003 while
-down, held in ±1. It runs in `brain::Npc::run_pass`, which is not
-scheduled yet.
+down, held in ±1. It runs in `brain::Npc::run_pass`. The target pass
+classifies with the stress plus the alarm less the courage, and its alarm
+mean raises the alarm (the word that decays by 0.9999), as the original's
+pass does. A Mind cast moves these words, the readiness, the calm and the
+contacts (`exa_game::mind::runtime::drive_mind_ai`); its re-arm sets
+`Npc::reapply`, and `brain::apply_new_roles` applies the roles again over
+the body's `MindPowers` (`Npc::apply_with`: a binding marker on a body that
+does not resist makes it follow).
 
 **Contacts and flight.** A contact flees first when the stress
 (base + stress − courage) passes 3 with an alarm above 0.75 and a way out;

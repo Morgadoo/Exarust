@@ -569,19 +569,30 @@ hand-backs run behind the transition screen; Spirit Form's wraith body
 them back; the handover and the hand-back first sweep the power tree
 (`power_screen::sweep_forms`: a shown tree closes, else a shown bar falls),
 and behind the simulation bridge the handover, the hand-back's transition
-and Spirit Form's end run on the frame's world; a blow on a body with the
+and Spirit Form's end run on the frame's world, posting their status words
+and the possession marker to the step's world (`runtime::on_power_walk`),
+so no mind is written on the frame's copy; a blow on a body with the
 handover bit ends its Spirit Form or Control Mind; and the lists are fed to the perception as `MindPowers`. The
 walk also ticks and expires the other classes (Sense Minds and Mask Mind,
 instant and persistent, Confusion and Enrage with their status bits,
 Trust and Suspicion, Loyalty and Command Dead with their markers' unlinks
 and re-arms), and the enraged bit is fed to the contact integration. Before a
 cast the bar copies the target's condition, rules, feral level and health
-onto its mind (`MindLive`), as the original's casts read them off the
-body; a Raise Dead or Command Dead raise is posted to the step's world
+onto its mind (`MindLive`, with the record's profession word as the dead
+powers' character flags and the body's encumbrance and build), as the
+original's casts read them off the body. A cast's changes to its target's
+AI (`casts::MindAiChange`: Calm, Enrage, Confusion, Trust, Fear, Embolden,
+the bound contact and the re-arm) are posted to the step's world and run
+on the live brain's morale, integration, contacts and target
+(`runtime::drive_mind_ai`, logged as `mind ai:`); a re-arm makes the brain
+apply its roles again over the body's powers, so a Loyalty or Command Dead
+marker makes it follow. A Raise Dead or Command Dead raise is posted to the step's world
 (`runtime::raise_corpse`): a body without decay is revived (feral 0.2, the
 decayed rules bit, its most energy), then revived as the AI manager's rise
 revives it (`rise::revive_corpse`: knocked out, muscled again, it gets up)
-with its yellow and red at a half and full; Command Dead's end lays the
+with its yellow and red at a half and full, and the revival's pins factor
+(gait scale), feral level (its step reach is the stamina), most energy and
+link-iteration count (pace) on its body; Command Dead's end lays the
 body down again (`runtime::lay_down`, the collapse start). A cast while in
 another body posts the control's end to the step's world
 (`runtime::end_control`), so a free-running simulation's newer copy of the
@@ -592,8 +603,7 @@ pick skips a body wearing a mind ward and, without Sense Minds, asks the
 level's light-reach query; the dead powers pick with corpses allowed. The
 casts play their sounds; Spirit Form fades its realm music in and out, and
 its screen drives the post-processing's desaturation. The spirit screen's
-two scene-environment values, its noise texture, and a revival's gait
-scale, pace and stamina are not in. The wraith is built physical (`physical_frame`,
+two scene-environment values and its noise texture are not in. The wraith is built physical (`physical_frame`,
 with its race's hover flag): legless, it floats on its hovering lift and
 the player walks it; a hovering player's combat mode stays off
 (`PlayerBody::hovering`).

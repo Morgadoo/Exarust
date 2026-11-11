@@ -304,15 +304,21 @@ fn set_status(world: &mut World, entity: Entity, status: impl Fn(u32) -> u32) {
 }
 
 /// What a Mind cast from the bar answered.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MindCastAnswer {
     pub code: i32,
     pub outcome: Option<MindOutcome>,
+    /// The changes the cast made to its target's AI, for the live brain
+    /// ([`post_mind_ai`]).
+    pub ai: Vec<casts::MindAiChange>,
 }
 
 /// What a cast reads off its target's body, as the original's casts read
 /// it straight from the body: the condition word, the rules, the feral
-/// level (the dead powers' decay) and the yellow and red health. The mind
+/// level (the dead powers' decay), the yellow and red health, the record's
+/// profession word (the dead powers' character flags: its `0x40` bit
+/// refuses them, its race byte keeps a corpse from the revival) and the
+/// encumbrance and build factor the revival's step reach reads. The mind
 /// keeps a copy, which the bar refreshes before each cast.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MindLive {
@@ -321,16 +327,34 @@ pub struct MindLive {
     pub decay: f32,
     pub yellow: f32,
     pub red: f32,
+    pub profession: u32,
+    pub load: f32,
+    pub build: f32,
 }
 
 impl MindLive {
-    pub fn of(condition: &Condition, fighter: Option<&Fighter>) -> Self {
+    pub fn of(
+        condition: &Condition,
+        fighter: Option<&Fighter>,
+        data: Option<&exa_character::record::CharacterData>,
+        body: Option<&exa_physics::body::Ragdoll>,
+    ) -> Self {
+        // A corpse's stats are the ones its muscles kept when they went.
+        let stats = body.and_then(|b| {
+            b.drive
+                .as_ref()
+                .map(|d| d.stats)
+                .or_else(|| b.kept_muscles().map(|(_, stats)| stats))
+        });
         Self {
             condition: condition.0,
             rules: fighter.map_or(0, |f| f.stats.rules.0),
             decay: fighter.map_or(0.0, |f| f.stats.feral),
             yellow: fighter.map_or(1.0, |f| f.health.yellow),
             red: fighter.map_or(1.0, |f| f.health.red),
+            profession: data.map_or(0, |d| d.record.profession()),
+            load: stats.map_or(0.0, |s| s.encumbrance),
+            build: stats.map_or(1.0, |s| s.scale.max(0.0).sqrt()),
         }
     }
 
@@ -341,6 +365,9 @@ impl MindLive {
         mind.decay = self.decay;
         mind.yellow = self.yellow;
         mind.red = self.red;
+        mind.character_flags = self.profession;
+        mind.load = self.load;
+        mind.build = self.build;
     }
 }
 
@@ -360,6 +387,7 @@ pub fn cast_mind(
     let refused = MindCastAnswer {
         code: casts::REFUSED,
         outcome: None,
+        ai: Vec::new(),
     };
     let Ok(controlling) = minds.get(caster).map(casts::controlling) else {
         return refused;
@@ -368,6 +396,7 @@ pub fn cast_mind(
         return refused;
     };
     let target = target.filter(|&t| t != caster);
+    let mut ai = Vec::new();
     let outcome = match target {
         Some(target) => {
             let Ok([mut mind, mut other]) = minds.get_many_mut([caster, target]) else {
@@ -379,6 +408,7 @@ pub fn cast_mind(
             std::mem::swap(body, &mut mind.cast);
             let outcome = casts::mind_cast(&row, cost, &mut mind, Some(&mut other), scene);
             std::mem::swap(body, &mut mind.cast);
+            ai = other.ai.take_changes();
             outcome
         }
         None => {
@@ -394,7 +424,127 @@ pub fn cast_mind(
     MindCastAnswer {
         code: outcome.code,
         outcome: Some(outcome),
+        ai,
     }
+}
+
+/// Hands a cast's changes to its target's AI to the world that runs the
+/// brains (the simulation's behind the bridge, at the start of its next
+/// step), where they run on the brain's own values ([`drive_mind_ai`]).
+pub fn post_mind_ai(
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
+    commands: &mut Commands,
+    target: Entity,
+    changes: Vec<casts::MindAiChange>,
+) {
+    if changes.is_empty() {
+        return;
+    }
+    match fixed {
+        Some(fixed) => fixed.run(drive_mind_ai, (target, changes)),
+        None => commands.queue(move |world: &mut World| {
+            if let Err(e) = world.run_system_cached_with(drive_mind_ai, (target, changes)) {
+                warn!("mind ai: {e}");
+            }
+        }),
+    }
+}
+
+/// The brain's values a Mind cast moves, as [`casts::MindAi`]: its
+/// contacts (a contact's body is the character it names), the morale's
+/// panic, alarm and courage, the integration's readiness, calm and level,
+/// and the body's target.
+pub fn mind_ai_of(npc: &Npc, target: Option<Entity>) -> casts::MindAi {
+    casts::MindAi {
+        contacts: npc
+            .contacts
+            .iter()
+            .map(|c| casts::MindContact {
+                body: Entity::try_from_bits(c.id).map_or(u32::MAX, body_id),
+                noticed: c.noticed,
+                concern: c.concern,
+                hostility: c.hostility,
+                others: [c.sighting, c.attention, c.concern_target, c.soothe],
+            })
+            .collect(),
+        panic: npc.morale.panic,
+        alarm: npc.morale.alarm,
+        readiness: npc.integration.readiness,
+        courage: npc.morale.courage,
+        calm: npc.integration.decay,
+        level: npc.integration.level,
+        focus: target.map(body_id),
+        rearm: npc.reapply,
+        changes: Vec::new(),
+    }
+}
+
+/// Writes [`casts::MindAi`]'s values back on the brain and the body's
+/// target (cleared when the change cleared its focus).
+pub fn write_mind_ai(ai: &casts::MindAi, npc: &mut Npc, target: &mut Option<Entity>) {
+    for (c, m) in npc.contacts.iter_mut().zip(&ai.contacts) {
+        c.noticed = m.noticed;
+        c.concern = m.concern;
+        c.hostility = m.hostility;
+        [c.sighting, c.attention, c.concern_target, c.soothe] = m.others;
+    }
+    npc.morale.panic = ai.panic;
+    npc.morale.alarm = ai.alarm;
+    npc.integration.alarm = ai.alarm;
+    npc.integration.readiness = ai.readiness;
+    npc.morale.courage = ai.courage;
+    npc.integration.courage = ai.courage;
+    npc.integration.decay = ai.calm;
+    npc.integration.level = ai.level;
+    if ai.focus.is_none() {
+        *target = None;
+    }
+    npc.reapply = ai.rearm;
+}
+
+/// A Mind cast's changes to a body's AI, run on its live brain: the values
+/// are read off the brain, changed as the cast changes them, and written
+/// back. A body without a brain (the arena's duellist, the player) keeps
+/// no such values.
+#[allow(clippy::type_complexity)]
+pub fn drive_mind_ai(
+    In((entity, changes)): In<(Entity, Vec<casts::MindAiChange>)>,
+    mut brains: Query<(&mut Npc, Option<&mut Combatant>)>,
+) {
+    let Ok((mut npc, combatant)) = brains.get_mut(entity) else {
+        info!("mind ai: {entity:?} has no brain for {changes:?}");
+        return;
+    };
+    let mut scratch = None;
+    let target = match combatant {
+        Some(c) => &mut c.into_inner().target,
+        None => &mut scratch,
+    };
+    let mut ai = mind_ai_of(&npc, *target);
+    let before = (ai.panic, ai.alarm, ai.readiness, ai.courage, ai.level);
+    for &change in &changes {
+        ai.apply(change);
+    }
+    write_mind_ai(&ai, &mut npc, target);
+    info!(
+        "mind ai: {entity:?}'s brain takes {changes:?}: panic {:.3} -> {:.3}, alarm {:.3} -> {:.3}, \
+         readiness {:.3} -> {:.3}, courage {:.3} -> {:.3}, level {} -> {}, calm {:.3}, \
+         {} contacts, target {:?}, re-arm {}",
+        before.0,
+        ai.panic,
+        before.1,
+        ai.alarm,
+        before.2,
+        ai.readiness,
+        before.3,
+        ai.courage,
+        before.4,
+        ai.level,
+        ai.calm,
+        ai.contacts.len(),
+        *target,
+        ai.rearm
+    );
 }
 
 /// Where the spirit body appears: the caster's feet moved 60 cm along its
@@ -832,7 +982,13 @@ pub fn tick_minds(
                     if let Some(mut mind) = world.get_mut::<MindBody>(body) {
                         mind.ai.rearm = true;
                     }
-                    info!("mind: {body:?}'s AI re-arms its behaviour");
+                    match world.get_mut::<Npc>(body) {
+                        Some(mut npc) => {
+                            npc.reapply = true;
+                            info!("mind: {body:?}'s AI re-arms its behaviour");
+                        }
+                        None => info!("mind: {body:?} has no brain to re-arm"),
+                    }
                 });
             }
             MindAction::LayDown(target) => {
@@ -929,7 +1085,7 @@ pub fn raise_corpse(
         fighter.stats.max_energy = revival.most_energy;
         info!(
             "raise dead: {entity:?} is revived with decay {}: gait scale {}, pace {} ticks, \
-             most energy {}, stamina {} (the gait, pace and stamina are not wired)",
+             most energy {}, stamina {}",
             revival.decay,
             revival.gait_scale,
             revival.pace_ticks,
@@ -957,6 +1113,25 @@ pub fn raise_corpse(
     ) else {
         return;
     };
+    if let Some(revival) = revival {
+        // The revival's values on the body the revive muscled again: the
+        // pins' factor (the gait scale), the most energy and the feral
+        // level, whose step reach is the revival's stamina, and the root's
+        // link-iteration count (the pace), which the body tick then holds
+        // at its feral cadence.
+        let reach = body.drive.as_mut().map(|drive| {
+            drive.stats.pin_factor = revival.gait_scale;
+            drive.stats.max_energy = revival.most_energy;
+            drive.stats.feral = revival.decay;
+            drive.stats.foot_reach()
+        });
+        body.set_link_iterations(revival.pace_ticks);
+        info!(
+            "raise dead: {entity:?}'s body takes the revival: pins {}, pace {} ticks, most energy \
+             {}, step reach {reach:?} (the revival's stamina {})",
+            revival.gait_scale, revival.pace_ticks, revival.most_energy, revival.stamina
+        );
+    }
     fighter.health.yellow = casts::RAISED_YELLOW;
     fighter.health.red = casts::RAISED_RED;
     commands.entity(entity).remove::<(
@@ -1140,15 +1315,11 @@ pub fn possess(world: &mut World, caster: Entity, target: Entity) {
     // journal and loot windows close, then the power tree closes, or the
     // shown bar falls.
     crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::ContainerFamily);
-    set_status(world, caster, |s| s | HANDED_OVER);
-    set_status(world, target, |s| s | IN_CONTROL);
-    let caster_id = body_id(caster);
-    if let Some(mut mind) = world.get_mut::<MindBody>(target) {
-        let mut marker = MindPower::new(POSSESSION_MARK, MindClass::Possession(Possession::new()));
-        marker.caster = Some(caster_id);
-        marker.target = Some(mind.id);
-        mind.powers.push(marker);
-    }
+    // The status bits and the marker are written on the world that walks
+    // the powers (see `on_power_walk`).
+    on_power_walk(world, false, move |world: &mut World| {
+        possess_minds(world, caster, target);
+    });
     let aim = hold_player(world, caster);
     // The target's AI behaviour is set aside, held.
     let mut entity = world.entity_mut(target);
@@ -1168,15 +1339,48 @@ pub fn possess(world: &mut World, caster: Entity, target: Entity) {
     info!("control mind: the player takes {target:?}; {caster:?} is held");
 }
 
+/// The handover's minds: the caster keeps [`HANDED_OVER`], the target
+/// gains [`IN_CONTROL`] and the possession marker whose caster is the
+/// caster.
+fn possess_minds(world: &mut World, caster: Entity, target: Entity) {
+    if world.get_entity(caster).is_err() || world.get_entity(target).is_err() {
+        return;
+    }
+    set_status(world, caster, |s| s | HANDED_OVER);
+    set_status(world, target, |s| s | IN_CONTROL);
+    let caster_id = body_id(caster);
+    if let Some(mut mind) = world.get_mut::<MindBody>(target) {
+        let mut marker = MindPower::new(POSSESSION_MARK, MindClass::Possession(Possession::new()));
+        marker.caster = Some(caster_id);
+        marker.target = Some(mind.id);
+        mind.powers.push(marker);
+    }
+    info!("control mind: {caster:?} is handed over, {target:?} carries the possession marker");
+}
+
+/// The hand-back's minds: the original writes the caster's status, less
+/// the control bits, over the released body's, then the caster's loses
+/// [`HANDED_OVER`].
+fn release_minds(world: &mut World, caster: Entity, target: Entity) {
+    if world.get_entity(target).is_ok() {
+        let caster_status = status_of(world, caster);
+        set_status(world, target, |_| caster_status & !IN_CONTROL);
+    }
+    if world.get_entity(caster).is_ok() {
+        set_status(world, caster, |s| s & !HANDED_OVER);
+    }
+    info!("control mind: {caster:?}'s and {target:?}'s status words are handed back");
+}
+
 /// Control Mind's hand-back, at the transition's black.
 pub fn release(world: &mut World, caster: Entity, target: Entity) {
     // The hand-back sweeps the GUI's forms first, as the handover does.
     crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::ContainerFamily);
+    // The status words are written on the world that walks the powers.
+    on_power_walk(world, false, move |world: &mut World| {
+        release_minds(world, caster, target);
+    });
     if world.get_entity(target).is_ok() {
-        // The original writes the caster's status, less the control bits,
-        // over the released body's.
-        let caster_status = status_of(world, caster);
-        set_status(world, target, |_| caster_status & !IN_CONTROL);
         let mut entity = world.entity_mut(target);
         entity.remove::<PlayerBody>();
         if let Some(held) = entity.take::<HeldBehaviour>() {
@@ -1192,7 +1396,6 @@ pub fn release(world: &mut World, caster: Entity, target: Entity) {
         }
     }
     if world.get_entity(caster).is_ok() {
-        set_status(world, caster, |s| s & !HANDED_OVER);
         resume_player(world, caster);
         if world.get_entity(target).is_ok() {
             move_player_root(world, target, caster);
@@ -1365,7 +1568,11 @@ fn spirit_ends(world: &mut World, spirit: Entity, body: Option<Entity>) {
     let Some(body) = body else {
         return;
     };
-    set_status(world, body, |s| s & !HANDED_OVER);
+    // The handover bit clears on the world that walks the powers.
+    on_power_walk(world, false, move |world: &mut World| {
+        set_status(world, body, |s| s & !HANDED_OVER);
+        info!("spirit form: {body:?}'s handover bit clears");
+    });
     let now = world
         .get_resource::<Time<Real>>()
         .map_or(0, |t| i64::from(crate::splash::clock_ms(t)));
@@ -1415,6 +1622,15 @@ pub fn spirit_home(world: &mut World, spirit: Entity, body: Entity) {
     // despawn among them) reach the simulation.
     on_power_walk(world, true, move |world: &mut World| {
         move_mind_list(world, spirit, body, None);
+    });
+    // The caster's body takes the body's status word there too, after this
+    // frame's changes (the caster's move home among them): the frame's
+    // copy of the word may not have the end's cleared handover bit yet.
+    on_power_walk(world, false, move |world: &mut World| {
+        let status = world.get::<MindBody>(body).map(|m| m.cast.status_bits);
+        if let (Some(status), Some(mut caster)) = (status, world.get_mut::<PowerCaster>(body)) {
+            caster.body.status_bits = status;
+        }
     });
     resume_player(world, body);
     if world.get_entity(spirit).is_ok() {
@@ -1585,8 +1801,12 @@ fn feed_mind_powers(
     let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
     for (entity, mind, current) in &minds {
         let effects = mind.sight_effects(entity_of);
-        if current.is_none_or(|c| c.effects != effects) {
-            commands.entity(entity).insert(MindPowers { effects });
+        let resists_control = mind.cast.techniques & casts::RESISTS_CONTROL != 0;
+        if current.is_none_or(|c| c.effects != effects || c.resists_control != resists_control) {
+            commands.entity(entity).insert(MindPowers {
+                effects,
+                resists_control,
+            });
         }
     }
 }
@@ -1928,6 +2148,127 @@ mod tests {
         assert_eq!(world.resource::<MindControl>().held, None);
     }
 
+    /// Behind the bridge the handover, the hand-back and the spirit's end
+    /// write no mind on the frame: each posts its status words (and the
+    /// handover its marker) to the world that walks the powers.
+    #[test]
+    fn behind_the_bridge_the_control_writes_its_minds_on_the_step() {
+        let mut world = world();
+        let mut fixed = exa_physics::sim_app::FixedCommands::default();
+        fixed.set_bridged(true);
+        world.insert_resource(fixed);
+        let caster = character(&mut world, true);
+        let target = character(&mut world, false);
+        possess(&mut world, caster, target);
+        assert!(world.get::<PlayerBody>(target).is_some());
+        assert_eq!(
+            (status_of(&world, caster), status_of(&world, target)),
+            (0, 0)
+        );
+        assert!(world.get::<MindBody>(target).unwrap().powers.is_empty());
+        let run_posts = |world: &mut World| {
+            let posts = world
+                .resource_mut::<exa_physics::sim_app::FixedCommands>()
+                .take_posts();
+            let n = posts.len();
+            for post in posts {
+                post(world);
+            }
+            n
+        };
+        assert_eq!(run_posts(&mut world), 1);
+        assert_eq!(status_of(&world, caster), HANDED_OVER);
+        assert_eq!(status_of(&world, target), IN_CONTROL);
+        assert_eq!(
+            world.get::<MindBody>(target).unwrap().powers[0].id,
+            POSSESSION_MARK
+        );
+        release(&mut world, caster, target);
+        assert!(world.get::<PlayerBody>(caster).is_some());
+        assert_eq!(status_of(&world, caster), HANDED_OVER);
+        assert_eq!(run_posts(&mut world), 1);
+        assert_eq!(
+            (status_of(&world, caster), status_of(&world, target)),
+            (0, HANDED_OVER)
+        );
+
+        let spirit = character(&mut world, false);
+        set_status(&mut world, caster, |s| s | HANDED_OVER);
+        spirit_ends(&mut world, spirit, Some(caster));
+        assert_eq!(status_of(&world, caster), HANDED_OVER);
+        assert_eq!(run_posts(&mut world), 1);
+        assert_eq!(status_of(&world, caster), 0);
+    }
+
+    /// A Mind cast's changes run on the live brain: its values are read off
+    /// the brain, changed as the cast changes them and written back.
+    #[test]
+    fn a_casts_changes_reach_the_live_brain() {
+        let mut world = world();
+        let caster = character(&mut world, true);
+        let target = character(&mut world, false);
+        let mut npc = Npc::new([0.0; 4]);
+        npc.contacts.push(exa_ai::contacts::ContactRecord {
+            id: caster.to_bits(),
+            concern: 12.0,
+            hostility: 4.0,
+            noticed: 1.0,
+            ..Default::default()
+        });
+        npc.morale.panic = 5.0;
+        npc.morale.alarm = 0.5;
+        npc.integration.readiness = 60.0;
+        npc.integration.level = 3;
+        let combatant = Combatant {
+            target: Some(caster),
+            ..Combatant::default()
+        };
+        world.entity_mut(target).insert((npc, combatant));
+        let run = |world: &mut World, changes: Vec<casts::MindAiChange>| {
+            world
+                .run_system_cached_with(drive_mind_ai, (target, changes))
+                .unwrap();
+        };
+        run(&mut world, vec![casts::MindAiChange::Calm]);
+        let npc = world.get::<Npc>(target).unwrap();
+        let c = npc.contacts[0];
+        // 12 concern loses 10 and gives 30; 4 hostility all goes, 12.
+        assert_eq!((c.concern, c.hostility, c.noticed), (2.0, 0.0, 43.0));
+        assert_eq!(
+            (
+                npc.morale.panic,
+                npc.integration.readiness,
+                npc.morale.alarm
+            ),
+            (0.0, 10.0, 0.0)
+        );
+        assert_eq!(npc.integration.decay, 1.0);
+        run(
+            &mut world,
+            vec![
+                casts::MindAiChange::Fear,
+                casts::MindAiChange::Embolden,
+                casts::MindAiChange::Bind {
+                    caster: body_id(caster),
+                },
+                casts::MindAiChange::Rearm,
+            ],
+        );
+        let npc = world.get::<Npc>(target).unwrap();
+        assert_eq!(npc.morale.alarm, 20.0);
+        assert_eq!(npc.morale.courage, 50.5);
+        assert_eq!(
+            (npc.contacts[0].concern, npc.contacts[0].noticed),
+            (0.0, 30.0)
+        );
+        assert!(npc.reapply);
+        run(&mut world, vec![casts::MindAiChange::Confusion]);
+        let npc = world.get::<Npc>(target).unwrap();
+        assert_eq!((npc.morale.panic, npc.integration.level), (50.0, 0));
+        assert_eq!(npc.contacts[0].noticed, 0.0);
+        assert_eq!(world.get::<Combatant>(target).unwrap().target, None);
+    }
+
     #[test]
     fn the_released_body_keeps_the_casters_other_bits() {
         let mut world = world();
@@ -2059,7 +2400,9 @@ mod tests {
         spirit_home(&mut world, spirit, body);
         let mut fixed = world.resource_mut::<exa_physics::sim_app::FixedCommands>();
         let (writes, posts) = (fixed.take_writes(), fixed.take_posts());
-        assert_eq!((writes.len(), posts.len()), (1, 0));
+        // The list's move before the frame's changes, the caster's status
+        // word after them.
+        assert_eq!((writes.len(), posts.len()), (1, 1));
         // The move runs before the spirit's despawn reaches the
         // simulation; the frame's copies are left alone.
         assert_eq!(count(&world, body), 0);
