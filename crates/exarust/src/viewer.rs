@@ -3723,6 +3723,17 @@ fn spawn_placed_characters(
         let root_at = placed_pose
             .as_ref()
             .map_or(c.position + Vec3::Y * 0.05, |p| Vec3::from_array(p.frame));
+        if let Some(placed) = &placed_pose {
+            let records = match &c.pose {
+                exa_formats::characters::SavedPose::Tree(t) => t.len(),
+                exa_formats::characters::SavedPose::Flat(f) => f.len(),
+                exa_formats::characters::SavedPose::None => 0,
+            };
+            info!(
+                "{} lies dead on its saved pose ({records} records), its frame at {:?} (placed at {:?})",
+                c.name, placed.frame, c.position
+            );
+        }
         let mut root = commands.spawn((
             Transform::from_translation(root_at),
             Visibility::default(),
