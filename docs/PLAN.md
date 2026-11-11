@@ -2517,6 +2517,8 @@ Round 170 arena2: arena purchases go into the arsenal and sales strip it, and ge
 
 Round 171 force2: the blast, bolt, wave and torrent meet the level real meshes through the original leaf tests, and the blast plays its sounds.
 
+Round 178 raisedead: Raise Dead and Command Dead raise and lay down corpses, and Spirit Form always ends in free mode.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
