@@ -683,7 +683,8 @@ pub(crate) fn release(
     let vscale = container(&screens, destination).map_or(1.0, |container| container.vscale);
     // The body's equipment panel's accept filter: the crystal its race takes
     // while it wears none (`exa_items::char_loot::accepts`), read from the
-    // race record's flag word.
+    // first flag word of the race the record's race byte names (the race
+    // id is the byte plus one; a missing race is the built-in record's 0).
     let core_ok = match destination {
         Panel::BodyEquipment(body) => body_entity(&mut bodies, body).is_some_and(|entity| {
             let worn = bodies
@@ -694,11 +695,8 @@ pub(crate) fn release(
                 .get(entity)
                 .ok()
                 .and_then(|data| {
-                    game.as_deref().and_then(|game| {
-                        crate::scene_bodies::game_races(game)
-                            .iter()
-                            .find(|race| race.id == u32::from(data.record.race))
-                            .map(|race| race.flags)
+                    game.as_deref().map(|game| {
+                        core_race_flags(&crate::scene_bodies::game_races(game), data.record.race)
                     })
                 })
                 .unwrap_or(0);
@@ -982,6 +980,13 @@ impl Plugin for PanelLivePlugin {
     }
 }
 
+/// The race flags the equipment panel's core test reads for a record's race
+/// byte: the first flag word of the race the byte names (id = byte + 1),
+/// or the built-in record's 0 when the table lacks it.
+fn core_race_flags(races: &[exa_formats::races::Race], byte: u8) -> u32 {
+    exa_formats::races::of_character(races, byte).map_or(0, |race| race.flags)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1209,5 +1214,45 @@ mod tests {
         assert_eq!(entry_at(&container, Cell::new(250, 250)), None);
         assert_eq!(entry_at(&container, Cell::new(35, 35)), Some(2));
         assert_eq!(entry_at(&container, Cell::new(500, 500)), None);
+    }
+
+    /// The shipped golems take their core crystals by their own races: the
+    /// guards and the workers crystal A, the boss and the suit crystal AL,
+    /// and a human neither (skipped without the game).
+    #[test]
+    fn shipped_golems_take_their_own_cores() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let races = exa_formats::races::parse(pack.get("races.rdb").unwrap()).unwrap();
+        let (a, al) = (
+            exa_items::possession::crystal::A,
+            exa_items::possession::crystal::AL,
+        );
+        let takes = |byte: u8, id: u32| {
+            exa_items::char_loot::accepts(core_race_flags(&races, byte), id, &[])
+        };
+        // Golem Guard (byte 16), BAM and BAF (19, 20): crystal A only.
+        for byte in [16, 19, 20] {
+            assert!(takes(byte, a), "{byte}");
+            assert!(!takes(byte, al), "{byte}");
+        }
+        // Golem Boss and Golem Suit (17, 18): crystal AL only.
+        for byte in [17, 18] {
+            assert!(takes(byte, al), "{byte}");
+            assert!(!takes(byte, a), "{byte}");
+        }
+        // A worn crystal refuses a second one.
+        assert!(!exa_items::char_loot::accepts(
+            core_race_flags(&races, 16),
+            a,
+            &[a]
+        ));
+        // Humans and a byte the table lacks take neither.
+        for byte in [0, 13, 200] {
+            assert!(!takes(byte, a) && !takes(byte, al), "{byte}");
+        }
     }
 }

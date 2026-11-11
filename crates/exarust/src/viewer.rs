@@ -3841,9 +3841,10 @@ fn spawn_placed_characters(
             &morph.physique,
             c.record.id ^ 0x51ED_270B,
         );
-        // Every race is built physical; only the human frame is dressed.
+        // Every race is built physical; only a race whose look word dresses
+        // it wears its record's items (`Race::wears_apparel`).
         let physical = physical_frame(c.race);
-        let dressed = human_frame(c.race);
+        let dressed = race.is_some_and(exa_formats::races::Race::wears_apparel);
         // The init, then the armour pass's encumbrance.
         let stats = CharacterStats::derive(
             &c.record,

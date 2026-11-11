@@ -604,7 +604,9 @@ pub fn spawn_scene_body(
         &morph.physique,
         record.id ^ 0x51ED_270B,
     );
-    let physical = human_frame(record.race);
+    // The model build loads the worn items only for a race whose look
+    // word dresses it (the built-in record's does not).
+    let dressed = race.is_some_and(exa_formats::races::Race::wears_apparel);
     let stats = exa_formats::character_stats::CharacterStats::derive(
         &record,
         race,
@@ -691,7 +693,7 @@ pub fn spawn_scene_body(
     let worn = look
         .worn
         .iter()
-        .filter(|_| physical)
+        .filter(|_| dressed)
         .map(|worn| exa_character::Garment {
             model: worn.model.clone(),
             appearance: worn.appearance,
@@ -944,7 +946,8 @@ pub fn character_retexture(
 }
 
 /// Races with the human frame (human, skeleton, ancient): their bodies take
-/// the skeleton's physical links and fit human apparel.
+/// the skeleton's physical links. Whether a race is dressed is its look
+/// word's ([`exa_formats::races::Race::wears_apparel`]), not the frame.
 pub fn human_frame(race: u8) -> bool {
     race <= 2
 }
@@ -1352,7 +1355,6 @@ mod tests {
         ] {
             assert!(physical_frame(race), "{race}");
         }
-        // Only the human frame wears human apparel.
         assert!(!human_frame(16));
         assert!(!human_frame(6));
     }

@@ -298,7 +298,7 @@ impl UnderwearItems {
 /// the original dresses a new record: the underwear first, the rest over
 /// it. The underwear counts as its own cover, so a second call adds
 /// nothing. Returns whether the outfit changed.
-fn put_on_underwear(outfit: &mut Outfit, items: &UnderwearItems) -> bool {
+fn put_on_underwear(outfit: &mut Outfit, items: &UnderwearItems, race: u8) -> bool {
     let Some(underwear) = &items.underwear else {
         return false;
     };
@@ -306,7 +306,7 @@ fn put_on_underwear(outfit: &mut Outfit, items: &UnderwearItems) -> bool {
         .0
         .iter()
         .map(|g| items.covers(g) || g.model.eq_ignore_ascii_case(&underwear.model));
-    if !needs_underwear(HUMAN, covered) {
+    if !needs_underwear(race, covered) {
         return false;
     }
     outfit.0.insert(0, underwear.clone());
@@ -424,24 +424,33 @@ fn load_underwear_items(mut commands: Commands, game: Res<Game>) {
 /// refits a record that lost an item): the rule changes what an outfit
 /// holds, and dressing then fits and paints the underwear like any other
 /// garment. A body dressed as it was given (no [`refit::DressedWith`] yet)
-/// is left as it is.
+/// is left as it is. The rule reads the body's race byte
+/// ([`RaceWeaponry::index`]; a body without one is a human's): a marked
+/// body of another race (a non-human player's stripped body or inventory
+/// figure) is never given the underwear.
 #[allow(clippy::type_complexity)]
 fn keep_underwear(
     items: Res<UnderwearItems>,
     mut outfits: Query<
-        (&mut Outfit, Has<Dressed>, Option<&refit::DressedWith>),
+        (
+            &mut Outfit,
+            Has<Dressed>,
+            Option<&refit::DressedWith>,
+            Option<&RaceWeaponry>,
+        ),
         (
             With<WearsUnderwear>,
             Or<(Added<WearsUnderwear>, Changed<Outfit>)>,
         ),
     >,
 ) {
-    for (mut outfit, dressed, dressed_with) in &mut outfits {
+    for (mut outfit, dressed, dressed_with, weaponry) in &mut outfits {
         if dressed && dressed_with.is_none_or(|d| d.outfit == *outfit) {
             continue;
         }
+        let race = weaponry.map_or(HUMAN, |w| w.index);
         // Marked changed only when the underwear goes on.
-        if put_on_underwear(outfit.bypass_change_detection(), &items) {
+        if put_on_underwear(outfit.bypass_change_detection(), &items, race) {
             outfit.set_changed();
         }
     }
@@ -2172,7 +2181,7 @@ mod tests {
         let dressed = |worn: &[&str]| {
             let mut outfit =
                 Outfit::of_models(&worn.iter().map(|m| m.to_string()).collect::<Vec<_>>());
-            put_on_underwear(&mut outfit, &items);
+            put_on_underwear(&mut outfit, &items, HUMAN);
             outfit
         };
         let bare = dressed(&[]);
@@ -2190,12 +2199,16 @@ mod tests {
         assert_eq!(models(&dressed(&["nothing_a"])), ["braies_a", "nothing_a"]);
         // A second pass adds nothing.
         let mut twice = dressed(&[]);
-        assert!(!put_on_underwear(&mut twice, &items));
+        assert!(!put_on_underwear(&mut twice, &items, HUMAN));
         assert_eq!(models(&twice), ["braies_a"]);
         // Without the underwear item nothing is added.
         let none = UnderwearItems::of(&database()[1..]);
         let mut outfit = Outfit::default();
-        assert!(!put_on_underwear(&mut outfit, &none));
+        assert!(!put_on_underwear(&mut outfit, &none, HUMAN));
+        // Another race never takes it.
+        let mut golem = Outfit::default();
+        assert!(!put_on_underwear(&mut golem, &items, 16));
+        assert!(golem.0.is_empty());
         assert!(outfit.0.is_empty());
     }
 
@@ -2228,6 +2241,18 @@ mod tests {
             .world_mut()
             .spawn((shirt(), WearsUnderwear, Dressed))
             .id();
+        // A marked body of another race (the ogre's byte 3) keeps its own.
+        let ogre = app
+            .world_mut()
+            .spawn((
+                shirt(),
+                WearsUnderwear,
+                RaceWeaponry {
+                    index: 3,
+                    ..RaceWeaponry::default()
+                },
+            ))
+            .id();
         app.update();
         app.update();
         let world = app.world();
@@ -2235,6 +2260,7 @@ mod tests {
         assert_eq!(worn(marked), ["braies_a", "shirt_b"]);
         assert_eq!(worn(placed), ["shirt_b"]);
         assert_eq!(worn(dressed), ["shirt_b"]);
+        assert_eq!(worn(ogre), ["shirt_b"]);
     }
 
     /// The weapon items of the installed object database are held with

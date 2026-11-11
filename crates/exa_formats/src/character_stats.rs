@@ -403,6 +403,10 @@ pub struct CharacterStats {
     /// character's reach when it is unarmed (human 0.5, the ghouls 1, the
     /// harvester 1.5; the built-in record's 1).
     pub unarmed_reach: f32,
+    /// The race's mind word ([`RaceStats::mind`]): the
+    /// Mind casts read it from the character's race record (1 or 2 a living
+    /// mind, 4 or 5 an undead one, else none; the built-in record's 0).
+    pub mind: u32,
 }
 
 impl Default for CharacterStats {
@@ -525,6 +529,7 @@ impl CharacterStats {
                 1.0
             },
             unarmed_reach: stats.unarmed_reach,
+            mind: stats.mind,
         }
     }
 
