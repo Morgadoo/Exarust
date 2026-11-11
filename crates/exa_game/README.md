@@ -585,7 +585,9 @@ with its yellow and red at a half and full; Command Dead's end lays the
 body down again (`runtime::lay_down`, the collapse start). A cast while in
 another body posts the control's end to the step's world
 (`runtime::end_control`), so a free-running simulation's newer copy of the
-list cannot overtake it. The
+list cannot overtake it; Spirit Form's adoption and way home likewise
+move the power list on the step's world (`runtime::move_mind_list`), as
+the frame's copy can lag the simulation's after a slow frame. The
 pick skips a body wearing a mind ward and, without Sense Minds, asks the
 level's light-reach query; the dead powers pick with corpses allowed. The
 casts play their sounds; Spirit Form fades its realm music in and out, and

@@ -28,6 +28,13 @@ A cast while the player is in another body SHALL end the held body's Control Min
 - **WHEN** the player casts from the spirit while the simulation runs free
 - **THEN** the Spirit Form is told to end, ends and the player is home
 
+### Requirement: Spirit list moves on the power walk
+Behind the simulation bridge, Spirit Form's adoption SHALL move the caster's power list to the spirit on the simulation's world after the frame's changes of that frame, and the way home SHALL move it back before them; neither SHALL write a mind's list on the frame. In one world the move SHALL run at once.
+
+#### Scenario: A slow frame at the adoption
+- **WHEN** the frame's copy of the caster's list still lacks the Spirit Form power the cast wrote
+- **THEN** the spirit still takes the power from the simulation's list, and the later cast ends it
+
 ### Requirement: Arc voxel light owner
 An arc emitter's voxel light SHALL name its emitter without a child link, and SHALL be despawned when its emitter is gone.
 

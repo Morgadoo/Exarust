@@ -33,7 +33,9 @@ REA (Ghidra and the assembly of `Exanima.exe` 0.9.5):
   revive (`exa_game::rise::revive_corpse`, now shared with the AI manager's
   rise) and writes the raised health; `lay_down` runs Command Dead's
   collapse start; `end_control` resolves the held body and its spirit on
-  the frame and posts the end to the step's world.
+  the frame and posts the end to the step's world; Spirit Form's adoption
+  and way home move the power list on the step's world instead of the
+  frame's copy, which a slow frame can leave behind the simulation's.
 - `exa_game::thaum::live`: an arc emitter's voxel light names its emitter
   (`ArcVoxelOf`) instead of being its child, and a light whose emitter is
   gone is despawned.
