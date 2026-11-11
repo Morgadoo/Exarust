@@ -907,14 +907,31 @@ just-under-maximum sentinel so a NaN distance never wins, the first leg
 stands in when none is free, and the standing position moves so that
 foot's spot is where the foot is. A step running when the balance falls
 under 0.2 (compared in double) is only cleared, as the original's balance
-routine clears it: no foot is landed and the standing position stays. A queued footwork step is taken by the original's rule at the
-next landing; a queued vector along the body's look (`Ragdoll::look_steps`, set by the movement
+routine clears it: no foot is landed and the standing position stays.
+The trigger runs for a step of any kind (a knockback or a tapped long
+stride is re-targeted as any other while the chest is past it), its lead
+reads the whole 3-D fast chest velocity, every taken target starts the
+episode's landing count again, and a locomoting body still writes the
+out-of-balance bit, the target and the count; a balance step from rest
+writes no start clock, near-target count or stand-still stamp
+(`steps::consider`). The episode checks and the other foot's 200 ms guard
+read the start clock the footwork, AI, queued and knockback starts write
+(`Steps::started`). With the body's slow-turn word (`Bearing::slow_turn`:
+exploring, an AI idle state, a resting statue) a reached foot keeps its
+step until the later stand-still stamp is 100 ms old. The foot scores'
+reach term is measured from the pelvis eased a quarter of the way toward
+the stance origin, and the scores and the anchor's clamp read the stored
+reach whatever the crouch. The other foot's landing near the target only
+clears the stepping byte (no step end). A queued footwork step is checked
+inside the footwork on a tick it changed a foot, and when taken the chosen
+foot is not started that tick (`steps::QueueView`, `Work::taken`); a
+queued vector along the body's look (`Ragdoll::look_steps`, set by the movement
 stage from the request's look) is first bent at the body's target's circle (`approach_bend`;
 the target is the behaviour's, `Ragdoll::aim_steps`: the player's auto-target, the duellist's
 foe). It is taken
 while the queue word waits (`steps::take_queued`,
-`Ragdoll::queue_step`): the queue becomes its countdown, the step kind and
-balance flag clear. The player's combat footwork and the AI's duellist
+`Ragdoll::queue_step`): the queue becomes its countdown (by the episode's
+landing count), the step kind and balance flag clear. The player's combat footwork and the AI's duellist
 read and write the body's step (`Ragdoll::footwork_step`, `write_footwork`,
 `FootworkStep`, whose `landed` counts the episode's landings;
 `Ragdoll::age_step` ages a step without a tick, for tests and tools):

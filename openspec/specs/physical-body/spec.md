@@ -1370,7 +1370,7 @@ A standing supported body whose balance is at least 0.2 SHALL start a recovery s
 - **THEN** the base is 65 cm, then 64.5 cm, and it stays at 30 cm once it has narrowed there
 
 ### Requirement: Recovery step target
-While a step is wanted, the target SHALL be the chest plus a horizontal lead of 15 ticks of the fast velocity when that is at most 2·scale cm a tick, otherwise 30·scale cm along it, each times (2 − S)(2 − E⁴·S), keeping its previous height. The target SHALL be taken only when it clears the standing position, or the current target once a step is going, by more than 10·scale cm.
+While a step is wanted the target SHALL be the chest plus a lead from the whole 3-D fast velocity v: 15·scale·k ticks of it when |v|² is at most (2·scale)² cm², else (30·scale/|v|)·k of it, k = (2 − S)(2 − E⁴·S), keeping only its horizontal part and the height it is measured from. A body not stepping SHALL first reset its target to the standing position.
 
 #### Scenario: A slow chest
 - **WHEN** support and energy and scale are 1 and the fast chest velocity is 1 cm a tick
@@ -1379,6 +1379,10 @@ While a step is wanted, the target SHALL be the chest plus a horizontal lead of 
 #### Scenario: A fast chest
 - **WHEN** the same velocity is 5 cm a tick
 - **THEN** the lead is 30 cm along it
+
+#### Scenario: A falling chest
+- **WHEN** the velocity is 1.5 cm a tick across and 1.5 down
+- **THEN** the lead is 1.5·30/√4.5 cm across
 
 ### Requirement: Stance origin
 During a step the foot spots SHALL be the pose's ankles shifted from the character frame onto the stance origin: the step target, pulled back to within (1.1·step length)·scale of the frame (in double, whatever the step's kind), at the frame's height. The character frame itself SHALL not move. The step length SHALL be 80 · √scale cm. A stepping foot's anchor SHALL stay within 1.8 step lengths of the other foot.
@@ -1442,7 +1446,7 @@ A candidate foot's score SHALL add ((|g| − 0.65 · the step length) · 0.1)² 
 - **THEN** the penalty is 3.24
 
 ### Requirement: Stepping episode
-A recovery step SHALL end after 100 ms with no foot anchored, after the chest has stayed within 20·scale cm of the target for more than 32 ticks, after 200 ms while the chest is farther than that and closing under 0.05 cm a tick, or after more than one landing. The other foot landing then SHALL end it too. Ending SHALL plant the free foot nearest its pose spot plus the chest and 5 ticks of fast velocity, and move the standing position so that spot is where the foot is.
+A step SHALL end after 100 ms of its start clock with no foot anchored, after the chest has stayed within 20·scale cm of the target for more than 32 ticks, after 200 ms while the chest is farther and closing under 0.05 cm a tick, or after more than one landing. Ending SHALL plant the free foot nearest its spot plus the chest and 5 ticks of fast velocity and move the standing position onto it.
 
 #### Scenario: The four ends
 - **WHEN** 101 ms have passed with no foot anchored, or the chest has been near for 33 ticks, or 201 ms have passed with the chest 21 cm away and closing at 0.04 cm a tick, or the step has two landings
@@ -1491,15 +1495,15 @@ Past the epsilon a plain step's thorax lead direction SHALL be (h²·(1/60) + 0.
 - **THEN** the exertion becomes −0.08, then 0
 
 ### Requirement: Knockback step target
-A knockback step SHALL keep the target the blow set, including while the body walks, until balance is under 0.2 or it is getting up.
+A knockback (or long) step SHALL be re-targeted by the trigger as any step while the chest is past it, its target kept otherwise, until balance is under 0.2, it gets up or the body locomotes.
 
-#### Scenario: Walking through it
-- **WHEN** a knockback target is 20 cm ahead and the body is walking with balance 1
-- **THEN** the step stays on that target
+#### Scenario: Chest past the trigger
+- **WHEN** a knockback step's chest is 1 m out
+- **THEN** its target moves under the chest and its stance origin is clamped to 88 cm
 
 #### Scenario: Balance gone
 - **WHEN** that step's balance falls under 0.2
-- **THEN** the step ends
+- **THEN** the step is cleared
 
 ### Requirement: Weapon stick
 An armed bite whose depth, widened to a double, is above 0.1 SHALL stick, its depth capped at 1. Above a promoted 0.4 the flags SHALL be 0x211000, else 0x11000. Strength SHALL be 12 times the depth and smoothing SHALL add 0.5. The count SHALL be 3 times the product of 83, the unit (the holder's link-iteration count) and the depth rounded to nearest, and the span twice that product. The weapon layer SHALL be 0xC0; the part, its parent and each child SHALL gain bit 0x40.
@@ -2866,3 +2870,38 @@ The stab drive's guide direction SHALL be normalised by the approximate reciproc
 #### Scenario: A guide
 - **WHEN** the stab drive's guide runs from the frame's offset to its guide point
 - **THEN** its direction is that offset scaled by RSQRTSS of its squared length
+
+### Requirement: Trigger target taken
+A wanted target more than 10·scale cm (squared) from the point it is measured from SHALL be taken and SHALL restart the episode's landing count; a body that does not locomote SHALL then step, a balance step when it was not stepping. A locomoting body SHALL still write the out-of-balance bit, the target and the count, and start no step.
+
+#### Scenario: Walking past the trigger
+- **WHEN** a walking body's chest is 1 m past the trigger
+- **THEN** its target is under the chest at the standing height and it is not stepping
+
+### Requirement: Start clock
+The episode checks and the other foot's guard SHALL read the start clock the footwork, AI, queued and knockback starts write. A balance step SHALL write no start clock, near-target count or stand-still stamp; no start SHALL write the near-target count; a knockback and a collapse stagger SHALL restart the landing count.
+
+#### Scenario: A balance step
+- **WHEN** a balance step starts with an old start clock and near count
+- **THEN** both are kept
+
+### Requirement: Slow-turn hold
+With the body's slow-turn word set (exploring, an AI idle state, a resting statue) the landing pass SHALL keep a reached foot's step until the later stand-still stamp is more than 100 ms old, and the other foot's landing outside an episode SHALL set that stamp 300 ms ahead. The reached foot's change stamp SHALL be written either way.
+
+#### Scenario: Held then released
+- **WHEN** the word is set and the stamp is 100 ms old, then 101 ms
+- **THEN** the foot keeps its step, then lands
+
+### Requirement: Footwork reach reference
+A foot score's reach term SHALL be measured from the pelvis eased a quarter of the way toward the stance origin (a + (b − a)·0.25), and the scores and the anchor's clamp SHALL read the stored reach whatever the crouch.
+
+#### Scenario: A pelvis off the frame
+- **WHEN** the pelvis stands 40 cm ahead of the frame with the stance origin on the frame
+- **THEN** the reach is measured from 30 cm ahead
+
+### Requirement: Other foot lands
+When a foot is chosen and the other foot is anchored, the other foot SHALL land where it is; with the episode's start clock more than 200 ms old and the chest strictly within 20·scale cm of the target, only the stepping byte SHALL clear: no step end, no foot planted by it.
+
+#### Scenario: Near the target
+- **WHEN** the clock is 250 ms old and the squared distance is 399 cm²
+- **THEN** stepping clears and the standing position stays

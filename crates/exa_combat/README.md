@@ -692,14 +692,21 @@ window. The picked clip, the countered motion and the last-check time are
 kept; the clip starts looped with its blend and the fast ease, and the hit
 path reads `Guard::Parry`, raised only while the fighter parries or still
 counters a motion and never over a shield's guard. Not yet: the armed
-parry (a weapon-holder does not parry: its speed and grip links come from
-the weapon's handling), the Fend entry, the player's request-an-attack, which clears
+parry (a weapon-holder's speed and parry link come from the weapon's
+handling), the Fend entry, the player's request-an-attack, which clears
 the permission, the race and claw forbids of the permission, and the
 previous-motion record of a continued swing (nothing sets the continuation
 flag yet).
 
-The armed parry's geometry is in place as tested functions, with nothing
-calling them yet: `parry_blade_height` finds how far up the attacker's
+The armed parry is live (`parry::run_parries`, `hold_parry_links`): while
+it holds, the weapon in its slot (the right hand's first) has its parry
+link, the soft world weld its attach built, made a plain world link to the
+parry point with the grip's strength (`exa_physics::grip::GripLinks::
+aim_parry`), the other hand's item's link is disabled, and a blow that has
+passed disables them all; the parry's end disables them again
+(`release_parry`; the hand grips are left alone). The point reads the
+attacker's clip progress, from its blade tip. The shield's plane link is
+not modelled. Its geometry: `parry_blade_height` finds how far up the attacker's
 blade the parry meets it (the chest gap less 20 cm against the reach and
 the blade length), `blade_point` carries that point by the blade's
 tetrahedron now and a tick ago (the fast barycentrics), `parry_point`
@@ -718,11 +725,13 @@ most), both compared in double, else the combat idle. The AI's guard
 choice uses it.
 
 `weapon` is the held weapon's handling: the blade lift and bend curves and
-their two guide pushes (the weapon's and the forearm's), with the weapon's
-balance W7 term, using `exa_physics::body::push_fraction`'s point weighting;
-the guide is normalised by the engine's `RSQRTSS`. Nothing applies the
-pushes to a body yet (the original's body tick runs them on the stab, attack
-clip 11).
+their two guide pushes (the weapon's and the right hand's), with the
+weapon's balance W7 term, using `exa_physics::body::push_fraction`'s point
+weighting; the guide from the frame's anchor to the stab's aim point is
+normalised by the engine's `RSQRTSS`. The swing stage applies them on a
+stab that does not cleave (`swing.rs drive_stab`, the original's body tick
+on attack clip 11): the weapon's to the item body at the point 0.9 up the
+blade, the hand's to the right hand.
 
 `burn` is fire's damage over time, worked in double as the original does:
 the timer gains 0.03 of the strength (cap 20) or loses 0.1; yellow loses

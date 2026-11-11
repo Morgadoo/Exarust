@@ -1,21 +1,19 @@
 //! The held weapon's handling forces, as the original's body tick runs them
-//! at the start of every attack (the routine that keeps the weapon in the
-//! swing's plane): the blade's bend and lift curves, and the two pushes they
-//! give the weapon body and its forearm, along the swing's guide direction.
+//! on a stab (clip 11) whose clip flags leave bit 8 clear: the blade's bend
+//! and lift curves, and the two pushes they give the weapon body and the
+//! right hand, along the guide from the frame's anchor to the stab's aim
+//! point.
 //! The weighting of a push at a point is the original's too: a push into the
 //! point acts in full, one partly into it in part, and one away from it not
 //! at all. Rules and constants: reverse engineering of the held-weapon
 //! handling routine and the push-at-point helper.
 //!
-//! A plain weapon model now has a solver body, but nothing applies these
-//! forces to it yet: the step is tested with its own numbers. Lengths are the original's centimetres.
+//! The swing stage applies them (`swing.rs drive_stab`). Lengths are the
+//! original's centimetres.
 
-use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_physics::engine_math::normalize_approx;
 
-/// The guide point's offset from the body's frame, in its space (cm).
-const GUIDE_OFFSET: Vec3 = Vec3::new(-20.0, 10.0, 0.0);
 /// The blade's lift curve: at or under 0.1 none; otherwise
 /// (p − 0.1)·1.65, then (3 − 2t)t², floored at 0.
 const LIFT_FROM: f64 = 0.1;
@@ -61,31 +59,32 @@ pub fn blade_bend(progress: f32) -> f32 {
     floored((3.0 - 2.0 * t) * t * (left * left) * BEND_SHARE as f32)
 }
 
-/// The two pushes the held-weapon handling block makes at `progress` of an
-/// attack's clip: the weapon's at `weapon_point` and the forearm's at
-/// `hand_point` (world, cm), along the guide direction from the frame's
-/// offset to `guide_point`; `balance` is the weapon's W7. None before 0.1.
-/// The caller makes them only while a weapon is held and the body is not
-/// staggered.
+/// The two pushes the held-weapon handling block makes at `progress` of a
+/// stab's clip: the weapon's at `weapon_point` and the right hand's at
+/// `hand_point` (world, cm), along the guide direction from `origin` (the
+/// frame's anchor, 20 cm to the side and 10 cm up, world cm) to
+/// `guide_point` (the stab's aim point); `balance` is the weapon's W7. None
+/// at or before 0.1 (a double compare; a NaN clock goes on). The caller makes them only while a
+/// weapon is held and the swing does not cleave.
 ///
 /// Each push is its point's offset from the guide's origin without its part
-/// along the guide, scaled (the weapon's by lift·p·6, the forearm's by
+/// along the guide, scaled (the weapon's by lift·p·6, the hand's by
 /// p²·lift), plus, once the clip is past 0.4 (the single-precision 0.4),
 /// the guide direction scaled by the bend and the balance (the weapon's
-/// (W7 + 0.8)·48, the forearm's (W7 + 0.8)·(1 − p)²·12, each rounded to
+/// (W7 + 0.8)·48, the hand's (W7 + 0.8)·(1 − p)²·12, each rounded to
 /// single before the bend multiplies it).
 pub fn handling_pushes(
     progress: f32,
     balance: f32,
-    frame: Affine3A,
+    origin: Vec3,
     guide_point: Vec3,
     weapon_point: Vec3,
     hand_point: Vec3,
 ) -> Option<[Vec3; 2]> {
+    // A NaN clock is not at or under it (the unordered compare goes on).
     if f64::from(progress) <= HANDLING_FROM {
         return None;
     }
-    let origin = frame.transform_point3(GUIDE_OFFSET);
     // The engine's approximate normaliser (`RSQRTSS` of (x² + z²) + y²),
     // as the original's handling routine calls it on the guide.
     let dir = normalize_approx(guide_point - origin);
@@ -161,20 +160,18 @@ mod tests {
     /// moves the guide's origin.
     #[test]
     fn the_handling_pushes_along_the_guide() {
-        let frame = Affine3A::IDENTITY;
-        let origin = GUIDE_OFFSET;
+        let origin = Vec3::new(-20.0, 10.0, 0.0);
         let guide = origin + Vec3::Z * 100.0;
         let weapon = origin + Vec3::new(3.0, 4.0, 5.0);
         let hand = origin + Vec3::new(1.5, 2.0, 2.5);
-        let [w, f] = handling_pushes(0.5, 0.5, frame, guide, weapon, hand).unwrap();
+        let [w, f] = handling_pushes(0.5, 0.5, origin, guide, weapon, hand).unwrap();
         assert!(close(blade_lift(0.5), 0.731_808));
         assert!(close(blade_bend(0.5), 0.28));
         assert!((w - Vec3::new(-6.586_272, -8.781_696, 17.472)).length() < 1e-3);
         assert!((f - Vec3::new(-0.274_428, -0.365_904, 1.092)).length() < 1e-3);
-        assert!(handling_pushes(0.05, 0.5, frame, guide, weapon, hand).is_none());
-        // Moving the frame moves the origin, so the same points push
-        // differently.
-        let moved = Affine3A::from_translation(Vec3::X);
+        assert!(handling_pushes(0.05, 0.5, origin, guide, weapon, hand).is_none());
+        // Moving the origin, the same points push differently.
+        let moved = origin + Vec3::X;
         let [w2, _] = handling_pushes(0.5, 0.5, moved, guide, weapon, hand).unwrap();
         assert!((w2 - w).length() > 0.1);
     }

@@ -14,14 +14,11 @@
 //! and one between 50 and 100 cm has its height replaced by
 //! `(10000 − h²)·0.0001`. The aim point lies 250 cm out along the aim.
 //!
-//! The drive ([`stab_drive`]) runs from clock 0.1 while the stab has a held
-//! weapon and has not landed a blow. With `s = S((c − 0.1)·1.65)` (`S(u) =
-//! (3 − 2u)·u²`, floored at 0), the weapon point 0.9 up the first held item
-//! is pushed across onto the line by `6·c·s` of its distance from it, and
-//! the left hand by `c²·s` of its own. Past clock 0.4, with `g = 4·(1 − c)²·
-//! (3 − 2t)·t` (`t = c − 0.4`, floored at 0), both are driven along the line
-//! as well: the weapon by `48·g·(W7 + 0.8)` cm and the hand by `12·g·
-//! (W7 + 0.8)·(1 − c)²` cm, W7 the weapon's balance.
+//! The drive runs from clock 0.1 while the stab has a held weapon and has
+//! not landed a blow: the body tick's handling pushes
+//! ([`crate::weapon::handling_pushes`]) move the weapon point 0.9 up the
+//! first held item and the right hand across onto the line from the anchor
+//! to the aim point, and past clock 0.4 along it.
 //!
 //! Evidence: the AI behaviour's stab-aim slot and the body tick's stab arm
 //! drive (REA, `Exanima.exe`).
@@ -46,22 +43,6 @@ const NEAR2: f32 = 2500.0;
 /// Below this squared distance across the ground (cm²) the height is
 /// replaced.
 const CLOSE2: f32 = 10000.0;
-/// The drive starts past this clock.
-pub const DRIVE_FROM: f32 = 0.1;
-/// The drive pushes along the line past this clock.
-pub const ALONG_FROM: f32 = 0.4;
-/// The across ramp's rate.
-const ACROSS_RATE: f32 = 1.65;
-/// The weapon point's across gain, times the clock and the ramp.
-const ITEM_ACROSS: f32 = 6.0;
-/// The weapon point's push along the line (cm), times the along ramp and
-/// W7 + 0.8.
-const ITEM_ALONG_CM: f32 = 48.0;
-/// The hand's push along the line (cm), times the along ramp, W7 + 0.8 and
-/// (1 − c)².
-const HAND_ALONG_CM: f32 = 12.0;
-/// Added to the weapon's balance for the along pushes.
-const BALANCE_PLUS: f32 = 0.8;
 /// The weapon point sits this share of the item's length up from its grip.
 pub const ITEM_POINT_SHARE: f32 = 0.9;
 
@@ -154,85 +135,6 @@ impl StabAim {
     }
 }
 
-/// The two pushes of one tick of the stab drive (cm).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StabPushes {
-    /// On the weapon point: toward the line and along it.
-    pub item: Vec3,
-    /// The weapon point's offset to the line (from the point to its
-    /// nearest point on the line).
-    pub item_to_line: Vec3,
-    /// On the left hand.
-    pub hand: Vec3,
-    /// The line's direction (unit).
-    pub dir: Vec3,
-}
-
-/// The across ramp at clock `c`: `S((c − 0.1)·1.65)`, 0 until 0.1.
-fn across_ramp(c: f32) -> f32 {
-    if c <= DRIVE_FROM {
-        return 0.0;
-    }
-    let u = (c - DRIVE_FROM) * ACROSS_RATE;
-    ((3.0 - u * 2.0) * u * u).max(0.0)
-}
-
-/// The along ramp at clock `c`: `4·(1 − c)²·(3 − 2t)·t`, `t = c − 0.4`, 0
-/// until 0.4.
-fn along_ramp(c: f32) -> f32 {
-    if c <= ALONG_FROM {
-        return 0.0;
-    }
-    let t = (c - ALONG_FROM) * 1.0;
-    let d = 1.0 - c;
-    (d * d * (3.0 - t * 2.0) * t * 4.0).max(0.0)
-}
-
-/// From `point` to the line through `anchor` along the unit `dir`: the
-/// anchor's offset less its part along the line (the dot taken z, y, x).
-fn across(anchor: Vec3, point: Vec3, dir: Vec3) -> Vec3 {
-    let v = anchor - point;
-    let along = v.z * dir.z + v.y * dir.y + v.x * dir.x;
-    v + dir * -along
-}
-
-/// One tick of the stab drive at clock `clock`: the anchor, the aim point,
-/// the weapon point and the left hand's centre (world, cm) and the
-/// weapon's balance W7. None at or before clock 0.1 or with no direction
-/// to the aim.
-pub fn stab_drive(
-    clock: f32,
-    anchor_cm: Vec3,
-    aim_point_cm: Vec3,
-    item_cm: Vec3,
-    hand_cm: Vec3,
-    balance: f32,
-) -> Option<StabPushes> {
-    if clock <= DRIVE_FROM {
-        return None;
-    }
-    let dir = normalize_approx(aim_point_cm - anchor_cm);
-    if dir == Vec3::ZERO || !dir.is_finite() {
-        return None;
-    }
-    let g = along_ramp(clock);
-    let s = across_ramp(clock);
-    let item_to_line = across(anchor_cm, item_cm, dir);
-    let mut item = item_to_line * (s * clock * ITEM_ACROSS);
-    let mut hand = across(anchor_cm, hand_cm, dir) * (clock * clock * s);
-    if ALONG_FROM < clock {
-        let rest = 1.0 - clock;
-        item += dir * (g * (balance + BALANCE_PLUS) * ITEM_ALONG_CM);
-        hand += dir * (g * (balance + BALANCE_PLUS) * rest * rest * HAND_ALONG_CM);
-    }
-    Some(StabPushes {
-        item,
-        item_to_line,
-        hand,
-        dir,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,33 +190,5 @@ mod tests {
         assert_eq!(aim.pitch, low.pitch);
         let up = -quick_asin(normalize_approx(Vec3::new(0.0, 0.64, 60.0)).y);
         assert!((aim.pitch - up).abs() < 1e-6, "{} {up}", aim.pitch);
-    }
-
-    #[test]
-    fn the_drive_pulls_across_from_a_tenth_and_along_from_four_tenths() {
-        let anchor = Vec3::ZERO;
-        let aim = Vec3::new(0.0, 0.0, 250.0);
-        // The weapon point 30 cm to the side of the anchor, the hand 10 cm
-        // (level with it, so the across push has no part along the line).
-        let item = Vec3::new(30.0, 0.0, 0.0);
-        let hand = Vec3::new(10.0, 0.0, 0.0);
-        assert_eq!(stab_drive(0.1, anchor, aim, item, hand, 0.5), None);
-        // Clock 0.3: u = 0.33, s = (3 − 0.66)·0.1089 = 0.254826; across only.
-        let p = stab_drive(0.3, anchor, aim, item, hand, 0.5).unwrap();
-        let s = (3.0f32 - 0.33 * 2.0) * 0.33 * 0.33;
-        assert!((p.item.x - -30.0 * (s * 0.3 * 6.0)).abs() < 1e-3, "{p:?}");
-        assert!((p.hand.x - -10.0 * (0.09 * s)).abs() < 1e-4, "{p:?}");
-        assert!(p.item.z.abs() < 1e-3 && p.hand.z.abs() < 1e-4, "{p:?}");
-        // Clock 0.6: t = 0.2, g = 4·0.16·2.6·0.2 = 0.3328; the weapon goes
-        // 48·g·1.3 = 20.77 cm along, the hand 12·g·1.3·0.16 = 0.831 cm.
-        let p = stab_drive(0.6, anchor, aim, item, hand, 0.5).unwrap();
-        let g = 0.4f32 * 0.4 * (3.0 - 0.2 * 2.0) * 0.2 * 4.0;
-        // (The direction is normalised as the engine does, to 12 bits.)
-        assert!((p.item.z - g * 1.3 * 48.0).abs() < 0.02, "{p:?}");
-        assert!((p.hand.z - g * 1.3 * 0.16 * 12.0).abs() < 1e-3, "{p:?}");
-        assert!((p.item.z - 20.77).abs() < 0.02 && (p.hand.z - 0.831).abs() < 0.001);
-        // Past the clip's end the across ramp has fallen to nothing.
-        let late = stab_drive(1.01, anchor, aim, item, hand, 0.5).unwrap();
-        assert!(late.item.x.abs() < 0.05, "{late:?}");
     }
 }

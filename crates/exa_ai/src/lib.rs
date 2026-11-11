@@ -3573,7 +3573,8 @@ mod tests {
     }
 
     /// Ending the parry clears the arm bit on the hand and its parent, and
-    /// disables the held grip past the pivot. The pivot link stays.
+    /// disables the held item's parry link (its soft world weld). The hand
+    /// grips stay.
     #[test]
     fn a_parry_end_unlocks_the_hand_and_the_grip() {
         use exa_combat::damage::Guard;
@@ -3638,7 +3639,7 @@ mod tests {
             hands: [Some(hand), None],
             arms: [None, None],
             links: Some(GripLinks {
-                links: vec![link(PIVOT), link(PIVOT | ENABLED)],
+                links: vec![link(PIVOT), link(PIVOT | ENABLED), link(0)],
                 main: 1,
                 second: None,
                 arm: None,
@@ -3652,7 +3653,7 @@ mod tests {
                 motion: -1,
                 relaxing: false,
                 record_dirty: false,
-                world_soft: None,
+                world_soft: Some(2),
                 world_hard: None,
             }),
             released: false,
@@ -3688,8 +3689,10 @@ mod tests {
             .links
             .as_ref()
             .unwrap();
+        // The parry link is the soft world weld; the hand grips stay.
         assert_eq!(links.links[0].flags, PIVOT);
-        assert_eq!(links.links[1].flags, DISABLED);
+        assert_eq!(links.links[1].flags, PIVOT | ENABLED);
+        assert_eq!(links.links[2].flags, DISABLED);
         assert!(!app.world().get::<Fighter>(holder).unwrap().parry.active);
     }
 

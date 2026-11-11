@@ -14,9 +14,13 @@
 //! [`run_parries`] places the rule where the original's body tick calls it:
 //! after the swing routine, for the ticked fighter, from the combat idle
 //! (muscle tone 0.85 or more, the auto-parry deadline passed, something in
-//! the hands) and then on every tick the fighter parries. The armed parry
-//! (its speed and grips from the weapon's handling) is not modelled, so a
-//! fighter holding a weapon does not parry.
+//! the hands) and then on every tick the fighter parries. An armed parry
+//! takes its speed from the weapon's handling, and on every tick it holds
+//! it drives the weapon toward the parry point through the item's parry
+//! link (the soft world weld its attach built): a plain world link to that
+//! point with the grip's strength, the other hand's item's link disabled,
+//! every item's link disabled once the blow has passed. The shield's link
+//! (a plane link) is not modelled.
 //!
 //! Evidence: the unarmed parry decision, the height table, the body tick's
 //! calls of the check, and the armed grip.
@@ -1231,6 +1235,9 @@ struct Pick {
     clip: u8,
     /// The blow cleaves: the armed parry refuses it.
     cleaving: bool,
+    /// The attacker's clip progress (its clock), which scales the blade's
+    /// vertical travel for a side swing.
+    progress: f32,
 }
 
 /// What the defender holds: whether it may parry at all (it holds something,
@@ -1279,8 +1286,7 @@ fn held(wielder: Entity, blades: &Query<&Blade>) -> Held {
 /// shield passes them as zero. `other_held` disables the other hand's grip.
 fn armed_parry_grip(
     held: &Held,
-    motion: u8,
-    cleaving: bool,
+    blow: ArmedBlow,
     distance_cm: f32,
     shield: Option<(f32, f32)>,
     other_held: bool,
@@ -1292,17 +1298,29 @@ fn armed_parry_grip(
     armed_grip(&Arm {
         handling: held.handling,
         horizontal_cm: distance_cm,
-        passed: false,
-        cleaving,
+        passed: blow.passed,
+        cleaving: blow.cleaving,
         shield: shield.is_some(),
         shield_weight,
         stamina,
-        attacking: false,
-        motion,
+        attacking: blow.defender_attacking,
+        motion: blow.defender_motion,
         held: held.count,
         has_grip: true,
         other_held,
     })
+}
+
+/// What the armed grip reads of the blow and the defender: the defender's
+/// own motion and whether it attacks (condition 2), which pick the held
+/// slot; whether the blow cleaves (refused) and whether the blade has
+/// already passed the defender.
+#[derive(Clone, Copy, Debug)]
+struct ArmedBlow {
+    defender_motion: u8,
+    defender_attacking: bool,
+    cleaving: bool,
+    passed: bool,
 }
 
 /// A fighter's reach in centimetres, as the equip refresh sets it: its
@@ -1378,8 +1396,12 @@ struct Defender<'a> {
     attacker_chest_cm: Vec3,
     defender_chest_cm: Vec3,
     tip_cm: (Vec3, Vec3),
-    /// The armed parry's point this tick (cm), once measured.
-    point_cm: Option<Vec3>,
+    /// The armed parry's point this tick (cm) and whether the blade has
+    /// passed, once measured.
+    point_cm: Option<ParryPoint>,
+    /// The armed parry this tick held: its grip and point (cm), which the
+    /// tick's end writes into the held items' parry links.
+    armed_hold: Option<(Grip, Vec3)>,
 }
 
 impl Defender<'_> {
@@ -1387,7 +1409,7 @@ impl Defender<'_> {
     /// blow's distance give its strength; a cleaving blow has none.
     /// The armed parry's point (cm): the blade point pulled back along its
     /// sweep by the chest's lead, or 10 cm on once the blade has passed.
-    fn parry_point_cm(&mut self, pick: Pick) -> Vec3 {
+    fn parry_point_cm(&mut self, pick: Pick) -> ParryPoint {
         if let Some(point) = self.point_cm {
             return point;
         }
@@ -1398,11 +1420,10 @@ impl Defender<'_> {
             self.attacker_chest_cm,
             self.defender_chest_cm,
             i32::from(pick.motion),
-            0.0,
-        )
-        .point;
+            pick.progress,
+        );
         self.point_cm = Some(point);
-        self.fighter.parry.point_cm = point.to_array();
+        self.fighter.parry.point_cm = point.point.to_array();
         point
     }
 
@@ -1419,14 +1440,20 @@ impl Defender<'_> {
             });
         }
         let point = self.parry_point_cm(pick);
-        armed_parry_grip(
+        let grip = armed_parry_grip(
             &self.held,
-            pick.motion,
-            pick.cleaving,
-            parry_distance(point, self.defender_chest_cm),
+            ArmedBlow {
+                defender_motion: self.motion,
+                defender_attacking: self.condition == Condition::ATTACKING,
+                cleaving: pick.cleaving,
+                passed: point.passed,
+            },
+            parry_distance(point.point, self.defender_chest_cm),
             self.shield,
             self.held.count > 1,
-        )
+        )?;
+        self.armed_hold = Some((grip, point.point));
+        Some(grip)
     }
 }
 
@@ -1693,7 +1720,7 @@ pub(crate) fn run_parries(
         )>,
     )>,
     shields: Query<(), With<crate::block::ShieldHold>>,
-    mut grips: Query<&mut exa_physics::grip::HeldGrip>,
+    mut grips: Query<(Entity, &mut exa_physics::grip::HeldGrip)>,
     targets: Query<&crate::CombatTarget>,
 ) {
     let Some(motions) = motions else { return };
@@ -1718,7 +1745,7 @@ pub(crate) fn run_parries(
             info!("attack left: {entity:?} releases the parry hold its aimed start kept");
             body.clear_parry_arms(Ragdoll::PARRY_HANDS);
             if let Some(key) = body.parts.first().map(|part| part.entity) {
-                for mut grip in &mut grips {
+                for (_, mut grip) in &mut grips {
                     if grip.holder_key == key
                         && let Some(links) = grip.links.as_mut()
                     {
@@ -1863,6 +1890,7 @@ pub(crate) fn run_parries(
                 motion: motion_index,
                 clip: clip_for(&threat),
                 cleaving,
+                progress,
             });
             pick_attacker_chest = chest;
             pick_tip = (tip_now, tip_before);
@@ -1893,6 +1921,7 @@ pub(crate) fn run_parries(
             defender_chest_cm: pick_def_chest * 100.0,
             tip_cm: (pick_tip.0 * 100.0, pick_tip.1 * 100.0),
             point_cm: None,
+            armed_hold: None,
             fighter: &mut fighter,
             anim: &mut anim,
             stance: &mut stance,
@@ -1909,11 +1938,14 @@ pub(crate) fn run_parries(
         if left_attack {
             commands.entity(entity).remove::<Attacking>();
         }
-        defender.fighter.parry.active
+        let hold = defender.armed_hold;
+        (defender.fighter.parry.active, hold)
     };
+    let (active, armed_hold) = active;
     // While the parry holds, the hands and their parents take the arm bit
-    // and each held grip past the pivot is enabled. The tick it ends, both
-    // are released. A body that was not parrying is left alone.
+    // and an armed parry drives its weapon through the item's parry link.
+    // The tick it ends, the arm bits and every held item's parry link are
+    // released. A body that was not parrying is left alone.
     if active || parries {
         let mut own = bodies.p0();
         let key = own
@@ -1929,20 +1961,63 @@ pub(crate) fn run_parries(
                 body.parts.first().map(|part| part.entity)
             });
         if let Some(key) = key {
-            for mut grip in &mut grips {
-                if grip.holder_key == key
-                    && let Some(links) = grip.links.as_mut()
-                {
-                    if active {
-                        links.hold_parry();
-                    } else {
-                        links.release_parry();
-                    }
-                }
-            }
+            hold_parry_links(
+                &mut grips,
+                key,
+                active.then_some(armed_hold).flatten(),
+                active,
+            );
         }
     }
 }
+
+/// The armed parry's writes into the holder's parry links (the original's
+/// armed parry and its end): on its end every held item's and the
+/// shield's link is disabled; while an armed parry holds, a passed blow
+/// disables them all, a weapon's grip makes the link of the item in its
+/// slot a world link to the parry point with the grip's strength and
+/// disables the other hand's item's link, and a shield's grip (a plane link
+/// along the frame's forward, not modelled) only disables the other hand's.
+/// The holder's held items are its non-shield grips, the right hand's
+/// first (the original's held list). An unarmed parry writes nothing.
+fn hold_parry_links(
+    grips: &mut Query<(Entity, &mut exa_physics::grip::HeldGrip)>,
+    key: Entity,
+    hold: Option<(Grip, Vec3)>,
+    active: bool,
+) {
+    use exa_physics::grip::HeldKind;
+    let mut items: Vec<(usize, Entity)> = grips
+        .iter()
+        .filter(|(_, g)| g.holder_key == key && g.kind != HeldKind::Shield && g.links.is_some())
+        .map(|(e, g)| (g.spec.hand, e))
+        .collect();
+    items.sort();
+    let release_all = !active || hold.is_some_and(|(g, _)| g.flags == ARMED_PASSED);
+    for (e, mut grip) in grips.iter_mut() {
+        if grip.holder_key != key {
+            continue;
+        }
+        let slot = items.iter().position(|&(_, item)| item == e);
+        let Some(links) = grip.links.as_mut() else {
+            continue;
+        };
+        if release_all {
+            links.release_parry();
+            continue;
+        }
+        let Some((g, point_cm)) = hold else { continue };
+        let Some(slot) = slot else { continue };
+        if g.flags == 0 && g.enabled && slot == usize::from(g.slot) {
+            links.aim_parry(point_cm / 100.0, g.strength);
+        } else if g.other_disabled && slot == 1 - usize::from(g.slot).min(1) {
+            links.release_parry();
+        }
+    }
+}
+
+/// The armed grip's flags for a blow that has passed the defender.
+const ARMED_PASSED: u32 = 0x10_0000;
 
 #[cfg(test)]
 mod stance_tests {
@@ -2063,6 +2138,9 @@ mod wiring_tests {
         .with_drive()
     }
 
+    /// A held item whose parry link (its soft world weld, link 2) an
+    /// earlier armed parry left enabled: an unarmed parry writes nothing
+    /// into it, and the parry's end disables it.
     fn parry_grip(key: Entity) -> exa_physics::grip::HeldGrip {
         use exa_physics::grip::{GripLink, GripLinks, GripSpec, HeldGrip, HeldKind, PIVOT};
         let link = |flags| GripLink {
@@ -2097,7 +2175,7 @@ mod wiring_tests {
             hands: [None, None],
             arms: [None, None],
             links: Some(GripLinks {
-                links: vec![link(PIVOT), link(PIVOT)],
+                links: vec![link(PIVOT), link(PIVOT), link(0)],
                 main: 1,
                 second: None,
                 arm: None,
@@ -2111,12 +2189,62 @@ mod wiring_tests {
                 motion: -1,
                 relaxing: false,
                 record_dirty: false,
-                world_soft: None,
+                world_soft: Some(2),
                 world_hard: None,
             }),
             released: false,
             head_extra: 0.0,
         }
+    }
+
+    /// An armed parry's hold makes the parry link of the item in its slot
+    /// (the right hand's first) a world link to the parry point with the
+    /// grip's strength and disables the other hand's; a passed blow and the
+    /// parry's end disable both.
+    #[test]
+    fn an_armed_parry_aims_its_slots_parry_link() {
+        use bevy::ecs::system::RunSystemOnce;
+        use exa_physics::grip::{DISABLED, HeldGrip};
+        let mut world = World::new();
+        let key = world.spawn_empty().id();
+        let right = world.spawn(parry_grip(key)).id();
+        let mut left_grip = parry_grip(key);
+        left_grip.spec.hand = 1;
+        let left = world.spawn(left_grip).id();
+        let run = |world: &mut World, hold: Option<(Grip, Vec3)>, active: bool| {
+            world
+                .run_system_once(move |mut q: Query<(Entity, &mut HeldGrip)>| {
+                    hold_parry_links(&mut q, key, hold, active)
+                })
+                .unwrap();
+        };
+        let link = |world: &World, e: Entity| {
+            world
+                .get::<HeldGrip>(e)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap()
+                .links[2]
+                .clone()
+        };
+        let weapon = grip(1.0, 0.3, 0, 0, true, true);
+        run(
+            &mut world,
+            Some((weapon, Vec3::new(100.0, 200.0, 300.0))),
+            true,
+        );
+        let aimed = link(&world, right);
+        assert_eq!(aimed.flags, 0);
+        assert_eq!(aimed.anchor, Some(Vec3::new(1.0, 2.0, 3.0)));
+        assert_eq!(aimed.strength, 0.3);
+        assert_eq!(link(&world, left).flags, DISABLED);
+        let passed = grip(1.0, 0.0, 0, ARMED_PASSED, false, true);
+        run(&mut world, Some((passed, Vec3::ZERO)), true);
+        assert_eq!(link(&world, right).flags, DISABLED);
+        run(&mut world, Some((weapon, Vec3::ZERO)), true);
+        run(&mut world, None, false);
+        assert_eq!(link(&world, right).flags, DISABLED);
     }
 
     /// An unarmed defender in the combat idle at the origin facing +Z, and
@@ -2247,7 +2375,7 @@ mod wiring_tests {
             .links
             .as_ref()
             .unwrap()
-            .links[1]
+            .links[2]
             .enabled()
     }
 
@@ -2352,7 +2480,7 @@ mod wiring_tests {
             .world()
             .get::<exa_physics::grip::HeldGrip>(d.grip)
             .unwrap();
-        assert!(grip.links.as_ref().unwrap().links[1].enabled());
+        assert!(grip.links.as_ref().unwrap().links[2].enabled());
 
         d.tick();
         d.tick();
@@ -2382,7 +2510,7 @@ mod wiring_tests {
             .world()
             .get::<exa_physics::grip::HeldGrip>(d.grip)
             .unwrap();
-        assert!(!grip.links.as_ref().unwrap().links[1].enabled());
+        assert!(!grip.links.as_ref().unwrap().links[2].enabled());
         d.tick();
         assert_eq!(d.get::<Fighter>().parry.counter, 3);
     }
