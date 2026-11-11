@@ -1,6 +1,6 @@
 ## Why
 
-Phase 5 (AI) in docs/PLAN.md, TMotileAI and TPathFinder. The AI's motion and search helpers still built every yaw
+Phase 6 (AI) in docs/PLAN.md, TMotileAI and TPathFinder. The AI's motion and search helpers still built every yaw
 and direction with exact trigonometry where the original calls the engine's fast heading, direction, pitch
 direction, two-argument arctangent and normaliser. Round 151 tried the port and reverted it: the brain's idle glue
 read each NPC's facing back from the model rotation it had just written, so the fast heading's error (up to 4e-4
