@@ -1964,6 +1964,8 @@ a sweep for human assumptions about races fixed four reads against the assembly:
 
 decals and blended surfaces now draw with the original scene pass depth bias (a fraction of a millimetre at 10 m); the research note on a compile fallback shader was wrong (the slot logs and skips).
 
+the last three frame writers found by the round 187 sweep are gone: bodies without a body tick now tick their clips once per simulation step and the frame only places their parts (menu figures keep a frame clock); the player practice lesson from a struck character is taken in the step, as the original damage routine raises it on the simulation thread; the arena-fell debug drop is posted to the step. The bridge write log ignores equal values and names what an applied value undid. Lockstep traces now differ from main from tick 1 because standing bodies clips tick per step before they turn physical (deterministic, 4 runs identical). Left: the Control Mind end frame writes (Duellist, PlayerBody).
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
