@@ -853,7 +853,7 @@ and holds the pointer (`destination`, `PointerOverGui`), so a chosen row
 starts the journey bubble, whose `teleportf01` voice, `teleportc01` close
 and shrinking volume play (`effects::bubble_sound`); its light keeps the
 node's 120 cm; and `--debug-slot FRAME` puts a stand-in crystal on every
-device's slot. A journey's level change passes no flags (no portal use,
+device's slot (logging how many devices took one). A journey's level change passes no flags (no portal use,
 hand-over or long hold). The
 screen's drawing, the grab input, the level change, the corpse
 record a strip leaves, the emissive half of the glow, the aura's shader
