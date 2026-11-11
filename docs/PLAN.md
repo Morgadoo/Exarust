@@ -1703,6 +1703,8 @@ Round 146 sectors: every grid level keeps the original scene of sectors live, it
 
 Round 151 core: the oriented-box slab tests use the original approximate reciprocal and the head tracking the engine fast normalise and trig direction; the sun fit sphere solver was already live.
 
+Round 158 kernel2: the body twist, spine, hunch and headings normalise with the original approximate reciprocal root and engine trig.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
