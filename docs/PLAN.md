@@ -2497,6 +2497,8 @@ Round 164 guiskin: the hub form fields take keys, carets, selection and the clip
 
 Round 167 skins: the colour picker draws on the base draw skin as an ownerless form does, and the line skin slider is verified against the assembly.
 
+Round 168 thaumunits: force domes knock, drain and stop the characters they push, and Control Mind possession works behind the simulation bridge.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
