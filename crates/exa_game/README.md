@@ -496,7 +496,11 @@ chest point: the 40 cm shove, the instability counter plus one, the energy
 drain (0.002 for the bubble, 0.001 for the barrier) and the AI's route
 dropped; a held weapon's struck part breaks its holder's attack. The
 barricade's shove keeps the original's double precision and drops the
-route too. Both domes run their frame step every frame and are
+route too. The frame writes the blast, torrent, barrier, bubble,
+barricade and wisp effects only to draw them (light points, ribbon
+normals, shown shares, growth), so the bridge copies them as drawn
+copies: a free simulation's newer effect state is never rolled back by a
+frame copy of an older step (`thaum::live`). Both domes run their frame step every frame and are
 drawn (`effects::dome_draw`: the cap or the sphere at the dome's radius in
 the node's frame, `effectbarrier_f`/`effectbubble_f` through
 `ForceDomeMaterial`, the `_ForceNoise` picture), and their sounds play
