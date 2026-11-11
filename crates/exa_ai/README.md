@@ -295,7 +295,32 @@ else it is noticed. A flight halves the courage and adds 2 to the stress
 before the pass, after the alarm mean's raise: a fresh flight halves the
 morale's courage, adds 2 to its alarm, marks the target fresh and remembers
 the threat's room, logged `the target pass starts a flight`);
-a cornered fighter fights on with its courage doubled. The way out is the
+on every flee outcome the brain's conversations end
+(`exa_script::EndConversationsOf`, the engine's `leave`), the flee start
+writes the body's target (the duellist's target, which leaves the combat
+state) or, for an object, the object focus (`Npc::flee_focus`, the flight's
+threat), and while at level 4 the pass keeps the threat as its foe. The
+flee state's head ends a flight whose threat is not fresh and stands in
+another room than the brain's and its previous one (or with neither a
+target nor a focus): level 0, a 10-20 s calm clock (`flee::tick`, logged
+`the flight ends`); a cornered fighter fights on with its courage doubled
+[the cornered branch is not wired].
+
+**Where the concern comes from.** The perception's threat estimate walks
+the observed character's own contacts. The player's are its behaviour's
+12 m list (`combatant::PlayerContacts`, written by `exa_game`'s player
+tick: closeness, the facing weight as the view, the score in the concern
+word), so a hostile NPC's concern target and contact alarm rise as the
+player approaches, faces and attacks it. The brain keeps the integration's
+concern apart from the combatant's contact, which the AI tick overwrites
+with the brain's each tick (`Contact::mirrored` keeps what it wrote); a hit
+reaction, a blast's, torrent's or stamped body's `AddConcern` and a script
+write the combatant's contact, and the next AI tick takes any value that
+differs from the copy into the brain (`brain::adopt_contact_writes`,
+logged `concern for … written` at `exa_ai::pass=debug`). The pass's debug
+line (`RUST_LOG=exa_ai::pass=debug`) gives the outcome, morale, the most
+concern, concern target and contact alarm and the room's exits;
+`exa_ai::flee_way=debug` gives the way-out inputs and each flight plan. The way out is the
 open exit most opposite the threat (cosine under 0.2), and fled rooms are
 remembered (eight). A combatant's contact is classified through
 `ContactRecord::of`; both lists admit as the original does: a full list

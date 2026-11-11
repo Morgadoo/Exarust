@@ -1338,8 +1338,12 @@ request), the rest are tested functions with no caller yet:
   admits marked non-solid nodes).
 - **Contacts.** Every character within 12 m, rebuilt each tick: closeness
   `1 − d·0.00083333335` capped at 0.99, facing weight `0.75·(0.5 −
-  0.5·facing·dir) + 0.25·(0.5 − 0.5·cursor·dir)²`, score half of each;
-  twelve kept, a new one replacing the lowest it outscores.
+  0.5·facing·dir) + 0.25·(0.5 − 0.5·cursor·dir)²` (`dir` from the other
+  to the player: a character straight ahead weighs 1), score half of each;
+  twelve kept, a new one replacing the lowest it outscores. The list is
+  the player's contacts the NPC perception reads: each holds the
+  closeness and the facing weight (as its view), and the score in its
+  concern word.
 - **Engaged enemy.** The largest threat among the living characters of the
   contact list within the player's reach plus 70 cm, in front of the
   heading by more than 0.3 of their distance (in double precision), whose

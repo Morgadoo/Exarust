@@ -24,7 +24,8 @@ the installation is open, keeps the session's `Conversations` (engine,
 cast, player, world clock base, locale) and steps the engine every frame on
 `Time<Virtual>`. Messages: `Narrate`, `NarrateText`, `Talk`, `PadTalk` (the gamepad's, whose panel
 keeps `Panel::by_pad`), `PickReply`,
-`LeaveDialogue` in; `ScriptEffect` (game events, inventory, checkpoint
+`LeaveDialogue`, `EndConversationsOf` (a character's live conversations end; the NPC
+target pass sends it when it flees) in; `ScriptEffect` (game events, inventory, checkpoint
 saves with whether the first actor slot is the player, witness roles,
 `StartDialogue`, script errors) out. Systems outside the plugin that run
 scripts (corpse, encounter, zone, interaction-condition and used devices'

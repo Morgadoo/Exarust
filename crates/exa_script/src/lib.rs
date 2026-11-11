@@ -37,6 +37,7 @@ impl Plugin for ScriptPlugin {
             .add_message::<NarrateText>()
             .add_message::<PickReply>()
             .add_message::<LeaveDialogue>()
+            .add_message::<EndConversationsOf>()
             .add_message::<EndNarration>()
             .add_message::<ScriptEffect>()
             .add_systems(
@@ -169,6 +170,12 @@ pub struct PickReply(pub usize);
 #[derive(Message, Debug, Clone, Copy, Default)]
 pub struct LeaveDialogue;
 
+/// A character's conversations end: every live conversation it speaks in
+/// as owner or partner ([`dialogue::Engine::leave`]). The NPC target pass
+/// asks for it when it starts or renews a flight.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndConversationsOf(pub u32);
+
 /// The player acted while the narrator's reply panel offers choices: the
 /// next update ends every narrator conversation
 /// ([`dialogue::Engine::end_narration`]).
@@ -207,6 +214,7 @@ fn run_conversations(
     mut pad_talk: MessageReader<PadTalk>,
     mut pick: MessageReader<PickReply>,
     mut leave: MessageReader<LeaveDialogue>,
+    mut ends: MessageReader<EndConversationsOf>,
     mut end_narration: MessageReader<EndNarration>,
     mut effects: MessageWriter<ScriptEffect>,
 ) {
@@ -232,6 +240,9 @@ fn run_conversations(
             if let Some(who) = player {
                 engine.leave(scene, who);
             }
+        }
+        for end in ends.read() {
+            engine.leave(scene, end.0);
         }
         if end_narration.read().count() > 0 {
             engine.end_narration();
