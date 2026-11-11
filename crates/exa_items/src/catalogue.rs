@@ -92,6 +92,11 @@ pub struct ItemCatalogue {
     tagged_usable: HashMap<u32, [u8; 2]>,
     tagged_burdens: HashMap<u32, Burden>,
     tagged_shields: HashMap<u32, ShieldRecord>,
+    /// The shield section's flags word (its first body word), by record id
+    /// and by tagged id: the character view's drag-over test reads its
+    /// race-permission bits.
+    shield_flags: HashMap<u32, u32>,
+    tagged_shield_flags: HashMap<u32, u32>,
 }
 
 /// What one item's description card and weight rules read.
@@ -196,6 +201,9 @@ impl ItemCatalogue {
         for r in &db.records {
             let payload = db.payload(r);
             out.kinds.insert(r.id, kind_of(payload));
+            if let Some(flags) = shield_flags_of(payload) {
+                out.shield_flags.insert(r.id, flags);
+            }
             if let Some(c) = section(payload, CONTAINER).and_then(Container::parse) {
                 out.contents
                     .insert(r.id, c.children.iter().map(|c| c.id).collect());
@@ -225,6 +233,15 @@ impl ItemCatalogue {
             return self.tagged_kinds.get(&id).copied();
         }
         self.kinds.get(&id).copied()
+    }
+
+    /// The shield section's flags word; `None` for an item without a
+    /// shield section.
+    pub fn shield_flags(&self, id: u32) -> Option<u32> {
+        if id & !ID_MASK != 0 {
+            return self.tagged_shield_flags.get(&id).copied();
+        }
+        self.shield_flags.get(&id).copied()
     }
 
     /// A container's children; `None` for anything that is not one.
@@ -437,9 +454,13 @@ impl ItemCatalogue {
         self.tagged_usable.retain(|id, _| !ours(id));
         self.tagged_burdens.retain(|id, _| !ours(id));
         self.tagged_shields.retain(|id, _| !ours(id));
+        self.tagged_shield_flags.retain(|id, _| !ours(id));
         for (id, payload) in records {
             let tagged = tag | (id & ID_MASK);
             self.tagged_kinds.insert(tagged, kind_of(payload));
+            if let Some(flags) = shield_flags_of(payload) {
+                self.tagged_shield_flags.insert(tagged, flags);
+            }
             if let Some(c) = section(payload, CONTAINER).and_then(Container::parse) {
                 self.tagged_contents
                     .insert(tagged, c.children.iter().map(|c| c.id).collect());
@@ -670,6 +691,14 @@ fn kind_of(payload: &[u8]) -> ItemKind {
         sight: section(payload, BODY).map(exa_formats::objdb::special_kind)
             == Some(exa_formats::objdb::Burden::SEES_IN_THE_DARK),
     }
+}
+
+/// The shield section's flags word (the first word of its body, as the
+/// weapon section's flags are read).
+fn shield_flags_of(payload: &[u8]) -> Option<u32> {
+    section(payload, SHIELD)
+        .and_then(|b| b.get(..4))
+        .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")))
 }
 
 /// The model section's `+0x24` byte (body `+0x1C`): the bulk an item panel

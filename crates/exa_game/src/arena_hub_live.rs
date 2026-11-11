@@ -1711,18 +1711,6 @@ fn inside4(rect: [i32; 4], at: (i32, i32)) -> bool {
     at.0 >= rect[0] && at.1 >= rect[1] && at.0 < rect[0] + rect[2] && at.1 < rect[1] + rect[3]
 }
 
-/// The race word of a record's race (bit 4: it wears apparel), from the
-/// races table; a human's 4 when the table is not read.
-fn race_word(game: Option<&exa_assets::Game>, race: u8) -> u32 {
-    game.and_then(|game| {
-        crate::scene_bodies::game_races(game)
-            .iter()
-            .find(|r| r.id == u32::from(race))
-            .map(|r| r.flags)
-    })
-    .unwrap_or(4)
-}
-
 /// The trade window's drag, as its item panels and its character preview
 /// take the mouse: a left press on an item starts the item's drag, a press
 /// on the preview's figure starts a drag of the item its pick finds there;
@@ -1880,8 +1868,21 @@ fn shop_drag(
         && let Some(shop) = windows.shop.as_mut()
         && let Some(record) = shop.preview.as_mut()
     {
-        let race = race_word(game.as_deref(), record.race);
-        let dressed = crate::shop_preview::dress(record, drag.id, drag.flags, race, find, kind_of);
+        // The view's drag-over test first: a refused item never reaches
+        // the drop (the drag is cancelled).
+        let race = items.race(record.race);
+        let accepted = crate::doll_view::figure_accepts(
+            race,
+            drag.id,
+            kind_of(drag.id).unwrap_or_default(),
+            catalogue.and_then(|c| c.shield_flags(drag.id)),
+            find(drag.id).is_some_and(|item| item.burden.is_some() && !item.worn_model.is_empty()),
+            false,
+        );
+        let look = race.map_or(4, |r| r.look);
+        let dressed = accepted
+            .then(|| crate::shop_preview::dress(record, drag.id, drag.flags, look, find, kind_of))
+            .flatten();
         match &dressed {
             Some(done) => {
                 shop.panels.drag = None;
