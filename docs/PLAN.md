@@ -313,6 +313,8 @@ Round 169 stream: level characters are built on the content stream thread neares
 
 Round 186 texrender: point-light shadows skip terrain blocks the view did not draw, and the texture unit blur is dead code in 0.9.5.
 
+holed terrain blocks (story levels; no arena level has holes) now use the original triangle list for draw and collision, fixing hole rims; FPS and arena traces unchanged.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
