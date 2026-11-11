@@ -563,6 +563,7 @@ pub fn spawn_figure(
         Transform::from_translation(CREATOR_ORIGIN),
         Visibility::default(),
         exa_anim::Animator::new(&moveset, "Idle"),
+        exa_anim::FrameClips,
         exa_character::Outfit::default(),
         exa_character::WearsUnderwear,
         exa_assets::BodyModel(model_name),

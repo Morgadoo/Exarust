@@ -1005,7 +1005,11 @@ other's position from the player's), runs the late-swing check (an attack past 0
 of its clock, once a swing: the swing's state word gains `0x100000` with an
 engaged enemy in front, else `0x200000`) and one practice tick
 (`exa_ai::combat::practise`), keeping the paid practice count on
-`PlayerPractice` (the player has no record). The swing's release is
+`PlayerPractice` (the player has no record). A blow that marks the player's
+swing raises its lesson in the same step's post-step, after the struck
+character's reaction (`take_lessons` after `exa_ai::struck::HitReactions`),
+as the original's struck behaviour, called from the damage routine on the
+simulation thread, raises the attacker's lesson directly. The swing's release is
 `exa_combat::swing::SwingState::release`. The combat mode word
 (`player_behaviour::combat_mode`: down, dazed under 0.85 energy, switching
 or casting idle, the right button's walk, the left button's attack) gates

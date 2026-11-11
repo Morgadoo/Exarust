@@ -722,7 +722,28 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
                     self.overtaken.0 += 1;
                     continue;
                 }
-                self.overtaken.1 += 1;
+                // A frame value equal to the simulation's newer one undoes
+                // nothing: not counted.
+                let sim = world.get::<T>(e).map(self.hash);
+                if sim != Some((self.hash)(&value)) {
+                    self.overtaken.1 += 1;
+                }
+                // EXA_BRIDGE_WRITES, simulation side: what the frame's
+                // value undoes of the simulation's newer one.
+                if self.logged < 20
+                    && writes_logged(type_name::<T>())
+                    && sim != Some((self.hash)(&value))
+                    && let Some(sim) = world.get::<T>(e)
+                {
+                    let (a, b) = first_difference(&(self.text)(sim), &(self.text)(&value));
+                    info!(
+                        "simulation bridge: the frame's {} of {e} (based on step {base}) undoes \
+                         the simulation's step {} write: …{a}… -> …{b}…",
+                        type_name::<T>(),
+                        self.sim_written.get(&e).copied().unwrap_or_default()
+                    );
+                    self.logged += 1;
+                }
             }
             if let Ok(mut entity) = world.get_entity_mut(e) {
                 (self.assign)(&mut entity, value);

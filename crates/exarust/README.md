@@ -108,7 +108,9 @@ which writes and flushes the entry as the original's settings writer does.
 With `--opponent` the fight starts when the level shows: the duellist enters
 combat and, in a practice or arena level, the player's combat mode turns on
 (both written through `FixedCommands::write`, so the simulation's copies
-take them at its next step).
+take them at its next step). `--arena-fell <frame>` drops every arena
+opponent dead at that frame through a posted step command too (condition
+and health, no collapse).
 In an arena level the match is ticked as the original ticks a career match
 (its first second, then who stands), and the music is the arena track the
 original's match start draws, at its own volume. The round's fighters are

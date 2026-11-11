@@ -658,9 +658,15 @@ impl Plugin for PlayerPlugin {
             .add_message::<exa_combat::pain::BlowFelt>()
             .add_message::<exa_combat::pain::ClashFelt>()
             .add_message::<exa_ai::struck::Taught>()
+            // The struck behaviour's lessons land in the step's post-step,
+            // where the original's damage routine raises the attacker's
+            // lesson: a frame write of the practice would undo the
+            // simulation's newer practice ticks.
             .add_systems(
-                PostUpdate,
-                crate::player_practice::take_lessons.after(exa_ai::struck::HitReactions),
+                FixedUpdate,
+                crate::player_practice::take_lessons
+                    .in_set(exa_physics::body::BodyPostStep)
+                    .after(exa_ai::struck::HitReactions),
             )
             .add_systems(
                 RunFixedMainLoop,
