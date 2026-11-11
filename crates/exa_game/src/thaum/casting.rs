@@ -535,6 +535,15 @@ pub struct PlayerHookInput {
     pub sprint_move: bool,
 }
 
+/// Whether the player's behaviour tick reaches its hook asks at all: it
+/// returns before them while the body's shock-stagger state flag is set or
+/// the behaviour is suspended (the controls blocked or second-blocked, the
+/// behaviour's own disable byte), and its walk returns before them while
+/// the body collapses or is dead.
+pub fn player_asks_hooks(dying: bool, shock_staggered: bool, suspended: bool) -> bool {
+    !(shock_staggered || suspended || dying)
+}
+
 /// The player's controller's hook calls, in its order: the left button
 /// down asks [`hook_event::PRIMARY_HELD`]; outside combat mode it asks
 /// [`hook_event::OUT_OF_COMBAT`]; in combat mode, while the body is not weak
@@ -1030,6 +1039,14 @@ mod tests {
         body.hook_asked = 0;
         assert!(!player_hooks(&mut body, weak));
         assert_eq!(body.hook_asked, 0);
+    }
+
+    #[test]
+    fn a_staggered_or_suspended_player_asks_no_hook() {
+        assert!(player_asks_hooks(false, false, false));
+        assert!(!player_asks_hooks(false, true, false));
+        assert!(!player_asks_hooks(false, false, true));
+        assert!(!player_asks_hooks(true, false, false));
     }
 
     #[test]

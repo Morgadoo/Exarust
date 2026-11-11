@@ -29,8 +29,10 @@
 //! [`LiveBarrier::sounds`] and played by [`super::dome_sound`]; the cap is
 //! drawn by [`crate::effects::dome_draw`].
 //!
-//! Not wired: the balance the contact drains and the knock count (the body
-//! keeps its character's balance private).
+//! Each pushed part's contact also counts a knock on the character's
+//! instability counter, drains its energy (0.001 a contact, more beyond
+//! 100 cm), drops its AI's route, and a held weapon's struck part breaks
+//! its holder's attack ([`apply_contact`]).
 //!
 //! Evidence: the barrier's creator, start, hook, tick and keep-out, the
 //! cast-motion start, the spend and the cast end, read from `Exanima.exe`.
@@ -46,7 +48,9 @@ use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook, spend_tick};
 use super::dome_sound::{DomeSet, DomeSounds};
 use super::live::{EffectDraws, EffectRoll};
-use crate::effects::force_dome::{Barrier, CONTACT_PUSH, DomeHit, Phase, Sound};
+use crate::effects::force_dome::{
+    BARRIER_BALANCE_STEP, Barrier, CONTACT_PUSH, DomeHit, Phase, Sound, balance_after,
+};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -143,15 +147,17 @@ pub(crate) fn cap_frame(at: Vec3, facing: Vec3) -> Affine3A {
 }
 
 /// One body against the barrier: each limb sphere is pushed out of the
-/// shell and strikes a ripple. `limbs` is the caller's scratch buffer.
-/// The last pushed part's shell point in the world (cm), when any was
-/// pushed.
+/// shell and strikes a ripple. `limbs` is the caller's scratch buffer;
+/// `parts` is filled with the pushed parts, in order. The last pushed
+/// part's shell point in the world (cm), when any was pushed.
 pub(crate) fn keep_out(
     barrier: &mut Barrier,
     facing: Vec3,
     body: &mut Ragdoll,
     limbs: &mut Vec<LimbSphere>,
+    parts: &mut Vec<usize>,
 ) -> Option<Vec3> {
+    parts.clear();
     let frame = cap_frame(barrier.dome.at, facing);
     let to_local = frame.inverse();
     barrier.dome.ripples.begin_body();
@@ -184,8 +190,61 @@ pub(crate) fn keep_out(
         );
         barrier.dome.ripples.strike(push.ripple_at, push.strength);
         pushed = Some(frame.transform_point3(push.ripple_at));
+        if parts.last() != Some(&limb.part) {
+            parts.push(limb.part);
+        }
     }
     pushed
+}
+
+/// What one pushed part's contact does to its character: the 40 cm shove,
+/// and for a knock the instability counter's rise, the energy drain taken
+/// at the contact's distance with `step` ([`balance_after`]) and the AI's
+/// route dropped (the behaviour's route byte cleared, so it plans again);
+/// a held weapon's struck part breaks its holder's attack at `now`. The
+/// original's order: shove, sound, counter, energy, route.
+pub(crate) fn apply_contact(
+    contact: &crate::effects::force_dome::Contact,
+    body: &mut Ragdoll,
+    route: Option<&mut exa_ai::drive::Driven>,
+    holder_swing: Option<&mut exa_combat::swing::SwingState>,
+    step: f64,
+    now: u32,
+) {
+    if let Some(shove) = contact.shove {
+        body.begin_knockback(shove * (CONTACT_PUSH / CM));
+    }
+    if contact.knocks {
+        if let Some(drive) = body.drive.as_mut() {
+            let counter = drive.balance().counter() + 1;
+            drive.balance_mut().set_counter(counter);
+            if let Some(distance) = contact.balance_distance {
+                drive.energy = balance_after(drive.energy, distance, step);
+            }
+            info!(
+                "dome contact: knock, instability counter {counter}, energy {:.4}, route {}",
+                drive.energy,
+                if route.is_some() { "dropped" } else { "none" }
+            );
+        }
+        if let Some(route) = route {
+            route.0.driving = false;
+        }
+    }
+    if contact.struck
+        && let Some(swing) = holder_swing
+    {
+        swing.force_interrupt(u64::from(now));
+        info!("dome contact: a held weapon's part is struck, its holder's attack breaks");
+    }
+}
+
+/// Whether `part` of a held body is its weapon's strike chain (the part's
+/// flag 0x10000).
+pub(crate) fn strikes(body: &Ragdoll, part: usize) -> bool {
+    body.parts
+        .get(part)
+        .is_some_and(|p| p.state.has(exa_physics::part::PartState::STRIKE_CHAIN))
 }
 
 /// The caster's facing: its locomotor's yaw, else its transform's.
@@ -199,6 +258,7 @@ fn facing_of(locomotor: Option<&Locomotor>, at: Option<&GlobalTransform>) -> Vec
 
 /// Ticks every barrier in the scene.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tick_barriers(
     mut commands: Commands,
     mut barriers: Query<(Entity, &mut LiveBarrier)>,
@@ -208,9 +268,13 @@ pub(crate) fn tick_barriers(
         Option<&GlobalTransform>,
     )>,
     mut bodies: Query<(Entity, &mut Ragdoll, Option<&GlobalTransform>)>,
+    (mut routes, mut swings): (
+        Query<&mut exa_ai::drive::Driven>,
+        Query<&mut exa_combat::swing::SwingState>,
+    ),
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
-    mut limbs: Local<Vec<LimbSphere>>,
+    (mut limbs, mut parts): (Local<Vec<LimbSphere>>, Local<Vec<usize>>),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (entity, mut live) in &mut barriers {
@@ -254,36 +318,60 @@ pub(crate) fn tick_barriers(
             if other == live.caster {
                 continue;
             }
-            let Some(shell_point) = keep_out(&mut live.barrier, facing, &mut body, &mut limbs)
+            let Some(shell_point) =
+                keep_out(&mut live.barrier, facing, &mut body, &mut limbs, &mut parts)
             else {
                 continue;
             };
             body.touch(WAKE_TICKS);
-            let Some(at) = at.map(|a| a.translation() * CM) else {
+            // A held body's parts are its holder's: no character holds a
+            // loose one, and the contact asks only about characters' parts.
+            let limp = body.drive.is_none();
+            let holder = body.held_by;
+            if limp && holder.is_none() {
                 continue;
-            };
-            let hit = DomeHit {
-                offset: at - centre,
-                scale: 1.0,
-                caster: false,
-                limp: body.drive.is_none(),
-                struck_flag: false,
-            };
-            let Some(contact) = live.barrier.contact(&hit, now, &mut roll.0) else {
-                continue;
-            };
-            if let Some(shove) = contact.shove {
-                body.begin_knockback(shove * (CONTACT_PUSH / CM));
             }
-            if let Some([volume, pitch]) = contact.sound {
-                live.sounds.push(
-                    DomeSet::Hit,
-                    Sound {
-                        at: shell_point,
-                        volume,
-                        pitch,
-                    },
+            // The contact measures from the character's chest point (its
+            // balance point), else its transform's place.
+            let chest = body
+                .drive
+                .as_ref()
+                .and_then(|d| d.balance().chest())
+                .map(|c| c * CM);
+            let Some(at) = chest.or_else(|| at.map(|a| a.translation() * CM)) else {
+                continue;
+            };
+            // The contact runs once for each pushed part.
+            for &part in parts.iter() {
+                let hit = DomeHit {
+                    offset: at - centre,
+                    scale: 1.0,
+                    caster: false,
+                    limp,
+                    struck_flag: limp && strikes(&body, part),
+                };
+                let Some(contact) = live.barrier.contact(&hit, now, &mut roll.0) else {
+                    continue;
+                };
+                let mut swing = holder.and_then(|h| swings.get_mut(h).ok());
+                apply_contact(
+                    &contact,
+                    &mut body,
+                    routes.get_mut(other).ok().as_deref_mut(),
+                    swing.as_deref_mut(),
+                    BARRIER_BALANCE_STEP,
+                    now,
                 );
+                if let Some([volume, pitch]) = contact.sound {
+                    live.sounds.push(
+                        DomeSet::Hit,
+                        Sound {
+                            at: shell_point,
+                            volume,
+                            pitch,
+                        },
+                    );
+                }
             }
         }
     }

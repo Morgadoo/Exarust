@@ -964,7 +964,10 @@ pub(crate) fn run_bar_commands(
                     cursor: ground.as_deref().and_then(|g| g.0).map(|p| p * CM),
                     clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
                     target: None,
-                    standing: None,
+                    // The creators place the domes on the body's standing
+                    // point, its transform's place (as the duellists' casts
+                    // take it), not its first part.
+                    standing: mind.places.get(entity).ok().map(|at| at.translation() * CM),
                     throw_pick: picked,
                     barricade_ground,
                 };
@@ -2578,6 +2581,7 @@ pub(crate) fn tick_casters(
             Option<&Ragdoll>,
             Option<&mut Animator>,
             Option<&PlayerBody>,
+            Option<&exa_combat::condition::StateFlags>,
         ),
         Without<OutOfScene>,
     >,
@@ -2612,6 +2616,7 @@ pub(crate) fn tick_casters(
         ragdoll,
         mut animator,
         player,
+        state_flags,
     ) in &mut casters
     {
         let caster = &mut *caster;
@@ -2641,8 +2646,19 @@ pub(crate) fn tick_casters(
         // [inf: the original's controller runs before the body tick and
         // reads the buttons only while the game view has the pointer; here
         // it runs with the casters, on the buttons as the window has them.]
+        // The behaviour tick returns before its asks while the body is
+        // shock-staggered or the behaviour is suspended (its disable byte),
+        // and its walk stops while the body is dying.
+        let suspended =
+            crate::player_controls::PlayerControl::behaviour_suspended(control.as_deref());
+        let staggered =
+            state_flags.is_some_and(|f| f.has(exa_combat::condition::StateFlags::SHOCK_STAGGER));
         if let Some(player) = player
-            && !condition.is_some_and(|c| c.dying())
+            && casting::player_asks_hooks(
+                condition.is_some_and(|c| c.dying()),
+                staggered,
+                suspended,
+            )
         {
             // [inf: the original's global flag beside the stick vector is
             // the gamepad action Exarust reads as Sprint.]

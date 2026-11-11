@@ -1019,11 +1019,16 @@ fn body_chest(body: &Ragdoll) -> Vec3 {
 }
 
 /// A character's energy after the knocks of the parts a barricade struck in
-/// front this tick: each lowers it by its loss while it is above 0.25.
-pub fn energy_after_knocks(energy: f32, losses: &[f32]) -> f32 {
-    losses
-        .iter()
-        .fold(energy, |e, &loss| if 0.25 < e { e - loss } else { e })
+/// front this tick: each lowers it by its loss while it is above 0.25, the
+/// difference taken in double.
+pub fn energy_after_knocks(energy: f32, losses: &[f64]) -> f32 {
+    losses.iter().fold(energy, |e, &loss| {
+        if 0.25 < e {
+            (f64::from(e) - loss) as f32
+        } else {
+            e
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1035,6 +1040,7 @@ fn tick_barricades(
     mut roll: ResMut<EffectRoll>,
     mut nav: Option<ResMut<NavGrid>>,
     mut minds: Query<&mut Npc>,
+    mut routes: Query<&mut exa_ai::drive::Driven>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live, stamped) in &mut walls {
@@ -1084,7 +1090,7 @@ fn tick_barricades(
             let mut touched = false;
             // Each part struck in front knocks the character back and
             // lowers its energy again.
-            let mut knocks: Vec<(Vec3, f32)> = Vec::new();
+            let mut knocks: Vec<(Vec3, f64)> = Vec::new();
             for k in 0..body.parts.len() {
                 let part = &body.parts[k];
                 let world = part.transform();
@@ -1143,8 +1149,13 @@ fn tick_barricades(
                 body.begin_knockback(step / CM);
                 if let Some(drive) = body.drive.as_mut() {
                     drive.balance_mut().set_counter(100);
-                    let losses: Vec<f32> = knocks.iter().map(|k| k.1).collect();
+                    let losses: Vec<f64> = knocks.iter().map(|k| k.1).collect();
                     drive.energy = energy_after_knocks(drive.energy, &losses);
+                }
+                // Each knock also clears the AI behaviour's route byte: it
+                // stops following its route and plans again.
+                if let Ok(mut route) = routes.get_mut(who) {
+                    route.0.driving = false;
                 }
             }
         }

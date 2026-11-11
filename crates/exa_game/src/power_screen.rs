@@ -328,6 +328,61 @@ fn suspend_controls(
     }
 }
 
+/// The tree's part of the GUI's forms sweep, which Control Mind's handover
+/// and hand-back run first: while the tree's form is shown it closes as its
+/// close routine does (the domain and the open bar stored, the 256 ms fade,
+/// the bar's fall, the bar's flag off; the controls come back on at the
+/// fade's end); otherwise, when `mask` has the bar's bit and the bar is
+/// shown, the bar falls.
+///
+/// Deviation, deliberate: the original's bar-only close starts the fall and
+/// leaves its open byte set, so its next toggle key only clears the byte;
+/// Exarust's bar is shown while its flag is set, so the flag goes.
+pub fn sweep_tree(world: &mut World, mask: u8) {
+    let now = world
+        .get_resource::<Time>()
+        .map_or(0, |t| t.elapsed().as_millis() as u32);
+    let Some(mut screen) = world.get_resource_mut::<PowerScreen>() else {
+        return;
+    };
+    let PowerScreen {
+        open,
+        bar_open,
+        tree,
+        record,
+        bar,
+        dirty,
+        ..
+    } = &mut *screen;
+    if *open {
+        if tree.mode == TreeMode::Play && !tree.closing() {
+            tree.leave(bar, record);
+            tree.hide(now);
+            tree.close_bar(now);
+            *bar_open = false;
+            *dirty = true;
+            info!("forms sweep: the power tree closes");
+        }
+    } else if mask & 1 != 0 && *bar_open {
+        *bar_open = false;
+        *dirty = true;
+        info!("forms sweep: the power bar falls");
+    }
+}
+
+/// Runs [`sweep_tree`] where the screen is: on this world when it holds the
+/// screen, else after the fixed step on the frame's ([`FrameCommands`]).
+///
+/// [`FrameCommands`]: exa_physics::sim_app::FrameCommands
+pub fn sweep_forms(world: &mut World, mask: u8) {
+    if world.contains_resource::<PowerScreen>() {
+        sweep_tree(world, mask);
+    } else if let Some(mut frame) = world.get_resource_mut::<exa_physics::sim_app::FrameCommands>()
+    {
+        frame.send(move |world: &mut World| sweep_tree(world, mask));
+    }
+}
+
 /// The tree's form in the GUI core's task, so the pointer takes the
 /// window manager's route.
 #[derive(Resource)]
@@ -2085,6 +2140,33 @@ fn blit_text(rows: &mut Rows, run: &TextRun, font: &GameFont, clip: Region) {
 mod tests {
     use super::*;
     use exa_ui::tree_draw::Uniforms;
+
+    /// The forms sweep closes the shown tree, else drops a shown bar when
+    /// its mask asks.
+    #[test]
+    fn the_forms_sweep_closes_the_tree_or_the_bar() {
+        let mut world = World::new();
+        world.insert_resource(PowerScreen {
+            bar_open: true,
+            ..PowerScreen::default()
+        });
+        sweep_forms(&mut world, 0);
+        assert!(world.resource::<PowerScreen>().bar_open);
+        sweep_forms(&mut world, 1);
+        assert!(!world.resource::<PowerScreen>().bar_open);
+        {
+            let mut screen = world.resource_mut::<PowerScreen>();
+            screen.open = true;
+            screen.bar_open = true;
+            let _ = screen.tree.show(0);
+        }
+        sweep_forms(&mut world, 0);
+        let screen = world.resource::<PowerScreen>();
+        assert!(screen.tree.closing() && !screen.bar_open);
+        // A world without the screen and without the frame's queue does
+        // nothing.
+        sweep_forms(&mut World::new(), 1);
+    }
 
     /// The plugin's systems run three updates without a window or a level.
     #[test]
