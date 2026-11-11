@@ -1960,6 +1960,8 @@ TMotilePart gaps rechecked against the assembly: the foot-child words, box sole 
 
 frame writes no longer undo newer simulation steps in free mode: the power bar posts its casts to the step (as the original main-thread key handler writes state the simulation thread reads at its next step), flame rows and arcs keep their draw state frame-only, and the stay-zone latch, fight start, combat aim, armour layers and moveset config go through the step queue. Lockstep traces match main on the duel, exanima01 and two cast scenes. The bar casts now draw from the step effect streams, so the still-opponent torrent sweep scene spray no longer reaches the level in lockstep. Left: the clip player Animator advance on bodies without ticked clips, the practice lesson, one health write.
 
+a sweep for human assumptions about races fixed four reads against the assembly: the equipment panel core-crystal test now looks the race up by byte + 1 (golems take their own crystal); bodies are dressed by the race look bit (ogres and the exanima05_sw manipulators now wear their items); Mind casts read the race mind word; the underwear rule reads the body race.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
