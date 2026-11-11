@@ -1431,6 +1431,8 @@ Round 154 motilepart3: the living step restores every part edges after the pose 
 
 Round 165 fists: unarmed strikes go through the hand hit event and fighters keep the original combat target.
 
+Round 176 palette: levels read from the archive roll their apparel colours, variants and condition before dressing, and arena outfits roll the palette.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
