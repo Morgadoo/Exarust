@@ -74,7 +74,9 @@ and the grid's rooms; portal clipping is next (see
   one-call `spawn_level` finishes them on the spot),
   one mesh per 6 m block (`terrain::patch` is the original's
   shared serpentine triangle list), each in its block's room and with the
-  original's `TerrainBlock` frame and flat 10 cm slab bounds, and in a grid
+  original's `TerrainBlock` frame and flat 10 cm slab bounds, culled by its
+  leaf descriptor's box over the tile's height bounds
+  (`manager::block_box`, reaching over the skirt on a tile's edge), and in a grid
   level only the blocks its grid flags; `terrain::ground` is the
   original's world height query (`TerrainGround`), built from the same
   displaced heights the navigation grid reads, with the bilinear sums in
@@ -115,7 +117,10 @@ and the grid's rooms; portal clipping is next (see
   the set; the priority slot is `reprioritise`, not
   run every frame because its caller is not identified; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
-  wireframe hook). Grass and
+  wireframe hook); `terrain::shadow_draw` keeps out of the sun's cascades the
+  blocks the live scene's visible pass did not draw, as the original's shadow
+  draws take only blocks with the main-view bit (`EXA_TERRAIN_SHADOW_ALL=1`
+  keeps them all). Grass and
   small plants take the original's upward normals turned with the instance,
   large plants their own model normals turned and un-scaled the same way
   (the loader's terrain-normal branch never runs, though its rule is

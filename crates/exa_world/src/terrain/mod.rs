@@ -11,8 +11,9 @@
 //! are built on the async compute pool, as the original's terrain worker
 //! does them; [`patch`] is the original's shared triangle list, [`ground`]
 //! its world height query, [`stream`] its streaming decisions and tile bits,
-//! [`composite`] its per-block texture sets, passes and selection, and
-//! [`wireframe`] its debug wireframe overlay.
+//! [`composite`] its per-block texture sets, passes and selection,
+//! [`shadow_draw`] its shadow draws' visible-block rule, and [`wireframe`]
+//! its debug wireframe overlay.
 
 pub mod manager;
 
@@ -24,6 +25,7 @@ pub mod ground;
 pub mod live;
 pub mod patch;
 pub mod plugins;
+pub mod shadow_draw;
 pub mod stream;
 pub mod tile_bake;
 pub mod vegetation;
@@ -85,6 +87,13 @@ impl Plugin for TerrainPlugin {
                     sync_plant_normal_map,
                 )
                     .chain(),
+            )
+            .init_resource::<shadow_draw::TerrainShadowRule>()
+            .init_resource::<shadow_draw::TerrainShadowStats>()
+            .add_systems(
+                PostUpdate,
+                shadow_draw::sun_casts_drawn_blocks
+                    .after(bevy::light::SimulationLightSystems::CheckLightVisibility),
             )
             .init_resource::<composite_draw::CompositeDraws>()
             .add_systems(
@@ -1117,6 +1126,9 @@ impl TerrainBuild {
             loader.warn_once(warning);
         }
         let palette = palette?;
+        // The loader's palette refresh: the material rule tree rebuilt from
+        // the chosen palette. Its grass slot (the first plant's tint) is
+        // `Plants::load`'s tint.
         let tree = RuleTree::new(&palette);
         let blocks = grid.map(|(grid, rooms)| grid_blocks(&terrain, grid, &rooms));
         let environment = loader.environment_map();
@@ -1588,6 +1600,17 @@ impl TerrainBuild {
         let tile_size = self.terrain.spacing * (TILE_VERTICES - 1) as f32;
         let wireframe = self.wireframe.clone();
         let mut block_entities = Vec::new();
+        // Each block culls by its leaf descriptor over the tile's height
+        // bounds (the finished, lifted vertices), as the original's block
+        // nodes do; an edge block's box also reaches down over its skirt.
+        let height_bounds = (built.heights.len() == TILE_VERTICES * TILE_VERTICES).then(|| {
+            let cm: Vec<[f32; 3]> = built
+                .heights
+                .iter()
+                .map(|&h| [0.0, h * 100.0, 0.0])
+                .collect();
+            manager::height_bounds(&cm)
+        });
         for block in std::mem::take(&mut built.blocks) {
             let record = TerrainBlock {
                 bx: block.bx as u32,
@@ -1596,6 +1619,9 @@ impl TerrainBuild {
                 room: block.room,
             };
             let bounds = record.bounds(tile_size, Vec3::ZERO);
+            let cull_box = height_bounds
+                .as_ref()
+                .map(|b| block_cull_box(b, block.bx, block.by, tile_size));
             let overlay = wireframe.as_ref().and_then(|material| {
                 wireframe::overlay_mesh(&block.mesh)
                     .map(|mesh| (loader.meshes.add(mesh), material.clone()))
@@ -1618,6 +1644,11 @@ impl TerrainBuild {
                 .id();
             if let Some(room) = block.room {
                 commands.entity(part).insert(InRoom(room));
+            }
+            if let Some(aabb) = cull_box {
+                commands
+                    .entity(part)
+                    .insert((aabb, bevy::camera::visibility::NoAutoAabb));
             }
             block_entities.push(part);
             let centre_in_tile =
@@ -1845,6 +1876,34 @@ impl Look {
             tile,
         }
     }
+}
+
+/// The culling box of block (`bx`, `by`) in its tile's space: the leaf
+/// descriptor's height range over the tile's height `bounds`
+/// ([`manager::block_box_in`]) around the block's centre and half extents
+/// at a tile of `tile_size` metres. A block on the tile's edge carries the
+/// skirt Exarust hangs there ([`SKIRT_DEPTH`] below the edge), so its box
+/// reaches that much lower.
+fn block_cull_box(
+    bounds: &manager::HeightBounds,
+    bx: usize,
+    by: usize,
+    tile_size: f32,
+) -> bevy::camera::primitives::Aabb {
+    let (centre, half) = manager::block_box_in(bounds, bx, by);
+    let level = TerrainBlock::LEVEL;
+    let middle = TerrainBlock::centre_in_tile(tile_size, bx as u32, by as u32, level);
+    let extent = TerrainBlock::half_extents(tile_size, level);
+    let mut lo = centre[1] - half[1];
+    let hi = centre[1] + half[1];
+    let last = TileBlocks::SIDE - 1;
+    if bx == 0 || by == 0 || bx == last || by == last {
+        lo -= SKIRT_DEPTH;
+    }
+    bevy::camera::primitives::Aabb::from_min_max(
+        Vec3::new(middle.x - extent.x, lo, middle.z - extent.z),
+        Vec3::new(middle.x + extent.x, hi, middle.z + extent.z),
+    )
 }
 
 /// One 6 m block of a tile, built as its own mesh as the original builds a

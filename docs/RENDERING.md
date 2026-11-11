@@ -1110,6 +1110,19 @@ skipped while the refresh delay counts down, as in the original):
 `terrain::wireframe` draws a block's edges as lines when `EXA_TERRAIN_WIRE`
 is set (the original's debug wireframe hook).
 
+**Terrain shadows** (`terrain::shadow_draw`): the original's two terrain
+shadow draws (a tile's blocks into the sun's map, one block into a light's
+cube face) skip a block with the external-draw bit and draw only a block
+whose visible word has the main-view bit, which the scene's visible pass sets
+on a node it drew this frame. Exarust takes the blocks the live scene did not
+draw out of the sun's cascade lists after Bevy's light check, so terrain
+outside the view casts no sun shadow (`EXA_TERRAIN_SHADOW_ALL=1` keeps every
+block). The cached cube faces keep every linked block: a face rendered while
+a block was out of view would keep its missing shadow until it is dirtied.
+Each block culls by its leaf descriptor: the 6 m block across, the height
+range of its bounds cells over the finished vertices, plus 1 cm on the half
+height (and, on a tile's edge, down over Exarust's skirt).
+
 **Height query** (`TerrainGround`): the original's ground slot floors the
 tile coordinate `width/2 + x/48 m`, takes tile slot `tz · width + tx`
 anywhere in the grid's slots, floors the fraction times eight for the

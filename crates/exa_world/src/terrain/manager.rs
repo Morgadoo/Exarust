@@ -530,6 +530,27 @@ impl BlockDescriptor {
     }
 }
 
+/// The culling box of 6 m block (`bx`, `by`) of a tile whose finished
+/// vertex heights (`heights`, metres, `TILE_VERTICES²` in rows) are known:
+/// the leaf descriptor of the block tree (level 3, first bounds cell
+/// `(2·bx, 2·by)`) over the tile's [`height_bounds`], in metres from the
+/// tile's centre. Returns its centre and half extents.
+pub fn block_box(heights: &[f32], bx: usize, by: usize) -> Option<([f32; 3], [f32; 3])> {
+    if heights.len() != TILE_VERTICES * TILE_VERTICES || bx >= BLOCK_SIDE || by >= BLOCK_SIDE {
+        return None;
+    }
+    let positions: Vec<[f32; 3]> = heights.iter().map(|&h| [0.0, h * 100.0, 0.0]).collect();
+    let bounds = height_bounds(&positions);
+    Some(block_box_in(&bounds, bx, by))
+}
+
+/// [`block_box`] over a tile's height bounds already worked out.
+pub fn block_box_in(bounds: &HeightBounds, bx: usize, by: usize) -> ([f32; 3], [f32; 3]) {
+    let span = BOUND_CELLS / BLOCK_SIDE;
+    let d = BlockDescriptor::new(3, (bx * span) as u16, (by * span) as u16, Some(bounds));
+    (d.centre.map(|v| v / 100.0), d.half.map(|v| v / 100.0))
+}
+
 /// One node of the tile's block tree as the descriptor walk sees it: a
 /// block's level and first bounds cell, and its four children when it was
 /// split. The original builds the tree outside this unit and walks it
@@ -922,6 +943,22 @@ mod tests {
         positions[5][1] = f32::NAN;
         let bounds = height_bounds(&positions);
         assert_eq!(bounds[0][0], (0.0, 6.0));
+    }
+
+    #[test]
+    fn a_block_box_is_its_leaf_descriptor_in_metres() {
+        // Heights rise 1 cm a row: block (1, 2) covers rows 60..=90, so
+        // 0.60 m to 0.90 m, centre 0.75 m and half 0.15 m + 1 cm.
+        let heights: Vec<f32> = (0..241 * 241).map(|i| (i / 241) as f32 * 0.01).collect();
+        let (centre, half) = block_box(&heights, 1, 2).unwrap();
+        assert_eq!(centre[0], -15.0);
+        assert_eq!(centre[2], -9.0);
+        assert!((centre[1] - 0.75).abs() < 1e-5);
+        assert_eq!(half[0], 3.0);
+        assert_eq!(half[2], 3.0);
+        assert!((half[1] - 0.16).abs() < 1e-5);
+        assert!(block_box(&heights, 8, 0).is_none());
+        assert!(block_box(&heights[1..], 0, 0).is_none());
     }
 
     #[test]
