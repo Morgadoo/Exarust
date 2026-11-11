@@ -23,7 +23,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 95% | 0% |  |
-| Thaumaturgy & effects | 697 | 296 | 83 | 86% | 0% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 90% | 0% |  |
@@ -81,7 +81,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Skinning | Characters, motion & animation | 25 | 91% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 92% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
 | TGSLines | UI | 24 | 89% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
-| SG_GameGUI | UI | 22 | 90% | exa_ui/src/game_gui.rs; exa_ui/src/game_gui_test.rs |
+| SG_Thaum_Mind | Thaumaturgy & effects | 21 | 95% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
 
 ## Combat rules
 
