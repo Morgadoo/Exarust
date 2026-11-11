@@ -1156,8 +1156,12 @@ whose visible word has the main-view bit, which the scene's visible pass sets
 on a node it drew this frame. Exarust takes the blocks the live scene did not
 draw out of the sun's cascade lists after Bevy's light check, so terrain
 outside the view casts no sun shadow (`EXA_TERRAIN_SHADOW_ALL=1` keeps every
-block). The cached cube faces keep every linked block: a face rendered while
-a block was out of view would keep its missing shadow until it is dirtied.
+block). The point lights' cube faces take the same rule: before the faces are
+built the undrawn blocks are listed in `CubeCasterGate`, and a face rendered
+that frame leaves them out. The face stays cached as rendered, as the
+original's does: its one-block draw tests the bit when the face renders and
+no block's bit change dirties a face, so a block out of view when its face
+rendered casts nothing into it until a caster or the light dirties the face.
 Each block culls by its leaf descriptor: the 6 m block across, the height
 range of its bounds cells over the finished vertices, plus 1 cm on the half
 height (and, on a tile's edge, down over Exarust's skirt).

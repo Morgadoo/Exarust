@@ -245,7 +245,13 @@ four per interleaved mask plane. Height rules (kind 0) can be rescaled:
 bound × scale + offset in single precision. The texture pass's Gaussian
 blur kernel has its negative half and zero computed (sigma a third of the
 radius, taken in double), mirrored, normalised by its sequential single sum
-and widened to four equal floats an entry.
+and widened to four equal floats an entry. Nothing in 0.9.5 reads it: the
+texture unit's init builds it (radius 120) and allocates its two scratch
+planes, a 481 × 481 one and a 244-float-row one, and no other code references
+the kernel or either plane. The 244 × 241 plane the init also allocates is
+read only as rule input 2 and never written, so that input stays zero
+(`blend::NoiseMaps::inputs`); `blend::gaussian_kernel` is kept, tested and
+unwired.
 
 The merge is byte-exact: the first used material keeps its accumulated
 byte, each later one but the last becomes `round(byte·255 / Σ)` over the

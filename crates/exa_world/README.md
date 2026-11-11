@@ -58,7 +58,8 @@ and the grid's rooms; portal clipping is next (see
   its byte) and the four-per-mask-plane packing (wired into the tile's
   splat, with the renderer's sixteen-layer cap keeping the heaviest
   materials and material 0 first), and, not wired, the height-rule
-  scaling and the Gaussian blur kernel; `terrain::tile_bake` runs the
+  scaling and the Gaussian blur kernel (the original builds it at init and
+  never reads it, nor its scratch planes); `terrain::tile_bake` runs the
   original's per-tile mask and height passes on the tile worker with the
   GPU's rules (the root node's quads, the merged weight bytes filtered
   bilinearly, groups of four blending `ONE, SRC_ALPHA` after the first, the
@@ -118,9 +119,11 @@ and the grid's rooms; portal clipping is next (see
   run every frame because its caller is not identified; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
   wireframe hook); `terrain::shadow_draw` keeps out of the sun's cascades the
-  blocks the live scene's visible pass did not draw, as the original's shadow
-  draws take only blocks with the main-view bit (`EXA_TERRAIN_SHADOW_ALL=1`
-  keeps them all). Grass and
+  blocks the live scene's visible pass did not draw, and lists them in
+  `exa_render::cube_shadows::CubeCasterGate` so the point lights' cube faces
+  rendered that frame leave them out too (the faces stay cached as rendered),
+  as the original's shadow draws take only blocks with the main-view bit
+  (`EXA_TERRAIN_SHADOW_ALL=1` keeps them all). Grass and
   small plants take the original's upward normals turned with the instance,
   large plants their own model normals turned and un-scaled the same way
   (the loader's terrain-normal branch never runs, though its rule is

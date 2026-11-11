@@ -95,6 +95,12 @@ impl Plugin for TerrainPlugin {
                 shadow_draw::sun_casts_drawn_blocks
                     .after(bevy::light::SimulationLightSystems::CheckLightVisibility),
             )
+            .add_systems(
+                PostUpdate,
+                shadow_draw::cube_faces_skip_undrawn_blocks
+                    .after(crate::scene_live::run_scene)
+                    .before(exa_render::lights::LightsSystems::Cubes),
+            )
             .init_resource::<composite_draw::CompositeDraws>()
             .add_systems(
                 Update,
