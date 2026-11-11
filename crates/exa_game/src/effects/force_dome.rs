@@ -508,12 +508,13 @@ impl Dome {
         })
     }
 
-    /// The response of a character whose parts the dome pushed: `offset` is
-    /// the character's place less the dome's, `scale` its size factor.
+    /// The response of a character one of whose parts the dome pushed (the
+    /// original asks it once for each pushed part): `offset` is the
+    /// character's place less the dome's, `scale` its size factor.
     /// `caster` when the character is the dome's caster (only the Bubble
-    /// tests it). A limp body (flag 1, a guess at its meaning) only plays the
-    /// hit sound, when its flag 0x10000
-    /// is set.
+    /// tests it). A part that is not a limb (flag 1: a held item's part)
+    /// only breaks its holder's attack and plays the hit sound, when its
+    /// flag 0x10000 (a held weapon) is set.
     pub fn contact(&mut self, hit: &DomeHit, now_ms: u32, roll: &mut Roll) -> Option<Contact> {
         let volume = if f64::from(self.ripples.peak) > 0.15 {
             let r = roll.unit();
@@ -523,6 +524,9 @@ impl Dome {
         };
         let mut contact = Contact::default();
         if hit.limp {
+            // A held weapon's part breaks its holder's attack before the
+            // sound's gate.
+            contact.struck = hit.struck_flag;
             if hit.struck_flag && self.quiet_until_ms < now_ms && f64::from(volume) > 0.05 {
                 contact.sound = Some([volume, (f64::from(roll.unit()) * 0.6 + 0.6) as f32]);
                 self.quiet_until_ms = now_ms.wrapping_add(400);
@@ -563,10 +567,12 @@ pub struct DomeHit {
     pub scale: f32,
     /// The character is the dome's caster.
     pub caster: bool,
-    /// The body's flag 1 is set (guess: a limp body), in which case only
-    /// its flag 0x10000 (`struck_flag`) lets the hit sound play and the
-    /// character's own struck call run.
+    /// The pushed part's flag 1 is set: it is not one of the character's
+    /// limbs but a held item's part (in Exarust a held body, whose holder
+    /// is the character).
     pub limp: bool,
+    /// Its flag 0x10000 (a held weapon's strike chain): the holder's
+    /// attack breaks and the hit sound may play.
     pub struck_flag: bool,
 }
 
@@ -578,15 +584,25 @@ pub struct Contact {
     pub shove: Option<Vec3>,
     /// The hit sound's volume and pitch.
     pub sound: Option<[f32; 2]>,
-    /// The character counts a knock and its brace is released.
+    /// The character counts a knock (its instability counter rises by
+    /// one) and its AI drops the route it follows.
     pub knocks: bool,
-    /// The distance its balance drain is taken at.
+    /// The distance its energy drain ([`balance_after`]) is taken at.
     pub balance_distance: Option<f32>,
+    /// A held weapon's part (its flag 0x10000) was met: its holder's
+    /// attack breaks (the character's struck call).
+    pub struck: bool,
 }
 
-/// The balance a pushed character keeps: above 0.25 it loses `step` within
-/// 100 cm, `(d − 100)·0.0001 + step` beyond (double precision); 0.002 for
-/// the dome, 0.001 for the Barrier.
+/// The dome's energy drain a contact within 100 cm.
+pub const DOME_BALANCE_STEP: f64 = 0.002;
+/// The Barrier's.
+pub const BARRIER_BALANCE_STEP: f64 = 0.001;
+
+/// The energy (the daze level) a pushed character keeps: above 0.25 it
+/// loses `step` within 100 cm, `(d − 100)·0.0001 + step` beyond (the
+/// difference in single precision, the rest in double); 0.002 for the
+/// dome, 0.001 for the Barrier. A NaN distance takes the near branch.
 pub fn balance_after(balance: f32, distance: f32, step: f64) -> f32 {
     if !(balance > 0.25) {
         return balance;
@@ -894,6 +910,7 @@ impl Barrier {
         let mut contact = Contact::default();
         let quiet = self.dome.quiet_until_ms < now_ms;
         if hit.limp {
+            contact.struck = hit.struck_flag;
             if hit.struck_flag && quiet {
                 let pitch = (f64::from(roll.unit()) * 0.6 + 0.6) as f32;
                 let volume = (f64::from(roll.unit()) * 0.2 + 0.3) as f32;
@@ -1557,6 +1574,34 @@ mod tests {
             (1.0f64 - (50.0f64 * 0.0001 + 0.001)) as f32
         );
         assert_eq!(balance_after(0.2, 150.0, 0.001), 0.2);
+        assert_eq!(balance_after(1.0, f32::NAN, 0.002), (1.0f64 - 0.002) as f32);
+    }
+
+    #[test]
+    fn a_held_weapon_part_breaks_its_holders_attack() {
+        let (mut bubble, _) = Bubble::cast(100.0, Vec3::ZERO, 0, Vec3::ZERO, 0.0, &mut random());
+        bubble.dome.ripples.peak = 4.0;
+        let mut hit = DomeHit {
+            offset: Vec3::new(100.0, 50.0, 0.0),
+            scale: 1.0,
+            caster: false,
+            limp: true,
+            struck_flag: true,
+        };
+        let c = bubble.dome.contact(&hit, 100, &mut Roll(9)).unwrap();
+        assert!(c.struck && !c.knocks && c.shove.is_none());
+        assert!(c.sound.is_some());
+        // Within the quiet time the attack still breaks, silently.
+        let c = bubble.dome.contact(&hit, 200, &mut Roll(9)).unwrap();
+        assert!(c.struck && c.sound.is_none());
+        hit.struck_flag = false;
+        let c = bubble.dome.contact(&hit, 900, &mut Roll(9)).unwrap();
+        assert!(!c.struck && c.sound.is_none());
+        let mut barrier = barrier();
+        barrier.dome.quiet_until_ms = 0;
+        hit.struck_flag = true;
+        let c = barrier.contact(&hit, 100, &mut Roll(9)).unwrap();
+        assert!(c.struck && !c.knocks);
     }
 
     #[test]

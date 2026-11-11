@@ -565,6 +565,7 @@ pub fn tick_minds(
     mut minds: Query<(Entity, &mut MindBody, Option<&mut PowerCaster>)>,
     conditions: Query<&Condition>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
+    mut frame: Option<ResMut<exa_physics::sim_app::FrameCommands>>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, _)| (m.id, e)).collect();
@@ -736,13 +737,25 @@ pub fn tick_minds(
     for action in actions {
         let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
         match action {
+            // The handover and the hand-back's transition are the frame's:
+            // they move the player behaviour and the view and write the
+            // control state the frame keeps, so behind the bridge they run
+            // on the frame's world after the step.
             MindAction::Possess { caster, target } => {
-                commands.queue(move |world: &mut World| possess(world, caster, target));
+                let run = move |world: &mut World| possess(world, caster, target);
+                match frame.as_deref_mut() {
+                    Some(frame) => frame.send(run),
+                    None => commands.queue(run),
+                }
             }
             MindAction::BeginRelease { caster, target } => {
-                commands.queue(move |world: &mut World| {
+                let run = move |world: &mut World| {
                     begin_fade(world, FadeAction::Release { caster, target });
-                });
+                };
+                match frame.as_deref_mut() {
+                    Some(frame) => frame.send(run),
+                    None => commands.queue(run),
+                }
             }
             MindAction::UnlinkTarget { target, caster } => {
                 commands.queue(move |world: &mut World| unlink_target(world, target, caster));
@@ -756,7 +769,11 @@ pub fn tick_minds(
             }
             MindAction::SpiritEnds { spirit, body } => {
                 let body = body.and_then(entity_of);
-                commands.queue(move |world: &mut World| spirit_ends(world, spirit, body));
+                let run = move |world: &mut World| spirit_ends(world, spirit, body);
+                match frame.as_deref_mut() {
+                    Some(frame) => frame.send(run),
+                    None => commands.queue(run),
+                }
             }
             MindAction::EndMarker { on, id, caster } => {
                 if let Some(on) = entity_of(on) {
@@ -904,6 +921,9 @@ pub fn possess(world: &mut World, caster: Entity, target: Entity) {
     if world.get_entity(caster).is_err() || world.get_entity(target).is_err() {
         return;
     }
+    // The handover first sweeps the GUI's forms: the power tree closes, or
+    // the shown bar falls.
+    crate::power_screen::sweep_forms(world, 1);
     set_status(world, caster, |s| s | HANDED_OVER);
     set_status(world, target, |s| s | IN_CONTROL);
     let caster_id = body_id(caster);
@@ -934,6 +954,8 @@ pub fn possess(world: &mut World, caster: Entity, target: Entity) {
 
 /// Control Mind's hand-back, at the transition's black.
 pub fn release(world: &mut World, caster: Entity, target: Entity) {
+    // The hand-back sweeps the GUI's forms first, as the handover does.
+    crate::power_screen::sweep_forms(world, 1);
     if world.get_entity(target).is_ok() {
         // The original writes the caster's status, less the control bits,
         // over the released body's.

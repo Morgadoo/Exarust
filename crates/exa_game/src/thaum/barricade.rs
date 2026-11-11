@@ -514,15 +514,17 @@ impl Barricade {
                 continue;
             }
             out.touched = true;
-            let mut push = ((r + 10.0) - p.z.abs()) * 0.04 + 0.1;
+            let mut push = (f64::from((r + 10.0) - p.z.abs()) * 0.04 + 0.1) as f32;
             if 0.5 < push.abs() {
                 push = sign(push) * 0.5;
             }
-            if p.z <= 0.0 {
-                push *= 0.1;
-            } else {
+            // Behind the wall (or a NaN depth) the push is a tenth, in
+            // double.
+            if p.z > 0.0 {
                 front = true;
                 depth = p.z;
+            } else {
+                push = (f64::from(push) * 0.1) as f32;
             }
             out.pushes.push((k, self.frame.z * (push * share * 1.0)));
             self.ripple(Vec2::new(p.x, p.y), push * 3.0);
@@ -537,10 +539,10 @@ impl Barricade {
                 if d < scale * 30.0 && 0.0 < d {
                     out.knockback = Some(knock_offset(n, 40.0, body.step));
                     out.instability = Some(100);
-                    out.energy_loss = (30.0 - d) * 0.0002 + 0.002;
+                    out.energy_loss = f64::from(30.0 - d) * 0.0002 + 0.002;
                     if self.sound_at < now {
-                        let pitch = roll.unit() * 0.4 + 0.6;
-                        let volume = roll.unit() * 0.2 + 0.3;
+                        let pitch = (f64::from(roll.unit()) * 0.4 + 0.6) as f32;
+                        let volume = (f64::from(roll.unit()) * 0.2 + 0.3) as f32;
                         out.sound = Some(WallSound {
                             depth,
                             volume,
@@ -554,8 +556,8 @@ impl Barricade {
             WallBodyKind::Weapon => {
                 out.interrupt = true;
                 if self.sound_at < now {
-                    let pitch = roll.unit() * 0.6 + 0.6;
-                    let volume = roll.unit() * 0.3 + 0.1;
+                    let pitch = (f64::from(roll.unit()) * 0.6 + 0.6) as f32;
+                    let volume = (f64::from(roll.unit()) * 0.3 + 0.1) as f32;
                     out.sound = Some(WallSound {
                         depth,
                         volume,
@@ -698,8 +700,9 @@ pub struct WallShove {
     /// The character's knockback step (cm, from its chest).
     pub knockback: Option<Vec3>,
     pub instability: Option<i32>,
-    /// Taken from the character's energy while it is above 0.25.
-    pub energy_loss: f32,
+    /// Taken from the character's energy while it is above 0.25 (in
+    /// double).
+    pub energy_loss: f64,
     /// The holder's attack is interrupted.
     pub interrupt: bool,
     /// The impact sound played: the hitter's group alert is raised, and

@@ -484,7 +484,14 @@ a struck character takes, and its ribbon drawn with the glow material. A barrier
 (`thaum::barrier_live`): cast motion 0x23 and the hook that ends it, the
 focus it pays a tick, and its shell pushing other bodies' limb spheres out.
 A bubble cast runs its dome where it was cast (`thaum::bubble_live`),
-ending with its power. Both domes run their frame step every frame and are
+ending with its power; the player's domes stand on the body's standing
+point, as the duellists' do. Each part a dome pushes takes its contact
+(`thaum::barrier_live::apply_contact`), measured from the character's
+chest point: the 40 cm shove, the instability counter plus one, the energy
+drain (0.002 for the bubble, 0.001 for the barrier) and the AI's route
+dropped; a held weapon's struck part breaks its holder's attack. The
+barricade's shove keeps the original's double precision and drops the
+route too. Both domes run their frame step every frame and are
 drawn (`effects::dome_draw`: the cap or the sphere at the dome's radius in
 the node's frame, `effectbarrier_f`/`effectbubble_f` through
 `ForceDomeMaterial`, the `_ForceNoise` picture), and their sounds play
@@ -515,7 +522,9 @@ a struck character takes, its ribbon drawn with the glow material, and
 leaving once its frame would draw nothing. Cast hooks answer by event
 (`thaum::casting::CastHook`): the shell's and the bubble's refuse another
 cast until their raise clip ends, and a caster's animator leaving its cast
-action asks the hook with event 4 (`thaum::cast::call_motion_hooks`).
+action asks the hook with event 4 (`thaum::cast::call_motion_hooks`). The
+player's controller asks no hook while the body is shock-staggered, dying
+or its behaviour suspended (`thaum::casting::player_asks_hooks`).
 
 The Mind domain (`mind`) has its casts (`mind::casts`): the sixteen-row
 table, the front end (Control Mind's lock, the shared pricing), the 0.3
@@ -543,8 +552,11 @@ walks Control Mind's binding (the player takes the target's body after
 root and camera moved), the possession marker and Spirit Form's drain; the
 hand-backs run behind the transition screen; Spirit Form's wraith body
 (built by the viewer) takes the player, the powers and the list and gives
-them back; a blow on a body with the handover bit ends its Spirit Form or
-Control Mind; and the lists are fed to the perception as `MindPowers`. The
+them back; the handover and the hand-back first sweep the power tree
+(`power_screen::sweep_forms`: a shown tree closes, else a shown bar falls),
+and behind the simulation bridge the handover, the hand-back's transition
+and Spirit Form's end run on the frame's world; a blow on a body with the
+handover bit ends its Spirit Form or Control Mind; and the lists are fed to the perception as `MindPowers`. The
 walk also ticks and expires the other classes (Sense Minds and Mask Mind,
 instant and persistent, Confusion and Enrage with their status bits,
 Trust and Suspicion, Loyalty and Command Dead with their markers' unlinks

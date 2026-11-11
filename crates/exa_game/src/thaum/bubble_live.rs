@@ -16,19 +16,18 @@
 //!   10 cm inside the shell are pushed back in ([`Bubble::own_part_push`]);
 //!   another body's parts within reach ([`Bubble::reaches`]) that the shell
 //!   covers are pushed out ([`Bubble::other_part_push`], the part's mass its
-//!   own). Every push strikes a ripple, and a body any of whose parts were
-//!   pushed takes [`Dome::contact`]: its caster is shoved back toward the
-//!   centre once beyond the radius less 30 cm, another character shoved
-//!   away within the radius plus 20 cm, 40 cm either way. [inf: the shove is
-//!   a knockback step, as the barrier's is, and the contact runs once a
-//!   body, not once a part.]
+//!   own). Every push strikes a ripple, and each pushed part takes
+//!   [`Dome::contact`]: its caster is shoved back toward the centre once
+//!   beyond the radius less 30 cm, another character shoved away within the
+//!   radius plus 20 cm, 40 cm either way, counting a knock, losing energy
+//!   (0.002 a contact, more beyond 100 cm) and dropping its AI's route; a
+//!   held weapon's struck part breaks its holder's attack. [inf: the shove
+//!   is a knockback step, as the barrier's is.]
 //!
 //! The cast's `thmfrc_ss`, the hum, the hits' `thmfrc_bi` and the break's
 //! `thmfrc_brf` are queued on [`LiveBubble::sounds`] and played by
 //! [`super::dome_sound`]; the sphere is drawn by
 //! [`crate::effects::dome_draw`].
-//!
-//! Not wired: the balance the contact drains and the knock count.
 //!
 //! Evidence: the bubble's start, hook, tick and keep-out, and its power
 //! class's control, read from `Exanima.exe`.
@@ -43,7 +42,7 @@ use super::casting::{self, CastBody, CastHook};
 use super::dome_sound::{DomeSet, DomeSounds};
 use super::live::{EffectDraws, EffectRoll};
 use super::power::force::{BUBBLE, BUBBLE_MOTION};
-use crate::effects::force_dome::{Bubble, CONTACT_PUSH, Dome, DomeHit, Phase, Sound};
+use crate::effects::force_dome::{Bubble, DOME_BALANCE_STEP, Dome, DomeHit, Phase, Sound};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -107,13 +106,16 @@ pub fn end_bubble(live: &mut LiveBubble) {
 
 /// One body against the bubble: its parts pushed in (`own`, the caster's)
 /// or out, each push striking a ripple. `limbs` is the caller's scratch
-/// buffer. Whether any part was pushed.
+/// buffer; `parts` is filled with the pushed parts, in order. Whether any
+/// part was pushed.
 pub(crate) fn keep_out(
     bubble: &mut Bubble,
     own: bool,
     body: &mut Ragdoll,
     limbs: &mut Vec<LimbSphere>,
+    parts: &mut Vec<usize>,
 ) -> bool {
+    parts.clear();
     let centre = bubble.dome.at;
     gather_limbs(body, limbs);
     bubble.dome.ripples.begin_body();
@@ -154,28 +156,33 @@ pub(crate) fn keep_out(
             body.push_sphere(k, limb.sphere, push.push / CM);
             bubble.dome.ripples.strike(push.ripple_at, push.strength);
             pushed = true;
+            if parts.last() != Some(&k) {
+                parts.push(k);
+            }
         }
         start = end;
     }
     pushed
 }
 
-/// The response of a body the dome pushed: the shove, and the hit sound
-/// at the dome's place.
+/// The response to one pushed part: the shove, the knock, the energy
+/// drain and the route ([`super::barrier_live::apply_contact`]), and the
+/// hit sound at the dome's place.
+#[allow(clippy::too_many_arguments)]
 fn contact(
     dome: &mut Dome,
     hit: &DomeHit,
     now: u32,
     roll: &mut EffectRoll,
     body: &mut Ragdoll,
+    route: Option<&mut exa_ai::drive::Driven>,
+    holder_swing: Option<&mut exa_combat::swing::SwingState>,
     sounds: &mut DomeSounds,
 ) {
     let Some(contact) = dome.contact(hit, now, &mut roll.0) else {
         return;
     };
-    if let Some(shove) = contact.shove {
-        body.begin_knockback(shove * (CONTACT_PUSH / CM));
-    }
+    super::barrier_live::apply_contact(&contact, body, route, holder_swing, DOME_BALANCE_STEP, now);
     if let Some([volume, pitch]) = contact.sound {
         sounds.push(
             DomeSet::Hit,
@@ -189,14 +196,19 @@ fn contact(
 }
 
 /// Ticks every bubble in the scene.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tick_bubbles(
     mut commands: Commands,
     mut bubbles: Query<(Entity, &mut LiveBubble)>,
     mut casters: Query<&mut PowerCaster>,
     mut bodies: Query<(Entity, &mut Ragdoll, Option<&GlobalTransform>)>,
+    (mut routes, mut swings): (
+        Query<&mut exa_ai::drive::Driven>,
+        Query<&mut exa_combat::swing::SwingState>,
+    ),
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
-    mut limbs: Local<Vec<LimbSphere>>,
+    (mut limbs, mut parts): (Local<Vec<LimbSphere>>, Local<Vec<usize>>),
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (entity, mut live) in &mut bubbles {
@@ -227,28 +239,47 @@ pub(crate) fn tick_bubbles(
         let centre = live.bubble.dome.at;
         for (other, mut body, at) in &mut bodies {
             let own = other == live.caster;
-            if !keep_out(&mut live.bubble, own, &mut body, &mut limbs) {
+            if !keep_out(&mut live.bubble, own, &mut body, &mut limbs, &mut parts) {
                 continue;
             }
             body.touch(WAKE_TICKS);
-            let Some(at) = at.map(|a| a.translation() * CM) else {
+            // A held body's parts are its holder's; a loose body is no
+            // character's and takes no contact.
+            let limp = body.drive.is_none();
+            let holder = body.held_by;
+            if limp && holder.is_none() {
+                continue;
+            }
+            // The contact measures from the character's chest point (its
+            // balance point), else its transform's place.
+            let chest = body
+                .drive
+                .as_ref()
+                .and_then(|d| d.balance().chest())
+                .map(|c| c * CM);
+            let Some(at) = chest.or_else(|| at.map(|a| a.translation() * CM)) else {
                 continue;
             };
-            let hit = DomeHit {
-                offset: at - centre,
-                scale: 1.0,
-                caster: own,
-                limp: body.drive.is_none(),
-                struck_flag: false,
-            };
-            contact(
-                &mut live.bubble.dome,
-                &hit,
-                now,
-                &mut roll,
-                &mut body,
-                &mut live.sounds,
-            );
+            for &part in parts.iter() {
+                let hit = DomeHit {
+                    offset: at - centre,
+                    scale: 1.0,
+                    caster: own,
+                    limp,
+                    struck_flag: limp && super::barrier_live::strikes(&body, part),
+                };
+                let mut swing = holder.and_then(|h| swings.get_mut(h).ok());
+                contact(
+                    &mut live.bubble.dome,
+                    &hit,
+                    now,
+                    &mut roll,
+                    &mut body,
+                    routes.get_mut(other).ok().as_deref_mut(),
+                    swing.as_deref_mut(),
+                    &mut live.sounds,
+                );
+            }
         }
     }
 }
