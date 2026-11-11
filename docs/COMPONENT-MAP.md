@@ -7,7 +7,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **81.9% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
 - Weighted by function count (zero-byte imported names left out): 73.3% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
-- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **87.0%** reproduced.
+- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
 ## By section
 
@@ -87,17 +87,17 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | rule | inside | bytes | coverage |
 |---|---|---:|---:|
-| NPC combat state | TMotileAI | 18,453 | 85% |
-| damage routine: hit point, speed/impact, zone factors, armour roll | TMotileDynamics | 13,157 | 88% |
+| NPC combat state | TMotileAI | 18,453 | 88% |
+| damage routine: hit point, speed/impact, zone factors, armour roll | TMotileDynamics | 13,157 | 93% |
 | per-part weapon stat bytes of factory weapons | FLX_ItemFactory | 3,692 | 90% |
-| armour layers from equipped apparel | SG_CharacterGen | 3,680 | 75% |
+| armour layers from equipped apparel | SG_CharacterGen | 3,680 | 88% |
 | weapon mesh assembly (feeds striking-part extent) | FLX_ItemFactory | 3,282 | 90% |
 | combat positioning score (spacing/reach) | TCombatant | 3,152 | 95% |
 | factory weapon spawn, striking-part extent | FLX_ItemFactory | 1,349 | 87% |
 | builds the weapon stat record from the item weapon section | TMotilePart | 1,284 | 92% |
-| grip/owner pass over the weapon stat record | TMotilePart | 1,244 | 85% |
-| re-runs the grip pass for each held weapon | TMotilePart | 798 | 85% |
-| apparel instance quality/condition | Item description phrases | 780 | 85% |
+| grip/owner pass over the weapon stat record | TMotilePart | 1,244 | 95% |
+| re-runs the grip pass for each held weapon | TMotilePart | 798 | 93% |
+| apparel instance quality/condition | Item description phrases | 780 | 92% |
 | factory item condition | Item description phrases | 532 | 95% |
 | applies damage to a body | TMotileDynamics | 481 | 95% |
 | attacker recoil after a hit | TMotileDynamics | 266 | 95% |
@@ -110,7 +110,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | enter combat state | TMotileAI | 116 | 95% |
 | blade length | TMotilePart | 79 | 95% |
 | weapon mass distribution | TMotilePart | 66 | 100% |
-| fetches the weapon stat record up the body chain | TMotilePart | 38 | 50% |
+| fetches the weapon stat record up the body chain | TMotilePart | 38 | 90% |
 
 ## How it was made
 
