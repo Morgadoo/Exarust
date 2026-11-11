@@ -813,11 +813,15 @@ pub struct FireHost {
     pub base: Option<[f32; 4]>,
 }
 
+/// The flame ticks after which a fire counts as settled: two seconds of the
+/// emitter's 83 Hz ticks.
+pub const SETTLE_TICKS: u32 = (2.0 * TICK_HZ) as u32 + 1;
+
 impl Fire {
     /// Whether the fire has burnt long enough for its flame and light to
     /// have built up (two seconds).
     pub fn settled(&self) -> bool {
-        self.ticks as f32 >= 2.0 * TICK_HZ
+        self.ticks >= SETTLE_TICKS
     }
 
     /// The emissive scale the mesh the fire burns on gets: the emitter's
