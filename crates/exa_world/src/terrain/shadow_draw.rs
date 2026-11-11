@@ -13,13 +13,19 @@
 //! block the scene does not hold (no live scene, or not yet registered) is
 //! kept. `EXA_TERRAIN_SHADOW_ALL=1` turns the rule off, to compare.
 //!
-//! The cached cube faces of point lights (`exa_render::cube_shadows`) keep
-//! every linked block: a face rendered while a block was out of view would
-//! keep its missing shadow until the face is dirtied again.
+//! The cube faces of point lights (`exa_render::cube_shadows`) take the
+//! same rule: [`cube_faces_skip_undrawn_blocks`] lists the blocks the visible
+//! pass left undrawn in [`CubeCasterGate`] before the faces are built, and a
+//! face rendered this frame leaves them out. The faces stay cached as
+//! rendered, as the original's do: its one-block draw tests the bit when the
+//! face renders and nothing dirties a face when a block's bit changes, so a
+//! face rendered while a block was out of view lacks its shadow until a
+//! caster or the light dirties the face again.
 //! Rules: `docs/RENDERING.md` (Terrain shadows).
 
 use bevy::camera::visibility::CascadesVisibleEntities;
 use bevy::prelude::*;
+use exa_render::cube_shadows::CubeCasterGate;
 
 use super::TerrainBlock;
 use crate::scene_live::LiveScene;
@@ -48,9 +54,9 @@ pub struct TerrainShadowStats {
     frames: u64,
 }
 
-/// Whether a terrain block casts into the sun's map: a block the scene
-/// holds casts only when its visible pass drew it; one it does not hold
-/// keeps Bevy's answer.
+/// Whether a terrain block casts into the sun's map or a cube face rendered
+/// this frame: a block the scene holds casts only when its visible pass
+/// drew it; one it does not hold keeps Bevy's answer.
 pub fn casts_into_sun(drawn_by_main: Option<bool>) -> bool {
     drawn_by_main != Some(false)
 }
@@ -92,6 +98,39 @@ pub fn sun_casts_drawn_blocks(
     if stats.frames % 240 == 1 && kept + left_out > 0 {
         info!(
             "terrain shadow draw: the sun casts {kept} block entries the main view drew and leaves out {left_out}"
+        );
+    }
+}
+
+/// Lists the terrain blocks the main view did not draw for this frame's
+/// cube faces to leave out (the original's one-block shadow draw's test of
+/// the visible word). Runs after the scene's visible pass and before the
+/// faces are built.
+pub fn cube_faces_skip_undrawn_blocks(
+    rule: Res<TerrainShadowRule>,
+    live: Option<Res<LiveScene>>,
+    blocks: Query<Entity, With<TerrainBlock>>,
+    gate: Option<ResMut<CubeCasterGate>>,
+    cube: Option<Res<exa_render::cube_shadows::CubeStats>>,
+    mut frames: Local<u64>,
+) {
+    let Some(mut gate) = gate else { return };
+    gate.left_out.clear();
+    let Some(live) = live.filter(|l| rule.drawn_only && l.scene.is_some()) else {
+        return;
+    };
+    gate.left_out.extend(
+        blocks
+            .iter()
+            .filter(|&e| !casts_into_sun(live.drawn_by_main(e))),
+    );
+    // The faces' count is the previous frame's (they are built later).
+    let gated = cube.map_or(0, |c| c.gated);
+    *frames += 1;
+    if *frames % 240 == 1 && gated > 0 {
+        info!(
+            "terrain shadow draw: the cube faces left out {gated} undrawn block draws ({} blocks undrawn)",
+            gate.left_out.len()
         );
     }
 }

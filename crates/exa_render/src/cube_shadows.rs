@@ -70,6 +70,7 @@ impl Plugin for CubeShadowsPlugin {
         app.init_resource::<PointShadows>()
             .init_resource::<CubeLids>()
             .init_resource::<CubeStats>()
+            .init_resource::<CubeCasterGate>()
             .init_resource::<Pool>()
             .init_resource::<CubeJobs>()
             .add_plugins(ExtractResourcePlugin::<CubeJobs>::default())
@@ -130,6 +131,19 @@ pub struct CubeStats {
     pub draws: usize,
     /// Rooms' lids drawn into faces since start-up.
     pub lid_draws: u64,
+    /// Caster draws the [`CubeCasterGate`] left out of this frame's faces.
+    pub gated: usize,
+}
+
+/// Casters a face rendered this frame must leave out, as the original's
+/// one-block terrain draw skips a block whose visible word lacks the
+/// main-view bit: the world fills it before [`LightsSystems::Cubes`] each
+/// frame. The face is cached as rendered (the gate does not dirty it), so a
+/// block left out keeps its shadow out of that face until a caster or the
+/// light dirties it, as in the original.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct CubeCasterGate {
+    pub left_out: bevy::ecs::entity::EntityHashSet,
 }
 
 /// Whether point lights cast shadows at all (`--no-shadows` turns it off).
@@ -611,9 +625,11 @@ fn build_jobs(
     joints: Query<&GlobalTransform>,
     bindposes: Res<Assets<SkinnedMeshInverseBindposes>>,
     materials: Res<Assets<ExaMaterial>>,
+    gate: Res<CubeCasterGate>,
     mut posed: Local<EntityHashMap<Option<u32>>>,
     mut stats: ResMut<CubeStats>,
 ) {
+    let mut gated = 0;
     jobs.faces.clear();
     jobs.draws.clear();
     jobs.joints.clear();
@@ -643,6 +659,10 @@ fn build_jobs(
             let start = jobs.draws.len() as u32;
             for (&caster, c) in &list.0 {
                 if c.faces & (1 << face) == 0 {
+                    continue;
+                }
+                if gate.left_out.contains(&caster) {
+                    gated += 1;
                     continue;
                 }
                 let Ok((mesh, at, bias, material, skin, dither)) = casters.get(caster) else {
@@ -701,6 +721,7 @@ fn build_jobs(
         faces: jobs.faces.len(),
         draws: jobs.draws.len(),
         lid_draws: stats.lid_draws + jobs.draws.iter().filter(|d| d.lid).count() as u64,
+        gated,
     };
 }
 
