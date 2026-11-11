@@ -46,8 +46,17 @@
 //! Guesses (labelled where they are made): the delete box's records are laid
 //! out in its client at its design size; the drop-down's row height is the
 //! combo box's; the item container lists entry names where the original
-//! draws icons; the skills panel on the right and the reset-after-the-portal
-//! question are not built.
+//! draws icons; the skills panel on the right is not built.
+//!
+//! The reset-after-the-portal question: after each select that read a
+//! slot, and when the screen opens, a story save from before 0.9.5's
+//! writers that went past the portal
+//! ([`crate::slots::offers_portal_reset`]) raises the `Reset to portal`
+//! box ([`exa_ui::dialogs::RESET_RECORDS`]) over the form. Its Yes deletes
+//! the file the select read, drops the slot when no checkpoint is left
+//! ([`SlotList::reset_to_portal`]) and selects the same index again; its
+//! No and the cancel key close it. The original runs the select's refresh
+//! and the check behind a fade; here they run at once.
 //!
 //! Evidence: the creation form's constructor and its continue table, the
 //! continue callbacks, the delete box's constructor and table, the
@@ -82,7 +91,9 @@ use crate::flow::{Flow, FlowSteps, Phase};
 use crate::gui_paint::{self, Frame, Painted};
 use crate::menu_pages::{MenuCommand, game_mode};
 use crate::menu_screen::MenuChoice;
-use crate::slots::SlotList;
+use crate::slots::{SlotList, offers_portal_reset};
+use exa_formats::save_package::SlotKind;
+use exa_ui::dialogs::{RESET_RECORDS, RESET_TO_PORTAL, reset_box};
 
 /// The story's game mode word, which shows the checkpoint toggle.
 pub const STORY: i32 = 4;
@@ -100,6 +111,8 @@ pub enum Target {
     Row(usize),
     /// A record of the delete box.
     Confirm(usize),
+    /// A record of the "Reset to portal" box.
+    Reset(usize),
 }
 
 /// Which combo box's list is open.
@@ -136,6 +149,12 @@ pub struct SaveScreen {
     pub journal_combo: Vec<Control>,
     /// The delete box's records, relative to its client, while it is up.
     pub confirm: Option<Vec<Control>>,
+    /// The "Reset to portal" box's records, relative to its client, while
+    /// it is up ([`SaveScreen::ask_portal_reset`]).
+    pub reset: Option<Vec<Control>>,
+    /// Which of the slot's files the last select read (the file the reset
+    /// deletes).
+    pub opened: Option<SlotKind>,
     /// The shown slot's index in the list.
     pub index: i32,
     /// The file the CONTINUE reads: 2 the save, 1 the checkpoint (0 until a
@@ -174,6 +193,8 @@ impl SaveScreen {
             main: Vec::new(),
             journal_combo: Vec::new(),
             confirm: None,
+            reset: None,
+            opened: None,
             index: 0,
             kind: 0,
             availability: 0,
@@ -212,10 +233,18 @@ impl SaveScreen {
         s.item_names = item_names;
         let found = list.character_screen_select(0, 1);
         s.availability = found.availability;
+        let asks = found
+            .loaded
+            .as_ref()
+            .is_some_and(|loaded| offers_portal_reset(game_mode, loaded));
         if let Some(loaded) = found.loaded {
+            s.opened = Some(loaded.kind);
             s.show(&loaded);
         }
         s.refresh(list);
+        if asks {
+            s.ask_portal_reset();
+        }
         Some(s)
     }
 
@@ -243,6 +272,9 @@ impl SaveScreen {
         );
         if self.confirm.is_some() {
             self.confirm = Some(confirm_controls(self.unit));
+        }
+        if self.reset.is_some() {
+            self.reset = Some(reset_controls(self.unit));
         }
     }
 
@@ -375,7 +407,12 @@ impl SaveScreen {
         let found = list.character_screen_select(self.index, self.kind);
         if found.availability != 0 {
             self.availability = found.availability;
+            let asks = found
+                .loaded
+                .as_ref()
+                .is_some_and(|loaded| offers_portal_reset(self.game_mode, loaded));
             if let Some(loaded) = found.loaded {
+                self.opened = Some(loaded.kind);
                 self.show(&loaded);
             }
             if self.kind == 2 && self.availability & 2 == 0 {
@@ -384,7 +421,56 @@ impl SaveScreen {
                 self.kind = 2;
             }
             self.refresh(list);
+            // The original runs the refresh and this check behind the
+            // select's fade.
+            if asks {
+                self.ask_portal_reset();
+            }
         }
+    }
+
+    /// The "Reset to portal" box comes up over the screen (the original's
+    /// check after a select found a save from before 0.9.5 that went past
+    /// the portal, [`offers_portal_reset`]).
+    pub fn ask_portal_reset(&mut self) {
+        info!(
+            "saves: slot index {} asks: {}",
+            self.index,
+            exa_ui::dialogs::RESET_QUESTION
+        );
+        self.reset = Some(reset_controls(self.unit));
+    }
+
+    /// The box's Yes: the file the select read is deleted and, without a
+    /// checkpoint left, the slot leaves the list
+    /// ([`SlotList::reset_to_portal`]); the same index is selected again
+    /// with the form's kind, and the box closes.
+    pub fn confirm_portal_reset(&mut self, list: &mut SlotList) {
+        self.reset = None;
+        let opened = self.opened.unwrap_or(SlotKind::Save);
+        match list.reset_to_portal(opened) {
+            Ok(dropped) => info!(
+                "saves: reset to the portal: the slot's {} file is deleted{}",
+                opened.extension(),
+                if dropped {
+                    "; no checkpoint is left, so the slot leaves the list"
+                } else {
+                    ""
+                }
+            ),
+            Err(error) => warn!("saves: cannot reset the slot to the portal: {error}"),
+        }
+        self.select(list, self.index);
+    }
+
+    /// The reset box's place: the delete box's size, centred.
+    pub fn reset_px(&self) -> GuiRect {
+        self.confirm_px()
+    }
+
+    pub(crate) fn reset_client(&self) -> GuiRect {
+        let frame = Frame::new(self.reset_px(), self.unit, RESET_TO_PORTAL.title);
+        frame.client()
     }
 
     /// The refresh: the combo box's items and the character's name, the
@@ -568,6 +654,15 @@ impl SaveScreen {
 
     /// What is under the window point.
     pub fn hit(&self, x: i32, y: i32) -> Option<Target> {
+        if let Some(reset) = &self.reset {
+            let client = self.reset_client();
+            for (i, c) in reset.iter().enumerate() {
+                if takes_hits(c) && rect_of(c, client.left, client.top).contains(x, y) {
+                    return Some(Target::Reset(i));
+                }
+            }
+            return None;
+        }
         if let Some(confirm) = &self.confirm {
             let client = self.confirm_client();
             for (i, c) in confirm.iter().enumerate() {
@@ -612,6 +707,7 @@ impl SaveScreen {
         match target {
             Target::Control(i) => Some((&mut self.main, i)),
             Target::Confirm(i) => self.confirm.as_mut().map(|c| (c, i)),
+            Target::Reset(i) => self.reset.as_mut().map(|c| (c, i)),
             _ => None,
         }
     }
@@ -745,6 +841,9 @@ impl SaveScreen {
             Target::Control(saves::CONTINUE) => return self.continue_action(list),
             Target::Confirm(delete_box::DELETE) => return self.confirm_delete(list),
             Target::Confirm(delete_box::CANCEL) => self.confirm = None,
+            Target::Reset(reset_box::YES) => self.confirm_portal_reset(list),
+            // No closes the box with result 0.
+            Target::Reset(reset_box::NO) => self.reset = None,
             _ => {}
         }
         SaveAction::None
@@ -752,7 +851,10 @@ impl SaveScreen {
 
     /// The cancel key: the box or the list closes, else the form leaves.
     pub fn cancel(&mut self) -> SaveAction {
-        if self.confirm.take().is_some() || self.list.take().is_some() {
+        if self.reset.take().is_some()
+            || self.confirm.take().is_some()
+            || self.list.take().is_some()
+        {
             return SaveAction::None;
         }
         SaveAction::Leave
@@ -769,6 +871,15 @@ fn confirm_controls(unit: i32) -> Vec<Control> {
     scaled(&creation_forms::lay_out(&DELETE_RECORDS, DELETE_SIZE), unit)
 }
 
+/// The reset box's records at `unit`, relative to its client [guess: laid
+/// out at the box's design size, as the delete box's].
+fn reset_controls(unit: i32) -> Vec<Control> {
+    scaled(&creation_forms::lay_out(&RESET_RECORDS, RESET_SIZE), unit)
+}
+
+/// The reset box's design size: every confirmation dialog's.
+const RESET_SIZE: (i32, i32) = (RESET_TO_PORTAL.width, RESET_TO_PORTAL.height);
+
 /// `--open-saves` / `--load-slot`: open the saves' screen once the load has
 /// ended, and continue a slot from it.
 #[derive(Resource, Debug, Clone, Default)]
@@ -778,7 +889,17 @@ pub struct ScriptedSaveScreen {
     /// The slot number to continue, and whether from its checkpoint first.
     pub load: Option<(u32, bool)>,
     pub done: bool,
+    /// `--portal-reset yes|no`: the answer given to the "Reset to portal"
+    /// box once it has been up [`PORTAL_RESET_WAIT`] frames (a debug
+    /// trigger; without it the box waits for the player).
+    pub portal_reset: Option<bool>,
+    /// Frames the reset box has been up for the scripted answer.
+    pub reset_frames: u32,
 }
+
+/// The frames the scripted answer to the reset box waits, so a screenshot
+/// can show the box first.
+pub const PORTAL_RESET_WAIT: u32 = 120;
 
 /// The saves' screen's input and paint, after the creator's.
 pub struct SaveScreenPlugin;
@@ -948,6 +1069,22 @@ fn saves_input(
                 actions.push(saves.continue_action(list));
             }
             None => warn!("--load-slot: slot {number} is not listed"),
+        }
+    }
+    if let Some(yes) = scripted.portal_reset {
+        if saves.reset.is_some() {
+            scripted.reset_frames += 1;
+            if scripted.reset_frames >= PORTAL_RESET_WAIT {
+                scripted.reset_frames = 0;
+                let target = if yes { reset_box::YES } else { reset_box::NO };
+                info!(
+                    "saves: --portal-reset answers {}",
+                    if yes { "Yes" } else { "No" }
+                );
+                actions.push(saves.answer(list, Target::Reset(target)));
+            }
+        } else {
+            scripted.reset_frames = 0;
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
@@ -1301,6 +1438,36 @@ pub fn paint_saves(saves: &SaveScreen, textures: &GuiTextures) -> Painted {
         }
         painted.layers.extend(form.over());
     }
+    // The reset box, laid out and drawn as the delete box (the same
+    // style, attributes and size; its own title).
+    if let Some(reset) = &saves.reset {
+        let (mut form, _) = gui_paint::paint_top_form(
+            saves.reset_px(),
+            unit,
+            &palette,
+            1.0,
+            gui_paint::FormWords {
+                style: exa_ui::dialogs::DIALOG_STYLE,
+                attributes: gui_paint::FORM_ATTRIBUTES | exa_ui::dialogs::DIALOG_ATTRIBUTES,
+            },
+            Some((RESET_TO_PORTAL.title, &font, size)),
+        );
+        painted.layers.extend(form.under());
+        let client = saves.reset_client();
+        for c in reset {
+            creator_screen::paint_record(
+                c,
+                (client.left, client.top),
+                unit,
+                &palette,
+                &text,
+                false,
+                textures,
+                &mut painted,
+            );
+        }
+        painted.layers.extend(form.over());
+    }
     painted
 }
 
@@ -1493,5 +1660,93 @@ mod tests {
         let s = SaveScreen::new(ARENA, (1024, 768), 4);
         assert!(hidden(&s.main[saves::CHECKPOINT]));
         assert_eq!(s.main[saves::CONTINUE].x, 1024 - 0x20 - 160);
+    }
+
+    /// Makes a slot's file a save from before 0.9.5's writers that went
+    /// past the portal: the third flags byte cleared and an `exanima06`
+    /// section added.
+    fn make_legacy_past_portal(path: &std::path::Path) {
+        use exa_formats::save_package::{
+            self, Flavour, PLAYER_DATA, PackageImage, PlayerData, PlayerHeader,
+        };
+        let mut package = PackageImage::read(&std::fs::read(path).unwrap()).unwrap();
+        let mut data =
+            PlayerData::parse(package.section(PLAYER_DATA).unwrap(), Flavour::Story).unwrap();
+        if let PlayerHeader::Story(header) = &mut data.header {
+            header.flags &= !0xff_0000;
+        }
+        package.put_section(PLAYER_DATA, &data.write());
+        package.put_section(&save_package::name("exanima06"), &[0; 4]);
+        std::fs::write(path, package.to_bytes()).unwrap();
+    }
+
+    /// A pre-0.9.5 story save past the portal raises the reset box when
+    /// the screen opens; No closes it and keeps the files; Yes deletes the
+    /// file the select read and, with no checkpoint left, drops the slot.
+    #[test]
+    fn a_legacy_save_past_the_portal_asks_to_reset() {
+        let dir = folder("portal-reset");
+        let mut list = SlotList::new(Slots::story(&dir));
+        let number = story_slot(&mut list, "Ash");
+        let save = list.slots().file(number, SlotKind::Save);
+        // A save of this version does not ask.
+        let s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        assert!(s.reset.is_none());
+        make_legacy_past_portal(&save);
+        let mut list = SlotList::new(Slots::story(&dir));
+        let mut s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        let reset = s.reset.as_ref().unwrap();
+        assert_eq!(
+            reset[reset_box::QUESTION].text,
+            exa_ui::dialogs::RESET_QUESTION.as_bytes()
+        );
+        assert_eq!(s.opened, Some(SlotKind::Save));
+        // The arena never asks.
+        let loaded = list.load_current(false).unwrap();
+        assert!(!offers_portal_reset(ARENA, &loaded));
+        // No closes the box.
+        assert_eq!(
+            s.answer(&mut list, Target::Reset(reset_box::NO)),
+            SaveAction::None
+        );
+        assert!(s.reset.is_none());
+        assert!(save.is_file());
+        // The cancel key closes a box that is up before it leaves.
+        s.ask_portal_reset();
+        assert_eq!(s.cancel(), SaveAction::None);
+        assert!(s.reset.is_none());
+        // Yes, by a click on its button.
+        s.ask_portal_reset();
+        let client = s.reset_client();
+        let yes = &s.reset.as_ref().unwrap()[reset_box::YES];
+        let at = (
+            client.left + yes.x + yes.w / 2,
+            client.top + yes.y + yes.h / 2,
+        );
+        assert_eq!(s.hit(at.0, at.1), Some(Target::Reset(reset_box::YES)));
+        assert_eq!(click(&mut s, &mut list, at), SaveAction::None);
+        assert!(s.reset.is_none());
+        assert!(!save.exists());
+        assert_eq!((list.count(), list.current()), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With a checkpoint left the slot stays listed and current after the
+    /// reset deletes the save.
+    #[test]
+    fn the_reset_keeps_a_slot_with_a_checkpoint() {
+        let dir = folder("portal-reset-checkpoint");
+        let mut list = SlotList::new(Slots::story(&dir));
+        let number = story_slot(&mut list, "Ash");
+        list.slots().copy_save_over_checkpoint(number).unwrap();
+        list.select(0);
+        assert!(!list.reset_to_portal(SlotKind::Save).unwrap());
+        assert!(!list.slots().file(number, SlotKind::Save).exists());
+        assert_eq!((list.count(), list.current()), (1, number as i32));
+        // No current slot: nothing happens.
+        let mut idle = SlotList::new(Slots::story(&dir));
+        assert!(!idle.reset_to_portal(SlotKind::Checkpoint).unwrap());
+        assert!(list.slots().file(number, SlotKind::Checkpoint).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

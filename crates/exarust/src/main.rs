@@ -244,6 +244,8 @@
 //!                                     full load does (tables, shelf regeneration, world clock, player record reset)
 //!          --open-saves story|arena   with --save-dir: once loaded, open the saves' character screen (the menu's
 //!                                     CONTINUE): the slot list, the character, delete, CONTINUE
+//!          --portal-reset yes|no      with --open-saves: answer the "Reset to portal" box (a pre-0.9.5 story save
+//!                                     past the portal raises it) 120 frames after it comes up
 //!          --load-slot n[:save|:checkpoint]  with --save-dir: once loaded, open the story saves' screen and CONTINUE
 //!                                     ExanimaNNN from it (the checkpoint first by default)
 //!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading
@@ -620,6 +622,9 @@ pub struct Options {
     /// `--open-saves`: the game mode the saves' screen opens for once
     /// loaded (4 the story, 8 the arena).
     pub open_saves: Option<i32>,
+    /// `--portal-reset yes|no`: answer the saves' screen's "Reset to
+    /// portal" box (`exa_game::save_screen::ScriptedSaveScreen`).
+    pub portal_reset: Option<bool>,
     /// `--load-slot`: the story slot continued from the saves' screen, and
     /// whether its checkpoint is read first.
     pub load_slot: Option<(u32, bool)>,
@@ -1651,6 +1656,17 @@ fn main() -> AppExit {
                     }
                 };
             }
+            "--portal-reset" => {
+                let word = args.next().unwrap_or_default();
+                options.portal_reset = match word.as_str() {
+                    "yes" => Some(true),
+                    "no" => Some(false),
+                    _ => {
+                        eprintln!("--portal-reset: yes or no, not {word:?}");
+                        return AppExit::from_code(2);
+                    }
+                };
+            }
             "--load-slot" => {
                 let text = args.next().unwrap_or_default();
                 let (number, kind) = text
@@ -2199,6 +2215,8 @@ fn main() -> AppExit {
                 .or(options.load_slot.map(|_| exa_game::save_screen::STORY)),
             load: options.load_slot,
             done: false,
+            portal_reset: options.portal_reset,
+            reset_frames: 0,
         });
     }
     // The simulation's own world (`exa_physics::sim_app`).

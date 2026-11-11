@@ -1301,6 +1301,11 @@ pub enum Step {
     PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
+    /// Move the placed player out of the level exit that holds it (the
+    /// story continue's nudge, [`exit_nudge`]): applied with the placement
+    /// once the level is in, against the level's exit zones
+    /// ([`crate::level_change::NudgeOutOfExits`]).
+    ExitNudge,
     /// Give the player its story roles (the list cleared first) and the
     /// gear and powers only the background's start writes, on the record
     /// the level load spawns the player from; `flags` is the spawn
@@ -2291,8 +2296,9 @@ impl Flow {
 
     /// Continues a story save: the menu form closes, the first wake-up's
     /// animating flag clears, the save's locale is loaded (or the first level
-    /// when there is none), the player nudged out of any exit trigger by the
-    /// host, and the near shot framed on the player's body, fast.
+    /// when there is none), the player placed and nudged out of the exit
+    /// that holds it ([`Step::ExitNudge`]), and the near shot framed on the
+    /// player's body, fast.
     pub fn continue_story(
         &mut self,
         save_locale: Option<&'static str>,
@@ -2316,6 +2322,7 @@ impl Flow {
                 teardown: true,
             },
             Step::PlacePlayer(player),
+            Step::ExitNudge,
             Step::Camera(camera::frame_point(player.position, true, false, viewport)),
             Step::Hook(Hook::Story),
         ]
@@ -4121,7 +4128,7 @@ fn apply_steps(
         let tail = steps.split_off(load + 1);
         let (now_steps, later): (Vec<Step>, Vec<Step>) = tail
             .into_iter()
-            .partition(|step| matches!(step, Step::PlacePlayer(_)));
+            .partition(|step| matches!(step, Step::PlacePlayer(_) | Step::ExitNudge));
         steps.extend(now_steps);
         if !later.is_empty() {
             if let Some(after) = story.after_load.as_mut() {
@@ -4215,6 +4222,9 @@ fn apply_steps(
             }
             Step::PlacePlayer(placement) => {
                 commands.insert_resource(crate::level_change::PlayerPlacement::of_flow(&placement));
+            }
+            Step::ExitNudge => {
+                commands.insert_resource(crate::level_change::NudgeOutOfExits);
             }
             Step::EndMenuUnselected(unselected) => {
                 if let Some(end) = end.as_mut() {
@@ -6411,6 +6421,12 @@ mod tests {
         };
         let steps = flow.continue_story(Some("exanima02"), placement, view);
         assert_eq!(steps.first(), Some(&Step::HideMenu));
+        // The player is nudged out of an exit right after its placement.
+        let placed = steps
+            .iter()
+            .position(|step| matches!(step, Step::PlacePlayer(_)))
+            .unwrap();
+        assert_eq!(steps[placed + 1], Step::ExitNudge);
         assert!(!flow.story.wake.animating);
         assert!(steps.contains(&Step::LoadLevel {
             locale: "exanima02",

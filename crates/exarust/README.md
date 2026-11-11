@@ -127,6 +127,10 @@ which places the manager at the return's 300 cm, half turn placement. The arena 
 the hub track the original's hub entry draws (Msc_Hub01 two times in three),
 at 0.1, from one of its four start places, and asks for the shopkeeper and
 one body per employed specialist at their spots.
+A level placement from a story continue is first nudged out of the exit zone
+that holds it (`exa_game::level_change::nudge_out_of_exits`), then stood on the
+floor; `--portal-reset yes|no` answers the saves' screen's `Reset to portal`
+box.
 Placed characters keep their records' perks (Remise, Feint, …); the player
 and the duellist are new records, with none unless `--perks` gives the
 player some.

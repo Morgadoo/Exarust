@@ -2142,11 +2142,14 @@ fn load_story_slot(
     }
     if placement.is_none() {
         // A save without a placement (one Exarust wrote before it saved
-        // the player) starts at the level's own start.
+        // the player) starts at the level's own start, which no exit
+        // holds; the nudge goes with the placement it moves.
         resumed.retain(|step| {
             !matches!(
                 step,
-                crate::flow::Step::PlacePlayer(_) | crate::flow::Step::Camera(_)
+                crate::flow::Step::PlacePlayer(_)
+                    | crate::flow::Step::ExitNudge
+                    | crate::flow::Step::Camera(_)
             )
         });
     }
