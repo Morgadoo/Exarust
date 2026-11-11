@@ -1033,6 +1033,8 @@ the viewport frame-rate readout and the version line are drawn live as the origi
 
 both AI and motion unit backlog premises were stale; the one live difference was the attack executor Break Tangle gate, now ported for the player and the AI (EXA_FORCE_TANGLE shows it).
 
+dormant characters nothing draws are parked out of the solver as the original body tick marks them, and woken by the AI manager frame or the golem wake; TMotileDynamics gains its dormant-branch mark. The chase camera no longer ticks behind the loading screen, which kept lockstep runs from repeating once the simulation read the camera.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
