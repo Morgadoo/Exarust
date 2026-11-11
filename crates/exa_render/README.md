@@ -105,7 +105,9 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   words, each level filtered directly from the base, sides shifted right
   with a floor of one and a final 1×1 level, each axis wrapping or clamping
   by the image's own flags; `ChainOptions::for_image`), filtered in the
-  space the format word picks (linear, squared colour or centred), the
+  word's own channels when the RGBA8 base is laid out as its decode makes
+  it (`NativeLayout`: grey, alpha, grey-alpha, RGB; all four otherwise),
+  in the space the format word picks (linear, squared colour or centred), the
   chain from a later first level, which the texture detail
   setting uploads as the base (all levels from it, or that level alone when
   mipmapping is off), the resample to an arbitrary size (the chain's level

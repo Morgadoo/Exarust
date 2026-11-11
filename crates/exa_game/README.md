@@ -2306,8 +2306,15 @@ spins on it; a factory weapon (`@`) is still assembled in place. A story
 load posts the loaded player's character request (`0x1000`,
 `WORLD_SCENE`) with its body morphed by the record's physique
 (`save_live::LoadedPlayerStream`), and the level's player spawn fetches it,
-waiting up to 30 s. `--sync-content` (`ContentStreamOff`) starts no stream,
-so both are built on the main thread (for timing comparisons).
+waiting up to 30 s. While a level's collision builds, the play loader hands
+the level's character bodies to the streamed pass (`stream_characters`, each
+body variant once, as a `PendingJob` the thread reads, parses, morphs and
+meshes, nearest the player's start first, `LEVEL_SCENE`); the pump keeps each
+one built (`take_streamed`) and the loader adds it to the model cache, so the
+spawn finds them built; the spawn does not wait and ends the list
+(`end_streamed_characters`). `--sync-content` (`ContentStreamOff`) starts no
+stream, so all of these are built on the main thread (for timing
+comparisons).
 
 ## Scene bodies and the live arena round
 

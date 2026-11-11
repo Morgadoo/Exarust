@@ -30,7 +30,12 @@
 //! - the story load's loaded player ([`crate::save_live`]): the reset's
 //!   request is posted with the player's body, morphed by the record's
 //!   physique, and the level's player spawn fetches it, waiting while it
-//!   is built.
+//!   is built;
+//! - the level's characters ([`ContentRequests::stream_characters`]): while
+//!   the collision builds, each body variant is read, parsed, morphed and
+//!   meshed on the thread, nearest the player's start first, and the pump
+//!   hands it over for the model cache; the spawn finds it built and does
+//!   not wait for the rest.
 //!
 //! The record lookup is the poster's: Exarust's object database lives in
 //! the main thread's catalogue, so a post hands the thread the record's
@@ -45,6 +50,7 @@ use exa_assets::content_stream::{
     CharacterRequest, ContentBuilders, Fetch, LevelNode, ObjectRequest, StreamedCharacter,
 };
 use exa_assets::model::{BuiltModel, ModelJob};
+use exa_assets::morph::PendingJob;
 use exa_assets::stream_worker::StreamWorker;
 use exa_assets::{Game, GameData, PackKind};
 
@@ -61,6 +67,17 @@ pub const ICON_SCENE: u64 = 0x1C0_0001;
 /// The world scene's key, which the loaded player's request and fetch carry
 /// [Exarust's key: the original passes the world scene's address].
 pub const WORLD_SCENE: u64 = 0x5CE_0001;
+
+/// The scene key a level's streamed characters carry [Exarust's key: the
+/// original passes the level scene's address].
+pub const LEVEL_SCENE: u64 = 0x1E7_0001;
+
+/// A level character's body for the stream thread to build: its model's
+/// pending job and where it stands.
+pub struct StreamedBody {
+    pub job: PendingJob,
+    pub position: Vec3,
+}
 
 /// A model the stream thread built, waiting for the main thread.
 pub struct Built {
@@ -87,6 +104,10 @@ struct Payloads {
     records: HashMap<u32, String>,
     /// The prepared job of each requested character, by owner and scene.
     characters: HashMap<(u64, u64), ModelJob>,
+    /// The pending body of each streamed character, by its stage node.
+    streamed: HashMap<u64, PendingJob>,
+    /// Streamed characters' bodies the pump handed over, in build order.
+    streamed_ready: Vec<Built>,
     /// Built models by the node key the stream holds.
     built: HashMap<u64, Built>,
     next: u64,
@@ -175,9 +196,28 @@ impl ContentBuilders for RequestBuilders {
         Some(lock(&self.payloads).store(built))
     }
 
-    /// Exarust spawns a level's characters with the level.
-    fn streamed_character(&mut self, _: &StreamedCharacter) -> Option<u64> {
-        None
+    /// A level character's body, nearest the focus first: the read, the
+    /// parse, the morph and the meshes off the main thread. The original
+    /// builds the whole character here; Exarust's body is its model, and
+    /// the level's spawn makes the entities from it.
+    fn streamed_character(&mut self, character: &StreamedCharacter) -> Option<u64> {
+        let pending = lock(&self.payloads).streamed.remove(&character.node)?;
+        let job = match pending.job(&self.game) {
+            Ok(job) => job,
+            Err(message) => {
+                warn!(
+                    "content stream: streamed character {}: {message}",
+                    character.node
+                );
+                return None;
+            }
+        };
+        let built = self.build(job);
+        debug!(
+            "content stream: streamed character {} ({}) built in {:?}",
+            character.node, built.key, built.took
+        );
+        Some(lock(&self.payloads).store(built))
     }
 }
 
@@ -239,6 +279,62 @@ impl ContentRequests {
         lock(&self.payloads).built.remove(&result.node)
     }
 
+    /// Hands a level's characters' bodies to the stream thread (the
+    /// original's character-chunk handoff): they are built once the request
+    /// rings are empty, nearest `focus` first (the player's start, the
+    /// original's focus point). The bodies of a previous list not yet
+    /// started are dropped.
+    pub fn stream_characters(&self, focus: Vec3, bodies: Vec<StreamedBody>) {
+        let mut characters = Vec::with_capacity(bodies.len());
+        {
+            let mut payloads = lock(&self.payloads);
+            payloads.streamed.clear();
+            for (index, body) in bodies.into_iter().enumerate() {
+                // Stage node 0 is the null node.
+                let node = index as u64 + 1;
+                payloads.streamed.insert(node, body.job);
+                characters.push(StreamedCharacter {
+                    node,
+                    scene: LEVEL_SCENE,
+                    position: body.position.to_array(),
+                });
+            }
+        }
+        self.worker
+            .begin_characters(LEVEL_SCENE, focus.to_array(), characters);
+    }
+
+    /// Ends the level's streamed list: the bodies not yet started are
+    /// dropped (the level's spawn builds them itself).
+    pub fn end_streamed_characters(&self) -> usize {
+        let left = self.worker.pending_streamed();
+        lock(&self.payloads).streamed.clear();
+        self.worker
+            .begin_characters(LEVEL_SCENE, [0.0; 3], std::iter::empty());
+        left
+    }
+
+    /// The streamed characters' bodies the pump handed over since the last
+    /// call, in build order.
+    pub fn take_streamed(&self) -> Vec<Built> {
+        std::mem::take(&mut lock(&self.payloads).streamed_ready)
+    }
+
+    /// The stream's main-thread pump: runs the completions and keeps the
+    /// streamed characters' bodies it hands over for the level's spawn.
+    pub fn pump(&self) {
+        let pumped = self.worker.pump();
+        if pumped.added.is_empty() {
+            return;
+        }
+        let mut payloads = lock(&self.payloads);
+        for result in pumped.added {
+            if let Some(built) = payloads.built.remove(&result.node) {
+                payloads.streamed_ready.push(built);
+            }
+        }
+    }
+
     /// Whether a character request for `owner` and `scene` is still queued.
     pub fn character_queued(&self, owner: u64, scene: u64) -> bool {
         lock(&self.payloads)
@@ -280,11 +376,12 @@ fn start_stream(mut commands: Commands, game: Option<Res<Game>>) {
     }
 }
 
-/// The stream's pump: the completions of finished jobs run here. The
-/// requested objects and characters wait for their fetches.
+/// The stream's pump: the completions of finished jobs run here and the
+/// streamed characters' bodies are handed over. The requested objects and
+/// characters wait for their fetches.
 fn pump(requests: Option<Res<ContentRequests>>) {
     if let Some(requests) = requests {
-        requests.worker.pump();
+        requests.pump();
     }
 }
 

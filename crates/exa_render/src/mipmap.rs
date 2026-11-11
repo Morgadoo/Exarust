@@ -193,8 +193,8 @@ pub fn resample_axis(
 
 /// [`resample_axis`] for an image of `channels` interleaved f32 channels.
 /// The mip chains filter the channels the format has (one for a grey image,
-/// two for a normal, three for RGB, four for RGBA); Exarust's decoded base
-/// is always RGBA8, so its chains pass four.
+/// two for a normal, three for RGB, four for RGBA); Exarust's chains take
+/// the word's channels back out of the RGBA8 base ([`NativeLayout`]).
 pub fn resample_axis_channels(
     src: &[f32],
     channels: usize,
@@ -816,6 +816,7 @@ pub fn build_mip_chain_rgba8_between(
             conversion,
             kernel: MipKernel::Kaiser,
             renormalise: false,
+            format_channels: 4,
         },
     )
 }
@@ -836,6 +837,9 @@ pub struct ChainOptions {
     pub kernel: MipKernel,
     /// Normalise every filtered texel's first three channels.
     pub renormalise: bool,
+    /// The channels the image's pixel word has (one to four), which the
+    /// original filters ([`NativeLayout`]).
+    pub format_channels: usize,
 }
 
 impl ChainOptions {
@@ -860,7 +864,20 @@ impl ChainOptions {
             conversion: pixel::mip_conversion(format_word).unwrap_or(MipConversion::Linear),
             kernel: MipKernel::for_format(format_word),
             renormalise: renormalises(format_word, image_flags),
+            format_channels: format_channels(format_word),
         }
+    }
+}
+
+/// The channels of a pixel word the chain driver filters: one for
+/// `0x2008` and `0x4200`, two for `0x6208` and `0x8400`, three for
+/// `0xC600`, four otherwise (the driver refuses any other word).
+pub fn format_channels(format_word: u32) -> usize {
+    match format_word & pixel::TARGET_MASK {
+        0x2008 | 0x4200 => 1,
+        0x6208 | 0x8400 => 2,
+        0xC600 => 3,
+        _ => 4,
     }
 }
 
@@ -902,6 +919,142 @@ fn to_bytes(floats: &[f32], conversion: MipConversion, bytes: &mut [u8]) {
     }
 }
 
+/// The channels of an image's pixel word inside Exarust's RGBA8 base. The
+/// original's chain driver filters a word's own channels (one float for
+/// `0x2008` and `0x4200`, two for `0x6208` and `0x8400`, three for
+/// `0xC600`, four for `0xE608`), each channel on its own; the RGBA decode
+/// puts a grey word in red, green and blue with an opaque alpha, an alpha
+/// word in alpha with white colour, a grey-alpha word's grey in the three
+/// colours, and an RGB word under an opaque alpha. A channel the decode
+/// fills with 255 filters back to 255 in every space (its weights sum to
+/// one within rounding), and a copied channel filters to the same bytes,
+/// so filtering only the word's channels and spreading them gives the
+/// RGBA path's bytes with a quarter to three quarters of its work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeLayout {
+    /// The grey of a one-channel word in red, green and blue.
+    Grey,
+    /// The one channel of an alpha word.
+    Alpha,
+    /// The grey and the alpha of a grey-alpha word.
+    GreyAlpha,
+    /// The colours of a three-channel word.
+    Rgb,
+    /// All four channels (four-channel words, the two-channel `0x8400`, a
+    /// renormalised image, or a base that is not laid out as its word's
+    /// decode makes it).
+    Rgba,
+}
+
+impl NativeLayout {
+    /// The layout to filter `texels` of `base` with under `options`; the
+    /// base is checked, so a base laid out otherwise is filtered whole.
+    pub fn of(options: &ChainOptions, base: &[u8], texels: usize) -> Self {
+        let Some(pixels) = base.get(..texels * 4) else {
+            return Self::Rgba;
+        };
+        let pixels = pixels.as_chunks::<4>().0;
+        let grey = |p: &[u8; 4]| p[0] == p[1] && p[0] == p[2];
+        let candidates: &[Self] = match options.format_channels {
+            1 => &[Self::Grey, Self::Alpha],
+            2 => &[Self::GreyAlpha],
+            3 => &[Self::Rgb],
+            _ => &[],
+        };
+        if options.renormalise {
+            return Self::Rgba;
+        }
+        for &layout in candidates {
+            // The colour-squared space only has a two-channel form.
+            if options.conversion == MipConversion::GammaColour && layout != Self::GreyAlpha {
+                continue;
+            }
+            let fits = match layout {
+                Self::Grey => pixels.iter().all(|p| grey(p) && p[3] == 255),
+                Self::Alpha => pixels.iter().all(|p| p[..3] == [255; 3]),
+                Self::GreyAlpha => pixels.iter().all(grey),
+                Self::Rgb => pixels.iter().all(|p| p[3] == 255),
+                Self::Rgba => true,
+            };
+            if fits {
+                return layout;
+            }
+        }
+        Self::Rgba
+    }
+
+    /// The floats each texel is filtered with.
+    pub fn channels(self) -> usize {
+        match self {
+            Self::Grey | Self::Alpha => 1,
+            Self::GreyAlpha => 2,
+            Self::Rgb => 3,
+            Self::Rgba => 4,
+        }
+    }
+
+    /// The RGBA channel each filtered float is read from.
+    fn sources(self) -> &'static [usize] {
+        match self {
+            Self::Grey => &[0],
+            Self::Alpha => &[3],
+            Self::GreyAlpha => &[0, 3],
+            Self::Rgb => &[0, 1, 2],
+            Self::Rgba => &[0, 1, 2, 3],
+        }
+    }
+
+    /// The word's channels of an RGBA8 base, as floats in the filtering
+    /// space.
+    fn to_floats(self, rgba: &[u8], conversion: MipConversion, floats: &mut [f32]) {
+        if self == Self::Rgba {
+            return to_floats(rgba, conversion, floats);
+        }
+        let sources = self.sources();
+        let packed: Vec<u8> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| sources.iter().map(move |&c| p[c]))
+            .collect();
+        if conversion == MipConversion::GammaColour {
+            // Grey squared, alpha linear, as the RGBA space has them.
+            pixel::gamma_pair_floats(&packed, floats);
+        } else {
+            to_floats(&packed, conversion, floats);
+        }
+    }
+
+    /// Filtered floats back to RGBA8: the word's channels converted and
+    /// spread as the decode spreads them, the rest opaque or white.
+    fn to_bytes(self, floats: &[f32], conversion: MipConversion, rgba: &mut [u8]) {
+        if self == Self::Rgba {
+            return to_bytes(floats, conversion, rgba);
+        }
+        let ch = self.channels();
+        let mut packed = vec![0u8; floats.len()];
+        if conversion == MipConversion::GammaColour {
+            pixel::gamma_pair_bytes(floats, &mut packed);
+        } else {
+            to_bytes(floats, conversion, &mut packed);
+        }
+        for (out, p) in rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(packed.chunks_exact(ch))
+        {
+            *out = match self {
+                Self::Grey => [p[0], p[0], p[0], 255],
+                Self::Alpha => [255, 255, 255, p[0]],
+                Self::GreyAlpha => [p[0], p[0], p[0], p[1]],
+                Self::Rgb => [p[0], p[1], p[2], 255],
+                Self::Rgba => unreachable!("the RGBA layout converts whole"),
+            };
+        }
+    }
+}
+
 /// The chain levels from `first_level` up, without the levels before it.
 fn build_chain_from_floats(
     base: &[u8],
@@ -911,8 +1064,13 @@ fn build_chain_from_floats(
 ) -> (Vec<u8>, u32) {
     let first_level = options.first_level;
     let first = first_level.max(1);
-    let mut floats = vec![0.0f32; width * height * 4];
-    to_floats(&base[..width * height * 4], options.conversion, &mut floats);
+    // The original filters the channels its pixel word has; the base here
+    // is always RGBA8, so the word's channels are taken back out of it
+    // when the RGBA layout is the one its decode makes.
+    let layout = NativeLayout::of(options, base, width * height);
+    let ch = layout.channels();
+    let mut floats = vec![0.0f32; width * height * ch];
+    layout.to_floats(&base[..width * height * 4], options.conversion, &mut floats);
     let floats = floats.as_slice();
     // The chain's levels, base bytes included when `first_level` is 0.
     let mut out: Vec<u8> = if first_level == 0 {
@@ -926,7 +1084,7 @@ fn build_chain_from_floats(
         let dst_width = (width >> level).max(1);
         let dst_height = (height >> level).max(1);
         let weights = options.kernel.table(level);
-        let mut horizontal = vec![0.0f32; dst_width * height * 4];
+        let mut horizontal = vec![0.0f32; dst_width * height * ch];
         let threads = std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(1)
@@ -939,21 +1097,22 @@ fn build_chain_from_floats(
                 let mut start_row = 0;
                 while start_row < height {
                     let rows = per.min(height - start_row);
-                    let (chunk, tail) = rest.split_at_mut(rows * dst_width * 4);
+                    let (chunk, tail) = rest.split_at_mut(rows * dst_width * ch);
                     rest = tail;
                     scope.spawn(move || {
-                        let mut row = vec![0.0f32; dst_width * 4];
+                        let mut row = vec![0.0f32; dst_width * ch];
                         for row_index in 0..rows {
                             let y = start_row + row_index;
-                            resample_axis(
-                                &floats[y * width * 4..(y + 1) * width * 4],
+                            resample_axis_channels(
+                                &floats[y * width * ch..(y + 1) * width * ch],
+                                ch,
                                 width,
                                 dst_width,
                                 weights,
                                 wrap_x,
                                 &mut row,
                             );
-                            chunk[row_index * dst_width * 4..(row_index + 1) * dst_width * 4]
+                            chunk[row_index * dst_width * ch..(row_index + 1) * dst_width * ch]
                                 .copy_from_slice(&row);
                         }
                     });
@@ -961,21 +1120,22 @@ fn build_chain_from_floats(
                 }
             });
         } else {
-            let mut row = vec![0.0f32; dst_width * 4];
+            let mut row = vec![0.0f32; dst_width * ch];
             for y in 0..height {
-                resample_axis(
-                    &floats[y * width * 4..(y + 1) * width * 4],
+                resample_axis_channels(
+                    &floats[y * width * ch..(y + 1) * width * ch],
+                    ch,
                     width,
                     dst_width,
                     weights,
                     wrap_x,
                     &mut row,
                 );
-                horizontal[y * dst_width * 4..(y + 1) * dst_width * 4].copy_from_slice(&row);
+                horizontal[y * dst_width * ch..(y + 1) * dst_width * ch].copy_from_slice(&row);
             }
         }
 
-        let mut texels = vec![0.0f32; dst_width * dst_height * 4];
+        let mut texels = vec![0.0f32; dst_width * dst_height * ch];
         let vertical_threads = if threads > 1 && dst_width >= 64 {
             threads
         } else {
@@ -989,17 +1149,18 @@ fn build_chain_from_floats(
                     let column_end = (column_start + per).min(dst_width);
                     let horizontal_ref = &horizontal;
                     handles.push(scope.spawn(move || {
-                        let mut column = vec![0.0f32; height * 4];
-                        let mut output = vec![0.0f32; dst_height * 4];
+                        let mut column = vec![0.0f32; height * ch];
+                        let mut output = vec![0.0f32; dst_height * ch];
                         let mut results = Vec::with_capacity(column_end - column_start);
                         for x in column_start..column_end {
                             for y in 0..height {
-                                let source = (y * dst_width + x) * 4;
-                                column[y * 4..y * 4 + 4]
-                                    .copy_from_slice(&horizontal_ref[source..source + 4]);
+                                let source = (y * dst_width + x) * ch;
+                                column[y * ch..y * ch + ch]
+                                    .copy_from_slice(&horizontal_ref[source..source + ch]);
                             }
-                            resample_axis(
+                            resample_axis_channels(
                                 &column,
+                                ch,
                                 height,
                                 dst_height,
                                 weights,
@@ -1018,30 +1179,40 @@ fn build_chain_from_floats(
             });
             for (x, data) in columns {
                 for y in 0..dst_height {
-                    let destination = (y * dst_width + x) * 4;
-                    texels[destination..destination + 4].copy_from_slice(&data[y * 4..y * 4 + 4]);
+                    let destination = (y * dst_width + x) * ch;
+                    texels[destination..destination + ch]
+                        .copy_from_slice(&data[y * ch..y * ch + ch]);
                 }
             }
         } else {
-            let mut column = vec![0.0f32; height * 4];
-            let mut output = vec![0.0f32; dst_height * 4];
+            let mut column = vec![0.0f32; height * ch];
+            let mut output = vec![0.0f32; dst_height * ch];
             for x in 0..dst_width {
                 for y in 0..height {
-                    let source = (y * dst_width + x) * 4;
-                    column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+                    let source = (y * dst_width + x) * ch;
+                    column[y * ch..y * ch + ch].copy_from_slice(&horizontal[source..source + ch]);
                 }
-                resample_axis(&column, height, dst_height, weights, wrap_y, &mut output);
+                resample_axis_channels(
+                    &column,
+                    ch,
+                    height,
+                    dst_height,
+                    weights,
+                    wrap_y,
+                    &mut output,
+                );
                 for y in 0..dst_height {
-                    let destination = (y * dst_width + x) * 4;
-                    texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+                    let destination = (y * dst_width + x) * ch;
+                    texels[destination..destination + ch]
+                        .copy_from_slice(&output[y * ch..y * ch + ch]);
                 }
             }
         }
         if options.renormalise {
             renormalise_texels(&mut texels);
         }
-        let mut level = vec![0u8; texels.len()];
-        to_bytes(&texels, options.conversion, &mut level);
+        let mut level = vec![0u8; dst_width * dst_height * 4];
+        layout.to_bytes(&texels, options.conversion, &mut level);
         out.extend(level);
         count += 1;
         if dst_width + dst_height <= 2 {
@@ -1292,6 +1463,7 @@ pub fn resample_axis_phased(
 #[cfg(test)]
 mod rgba_chain_tests {
     use super::*;
+    use exa_formats::pixel::id;
 
     #[test]
     fn an_rgba_chain_appends_its_levels() {
@@ -1624,4 +1796,132 @@ mod rgba_chain_tests {
             64
         );
     }
+
+    /// A small generator for the layout tests' images.
+    fn noise(seed: &mut u32) -> u8 {
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*seed >> 24) as u8
+    }
+
+    /// RGBA8 bases laid out as each word's decode makes them.
+    fn laid_out(layout: NativeLayout, width: usize, height: usize, seed: u32) -> Vec<u8> {
+        let mut seed = seed;
+        let mut base = Vec::with_capacity(width * height * 4);
+        for _ in 0..width * height {
+            let (a, b, c, d) = (
+                noise(&mut seed),
+                noise(&mut seed),
+                noise(&mut seed),
+                noise(&mut seed),
+            );
+            base.extend_from_slice(&match layout {
+                NativeLayout::Grey => [a, a, a, 255],
+                NativeLayout::Alpha => [255, 255, 255, a],
+                NativeLayout::GreyAlpha => [a, a, a, d],
+                NativeLayout::Rgb => [a, b, c, 255],
+                NativeLayout::Rgba => [a, b, c, d],
+            });
+        }
+        base
+    }
+
+    /// Filtering a word's own channels gives the bytes the four-channel
+    /// path gives, in every filtering space, with both banks, wrapped or
+    /// clamped, on square and oblong images.
+    #[test]
+    fn the_words_own_channels_filter_to_the_rgba_paths_bytes() {
+        let cases = [
+            (NativeLayout::Grey, id::LUM8, 1),
+            (NativeLayout::Alpha, id::ALPHA8, 1),
+            (NativeLayout::GreyAlpha, id::LUMA8, 2),
+            (NativeLayout::Rgb, id::RGB8, 3),
+        ];
+        for (layout, word, channels) in cases {
+            assert_eq!(format_channels(word), channels);
+            for (width, height) in [(16, 16), (32, 8), (5, 12)] {
+                let base = laid_out(layout, width, height, word ^ width as u32);
+                for conversion in [
+                    MipConversion::Linear,
+                    MipConversion::Gamma,
+                    MipConversion::GammaColour,
+                    MipConversion::Signed,
+                ] {
+                    for kernel in [MipKernel::Kaiser, MipKernel::Box] {
+                        for wrap in [[true, true], [false, true], [false, false]] {
+                            let native = ChainOptions {
+                                first_level: 0,
+                                last_level: u32::MAX,
+                                wrap,
+                                conversion,
+                                kernel,
+                                renormalise: false,
+                                format_channels: channels,
+                            };
+                            let whole = ChainOptions {
+                                format_channels: 4,
+                                ..native
+                            };
+                            let expected = if conversion == MipConversion::GammaColour
+                                && layout != NativeLayout::GreyAlpha
+                            {
+                                NativeLayout::Rgba
+                            } else {
+                                layout
+                            };
+                            assert_eq!(NativeLayout::of(&native, &base, width * height), expected);
+                            assert_eq!(
+                                build_mip_chain_rgba8_with(&base, width, height, &native),
+                                build_mip_chain_rgba8_with(&base, width, height, &whole),
+                                "{layout:?} {width}x{height} {conversion:?} {kernel:?} {wrap:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A base its word's decode did not make (a grey word whose colours
+    /// differ, a renormalised image) is filtered whole.
+    #[test]
+    fn a_base_off_its_words_layout_is_filtered_whole() {
+        let options = ChainOptions::for_image(id::LUM8, 0, 1, 1);
+        let mut base = laid_out(NativeLayout::Grey, 4, 4, 7);
+        assert_eq!(NativeLayout::of(&options, &base, 16), NativeLayout::Grey);
+        base[1] ^= 1;
+        assert_eq!(NativeLayout::of(&options, &base, 16), NativeLayout::Rgba);
+        let normals = ChainOptions::for_image(id::RGB8, 0x0400_0000, 1, 1);
+        assert!(normals.renormalise);
+        let base = laid_out(NativeLayout::Rgb, 4, 4, 9);
+        assert_eq!(NativeLayout::of(&normals, &base, 16), NativeLayout::Rgba);
+    }
+
+    /// Exact levels of an 8 x 4 grey image (a word `0x4200` colour image,
+    /// squared space, Kaiser bank, wrapped), checked against an independent
+    /// re-implementation of the original's arithmetic (its f64 table, f32
+    /// taps in order, `1/255` as stored, the bit-bounded square root back):
+    /// levels 1 (4 x 2), 2 (2 x 1) and 3 (1 x 1).
+    #[test]
+    fn a_grey_chain_has_the_originals_exact_levels() {
+        let greys: [u8; 32] = [
+            0, 16, 32, 48, 64, 80, 96, 112, 255, 240, 224, 208, 192, 176, 160, 144, 10, 200, 30,
+            180, 50, 160, 70, 140, 128, 128, 128, 128, 0, 255, 0, 255,
+        ];
+        let base: Vec<u8> = greys.iter().flat_map(|&g| [g, g, g, 255]).collect();
+        let options = ChainOptions::for_image(id::LUM8, 0x0003_0000, 1, u32::MAX);
+        assert_eq!(options.conversion, MipConversion::Gamma);
+        let (chain, count) = build_mip_chain_rgba8_with(&base, 8, 4, &options);
+        assert_eq!(count, 3);
+        let grey: Vec<u8> = chain.as_chunks::<4>().0.iter().map(|p| p[0]).collect();
+        assert!(
+            chain
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 255)
+        );
+        assert_eq!(grey, EXPECTED_GREY_CHAIN);
+    }
+
+    const EXPECTED_GREY_CHAIN: [u8; 11] = [168, 152, 140, 138, 147, 128, 144, 153, 149, 144, 147];
 }

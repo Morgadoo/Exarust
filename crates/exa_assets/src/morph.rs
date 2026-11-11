@@ -302,6 +302,54 @@ impl ModelLoader<'_> {
         job.morph = job_morph;
         Some(job)
     }
+
+    /// [`ModelLoader::morphed_job`] without the file's parse, for a thread
+    /// to finish ([`PendingJob::job`]): what the morph takes comes from the
+    /// main thread's cache, the read and the parse from the installation
+    /// alone. The unmorphed body is loaded first, as there.
+    pub fn pending_morphed_job(
+        &mut self,
+        pack: PackKind,
+        entry: &str,
+        morph: Option<&BodyMorph>,
+    ) -> PendingJob {
+        let morph = self.job_morph(pack, entry, morph);
+        if morph.is_some() && pack == PackKind::Resource && is_body_model(entry) {
+            self.model(pack, entry);
+        }
+        PendingJob {
+            pack,
+            entry: entry.to_string(),
+            morph,
+        }
+    }
+}
+
+/// A morphed model's job before its file is read and parsed
+/// ([`ModelLoader::pending_morphed_job`]), owned so any thread can finish
+/// it.
+pub struct PendingJob {
+    pack: PackKind,
+    entry: String,
+    morph: Option<JobMorph>,
+}
+
+impl PendingJob {
+    /// The cache key the built model is kept under, as [`ModelJob::key`].
+    pub fn key(&self) -> String {
+        match &self.morph {
+            Some(m) => m.key.clone(),
+            None => model_key(self.pack, &self.entry),
+        }
+    }
+
+    /// Reads and parses the file: the job [`ModelLoader::morphed_job`]
+    /// makes, or the message it warns with.
+    pub fn job(self, game: &crate::GameData) -> Result<ModelJob, String> {
+        let mut job = ModelJob::from_game(game, self.pack, &self.entry)?;
+        job.morph = self.morph;
+        Ok(job)
+    }
 }
 
 #[cfg(test)]

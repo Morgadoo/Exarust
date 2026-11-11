@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::content_stream::{
     CharacterRequest, CharacterResult, ContentBuilders, ContentStream, Fetch, Job, ObjectRequest,
-    Pumped, Step,
+    Pumped, Step, StreamedCharacter,
 };
 
 /// The thread's event and its state: whether a loop is running, and whether
@@ -85,6 +85,30 @@ impl StreamWorker {
         let posted = lock(&self.shared.stream).request_character(request);
         self.signal();
         posted
+    }
+
+    /// Hands the thread a level's streamed characters, built nearest the
+    /// focus point first once the request rings are empty
+    /// ([`ContentStream::begin_characters`], the original's character-chunk
+    /// handoff), and signals it. An empty list drops the ones not yet
+    /// started.
+    pub fn begin_characters(
+        &self,
+        scene: u64,
+        focus: [f32; 3],
+        characters: impl IntoIterator<Item = StreamedCharacter>,
+    ) {
+        {
+            let mut stream = lock(&self.shared.stream);
+            stream.set_focus(focus);
+            stream.begin_characters(scene, characters);
+        }
+        self.signal();
+    }
+
+    /// Streamed characters not yet built.
+    pub fn pending_streamed(&self) -> usize {
+        lock(&self.shared.stream).pending_streamed()
     }
 
     /// The object fetch ([`ContentStream::fetch_object`]).
@@ -236,7 +260,7 @@ fn pass(shared: &Shared) -> Step {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content_stream::{LevelNode, StreamedCharacter};
+    use crate::content_stream::LevelNode;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -262,8 +286,9 @@ mod tests {
             lock(&self.order).push(format!("character {}", request.owner));
             Some(200 + request.owner)
         }
-        fn streamed_character(&mut self, _: &StreamedCharacter) -> Option<u64> {
-            None
+        fn streamed_character(&mut self, character: &StreamedCharacter) -> Option<u64> {
+            lock(&self.order).push(format!("streamed {}", character.node));
+            (character.node != 0).then_some(300 + character.node)
         }
     }
 
@@ -361,5 +386,41 @@ mod tests {
         worker.request_object(object(1));
         wait_idle(&worker);
         assert!(lock(&order).is_empty());
+    }
+
+    /// The level's streamed characters wait for the request rings, then
+    /// build nearest the focus first; the pump hands each over with its
+    /// stage node; a new list drops what was not started.
+    #[test]
+    fn streamed_characters_follow_the_requests_nearest_first() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (open, gate) = mpsc::channel();
+        let worker = StreamWorker::new(Gated {
+            order: order.clone(),
+            gate: Some(gate),
+        });
+        // Held on its gate, the object keeps the thread busy while the
+        // characters are handed over.
+        worker.request_object(object(1));
+        let at = |node, x| StreamedCharacter {
+            node,
+            scene: 9,
+            position: [x, 0.0, 0.0],
+        };
+        worker.begin_characters(9, [4.0, 0.0, 0.0], [at(1, 0.0), at(2, 5.0), at(0, 3.5)]);
+        open.send(()).unwrap();
+        wait_idle(&worker);
+        assert_eq!(
+            *lock(&order),
+            ["object 1", "streamed 0", "streamed 2", "streamed 1"]
+        );
+        let pumped = worker.pump();
+        let added: Vec<_> = pumped
+            .added
+            .iter()
+            .map(|r| (r.node, r.placeholder))
+            .collect();
+        assert_eq!(added, [(302, Some(2)), (301, Some(1))]);
+        assert_eq!(worker.pending_streamed(), 0);
     }
 }

@@ -444,7 +444,11 @@ raises `missing_requested`. `stream_worker::StreamWorker` is the stream
 thread: posts push under the stream's lock and signal it, and its passes
 run one at a time on the async compute pool (a plain thread without one)
 with the lock taken only around the ring steps, until a pass is idle with
-no signal since it began; the next post starts it again. A placed object whose node kind
+no signal since it began; the next post starts it again;
+`begin_characters` hands it a level's streamed characters with the focus
+point. `ModelLoader::pending_morphed_job` gives a morphed model's job
+without the file's parse (`morph::PendingJob`), for the stream thread to
+read and parse. A placed object whose node kind
 (`LevelNode::class`, the word the database builder left on the node:
 `OBJECT_DOOR` checked first, then `OBJECT_OPERATIVE`, then `OBJECT_VOLUME`)
 is the operative one and whose operative kind is the one the session's

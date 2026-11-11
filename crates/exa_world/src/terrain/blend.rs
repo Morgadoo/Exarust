@@ -505,12 +505,8 @@ pub fn gaussian_kernel(radius: i32) -> Vec<f32> {
     for i in 1..=radius {
         kernel[(i + radius) as usize] = kernel[(radius - i) as usize];
     }
-    let sum: f32 = kernel.iter().sum();
-    if sum != 0.0 {
-        for value in &mut kernel {
-            *value /= sum;
-        }
-    }
+    // The resampling unit's kernel normaliser, as the original calls it.
+    exa_render::mipmap::normalise_kernel(&mut kernel);
     kernel
 }
 
