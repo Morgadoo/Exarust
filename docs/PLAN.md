@@ -1944,6 +1944,8 @@ concern and contact alarm now come from the player contact list, and hit and Add
 
 the second feature sweep (80 scenes, free and lockstep, 16 new scenes for rounds 169 to 181) runs clean; it found that in free mode the frame draw writes to the force effects were copied back over newer simulation state, so an AI Force Blast never released. The six force effects are now drawn copies of the bridge; lockstep traces unchanged. The armed parry logs its link taking hold.
 
+TMotilePart gaps rechecked against the assembly: the foot-child words, box sole and collapse passes were already live; the AI now aims at the target of its own tick, and death ends a running parry.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
