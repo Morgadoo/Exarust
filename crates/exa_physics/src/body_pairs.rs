@@ -353,6 +353,42 @@ fn body_key(body: &Ragdoll) -> Entity {
     body.parts.first().map_or(Entity::PLACEHOLDER, |p| p.entity)
 }
 
+/// A part's place in its grid cell's body list. The original's grid
+/// sector links a body at the head of its cell's list when it joins the
+/// sector, and its step moves a part whose cell changed to the head of the
+/// new cell's list (the awake list walked from its start, after the
+/// iterations and the inverted-tetra repair, before the detection); a
+/// sleeping part is not moved. A cell's list is therefore its parts by the
+/// time they last entered it, the latest at the head: Exarust keeps that
+/// time, from the pair stage's own clock, instead of the linked list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CellEntry {
+    /// The cell the part was last linked into.
+    cell: (i32, i32),
+    /// When it was linked there: 0 for a part that has not joined yet.
+    stamp: u64,
+}
+
+/// `EXA_CELL_ORDER`, a debug aid for the cell lists: `join` meets each
+/// cell's parts in joining order (as before the head move), `trace` logs
+/// the first detections where an awake part meets its cells' parts in
+/// another order than the joining order would give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CellOrderDebug {
+    Off,
+    Join,
+    Trace,
+}
+
+fn cell_order_debug() -> CellOrderDebug {
+    static MODE: std::sync::OnceLock<CellOrderDebug> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("EXA_CELL_ORDER").as_deref() {
+        Ok("join") => CellOrderDebug::Join,
+        Ok("trace") => CellOrderDebug::Trace,
+        _ => CellOrderDebug::Off,
+    })
+}
+
 /// Whether a part takes part in contacts with other parts at all.
 fn meets(p: &Part) -> bool {
     !p.pairing.out && p.pairing.radius() > 0.0 && !p.spheres.is_empty()
@@ -369,6 +405,9 @@ struct Seen {
     /// ([`Ragdoll::list_place`]) and its own place in the body's list
     /// order ([`Ragdoll::list_parts`]).
     list: (u64, usize),
+    /// When it entered its cell's list ([`CellEntry`]): the later, the
+    /// nearer the head.
+    entered: u64,
     /// The grid cell of its mesh box's world centre.
     cell: (i32, i32),
     /// Its sphere bound's world centre (from the particle weights).
@@ -386,6 +425,7 @@ impl Seen {
             body,
             part,
             list,
+            entered: p.cell_entry.stamp,
             cell: pose.cell,
             sphere: pose.sphere_centre,
             mesh: pose.box_centre,
@@ -738,6 +778,12 @@ pub struct Pairs {
     /// The detection's working lists, kept from tick to tick so that the
     /// stage does not allocate once they have grown.
     scratch: Scratch,
+    /// The grid's clock for the cell lists ([`CellEntry`]): the time of the
+    /// last part linked into a cell.
+    cell_clock: u64,
+    /// Detections run (for `EXA_CELL_ORDER=trace`) and lines it logged.
+    detections: u64,
+    traced: u32,
 }
 
 /// The pair stage's working lists ([`Pairs::find`]).
@@ -834,6 +880,7 @@ impl Pairs {
             self.find_all_pairs(bodies, awake, found);
             return;
         }
+        self.link_cells(bodies, awake);
         // The original's grid sector walks its awake list, which the step
         // filled from the end of the sector's body list: the last body to
         // join first, and in each body its parts from the last in list
@@ -875,17 +922,24 @@ impl Pairs {
         }
         drop(span);
         let _span = bevy::log::info_span!("pairs: meet").entered();
-        // Each cell's list as the original keeps it: a body joins its cell
-        // at the head, so the cell holds its parts last-joined first, the
-        // order the awake list walks in. (The original also moves a part
-        // to the head of its new cell when it changes cells; Exarust keeps
-        // no lists from tick to tick, so the cell keeps the joining order.)
+        // Each cell's list as the original keeps it ([`CellEntry`]): the
+        // part that entered it last at the head. Parts that never joined
+        // (bodies built by hand) follow, last-joined first.
         let others = &mut s.others;
         others.clear();
         others.extend(0..found.len());
+        let debug = cell_order_debug();
+        self.detections += 1;
         others.sort_by_key(|&i| {
             let (place, slot) = found[i].list;
+            let entered = if debug == CellOrderDebug::Join {
+                0
+            } else {
+                found[i].entered
+            };
             (
+                entered == 0,
+                std::cmp::Reverse(entered),
                 place == 0,
                 std::cmp::Reverse(place),
                 std::cmp::Reverse(slot),
@@ -907,8 +961,94 @@ impl Pairs {
             met[x] = true;
             others.clear();
             others.extend(grid.around(found[x].cell).filter(|&y| !met[y]));
+            if debug == CellOrderDebug::Trace && self.traced < 40 && others.len() > 1 {
+                let mut joined = others.clone();
+                joined.sort_by_key(|&i| {
+                    let (place, slot) = found[i].list;
+                    let cell = found[i].cell;
+                    let own = (cell != found[x].cell, cell);
+                    (
+                        own,
+                        place == 0,
+                        std::cmp::Reverse(place),
+                        std::cmp::Reverse(slot),
+                    )
+                });
+                let mut by_cell = others.clone();
+                by_cell.sort_by_key(|&i| {
+                    let cell = found[i].cell;
+                    (cell != found[x].cell, cell)
+                });
+                let ids = |l: &[usize]| l.iter().map(|&i| found[i].list).collect::<Vec<_>>();
+                // Both sorted by cell, so only an order within a cell differs.
+                if ids(&by_cell) != ids(&joined) {
+                    self.traced += 1;
+                    bevy::log::info!(
+                        "cell order: detection {} part {:?} meets {:?} (joining order {:?})",
+                        self.detections,
+                        found[x].list,
+                        ids(others),
+                        ids(&joined)
+                    );
+                }
+            }
             for &y in others.iter() {
                 self.meet(bodies, found, x, y, false);
+            }
+        }
+    }
+
+    /// The cell lists' upkeep before the detection ([`CellEntry`]): bodies
+    /// new to the sector join, each part at the head of its cell in list
+    /// order (the original's appender links each at the head as it adds
+    /// it, the node before its children); then each awake part whose cell
+    /// changed moves to the head of its new cell, in awake-list order (the
+    /// original's step, after the iterations and the inverted-tetra repair).
+    fn link_cells(&mut self, bodies: &mut [&mut Ragdoll], awake: usize) {
+        if self.cell_clock == 0 {
+            // A stage made for a scene the bodies were already in carries
+            // on from their latest time.
+            self.cell_clock = bodies
+                .iter()
+                .flat_map(|b| b.parts.iter().map(|p| p.cell_entry.stamp))
+                .max()
+                .unwrap_or(0);
+        }
+        let mut joining: Vec<(u64, usize)> = bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.list_place != 0 && b.parts.iter().any(|p| p.cell_entry.stamp == 0))
+            .map(|(i, b)| (b.list_place, i))
+            .collect();
+        joining.sort_unstable();
+        for &(_, b) in &joining {
+            let body = &mut *bodies[b];
+            for slot in 0..body.outward.len() {
+                let p = &mut body.parts[body.outward[slot]];
+                if p.cell_entry.stamp == 0 {
+                    self.cell_clock += 1;
+                    p.cell_entry = CellEntry {
+                        cell: p.cell((0, 0)),
+                        stamp: self.cell_clock,
+                    };
+                }
+            }
+        }
+        for body in bodies[..awake].iter_mut() {
+            let body = &mut **body;
+            for slot in (0..body.outward.len()).rev() {
+                let p = &mut body.parts[body.outward[slot]];
+                if p.cell_entry.stamp == 0 {
+                    continue;
+                }
+                let cell = p.cell((0, 0));
+                if cell != p.cell_entry.cell {
+                    self.cell_clock += 1;
+                    p.cell_entry = CellEntry {
+                        cell,
+                        stamp: self.cell_clock,
+                    };
+                }
             }
         }
     }

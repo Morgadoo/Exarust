@@ -1472,3 +1472,67 @@ fn the_all_pairs_sector_meets_only_later_parts() {
         );
     }
 }
+
+/// The cell lists' upkeep: bodies join their cells at the head in list
+/// order, an awake part whose cell changed moves to the head of its new
+/// cell, and a sleeping one keeps its entry until it is awake again.
+#[test]
+fn a_part_that_changes_cells_moves_to_the_head_of_its_new_cell() {
+    let mut a = ball(1, 11, Vec3::new(1.0, 2.0, 1.0), 0.1);
+    let mut b = ball(2, 11, Vec3::new(1.5, 2.0, 1.0), 0.1);
+    let mut c = ball(3, 11, Vec3::new(2.0, 2.0, 1.0), 0.1);
+    a.set_list_place(1);
+    b.set_list_place(2);
+    c.set_list_place(3);
+    let mut pairs = Pairs::default();
+    let entry = |r: &Ragdoll| r.parts[0].cell_entry;
+    pairs.link_cells(&mut [&mut a, &mut b, &mut c], 3);
+    // Joined in list order: the last at the head.
+    assert_eq!(
+        [entry(&a).stamp, entry(&b).stamp, entry(&c).stamp],
+        [1, 2, 3]
+    );
+    assert_eq!(entry(&a).cell, entry(&b).cell);
+    // Nothing moved: nothing changes.
+    pairs.link_cells(&mut [&mut c, &mut b, &mut a], 3);
+    assert_eq!(entry(&a).stamp, 1);
+    // `a` goes 6 m along x into the next cell and back: it is at the head
+    // of its first cell again, before `b`, which never left.
+    let home = entry(&a).cell;
+    a.translate(Vec3::new(6.0, 0.0, 0.0));
+    pairs.link_cells(&mut [&mut c, &mut b, &mut a], 3);
+    assert_ne!(entry(&a).cell, home);
+    assert_eq!(entry(&a).stamp, 4);
+    a.translate(Vec3::new(-6.0, 0.0, 0.0));
+    pairs.link_cells(&mut [&mut c, &mut b, &mut a], 3);
+    assert_eq!(
+        entry(&a),
+        CellEntry {
+            cell: home,
+            stamp: 5
+        }
+    );
+    // `b` moves while asleep (outside the awake count): no move until it
+    // is awake again, then it takes the head.
+    b.translate(Vec3::new(6.0, 0.0, 0.0));
+    pairs.link_cells(&mut [&mut c, &mut a, &mut b], 2);
+    assert_eq!(entry(&b).stamp, 2);
+    pairs.link_cells(&mut [&mut c, &mut b, &mut a], 3);
+    assert_eq!(entry(&b).stamp, 6);
+    // A body built by hand (no place) never joins.
+    let mut loose = ball(4, 11, Vec3::new(1.0, 2.0, 1.0), 0.1);
+    pairs.link_cells(&mut [&mut loose], 1);
+    assert_eq!(entry(&loose).stamp, 0);
+}
+
+/// A body given a velocity is where it was a tick ago in both of the
+/// stand-ins for the original's one between-ticks set: the two-step point
+/// reads the velocity's tick of travel.
+#[test]
+fn a_velocity_writes_the_two_ticks_ago_particles_too() {
+    let mut a = ball(1, 11, Vec3::new(0.0, 2.0, 0.0), 0.1);
+    a.set_velocity(Vec3::new(0.83, 0.0, 0.0));
+    let moved = a.parts[0].two_step_point(&[0.25; 4]);
+    assert!((moved.x - 0.01).abs() < 1e-6, "{moved}");
+    assert_eq!(a.parts[0].previous, a.parts[0].two_ticks_ago);
+}

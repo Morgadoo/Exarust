@@ -186,10 +186,27 @@ stage walks each body's parts in reverse list order (`Ragdoll::list_parts`,
 the tree's node order) and meets the parts of each cell (own cell first)
 in the order a cell's list holds them, last joined first. Of two equally
 mobile parts, the one earlier in the list brings its spheres: the
-original's key word holds the list index under the order key. Not kept:
-the original moves a body to the head of its new cell's list when it
-changes cells, and its list index is 16 bits; the all-pairs sector walks
-its list from the start, each awake part against every later part.
+original's key word holds the list index under the order key (16 bits
+there; Exarust compares the whole place, the same order for any sector of
+fewer than 65,536 parts). The all-pairs sector walks its list from the
+start, each awake part against every later part.
+
+Cell lists. A grid sector links a body at the head of its cell's list when
+it joins, and its step moves an awake part whose cell changed to the head
+of its new cell's list (the awake list from its start, after the
+iterations and the inverted-tetra repair, before the detection); a
+sleeping part is not moved. Each `Part` keeps its cell entry (the cell and
+the time it was linked there, `body::pairs::CellEntry`); the pair stage's
+`link_cells` joins new bodies in list order and moves the awake parts that
+changed cells in awake-list order on its own clock before each detection,
+and each cell's parts are met latest-linked first. `EXA_CELL_ORDER=join`
+meets them in joining order instead (the order before the head move) and
+`EXA_CELL_ORDER=trace` logs the first detections where the two differ. The original steps each
+part as a body of its own in the list's reverse order; Exarust steps a tree
+in one `Ragdoll::step`, which gives the same values because a part's step
+reads only its own particles and the character's words (the carry, the
+tone), and the root, last of its tree, restores every part's edges at the
+end, as `Ragdoll::step` does.
 
 Stage 4 turns the frame's writers of simulation data into work the
 simulation does itself and the copies out into snapshots, group by group.
@@ -1678,7 +1695,12 @@ array the same way. The body also keeps the particles where the last
 post-step left them (the original's third particle set, rolled each
 post-step, on the first tick of sleep and in the muscles-off snap), so
 `Part::two_step_point` gives a point's displacement since then (two ticks
-mid-step, one between ticks); `Ragdoll::root_moved`, which the locomotion
+mid-step, one between ticks). Between ticks the original keeps one set for
+where a body was a tick ago, which its Verlet step's velocity and the
+two-step point both read, and every particle writer outside the step and
+post-step (the placements, the freeze, the held items' re-placing) keeps
+the previous set equal to it; so `Ragdoll::set_velocity` writes both of
+Exarust's stand-ins for that set; `Ragdoll::root_moved`, which the locomotion
 stage and the lift servo read, is the two-step point of the root's own
 origin, as the original's character tick reads it; and its tree-wide take of sleep ticks (`Ragdoll::take_ticks`,
 holding the count at one) that the frozen step and a dormant living
