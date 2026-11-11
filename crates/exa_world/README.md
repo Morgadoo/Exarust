@@ -74,7 +74,9 @@ and the grid's rooms; portal clipping is next (see
   for the texture loader; the tile spawns once both arrived, and a
   one-call `spawn_level` finishes them on the spot),
   one mesh per 6 m block (`terrain::patch` is the original's
-  shared serpentine triangle list), each in its block's room and with the
+  shared serpentine triangle list; a block with holes draws, and collides with, the list
+  its activation builds instead, `patch::hole_triangles`: the other diagonal, a
+  triangle left out when one of its vertices is a hole), each in its block's room and with the
   original's `TerrainBlock` frame and flat 10 cm slab bounds, culled by its
   leaf descriptor's box over the tile's height bounds
   (`manager::block_box`, reaching over the skirt on a tile's edge), and in a grid
