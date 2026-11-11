@@ -114,6 +114,7 @@ mod lift;
 pub mod locomotion;
 #[path = "body_pairs.rs"]
 pub mod pairs;
+use pairs::CellEntry;
 pub use pairs::{Pairing, Pairs, Touch};
 #[path = "body_drag.rs"]
 mod drag;
@@ -365,6 +366,9 @@ pub struct Part {
     /// Particles where the tick before last left them: the original's third
     /// particle set, which [`Part::two_step_point`] reads.
     two_ticks_ago: [Vec3; 4],
+    /// The part's place in its grid cell's body list
+    /// ([`crate::body_pairs`]): the cell it was last linked into and when.
+    cell_entry: CellEntry,
     /// Each particle's displacement over the last tick, as this tick's
     /// integration found it (before its inertia): the velocity the pose
     /// drive damps.
@@ -627,6 +631,7 @@ impl Part {
             },
             start: positions,
             two_ticks_ago: positions,
+            cell_entry: CellEntry::default(),
             moved: [Vec3::ZERO; 4],
             smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
@@ -1915,6 +1920,9 @@ impl Ragdoll {
         let mut parts = self.parts.clone();
         if drop_runtime_links {
             for p in &mut parts {
+                // The clone is a new body: it joins its cells when it joins
+                // the list.
+                p.cell_entry = CellEntry::default();
                 p.leg_limit = p.leg_limit.and_then(|k| remap.get(k).copied().flatten());
             }
         }
@@ -4873,13 +4881,19 @@ impl Ragdoll {
     }
 
     /// Gives every particle a velocity (m/s) by placing its previous
-    /// position behind it.
+    /// position behind it. Between ticks the original keeps one set for
+    /// where a body was a tick ago (its third particle set, which both its
+    /// Verlet step's velocity and the two-step point read), and every one of
+    /// its particle writers outside the step keeps the previous set equal to
+    /// it; so the velocity goes into both of Exarust's stand-ins for that set
+    /// ([`Part::two_step_point`] reads the second).
     pub fn set_velocity(&mut self, velocity: Vec3) {
         let back = velocity / BODY_HZ;
         for p in &mut self.parts {
             for i in 0..4 {
                 p.previous[i] = p.positions[i] - back;
             }
+            p.two_ticks_ago = p.previous;
         }
     }
 
