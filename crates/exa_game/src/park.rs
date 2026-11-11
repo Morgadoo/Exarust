@@ -48,10 +48,9 @@
 //! `EXA_NO_PARK=1` turns the drawn test off, so nothing is parked.
 //!
 //! The note makes the simulation read the camera, as the original's body
-//! tick reads its renderer's word. Exarust's chase camera is not repeatable
-//! tick for tick between runs (its wall probe's tilt differs by a few
-//! thousandths of a radian), so a parked body at the edge of the view can
-//! be unparked a tick apart in two lockstep runs of the same scene;
+//! tick reads its renderer's word, so the chase camera has to repeat tick
+//! for tick in a fixed-frames run: its clock stands still behind the
+//! loading screen (`crate::player::chase_camera`), as the game time does.
 //! `EXA_NO_PARK=1` gives back a simulation that does not read the camera.
 
 use bevy::camera::primitives::{Frustum, Sphere};

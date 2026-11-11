@@ -41,11 +41,11 @@
 //! ([`crate::combat::keep_off`]), which keeps the original's last test as
 //! it reads (a vector whose first component is overwritten by its second).
 //!
-//! Not reproduced: the frame's wake of a parked character (a body whose
-//! own mark is set, under a node the frame flags as shown, has the mark
-//! cleared down its node tree): the mark is the body tick's suspension of
-//! an idle character's limbs, which Exarust's body does not keep. The
-//! start-up's `_Temp` holder, the manager singleton and its hook chain
+//! The frame's wake of a parked character (a body whose own mark is set
+//! and whose node was drawn has the mark cleared down its node tree, before
+//! its rise) is `exa_game::park::wake_parked`; the mark is the body tick's
+//! park of a dormant character nothing drew (`Ragdoll::park_unseen`), and
+//! the unmark's second caller is the golem wake. The start-up's `_Temp` holder, the manager singleton and its hook chain
 //! are the plugin's systems and the dormant marker in Exarust
 //! ([`bootstrap`] only states the rule).
 

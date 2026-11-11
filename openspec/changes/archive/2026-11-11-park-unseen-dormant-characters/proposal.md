@@ -44,10 +44,13 @@ So a dormant character nothing draws is taken out of the simulation where it lie
 
 ## Determinism
 
-The note makes the simulation read the camera, as the original's body tick reads its renderer's word. Exarust's chase
-camera is not repeatable tick for tick between lockstep runs (its wall probe's tilt differs by a few thousandths of a
-radian), so a parked body at the edge of the view can be unparked a tick apart in two runs of the same scene.
-`EXA_NO_PARK=1` turns the note off; such a run is byte-identical to one without this change.
+The note makes the simulation read the camera, as the original's body tick reads its renderer's word. The chase
+camera ticked on a 17 ms clock that kept running behind the loading screen, whose frame count differs from run to
+run, while the game time is held there: its ticks fell at a different phase of the body ticks in each run (wall probe
+tilt -0.489 or -0.492 rad), and an edge statue was unparked a tick apart. The camera's clock now stands still while
+the loading screen is up, as the game time does; a fixed-frames run's camera, and with it the note, repeats. Nothing
+changes in free play outside a load. `EXA_NO_PARK=1` turns the note off; such a run is byte-identical to one without
+this change.
 
 ## Out of scope
 
