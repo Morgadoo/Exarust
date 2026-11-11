@@ -136,6 +136,8 @@ Round 105 os: the original's pointer warp hold and full-screen confinement act o
 
 Round 139 osgui: the hub shows the original message box (hire refusals, company name), the GUI pointer starts unknown, and the viewport action removal keys on the handler code.
 
+Round 183 runtime: the run-time library random generator the game calls in over 150 places is one shared port with the original reseed rule, and SysUtils is shown unreachable from engine code.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
