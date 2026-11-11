@@ -1023,6 +1023,8 @@ Round 163 bridgeaudit: a bridge audit checks every frame schedule for systems th
 
 Round 179 rbd: a body part that changes collision cells moves to the head of its new cell list, as the original grid step does.
 
+Round 184 exitstall: the intermittent free-mode exit stall with Constant Displacement was the rodio resampler wrapping a u32 product for the phasing sound ratio and walking 2^32 frames on the audio thread, which the audio output drop at exit waited on; a patched rodio computes in u64 and exits went from 6 of 40 stalled to 48 of 48 under a second; EXA_EXIT_TRACE traces each exit stage. The AI flee start now runs from the target pass flee outcome as the original does, but no live scene reaches a flight yet because the contacts concern and alarm are never written.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
