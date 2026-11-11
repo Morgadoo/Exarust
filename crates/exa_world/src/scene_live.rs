@@ -58,13 +58,16 @@ use bevy::math::{Mat3, Vec2, Vec3};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_physics::intersect::ConvexVolume;
-use exa_render::sector_walk::DrawSectors;
+use exa_render::sector_walk::{DrawSectors, DrawSlot, SectorScissors};
 use exa_render::sun_fit::frustum_volume;
-use exa_render::supersample::SceneCamera;
+use exa_render::supersample::{SceneCamera, Supersample};
+use exa_render::view::project_to_screen;
 
 use crate::room_view::{InRoom, LevelRooms, RoomShell, RoomTracked};
 use crate::rooms::{CELL_M, DoorPortal, PORTAL_BOTTOM_CM, Rooms};
-use crate::scene_nodes::{BOUNDS_SPLIT, Draw, NodeKind, Portal, SCENE_SECTOR, Scene, SectorState};
+use crate::scene_nodes::{
+    BOUNDS_SPLIT, Draw, NodeKind, Portal, SCENE_SECTOR, SCISSOR, Scene, SectorState,
+};
 
 pub struct SceneLivePlugin;
 
@@ -310,10 +313,22 @@ pub fn run_scene(
     parents: Query<&ChildOf>,
     tracked_roots: Query<(), With<RoomTracked>>,
     root_transforms: Query<&GlobalTransform, With<RoomTracked>>,
-    cameras: Query<(Entity, &Camera, &GlobalTransform, &Projection), SceneCamera>,
+    cameras: Query<
+        (
+            Entity,
+            &Camera,
+            &GlobalTransform,
+            &Projection,
+            Has<Supersample>,
+        ),
+        SceneCamera,
+    >,
+    mut scissors: ResMut<SectorScissors>,
 ) {
     let started = std::time::Instant::now();
     let Some(level) = level else {
+        scissors.camera = None;
+        scissors.rects.clear();
         if live.scene.is_some() {
             live.reset();
             draw_sectors.map.clear();
@@ -527,10 +542,10 @@ pub fn run_scene(
     // The scene's own sector is not a room: the room manager never hides
     // it, so it is drawn with every view (content in no room always is).
     scene.sectors[SCENE_SECTOR].state = SectorState::Active;
-    let camera = cameras.iter().find(|(_, c, _, _)| c.is_active);
-    let Some((camera_entity, camera, camera_transform, perspective)) =
-        camera.and_then(|(e, c, t, p)| match p {
-            Projection::Perspective(perspective) => Some((e, c, t, perspective)),
+    let camera = cameras.iter().find(|(_, c, _, _, _)| c.is_active);
+    let Some((camera_entity, camera, camera_transform, perspective, supersampled)) = camera
+        .and_then(|(e, c, t, p, s)| match p {
+            Projection::Perspective(perspective) => Some((e, c, t, perspective, s)),
             _ => None,
         })
     else {
@@ -541,6 +556,8 @@ pub fn run_scene(
             sector.quiet = false;
         }
         live.camera = None;
+        scissors.camera = None;
+        scissors.rects.clear();
         return;
     };
     let corners = perspective
@@ -548,10 +565,24 @@ pub fn run_scene(
         .map(|c| camera_transform.transform_point(Vec3::from(c)));
     let view: ConvexVolume = frustum_volume(corners);
     let eye = camera_transform.translation();
+    // The portal scissor is in window pixels, as the original projects it
+    // into its view (each super-sampled sub-frame is window-sized).
+    let target = camera.physical_viewport_size().unwrap_or(UVec2::ONE);
+    let window = if supersampled {
+        (target / exa_render::supersample::SCALE).max(UVec2::ONE)
+    } else {
+        target
+    };
+    let clip = camera.clip_from_view();
+    let view_from_world = camera_transform.affine().inverse();
     let project = |p: Vec3| {
-        camera
-            .world_to_viewport(camera_transform, p)
-            .unwrap_or(Vec2::ZERO)
+        let v = view_from_world.transform_point3(p);
+        let (x, y, _) = project_to_screen(
+            window,
+            Vec2::new(clip.x_axis.x, clip.y_axis.y),
+            v.to_array(),
+        );
+        Vec2::new(x, y)
     };
     let dt_ms = time.delta().as_millis().min(i32::MAX as u128) as i32;
     let frame_started = std::time::Instant::now();
@@ -620,18 +651,55 @@ pub fn run_scene(
         live.timing_frames = 0;
     }
 
-    // The renderer's sector walk.
+    // The renderer's sector walk: each mesh's sector and its position in
+    // the sector's list (registration order).
     if live.sectors_changed {
         live.sectors_changed = false;
+        let registration_order = draw_sectors.registration_order;
         draw_sectors.map.clear();
-        for (node, entity) in live.entity_of.iter().enumerate() {
-            if let (Some(entity), Some(sector)) = (entity, scene.nodes[node].sector)
-                && sector != SCENE_SECTOR
-            {
-                draw_sectors.map.insert(*entity, sector as u32);
+        for (index, sector) in scene.sectors.iter().enumerate() {
+            for (order, &node) in sector.meshes.iter().enumerate() {
+                if let Some(Some(entity)) = live.entity_of.get(node) {
+                    draw_sectors.map.insert(
+                        *entity,
+                        DrawSlot {
+                            sector: index as u32,
+                            order: if registration_order { order as u32 } else { 0 },
+                        },
+                    );
+                }
             }
         }
         draw_sectors.generation += 1;
+    }
+
+    // The portal scissor: the rectangles of the sectors seen through
+    // doorways and the meshes drawn with the scissor bit.
+    scissors.camera = Some(camera_entity);
+    scissors.supersampled = supersampled;
+    scissors.rects.clear();
+    let mut entries = EntityHashMap::default();
+    if scissors.enabled {
+        for (index, sector) in scene.sectors.iter().enumerate() {
+            let Some(rect) = sector.scissor.filter(|_| sector.through_portal) else {
+                continue;
+            };
+            scissors.rects.push((
+                index as u32,
+                [rect.min_x, rect.min_y, rect.max_x, rect.max_y],
+            ));
+            for &node in &sector.meshes {
+                if scene.nodes[node].mask & SCISSOR != 0
+                    && let Some(Some(entity)) = live.entity_of.get(node)
+                {
+                    entries.insert(*entity, index as u32);
+                }
+            }
+        }
+    }
+    if entries != scissors.entries {
+        scissors.entries = entries;
+        scissors.generation += 1;
     }
     let done = std::time::Instant::now();
     live.timing[0] += (frame_started - started).as_secs_f32() * 1000.0;

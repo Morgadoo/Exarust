@@ -553,9 +553,12 @@ scene (`exa_world::scene_live`, below) registers every mesh in its room's
 sector, and after Bevy's sort the transparent phase is re-sorted, stably,
 by list and then, for the decal and blended lists, by sector, so the
 decals of the scene's own sector, then of each room in room order, come
-first, then the blended surfaces the same way. One difference remains:
-objects of the same state in one sector keep Bevy's distance order instead
-of their registration order. In the shipped levels the walk ranks 77
+first, then the blended surfaces the same way, and within one sector and
+state by registration order (the mesh's position in its sector's mesh
+list, which the scene keeps in registration order; a surface the scene
+does not hold follows its rank's registered ones in Bevy's distance order).
+`--no-registration-order` keeps the distance order within a state, to
+compare. In the shipped levels the walk ranks 77
 states in exanima01, 10 in exanima06, 4 in the arena and 13 in arenao3
 (one decal state in all; the rest blended, one or two on a layer above 0);
 at the views tested the picture does not change beyond the same-build
@@ -584,11 +587,47 @@ hidden and visible passes, removals), and a registered mesh the visible
 pass leaves undrawn is taken out of the main camera's visible list; shadow
 views are not touched. In practice that removes what an adjacent room
 shows outside its doorways' frusta, which its lid already covers from the
-gameplay camera. Not reproduced: the portal scissor as a pixel scissor
-(only the portal frusta cull), the per-quadrant scissor regions of the
-super-sampled sub-frames, the light aliases' links on this scene (lights
-stay global), and levels without a grid (a sectorless scene, one list in
-the original as here).
+gameplay camera.
+
+**Portal scissor.** A sector seen only through doorways keeps the screen
+rectangle of its doorway frusta: the projected first vertex of each
+frustum face (a point of the clipped doorway polygon) through the view's
+window projection (`view::project_to_screen`), the four bounds rounded,
+right and bottom exclusive, in window pixels. Its meshes start the visible
+pass with the `0x1000_0000` bit, which a mesh straddling a doorway loses.
+Every list (alpha-tested, opaque, decal, blended) is walked per sector;
+the walk sets a sector's rectangle and queues each visible entry with the
+bit as a flag. What the flag does depends on the view:
+
+- **Super-sampled** (the sub-view count above one): on a change of the
+  flag the queue's flush switches the draw to a second set of sub-frame
+  viewports and projections, which the walk builds for each sector that
+  has a rectangle: in each of the four sub-frames the viewport is the
+  rectangle (offset by the sub-frame's origin, the rows flipped for the
+  GL origin) and the projection is cropped to it, so the entry covers
+  exactly the rectangle's pixels of each sub-frame. A sector without a
+  rectangle leaves the last set in place, which no entry of it uses (its
+  entries never carry the bit). The decal bias reaches both sets.
+- **Single view**: the flush notes the flag change and does nothing with
+  it (the call is compiled out), and the walk sets the region without
+  turning the scissor test on, so nothing is clipped.
+
+Exarust draws the super-sampled scene as one image at twice the window's
+size, each window pixel a 2 × 2 block of sub-frame samples, so the
+rectangle doubled is the same samples; `exa_render::sector_walk` sets it
+with the transparent pass's scissor: after the walk's sort it puts a
+transient scissor item in the scene view's transparent phase before each
+run of entries of one rectangle and before the first entry after them
+without one (the item draws nothing; the run's surfaces are not batched
+across it). `exa_world::scene_live` projects the rectangles and lists the
+meshes with the bit every frame (`SectorScissors`); `--no-sector-scissor`
+turns it off, to compare. Bevy draws the opaque and alpha-tested phases
+as batched multi-draws in which one draw cannot carry its own scissor, so
+there the portal frusta cull only (what lies outside the rectangle there
+is under the adjacent room's lid from the gameplay camera). Not
+reproduced: the scissor on the opaque and alpha-tested phases, the light
+aliases' links on this scene (lights stay global), and levels without a
+grid (a sectorless scene, one list in the original as here).
 
 ## Light nodes
 
