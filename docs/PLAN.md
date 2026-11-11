@@ -1009,6 +1009,8 @@ Round 152 determ2: the arena duel lockstep trace no longer splits into two modes
 
 Round 155 determ3: lockstep armed duels are deterministic in values and body ids. The first-clash split (53 cm at 10.0 cm per tick against 55 cm at 11.5) came from the held weapons body ids swapping with dressing order, since the body solver and pair stage walk bodies in entity order and the dress ran on a wall-clock budget with async fits and paints. Under fixed frames the characters are now dressed in one frame in spawn order, with hair and off-hands also in spawn order, and bridged resources such as the nav movers are registered so the second-update hold covers them; four sword-duel and four plain-duel runs are byte-identical with identical entity censuses.
 
+Round 156 walkorder: bodies are walked in the original sector-list order with an explicit insertion place, not the engine entity order.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
