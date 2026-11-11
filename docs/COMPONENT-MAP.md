@@ -66,7 +66,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | XA_Arena | Game modes, arena & session | 71 | 96% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 99% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 99% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
-| TMotilePart | Characters, motion & animation | 53 | 84% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
+| TMotilePart | Characters, motion & animation | 53 | 85% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TThaumTree | Thaumaturgy & effects | 38 | 91% | exa_game/src/thaum/tree.rs; exa_game/src/power_screen.rs |
 | TGUIDrawSkin | UI | 35 | 93% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
