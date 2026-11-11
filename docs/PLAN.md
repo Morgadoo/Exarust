@@ -311,6 +311,8 @@ Round 166 terrain3: terrain blocks cull by the original descriptors and the sun 
 
 Round 169 stream: level characters are built on the content stream thread nearest the player first, and mip chains filter the pixel word own channels.
 
+Round 186 texrender: point-light shadows skip terrain blocks the view did not draw, and the texture unit blur is dead code in 0.9.5.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
