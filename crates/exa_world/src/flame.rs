@@ -54,11 +54,14 @@ const SMALL_TEXTURE: &str = "FirePrt02";
 /// The larger fires' texture: the same atlas layout.
 const LARGE_TEXTURE: &str = "FirePrt01";
 
-/// The shared particle materials, once loaded.
+/// The shared particle materials, once loaded: the fires' two, and each
+/// additive flame's texture (the level portals'), loaded the first time
+/// one asks for it (`None` once its texture failed to load).
 #[derive(Resource)]
 struct FlameAssets {
     small: Handle<FlameMaterial>,
     large: Handle<FlameMaterial>,
+    others: std::collections::HashMap<(&'static str, bool), Option<Handle<FlameMaterial>>>,
 }
 
 /// Fixed ticks a slow frame catches up at most; the rest of the backlog is
@@ -80,6 +83,9 @@ pub struct Flame {
     lift: f32,
     /// The particle texture this emitter draws with.
     texture: &'static str,
+    /// Drawn with ONE, ONE (the level portals' `_PrtlPrt01`) rather than the
+    /// fires' premultiplied blend.
+    additive: bool,
     rng: Rng,
     accumulator: f32,
     /// Whether the flame rides a carried item, once looked up.
@@ -95,6 +101,7 @@ impl Flame {
             emitter,
             lift,
             texture,
+            additive: false,
             rng: Rng::new(seed | 1),
             accumulator: 0.0,
             carried: None,
@@ -102,9 +109,20 @@ impl Flame {
         }
     }
 
+    /// The same flame drawn with ONE, ONE ([`FlameMaterial::additive`]).
+    pub fn additive(mut self) -> Self {
+        self.additive = true;
+        self
+    }
+
     /// The emitter's rules state.
     pub fn emitter(&self) -> &Emitter {
         &self.emitter
+    }
+
+    /// The emitter, to write into (a seeding pass).
+    pub fn emitter_mut(&mut self) -> &mut Emitter {
+        &mut self.emitter
     }
 }
 
@@ -138,8 +156,15 @@ fn load_flame_assets(
         return;
     };
     commands.insert_resource(FlameAssets {
-        small: flames.add(FlameMaterial { texture: small }),
-        large: flames.add(FlameMaterial { texture: large }),
+        small: flames.add(FlameMaterial {
+            texture: small,
+            additive: false,
+        }),
+        large: flames.add(FlameMaterial {
+            texture: large,
+            additive: false,
+        }),
+        others: Default::default(),
     });
 }
 
@@ -158,21 +183,54 @@ pub(crate) fn empty_particle_mesh() -> Mesh {
     mesh
 }
 
-/// Gives each flame its mesh and material once the assets are loaded.
+/// Gives each flame its mesh and material once the assets are loaded: the
+/// small fire's texture, else the large one's, and an additive flame's own
+/// texture, loaded the first time one asks for it.
+#[allow(clippy::too_many_arguments)]
 fn attach_flames(
     mut commands: Commands,
-    assets: Option<Res<FlameAssets>>,
+    assets: Option<ResMut<FlameAssets>>,
     flames: Query<(Entity, &Flame), Without<Mesh3d>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    game: Option<Res<Game>>,
+    mut cache: ResMut<ModelCache>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut flame_materials: ResMut<Assets<FlameMaterial>>,
+    support: Option<Res<bevy::image::CompressedImageFormatSupport>>,
 ) {
-    let Some(assets) = assets else { return };
+    let Some(mut assets) = assets else { return };
     for (e, flame) in &flames {
-        let mesh = meshes.add(empty_particle_mesh());
-        let material = if flame.texture == SMALL_TEXTURE {
-            assets.small.clone()
-        } else {
-            assets.large.clone()
+        let material = match (flame.texture, flame.additive) {
+            (SMALL_TEXTURE, false) => assets.small.clone(),
+            (_, false) => assets.large.clone(),
+            (texture, additive) => {
+                let loaded = assets.others.entry((texture, additive)).or_insert_with(|| {
+                    let game = game.as_deref()?;
+                    let mut loader = ModelLoader {
+                        game: &game.0,
+                        cache: &mut cache,
+                        meshes: &mut meshes,
+                        materials: &mut materials,
+                        images: &mut images,
+                        bc_supported: exa_assets::model::bc_supported(support.as_deref()),
+                    };
+                    let Some((image, _)) = loader.texture(texture, ColorSpace::Srgb) else {
+                        warn!("particles: no texture {texture}");
+                        return None;
+                    };
+                    Some(flame_materials.add(FlameMaterial {
+                        texture: image,
+                        additive,
+                    }))
+                });
+                match loaded {
+                    Some(material) => material.clone(),
+                    None => continue,
+                }
+            }
         };
+        let mesh = meshes.add(empty_particle_mesh());
         commands.entity(e).insert((
             Mesh3d(mesh),
             MeshMaterial3d(material),

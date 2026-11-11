@@ -256,6 +256,10 @@
 //!                                     device's scan (it opens 1600 ms later), as a use that passed the checks starts it
 //!          --debug-slot <frame>       play mode: at that frame after the load a stand-in Power Crystal A goes on every
 //!                                     teleporter's slot and a Power Crystal L on every reconstruction device's slot
+//!          --debug-portal-use <frame> play mode: at that frame after the load the player runs the portal use (the
+//!                                     dissolve burst over its body and portaluse01), with no level change
+//!          --debug-exit <frame>       play mode: at that frame after the load the player crosses the level's first
+//!                                     exit zone with the portal bit (else its first exit zone): the level change
 //!          --debug-bubble f[,hold]    play mode: at frame f after the load a teleport bubble is made around the player;
 //!                                     with hold it charges, swells and is freed after 7 s, else it rests and shrinks
 //!          --debug-force-cast <s>     play mode: every s seconds the player casts its first power at the nearest character, logging GI shapes and struck bodies' pin gain
@@ -616,6 +620,10 @@ pub struct Options {
     /// The frame stand-in crystals go on the devices' slots
     /// (`--debug-slot`).
     pub debug_slot: Option<u32>,
+    /// `--debug-portal-use FRAME`.
+    pub debug_portal_use: Option<u32>,
+    /// `--debug-exit FRAME`.
+    pub debug_exit: Option<u32>,
     /// A teleport bubble made around the player (`--debug-bubble`).
     pub debug_bubble: Option<exa_game::effects::bubble_draw::DebugBubbleAt>,
     /// The player's starting yellow and red health.
@@ -1323,6 +1331,10 @@ fn main() -> AppExit {
             }
             "--debug-scan" => options.debug_scan = args.next().and_then(|v| v.parse().ok()),
             "--debug-slot" => options.debug_slot = args.next().and_then(|v| v.parse().ok()),
+            "--debug-portal-use" => {
+                options.debug_portal_use = args.next().and_then(|v| v.parse().ok());
+            }
+            "--debug-exit" => options.debug_exit = args.next().and_then(|v| v.parse().ok()),
             "--debug-bubble" => {
                 let text = args.next().unwrap_or_default();
                 match exa_game::effects::bubble_draw::DebugBubbleAt::parse(&text) {
@@ -2065,6 +2077,10 @@ fn main() -> AppExit {
     .insert_resource(exa_game::effects::bubble_draw::DebugBubble(
         options.debug_bubble,
     ))
+    .insert_resource(exa_game::effects::portal::DebugPortalUse(
+        options.debug_portal_use,
+    ))
+    .insert_resource(exa_game::zone_scripts::DebugExit(options.debug_exit))
     .insert_resource(options.doll_drop.clone())
     .insert_resource(options.character_use.clone())
     .insert_resource(options.figure.clone())

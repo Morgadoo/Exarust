@@ -1353,7 +1353,8 @@ pub enum Step {
     LevelTime,
     /// The portal use on the player: the dissolve burst seeded over its
     /// body and `portaluse01` (the exit's portal bit; the zone exits of the
-    /// level portals set it, a teleporter journey does not).
+    /// level portals set it, a teleporter journey does not). Applied as
+    /// [`crate::effects::portal::PortalUse`].
     PortalUse,
     /// The AI takes over the player's body for the level change (the exit's
     /// portal bit).
@@ -4651,6 +4652,19 @@ fn apply_steps(
             Step::LevelTime => {
                 // The level-6 checkpoint keeps the engine clock.
                 commands.insert_resource(crate::save_live::LevelTime(now));
+            }
+            Step::PortalUse => {
+                // The exit's portal bit: the portal use on the player (its
+                // dissolve burst and sound, `effects::portal`).
+                for player in players.iter() {
+                    info!(
+                        "game flow: the portal use on the player {:?}",
+                        player.entity
+                    );
+                    commands.write_message(crate::effects::portal::PortalUse {
+                        body: player.entity,
+                    });
+                }
             }
             Step::ScriptMode { mode, hook } => {
                 // A registered scripted mode's hook. Exarust has no script

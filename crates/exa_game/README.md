@@ -552,18 +552,25 @@ the player walks it; a hovering player's combat mode stays off
 
 The small effect nodes (`effects`) are in, on the original's game clock
 in whole milliseconds: a level portal marker (the `0x3DD0E004` emitter
-node, `_PortalPrt` in `uwportal01`) gets the soft blue 0.75 light of
-500 cm 50 cm above it when its model loads (its `_PrtlPrt01` sparks are
-not simulated), and a body stepping through one gets the seeded
-`_PrtlDisp` dissolve burst (cells 6 cm apart, two fifths taken, each
-particle's position moved halfway between the node's two frames,
-jittered ±1.5 cm and pushed 1.5 % out from the body's centre, lifetime
-41 ticks less up to a quarter) with `portaluse01` at 0.6. A marker
+node, `_PortalPrt` in `uwportal01`) becomes a `_PortalPrt` particle
+system when its model loads: template `effects::portal::SPARKS` (140 a
+second for 1.5 s, a pool of 2048, blue keys, the `Portal01` loop at 0.1)
+with the portal effect's own spawn on an upright 80 × 115 cm ellipse
+(`exa_world::particles::SpawnRule::PortalRing`), drawn with
+`_PrtlPrt01` (`PrtDot02`, ONE/ONE), and the soft blue 0.75 light of
+500 cm 50 cm above it. A level exit with the portal bit (the zone exits
+of the level portals) runs the portal use on the player
+(`flow`'s `Step::PortalUse` → `effects::portal::PortalUse`): a `_PrtlDisp`
+system from `DISSOLVE` (0.5 s lives, one-shot) seeded over the body's
+part boxes (cells 6 cm apart, two fifths taken, each particle's position
+moved halfway between the part's two frames, jittered ±1.5 cm and pushed
+1.5 % out from the body's centre, lifetime 41 ticks less up to a
+quarter; `exa_world::particles::Emitter::seed`), its particles then
+flying as the system's own, and `portaluse01` at 0.6.
+`--debug-portal-use FRAME` runs the use on the player and `--debug-exit
+FRAME` crosses the level's first portal exit. A marker
 loaded into a world whose flags carry 0x10000 is replaced by a fresh one
-at its place (the 4-byte payload read and unused), and a dissolve fills
-its system's ring slot by slot (life, look, position, previous position)
-up to the capacity and clears the burst flag; nothing in the game calls
-the seeding, the ring or the import handler yet. A lit held item
+at its place (the 4-byte payload read and unused). A lit held item
 carries a flame row from 30 to 115 cm with the `_FlameMat01` shader,
 fading in by 0.02 a tick and out by 0.015 in double precision, its
 ribbon's points closing a fifth of the gap to 20 cm above its ends, lit
@@ -604,8 +611,8 @@ starts the shell's aura entity yet (its caller, the shell power's visual,
 is not in); the power tree carries the wheel as its domain wheel child and
 uses its hit test, confirm and open ease; the wheel's paint is
 `exa_ui::wheel_draw`. The shell and scan mesh copies are drawn
-(`thaum::vanish_live`, `effects::scan_draw`); the bubble geometry, the
-portal particle simulation and the bubble's GI light values are not in.
+(`thaum::vanish_live`, `effects::scan_draw`); the bubble geometry and the
+bubble's GI light values are not in.
 
 The force and environment effects of the same powers are in as plain
 rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,
@@ -616,8 +623,7 @@ live with the rain loop, thunder and the outdoor arenas' wind bed by
 set's 2° tilt scaled by `sqrt(field/70)`, placed at the box centre and
 multiplied by each sub-frame's composite, with its `EyeVec`), the
 program's uniforms and frame-buffer unit are modelled but not drawn),
-`effects::portal_effect` (one ellipse particle per call, its previous and
-current positions, the 3- and 5-bit look draws), `effects::fire_node`
+`effects::fire_node`
 (the `_FlameMat01` node's 800 cm 1/0.68/0.43 light and the colour ramp
 its object conversion derives from a record byte), `effects::force_dome`
 (the eight-ripple list, the cast sound, the Barrier's damped height,

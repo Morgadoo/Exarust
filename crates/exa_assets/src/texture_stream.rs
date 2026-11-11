@@ -769,6 +769,7 @@ mod tests {
             .resource_mut::<Assets<exa_render::flame::FlameMaterial>>()
             .add(exa_render::flame::FlameMaterial {
                 texture: image.clone(),
+                additive: false,
             });
         // Settle the creation events, then replace the image.
         app.update();

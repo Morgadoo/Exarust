@@ -85,6 +85,57 @@ pub struct StayVolumes(pub Vec<ScriptVolume>);
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ExitVolumes(pub Vec<ExitVolume>);
 
+/// `--debug-exit FRAME`: at that frame after the load the player crosses
+/// the level's first exit zone with the portal bit (else its first exit
+/// zone), as stepping into it does.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DebugExit(pub Option<u32>);
+
+fn debug_exit(
+    script: Res<DebugExit>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    exits: Res<ExitVolumes>,
+    players: Query<Option<&exa_combat::Condition>, With<crate::player::PlayerBody>>,
+    mut crossed: MessageWriter<ExitZoneCrossed>,
+    mut frames: Local<u32>,
+) {
+    let Some(frame) = script.0 else {
+        return;
+    };
+    if loading.is_some() || *frames > frame {
+        return;
+    }
+    *frames += 1;
+    if *frames != frame {
+        return;
+    }
+    let Some(volume) = exits
+        .0
+        .iter()
+        .find(|v| v.exit.flagged)
+        .or_else(|| exits.0.first())
+    else {
+        info!("debug exit: the level has no exit zone");
+        return;
+    };
+    let condition = players.iter().next().flatten().map_or(0, |c| c.0);
+    info!(
+        "debug exit: the player crosses {} (level {} {:?}, entrance {}, portal bit {})",
+        volume.name,
+        volume.exit.level,
+        volume.destination,
+        volume.exit.entrance,
+        volume.exit.flagged
+    );
+    crossed.write(ExitZoneCrossed {
+        level: volume.exit.level,
+        entrance: volume.exit.entrance,
+        flagged: volume.exit.flagged,
+        destination: volume.destination.clone(),
+        condition,
+    });
+}
+
 /// The point (cm) a character's zones were last checked at.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub struct ZoneCheckPoint(pub Vec3);
@@ -111,8 +162,9 @@ impl Plugin for ZoneScriptsPlugin {
         app.init_resource::<ScriptVolumes>()
             .init_resource::<StayVolumes>()
             .init_resource::<ExitVolumes>()
+            .init_resource::<DebugExit>()
             .add_message::<ExitZoneCrossed>()
-            .add_systems(Update, (check_zones, check_stay_zones));
+            .add_systems(Update, (check_zones, check_stay_zones, debug_exit));
     }
 }
 

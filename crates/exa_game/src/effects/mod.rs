@@ -2,7 +2,7 @@
 //!
 //! Each module reproduces one owner from the original: the level portal's
 //! sparks and the dissolve burst of a body stepping through one
-//! (`portal`, and the portal's spray, `portal_effect`), the flame drawn
+//! (`portal`), the flame drawn
 //! along a lit blade (`fire_row`) and its node (`fire_node`), the
 //! displacement shell (`shell`), the teleport bubble (`bubble`), the
 //! teleporter scan (`scan`), the domain wheel of the power screen
@@ -16,9 +16,11 @@
 //!
 //! The rules are plain data and functions so they can be tested without a
 //! Bevy app. The Bevy systems step components that gameplay inserts, on
-//! the original's 83 Hz tick. The one effect spawned here is a level
-//! portal's light, on the marker node a loaded model carries
-//! ([`exa_world::PortalMarker`], `uwportal01`), and the reconstruction
+//! the original's 83 Hz tick. The effects spawned here are a level
+//! portal's sparks and light, on the marker node a loaded model carries
+//! ([`exa_world::PortalMarker`], `uwportal01`), and the portal use's
+//! dissolve burst, which a level exit's portal bit asks for
+//! ([`portal::PortalUse`]); the reconstruction
 //! device puts a scan on the player ([`crate::teleporters`]) and the
 //! destination screen's journey a bubble ([`crate::destination`]); the
 //! others are started by the systems that start them in the original (a
@@ -37,7 +39,6 @@ pub mod fire_row;
 pub mod force_dome;
 pub mod force_wave;
 pub mod portal;
-pub mod portal_effect;
 pub mod rain;
 pub mod ribbon;
 pub mod scan;
@@ -180,14 +181,19 @@ impl Plugin for EffectsPlugin {
             )
                 .chain(),
         );
-        app.init_resource::<bubble_draw::DebugBubble>().add_systems(
-            Update,
-            (
-                fire_row::frame_rows,
-                portal::light_portals,
-                bubble_draw::debug_bubble,
-            ),
-        );
+        app.init_resource::<bubble_draw::DebugBubble>()
+            .init_resource::<portal::PortalUseDraws>()
+            .init_resource::<portal::DebugPortalUse>()
+            .add_message::<portal::PortalUse>()
+            .add_systems(
+                Update,
+                (
+                    fire_row::frame_rows,
+                    portal::light_portals,
+                    bubble_draw::debug_bubble,
+                    (portal::debug_portal_use, portal::use_portals).chain(),
+                ),
+            );
     }
 }
 
