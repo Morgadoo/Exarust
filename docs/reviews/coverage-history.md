@@ -258,3 +258,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-11-11 | 7bb24aa84 | clean | 81.9% | 5.0% | 73.3% | 90.6% | Rate round 182's combat rules |
 | 2026-11-11 | 6abcaadeb | clean | 86.2% | 0.8% | 84.2% | 90.6% | Rate round 183's lane |
 | 2026-11-11 | 638c2fd4f | clean | 81.9% | 5.1% | 73.3% | 90.6% | Keep the runtime library engine-provided |
+| 2026-11-11 | 9b4f876bd | clean | 81.9% | 5.1% | 73.4% | 90.6% | Rate rounds 184 and 185 |
