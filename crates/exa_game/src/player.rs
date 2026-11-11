@@ -2010,6 +2010,7 @@ fn follow_body_camera(
 /// Combat mode (Tab), each frame: the cursor's direction is the aim, and
 /// the heading turns to it once it is more than 30° off, or follows it
 /// while an attack is requested.
+#[allow(clippy::type_complexity)]
 pub(crate) fn player_combat(
     cursor: Res<CursorGround>,
     aim_cursor: Res<AimCursor>,
@@ -2017,11 +2018,13 @@ pub(crate) fn player_combat(
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
     players: Query<&GlobalTransform, With<Player>>,
     mut bodies: Query<(
+        Entity,
         &mut PlayerBody,
         &mut Locomotion,
         Option<&Condition>,
         Has<Fallen>,
     )>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
@@ -2035,7 +2038,7 @@ pub(crate) fn player_combat(
     if captured && look_aim.is_none() {
         return;
     }
-    for (mut pb, mut req, condition, fallen) in &mut bodies {
+    for (entity, mut pb, mut req, condition, fallen) in &mut bodies {
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
@@ -2054,7 +2057,15 @@ pub(crate) fn player_combat(
                 })
         };
         if let Some(aim) = aim {
-            pb.aim = aim;
+            // The aim is input the step reads: it lands on the
+            // simulation's copy at its next step, not as the frame's whole
+            // player body, which a free-running simulation's newer steps
+            // would lose.
+            let set = move |pb: &mut PlayerBody| pb.aim = aim;
+            match fixed.as_deref_mut() {
+                Some(fixed) => fixed.write(entity, &mut pb, set),
+                None => set(&mut pb),
+            }
             req.heading = combat_heading(req.heading, aim, pb.attack.requested);
         }
     }

@@ -423,7 +423,7 @@ tested rules of their own.
   `swap_on_switch`). The choice runs in the frame; behind the simulation
   bridge its switch of the animator's config is queued for the
   simulation's copy (`FixedCommands::write`), not sent as the frame's whole
-  animator.
+  animator; the dresser's armour layers reach the fighter the same way.
 - The off hand's item is attached by `offhand` after the dresser: a shield
   from either hand (its own model, body, a back pivot to its forearm and two face
   pivots to the left hand, and its soft weld, turned −5° about z on the hand) or a second

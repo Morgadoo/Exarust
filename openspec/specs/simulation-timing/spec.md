@@ -498,8 +498,15 @@ The arcs' light and hum flickers and their light points SHALL be frame-only stat
 - **THEN** the log counts no LiveArcs among the frame values applied after a newer simulation write, and lockstep traces match the build before the change
 
 ### Requirement: Small frame writes to simulation data go through the step queue
-The fight start's engage of the duellists and the player's combat mode, the stay check's clear of the trailing-foot latch and the held moveset choice's switch of the animator's config SHALL write the frame's copy at once, without a change mark, and queue the same write for the simulation's copy at the start of its next step. A lapsed trailing-foot request SHALL run the stay check once, though steps computed before the clear landed still carry the raised latch.
+The fight start's engage of the duellists and the player's combat mode, the combat aim, the outfit's armour layers, the stay check's clear of the trailing-foot latch and the held moveset choice's switch of the animator's config SHALL write the frame's copy at once, without a change mark, and queue the same write for the simulation's copy at the start of its next step.
 
 #### Scenario: The feature sweep in free mode
 - **WHEN** the feature sweep runs free with the bridge's write log on
-- **THEN** no Locomotor, Duellist or moveset config write is counted among the frame values applied after a newer simulation write
+- **THEN** no Locomotor, Duellist, combat aim, armour or moveset config write is counted among the frame values applied after a newer simulation write
+
+### Requirement: One stay check per lapsed request
+A lapsed trailing-foot request SHALL run the stay check once, though a free-running simulation's steps computed before the latch's clear landed still carry the raised latch.
+
+#### Scenario: The player stops in a stay zone
+- **WHEN** the player's trailing foot plants in a stay zone while the simulation runs free
+- **THEN** the zone's routine runs once for that request

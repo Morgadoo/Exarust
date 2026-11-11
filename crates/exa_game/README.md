@@ -1713,9 +1713,10 @@ and the item abilities' extinguish and arcs' end. A free-running
 simulation's newer steps are no longer undone by a frame copy of the
 caster, the minds, a flame row or the arcs. The stay check's clear of the
 trailing-foot latch goes the same way (`zone_scripts::check_stay_zones`,
-one check per lapsed request), as do the fight start's engage and combat
-mode (the binary's `start_fight`) and the held moveset choice's animator
-config (`exa_character::held`).
+one check per lapsed request), as do the combat aim (`player_combat`), the
+fight start's engage and combat mode (the binary's `start_fight`), the
+outfit's armour layers and the held moveset choice's animator config
+(`exa_character`).
 
 ## Debug commands
 

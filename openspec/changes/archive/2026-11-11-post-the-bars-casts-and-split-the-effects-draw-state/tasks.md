@@ -10,7 +10,7 @@
 
 ## 3. The sweep's small writers
 
-- [x] 3.1 Route the fight start, the stay check's clear and the moveset config switch through the fixed-step write queue
+- [x] 3.1 Route the fight start, the combat aim, the armour layers, the stay check's clear and the moveset config switch through the fixed-step write queue
 
 ## 4. Checks
 

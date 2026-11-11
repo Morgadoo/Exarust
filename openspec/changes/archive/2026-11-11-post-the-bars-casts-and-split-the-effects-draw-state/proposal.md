@@ -12,7 +12,7 @@ The bar's cast entry runs from the player controls' key handler, a GUI event on 
 - Flame rows: the loop's pitch is frame-only (`FlamePitch`). The frame's draw from the row's stream is queued for the simulation's copy. The removal is the frame's despawn.
 - Arcs: the flickers and light points are frame-only (`ArcGlow`). The draw reads each tendril's origin, and its write of the first point is queued for the simulation's copy (`settle_origins`).
 - The item abilities' extinguish and arcs' end go through `FixedCommands::write`.
-- The feature sweep with the bridge's write log on found three more small frame writers, now routed through `FixedCommands::write`: the fight start (the duellists' engage, the player's combat mode), the stay check's latch clear (one check per lapsed request), and the held moveset choice's switch of the animator's config.
+- The feature sweep with the bridge's write log on found more small frame writers, now routed through `FixedCommands::write`: the fight start (the duellists' engage, the player's combat mode), the combat aim, the outfit's armour layers (a refit sent the whole fighter, its health an older step's), the stay check's latch clear (one check per lapsed request), and the held moveset choice's switch of the animator's config.
 
 ## Impact
 
