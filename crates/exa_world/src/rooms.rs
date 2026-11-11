@@ -1074,15 +1074,30 @@ impl RoomTracker {
 }
 
 /// The room manager's light lists: the light aliases each room's sector
-/// holds. A light is added to the room of the cell it stands in; after the
-/// rooms exist each room also receives the light list entries of every room
-/// that portals into it, once, so a lamp in one room lights the room behind
-/// its door too.
+/// holds, which decide the lights a mesh in that room can be lit by.
+///
+/// The original makes an alias of a light in a sector in two ways on a
+/// tile-grid level: the light's activation in the sector it is registered
+/// in (the room of the cell it stands in, or the scene's own sector off
+/// the rooms), and the flood's cell hook, which the room manager installs
+/// on every room sector: each time the light's flood records it in a cell
+/// (a cell holds twelve lights; a full cell that does not list it yet
+/// records nothing and calls nothing), the room of that cell gets an alias
+/// of the light, or its existing alias is stamped current. A mesh's light
+/// buckets are its sector's aliases, one each, so a light lights a mesh only
+/// in a room where it has an alias. The live renderer keeps these lists
+/// ([`Self::place`], [`Self::add_cell`], [`Self::reaches`]) and the link
+/// pass ([`crate::shadow_links`]) reads them.
+///
+/// [`Self::propagate`] passes each room's list through its doors once.
+/// REA finds no shipped routine that adds aliases that way (the only alias
+/// makers are the activation, the cell hook, the spread along linked
+/// sectors of a scene without a grid, and the room-mode-off hook), so the
+/// live lists do not run it; the terrain's hidden-block ranking still does
+/// ([`crate::terrain::live::room_light_lists`]).
 ///
 /// The original keeps one alias object per light and sector; Exarust keeps
-/// the light ids. The renderer's sector light lists are modelled here, not
-/// read by [`crate::room_view`] (Exarust's lights stay global, as the room
-/// drawing rules ask).
+/// the light ids.
 #[derive(Debug, Clone, Default)]
 pub struct RoomLights {
     /// Per room, the light ids its sector lists, in the order they were
@@ -1090,6 +1105,11 @@ pub struct RoomLights {
     per_room: Vec<Vec<u32>>,
     /// The room each light id was placed in, indexed by id.
     home: Vec<Option<u16>>,
+    /// The lights registered in the scene's own sector (standing in no
+    /// room), for the live lists.
+    scene: Vec<u32>,
+    /// The rooms each light id is listed in, for the live lists.
+    listed: HashMap<u32, Vec<u16>>,
 }
 
 impl RoomLights {
@@ -1097,7 +1117,7 @@ impl RoomLights {
     pub fn new(rooms: usize) -> Self {
         Self {
             per_room: vec![Vec::new(); rooms],
-            home: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -1141,6 +1161,86 @@ impl RoomLights {
         if let Some(slot) = self.home.get_mut(id as usize) {
             *slot = None;
         }
+    }
+
+    /// Takes light `id` out of every list it is in (its own room, the rooms
+    /// its flood reached and the scene's own sector), before it is placed
+    /// and flooded again.
+    pub fn forget(&mut self, id: u32) {
+        if let Some(rooms) = self.listed.remove(&id) {
+            for room in rooms {
+                if let Some(list) = self.per_room.get_mut(room as usize) {
+                    list.retain(|&l| l != id);
+                }
+            }
+        }
+        self.scene.retain(|&l| l != id);
+        if let Some(slot) = self.home.get_mut(id as usize) {
+            *slot = None;
+        }
+    }
+
+    /// Registers light `id` standing at `at` (metres, X/Z) in its sector, as
+    /// the room manager's node hook moves it into the room of its cell and
+    /// its activation makes its alias there: the room of the cell it stands
+    /// in ([`Rooms::room_of_node`]), or the scene's own sector off the
+    /// rooms. Its earlier lists are dropped first ([`Self::forget`]).
+    pub fn place(&mut self, rooms: &Rooms, id: u32, at: Vec2) -> Option<u16> {
+        self.forget(id);
+        match rooms.room_of_node(at) {
+            Some(room) => {
+                self.home.resize(self.home.len().max(id as usize + 1), None);
+                self.home[id as usize] = Some(room);
+                self.list(id, room);
+                Some(room)
+            }
+            None => {
+                self.scene.push(id);
+                None
+            }
+        }
+    }
+
+    /// The flood's cell hook: light `id` was recorded in grid cell `cell`,
+    /// so the cell's room lists it (once). A cell in no room adds nothing.
+    pub fn add_cell(&mut self, rooms: &Rooms, id: u32, cell: u32) -> Option<u16> {
+        let room = rooms.room_of_index(cell)?;
+        self.list(id, room);
+        Some(room)
+    }
+
+    fn list(&mut self, id: u32, room: u16) {
+        let Some(list) = self.per_room.get_mut(room as usize) else {
+            return;
+        };
+        if !list.contains(&id) {
+            list.push(id);
+            self.listed.entry(id).or_default().push(room);
+        }
+    }
+
+    /// Whether light `id` has an alias in the sector of `room` (`None`: the
+    /// scene's own sector), so it may light a mesh registered there.
+    pub fn reaches(&self, id: u32, room: Option<u16>) -> bool {
+        match room {
+            Some(room) => self.of(room).contains(&id),
+            None => self.scene.contains(&id),
+        }
+    }
+
+    /// The rooms light `id` is listed in, in the order they were added.
+    pub fn rooms_of(&self, id: u32) -> &[u16] {
+        self.listed.get(&id).map_or(&[], |rooms| &rooms[..])
+    }
+
+    /// The number of rooms.
+    pub fn len(&self) -> usize {
+        self.per_room.len()
+    }
+
+    /// Whether there are no rooms.
+    pub fn is_empty(&self) -> bool {
+        self.per_room.is_empty()
     }
 
     /// Gives every room the lights of each room whose portal leads into it,
@@ -2034,6 +2134,41 @@ mod tests {
         assert_eq!(lights.of(0), &[] as &[u32]);
         assert_eq!(lights.of(1), &[7, 9][..]);
         assert_eq!(lights.home(7), None);
+    }
+
+    #[test]
+    fn live_lists_follow_the_home_room_and_the_flooded_cells() {
+        // Rooms A (0), B (1) and C (2) in a row, as above.
+        let mut g = Grid::new(8, 3);
+        g.open(1, 1, [7, 7, 7, 0])
+            .open(2, 1, [7, 0, 7, 0xB])
+            .open(3, 1, [7, 0xB, 7, 0xB])
+            .open(4, 1, [7, 0xB, 7, 0])
+            .open(5, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&g.0);
+        let mut lights = RoomLights::new(rooms.len());
+        // A light in A is listed there; a light off the rooms is the scene's.
+        assert_eq!(lights.place(&rooms, 4, Vec2::new(-15.0, 3.0)), Some(0));
+        assert_eq!(lights.place(&rooms, 6, Vec2::new(0.0, -15.0)), None);
+        assert!(lights.reaches(4, Some(0)));
+        assert!(!lights.reaches(4, Some(1)));
+        assert!(!lights.reaches(4, None));
+        assert!(lights.reaches(6, None));
+        // Its flood recorded it in B's cell: B lists it too, once.
+        let b_cell = rooms.cell_index(3, 1).unwrap();
+        assert_eq!(lights.add_cell(&rooms, 4, b_cell), Some(1));
+        assert_eq!(lights.add_cell(&rooms, 4, b_cell), Some(1));
+        assert_eq!(lights.of(1), &[4][..]);
+        assert_eq!(lights.rooms_of(4), &[0, 1][..]);
+        // A cell in no room adds nothing.
+        assert_eq!(lights.add_cell(&rooms, 4, 0), None);
+        // Placed again (it moved into C), it leaves A and B.
+        assert_eq!(lights.place(&rooms, 4, Vec2::new(9.0, 3.0)), Some(2));
+        assert!(!lights.reaches(4, Some(0)) && !lights.reaches(4, Some(1)));
+        assert!(lights.reaches(4, Some(2)));
+        assert_eq!(lights.home(4), Some(2));
+        lights.forget(6);
+        assert!(!lights.reaches(6, None));
     }
 
     #[test]

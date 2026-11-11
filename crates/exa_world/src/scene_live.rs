@@ -141,6 +141,10 @@ pub struct LiveScene {
     timing_frames: u32,
     /// Frames refreshed since the last log line.
     refreshed: usize,
+    /// Meshes registered or moved to another sector by this frame's run,
+    /// for the light links ([`crate::shadow_links`]): a mesh is lit only by
+    /// the lights its sector lists.
+    pub sector_changes: Vec<Entity>,
 }
 
 impl LiveScene {
@@ -284,7 +288,7 @@ type MovedQuery<'w, 's> = Query<
 /// bounds, then the original's frame with the room states and the main
 /// camera.
 #[allow(clippy::too_many_arguments)]
-fn run_scene(
+pub fn run_scene(
     mut live: ResMut<LiveScene>,
     mut draw_sectors: ResMut<DrawSectors>,
     level: Option<Res<LevelRooms>>,
@@ -310,6 +314,7 @@ fn run_scene(
         return;
     };
     let live = &mut *live;
+    live.sector_changes.clear();
     let fresh = !live
         .rooms
         .as_ref()
@@ -399,6 +404,7 @@ fn run_scene(
         }
         live.entity_of[node] = Some(entity);
         live.node_of.insert(entity, node);
+        live.sector_changes.push(entity);
         if let Some(root) = root {
             live.tracked.insert(entity, root);
             live.roots
@@ -448,6 +454,9 @@ fn run_scene(
             continue;
         }
         scene.move_to_sector(node, sector);
+        if let Some(entity) = live.entity_of.get(node).copied().flatten() {
+            live.sector_changes.push(entity);
+        }
         live.mark(old);
         live.mark(Some(sector));
     }
