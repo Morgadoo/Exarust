@@ -1737,6 +1737,8 @@ Round 181 renderer: doorway sectors clip their see-through surfaces on the super
 
 the wraith skin and robe now draw as translucent dark smoke as in the original (the smoke unit start-up hook rewrites material type 2); the shipped smoke program fails to build under distance fog, so outdoor levels draw no wraith, and Exarust matches that.
 
+diffuse and opacity layers now share one colour slot as in the original loader and builder; shipped data has plug-in mask 1 everywhere, so the factory dispatch is a no-op on data; the only changed record is an arenao4 awning tube whose opacity image is not shipped (the original draws its grey placeholder). Shots identical, FPS unchanged, lockstep identical.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
