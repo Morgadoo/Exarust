@@ -196,6 +196,15 @@ pub struct ItemFacts {
     /// Raw unit counts behind the bonus floats, used when filling a weapon
     /// table row.
     pub bonus_units: [u32; BONUS_SLOTS],
+    /// The record has a body section: an apparel table row takes its facts
+    /// only then.
+    pub has_body: bool,
+    /// The record has a weapon section, and its rank word.
+    pub has_weapon: bool,
+    pub weapon_word: u16,
+    /// The record has a shield section, and its rank word.
+    pub has_shield: bool,
+    pub shield_word: u16,
 }
 
 impl ItemFacts {
@@ -212,10 +221,11 @@ impl ItemFacts {
     /// The rank word and the twenty bonus words are the body's rank and
     /// occupancy table; a weapon without a body takes its weapon section's
     /// rank. Quality and condition are the appearance bytes for apparel and
-    /// the weapon's own for a weapon. The bonus floats and units are not
-    /// item fields in the original (they come from the arena's table rows),
-    /// so they stay zero here; the item's material bytes are also not
-    /// exposed by the parser yet.
+    /// the weapon's own for a weapon. The bonus floats are not item fields
+    /// in the original (the apparel table pass computes them into its rows,
+    /// [`apparel_bonus_floats`]), so they stay zero here; the units behind
+    /// them are the body's twenty coverage words and the two material bytes
+    /// its padding and slash bytes.
     #[must_use]
     pub fn of_item(item: &Item) -> Self {
         let quality = item
@@ -234,13 +244,18 @@ impl ItemFacts {
             weapon_kind: 0,
             apparel_class: u32::from(item.armour_type),
             apparel_points: i32::from(item.rank_word & BULK_MASK),
-            material_lo: 0,
-            material_hi: 0,
+            material_lo: item.armour.map_or(0, |armour| armour.padding),
+            material_hi: item.armour.map_or(0, |armour| armour.slash),
             quality,
             condition,
             bonus_words: item.occupancy,
             bonus_floats: [0.0; BONUS_SLOTS],
-            bonus_units: [0; BONUS_SLOTS],
+            bonus_units: item.coverage_units,
+            has_body: item.has_body,
+            has_weapon: item.has_weapon,
+            weapon_word: item.weapon_word,
+            has_shield: item.has_shield,
+            shield_word: item.shield_word,
         }
     }
 }
@@ -328,50 +343,6 @@ pub struct HeldWeapon {
     pub id: ItemId,
     /// The variant the randomiser chose.
     pub variant: u32,
-}
-
-/// One row of a weapon table.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct WeaponRow {
-    /// The weapon id; zero rows are ignored.
-    pub id: ItemId,
-    /// The selection weight. Zero becomes ten, the original's default.
-    pub weight: i32,
-    /// The weapon class, filled from the item kind when still zero.
-    pub class: u32,
-    /// The rank, from the top bits of the item's rank word.
-    pub rank: u32,
-    /// The points, from the low five bits of the item's rank word.
-    pub points: i32,
-    /// Bonus floats derived from the item's unit counts.
-    pub bonus_floats: [f32; BONUS_SLOTS],
-}
-
-/// One row of a shield table.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ShieldRow {
-    /// The shield id; zero rows are ignored.
-    pub id: ItemId,
-    /// The selection weight. Zero becomes ten.
-    pub weight: i32,
-    /// The shield class, from the top bits of the shield's rank byte when
-    /// still zero.
-    pub class: u32,
-    /// The shield rank, from the low five bits of the rank byte.
-    pub rank: i32,
-}
-
-/// One row of an apparel table.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ApparelRow {
-    /// The apparel id; zero rows are ignored.
-    pub id: ItemId,
-    /// The selection weight. Zero becomes ten.
-    pub weight: i32,
-    /// The apparel class, filled from the item when still zero.
-    pub class: u32,
-    /// The points, filled from the item.
-    pub points: i32,
 }
 
 /// A weighted outfit candidate pool.
@@ -801,9 +772,11 @@ pub struct GeneratedOutfit {
 /// The outfit item tables, converted from the raw arena data with an
 /// item-facts pass.
 ///
-/// Large tables carry rank, cost and bonus from [`ItemFacts`]. Small rank
-/// tables carry the same three fields; their raw weight is kept unchanged.
-/// A zero weight in a large table becomes the original's default of ten.
+/// Large (apparel) tables carry rank, cost and bonus from [`ItemFacts`],
+/// a zero class from the armour type and the bonus floats the apparel pass
+/// computes. Small rank tables take rank and cost from their weapon or
+/// shield section. A zero weight in either becomes the original's default
+/// of ten.
 #[derive(Clone, Debug, Default)]
 pub struct OutfitTables {
     /// Alt A pool.
@@ -927,12 +900,37 @@ impl OutfitTables {
         let torso_h = pool_entries(&data::TORSO_H, &mut lookup, &mut facts);
         let torso_i = pool_entries(&data::TORSO_I, &mut lookup, &mut facts);
         let underwear = pool_entries(&data::UNDERWEAR, &mut lookup, &mut facts);
-        let ranked_armour = rank_entries(&data::RANKED_ARMOUR, &mut lookup, &mut facts);
-        let shields = rank_entries(&data::SHIELDS, &mut lookup, &mut facts);
-        let weapons_a = rank_entries(&data::WEAPONS_A, &mut lookup, &mut facts);
-        let weapons_b = rank_entries(&data::WEAPONS_B, &mut lookup, &mut facts);
-        let weapons_c = rank_entries(&data::WEAPONS_C, &mut lookup, &mut facts);
-        let weapons_d = rank_entries(&data::WEAPONS_D, &mut lookup, &mut facts);
+        let ranked_armour = rank_entries(
+            &data::RANKED_ARMOUR,
+            RankSection::Weapon,
+            &mut lookup,
+            &mut facts,
+        );
+        let shields = rank_entries(&data::SHIELDS, RankSection::Shield, &mut lookup, &mut facts);
+        let weapons_a = rank_entries(
+            &data::WEAPONS_A,
+            RankSection::Weapon,
+            &mut lookup,
+            &mut facts,
+        );
+        let weapons_b = rank_entries(
+            &data::WEAPONS_B,
+            RankSection::Weapon,
+            &mut lookup,
+            &mut facts,
+        );
+        let weapons_c = rank_entries(
+            &data::WEAPONS_C,
+            RankSection::Weapon,
+            &mut lookup,
+            &mut facts,
+        );
+        let weapons_d = rank_entries(
+            &data::WEAPONS_D,
+            RankSection::Weapon,
+            &mut lookup,
+            &mut facts,
+        );
         Self {
             alt_a,
             alt_b,
@@ -989,26 +987,84 @@ impl OutfitTables {
 /// Convert one large raw pool row.
 fn convert_pool_entry(row: &data::RawPoolEntry, facts: Option<ItemFacts>) -> PoolEntry {
     let id = ItemId(row.id);
+    let mut wanted = row.wanted;
     let (rank, cost, bonus) = match facts {
-        Some(facts) => (
-            i32::from((facts.rank_word as u8) >> 5),
-            i32::from(facts.rank_word & BULK_MASK),
-            Bonus {
-                words: facts.bonus_words,
-                floats: facts.bonus_floats,
-            },
-        ),
+        Some(facts) => {
+            // The apparel table pass reads the record's body: a zero class
+            // takes the one its armour type gives, and the twenty bonus
+            // floats come from the coverage words and material bytes.
+            // A record without a body is refused and keeps the row's own
+            // (zero) rank, points and floats.
+            if facts.has_body {
+                if wanted == 0 {
+                    wanted = apparel_row_class(facts.apparel_class as u8);
+                }
+                (
+                    i32::from((facts.rank_word as u8) >> 5),
+                    i32::from(facts.rank_word & BULK_MASK),
+                    Bonus {
+                        words: facts.bonus_words,
+                        floats: apparel_bonus_floats(&facts),
+                    },
+                )
+            } else {
+                (
+                    0,
+                    0,
+                    Bonus {
+                        words: facts.bonus_words,
+                        floats: [0.0; BONUS_SLOTS],
+                    },
+                )
+            }
+        }
         None => (0, 0, Bonus::default()),
     };
     PoolEntry {
         id,
         weight: if row.weight == 0 { 10 } else { row.weight },
-        wanted: row.wanted,
+        wanted,
         forbidden: row.forbidden,
         rank,
         cost,
         bonus,
     }
+}
+
+/// The class an apparel table row takes from its item's armour type when
+/// the row's own is zero: types 1 and 2 are class 1, 3 and 4 class 4, 5
+/// class 8 and 6 class `0x40`; any other type leaves it zero.
+pub fn apparel_row_class(armour_type: u8) -> u32 {
+    match armour_type {
+        1 | 2 => 1,
+        3 | 4 => 4,
+        5 => 8,
+        6 => 0x40,
+        _ => 0,
+    }
+}
+
+/// The twenty bonus floats the apparel table pass computes for a row: each
+/// non-zero coverage word `u` gives (lo + hi) × (√(u × 0.01) × 0.05 × 0.5),
+/// the bracket in double precision and narrowed, the product in single
+/// precision; a zero word leaves its float zero.
+pub fn apparel_bonus_floats(facts: &ItemFacts) -> [f32; BONUS_SLOTS] {
+    let material = (u32::from(facts.material_lo) + u32::from(facts.material_hi)) as f32;
+    std::array::from_fn(|slot| {
+        let units = facts.bonus_units[slot];
+        if units == 0 {
+            return 0.0;
+        }
+        let scale = ((f64::from(units) * 0.01).sqrt() * 0.05 * 0.5) as f32;
+        material * scale
+    })
+}
+
+/// Which section a small rank table's pass reads its rank word from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RankSection {
+    Weapon,
+    Shield,
 }
 
 /// Convert a large raw pool table, recording item facts.
@@ -1032,9 +1088,14 @@ where
         .collect()
 }
 
-/// Convert a small rank table, keeping its raw weight.
+/// Convert a small rank table as the weapon and shield table passes fill
+/// it: a zero weight becomes ten; when the record has the table's section
+/// (a weapon's or a shield's), a zero rank word takes the top three bits
+/// of the section's rank byte and the cost always its low five bits; a
+/// record without it keeps the row's own rank and cost.
 fn rank_entries<F>(
     raw: &[data::RawRankEntry],
+    section: RankSection,
     lookup: &mut F,
     cache: &mut BTreeMap<u32, ItemFacts>,
 ) -> Vec<PoolEntry>
@@ -1048,20 +1109,32 @@ where
             if let Some(facts) = &item {
                 cache.insert(row.id, facts.clone());
             }
-            let (rank, cost, bonus) = match item {
-                Some(facts) => (
-                    i32::from((facts.rank_word as u8) >> 5),
-                    i32::from(facts.rank_word & BULK_MASK),
-                    Bonus {
-                        words: facts.bonus_words,
-                        floats: facts.bonus_floats,
-                    },
-                ),
-                None => (0, 0, Bonus::default()),
+            let word = item.as_ref().and_then(|facts| match section {
+                RankSection::Weapon => facts.has_weapon.then_some(facts.weapon_word),
+                RankSection::Shield => facts.has_shield.then_some(facts.shield_word),
+            });
+            let (rank, cost) = match word {
+                Some(word) if row.id != 0 => {
+                    let rank = if row.first == 0 {
+                        i32::from((word as u8) >> 5)
+                    } else {
+                        row.first
+                    };
+                    (rank, i32::from(word & BULK_MASK))
+                }
+                _ => (row.first, row.second),
             };
+            let bonus = item.map_or_else(Bonus::default, |facts| Bonus {
+                words: facts.bonus_words,
+                floats: facts.bonus_floats,
+            });
             PoolEntry {
                 id,
-                weight: row.weight,
+                weight: if row.id != 0 && row.weight == 0 {
+                    10
+                } else {
+                    row.weight
+                },
                 wanted: 0,
                 forbidden: 0,
                 rank,
@@ -2083,108 +2156,6 @@ pub struct ApparelFit {
     pub quality: u8,
     /// The condition byte supplied by the caller's callback.
     pub condition: u8,
-}
-
-/// Fill weapon table rows from item facts.
-///
-/// Zero-weight rows take the default weight of ten. Rows with no id are left
-/// alone, and rows whose item is unknown keep the default weight but get no
-/// facts. The class is filled only when it is still zero, from the item kind:
-/// kinds one and two are class one, three and four are class four, five is
-/// eight and six is the top class. Rank comes from the top bits of the low
-/// rank byte and points from its low five bits. Each non-zero unit count
-/// gives a bonus float scaled by the material bytes and the square root of
-/// the units.
-pub fn fill_weapon_rows<F>(rows: &mut [WeaponRow], mut lookup: F)
-where
-    F: FnMut(ItemId) -> Option<ItemFacts>,
-{
-    for row in rows {
-        if row.id.0 == 0 {
-            continue;
-        }
-        if row.weight == 0 {
-            row.weight = 10;
-        }
-        let Some(facts) = lookup(row.id) else {
-            continue;
-        };
-        if row.class == 0 {
-            row.class = weapon_class(facts.weapon_kind);
-        }
-        row.rank = u32::from((facts.rank_word as u8) >> 5);
-        row.points = i32::from(facts.rank_word & BULK_MASK);
-        for (float, units) in row.bonus_floats.iter_mut().zip(facts.bonus_units.iter()) {
-            if *units == 0 {
-                continue;
-            }
-            let scale = ((f64::from(*units) * 0.01).sqrt() * 0.05 * 0.5) as f32;
-            *float = (u32::from(facts.material_lo) + u32::from(facts.material_hi)) as f32 * scale;
-        }
-    }
-}
-
-/// The weapon class for an item kind byte.
-fn weapon_class(kind: u8) -> u32 {
-    match kind {
-        1 | 2 => 1,
-        3 | 4 => 4,
-        5 => 8,
-        6 => 0x40,
-        _ => 0,
-    }
-}
-
-/// Fill shield table rows from item facts.
-///
-/// Zero-weight rows take the default weight of ten. Rows with no id are
-/// skipped. A zero class is filled from the top bits of the shield's rank
-/// byte; the rank comes from its low five bits.
-pub fn fill_shield_rows<F>(rows: &mut [ShieldRow], mut lookup: F)
-where
-    F: FnMut(ItemId) -> Option<ItemFacts>,
-{
-    for row in rows {
-        if row.id.0 == 0 {
-            continue;
-        }
-        if row.weight == 0 {
-            row.weight = 10;
-        }
-        let Some(facts) = lookup(row.id) else {
-            continue;
-        };
-        if row.class == 0 {
-            row.class = u32::from((facts.rank_word as u8) >> 5);
-        }
-        row.rank = i32::from(facts.rank_word & BULK_MASK);
-    }
-}
-
-/// Fill apparel table rows from item facts.
-///
-/// Zero-weight rows take the default weight of ten. Rows with no id are
-/// skipped. A zero class is filled from the item's apparel class; the points
-/// are always taken from the item.
-pub fn fill_apparel_rows<F>(rows: &mut [ApparelRow], mut lookup: F)
-where
-    F: FnMut(ItemId) -> Option<ItemFacts>,
-{
-    for row in rows {
-        if row.id.0 == 0 {
-            continue;
-        }
-        if row.weight == 0 {
-            row.weight = 10;
-        }
-        let Some(facts) = lookup(row.id) else {
-            continue;
-        };
-        if row.class == 0 {
-            row.class = facts.apparel_class;
-        }
-        row.points = facts.apparel_points;
-    }
 }
 
 /// One row of profession progress: total experience and the column gained at
@@ -3358,115 +3329,120 @@ mod tests {
     }
 
     #[test]
-    fn weapon_rows_fill_from_facts() {
-        let mut rows = [
-            WeaponRow {
-                id: ItemId(7),
-                ..WeaponRow::default()
+    fn the_table_pass_fills_classes_floats_ranks_and_weights() {
+        let mut coat = ItemFacts {
+            id: ItemId(1),
+            rank_word: (3 << 5) | 7,
+            apparel_class: 5,
+            material_lo: 1,
+            material_hi: 2,
+            has_body: true,
+            ..ItemFacts::default()
+        };
+        coat.bonus_units[0] = 25;
+        coat.bonus_units[2] = 100;
+        let row = data::RawPoolEntry {
+            id: 1,
+            weight: 0,
+            wanted: 0,
+            forbidden: 0,
+        };
+        let entry = convert_pool_entry(&row, Some(coat.clone()));
+        assert_eq!(
+            (entry.weight, entry.wanted, entry.rank, entry.cost),
+            (10, 8, 3, 7)
+        );
+        // 3 × (√0.25 × 0.05 × 0.5) and 3 × (√1 × 0.05 × 0.5).
+        assert_eq!(
+            entry.bonus.floats[0],
+            3.0 * ((0.25f64).sqrt() * 0.05 * 0.5) as f32
+        );
+        assert_eq!(entry.bonus.floats[1], 0.0);
+        assert_eq!(entry.bonus.floats[2], 3.0 * (0.05f64 * 0.5) as f32);
+        // A row's own class stays; a record without a body is refused.
+        let kept = convert_pool_entry(
+            &data::RawPoolEntry {
+                wanted: 0x100,
+                ..row
             },
-            WeaponRow {
-                id: ItemId(8),
-                class: 4,
-                ..WeaponRow::default()
-            },
-            WeaponRow {
-                id: ItemId(9),
-                ..WeaponRow::default()
-            },
-            WeaponRow::default(),
-        ];
-        fill_weapon_rows(&mut rows, |id| match id.0 {
-            7 => {
-                let mut facts = ItemFacts {
-                    id,
-                    rank_word: (3 << 5) | 7,
-                    weapon_kind: 5,
-                    material_lo: 1,
-                    material_hi: 2,
-                    ..ItemFacts::default()
-                };
-                facts.bonus_units[0] = 25;
-                facts.bonus_units[2] = 100;
-                Some(facts)
-            }
-            8 => Some(ItemFacts {
-                id,
-                rank_word: (1 << 5) | 2,
-                weapon_kind: 3,
-                ..ItemFacts::default()
+            Some(coat.clone()),
+        );
+        assert_eq!(kept.wanted, 0x100);
+        let bare = convert_pool_entry(
+            &row,
+            Some(ItemFacts {
+                has_body: false,
+                ..coat
             }),
-            _ => None,
-        });
-        assert_eq!(rows[0].weight, 10);
-        assert_eq!(rows[0].class, 8);
-        assert_eq!(rows[0].rank, 3);
-        assert_eq!(rows[0].points, 7);
-        assert_eq!(rows[0].bonus_floats[1], 0.0);
-        assert!(close(rows[0].bonus_floats[0], 0.0375));
-        assert!(close(rows[0].bonus_floats[2], 0.075));
-        assert_eq!(rows[1].class, 4);
-        assert_eq!(rows[1].rank, 1);
-        assert_eq!(rows[1].points, 2);
-        assert_eq!(rows[2].weight, 10);
-        assert_eq!(rows[2].class, 0);
-        assert_eq!(rows[3].weight, 0);
-        assert_eq!(rows[3].id, ItemId(0));
-    }
+        );
+        assert_eq!((bare.wanted, bare.rank, bare.cost), (0, 0, 0));
+        assert_eq!(bare.bonus.floats, [0.0; BONUS_SLOTS]);
+        assert_eq!(
+            [1, 2, 3, 4, 5, 6, 7].map(apparel_row_class),
+            [1, 1, 4, 4, 8, 0x40, 0]
+        );
 
-    #[test]
-    fn shield_and_apparel_rows_fill_from_facts() {
-        let mut shields = [
-            ShieldRow {
-                id: ItemId(20),
-                ..ShieldRow::default()
+        let sword = ItemFacts {
+            id: ItemId(2),
+            has_weapon: true,
+            weapon_word: (2 << 5) | 6,
+            ..ItemFacts::default()
+        };
+        let shield = ItemFacts {
+            id: ItemId(3),
+            has_shield: true,
+            shield_word: (4 << 5) | 9,
+            ..ItemFacts::default()
+        };
+        let raw = [
+            data::RawRankEntry {
+                id: 2,
+                weight: 0,
+                first: 0,
+                second: 0,
             },
-            ShieldRow::default(),
+            data::RawRankEntry {
+                id: 2,
+                weight: 5,
+                first: 5,
+                second: 1,
+            },
+            data::RawRankEntry {
+                id: 3,
+                weight: 0,
+                first: 0,
+                second: 3,
+            },
+            data::RawRankEntry {
+                id: 0,
+                weight: 0,
+                first: 0,
+                second: 0,
+            },
         ];
-        fill_shield_rows(&mut shields, |id| {
-            (id.0 == 20).then_some(ItemFacts {
-                id,
-                rank_word: (2 << 5) | 5,
-                ..ItemFacts::default()
-            })
-        });
-        assert_eq!(shields[0].weight, 10);
-        assert_eq!(shields[0].class, 2);
-        assert_eq!(shields[0].rank, 5);
-        assert_eq!(shields[1].weight, 0);
-
-        let mut apparel = [
-            ApparelRow {
-                id: ItemId(30),
-                ..ApparelRow::default()
-            },
-            ApparelRow {
-                id: ItemId(31),
-                class: 7,
-                ..ApparelRow::default()
-            },
-            ApparelRow::default(),
-        ];
-        fill_apparel_rows(&mut apparel, |id| match id.0 {
-            30 => Some(ItemFacts {
-                id,
-                apparel_class: 4,
-                apparel_points: 12,
-                ..ItemFacts::default()
-            }),
-            31 => Some(ItemFacts {
-                id,
-                apparel_class: 9,
-                apparel_points: 3,
-                ..ItemFacts::default()
-            }),
+        let mut lookup = |id: ItemId| match id.0 {
+            2 => Some(sword.clone()),
+            3 => Some(shield.clone()),
             _ => None,
-        });
-        assert_eq!(apparel[0].weight, 10);
-        assert_eq!(apparel[0].class, 4);
-        assert_eq!(apparel[0].points, 12);
-        assert_eq!(apparel[1].class, 7);
-        assert_eq!(apparel[1].points, 3);
-        assert_eq!(apparel[2].weight, 0);
+        };
+        let mut cache = BTreeMap::new();
+        let weapons = rank_entries(&raw, RankSection::Weapon, &mut lookup, &mut cache);
+        let ranks = |entries: &[PoolEntry]| {
+            entries
+                .iter()
+                .map(|e| (e.weight, e.rank, e.cost))
+                .collect::<Vec<_>>()
+        };
+        // The shield row has no weapon section: it keeps its own words.
+        assert_eq!(
+            ranks(&weapons),
+            [(10, 2, 6), (5, 5, 6), (10, 0, 3), (0, 0, 0)]
+        );
+        let shields = rank_entries(&raw, RankSection::Shield, &mut lookup, &mut cache);
+        assert_eq!(
+            ranks(&shields),
+            [(10, 0, 0), (5, 5, 1), (10, 4, 9), (0, 0, 0)]
+        );
     }
 
     #[test]
@@ -3497,12 +3473,21 @@ mod tests {
         assert_eq!(fit.condition, 77);
     }
     fn synthetic_item(id: ItemId) -> Option<ItemFacts> {
+        // Every section, so every table takes its facts; the coverage
+        // word and material make the apparel pass's first float exactly
+        // 10 × (√16 × 0.05 × 0.5) = 1.
         let mut facts = ItemFacts {
             id,
             rank_word: (2 << 5) | 1,
+            material_lo: 10,
+            has_body: true,
+            has_weapon: true,
+            weapon_word: (2 << 5) | 1,
+            has_shield: true,
+            shield_word: (2 << 5) | 1,
             ..ItemFacts::default()
         };
-        facts.bonus_floats[0] = 1.0;
+        facts.bonus_units[0] = 1600;
         Some(facts)
     }
 
@@ -3580,12 +3565,14 @@ mod tests {
         let shield = &tables.shields[0];
         assert_eq!(shield.id, ItemId(80));
         assert_eq!(shield.weight, 10);
-        assert_eq!(shield.rank, 2);
+        // The shield row's own rank word (1) stays; its cost is the
+        // section's.
+        assert_eq!(shield.rank, 1);
         assert_eq!(shield.cost, 1);
 
         let weapon = &tables.weapons_a[0];
         assert_eq!(weapon.id, ItemId(23));
-        assert_eq!(weapon.weight, 0);
+        assert_eq!(weapon.weight, 10);
         assert_eq!(weapon.rank, 2);
         assert_eq!(weapon.cost, 1);
 
@@ -3603,7 +3590,9 @@ mod tests {
         assert_eq!(tables.body_pool[0].weight, 150);
         assert_eq!(tables.body_pool[0].rank, 0);
         assert_eq!(tables.body_pool[0].cost, 0);
-        assert_eq!(tables.weapons_a[0].weight, 0);
+        // The weapon pass gives a zero weight ten before it looks the
+        // weapon up; an unknown one keeps the row's own rank.
+        assert_eq!(tables.weapons_a[0].weight, 10);
         assert_eq!(tables.weapons_a[0].rank, 0);
     }
 
@@ -3666,13 +3655,13 @@ mod tests {
         let character = OutfitCharacter::default();
         let outfit =
             generate_by_level(3, 0.25, 0, &mut Lcg::new(0), &tables, &character, unit_half);
-        assert_eq!(ids(&outfit), vec![210, 280, 249]);
+        assert_eq!(ids(&outfit), vec![262, 280, 249]);
         assert_eq!(
             outfit.hands,
             [
                 Some(HeldWeapon {
-                    id: ItemId(210),
-                    variant: 210
+                    id: ItemId(262),
+                    variant: 262
                 }),
                 None
             ]
@@ -3751,27 +3740,27 @@ mod tests {
             with_skill.hands,
             [
                 Some(HeldWeapon {
-                    id: ItemId(210),
-                    variant: 210
+                    id: ItemId(222),
+                    variant: 222
                 }),
                 Some(HeldWeapon {
-                    id: ItemId(65),
-                    variant: 65
+                    id: ItemId(22),
+                    variant: 22
                 })
             ]
         );
-        assert_eq!(ids(&with_skill), vec![210, 65, 149, 249]);
+        assert_eq!(ids(&with_skill), vec![222, 22, 149, 249]);
         assert_eq!(
             without_skill.hands,
             [
                 Some(HeldWeapon {
-                    id: ItemId(210),
-                    variant: 210
+                    id: ItemId(262),
+                    variant: 262
                 }),
                 None
             ]
         );
-        assert_eq!(ids(&without_skill), vec![210, 280, 249]);
+        assert_eq!(ids(&without_skill), vec![262, 280, 249]);
     }
     #[test]
     fn rich_profile_branch_puts_the_shield_in_hand_one() {

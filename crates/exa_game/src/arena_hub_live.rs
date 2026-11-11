@@ -188,7 +188,11 @@ impl Plugin for ArenaHubPlugin {
                     crate::hub_forms::hub_employee_kit_on_load,
                     crate::hub_forms::hub_arsenal_on_load,
                     crate::hub_forms::hub_stash_on_load,
-                    crate::hub_forms::hub_form_input,
+                    (
+                        crate::hub_forms::hub_form_input,
+                        crate::hub_forms::manage_table_script,
+                    )
+                        .chain(),
                     crate::loadout_kit::kit_input,
                     crate::loadout_kit::sync_kit,
                     hub_clicks,
@@ -922,6 +926,9 @@ struct HubShop<'w, 's> {
         &'static mut exa_items::possession::Possessions,
         With<crate::player::PlayerBody>,
     >,
+    /// The company's arsenal and holders a confirmed trade reaches.
+    stores: Option<ResMut<'w, crate::save_live::ArenaStores>>,
+    kinds: Option<Res<'w, crate::arsenal::ShelfKinds>>,
 }
 
 /// The shop line for an item's value: a copy's own model value word in the
@@ -1084,6 +1091,119 @@ impl HubShop<'_, '_> {
         run(&mut world)
     }
 
+    /// A confirmed trade reaches the company, as the original's two arena
+    /// hooks on the trade window do: the pack loses the sold items (the
+    /// player's carried list is rewritten), each sold item leaves the
+    /// arsenal and its holders, and each bought item is made the world's
+    /// own copy and stowed on its shelf ([`crate::arsenal::Arsenal::trade`]).
+    fn arena_trade(
+        &mut self,
+        trade: &crate::hub_windows::ShopTrade,
+        career: &mut crate::hub_windows::ArenaCareer,
+    ) -> Vec<(u32, Option<usize>)> {
+        if career.goods_changed
+            && let Some(mut possessions) = self.players.iter_mut().next()
+        {
+            possessions.carried = crate::hub_windows::ArenaCareer::carried_after_trade(
+                &possessions.carried,
+                &career.goods,
+            );
+            career.goods_changed = false;
+        }
+        let Some(stores) = self.stores.as_deref_mut() else {
+            return Vec::new();
+        };
+        let kinds = self.kinds.as_deref();
+        let objects = &mut *self.objects;
+        // A level's or the world's own record is shelved by the template it
+        // was made from (the shelf facts are the templates').
+        let template = |db: &exa_formats::objdb::ObjectDb, item: u32| {
+            if item & exa_formats::objdb::TAG_MASK != 0 {
+                db.template_of(item)
+            } else {
+                item
+            }
+        };
+        let kinds_of: Vec<(u32, crate::arsenal::ItemKind)> = trade
+            .sold
+            .iter()
+            .map(|&item| {
+                let kind =
+                    kinds.map_or_else(Default::default, |k| k.kind(template(objects.db(), item)));
+                (item, kind)
+            })
+            .collect();
+        let promoted: Vec<(u32, crate::arsenal::ItemKind)> = trade
+            .bought
+            .iter()
+            .map(|&item| {
+                let copy = objects.db_mut().promote(item);
+                let kind =
+                    kinds.map_or_else(Default::default, |k| k.kind(template(objects.db(), copy)));
+                (copy, kind)
+            })
+            .collect();
+        let kind = |item: u32| {
+            kinds_of
+                .iter()
+                .chain(&promoted)
+                .find(|(id, _)| *id == item)
+                .map_or_else(Default::default, |(_, kind)| *kind)
+        };
+        let crate::save_live::ArenaStores {
+            staff,
+            arsenal,
+            stash,
+        } = stores;
+        let mut holders = vec![crate::arsenal::Holder {
+            items: stash,
+            loadouts: &mut career.player.loadouts,
+            own: None,
+        }];
+        for (employee, member) in staff
+            .employees
+            .iter_mut()
+            .zip(career.company.roster.iter_mut())
+        {
+            holders.push(crate::arsenal::Holder {
+                items: &mut employee.kit,
+                loadouts: &mut member.loadouts,
+                own: Some(crate::arsenal::OwnItems {
+                    carried: &mut employee.carried,
+                    hands: &mut employee.hands,
+                    worn: &mut employee.worn,
+                }),
+            });
+        }
+        let promoted_ids: Vec<u32> = promoted.iter().map(|(id, _)| *id).collect();
+        let went = arsenal.trade(&trade.sold, &promoted_ids, kind, |id| id, &mut holders);
+        drop(holders);
+        let shelf_counts: Vec<usize> = arsenal
+            .shelves
+            .iter()
+            .map(|shelf| shelf.iter().map(Vec::len).sum())
+            .collect();
+        let kits: Vec<(&str, &Vec<u32>, Vec<usize>)> = staff
+            .employees
+            .iter()
+            .zip(&career.company.roster)
+            .map(|(employee, member)| {
+                let worn = member
+                    .loadouts
+                    .iter()
+                    .map(|l| l.worn.len() + l.hands.iter().filter(|h| h.id != 0).count())
+                    .collect();
+                (member.name.as_str(), &employee.kit, worn)
+            })
+            .collect();
+        bevy::log::info!(
+            "arena trade: sold {:x?} left the arsenal and its holders; bought (copy, shelf) {went:x?} stowed; shelves hold {shelf_counts:?}; stash {:x?}; staff (name, kit, items held and worn per loadout) {kits:x?}",
+            trade.sold,
+            stash
+        );
+        went
+    }
+
     /// Logs each copy the shelf holds with its own condition: an apparel
     /// body's condition, damage, dirt and variant bytes, a weapon's quality,
     /// damage and dirt, and the value word.
@@ -1160,20 +1280,25 @@ pub struct OpenHubShop {
 /// `--shop-buy ROW` (debug): once the scripted shop opens, its stock row
 /// `ROW` is clicked into the buy basket and the trade confirmed through the
 /// window's own clicks; the window then closes and the bought copy's card
-/// opens at the pointer.
+/// opens at the pointer. `--shop-sell ID` (debug) puts item `ID` in the
+/// manager's pack before the open, and the same step drags it into the
+/// sell basket before the trade.
 #[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShopBuyScript {
     pub row: Option<usize>,
+    pub sell: Option<u32>,
     stage: u8,
     wait: u32,
     bought: u32,
 }
 
 impl ShopBuyScript {
-    /// The purchase of stock row `row`.
-    pub fn of_row(row: usize) -> Self {
+    /// The purchase of stock row `row` (if any) and the sale of item `sell`
+    /// (if any), in one trade.
+    pub fn of_trade(row: Option<usize>, sell: Option<u32>) -> Self {
         Self {
-            row: Some(row),
+            row,
+            sell,
             ..Self::default()
         }
     }
@@ -1195,6 +1320,16 @@ fn scripted_shop(
         return;
     };
     for open in opens.read() {
+        if let Some(id) = buy.sell {
+            if career.goods.is_empty()
+                && let Some(possessions) = shop.players.iter().next()
+            {
+                career.seed_goods(possessions.carried.iter().map(|carried| carried.id));
+            }
+            if !career.goods.contains(&id) {
+                career.goods.push(id);
+            }
+        }
         shop.open(open.merchant, &mut career, &mut windows);
         info!(
             "hub shop: opened by script (merchant {}), {} on the shelf, {} with the merchant",
@@ -1202,7 +1337,7 @@ fn scripted_shop(
             career.company.stock.len(),
             career.merchant_stock.len()
         );
-        if buy.row.is_some() {
+        if buy.row.is_some() || buy.sell.is_some() {
             buy.stage = 1;
             buy.wait = SHOP_SCRIPT_WAIT;
         }
@@ -1216,28 +1351,65 @@ fn scripted_shop(
     }
     match buy.stage {
         1 => {
-            // The stock entry is dragged into the buy basket through the
-            // window's own press and release, then the trade confirmed.
-            let row = buy.row.unwrap_or(0);
-            use crate::shop_panels::ShopPanel;
-            let id = windows
-                .shop
-                .as_ref()
-                .and_then(|shop| shop.panels.stock.entries.get(row))
-                .map_or(0, |entry| entry.id);
-            let pressed = windows.shop_press_entry(ShopPanel::Stock, row).is_some();
-            let to = HubWindows::shop_panel_middle(ShopPanel::Buy);
-            let dropped = windows.shop_release(to, (0, 0), true);
-            let took = matches!(dropped, Some(crate::shop_panels::ShopDrop::Moved { .. }));
+            // The stock entry is dragged into the buy basket and the pack's
+            // sold item into the sell basket through the window's own press
+            // and release, then the trade confirmed.
+            use crate::shop_panels::{ShopDrop, ShopPanel};
+            let mut took = false;
+            let mut id = 0;
+            if let Some(row) = buy.row {
+                id = windows
+                    .shop
+                    .as_ref()
+                    .and_then(|shop| shop.panels.stock.entries.get(row))
+                    .map_or(0, |entry| entry.id);
+                let pressed = windows.shop_press_entry(ShopPanel::Stock, row).is_some();
+                let to = HubWindows::shop_panel_middle(ShopPanel::Buy);
+                let dropped = windows.shop_release(to, (0, 0), true);
+                took |= matches!(dropped, Some(ShopDrop::Moved { .. }));
+                info!(
+                    "shop buy script: stock entry {row} item {id:#x} pressed {pressed}, dropped {dropped:?}"
+                );
+            }
+            if let Some(sold) = buy.sell {
+                let row = windows.shop.as_ref().and_then(|shop| {
+                    shop.panels
+                        .pack
+                        .entries
+                        .iter()
+                        .position(|entry| entry.id == sold)
+                });
+                let pressed =
+                    row.is_some_and(|row| windows.shop_press_entry(ShopPanel::Pack, row).is_some());
+                let dropped = if pressed {
+                    let to = HubWindows::shop_panel_middle(ShopPanel::Sell);
+                    windows.shop_release(to, (0, 0), true)
+                } else {
+                    None
+                };
+                took |= matches!(dropped, Some(ShopDrop::Moved { .. }));
+                info!(
+                    "shop sell script: pack entry {row:?} item {sold:#x} pressed {pressed}, dropped {dropped:?}"
+                );
+            }
             let trade = (10, crate::hub_windows::SHOP_SIZE.1 - 20);
-            let done = took && windows.shop_click(trade, &mut career);
-            info!(
-                "shop buy script: stock entry {row} item {id:#x} pressed {pressed}, dropped {dropped:?}, trade {done}"
-            );
+            let traded = if took {
+                windows.shop_click(trade, &mut career)
+            } else {
+                None
+            };
+            let done = traded.is_some();
+            // The card is the arsenal's copy (a level's item is promoted).
+            let copies = match &traded {
+                Some(traded) => shop.arena_trade(traded, &mut career),
+                None => Vec::new(),
+            };
+            info!("shop script: trade {done} ({traded:x?})");
+            let id = copies.first().map_or(id, |&(copy, _)| copy);
             buy.bought = if done { id } else { 0 };
-            buy.stage = if done { 2 } else { 0 };
+            buy.stage = if done && id != 0 { 2 } else { 0 };
             buy.wait = SHOP_SCRIPT_WAIT;
-            if done {
+            if done && id != 0 {
                 shop.log_copies(&[id]);
             }
         }
@@ -1371,16 +1543,8 @@ fn hub_clicks(
                             }
                         }
                         HubWindowKind::Shop => {
-                            let _ = windows.shop_click(local, &mut career);
-                            if career.goods_changed
-                                && let Some(mut possessions) = shop.players.iter_mut().next()
-                            {
-                                possessions.carried =
-                                    crate::hub_windows::ArenaCareer::carried_after_trade(
-                                        &possessions.carried,
-                                        &career.goods,
-                                    );
-                                career.goods_changed = false;
+                            if let Some(trade) = windows.shop_click(local, &mut career) {
+                                let _ = shop.arena_trade(&trade, &mut career);
                             }
                         }
                         HubWindowKind::Manage | HubWindowKind::None => {}

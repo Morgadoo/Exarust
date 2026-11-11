@@ -430,13 +430,31 @@ impl ShopPanels {
     /// callback lies outside the window and is not read].
     pub fn settle(&mut self) {
         let bought = std::mem::take(&mut self.buy.entries);
-        let sold = std::mem::take(&mut self.sell.entries);
-        self.buy.used = 0;
-        self.sell.used = 0;
         for entry in bought {
             self.pack
                 .add_at_centre(entry.id, entry.icon, entry.flags & !SHOP_ITEM_FLAGS, 0);
         }
+        self.settle_sold();
+    }
+
+    /// The arena's settle: the window's bought hook takes the buy basket's
+    /// items to the company's arsenal, so they leave the window (their icon
+    /// handles are returned for release); the sell basket's join the stock
+    /// as in [`Self::settle`].
+    pub fn settle_bought_away(&mut self) -> Vec<usize> {
+        let bought = std::mem::take(&mut self.buy.entries);
+        self.settle_sold();
+        bought
+            .into_iter()
+            .map(|entry| entry.icon)
+            .filter(|&icon| icon != 0)
+            .collect()
+    }
+
+    fn settle_sold(&mut self) {
+        self.buy.used = 0;
+        self.sell.used = 0;
+        let sold = std::mem::take(&mut self.sell.entries);
         for entry in sold {
             self.stock
                 .add_at_centre(entry.id, entry.icon, entry.flags | SHOP_ITEM_FLAGS, 0);

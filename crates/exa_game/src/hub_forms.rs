@@ -98,6 +98,69 @@ pub struct HubForms {
     /// The result the last message box closed with: 1 for Ok, 0 for Cancel
     /// or Enter and Space, −1 for Escape.
     pub message_result: Option<i32>,
+    /// Manage Company's two tables' pointer state.
+    pub manage_tables: ManageTables,
+}
+
+/// Manage Company's two table views: the roster (table 0) and the report
+/// (table 1).
+pub const ROSTER_TABLE: usize = 0;
+pub const REPORT_TABLE: usize = 1;
+
+/// The pointer state of Manage Company's tables: the roster row a press
+/// picked up for a drag, and the last press for the double press.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ManageTables {
+    /// The roster's table row (0 the manager) a press picked up.
+    pub drag: Option<usize>,
+    /// The last press: its table, its 1-based row and its time (ms).
+    pub last_press: Option<(usize, i32, i64)>,
+}
+
+/// What the pointer did on Manage Company's tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManageTableAction {
+    None,
+    /// A roster row (its table row, 0 the manager) let go over the roster
+    /// with `drop` the 1-based row under the pointer (0 for none).
+    Drop {
+        row: usize,
+        drop: i32,
+    },
+    /// A double press on a roster row (0-based, 0 the manager).
+    Roster(i32),
+    /// A double press on a report line (0-based).
+    Report(usize),
+}
+
+/// The row of one of Manage Company's tables under a screen point: `None`
+/// off the table's client, `Some(0)` on its header or below its `rows`
+/// rows, else the 1-based row. Rows are six units under the six-unit
+/// header, as the tables draw them.
+pub fn manage_table_row(
+    form: &RecordForm,
+    table: usize,
+    rows: usize,
+    at: (i32, i32),
+) -> Option<i32> {
+    let pane = form.child(table)?;
+    let border = exa_ui::match_board::TABLE_BORDER;
+    let client = GuiRect::new(
+        pane.x + border,
+        pane.y + border,
+        pane.w - 2 * border,
+        pane.h - 2 * border,
+    );
+    if !client.contains(at.0, at.1) {
+        return None;
+    }
+    let pitch = exa_ui::table_view::ROW_UNITS * form.unit();
+    let y = at.1 - client.top - pitch;
+    if y < 0 || pitch <= 0 {
+        return Some(0);
+    }
+    let row = y / pitch + 1;
+    Some(if row as usize > rows { 0 } else { row })
 }
 
 impl HubForms {
@@ -527,6 +590,79 @@ impl HubWindows {
     pub fn open_status(&mut self, career: &ArenaCareer) {
         let form = status_form(career, self.task.screen, self.unit_now());
         self.forms.push(FormWindow::Status, form);
+    }
+
+    /// The pointer on Manage Company's tables, when it is the top form. A
+    /// press on a roster row picks it up and a release over the roster
+    /// drops it there (the table's drop runs [`crate::staff::Staff::
+    /// move_employee`]); a second press on the same row within the GUI's
+    /// double-press time activates it: a roster row opens the loadout form
+    /// on that row, a report line runs its action.
+    pub fn manage_table_input(
+        &mut self,
+        at: (i32, i32),
+        pressed: bool,
+        released: bool,
+        now: i64,
+    ) -> ManageTableAction {
+        if self.forms.top().map(|f| f.window) != Some(FormWindow::Manage) {
+            self.forms.manage_tables = ManageTables::default();
+            return ManageTableAction::None;
+        }
+        let (Some(form), Some(refresh)) = (self.forms.get(FormWindow::Manage), &self.manage) else {
+            return ManageTableAction::None;
+        };
+        let roster = manage_table_row(form, ROSTER_TABLE, refresh.roster.len(), at);
+        let report = manage_table_row(form, REPORT_TABLE, refresh.report.len(), at);
+        let state = &mut self.forms.manage_tables;
+        if pressed {
+            let hit = match (roster, report) {
+                (Some(row), _) if row > 0 => Some((ROSTER_TABLE, row)),
+                (_, Some(row)) if row > 0 => Some((REPORT_TABLE, row)),
+                _ => None,
+            };
+            state.drag = None;
+            let Some((table, row)) = hit else {
+                state.last_press = None;
+                return ManageTableAction::None;
+            };
+            let double = state.last_press.is_some_and(|(t, r, when)| {
+                t == table && r == row && now - when <= i64::from(exa_ui::gui_core::DOUBLE_CLICK)
+            });
+            if double {
+                state.last_press = None;
+                return if table == ROSTER_TABLE {
+                    ManageTableAction::Roster(row - 1)
+                } else {
+                    ManageTableAction::Report(row as usize - 1)
+                };
+            }
+            state.last_press = Some((table, row, now));
+            if table == ROSTER_TABLE {
+                state.drag = Some(row as usize - 1);
+            }
+        } else if released && let Some(row) = state.drag.take() {
+            // A release on the row it was picked up from is a click.
+            if let Some(drop) = roster
+                && drop != row as i32 + 1
+            {
+                return ManageTableAction::Drop { row, drop };
+            }
+        }
+        ManageTableAction::None
+    }
+
+    /// Opens the loadout form on a page at a row, as the arena's open with
+    /// a row does (the row clamped to the page).
+    pub fn open_loadout_at(&mut self, page: u32, row: i32, career: &ArenaCareer) {
+        self.open_loadout(page, career);
+        if let Some(mut arsenal) = self.forms.arsenal {
+            arsenal.select(row);
+            if let Some(form) = self.forms.get_mut(FormWindow::Loadout) {
+                refresh_loadout(form, &mut arsenal, career);
+            }
+            self.forms.arsenal = Some(arsenal);
+        }
     }
 
     /// Opens the loadout form on a page (the roster or the hire list) at
@@ -1138,6 +1274,121 @@ pub(crate) fn paint_form_with(
     (frame.over().collect(), committed)
 }
 
+/// `--manage-table <steps>` (debug): once Manage Company is the top form,
+/// its tables take these pointer steps through
+/// [`HubWindows::manage_table_input`], one every few frames, at the rows'
+/// centres: `drag:FROM:TO` presses roster row FROM and lets go on row TO
+/// (1-based table rows, 1 the manager), `roster:ROW` and `report:LINE`
+/// double press a roster row or a report line (1-based). Steps are comma
+/// separated.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ManageTableScript {
+    pub steps: Vec<ManageTableStep>,
+    pub wait: u32,
+}
+
+/// One `--manage-table` step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManageTableStep {
+    Drag(i32, i32),
+    Double(usize, i32),
+}
+
+impl ManageTableScript {
+    /// The steps of a `--manage-table` value, or `None` when one does not
+    /// read.
+    pub fn parse(value: &str) -> Option<Self> {
+        let steps = value
+            .split(',')
+            .map(|step| {
+                let parts: Vec<&str> = step.trim().split(':').collect();
+                match parts.as_slice() {
+                    ["drag", from, to] => {
+                        Some(ManageTableStep::Drag(from.parse().ok()?, to.parse().ok()?))
+                    }
+                    ["roster", row] => {
+                        Some(ManageTableStep::Double(ROSTER_TABLE, row.parse().ok()?))
+                    }
+                    ["report", line] => {
+                        Some(ManageTableStep::Double(REPORT_TABLE, line.parse().ok()?))
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self { steps, wait: 30 })
+    }
+}
+
+/// The screen centre of a 1-based row of one of Manage Company's tables.
+pub fn manage_row_centre(form: &RecordForm, table: usize, row: i32) -> Option<(i32, i32)> {
+    let pane = form.child(table)?;
+    let border = exa_ui::match_board::TABLE_BORDER;
+    let pitch = exa_ui::table_view::ROW_UNITS * form.unit();
+    Some((
+        pane.x + pane.w / 2,
+        pane.y + border + pitch * row + pitch / 2,
+    ))
+}
+
+/// Runs `--manage-table`'s steps through the tables' own input.
+pub fn manage_table_script(
+    script: Option<ResMut<ManageTableScript>>,
+    time: Res<Time<Real>>,
+    mut windows: ResMut<HubWindows>,
+    mut career: ResMut<ArenaCareer>,
+    mut stores: Option<ResMut<crate::save_live::ArenaStores>>,
+) {
+    let Some(mut script) = script else {
+        return;
+    };
+    if script.steps.is_empty() || windows.forms.top().map(|f| f.window) != Some(FormWindow::Manage)
+    {
+        return;
+    }
+    if script.wait > 0 {
+        script.wait -= 1;
+        return;
+    }
+    let step = script.steps.remove(0);
+    script.wait = 30;
+    // The debug joins (`--hub-employee-kit`) may come after the form was
+    // filled: the step reads the career as it stands.
+    windows.refresh_manage(&career);
+    let Some(form) = windows.forms.get(FormWindow::Manage) else {
+        return;
+    };
+    let now = time.elapsed().as_millis() as i64;
+    let presses: Vec<((i32, i32), bool, bool, i64)> = match step {
+        ManageTableStep::Drag(from, to) => {
+            let (Some(a), Some(b)) = (
+                manage_row_centre(form, ROSTER_TABLE, from),
+                manage_row_centre(form, ROSTER_TABLE, to),
+            ) else {
+                return;
+            };
+            vec![(a, true, false, now), (b, false, true, now)]
+        }
+        ManageTableStep::Double(table, row) => {
+            let Some(at) = manage_row_centre(form, table, row) else {
+                return;
+            };
+            vec![
+                (at, true, false, now),
+                (at, false, true, now),
+                (at, true, false, now + 100),
+            ]
+        }
+    };
+    for (at, pressed, released, when) in presses {
+        let action = windows.manage_table_input(at, pressed, released, when);
+        info!(
+            "--manage-table: {step:?} at {at:?} (press {pressed}, release {released}): {action:?}"
+        );
+        manage_table_action(action, &mut windows, &mut career, stores.as_deref_mut());
+    }
+}
+
 /// `--open-hub-window <name>`: once the hub is entered and the manager
 /// stands, open a window for a scripted check.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -1281,6 +1532,9 @@ pub fn open_hub_window_on_load(
 pub struct HubEmployeeKit {
     pub name: String,
     pub kit: Vec<u32>,
+    /// Further combatants (the flag given again), joining after the first
+    /// in order.
+    pub more: Vec<(String, Vec<u32>)>,
     pub done: bool,
 }
 
@@ -1299,14 +1553,29 @@ pub fn hub_employee_kit_on_load(
         return;
     }
     ask.done = true;
-    let name = crate::hub_windows::name16(&ask.name);
+    let mut joining = vec![(ask.name.clone(), ask.kit.clone())];
+    joining.extend(ask.more.iter().cloned());
+    for (name, kit) in &joining {
+        join_with_kit(name, kit, &mut career, &mut stores, &kinds);
+    }
+}
+
+/// One `--hub-employee-kit` combatant joins.
+fn join_with_kit(
+    name_text: &str,
+    kit: &[u32],
+    career: &mut ArenaCareer,
+    stores: &mut crate::save_live::ArenaStores,
+    kinds: &crate::arsenal::ShelfKinds,
+) {
+    let name = crate::hub_windows::name16(name_text);
     let hire = crate::staff::Hire {
         role: Some(Profession::Combatant),
         name,
         carried: Vec::new(),
         loadouts: vec![crate::hirelings::Loadout {
             hands: [0, 0],
-            items: ask.kit.clone(),
+            items: kit.to_vec(),
         }],
     };
     let mut purse = 0;
@@ -1333,7 +1602,7 @@ pub fn hub_employee_kit_on_load(
     // in the two hands (in order), the rest worn, and the six loadouts a
     // hire builds from it (a level-0 fighter trims none).
     let mut outfit = crate::hirelings::Loadout::default();
-    for &item in &ask.kit {
+    for &item in kit {
         let hand = matches!(
             crate::arsenal::shelf_of(kinds.kind(item)),
             Some(crate::arsenal::WEAPONS | crate::arsenal::SHIELDS)
@@ -1344,7 +1613,7 @@ pub fn hub_employee_kit_on_load(
         }
     }
     let mut member = crate::career::Member {
-        name: ask.name.clone(),
+        name: name_text.to_string(),
         profession: Profession::Combatant,
         ..career.player.clone()
     };
@@ -1370,14 +1639,13 @@ pub fn hub_employee_kit_on_load(
     }
     member.outfit = outfit;
     career.company.roster.push(member);
-    let stowed: Vec<(u32, Option<usize>)> = ask
-        .kit
+    let stowed: Vec<(u32, Option<usize>)> = kit
         .iter()
         .map(|&item| (item, crate::arsenal::shelf_of(kinds.kind(item))))
         .collect();
     info!(
         "--hub-employee-kit: {} joins as employee {} with kit (item, shelf) {:?}",
-        ask.name,
+        name_text,
         stores.staff.employees.len(),
         stowed
     );
@@ -1467,7 +1735,7 @@ pub fn hub_form_input(
     mut windows: ResMut<HubWindows>,
     mut career: ResMut<ArenaCareer>,
     mut hub: ResMut<crate::arena_hub_live::ArenaHub>,
-    (stores, kinds): (
+    (mut stores, kinds): (
         Option<ResMut<crate::save_live::ArenaStores>>,
         Option<Res<crate::arsenal::ShelfKinds>>,
     ),
@@ -1501,6 +1769,13 @@ pub fn hub_form_input(
             if pressed {
                 windows.forms.options.focus = None;
             }
+            let now = windows.forms.options.clock;
+            let table = windows.manage_table_input(at, pressed, released, now);
+            if table != ManageTableAction::None {
+                manage_table_action(table, &mut windows, &mut career, stores.as_deref_mut());
+                windows.took_pointer = true;
+                return;
+            }
             let answered = windows.forms.input(at, pressed, released);
             for (form, record, finished) in answered {
                 match windows.answer(&mut career, form, record, finished) {
@@ -1517,6 +1792,86 @@ pub fn hub_form_input(
     }
     if let (Some(mut stores), Some(kinds)) = (stores, kinds) {
         apply_staff_changes(&mut windows.forms, &mut stores, &kinds);
+    }
+}
+
+/// Runs what the pointer did on Manage Company's tables. A drop moves the
+/// employee in the staff list and in the career's roster alike (the ids in
+/// the log, the tournament entries and the order list remapped), then the
+/// form is refreshed. A roster row's double press opens the loadout form
+/// on it; a report line's runs [`crate::manage::report_click`]: the
+/// tournament line closes Manage Company and opens the board on its
+/// tournament tab, a hire-list line the hire page on the first candidate of
+/// its profession, a training or rank line the roster page on its first
+/// row.
+pub fn manage_table_action(
+    action: ManageTableAction,
+    windows: &mut HubWindows,
+    career: &mut ArenaCareer,
+    stores: Option<&mut crate::save_live::ArenaStores>,
+) {
+    match action {
+        ManageTableAction::None => {}
+        ManageTableAction::Drop { row, drop } => {
+            let Some(stores) = stores else {
+                return;
+            };
+            let staff = &mut stores.staff;
+            let target = staff.drop_target(drop);
+            let moved = staff.move_employee(row, drop, &mut career.log, &mut career.entries);
+            if moved && row <= career.company.roster.len() && target <= career.company.roster.len()
+            {
+                let member = career.company.roster.remove(row - 1);
+                career.company.roster.insert(target - 1, member);
+            }
+            info!(
+                "hub manage: roster row {row} dropped on row {drop}: moved {moved} to row {target}; roster {:?}",
+                career
+                    .company
+                    .roster
+                    .iter()
+                    .map(|m| m.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+            windows.refresh_manage(career);
+        }
+        ManageTableAction::Roster(row) => {
+            info!("hub manage: roster row {row} double pressed: the loadout form opens on it");
+            windows.open_loadout_at(PAGE_ROSTER, row, career);
+        }
+        ManageTableAction::Report(line) => {
+            let Some(code) = windows
+                .manage
+                .as_ref()
+                .and_then(|refresh| refresh.report.get(line))
+                .map(|line| line.code)
+            else {
+                return;
+            };
+            let listed: Vec<Profession> = career
+                .hire_pool
+                .iter()
+                .map(|member| member.profession)
+                .collect();
+            let report = crate::manage::report_click(code, &listed);
+            info!("hub manage: report line {line} (code {code:#x}) double pressed: {report:?}");
+            match report {
+                crate::manage::ReportAction::TournamentBoard => {
+                    windows.close_window();
+                    windows.open_board(career);
+                    if let Some(board) = windows.board.as_mut() {
+                        board.switch_tab(exa_ui::match_board::BoardTab::Tournament);
+                    }
+                }
+                crate::manage::ReportAction::HireList(candidate) => {
+                    windows.open_loadout_at(PAGE_HIRE, candidate as i32, career);
+                }
+                crate::manage::ReportAction::Roster { .. } => {
+                    windows.open_loadout_at(PAGE_ROSTER, 0, career);
+                }
+                crate::manage::ReportAction::None => {}
+            }
+        }
     }
 }
 
@@ -1702,6 +2057,85 @@ mod tests {
         assert_ne!(
             loadout_form.controls()[loadout::DISMISS].state & DISABLED,
             0
+        );
+    }
+
+    #[test]
+    fn the_roster_drags_and_its_rows_and_report_lines_double_press() {
+        let (mut windows, mut career) = opened();
+        for name in ["Cato", "Dara"] {
+            career.company.roster.push(crate::career::Member {
+                name: name.to_string(),
+                ..career.player.clone()
+            });
+        }
+        windows.refresh_manage(&career);
+        let mut stores = crate::save_live::ArenaStores::default();
+        for name in [b"Brom", b"Cato", b"Dara"] {
+            let mut employee = crate::staff::Employee {
+                class: crate::staff::COMBATANT,
+                name: [0; 16],
+                kit: Vec::new(),
+                carried: Vec::new(),
+                hands: [0, 0],
+                worn: Vec::new(),
+                world: None,
+            };
+            employee.name[..4].copy_from_slice(name);
+            stores.staff.employees.push(employee);
+        }
+        let (brom, dara, manager) = {
+            let form = windows.forms.get(FormWindow::Manage).unwrap();
+            let centre = |row| manage_row_centre(form, ROSTER_TABLE, row).unwrap();
+            let (brom, dara) = (centre(2), centre(4));
+            let header = (brom.0, form.child(ROSTER_TABLE).unwrap().y + 3);
+            assert_eq!(manage_table_row(form, ROSTER_TABLE, 4, header), Some(0));
+            assert_eq!(manage_table_row(form, ROSTER_TABLE, 4, dara), Some(4));
+            assert_eq!(manage_table_row(form, ROSTER_TABLE, 3, dara), Some(0));
+            (brom, dara, centre(1))
+        };
+        // Brom (table row 1) let go on Dara's row (4) goes last.
+        assert_eq!(
+            windows.manage_table_input(brom, true, false, 0),
+            ManageTableAction::None
+        );
+        let action = windows.manage_table_input(dara, false, true, 10);
+        assert_eq!(action, ManageTableAction::Drop { row: 1, drop: 4 });
+        manage_table_action(action, &mut windows, &mut career, Some(&mut stores));
+        let names: Vec<&str> = career
+            .company
+            .roster
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(names, ["Cato", "Dara", "Brom"]);
+        assert_eq!(&stores.staff.employees[2].name[..4], b"Brom");
+        // The manager's row does not move.
+        windows.manage_table_input(manager, true, false, 1000);
+        let action = windows.manage_table_input(dara, false, true, 1010);
+        manage_table_action(action, &mut windows, &mut career, Some(&mut stores));
+        assert_eq!(career.company.roster[0].name, "Cato");
+        // A double press on a roster row opens the loadout form on it.
+        // Cato is on table row 2 now.
+        let cato = brom;
+        windows.manage_table_input(cato, true, false, 5000);
+        windows.manage_table_input(cato, false, true, 5010);
+        let action = windows.manage_table_input(cato, true, false, 5100);
+        assert_eq!(action, ManageTableAction::Roster(1));
+        manage_table_action(action, &mut windows, &mut career, Some(&mut stores));
+        assert_eq!(windows.forms.top().unwrap().window, FormWindow::Loadout);
+        assert_eq!(windows.forms.arsenal.unwrap().selection, 1);
+        // Too slow for a double press.
+        windows
+            .forms
+            .forms
+            .retain(|f| f.window == FormWindow::Manage);
+        windows.manage_table_input(cato, true, false, 9000);
+        windows.manage_table_input(cato, false, true, 9010);
+        let late = 9000 + i64::from(exa_ui::gui_core::DOUBLE_CLICK) + 1;
+        assert_eq!(
+            windows.manage_table_input(cato, true, false, late),
+            ManageTableAction::None
         );
     }
 

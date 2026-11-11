@@ -178,6 +178,14 @@ pub struct Item {
     pub has_weapon: bool,
     /// The record has a shield section (`0x8000`), whatever its contents.
     pub has_shield: bool,
+    /// The body's twenty coverage words at `0x150` as stored (one per bone,
+    /// not clamped), 0 without a body or past a short one. The arena's
+    /// apparel table pass scales its bonus floats by them.
+    pub coverage_units: [u32; OCCUPANCY_BONES],
+    /// The weapon section's rank word at `0x42`, 0 without one.
+    pub weapon_word: u16,
+    /// The shield section's rank word at `0x08`, 0 without one.
+    pub shield_word: u16,
 }
 
 /// An object's volume section: a box the level places, and for a level
@@ -926,6 +934,9 @@ impl Item {
             has_body: false,
             has_weapon: false,
             has_shield: false,
+            coverage_units: [0; 20],
+            weapon_word: 0,
+            shield_word: 0,
         };
         let mut body_rank = None;
         let mut weapon_rank = None;
@@ -964,6 +975,11 @@ impl Item {
                         .get(0x1AB..0x1AD)
                         .map(|w| u16::from_le_bytes(w.try_into().expect("2 bytes")));
                     item.armour_type = body.get(0x1A8).copied().unwrap_or(0);
+                    item.coverage_units = std::array::from_fn(|b| {
+                        let at = COVERAGE_OFFSET + 4 * b;
+                        body.get(at..at + 4)
+                            .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("4 bytes")))
+                    });
                     let table = OCCUPANCY_OFFSET..OCCUPANCY_OFFSET + OCCUPANCY_BONES * 8;
                     if let Some(t) = body.get(table) {
                         item.occupancy = std::array::from_fn(|b| {
@@ -1014,6 +1030,8 @@ impl Item {
         }
         item.rank_word = body_rank.or(weapon_rank).or(shield_rank).unwrap_or(0);
         item.body_rank = body_rank.unwrap_or(0);
+        item.weapon_word = weapon_rank.unwrap_or(0);
+        item.shield_word = shield_rank.unwrap_or(0);
         // The weapon section decides when the record has one, even one too
         // short for its word; only then is the shield's word read.
         let hand_rank = if item.has_weapon {

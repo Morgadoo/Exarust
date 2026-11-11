@@ -1568,6 +1568,9 @@ mod tests {
             has_body: false,
             has_weapon: true,
             has_shield: false,
+            coverage_units: [0; 20],
+            weapon_word: 0,
+            shield_word: 0,
         }
     }
 

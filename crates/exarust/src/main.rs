@@ -99,10 +99,15 @@
 //!                                     shop, and arsenal, the arsenal view Manage Company's Arsenal opens)
 //!          --shop-buy ROW             with --open-hub-window shop: click stock row ROW into the buy basket, confirm
 //!                                     the trade, then open the bought copy's card at the pointer (debug)
+//!          --manage-table STEPS       with --open-hub-window manage: Manage Company's tables take these pointer
+//!                                     steps: drag:FROM:TO (roster rows, 1 the manager), roster:ROW or report:LINE
+//!                                     (a double press), comma separated (debug)
+//!          --shop-sell ID             with --open-hub-window shop: put item ID (hex with 0x) in the manager's pack,
+//!                                     click it into the sell basket and confirm the trade (debug)
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
 //!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
 //!                                     stand-in for a loaded career's employee); its weapons and shields are held,
-//!                                     the rest worn, in its outfit and its six loadouts
+//!                                     the rest worn, in its outfit and its six loadouts (given again, more join)
 //!          --hub-enter slot,...       play arenahub: once the manager stands, the board's match begins with this
 //!                                     lineup of company pool slots (0 the manager, 1 the first employee); without
 //!                                     0 the match is spectated (debug)
@@ -666,9 +671,13 @@ pub struct Options {
     pub open_hub_window: Option<String>,
     /// `--shop-buy ROW`: the scripted shop's purchase.
     pub shop_buy: Option<usize>,
+    /// `--shop-sell ID`: the scripted shop's sale.
+    pub shop_sell: Option<u32>,
+    /// `--manage-table STEPS`: Manage Company's scripted table steps.
+    pub manage_table: Option<exa_game::hub_forms::ManageTableScript>,
     /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
     /// the company once the hub is entered (a debug tool).
-    pub hub_employee_kit: Option<(String, Vec<u32>)>,
+    pub hub_employee_kit: Vec<(String, Vec<u32>)>,
     /// `--hub-enter slot,...`: the hub begins the board's match with this
     /// lineup.
     pub hub_enter: Vec<usize>,
@@ -1315,6 +1324,33 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--manage-table" => {
+                let value = args.next().unwrap_or_default();
+                match exa_game::hub_forms::ManageTableScript::parse(&value) {
+                    Some(script) => options.manage_table = Some(script),
+                    None => {
+                        eprintln!(
+                            "--manage-table: cannot read {value:?} (drag:FROM:TO, roster:ROW or report:LINE, comma separated)"
+                        );
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--shop-sell" => {
+                let value = args.next().unwrap_or_default();
+                let value = value.trim();
+                let parsed = match value.strip_prefix("0x") {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => value.parse().ok(),
+                };
+                match parsed {
+                    Some(id) => options.shop_sell = Some(id),
+                    None => {
+                        eprintln!("--shop-sell: cannot read {value:?} (an item id)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--open-hub-window" => {
                 let name = args.next().unwrap_or_default();
                 if !exa_game::hub_forms::hub_window_name_ok(&name) {
@@ -1472,7 +1508,7 @@ fn main() -> AppExit {
             "--hub-employee-kit" => {
                 let value = args.next().unwrap_or_default();
                 match parse_employee_kit(&value) {
-                    Some(kit) => options.hub_employee_kit = Some(kit),
+                    Some(kit) => options.hub_employee_kit.push(kit),
                     None => {
                         eprintln!("--hub-employee-kit: cannot read {value:?} (NAME:id,id,...)");
                         return AppExit::from_code(2);
