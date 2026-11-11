@@ -67,18 +67,12 @@ fn span2(points: &[Vec3]) -> f32 {
 }
 
 /// The world pass's brain reset ([`crate::flow::Step::ReviveBrains`]),
-/// taken out of the flow's steps before they are applied. See the module.
-#[allow(clippy::too_many_arguments)]
-pub fn reset_brains(
-    mut queued: ResMut<crate::flow::FlowSteps>,
-    mut brains: Brains,
-    mut roots: Roots,
-    mut bodies: Query<(Entity, &mut Ragdoll)>,
-    level: Option<Res<LevelRooms>>,
-    mut nav: Option<ResMut<exa_world::nav::NavGrid>>,
-    mut prints: Option<ResMut<exa_world::nav::NavFootprints>>,
-    mut fixed: ResMut<FixedCommands>,
-) {
+/// taken out of the flow's steps before they are applied: the reset itself
+/// ([`revive_brains`]) runs at the start of the next fixed step, in the
+/// world that runs the step, where the navigation grid and the footprints
+/// live (behind the simulation bridge the frame's world holds neither, so a
+/// reset run there could not plan). See the module.
+pub fn reset_brains(mut queued: ResMut<crate::flow::FlowSteps>, mut fixed: ResMut<FixedCommands>) {
     let Some(at) = queued
         .steps
         .iter()
@@ -87,6 +81,20 @@ pub fn reset_brains(
         return;
     };
     queued.steps.remove(at);
+    fixed.run(revive_brains, ());
+}
+
+/// The reset over every AI character (see the module), run in the world
+/// that runs the fixed step.
+pub fn revive_brains(
+    In(()): In<()>,
+    mut brains: Brains,
+    mut roots: Roots,
+    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    level: Option<Res<LevelRooms>>,
+    mut nav: Option<ResMut<exa_world::nav::NavGrid>>,
+    mut prints: Option<ResMut<exa_world::nav::NavFootprints>>,
+) {
     let (mut reset, mut roamed, mut moved, mut refused) = (0, 0, 0, 0);
     for (entity, gt, parent, mut npc, mut fighter, mut combatant, condition, flags, duellist) in
         &mut brains
@@ -142,10 +150,23 @@ pub fn reset_brains(
         let mut wander = |from: Vec3| {
             let (room, avoid, exits) = exits(from);
             let mut b = brain.borrow_mut();
-            let picked = exa_ai::idle::pick_wander(room, &exits, avoid, &mut b.roll)?;
+            let picked = exa_ai::idle::pick_wander(room, &exits, avoid, &mut b.roll);
+            debug!(
+                "revive pass: {entity:?} plans from {from} in room {room} ({} exits, avoiding {avoid}): {:?}",
+                exits.len(),
+                picked.map(|p| p.goal)
+            );
+            let picked = picked?;
             b.walk.toward = picked.node;
             drop(b);
-            plan(route(from, picked.goal))
+            let points = route(from, picked.goal);
+            debug!(
+                "revive pass: {entity:?} wander route of {} points (grid {}), span² {}",
+                points.len(),
+                grid.is_some(),
+                span2(&points)
+            );
+            plan(points)
         };
         let mut home = |from: Vec3| {
             let (room, toward) = {
@@ -204,14 +225,12 @@ pub fn reset_brains(
                 root.translation += shift;
             }
             if let Ok((_, mut body)) = bodies.get_mut(entity) {
-                fixed.write(entity, &mut body, move |body| {
-                    let worlds: Vec<Affine3A> = body
-                        .parts
-                        .iter()
-                        .map(|p| Affine3A::from_translation(shift) * p.transform())
-                        .collect();
-                    body.place_at(&worlds);
-                });
+                let worlds: Vec<Affine3A> = body
+                    .parts
+                    .iter()
+                    .map(|p| Affine3A::from_translation(shift) * p.transform())
+                    .collect();
+                body.place_at(&worlds);
             }
         }
         // The footprint is stamped again where the body now stands, so the
@@ -287,6 +306,8 @@ mod tests {
         let awake = spawn(&mut app, Condition::default(), true);
         let falling = spawn(&mut app, Condition::COLLAPSING, true);
         app.update();
+        // The reset runs at the start of the next fixed step.
+        exa_physics::sim_app::run_fixed_commands(app.world_mut());
         assert!(
             app.world()
                 .resource::<crate::flow::FlowSteps>()
@@ -363,6 +384,7 @@ mod tests {
         let before = [cost(&app, feet), cost(&app, feet + Vec3::X)];
         assert!(before[0].1 > 0.0, "the footprint is on the penalty bytes");
         app.update();
+        exa_physics::sim_app::run_fixed_commands(app.world_mut());
         let prints = app.world().resource::<NavFootprints>();
         assert_eq!(prints.of(roamer), Some(feet));
         assert_eq!(prints.of(waiter), Some(feet + Vec3::X));
