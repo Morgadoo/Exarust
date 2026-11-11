@@ -82,7 +82,9 @@ framed window's size and position restored, and minimises a full-screen
 window that loses the focus (not in unattended runs). `src/message_box.rs`
 shows the original's modal message box through `zenity` or `kdialog`: the
 level-6 "minimum requirements" box when Bevy's renderer finds no usable
-graphics adapter. A background window runs on
+graphics adapter, and every level-6 or level-7 message of the engine's
+message hook (`exa_game::engine_log`), whose log file the binary names
+at start-up: `<project>.log` in the user folder, unless `--no-settings`. A background window runs on
 winit's low-power 32 ms update. A launch full screen is a borderless window
 over the primary display; the settings' `ScreenWidth`/`ScreenHeight` can
 ask for an exclusive display mode instead (`exa_game::hw_config`). The

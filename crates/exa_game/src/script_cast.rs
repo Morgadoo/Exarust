@@ -346,7 +346,7 @@ pub fn sync_contacts(
 fn report_script_problems(mut effects: MessageReader<exa_script::ScriptEffect>) {
     for effect in effects.read() {
         if let exa_script::dialogue::Effect::Report(title, text) = &effect.0 {
-            warn!("{}", crate::frame::overlay_text(title, text));
+            crate::engine_log::log(4, title, text);
         }
     }
 }

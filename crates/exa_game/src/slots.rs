@@ -1285,8 +1285,12 @@ impl SlotList {
 /// Logs a package file the writer cannot open or create, as the original
 /// does (`frame::package_create_failure`).
 fn report_create_failure(error: &io::Error) {
-    for line in crate::frame::package_create_failure(error) {
-        bevy::log::warn!("{line}");
+    let (title, text) = crate::frame::PACKAGE_CREATE_FAILED;
+    crate::engine_log::log(4, title, text);
+    let code = error.raw_os_error().unwrap_or(0);
+    let system = crate::frame::system_error_text(error);
+    if let Some((level, system)) = crate::frame::os_error_report(code, true, &system) {
+        crate::engine_log::log(level, crate::frame::OS_ERROR_TITLE, &system);
     }
 }
 
