@@ -410,6 +410,14 @@ impl Duellist {
         self.in_combat
     }
 
+    /// Its combat target: its foe while it is in the combat state, unless
+    /// its tick took a barricade or a blast instead (no character foe) or
+    /// dropped the foe, as the original clears the character's target when
+    /// it leaves combat.
+    pub fn combat_target(&self) -> Option<Entity> {
+        (self.in_combat && self.focus.is_none() && !self.dropped).then_some(self.target)
+    }
+
     /// It walks a chase route: the last combat tick ended at the chase and
     /// a route the planner accepted is left to walk (the route-following
     /// flag the AI tick's footprint gate reads) [guess: the original's flag

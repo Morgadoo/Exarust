@@ -472,3 +472,65 @@ fn the_counter_is_asked_only_where_the_hit_would_interrupt() {
     assert!(!interrupts(1, false, true, 0.9));
     assert!(!interrupts(1, true, false, 0.9));
 }
+
+/// A fist's hand takes the strike-chain bit while its slot's window is open
+/// and loses it when the window shuts or the fist leaves the world; only
+/// that hand part's bit changes.
+#[test]
+fn a_fists_hand_strikes_while_its_window_is_open() {
+    let mut app = App::new();
+    app.add_systems(Update, sync_fist_striking);
+    let hand = app.world_mut().spawn_empty().id();
+    let other = app.world_mut().spawn_empty().id();
+    let setup = |entity, bone, parent| PartSetup {
+        bone,
+        entity,
+        parent,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.05),
+        spheres: None,
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    };
+    let body = Ragdoll::new(&[setup(other, 15, None), setup(hand, 17, Some(0))]);
+    let wielder = app
+        .world_mut()
+        .spawn((
+            body,
+            SwingState::default(),
+            Attacking::new(AttackMotion::Main(0), 0x80),
+        ))
+        .id();
+    let record = exa_formats::weapon_record::WeaponRecord::build(
+        &exa_formats::weapon_record::Section::FISTS,
+        false,
+        exa_formats::weapon_record::Lengths::hand(0.0, 10.0),
+        &exa_formats::weapon_record::Holder::AVERAGE,
+    );
+    let fist = app
+        .world_mut()
+        .spawn((ChildOf(hand), Blade::new(wielder, 0.1, record)))
+        .id();
+    let chain = |app: &App| {
+        let body = app.world().get::<Ragdoll>(wielder).unwrap();
+        [0, 1].map(|i| body.parts[i].state.has(PartState::STRIKE_CHAIN))
+    };
+    app.update();
+    assert_eq!(chain(&app), [false, false]);
+    app.world_mut().get_mut::<SwingState>(wielder).unwrap().open = [true, false];
+    app.update();
+    assert_eq!(chain(&app), [false, true]);
+    app.world_mut().get_mut::<SwingState>(wielder).unwrap().open = [false, false];
+    app.update();
+    assert_eq!(chain(&app), [false, false]);
+    // Open again, then the hands are dressed again: the fist goes.
+    app.world_mut().get_mut::<SwingState>(wielder).unwrap().open = [true, false];
+    app.update();
+    assert_eq!(chain(&app), [false, true]);
+    app.world_mut().despawn(fist);
+    app.update();
+    assert_eq!(chain(&app), [false, false]);
+}
