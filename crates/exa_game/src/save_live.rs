@@ -693,7 +693,10 @@ pub fn record_with_health(
 /// and the spawn reads it back ([`exa_ai::roles::Roles::of_record`]).
 /// Only a version 7 record keeps its list as held; an older one is left
 /// alone (its roles are rebuilt from the list at every spawn).
-pub fn record_with_roles(mut record: CharacterRecord, roles: &exa_ai::roles::Roles) -> CharacterRecord {
+pub fn record_with_roles(
+    mut record: CharacterRecord,
+    roles: &exa_ai::roles::Roles,
+) -> CharacterRecord {
     if record.version >= exa_formats::characters::RECORD_VERSION {
         record.roles = roles
             .0
