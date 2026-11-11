@@ -64,7 +64,9 @@ engages, and whom: its combat entry makes the character it picked the
 duellist's foe (the player or anyone else; `Duellist::combat_target`
 gives it as the character's combat target while the duellist is in combat
 and has a character foe, which a brainless duellist's body keeps as its
-`exa_combat::CombatTarget`); nothing else gates the entry
+`exa_combat::CombatTarget`; the duellist tick re-reads that target just
+before its attack starters and aims again when it changed in the tick, as
+the original's starters read it as they run); nothing else gates the entry
 (the AI timers a match's spawn sets delay only the idle look). The player's id is the original's new-character id,
 `brain::PLAYER_ID` = `0x4000_0001`: a story start empties both character
 databases and adds the new character to the world one under its first free

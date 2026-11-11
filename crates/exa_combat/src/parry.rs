@@ -1614,6 +1614,8 @@ pub fn chooser_clip(
 /// with no target component takes the nearest other fighter in combat
 /// [Exarust's]. Its parry is the chooser's ([`chooser_clip`]) against the
 /// motion the foe's chain carries on, none while the foe plays no attack.
+/// An AI that picks another target in its tick aims again there, as its
+/// own starters run ([`aim_at_new_target`]).
 #[allow(clippy::type_complexity)]
 pub fn aim_foe_parries(
     mut attackers: Query<
@@ -1626,51 +1628,123 @@ pub fn aim_foe_parries(
         ),
         With<Fighter>,
     >,
-    foes: Query<
-        (
-            Entity,
-            &Condition,
-            &GlobalTransform,
-            Option<&Ragdoll>,
-            Option<&Attacking>,
-            &SwingState,
-        ),
-        With<Fighter>,
-    >,
+    foes: Query<FoeView, With<Fighter>>,
 ) {
-    let fighting: Vec<_> = foes
-        .iter()
-        .filter(|(_, condition, ..)| **condition == Condition::ATTACKING)
-        .map(|(e, _, gt, body, attacking, swing)| {
-            let chained = swing.has(crate::swing::flags::CONTINUATION);
-            let motion = attacking.map(|a| (a.chooser_motion(chained), a.motion.index()));
-            (e, stance::chest_point(gt, body), forward(gt), motion)
-        })
-        .collect();
+    let fighting = fighting_foes(&foes);
     for (entity, mut attacker, gt, body, target) in &mut attackers {
         let chest = stance::chest_point(gt, body);
-        let foe = match target {
-            Some(&crate::CombatTarget(target)) => target
-                .filter(|&t| t != entity)
-                .and_then(|t| fighting.iter().find(|(e, ..)| *e == t)),
-            None => fighting
-                .iter()
-                .filter(|(e, ..)| *e != entity)
-                .min_by(|a, b| {
-                    let da = (a.1 - chest).length_squared();
-                    let db = (b.1 - chest).length_squared();
-                    da.total_cmp(&db).then(a.0.cmp(&b.0))
-                }),
-        };
-        let aim = foe.and_then(|&(_, foe_chest, foe_forward, motion)| {
-            let (chooser, foe_motion) = motion?;
-            let clip = chooser_clip(chooser?, chest, foe_chest, foe_forward)?;
-            Some(crate::attack::FoeParry { clip, foe_motion })
-        });
+        let aim = foe_parry_of(entity, chest, target.map(|t| t.0), &fighting);
         if attacker.foe_parry != aim {
             attacker.foe_parry = aim;
         }
     }
+}
+
+/// What [`aim_foe_parries`] reads of each fighter as a foe.
+pub type FoeView = (
+    Entity,
+    &'static Condition,
+    &'static GlobalTransform,
+    Option<&'static Ragdoll>,
+    Option<&'static Attacking>,
+    &'static SwingState,
+);
+
+/// A fighter in combat (condition 2), as the parry aim reads it: its
+/// chest, its forward, and the chooser's motion with the motion it plays.
+pub struct Fighting {
+    entity: Entity,
+    chest: Vec3,
+    forward: Vec3,
+    motion: Option<(Option<usize>, usize)>,
+}
+
+/// Every fighter in combat (condition 2), in query order.
+pub fn fighting_foes(foes: &Query<FoeView, With<Fighter>>) -> Vec<Fighting> {
+    fighting_of(foes.iter())
+}
+
+/// The fighters in combat (condition 2) among `fighters`: each one's
+/// entity, condition, transform, body, attack and swing state.
+pub fn fighting_of<'a>(
+    fighters: impl IntoIterator<
+        Item = (
+            Entity,
+            &'a Condition,
+            &'a GlobalTransform,
+            Option<&'a Ragdoll>,
+            Option<&'a Attacking>,
+            &'a SwingState,
+        ),
+    >,
+) -> Vec<Fighting> {
+    fighters
+        .into_iter()
+        .filter(|(_, condition, ..)| **condition == Condition::ATTACKING)
+        .map(|(e, _, gt, body, attacking, swing)| {
+            let chained = swing.has(crate::swing::flags::CONTINUATION);
+            let motion = attacking.map(|a| (a.chooser_motion(chained), a.motion.index()));
+            Fighting {
+                entity: e,
+                chest: stance::chest_point(gt, body),
+                forward: forward(gt),
+                motion,
+            }
+        })
+        .collect()
+}
+
+/// The parry `entity`, its chest at `chest`, would pick against its foe:
+/// its combat target when it has the component (`Some`), else the nearest
+/// other fighter in combat. None while the foe plays no attack.
+fn foe_parry_of(
+    entity: Entity,
+    chest: Vec3,
+    target: Option<Option<Entity>>,
+    fighting: &[Fighting],
+) -> Option<crate::attack::FoeParry> {
+    let foe = match target {
+        Some(target) => target
+            .filter(|&t| t != entity)
+            .and_then(|t| fighting.iter().find(|f| f.entity == t)),
+        None => fighting
+            .iter()
+            .filter(|f| f.entity != entity)
+            .min_by(|a, b| {
+                let da = (a.chest - chest).length_squared();
+                let db = (b.chest - chest).length_squared();
+                da.total_cmp(&db).then(a.entity.cmp(&b.entity))
+            }),
+    }?;
+    let (chooser, foe_motion) = foe.motion?;
+    let clip = chooser_clip(chooser?, chest, foe.chest, foe.forward)?;
+    Some(crate::attack::FoeParry { clip, foe_motion })
+}
+
+/// A fighter whose AI picked another combat target earlier in this tick
+/// takes it as its attack starters run, and aims again: the original's AI
+/// writes the character's combat target and the starters it calls read it
+/// in the same tick, so an attack started there aims at the new pick, not
+/// at the one the fixed step's aim ([`aim_foe_parries`]) read before the AI
+/// ran. `picked` is the AI's target; a target that did not change is left
+/// as it is. Returns whether it changed.
+pub fn aim_at_new_target(
+    entity: Entity,
+    picked: Option<Entity>,
+    target: &mut crate::CombatTarget,
+    attacker: &mut Attacker,
+    chest: Vec3,
+    fighting: &[Fighting],
+) -> bool {
+    if target.0 == picked {
+        return false;
+    }
+    target.0 = picked;
+    let aim = foe_parry_of(entity, chest, Some(picked), fighting);
+    if attacker.foe_parry != aim {
+        attacker.foe_parry = aim;
+    }
+    true
 }
 
 /// The parry rule on every living fighter, in its attack stage after the
@@ -2740,6 +2814,48 @@ mod wiring_tests {
             d.tick();
             assert!(!d.parrying(), "{target:?}");
         }
+    }
+
+    /// A target picked after the fixed step's aim is taken at once and
+    /// aimed at: the fighter with no target then picks its foe gets the
+    /// foe's parry in the same step; the same pick again changes nothing,
+    /// and dropping the target drops the aim.
+    #[test]
+    fn a_new_target_is_aimed_at_in_the_same_step() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut d = Duel::high();
+        let (me, foe) = (d.me, d.foe);
+        d.app
+            .world_mut()
+            .entity_mut(me)
+            .insert(crate::CombatTarget(None));
+        d.app.world_mut().run_schedule(FixedPreUpdate);
+        assert_eq!(d.get::<Attacker>().foe_parry, None);
+        let take = move |picked: Option<Entity>| {
+            move |mut bodies: Query<(
+                &mut crate::CombatTarget,
+                &mut Attacker,
+                &GlobalTransform,
+                Option<&Ragdoll>,
+            )>,
+                  foes: Query<FoeView, With<Fighter>>| {
+                let fighting = fighting_foes(&foes);
+                let (mut target, mut attacker, gt, body) = bodies.get_mut(me).unwrap();
+                let chest = stance::chest_point(gt, body);
+                aim_at_new_target(me, picked, &mut target, &mut attacker, chest, &fighting)
+            }
+        };
+        let aimed = Some(crate::attack::FoeParry {
+            clip: LEFT,
+            foe_motion: 5,
+        });
+        assert!(d.app.world_mut().run_system_once(take(Some(foe))).unwrap());
+        assert_eq!(d.get::<crate::CombatTarget>().0, Some(foe));
+        assert_eq!(d.get::<Attacker>().foe_parry, aimed);
+        assert!(!d.app.world_mut().run_system_once(take(Some(foe))).unwrap());
+        assert_eq!(d.get::<Attacker>().foe_parry, aimed);
+        assert!(d.app.world_mut().run_system_once(take(None)).unwrap());
+        assert_eq!(d.get::<Attacker>().foe_parry, None);
     }
 
     /// The trigger's clock window is 0.3 through 0.9 of the foe's clip,

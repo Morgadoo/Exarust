@@ -1101,10 +1101,20 @@ fn duellist(
         Without<Duellist>,
     >,
     children: Query<&Children>,
-    (blades, target_swings, attacks): (
+    (blades, target_swings, attacks, others): (
         Query<&Blade>,
         Query<&SwingState, Without<Duellist>>,
         Query<&Attacking>,
+        Query<
+            (
+                Entity,
+                &Condition,
+                &GlobalTransform,
+                Option<&Ragdoll>,
+                Option<&Attacking>,
+            ),
+            (With<Fighter>, Without<Duellist>),
+        >,
     ),
     mut brains: Query<&mut brain::Npc>,
     role_db: Option<Res<brain::RoleDatabase>>,
@@ -1133,6 +1143,7 @@ fn duellist(
             Option<&mut exa_physics::body::locomotion::Locomotion>,
             Option<&mut exa_character::record::CharacterData>,
             Option<&mut drive::Driven>,
+            Option<&mut exa_combat::CombatTarget>,
         ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
@@ -1151,6 +1162,24 @@ fn duellist(
         .iter()
         .filter_map(|(entity, ai, ..)| ai.step.map(|step| (entity, step.goal)))
         .collect();
+    // The fighters in combat as the starters' aim reads them, taken once
+    // after the AI tick: the duellists and every other fighter.
+    let fighting = exa_combat::parry::fighting_of(
+        npcs.iter()
+            .map(
+                |(e, _, _, _, _, (_, swing), _, attacking, _, _, condition, gt, body, ..)| {
+                    (e, condition, gt, body, attacking, swing)
+                },
+            )
+            .chain(
+                others
+                    .iter()
+                    .filter_map(|(e, condition, gt, body, attacking)| {
+                        let swing = target_swings.get(e).ok()?;
+                        Some((e, condition, gt, body, attacking, swing))
+                    }),
+            ),
+    );
     for (
         entity,
         mut ai,
@@ -1166,7 +1195,16 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence, attack_hook, locomotor, mut walk, mut record, mut driven),
+        (
+            mut powers,
+            presence,
+            attack_hook,
+            locomotor,
+            mut walk,
+            mut record,
+            mut driven,
+            mut combat_target,
+        ),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -2298,6 +2336,31 @@ fn duellist(
                 // weapons), else at random, never the side's last. The
                 // stab's and the overhead's starters mark the foe's motion
                 // they counter.
+                // The starters read the combat target the AI holds now (the
+                // character's brain pick, else the duellist's foe in
+                // combat, as the attack stage keeps it): one picked
+                // earlier in this tick is aimed at here.
+                if let Some(target) = combat_target.as_deref_mut() {
+                    let picked = match brains.get(parent.parent()) {
+                        Ok(npc) => npc.pass.target.and_then(Entity::try_from_bits),
+                        Err(_) => ai.combat_target(),
+                    };
+                    let was = target.0;
+                    if exa_combat::parry::aim_at_new_target(
+                        entity,
+                        picked,
+                        target,
+                        &mut attacker,
+                        stance::chest_point(gt, ragdoll),
+                        &fighting,
+                    ) {
+                        info!(
+                            "duellist {entity:?} aims at {picked:?} (was {was:?}), its target \
+                             this tick, parry aim {:?}",
+                            attacker.foe_parry
+                        );
+                    }
+                }
                 let aim = attacker.aim(
                     Some(fighter),
                     ragdoll.map_or(0.0, Ragdoll::crouch) > 0.0,
@@ -3860,6 +3923,25 @@ mod tests {
             step(&mut tired);
             assert!(tired.world().get::<Attacking>(foe2).is_none());
         }
+    }
+
+    /// The starters aim at the combat target the duellist holds when it
+    /// strikes: a body whose kept target is stale (here none, as no attack
+    /// stage ran to copy the foe) takes its foe in combat as the blow
+    /// starts, not a tick later.
+    #[test]
+    fn a_strike_aims_at_the_target_of_its_own_tick() {
+        let (mut app, foe, _) = duel(3.0, false);
+        app.world_mut()
+            .entity_mut(foe)
+            .insert(exa_combat::CombatTarget(None));
+        engage(&mut app, foe);
+        assert!(strikes(&mut app, foe));
+        let target = app.world().get::<Duellist>(foe).unwrap().target;
+        assert_eq!(
+            app.world().get::<exa_combat::CombatTarget>(foe).unwrap().0,
+            Some(target)
+        );
     }
 
     /// A body at the balance line clears the eagerness, so no blow comes.

@@ -524,6 +524,7 @@ pub fn dying_tick(
         &GlobalTransform,
         Option<&mut Hands>,
     )>,
+    mut grips: Query<&mut exa_physics::grip::HeldGrip>,
 ) {
     let entity = ticked.body;
     if let Ok((mut condition, fall, mut collapse, mut body, mut anim, mut fighter, gt, hands)) =
@@ -595,6 +596,9 @@ pub fn dying_tick(
             // go-limp takes the lower legs out of the living layer (the
             // class writer's 0, 0x30 on the feet).
             fighter.health.yellow = 0.0;
+            if end_parry_at_death(&mut fighter, &mut body, &mut grips) {
+                info!("{entity:?} dies parrying: the parry ends");
+            }
             body.clear_death_strikes();
             body.go_limp();
             commands
@@ -610,6 +614,37 @@ pub fn dying_tick(
             );
         }
     }
+}
+
+/// Death's end of a parry still running (the original's death runs its
+/// parry end while the parrying flag is set, before its condition becomes
+/// dead): the fighter is no longer parrying, its countered motion is gone,
+/// both hands lose the parry's arm bit and every item it holds has its
+/// parry grip disabled. The stance clip the end restarts is not started:
+/// the dead body's clip is stripped. Returns whether a parry ended.
+pub fn end_parry_at_death(
+    fighter: &mut Fighter,
+    body: &mut Ragdoll,
+    grips: &mut Query<&mut exa_physics::grip::HeldGrip>,
+) -> bool {
+    if !fighter.parry.active {
+        return false;
+    }
+    fighter.parry.end();
+    if fighter.guard == crate::damage::Guard::Parry {
+        fighter.guard = crate::damage::Guard::Open;
+    }
+    body.clear_parry_arms(Ragdoll::PARRY_HANDS);
+    if let Some(key) = body.parts.first().map(|part| part.entity) {
+        for mut grip in grips.iter_mut() {
+            if grip.holder_key == key
+                && let Some(links) = grip.links.as_mut()
+            {
+                links.release_parry();
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
