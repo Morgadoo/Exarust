@@ -3813,13 +3813,52 @@ form stack (`exa_ui::arena_forms`, `exa_ui::emblem_form`,
   byte. Randomise keeps the record (four at most), enables Previous, rolls,
   applies and runs both setters; Previous takes the newest kept record
   back (applied, the setters not run) and disables itself when none is
-  left. The name `klean` (once the field changed) gives the colours the
+  left. The name `klean`, submitted with Enter, gives the colours the
   palette bytes 7, 0, 0 and 6, clears the layer word, applies, and stores
   background 52 and design 81 directly. NEXT with an empty name shows the
   "Please name your company" message box; otherwise it stores the name and
   record and starts the creator. In Exarust the dialog opens through
   `--open-hub-window company` (New Career's route belongs to the creator);
   the message box and the creator that follows are not run from it.
+- **Field keys and focus.** The focus follows the pointer: the record
+  under it is focused, and a text field or combo box gaining it gets the
+  focus message (0xb0, word 0, focus bit set), which selects its whole text
+  (anchor 0, caret at the end). A focused field takes each key-down as its
+  key byte and each typed character with the typed bit (`exa_ui::field_edit`).
+  The text field: Enter with an owner callback runs it with state bit
+  0x100000 and, with style 0x2000000, gives the focus up until the pointer
+  moves; an editable field (style bits 0xd) drops a typed non-digit under
+  style 0x4000000 and otherwise passes the key to the text edit unit with
+  its limit and span (w − 2·pad − 2·unit), then calls the owner after
+  every key with style 0x1000000; a read-only field passes the key to the
+  edit unit's moves. The combo box: Enter runs the callback with state bits
+  0x300000; any other key goes to the edit unit whatever its editable bits
+  (span w − (4·unit|1) − 2·pad − unit), with the callback under bit 0x200000
+  for style 0x1000000. A left press on a hovered text field (state bits
+  0xf0000 equal to 0x10000) puts the caret under the pointer with the
+  anchor; a drag moves the caret only. The front draw binds slot 0xe4 and
+  draws the edit run at the field's own label origin, the selection only
+  while focused, and the caret glyph while focused and the form's caret
+  bit is lit (it turns every fifth frame).
+- **Field callbacks.** The emblem name's callback runs on every key but
+  acts only on bit 0x100000 (Enter): `klean` selects the preset, applies and
+  refreshes. A picture number's runs on Enter. The merchant's callbacks
+  read only the box's selection word (stock type from the list's table, rank
+  the word less two), so Enter re-stores the current choice; the typed text
+  stays shown until a pick. The loadout fighter list's callback steps to the
+  row its word less one names when it is not the shown row; the word is the
+  record's own (0 until a pick writes it), so Enter on a box nobody picked
+  from steps to the manager's row.
+- **Colour drag.** A left press on a swatch is not held by the control; a
+  move past the pointer's drag threshold sends it the drag press (0x4001),
+  which starts a drag with code 0xcd0c carrying the colour word, the press's
+  offset into the swatch and its inner size (the swatch less two pads), and
+  a draw that fills that rectangle under the pointer at alpha 0xa0. A swatch
+  accepts only that code; the drop stores the word as its colour and runs
+  its drop callback. The emblem swatches' drop callback writes the whole
+  word, palette index in the alpha byte included, into the form's colour
+  slot (the swatch's word at 0x48) and the preview's copy, without a
+  refresh. In the hub only the emblem swatches take a drop.
 - **Colour picker.** `TColourPicker` is 0x192 × 0x11a, titled with the
   swatch's caption ("Colour" by default), border 1, the upper-layer bit and
   centred across. Its 17 records: for R, G, B, H, S and V a trackbar (style

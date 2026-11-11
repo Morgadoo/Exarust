@@ -46,6 +46,7 @@ pub mod drop_down;
 pub mod emblem_form;
 pub mod engine_math;
 pub mod fade;
+pub mod field_edit;
 pub mod font;
 pub mod form;
 pub mod fps;

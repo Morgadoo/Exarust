@@ -148,6 +148,16 @@ impl HubForms {
         if options.focus.is_some_and(|(w, _)| w == window) {
             options.focus = None;
         }
+        if options.key_focus.is_some_and(|(w, _)| w == window) {
+            options.key_focus = None;
+        }
+        options.edits.retain(|e| e.window != window);
+        if options.held_swatch.is_some_and(|h| h.window == window) {
+            options.held_swatch = None;
+        }
+        if options.dragging.is_some_and(|d| d.window == window) {
+            options.dragging = None;
+        }
         match &options.popup {
             Some(crate::option_forms::Popup::List { window: w, .. }) if *w == window => {
                 options.popup = None;
@@ -209,6 +219,7 @@ impl HubForms {
         });
         // The box takes the keys: a text field under it loses the focus.
         self.options.focus = None;
+        self.options.key_focus = None;
         self.push(FormWindow::Message, form);
         info!("message box: {title:?}: {text:?}");
     }
@@ -281,6 +292,7 @@ impl HubForms {
             Some(top) => top,
             None => return Vec::new(),
         };
+        let screen_h = self.forms[target].form.screen.1;
         let top = &mut self.forms[target];
         let window = top.window;
         let mut out: Vec<(FormWindow, usize, bool)> = top
@@ -289,15 +301,31 @@ impl HubForms {
             .into_iter()
             .map(|i| (window, i, false))
             .collect();
+        // The focus follows the pointer to the record it is on; a held
+        // text field's caret follows a drag and a held swatch starts a
+        // colour drag past the threshold.
+        self.follow_key_focus(target, at);
+        if !pressed && !released {
+            self.field_drag(target, at);
+            self.swatch_drag(target, at, screen_h);
+        }
         if pressed {
+            self.field_press(target, at);
+            let top = &mut self.forms[target];
             out.extend(
                 top.form
                     .press(at.0, at.1)
                     .into_iter()
                     .map(|i| (window, i, false)),
             );
+            self.swatch_press(target, at);
         }
         if released {
+            self.options.held_swatch = None;
+            if self.drop_colour(target, at) {
+                return out;
+            }
+            let top = &mut self.forms[target];
             out.extend(
                 top.form
                     .release(at.0, at.1)
@@ -681,6 +709,38 @@ impl HubWindows {
         FormAnswer::None
     }
 
+    /// The fighter list's callback, which the box's Enter runs: when the
+    /// box's selection word less one is not the form's selection, the form
+    /// steps to that row (clamped to the rows) and refreshes. The word is
+    /// the record's own, which only a pick from the box's list writes.
+    pub(crate) fn loadout_list_entered(&mut self, career: &mut ArenaCareer, record: usize) {
+        if record != loadout::LIST {
+            return;
+        }
+        let Some(mut arsenal) = self.forms.arsenal else {
+            return;
+        };
+        let word = self
+            .forms
+            .get(FormWindow::Loadout)
+            .and_then(|f| f.amounts.get(record).copied())
+            .unwrap_or(0) as i32;
+        let row = word.wrapping_sub(1);
+        // The original commits the step after the frame; the hub commits
+        // it at once, as Previous and Next do.
+        if row != arsenal.selection && arsenal.step_to(row).is_some() {
+            arsenal.commit(|_| {});
+            info!(
+                "hub loadout: Enter on the fighter list steps to row {} (word {word})",
+                arsenal.selection
+            );
+        }
+        if let Some(form) = self.forms.get_mut(FormWindow::Loadout) {
+            refresh_loadout(form, &mut arsenal, career);
+        }
+        self.forms.arsenal = Some(arsenal);
+    }
+
     fn answer_loadout(&mut self, career: &mut ArenaCareer, record: usize, finished: bool) {
         let Some(mut arsenal) = self.forms.arsenal else {
             return;
@@ -954,6 +1014,13 @@ pub(crate) fn paint_form(
 pub(crate) struct FormExtras<'a> {
     pub focus: Option<usize>,
     pub picker: Option<&'a exa_ui::colour_picker::ColourPicker>,
+    /// The text field or combo box the form's focus is on (state bit
+    /// 0x400 for its draw).
+    pub key_focus: Option<usize>,
+    /// The edit bytes of the form's fields that a key or press reached.
+    pub edits: Vec<(usize, exa_ui::text_edit::EditView)>,
+    /// The form's caret bit (the blink's lit half).
+    pub caret_lit: bool,
 }
 
 /// [`paint_form`] with the extended forms' extras.
@@ -1012,13 +1079,15 @@ pub(crate) fn paint_form_with(
                 // The panel stands for the skin's frame behind the box; the
                 // front is the combo box's own draw.
                 crate::hub_windows::paint_panel(painted, rect, look);
+                let focused = extras.key_focus == Some(i);
                 let front = gui_paint::paint_combo_front(
                     rect,
                     gui_paint::ComboWords {
                         style: c.style,
-                        state: c.state,
+                        state: c.state | if focused { 0x400 } else { 0 },
                         pad: c.margin,
                         text: &c.text,
+                        view: extras.edits.iter().find(|(r, _)| *r == i).map(|(_, v)| *v),
                     },
                     unit,
                     &look.palette,
@@ -1073,7 +1142,11 @@ pub(crate) fn paint_form_with(
                 c,
                 rect,
                 look,
-                extras.focus == Some(i),
+                crate::option_forms::FieldDraw {
+                    focused: extras.focus == Some(i) || extras.key_focus == Some(i),
+                    view: extras.edits.iter().find(|(r, _)| *r == i).map(|(_, v)| *v),
+                    caret_lit: extras.caret_lit,
+                },
             ) => {}
             _ => crate::settings_form::paint_control(
                 c,
@@ -1412,6 +1485,7 @@ pub fn hub_arsenal_on_load(
 #[allow(clippy::too_many_arguments)]
 pub fn hub_form_input(
     mouse: Res<ButtonInput<MouseButton>>,
+    time: Res<Time<Real>>,
     windows_q: Query<&Window, With<PrimaryWindow>>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
     mut windows: ResMut<HubWindows>,
@@ -1434,6 +1508,7 @@ pub fn hub_form_input(
                 (at.y * window.scale_factor()) as i32,
             ))
         });
+        windows.forms.options.clock = time.elapsed().as_millis() as i64;
         if let Some(at) = pointer {
             let pressed = mouse.just_pressed(MouseButton::Left);
             let released = mouse.just_released(MouseButton::Left);

@@ -179,7 +179,7 @@
 //!          --pause-after-jet <n>      pause the simulation n body ticks after the first blood jet
 //!          --pause-on-hit <n>         pause the simulation n ticks after the player's first blow lands
 //!          --pause-after-collapse <n> pause the simulation n ticks after the first killing blow starts a collapse
-//!          --press key@frame,...      press keys (Ctrl, Shift, Esc, Enter, Up and Down among them) or mouse buttons (LMB, RMB, MMB) at frames after
+//!          --press key@frame,...      press keys (Ctrl, Shift, Esc, Enter, the arrows, Home, End, Backspace and Delete among them) or mouse buttons (LMB, RMB, MMB) at frames after
 //!                                     loading (e.g. `.@400,F8@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
@@ -787,6 +787,12 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "Shift" => Some(KeyCode::ShiftLeft),
         "Up" => Some(KeyCode::ArrowUp),
         "Down" => Some(KeyCode::ArrowDown),
+        "Left" => Some(KeyCode::ArrowLeft),
+        "Right" => Some(KeyCode::ArrowRight),
+        "Home" => Some(KeyCode::Home),
+        "End" => Some(KeyCode::End),
+        "Backspace" => Some(KeyCode::Backspace),
+        "Delete" => Some(KeyCode::Delete),
         _ => {
             if let Some(n) = name.strip_prefix('F').and_then(|n| n.parse::<usize>().ok()) {
                 return n.checked_sub(1).and_then(|i| fkeys.get(i)).copied();

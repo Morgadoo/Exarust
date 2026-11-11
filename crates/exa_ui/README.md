@@ -519,7 +519,12 @@ texture, caption, trackbar and scroll-bar geometry and draw calls, with
 `CVTSS2SI`'s indefinite result and the unordered clamps that let a NaN
 through. The combo box's front draw (`combo_draw`, `combo_text_origin`,
 `run_width`) is painted by the hub's table-built forms; the screen and the
-other extended controls are not drawn by a form yet.
+other extended controls are not drawn by a form yet. `field_edit` holds the
+text field's and combo box's own editing: their key message through the
+text edit unit (`text_edit::apply_key`, the read-only field's moves, the
+digits filter, Enter's submitted bits and the notify call), the caret a
+press or drag places from the field's text origin, the focus message's
+selection, and the colour swatch's drop and the emblem's drop callback.
 
 The thaumaturgy power tree's drawing is `tree_draw`: the six immediate
 programs and the spline renderer's procedural ribbon, the empty slot, icon,
