@@ -18,6 +18,7 @@ import exa_render::shading::{
 import exa_render::hair::{
     light_hair, hair_rim_colour, hair_ambient_weight, hair_reflection_dir, hair_reflection_weight,
 };
+import exa_render::shadesmk::{smoke_offset, smoke_alpha};
 
 struct ExaParams {
     // Linear rgb (×1.5 for legacy materials); a = opacity.
@@ -167,6 +168,9 @@ const GREY_DIRT: u32 = 64u;
 // `flags2`: the original's grass program (`shadegrs_f`) for terrain plants
 // (`exa_render::material::flags2::GRASS`).
 const GRASS: u32 = 128u;
+// `flags2`: the original's smoke and mist program (`shadesmk_f`), which
+// every type-2 record draws with (`exa_render::material::flags2::SMOKE`).
+const SMOKE: u32 = 256u;
 
 // The material's opacity (`MatDif.a`): the cut-away fade's own while the
 // mesh fades, as the original's faded pass writes it for the draw.
@@ -309,6 +313,36 @@ fn fogged(colour: vec3<f32>, p: vec3<f32>, amb: vec3<f32>) -> vec3<f32> {
     return mix(colour, fog_colour() * (amb * 0.5 + 0.5), b);
 }
 
+// The original's smoke and mist program (`shadesmk_f`): black, with the
+// alpha of `exa_render::shadesmk` from the facing ratio, the opacity
+// texture's alpha read at the scrolled `UVOfst` and again shifted by its
+// xy (0.25 without the texture), and the vertex alpha (1 without a colour
+// stream, as GL's default attribute). Under the level's distance fog (fog
+// mode 1) the shipped program reads `amb` and `b`, which it never declares,
+// so it does not build and the original skips the draw.
+fn smoke(in: VertexOutput, uv: vec2<f32>) -> vec4<f32> {
+@if(DISTANCE_FOG) {
+    discard;
+}
+    let nrm = normalize(in.world_normal);
+    let vwr = normalize(in.world_position.xyz - view_bindings::view.world_position.xyz);
+    let ndv = abs(dot(vwr, nrm));
+    var t = 0.25;
+    if has(OPACITY_MAP) {
+        let ofs = smoke_offset(view_bindings::globals.time);
+        var tc = uv;
+        tc.y = tc.y + ofs.z;
+        t = textureSampleBias(opacity_map, opacity_sampler, tc, material.texture_bias).a;
+        tc = tc + ofs.xy;
+        t = t * textureSampleBias(opacity_map, opacity_sampler, tc, material.texture_bias).a;
+    }
+    var colour_alpha = 1.0;
+@if(VERTEX_COLORS) {
+    colour_alpha = in.color.a;
+}
+    return blended(vec3(0.0), smoke_alpha(ndv, t, colour_alpha));
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var out: FragmentOutput;
@@ -324,6 +358,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 @if(VERTEX_UVS_A) {
     uv = in.uv;
 }
+    if (material.flags2 & SMOKE) != 0u {
+        out.color = smoke(in, uv);
+        return out;
+    }
     let p = in.world_position.xyz;
     let v = normalize(view_bindings::view.world_position.xyz - p);
     // Parallax: the view in tangent space shifts the texture coordinates

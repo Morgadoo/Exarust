@@ -182,6 +182,15 @@ enum Cmd {
         /// record the executable builds in code.
         #[arg(long)]
         record: Option<PathBuf>,
+        /// Take the named material from a chunk tree's own records
+        /// (`Resource:wraithhabase.rfc`) instead of the library.
+        #[arg(long)]
+        scene: Option<String>,
+        /// Expand the smoke and mist program (`shading_v` + `shadesmk_f`)
+        /// with the words the smoke draw gives it (the type-2 draw), and
+        /// say which of its inputs the expanded text never declares.
+        #[arg(long)]
+        smoke: bool,
         /// Lights on the object, 0 through 6.
         #[arg(long, default_value_t = 0)]
         lights: u32,
@@ -272,6 +281,9 @@ enum CorpusKind {
     /// Every node whose second flag word has the floor bit (0x800000), the
     /// bit the original's Ground Query meets.
     FloorNodes,
+    /// Every material record a mesh group draws with, by material type
+    /// (the low byte of its kind word), listing the type-2 (smoke) users.
+    Materials,
 }
 
 fn main() -> Result<()> {
@@ -288,6 +300,8 @@ fn main() -> Result<()> {
             shader_library,
             material,
             record,
+            scene,
+            smoke,
             lights,
             quality,
             shadow_quality,
@@ -315,6 +329,8 @@ fn main() -> Result<()> {
                 shader_library,
                 material,
                 record,
+                scene,
+                smoke,
                 lights,
                 quality,
                 shadow_quality,
@@ -493,6 +509,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::FloorNodes,
         } => corpus::floor_nodes(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Materials,
+        } => corpus::materials(&game),
         Cmd::Nav { level, png } => nav::nav(&game, &level, png.as_deref()),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)
@@ -888,6 +907,8 @@ struct ShaderRequest {
     shader_library: String,
     material: Option<String>,
     record: Option<PathBuf>,
+    scene: Option<String>,
+    smoke: bool,
     lights: u32,
     quality: u32,
     shadow_quality: u32,
@@ -1014,7 +1035,21 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         }
         return Ok(());
     }
-    let (name, material) = if let Some(path) = &request.record {
+    let (name, material) = if let Some(scene) = &request.scene {
+        let (pack, entry) = scene
+            .split_once(':')
+            .ok_or_else(|| anyhow!("--scene takes pack:entry"))?;
+        let name = request
+            .material
+            .as_deref()
+            .ok_or_else(|| anyhow!("name the scene's material"))?;
+        let tree = exa_formats::rfc::Scene::parse(entry_bytes(game, pack, entry)?)?;
+        let material = tree
+            .material(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("material {name:?} not found in {scene}"))?;
+        (format!("{name} ({scene})"), material)
+    } else if let Some(path) = &request.record {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         (path.display().to_string(), Material::parse(&bytes)?)
     } else {
@@ -1039,6 +1074,9 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
     if request.sun_first {
         key.set_light(0, LightKind::Directional);
     }
+    if request.smoke {
+        return smoke_program(&shaders, &name, key);
+    }
     let program: SurfaceProgram = program_for_shader_word(key.flags.shader);
     let text = program.expand(&shaders, &key.context())?;
     println!(
@@ -1058,6 +1096,70 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         println!("// ---- fragment: {}_f", program.set());
         print!("{}", text.fragment);
     }
+    Ok(())
+}
+
+/// `shader --smoke`: the smoke draw's program for a record's key. The key
+/// routine keeps the material and shader words under the smoke's mask and
+/// adds the builder's shading-quality bits; the object word gains `VrtCol`
+/// from the geometry. Prints the expanded pair, then each identifier the
+/// shipped text reads that its expansion does not declare.
+fn smoke_program(
+    shaders: &exa_formats::flb::ShaderLibrary,
+    name: &str,
+    mut key: exa_render::shader_program::ProgramKey,
+) -> Result<()> {
+    use exa_render::shader_program::shader;
+    use exa_render::smoke::{program_builds, program_words};
+    let quality_bits = key.flags.shader & (shader::QUALITY_MASK | shader::FAST_LIGHT);
+    let (mat, shd) = program_words(key.flags.material, key.flags.shader, quality_bits);
+    key.flags.material = mat;
+    key.flags.shader = shd;
+    let text = exa_render::shader_template::expand_pair(
+        shaders,
+        "shading_v",
+        "shadesmk_f",
+        &key.context(),
+    )?;
+    println!(
+        "// {name}: shadesmk_f, Mat {mat:#010x} Shd {shd:#010x} Obj {:#010x} Env {:#010x}",
+        key.flags.object, key.flags.environment
+    );
+    println!("// ---- vertex: shading_v");
+    print!("{}", text.vertex);
+    println!("// ---- fragment: shadesmk_f");
+    print!("{}", text.fragment);
+    let declared = |ident: &str| {
+        text.fragment.split(['\r', '\n']).any(|line| {
+            let line = line.trim_start();
+            ["in ", "uniform ", "float ", "vec2 ", "vec3 ", "vec4 "]
+                .iter()
+                .any(|kind| line.starts_with(kind))
+                && line
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| word == ident)
+        })
+    };
+    let used = |ident: &str| {
+        text.fragment
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == ident)
+    };
+    let missing: Vec<&str> = [
+        "vrNrm", "vrCol", "vrTex", "OpcTex", "amb", "b", "gic", "vgi", "rb",
+    ]
+    .into_iter()
+    .filter(|ident| used(ident) && !declared(ident))
+    .collect();
+    println!(
+        "// undeclared: {}; builds by the rule: {}",
+        if missing.is_empty() {
+            "none".to_string()
+        } else {
+            missing.join(", ")
+        },
+        program_builds(shd, key.flags.object, key.flags.environment)
+    );
     Ok(())
 }
 

@@ -164,11 +164,15 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
 - `material`: the original's surface material, its programs and the grass program (`flags2::GRASS`: colour-derived roughness, the fast light loop `light_fast`, no back-face flip, ¾ specular; [`docs/RENDERING.md`](../../docs/RENDERING.md), Grass). The camera's cut-away fade uses `flags2` bits 4 (`CUT_AWAY_BLEND`: `ExaParams::cut_away_opacity` replaces the diffuse alpha; such a blended copy writes depth while its opacity is above 0) and 8 (`CUT_AWAY_HALF`: one diagonal of each supersampled 2 × 2 block); the shadow casters ignore both ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cut-away fade).
   `set_texture_bias` pass that a texture-quality change runs over every
   loaded material (the original sets the LOD bias on each bind).
-- `material_state`: the default material factory's type table (five built-ins, the reset and plug-in registration; its masks and program classes are the ones `shader_program` uses, so the two cannot drift), its factory list (priority-ordered, every matching record called), the normal-map predicate, the loader's diffuse scale order, gloss floor and shared diffuse/specular colour slot, and the loader's transparency flag (refraction mode, or opacity above 0.8 in double with an opaque class not of nibble 1, cleared by the no-shadow bit); `exa_assets` uses the diffuse and gloss rules, the flag is a tested model (the draw path uses the blend word).
-- `smoke`: the original's `shadesmk_f` smoke and mist program
-  (`shadesmk.wesl`, line for line without its fog and dither), its `UVOfst`
-  scroll, state key and program cache, and the per-pass sub-view draw count
-  (not spawned yet).
+- `material_state`: the default material factory's type table (five built-ins, slot 2 as the smoke unit rewrites it, `draws_smoke`, the reset and plug-in registration; its masks and program classes are the ones `shader_program` uses, so the two cannot drift), its factory list (priority-ordered, every matching record called), the normal-map predicate, the loader's diffuse scale order, gloss floor and shared diffuse/specular colour slot, and the loader's transparency flag (refraction mode, or opacity above 0.8 in double with an opaque class not of nibble 1, cleared by the no-shadow bit); `exa_assets` uses the diffuse and gloss rules, the flag is a tested model (the draw path uses the blend word).
+- `smoke`: the original's `shadesmk_f` smoke and mist draw, which every
+  type-2 record takes (its start-up hook rewrites the type table's third
+  slot; only the wraith's skin and robe ship as type 2): the program's alpha
+  (`shadesmk.wesl`, a library the surface shader `exa.wesl` calls under
+  `flags2::SMOKE`), its `UVOfst` scroll, key words, the rule for when the
+  shipped text builds (never under the level's distance fog, where the
+  surface then draws nothing), the program cache and the per-pass sub-view
+  draw count.
 - `icon_render`: the character-creation thumbnail renderer (`FLX_IconRender`):
   its private view (30° FOV, 10 cm near plane, a 0.8 view value read as
   bloom), the twice-icon sRGB target with alpha for cut-outs, the
