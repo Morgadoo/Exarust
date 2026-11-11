@@ -2811,3 +2811,5 @@ Round 56 nightlook: the night environment already matched the original; the aren
 
 Round 185 mainview: the engine message hook writes the log file, shows the timed overlay and opens message boxes as the original does.
 
+the main unit timer table now runs once a frame; the GUI work (tooltip, arrow repeat, closed form deletion) runs on its 100 ms timer as in the original.
+
