@@ -428,6 +428,17 @@ pub fn normalize_approx(v: Vec3) -> Vec3 {
     v * reciprocal_sqrt(squared)
 }
 
+/// A quaternion scaled to unit length by the original's four-lane
+/// normaliser: the squared length summed `(y² + w²) + (x² + z²)` (its
+/// horizontal SSE sum), the reciprocal `1 / √` of it taken exactly, and
+/// each component times that. A zero quaternion gives NaN, as the
+/// original's (0 × ∞).
+pub fn normalize_quat(q: Quat) -> Quat {
+    let squared = (q.y * q.y + q.w * q.w) + (q.x * q.x + q.z * q.z);
+    let scale = 1.0 / squared.sqrt();
+    Quat::from_xyzw(q.x * scale, q.y * scale, q.z * scale, q.w * scale)
+}
+
 /// `v` without its part along the unit vector `unit`: `v − project(v)`.
 pub fn remove_component(v: Vec3, unit: Vec3) -> Vec3 {
     v - project_onto_unit(v, unit)
@@ -1010,6 +1021,24 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    /// The four-lane normaliser sums `(y² + w²) + (x² + z²)`, takes the
+    /// exact reciprocal root and scales; zero gives NaN.
+    #[test]
+    fn the_quaternion_normalisation_is_the_four_lane_one() {
+        let q = Quat::from_xyzw(0.1, 0.7, 0.3, 0.6);
+        let squared = (0.7f32 * 0.7 + 0.6 * 0.6) + (0.1f32 * 0.1 + 0.3 * 0.3);
+        let scale = 1.0 / squared.sqrt();
+        let n = normalize_quat(q);
+        assert_eq!(n.x.to_bits(), (0.1f32 * scale).to_bits());
+        assert_eq!(n.w.to_bits(), (0.6f32 * scale).to_bits());
+        assert!((n.length() - 1.0).abs() < 1e-6);
+        assert!(
+            normalize_quat(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0))
+                .x
+                .is_nan()
+        );
     }
 
     #[test]

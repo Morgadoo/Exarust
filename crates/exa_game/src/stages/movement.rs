@@ -324,10 +324,26 @@ const WALK: &str = "Walk";
 
 /// Starts the walk as the locomotion routine asks, when another clip
 /// plays: from where the body is, its clock at its start key's (the key
-/// before it's time), at its start without a key, or where it was when
-/// resumed.
+/// before it's time), or where it was when resumed.
+///
+/// A start without a key (turning right beyond a radian) and a resumed
+/// start leave the original's jump-in key as the playing clip left it (its
+/// start routine is not called): the key it still leads in to from its
+/// capture, or none once its sampler has passed that key. Without a key
+/// the clock is read at that key less one in the walk's key times: from a
+/// clip leading in to key `k` > 0 the walk starts at key `k − 1`'s time and
+/// leads in to key `k` (a jump in); to key 0 the read falls on the word
+/// before the times (taken as 0) and the walk leads in to its first key as
+/// a plain start; with none the read falls 8 bytes before them (a header
+/// word that reads as 0 or a denormal, taken as 0) and the walk has no
+/// lead-in from the capture: it enters from its own last key. A resumed
+/// walk keeps the same key, or none.
 fn start_walk(motions: Option<&Motions>, anim: &mut Animator, start: Option<Start>) {
     let Some(start) = start else { return };
+    let kept = anim.leading.then_some(anim.capture_key);
+    if !matches!(start, Start::Key(_)) {
+        debug!("walk start {start:?}: kept jump-in key {kept:?}");
+    }
     anim.play_loop(WALK);
     match start {
         Start::Key(key) => {
@@ -335,8 +351,21 @@ fn start_walk(motions: Option<&Motions>, anim: &mut Animator, start: Option<Star
                 anim.jump_in(clip, key);
             }
         }
-        Start::Unkeyed => {}
-        Start::Resume(clock) => anim.time = clock,
+        Start::Unkeyed => match kept {
+            Some(key) => {
+                if let Some(clip) = motions.and_then(|m| m.clip(anim, WALK)) {
+                    anim.jump_in(clip, key);
+                }
+            }
+            None => anim.leading = false,
+        },
+        Start::Resume(clock) => {
+            anim.time = clock;
+            match kept {
+                Some(key) => anim.capture_key = key,
+                None => anim.leading = false,
+            }
+        }
     }
 }
 
@@ -818,6 +847,51 @@ mod tests {
         // 51 ticks after: from key 2 again.
         let restarted = walk_again(&mut app, 1101);
         assert_eq!((restarted.time, restarted.capture_key), (10.0, 2));
+    }
+
+    /// A start without a key keeps the playing clip's jump-in key: leading
+    /// in to key 3 the walk jumps in at key 2's time and leads in to key 3;
+    /// leading in to key 0 it starts plainly; past its lead-in the walk has
+    /// none (it enters from its own last key). A resumed walk keeps the key
+    /// or none the same way.
+    #[test]
+    fn a_keyless_start_keeps_the_playing_clips_jump_in_key() {
+        let motions = walk_motions();
+        let started = |leading: bool, key: usize, start: Start| {
+            let mut anim = Animator::new("Default", "Idle");
+            anim.leading = leading;
+            anim.capture_key = key;
+            start_walk(Some(&motions), &mut anim, Some(start));
+            (
+                anim.action.clone(),
+                anim.time,
+                anim.leading,
+                anim.capture_key,
+            )
+        };
+        let walk = WALK.to_string();
+        assert_eq!(
+            started(true, 3, Start::Unkeyed),
+            (walk.clone(), 20.0, true, 3)
+        );
+        assert_eq!(
+            started(true, 0, Start::Unkeyed),
+            (walk.clone(), 0.0, true, 0)
+        );
+        assert_eq!(
+            started(false, 3, Start::Unkeyed),
+            (walk.clone(), 0.0, false, 0)
+        );
+        assert_eq!(
+            started(true, 3, Start::Resume(42.0)),
+            (walk.clone(), 42.0, true, 3)
+        );
+        assert_eq!(
+            started(false, 3, Start::Resume(42.0)),
+            (walk.clone(), 42.0, false, 0)
+        );
+        // A keyed start sets its own key.
+        assert_eq!(started(false, 0, Start::Key(2)), (walk, 10.0, true, 2));
     }
 
     /// The torso twist follows the look in the movement stage: a standing

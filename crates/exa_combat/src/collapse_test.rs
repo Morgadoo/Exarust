@@ -144,16 +144,19 @@ fn rebalance_starts_once_with_20_frames() {
 #[test]
 fn the_heading_wanders() {
     let ahead = Vec2::Y;
-    assert_eq!(jitter_heading(ahead, 0.5, 0.5), ahead);
+    // Unit to the approximate reciprocal square root's 12 bits.
+    assert!((jitter_heading(ahead, 0.5, 0.5) - ahead).length() < 1e-3);
     let right = jitter_heading(ahead, 1.0, 0.5);
-    assert!((right - Vec2::new(0.242_535_6, 0.970_142_5)).length() < 1e-6);
+    assert!((right - Vec2::new(0.242_535_6, 0.970_142_5)).length() < 1e-3);
     let back = jitter_heading(ahead, 0.0, 0.0);
-    assert!((back - Vec2::new(-0.316_227_8, 0.948_683_3)).length() < 1e-6);
+    assert!((back - Vec2::new(-0.316_227_8, 0.948_683_3)).length() < 1e-3);
+    let r = exa_physics::engine_math::reciprocal_sqrt(0.25f32 * 0.25 + 1.0);
+    assert_eq!(right.y.to_bits(), r.to_bits());
     let mut h = ahead;
     let mut roll = Roll::default();
     for _ in 0..250 {
         h = jitter_heading(h, roll.next(), roll.next());
-        assert!((h.length() - 1.0).abs() < 1e-5);
+        assert!((h.length() - 1.0).abs() < 1e-3);
     }
 }
 
@@ -277,7 +280,7 @@ fn the_body_dies_250_ticks_after_the_blow() {
     let collapse = *app.world().get::<Collapse>(id).unwrap();
     assert_eq!(collapse.ticks, 249);
     let heading = collapse.heading.unwrap();
-    assert!((heading.length() - 1.0).abs() < 1e-5 && heading != Vec2::Y);
+    assert!((heading.length() - 1.0).abs() < 1e-3 && heading != Vec2::Y);
     assert_eq!(
         app.world().get::<Animator>(id).unwrap().action,
         FALL_BACKWARD

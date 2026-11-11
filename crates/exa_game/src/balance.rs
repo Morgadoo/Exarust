@@ -46,6 +46,7 @@ use exa_combat::stance::Stance;
 use exa_physics::body::{
     BodyTicks, CharacterStage, CharacterTick, Fallen, Ragdoll, TickedCharacter,
 };
+use exa_physics::engine_math::normalize_approx;
 use exa_physics::shock::shock_stagger_tick;
 
 use crate::limp::CM;
@@ -276,12 +277,15 @@ pub fn waits_for_support(playing: Option<Rise>, supported: bool, airborne: u32) 
 }
 
 /// The direction a body gets up facing: from its `pelvis` to its `chest`
-/// across the ground for Get up, the other way for Get Up 2; none when the
-/// chest is right over the pelvis.
+/// across the ground for Get up, the other way for Get Up 2, normalised by
+/// the approximate reciprocal square root (`RSQRTSS`) as the original's;
+/// none when the chest is right over the pelvis (the original's zero
+/// vector).
 pub fn rise_heading(chest: Vec3, pelvis: Vec3, rise: Rise) -> Option<Vec3> {
     let d = (chest - pelvis).with_y(0.0);
     let d = if rise == Rise::FaceUp { -d } else { d };
-    d.try_normalize()
+    let d = normalize_approx(d);
+    (d != Vec3::ZERO).then_some(d)
 }
 
 /// Whether a get-up turns a body facing `heading` to `to`: their cosine is
@@ -315,7 +319,12 @@ pub fn fall_heading(
     } else {
         current
     };
-    let d = d.with_y(0.0).try_normalize()?;
+    // The approximate normalisation (`RSQRTSS`); the original's zero
+    // vector (a vertical axis) is no turn here.
+    let d = normalize_approx(d.with_y(0.0));
+    if d == Vec3::ZERO {
+        return None;
+    }
     (f64::from(heading.dot(d)) <= FALL_TURN_FROM).then_some(d)
 }
 
@@ -355,9 +364,12 @@ fn stance_of(anim: &Animator, stance: Option<&Stance>) -> &'static str {
     }
 }
 
-/// The yaw (rad, the model facing +Z) of a direction across the ground.
+/// The yaw (rad, the model facing +Z) of a direction across the ground:
+/// the engine's heading (its fast arc cosine of z over the ground length,
+/// negative for a negative x), as the original's turn keeps the yaw of the
+/// facing it writes.
 fn yaw_of(d: Vec3) -> f32 {
-    d.x.atan2(d.z)
+    exa_physics::engine_math::heading(d)
 }
 
 /// The locomotion request and body state of a body that has them (the
@@ -441,7 +453,8 @@ fn start_getting_up(
     if let Some(d) = chest.and_then(|c| rise_heading(c, at, rise))
         && turns_to_rise(heading, d)
     {
-        turn_to(body, root, player, d);
+        // The facing it writes is normalised again (approximately).
+        turn_to(body, root, player, normalize_approx(d));
     }
     stand(body);
     let started = start_clip(anim, motions, rise.action(), GET_UP_BLEND, then);
