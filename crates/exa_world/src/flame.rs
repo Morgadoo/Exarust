@@ -251,8 +251,11 @@ fn attach_flames(
 
 /// Runs each flame's fixed ticks, then its light's frame. A finished
 /// flame is removed.
+#[allow(clippy::too_many_arguments)]
 fn simulate(
     time: Res<Time>,
+    clock: Res<Time<Virtual>>,
+    gi_waits: Option<Res<crate::gi_volume::PendingGi>>,
     pin: Res<FireLightPin>,
     mut commands: Commands,
     mut flames: Query<(
@@ -272,8 +275,21 @@ fn simulate(
                 .any(|ancestor| carriers.contains(ancestor))
         });
         flame.accumulator += time.delta_secs();
+        // The load holds game time while the GI waits for the level's fires
+        // to build up (`crate::gi_volume`), so with the clock held an
+        // unsettled fire runs the ticks it still needs at once: always the
+        // same count, whatever the load's frames (Exarust's own pre-roll,
+        // the GI's wait is Exarust's).
+        let preroll = match &fire {
+            Some(fire) if gi_waits.is_some() && clock.is_paused() && !fire.settled() => {
+                crate::fire::SETTLE_TICKS - fire.ticks
+            }
+            _ => 0,
+        };
+        flame.accumulator += preroll as f32 * dt;
+        let cap = MAX_STEPS.max(preroll);
         let mut steps = 0;
-        while flame.accumulator >= dt && steps < MAX_STEPS {
+        while flame.accumulator >= dt && steps < cap {
             let position = (at.translation() - Vec3::Y * (flame.lift / 100.0)) * 100.0;
             let rotation = Mat3::from_quat(at.rotation());
             let Flame { emitter, rng, .. } = &mut *flame;
@@ -393,6 +409,89 @@ mod tests {
         }
         assert!(is_small_fire(SMALL_TEXTURE));
         assert!(!is_small_fire(LARGE_TEXTURE));
+    }
+
+    /// A fire with its flame, as the fire builder spawns a torch's.
+    fn torch_fire(app: &mut App) -> Entity {
+        let p = fire::preset(0.2);
+        let emitter = Emitter::new(
+            p.flame.template,
+            p.flame.size,
+            vec![crate::particles::Source::at_node()],
+        );
+        app.world_mut()
+            .spawn((
+                fire::Fire {
+                    intensity: 0.0,
+                    softness: 1.0,
+                    density: 0.0,
+                    emissive: 0.0,
+                    ticks: 0,
+                    node_flags: 0,
+                    field: 0.0,
+                },
+                Flame::new(emitter, 0.0, SMALL_TEXTURE, 3),
+                GlobalTransform::default(),
+            ))
+            .id()
+    }
+
+    fn flame_app(held: bool, gi_waits: bool) -> App {
+        let mut app = App::new();
+        let mut clock = Time::<Virtual>::default();
+        if held {
+            clock.pause();
+        }
+        app.insert_resource(clock)
+            .init_resource::<Time>()
+            .insert_resource(FireLightPin(None))
+            .add_systems(Update, simulate);
+        if gi_waits {
+            app.insert_resource(crate::gi_volume::PendingGi {
+                centre: Vec3::ZERO,
+                top: 1.0,
+                bottom: 0.0,
+                base_ambient: [0.0; 3],
+                grid: crate::gi_volume::GiGrid::synthetic(),
+                top_slice: false,
+            });
+        }
+        app
+    }
+
+    #[test]
+    fn a_held_load_settles_the_fires_the_gi_waits_for() {
+        // The load holds game time while the GI waits for the fires: they
+        // run their settle ticks at once (two frames at most, the
+        // accumulator's rounding), so the wait ends.
+        let mut app = flame_app(true, true);
+        let fire = torch_fire(&mut app);
+        app.update();
+        app.update();
+        let f = app.world().get::<fire::Fire>(fire).unwrap();
+        assert!(f.settled(), "{} ticks", f.ticks);
+        assert!(f.ticks <= fire::SETTLE_TICKS, "{} ticks", f.ticks);
+        assert!(f.density > 0.0);
+        // Settled, it runs no more ticks while the clock is held.
+        let ticks = f.ticks;
+        app.update();
+        assert_eq!(app.world().get::<fire::Fire>(fire).unwrap().ticks, ticks);
+    }
+
+    #[test]
+    fn a_held_clock_alone_does_not_run_the_fires() {
+        // A pause with no GI waiting (a menu, the death fade) holds them.
+        for (held, gi_waits) in [(true, false), (false, true)] {
+            let mut app = flame_app(held, gi_waits);
+            let fire = torch_fire(&mut app);
+            app.update();
+            let f = app.world().get::<fire::Fire>(fire).unwrap();
+            assert!(
+                !f.settled(),
+                "held {held}, gi {gi_waits}: {} ticks",
+                f.ticks
+            );
+        }
     }
 
     #[test]
