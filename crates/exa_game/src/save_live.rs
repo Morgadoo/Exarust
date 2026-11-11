@@ -325,8 +325,10 @@ impl Plugin for SaveLivePlugin {
                     make_slot_lists,
                     report_saves,
                     scripted_saves,
-                    save_to_new_slot,
                     run_checkpoint_scripts,
+                    // Every save first saves the open screens.
+                    crate::gui_screens::save_open_screens_for_saves,
+                    save_to_new_slot,
                     run_save_steps,
                     load_arena_slot,
                     load_story_slot,

@@ -4280,10 +4280,18 @@ fn apply_steps(
                 for mut player in &mut players {
                     // Entering combat mode drops the double-click clock and
                     // the walk bits. A mode already on keeps both.
-                    if player.body.set_combat(on)
-                        && let Some(req) = player.locomotion.as_mut()
-                    {
-                        req.entered_combat();
+                    if player.body.set_combat(on) {
+                        if let Some(req) = player.locomotion.as_mut() {
+                            req.entered_combat();
+                        }
+                        // The entry closes every in-game screen and the
+                        // power tree, as Tab's does.
+                        commands.queue(|world: &mut World| {
+                            crate::gui_screens::sweep_screens(
+                                world,
+                                crate::gui_screens::ScreenSweep::Every,
+                            );
+                        });
                     }
                 }
             }

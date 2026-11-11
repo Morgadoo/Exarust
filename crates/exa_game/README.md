@@ -1699,7 +1699,15 @@ showing ten times the player's encumbrance with the dot sheet's whole and
 half dots in the label group's seventh shade. The view draws no preview
 bars (only character creation and the arena switch them on). The
 journal keeps its session entries and stores its text on close. Escape
-closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
+closes the focused screen (Exarust's). Entering combat mode (Tab in
+`hotkeys`, a flow's `CombatMode(true)`) closes every in-game screen and the
+power tree (`gui_screens::sweep_screens` with `ScreenSweep::Every`); Control
+Mind's handover and hand-back close the container and journal family and
+sweep the tree or bar (`ScreenSweep::ContainerFamily`); J leaves combat
+mode first. Before a save to a new slot or a writing save step,
+`save_open_screens_for_saves` (in the save chain) saves the open screens:
+the popups' contents into their containers' sections and the journal's
+text. The rules are `exa_ui::game_gui`'s.
 The screens are base forms (`exa_ui::base_form`) on a rooted window
 manager the pointer drives (`form_input`: a frame's pointer, left button
 and wheel, the GUI timer and the task's tick): a press on a title drags the

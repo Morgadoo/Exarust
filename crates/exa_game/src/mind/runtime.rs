@@ -921,9 +921,10 @@ pub fn possess(world: &mut World, caster: Entity, target: Entity) {
     if world.get_entity(caster).is_err() || world.get_entity(target).is_err() {
         return;
     }
-    // The handover first sweeps the GUI's forms: the power tree closes, or
-    // the shown bar falls.
-    crate::power_screen::sweep_forms(world, 1);
+    // The handover first sweeps the GUI's forms: the inventory, container,
+    // journal and loot windows close, then the power tree closes, or the
+    // shown bar falls.
+    crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::ContainerFamily);
     set_status(world, caster, |s| s | HANDED_OVER);
     set_status(world, target, |s| s | IN_CONTROL);
     let caster_id = body_id(caster);
@@ -955,7 +956,7 @@ pub fn possess(world: &mut World, caster: Entity, target: Entity) {
 /// Control Mind's hand-back, at the transition's black.
 pub fn release(world: &mut World, caster: Entity, target: Entity) {
     // The hand-back sweeps the GUI's forms first, as the handover does.
-    crate::power_screen::sweep_forms(world, 1);
+    crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::ContainerFamily);
     if world.get_entity(target).is_ok() {
         // The original writes the caster's status, less the control bits,
         // over the released body's.
