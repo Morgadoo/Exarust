@@ -1015,7 +1015,7 @@ The solver SHALL offer stages for added work at the original's points of its sec
 - **THEN** its particles are exactly where the solver without stages leaves them
 
 ### Requirement: Contacts between bodies
-The system SHALL keep body parts out of each other, for every body: after the iterations each awake part meets the parts near it, awake or asleep, that it has not met this tick. The part with the smaller key round(100/mobility) brings its spheres against the other's (of two equal keys, the one that joined the sector's list first), each where it is, or swept from the last tick when it moved over 0.1 cm² relative to the other part. Each hit pushes both at once; a pair keeps up to four points, spread widest over the sphere side.
+The system SHALL keep body parts out of each other, for every body: after the iterations each awake part meets the parts near it, awake or asleep, that it has not met this tick. The part with the smaller key round(100/mobility) brings its spheres against the other's (of two equal keys, the one that joined the sector's list first), each where it is, or swept from the last tick when it moved over 0.1 cm² relative to the other part.
 
 #### Scenario: Two limbs meet
 - **WHEN** two limbs with 10 cm spheres are thrown at each other at 2 m/s each
@@ -1033,8 +1033,15 @@ The system SHALL keep body parts out of each other, for every body: after the it
 - **WHEN** a human's pelvis (mobility 0.3) and hand (mobility 1.67) meet
 - **THEN** their keys are 333 and 60, and the hand brings its spheres
 
+### Requirement: Body contact pushes
+Each hit between two body parts SHALL push both at once; a pair SHALL keep up to four points, spread widest over the sphere side.
+
+#### Scenario: Many hits on one pair
+- **WHEN** two parts meet with more than four sphere hits
+- **THEN** the pair keeps four points spread widest over the sphere side
+
 ### Requirement: Sector list order
-Each body SHALL take a place in the sector's list when it is first inserted, later bodies after earlier ones, and keep it when it is moved between worlds; characters and props SHALL be inserted in spawn order. The solver, its body–body detection and the body grid SHALL walk the bodies from the list's end (the last to join first), each body's parts from the last in its node order to its root. The detection SHALL meet, for each awake part, the parts of its nine cells (its own first) in the order a cell's list holds them, the last to join first.
+Each body SHALL take a place in the sector's list when it is first inserted, later bodies after earlier ones, and keep it when it is moved between worlds; characters and props SHALL be inserted in spawn order. The solver, its body–body detection and the body grid SHALL walk the bodies from the list's end (the last to join first), each body's parts from the last in its node order to its root.
 
 #### Scenario: Two bodies
 - **WHEN** two bodies are inserted one after the other, and the first is lent away and inserted again
@@ -1047,6 +1054,13 @@ Each body SHALL take a place in the sector's list when it is first inserted, lat
 #### Scenario: An all-pairs sector
 - **WHEN** an awake part is listed after a sleeper it touches in a sector without a grid
 - **THEN** the two do not meet
+
+### Requirement: Cell meeting order
+The body–body detection SHALL meet, for each awake part, the parts of its nine cells (its own first) in the order a cell's list holds them, the last to join first.
+
+#### Scenario: Two parts in one cell
+- **WHEN** an awake part's cell holds two parts
+- **THEN** it meets the one that joined last first
 
 ### Requirement: Groups within a body
 Two parts of one body SHALL skip each other when their group masks share a bit. From each root, with a bit counter from 0 wrapping at 32, a part with children SHALL take the next bit, its parent's bit and the two bits its parent was given, and a leaf its parent's bit; each child then SHALL also take its parent's two given bits. A character's two feet SHALL share the union of their masks.
