@@ -248,30 +248,33 @@ pub struct DomainWheel {
 }
 
 impl DomainWheel {
-    /// The child at the tree form's lower left, 280 pixels square, with the
-    /// opened domain as its choice.
+    /// The child the tree's opening builds: the wheel's constructor form
+    /// (280 pixels square, its seeded state), placed at the tree form's
+    /// lower left with the opened domain written over the constructor's
+    /// choice.
     pub fn new(left: f32, top: f32, domain: u8) -> Self {
+        let form = crate::effects::wheel::wheel_form();
+        let mut state = form.wheel;
+        state.chosen = i32::from(domain);
         Self {
             left,
             top,
-            size: crate::effects::wheel::SIZE_PX as f32,
-            state: crate::effects::wheel::Wheel {
-                chosen: i32::from(domain),
-                ..Default::default()
-            },
+            size: (form.client[2] - form.client[0]) as f32,
+            state,
         }
     }
 
-    /// The domain icon under the window point `x`,`y`, 1 to 6, or 0: the
-    /// wheel's own hit test about the child's centre, in whole client
-    /// pixels.
-    pub fn domain_at(&self, x: f32, y: f32) -> u8 {
+    /// The domain icon under the window point `x`,`y` at the interface
+    /// unit `unit`, 1 to 6, or 0: the wheel's own hit test about the
+    /// child's centre, in whole client pixels (its ring follows the GUI
+    /// scale and its reach the size word, both from the unit).
+    pub fn domain_at(&self, x: f32, y: f32, unit: i32) -> u8 {
         let half = (self.size * 0.5) as i32;
         let mouse = (
             (x - self.left).floor() as i32,
             (y - self.top).floor() as i32,
         );
-        crate::effects::wheel::Wheel::hit_test((half, half), mouse) as u8
+        crate::effects::wheel::Wheel::hit_test((half, half), mouse, unit) as u8
     }
 
     /// Starts the 300 ms ease a picked or dropped power triggers: the
@@ -2638,7 +2641,9 @@ impl TreeScreen {
     /// domain is outside this module; its click calls [`TreeScreen::choose_domain`]
     /// or this.
     pub fn fade_domain(&mut self, now: u32) {
-        self.domain_flags = DOMAIN_OUT;
+        // The wheel's click adds the fade-out bit; a running fade-in keeps
+        // its own.
+        self.domain_flags |= DOMAIN_OUT;
         self.domain_at = now.wrapping_add(CLOSE_MS);
     }
 
@@ -2666,7 +2671,7 @@ impl TreeScreen {
         let side = child.size as i32;
         let mut view = exa_ui::wheel_draw::WheelDrawView::new(child.left, child.top, side, unit);
         let state = &mut child.state;
-        view.scale = crate::effects::wheel::GUI_SCALE;
+        view.scale = crate::effects::wheel::gui_scale(unit);
         view.size_word = wheel_size_word(unit);
         view.shown = state.shown;
         view.fade = state.fade(now);
@@ -2695,15 +2700,16 @@ impl TreeScreen {
     /// choice). A confirmed choice starts the tree's domain switch to it
     /// and names the sound it plays: the wheel's confirm plays the tree's
     /// `ThaumShow02` at 0.25 and pitch one.
-    pub fn wheel_click(&mut self, x: f32, y: f32, now: u32) -> Option<TreeSound> {
-        let hit = self.wheel_child.domain_at(x, y);
+    pub fn wheel_click(&mut self, x: f32, y: f32, unit: i32, now: u32) -> Option<TreeSound> {
+        let hit = self.wheel_child.domain_at(x, y, unit);
         let wheel = &mut self.wheel_child.state;
         wheel.hover(i32::from(hit), now);
         if hit == 0 {
             return None;
         }
         let modifier = crate::effects::wheel::CONFIRM_MODIFIER;
-        if wheel.confirm(modifier, &self.known_domains, now, now) {
+        let switching = self.domain_flags & DOMAIN_OUT != 0;
+        if wheel.confirm(modifier, &self.known_domains, switching, now) {
             self.choose_domain(hit, now);
             return Some(SHOW_SOUND);
         }
@@ -3659,10 +3665,15 @@ mod tests {
         // The wheel's own hit test about the child's centre (140, 140):
         // icon 1 at (140, 64) and icon 4 at (140, 216); the centre is no
         // icon.
-        assert_eq!(wheel.domain_at(150.0, 474.0), 1);
-        assert_eq!(wheel.domain_at(150.0, 626.0), 4);
-        assert_eq!(wheel.domain_at(150.0, 550.0), 0);
-        assert_eq!(wheel.domain_at(0.0, 0.0), 0);
+        assert_eq!(wheel.domain_at(150.0, 474.0, 4), 1);
+        assert_eq!(wheel.domain_at(150.0, 626.0, 4), 4);
+        assert_eq!(wheel.domain_at(150.0, 550.0, 4), 0);
+        assert_eq!(wheel.domain_at(0.0, 0.0, 4), 0);
+        // At unit 8 the ring doubles (152 px): icon 1 sits at (140, −12)
+        // in the child, above its form, and icon 4 at (140, 292), below.
+        assert_eq!(wheel.domain_at(150.0, 626.0, 8), 0);
+        assert_eq!(wheel.domain_at(150.0, 702.0, 8), 4);
+        assert_eq!(wheel.domain_at(150.0, 398.0, 8), 1);
     }
 
     #[test]
@@ -3685,20 +3696,37 @@ mod tests {
     fn a_wheel_click_switches_only_to_a_known_other_domain() {
         let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
         // An unknown domain is refused.
-        assert!(tree.wheel_click(150.0, 626.0, 1000).is_none());
+        assert!(tree.wheel_click(150.0, 626.0, 4, 1000).is_none());
         assert_eq!(tree.domain_flags, 0);
         tree.known_domains = [true; 6];
         // The current choice is refused too.
-        assert!(tree.wheel_click(150.0, 474.0, 1000).is_none());
+        assert!(tree.wheel_click(150.0, 474.0, 4, 1000).is_none());
         assert_eq!(tree.domain_flags, 0);
         // A known other domain is chosen, its switch starts and the show
         // sound plays.
-        assert_eq!(tree.wheel_click(150.0, 626.0, 1000), Some(SHOW_SOUND));
+        assert_eq!(tree.wheel_click(150.0, 626.0, 4, 1000), Some(SHOW_SOUND));
         assert_eq!(tree.wheel_child.state.chosen, i32::from(DOMAIN_ENERGY));
         assert_eq!(tree.pending_domain, DOMAIN_ENERGY);
         assert_eq!(tree.domain_flags, DOMAIN_OUT);
+        // While the fade-out bit is set another icon is refused.
+        assert!(tree.wheel_click(150.0, 474.0, 4, 1100).is_none());
+        assert_eq!(tree.pending_domain, DOMAIN_ENERGY);
         // Off the icons the click is not the wheel's.
-        assert!(tree.wheel_click(150.0, 550.0, 2000).is_none());
+        assert!(tree.wheel_click(150.0, 550.0, 4, 2000).is_none());
+    }
+
+    #[test]
+    fn a_wheel_click_during_the_fade_in_keeps_its_bit() {
+        let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        tree.known_domains = [true; 6];
+        tree.choose_domain(DOMAIN_ENERGY, 1000);
+        tree.present_window(1256);
+        assert_eq!(tree.domain_flags, DOMAIN_IN);
+        // Mid fade-in the wheel's click adds the fade-out bit to it.
+        tree.wheel_child.state.chosen = i32::from(DOMAIN_ENERGY);
+        assert_eq!(tree.wheel_click(150.0, 474.0, 4, 1500), Some(SHOW_SOUND));
+        assert_eq!(tree.domain_flags, DOMAIN_IN | DOMAIN_OUT);
+        assert_eq!((tree.pending_domain, tree.domain_at), (DOMAIN_MIND, 1756));
     }
 
     #[test]
@@ -3750,6 +3778,13 @@ mod tests {
         // Past the flash the faded choice is dropped.
         let view = tree.wheel_draw_view(1300, 4, *exa_ui::tree_draw::TREE_FONT, (0, 0));
         assert_eq!((view.flash, view.before), (1.0, 0));
+        assert_eq!((view.scale, view.size_word), (1.0, 32));
+        // The paint's scale is the unit over four: at unit 5 the icons sit
+        // on a 95-pixel ring inside a 175-pixel outer ring.
+        let view = tree.wheel_draw_view(1300, 5, *exa_ui::tree_draw::TREE_FONT, (0, 0));
+        assert_eq!((view.scale, view.size_word), (1.25, 40));
+        assert_eq!(76.0 * view.scale, 95.0);
+        assert_eq!(140.0 * view.scale, 175.0);
     }
 
     #[test]

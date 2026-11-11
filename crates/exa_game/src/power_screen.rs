@@ -663,6 +663,7 @@ fn pointer(
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
     gui: Option<Res<exa_ui::GuiScale>>,
+    scripted: Option<Res<exa_ui::ScriptedPointer>>,
     mut screen: ResMut<PowerScreen>,
     mut router: Option<ResMut<PowerRouter>>,
 ) {
@@ -675,7 +676,12 @@ fn pointer(
     };
     let width = window.physical_width() as f32;
     let height = window.physical_height() as f32;
-    let Some(cursor) = window.cursor_position() else {
+    // A scripted pointer (`--cursor`, `--click-at`; unattended runs only)
+    // stands in for the mouse.
+    let Some(cursor) = scripted
+        .and_then(|scripted| scripted.0)
+        .or_else(|| window.cursor_position())
+    else {
         return;
     };
     let x = cursor.x * window.scale_factor();
@@ -705,13 +711,15 @@ fn pointer(
         ..
     } = &mut *screen;
     let hidden = !*open || tree.closing();
+    // The interface unit the wheel's ring and reach follow.
+    let gui_unit = gui.as_deref().map_or(4, |gui| gui.scale) as i32;
     // The domain wheel is a child form, so a button over one of its icons
     // is its own: the click (the release) confirms that domain through the
     // wheel's rule and turns the tree to it.
-    if !hidden && drag.is_none() && tree.wheel_child.domain_at(x, y) > 0 {
+    if !hidden && drag.is_none() && tree.wheel_child.domain_at(x, y, gui_unit) > 0 {
         if buttons.just_released(MouseButton::Left) {
             *press_origin = None;
-            if let Some(played) = tree.wheel_click(x, y, now) {
+            if let Some(played) = tree.wheel_click(x, y, gui_unit, now) {
                 *sound = Some(played);
             }
             *dirty = true;
@@ -724,7 +732,7 @@ fn pointer(
     // The wheel child's own hover: the icon under the pointer, its
     // highlight stamp and the label it keeps.
     if !hidden {
-        let hit = tree.wheel_child.domain_at(x, y);
+        let hit = tree.wheel_child.domain_at(x, y, gui_unit);
         tree.wheel_child.state.hover(i32::from(hit), now);
     }
     // The bar's slots and the prompt's buttons are laid out at the
