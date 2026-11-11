@@ -313,6 +313,8 @@ Round 169 stream: level characters are built on the content stream thread neares
 
 Round 186 texrender: point-light shadows skip terrain blocks the view did not draw, and the texture unit blur is dead code in 0.9.5.
 
+holed terrain blocks (story levels; no arena level has holes) now use the original triangle list for draw and collision, fixing hole rims; FPS and arena traces unchanged.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1028,6 +1030,8 @@ Round 179 rbd: a body part that changes collision cells moves to the head of its
 Round 184 exitstall: the intermittent free-mode exit stall with Constant Displacement was the rodio resampler wrapping a u32 product for the phasing sound ratio and walking 2^32 frames on the audio thread, which the audio output drop at exit waited on; a patched rodio computes in u64 and exits went from 6 of 40 stalled to 48 of 48 under a second; EXA_EXIT_TRACE traces each exit stage. The AI flee start now runs from the target pass flee outcome as the original does, but no live scene reaches a flight yet because the contacts concern and alarm are never written.
 
 the viewport frame-rate readout and the version line are drawn live as the original draws them; the title hides the readout and shows V 0.9.5.2g, as on the retail main menu.
+
+both AI and motion unit backlog premises were stale; the one live difference was the attack executor Break Tangle gate, now ported for the player and the AI (EXA_FORCE_TANGLE shows it).
 
 ### Phase 4 — Combat and items (started)
 

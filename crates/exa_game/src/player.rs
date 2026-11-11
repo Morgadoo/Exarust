@@ -2212,8 +2212,12 @@ fn request_attacks(
             side_started_ms: attacker.side_started_ms,
             feint: fighter.is_some_and(Fighter::feint),
             strikers: attack::held_strikers(entity, blades.iter().map(|(b, _)| b)),
+            breaking_tangle: anim.action == exa_combat::strike_body::BREAK_TANGLE,
         };
         let Some(start) = attack::execute(pb.attack.request(), busy) else {
+            if busy.breaking_tangle && now >= state.end_ms {
+                debug!("attack held at {now} ms: Break Tangle plays");
+            }
             continue;
         };
         // The starters aim at the foe's parry (a shield fighter's or one
@@ -2243,7 +2247,7 @@ fn request_attacks(
         };
         info!(
             "attack: {} in {} with {} at {now} ms (cursor {:.0}° left of the facing, \
-             energy {energy:.2}; last attack tick {}, cooldown {cooldown} ms{})",
+             energy {energy:.2}; last attack tick {}, cooldown {cooldown} ms{}; over {})",
             motion.action(),
             anim.moveset,
             anim.config,
@@ -2256,6 +2260,7 @@ fn request_attacks(
             } else {
                 String::new()
             },
+            anim.action,
         );
         pb.attack.other_side = false;
         // It ends in the stance the player holds by then.

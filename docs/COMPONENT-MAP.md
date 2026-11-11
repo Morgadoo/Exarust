@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.1% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 73.5% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.2% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 73.7% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
 ## By section
@@ -17,12 +17,12 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% |  |
-| World, levels & terrain | 454 | 174 | 31 | 81% | 0% |  |
+| World, levels & terrain | 454 | 174 | 31 | 82% | 0% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 95% | 0% |  |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% |  |

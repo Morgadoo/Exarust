@@ -157,9 +157,91 @@ impl GridPatch {
     }
 }
 
+/// Triangles in a full 6 m block: two for each of its 30 × 30 cells.
+pub const BLOCK_TRIANGLES: usize = 2 * (BLOCK_CELLS * BLOCK_CELLS) as usize;
+
+/// The triangle list a holed block draws instead of the shared patch, as
+/// the original's block activation builds it from the tile's per-vertex
+/// hole mask: `hole(i, j)` for tile vertex column `i`, row `j`.
+///
+/// Rows run along +X from the block's first row; each cell `(i, j)` with
+/// low vertex `v = j · 241 + i` (relative to the block's first vertex) may
+/// emit two triangles split along its other diagonal, `v + 1` to
+/// `v + 241`: `(v + 1, v, v + 241)` when none of those three vertices is
+/// a hole, then `(v + 1, v + 241, v + 242)` when none of those is. Both
+/// face +Y, like the patch's.
+///
+/// `None` when every triangle is present (all 1800): the block then
+/// draws the shared patch ([`GridPatch::block`]), as the original keeps
+/// the patch's list for a block without holes.
+pub fn hole_triangles(hole: impl Fn(u32, u32) -> bool, bx: u32, by: u32) -> Option<Vec<u16>> {
+    let mut indices = Vec::new();
+    let (x0, y0) = (bx * BLOCK_CELLS, by * BLOCK_CELLS);
+    for j in 0..BLOCK_CELLS {
+        let row = (j * TILE_VERTICES) as u16;
+        for i in 0..BLOCK_CELLS {
+            let (x, y) = (x0 + i, y0 + j);
+            // The original packs the four corners into one code: this
+            // row's two vertices in bits 0–1, the next row's in bits 2–3.
+            let code = u32::from(hole(x, y))
+                | u32::from(hole(x + 1, y)) << 1
+                | u32::from(hole(x, y + 1)) << 2
+                | u32::from(hole(x + 1, y + 1)) << 3;
+            let v = row + i as u16;
+            let below = v + TILE_VERTICES as u16;
+            if code & 0x7 == 0 {
+                indices.extend([v + 1, v, below]);
+            }
+            if code & 0xe == 0 {
+                indices.extend([v + 1, below, below + 1]);
+            }
+        }
+    }
+    (indices.len() / 3 < BLOCK_TRIANGLES).then_some(indices)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_block_without_holes_keeps_the_patch() {
+        assert_eq!(hole_triangles(|_, _| false, 3, 5), None);
+    }
+
+    #[test]
+    fn a_holed_block_splits_along_the_other_diagonal() {
+        // One hole at the block's vertex (1, 1): the four cells around it
+        // lose the triangles touching it.
+        let (bx, by) = (2, 1);
+        let at = (bx * BLOCK_CELLS + 1, by * BLOCK_CELLS + 1);
+        let list = hole_triangles(|i, j| (i, j) == at, bx, by).unwrap();
+        // Cell (0, 0) keeps A (vertices 1, 0, 241), loses B (its 242).
+        assert_eq!(&list[..3], &[1, 0, 241]);
+        // Cell (1, 0) loses A (its 241 + 1) and B (242 is (1, 1)).
+        // Cell (0, 1) loses A (its 1 is (1, 1)) and B too.
+        // Cell (1, 1) loses A (its v), keeps B (vertices 243, 483, 484).
+        assert!(list.chunks(3).any(|t| t == [243, 483, 484]));
+        assert!(!list.chunks(3).any(|t| t.contains(&242)));
+        // Six of the 1800 triangles touch the hole.
+        assert_eq!(list.len() / 3, BLOCK_TRIANGLES - 6);
+        // Every triangle faces +Y.
+        for t in list.chunks(3) {
+            let p = |i: u16| [(i % 241) as f32, (i / 241) as f32];
+            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+            assert!((b[1] - a[1]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[1] - a[1]) > 0.0);
+        }
+    }
+
+    #[test]
+    fn a_hole_on_the_far_edge_reaches_the_block() {
+        // The block's last vertex row and column (30) belong to the next
+        // block too: a hole there still cuts this block's edge cells.
+        let (bx, by) = (0, 0);
+        let list = hole_triangles(|i, j| (i, j) == (30, 30), bx, by).unwrap();
+        // Only cell (29, 29)'s second triangle touches vertex (30, 30).
+        assert_eq!(list.len() / 3, BLOCK_TRIANGLES - 1);
+    }
 
     #[test]
     fn quads_split_low_to_high_and_face_up() {

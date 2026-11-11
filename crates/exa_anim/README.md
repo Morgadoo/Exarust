@@ -106,8 +106,10 @@ owed to the next frame), 0.6 × the race's base a tick, added in double
   takes the source child's id and its new parent's controller link) and
   `copy_by_id` (children matched by id), with `start` choosing between
   numbering and copying the first listed body. The controller state is
-  the caller's; models do not rebuild in the running game yet, so nothing
-  calls these.
+  the caller's. Nothing calls these: the original runs them when a
+  character is added to the world and when the character generator
+  rebuilds a body, to carry its shared motion controller's per-part
+  records, and Exarust's clip player keeps its state on the character.
 - Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
   `StartTracks` starts the tracks of a node and the nodes under it as
   using an object does (once and reverse swap at each start), and every
