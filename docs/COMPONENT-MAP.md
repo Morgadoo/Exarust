@@ -80,7 +80,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Skinning | Characters, motion & animation | 25 | 91% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 92% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
 | TGSLines | UI | 24 | 89% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
-| SG_Thaum_Mind | Thaumaturgy & effects | 21 | 95% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
+| SG_Thaum_Mind | Thaumaturgy & effects | 21 | 96% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
 
 ## Combat rules
 
