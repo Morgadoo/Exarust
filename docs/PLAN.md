@@ -1437,6 +1437,8 @@ Round 176 palette: levels read from the archive roll their apparel colours, vari
 
 Round 177 motilepart4: bodies scale their pins by the character size as they join the world, and the player picks its target before attacks aim.
 
+Round 182 combat2: the weapon stat record is fetched up the body chain, the holding pass mass redistribution runs on the registered weapon body (every armed body moves from tick 1; a debug flag restores main), the worn rules re-run on every possessions change with the original golem core nesting, the Force Shell damage callback and the clawed overhead hand restore are wired, and the NPC cast runs at the first place after its contact pass; weapons stay held in the GPU duels.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
