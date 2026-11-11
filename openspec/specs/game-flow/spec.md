@@ -448,3 +448,10 @@ A teleporter journey's level change SHALL pass no flags: no portal use, no AI ha
 #### Scenario: A journey to level 7
 - **WHEN** a journey's resting bubble shrinks away and asks for level 7
 - **THEN** the level exit's steps hold no portal use and no AI hand-over, and the transition uses the 600 ms fade
+
+### Requirement: Portal use step
+The level exit's portal-use step SHALL run the portal use on the player's body (its dissolve burst and `portaluse01`) when the flow applies it, before the transition opens.
+
+#### Scenario: A portal exit
+- **WHEN** the player crosses a level exit zone with the portal bit
+- **THEN** the portal use runs on the player's body and the long transition starts

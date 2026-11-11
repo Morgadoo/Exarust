@@ -88,6 +88,11 @@ pub mod state {
     pub const FIRST_PASS: u32 = 0x200;
     /// The emitter has finished; the original removes its node.
     pub const FINISHED: u32 = 0x1000;
+    /// The bit the level portal's ring spawn clears when its ring wraps,
+    /// and a seeding pass clears when it is done. Nothing sets it: an
+    /// emitter starts without it ([`INITIAL`]) and no routine read for
+    /// these effects writes it, so both clears change nothing.
+    pub const RING: u32 = 0x2;
 }
 
 /// Random draws in the original's order. The integer stream is the
@@ -408,6 +413,41 @@ impl Params {
             light: d.light,
         }
     }
+}
+
+/// How an emitter places its new particles.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum SpawnRule {
+    /// The system's own spawn, from its sources.
+    #[default]
+    Sources,
+    /// The level portal effect's spawn on an upright ellipse at the node's
+    /// place, drawn at `scale` ([`Emitter::spawn_ring`]).
+    PortalRing { scale: f32 },
+}
+
+/// The portal ring's radii (cm): 80 across, 115 up, 10 deep.
+pub const RING_RADIUS_X: f32 = 80.0;
+pub const RING_RADIUS_Y: f32 = 115.0;
+pub const RING_THICKNESS: f32 = 10.0;
+/// The ring's arc: `2π·0.76·u − 0.76π`.
+pub const RING_TURN: f64 = 0.76;
+pub const RING_OFFSET: f64 = 2.387_610_416_728_242_6;
+/// The ring's spread, `0.8 + 0.4·u`.
+pub const RING_SPREAD_BASE: f64 = 0.8;
+pub const RING_SPREAD_RANGE: f64 = 0.4;
+/// The ring particle's outward drift: its position is its offset times
+/// this.
+pub const RING_DRIFT: f32 = 1.0015;
+
+/// One particle a seeding pass writes ([`Emitter::seed`]): its position,
+/// its previous position, its life in ticks and its look.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Seed {
+    pub at: Vec3,
+    pub before: Vec3,
+    pub life: i32,
+    pub variant: u8,
 }
 
 /// The node an emitter hangs from: its world position and rotation.
@@ -814,6 +854,8 @@ pub struct Emitter {
     pub active: bool,
     /// The emitter's own state word ([`state`]).
     pub emitter_flags: u32,
+    /// How new particles are placed ([`SpawnRule`]).
+    pub spawn_rule: SpawnRule,
     /// Ticks run, for finitely lived emitters.
     pub ticks: i32,
     /// The tick a finitely lived emitter stops at (the original keeps a
@@ -880,6 +922,7 @@ impl Emitter {
             bounds: Bounds::default(),
             active: true,
             emitter_flags,
+            spawn_rule: SpawnRule::Sources,
             ticks: 0,
             deadline: i32::MAX,
             hits: 0,
@@ -1060,11 +1103,17 @@ impl Emitter {
                 if self.sources[index].count > 0 {
                     self.sources[index].count -= 1;
                 }
-                let slot = self.spawn(index, rng);
-                spawned += 1;
-                // The pull is along the source's own second axis, untransformed.
-                let src = self.sources[index];
-                self.slots[slot].q += src.axes[1] * -src.kick;
+                let slot = match self.spawn_rule {
+                    SpawnRule::Sources => Some(self.spawn(index, rng)),
+                    SpawnRule::PortalRing { scale } => self.spawn_ring(scale, rng),
+                };
+                if let Some(slot) = slot {
+                    spawned += 1;
+                    // The pull is along the source's own second axis,
+                    // untransformed.
+                    let src = self.sources[index];
+                    self.slots[slot].q += src.axes[1] * -src.kick;
+                }
                 if p.start_life == 0 && self.next == self.params.capacity {
                     self.active = false;
                     break;
@@ -1251,6 +1300,91 @@ impl Emitter {
             self.next = 0;
         }
         slot
+    }
+
+    /// The level portal effect's spawn ([`SpawnRule::PortalRing`]), which
+    /// its class puts in place of the system's own: the ring index moves
+    /// on first and the particle fills the slot it lands on. Past the
+    /// capacity it clears [`state::RING`] and starts again at slot 0,
+    /// unless the head is at slot 1 (the ring is full), which parks the
+    /// index at the capacity and spawns nothing; landing just before the
+    /// head steps back and spawns nothing as well.
+    ///
+    /// The particle: the angle `2π·0.76·u − 0.76π` (double precision,
+    /// so the arc spans ±137° about the top), the spread `s = 0.8 + 0.4·u`
+    /// and the ellipse point `(sin·s·scale·80, cos·s·scale·115,
+    /// scale·10·(u − 0.5))` cm in world axes (the node's turn is not
+    /// applied). Its previous position is that point plus the node's place,
+    /// its position the point times 1.0015 plus the place, so it drifts
+    /// outward by 0.0015 of its offset a tick. It starts with the
+    /// template's full life; with [`flags::UV_8`] a 3-bit look is drawn,
+    /// with [`flags::UV_32`] a 5-bit one, otherwise the slot keeps its
+    /// look. The slot's random size stays.
+    fn spawn_ring<R: Draws>(&mut self, scale: f32, rng: &mut R) -> Option<usize> {
+        let p = self.params;
+        let capacity = p.capacity;
+        self.next += 1;
+        if capacity < self.next {
+            self.emitter_flags &= !state::RING;
+            if self.first == 1 {
+                self.next = capacity;
+                return None;
+            }
+            self.next = 0;
+        } else if self.first as i64 - 1 == self.next as i64 {
+            self.next -= 1;
+            return None;
+        }
+        let angle = f64::from(std::f32::consts::TAU) * RING_TURN * rng.unit() - RING_OFFSET;
+        let (sin, cos) = exa_physics::engine_math::sin_cos(angle as f32);
+        let spread = (rng.unit() * RING_SPREAD_RANGE + RING_SPREAD_BASE) as f32;
+        let (sin, cos) = (sin * spread, cos * spread);
+        let offset = Vec3::new(
+            sin * scale * RING_RADIUS_X,
+            cos * scale * RING_RADIUS_Y,
+            (f64::from(scale) * f64::from(RING_THICKNESS) * (rng.unit() - 0.5)) as f32,
+        );
+        let slot = self.next;
+        let variant = if p.flags & flags::UV_8 != 0 {
+            rng.int(8) as u8
+        } else if p.flags & flags::UV_32 != 0 {
+            rng.int(32) as u8
+        } else {
+            self.slots[slot].variant
+        };
+        let place = self.node.position;
+        let s = &mut self.slots[slot];
+        s.life = p.start_life;
+        s.variant = variant;
+        s.q = offset + place;
+        s.p = offset * RING_DRIFT + place;
+        Some(slot)
+    }
+
+    /// A seeding pass (the portal use's dissolve burst): the ring is
+    /// emptied and the particles are written from slot 0 on, in order,
+    /// each with its life, look, position and previous position (the
+    /// slot's random size stays), stopping when the ring's capacity is
+    /// reached. Then the box is measured over them and [`state::RING`] is
+    /// cleared. Returns how many were written. The emitter keeps running
+    /// its own spawn afterwards, as the original's does.
+    pub fn seed(&mut self, particles: &[Seed]) -> usize {
+        self.first = 0;
+        self.next = 0;
+        for particle in particles {
+            let s = &mut self.slots[self.next];
+            s.life = particle.life;
+            s.variant = particle.variant;
+            s.q = particle.before;
+            s.p = particle.at;
+            self.next += 1;
+            if self.next == self.params.capacity {
+                break;
+            }
+        }
+        self.update_bounds();
+        self.emitter_flags &= !state::RING;
+        self.next
     }
 
     /// The bounding box of the live particles, padded by 5 cm.
@@ -2559,6 +2693,77 @@ mod tests {
         let s = e.slots[0];
         // θ = 0: the source sits on +X and its y axis points out along +X.
         assert!((s.p - s.q - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-5);
+    }
+    /// A template with a small pool, for the ring's and the seed's tests.
+    fn pooled(pool: i32, flags: u32) -> Descriptor {
+        let mut d = SMALL;
+        d.pool = pool;
+        d.flags = flags;
+        d.life = 1.5;
+        d
+    }
+
+    #[test]
+    fn the_portal_ring_fills_slot_one_first_on_its_ellipse() {
+        let mut e = Emitter::new(pooled(4, flags::UV_32), 1.0, Vec::new());
+        e.spawn_rule = SpawnRule::PortalRing { scale: 1.0 };
+        e.enter(NodeFrame {
+            position: Vec3::new(100.0, 0.0, 0.0),
+            rotation: Mat3::IDENTITY,
+        });
+        // u = 0.76π / (2π·0.76) = 0.5 puts the angle at 0: straight up.
+        let mut rng = Scripted::new(&[7], &[0.5, 0.5, 0.5]);
+        let slot = e.spawn_ring(1.0, &mut rng);
+        assert_eq!(slot, Some(1));
+        let s = e.slots[1];
+        assert_eq!(s.life, e.params.start_life);
+        assert_eq!(s.variant, 7);
+        // Spread 1: (0, 115, 0) from the node, drifting out by 0.0015.
+        assert!((s.q - Vec3::new(100.0, 115.0, 0.0)).length() < 1e-3);
+        assert!((s.p - Vec3::new(100.0, 115.0 * RING_DRIFT, 0.0)).length() < 1e-3);
+    }
+
+    #[test]
+    fn the_portal_ring_stops_short_of_its_head() {
+        let mut e = Emitter::new(pooled(3, 0), 1.0, Vec::new());
+        let mut rng = Scripted::new(&[], &[]);
+        // Head at 0: slots 1, 2, 3, then the wrap writes slot 0.
+        for want in [1, 2, 3, 0] {
+            assert_eq!(e.spawn_ring(1.0, &mut rng), Some(want));
+        }
+        // With the head at 2 the next slot, 1, is just before it: the index
+        // steps back and nothing spawns.
+        e.first = 2;
+        assert_eq!(e.spawn_ring(1.0, &mut rng), None);
+        assert_eq!(e.next, 0);
+        // A wrap onto a head at 1 parks the index at the capacity.
+        e.first = 1;
+        e.next = 3;
+        assert_eq!(e.spawn_ring(1.0, &mut rng), None);
+        assert_eq!(e.next, 3);
+    }
+
+    #[test]
+    fn a_seed_pass_fills_the_ring_from_slot_zero_to_its_capacity() {
+        let mut e = Emitter::new(pooled(3, flags::ONE_SHOT), 1.0, Vec::new());
+        e.enter(NodeFrame::default());
+        let seeds: Vec<Seed> = (0..5)
+            .map(|i| Seed {
+                at: Vec3::splat(i as f32 + 1.0),
+                before: Vec3::splat(i as f32),
+                life: 10 + i,
+                variant: i as u8,
+            })
+            .collect();
+        assert_eq!(e.seed(&seeds), 3);
+        assert_eq!(e.live(), 3);
+        let lives: Vec<i32> = e.particles().map(|(_, _, _, life)| life).collect();
+        assert_eq!(lives, [10, 11, 12]);
+        assert_eq!(e.slots[2].p, Vec3::splat(3.0));
+        assert_eq!(e.slots[2].q, Vec3::splat(2.0));
+        // The box: from 1 to 3, five past the last.
+        assert_eq!(e.bounds.centre, Vec3::splat(2.0));
+        assert_eq!(e.bounds.extent, Vec3::splat(6.0));
     }
 }
 

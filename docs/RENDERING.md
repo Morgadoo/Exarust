@@ -3765,10 +3765,10 @@ lengthens as the view tilts (`(y⁴ + 0.2)`, `y` the camera's backward-axis
 height); the colour the environment's times 2.2 and
 `0.075·intensity + 0.075`, its alpha `(0.5·intensity + 0.5)(|y| + 0.5)`;
 and the eye's `(0.6 − 0.000667·d)⁴` fade. `exa_game::weather` runs it
-live (see [Rain](#rain) below). `effects::portal_effect` spawns a portal's particles one at a
+live (see [Rain](#rain) below). A level portal's sparks spawn one at a
 time on an 80 × 115 cm ellipse at the node's place, each starting with an
 outward step of 0.0015 of its offset, with the original's 3- or 5-bit look
-index draws. `effects::fire_node` builds the `_FlameMat01` node's warm
+index draws (see [Level portals](#level-portals) below). `effects::fire_node` builds the `_FlameMat01` node's warm
 800 cm light, and the colour ramp the unit's object conversion derives
 from a record byte (`flame_ramp`); the row itself is `effects::fire_row`. The row's ribbon is
 built each frame from the two shifted ends of the line and the two lagging
@@ -3783,6 +3783,39 @@ falloff, the `Anim` roll and fade, and a 1 × 5 `GrdTex` palette from
 transparent to warm white. The draw is additive [guess: the record's blend
 state is not in this path] and the original's per-supersample scissor pass
 is collapsed to one draw.
+
+### Level portals
+
+A level portal marker (`_PortalPrt` in `uwportal01`) loaded into the game's
+scene becomes a particle system at its place (`exa_game::effects::portal`),
+run by the same emitter as the fires (`exa_world::particles`, drawn by
+`exa_world::flame`):
+- **Sparks.** Template: 140 a second, 1.5 s lives, half size 36 cm (each
+  ring slot's size drawn once, 18 to 36), the velocity tripling each
+  second, stretch 1.5, a pool of 2048, the key colours with the slot
+  parity (six blue keys), 32 looks, velocity-aligned diamonds. The portal
+  effect's class replaces the system's spawn: the ring index moves on
+  first, and each particle starts on an upright ellipse (80 cm across,
+  115 up, 10 deep, the arc ±137° about the top, spread 0.8–1.2) at the
+  node's place in world axes, its full life ahead, moving out by 0.0015 of
+  its offset a tick. The `Portal01` loop plays at 0.1 with the wide pitch
+  walk. The node's light (0.49, 0.69, 1) at 0.75 over 500 cm hangs 50 cm
+  above it; the template's own light values are not driven [guess].
+- **The portal use.** A level exit with the portal bit runs it on the
+  player: a `_PrtlDisp` system (0.5 s lives, one-shot, stretch 2, six keys
+  with a bright blue flash early in the life) is seeded over the body's
+  part boxes (6 cm cells, two in five taken, each placed halfway between
+  the part's two frames, jittered ±1.5 cm and pushed 1.5 % out from the
+  body's centre), and `portaluse01` plays at 0.6. The seeded particles
+  then age and fly as the system's own. The system hangs unplaced under
+  the body's parent and keeps its own spawn there [guess].
+- **Material.** Both draw with the built-in `_PrtlPrt01`: `PrtDot02`, the
+  blend word 0x101 (ONE, ONE), unlit and emissive (`exa_render::flame`,
+  `FlameMaterial::additive`: the alpha is written as zero under the
+  premultiplied blend, so the colour adds in full). `PrtDot02` is an
+  alpha-only 2 × 2 atlas of sparkle blobs (white with the shape in its
+  alpha), so the colour is weighted by the texture's alpha [guess: how the
+  material program reads an alpha-only picture is not read].
 
 ### Rain
 

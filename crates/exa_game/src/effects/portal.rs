@@ -1,20 +1,35 @@
 //! Level portals: the sparks that replace a portal marker when a level is
 //! loaded, and the dissolve burst thrown over a body that steps through one.
 //!
-//! A portal marker (a plain node ending in the 0x3dd0_e004 emitter record,
-//! `_PortalPrt` in `uwportal01`) becomes a `_PrtlPrt01` particle system
-//! with a soft blue light 50 cm above it. Using a portal builds a second
-//! `_PrtlPrt01` system, named `_PrtlDisp`, seeds it with particles across
-//! every model node's bounding box of the body, pushed out from the body's
-//! centre, and plays `portaluse01`.
+//! - **The marker's sparks** ([`light_portals`]): a portal marker (a plain
+//!   node ending in the 0x3dd0_e004 emitter record, `_PortalPrt` in
+//!   `uwportal01`) loaded into the game's scene becomes a `_PortalPrt`
+//!   particle system at its place, with the portal effect's own spawn on
+//!   an upright ellipse (`exa_world::particles::SpawnRule::PortalRing`),
+//!   template [`SPARKS`], and a soft blue light 50 cm above it.
+//! - **The portal use** ([`PortalUse`], [`use_portals`]): the level exit's
+//!   portal bit (the zone exits of the level portals) runs it on the
+//!   player before the long transition. It builds a second system,
+//!   `_PrtlDisp` (template [`DISSOLVE`]), seeds it over every model node's
+//!   box of the body ([`seed_burst`], `Emitter::seed`), pushed out from the
+//!   body's centre, and plays `portaluse01` at the body (0.6, pitch 1).
+//!   The seeded particles then age and fly as any other particle of the
+//!   system; the system keeps its own spawn at its node, which hangs
+//!   unplaced under the body's parent (the level's origin) [guess].
+//! - Both draw with the built-in `_PrtlPrt01` material: `PrtDot02`, the
+//!   blend word 0x101 (ONE, ONE), unlit (`exa_render::flame`, additive).
 //!
-//! Sizes are the original's centimetres. The seeding rules are plain
-//! functions; nothing here draws or spawns.
+//! `--debug-portal-use FRAME` runs the portal use on the player at that
+//! frame after the load, without a level change (`docs/DEBUGGING.md`).
+//!
+//! Sizes are the original's centimetres.
 
 use bevy::prelude::*;
+use exa_world::flame::Flame;
+use exa_world::particles::{Descriptor, Emitter, Key, Keys, LightDesc, NodeFrame, Seed, SpawnRule};
 
 use crate::arena::Mt19937;
-use crate::effects::{Frame, TICK_HZ};
+use crate::effects::Frame;
 use crate::item_container::Rng;
 
 /// `_PrtlPrt01`, the shared particle material of both systems.
@@ -30,47 +45,98 @@ pub const IMPORT_FLAG: u32 = 0x10000;
 /// The names the systems carry.
 pub const PORTAL_NODE_NAME: &str = "_PortalPrt";
 pub const DISSOLVE_NODE_NAME: &str = "_PrtlDisp";
-/// The particle system's box keeps this margin past its live particles.
-pub const BOUNDS_MARGIN_CM: f32 = 5.0;
 
-/// The sparks a level's portal marker gives off.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ParticleSpec {
-    /// Particles started per second.
-    pub rate_per_second: f32,
-    /// Lifetime, seconds.
-    pub life_seconds: f32,
-    /// Base half size, centimetres.
-    pub half_size_cm: f32,
-    /// Initial speed, centimetres per second.
-    pub speed_cm_per_second: f32,
-    /// Growth over the life, a multiple of the half size.
-    pub growth: f32,
-}
+/// `_PrtlPrt01`'s particle texture (`PrtDot02.rfi`).
+pub const PARTICLE_TEXTURE: &str = "PrtDot02";
 
-impl ParticleSpec {
-    /// Lifetime in simulation ticks: `trunc(83 · seconds)`.
-    pub fn lifetime_ticks(self) -> i32 {
-        (TICK_HZ as f32 * self.life_seconds).trunc() as i32
-    }
-}
+/// The marker sparks' colour keys: six, blue, opaque in the middle of the
+/// life (the RGB is not scaled at load: only the fires' tables are).
+const SPARK_KEYS: &[Key] = &[
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [10, 10, 64, 0],
+    [10, 15, 64, 255],
+    [15, 25, 80, 255],
+    [15, 40, 100, 255],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+];
 
-/// The portal marker's sparks: 140 a second, 1.5 s, 36 cm, 16 cm/s, ×3.
-pub const SPARKS: ParticleSpec = ParticleSpec {
-    rate_per_second: 140.0,
-    life_seconds: 1.5,
-    half_size_cm: 36.0,
-    speed_cm_per_second: 16.0,
-    growth: 3.0,
+/// The dissolve's colour keys: six, a bright blue flash early in the life.
+const DISSOLVE_KEYS: &[Key] = &[
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [10, 10, 64, 255],
+    [48, 64, 255, 255],
+    [15, 25, 64, 255],
+    [4, 10, 32, 255],
+    [2, 5, 16, 255],
+    [0, 0, 0, 0],
+];
+
+/// The marker sparks' template: 140 a second for 1.5 s, half size 36 cm
+/// (each slot's drawn once between 18 and 36), speed 16 cm/s, the velocity
+/// tripling each second, growth 1, stretch 1.5, spread 1, a pool of 2048,
+/// flags 0x4400_2B01 (the key colours with the slot parity, 32 looks,
+/// random sizes, the wide pitch walk, diamonds), a light of (0.49, 0.69,
+/// 1) at 16 over 900 cm (flicker 0.25) and the `Portal01` loop at 0.1.
+pub const SPARKS: Descriptor = Descriptor {
+    rate: 140,
+    life: 1.5,
+    half_size: 36.0,
+    speed: 16.0,
+    retention: 3.0,
+    growth: 1.0,
+    stretch: 1.5,
+    spawn_radius: 0.0,
+    spread: 1.0,
+    buoyancy: 0.0,
+    centring: 0.0,
+    pool: 2048,
+    flags: 0x4400_2B01,
+    keys: Keys {
+        count: 6,
+        entries: SPARK_KEYS,
+    },
+    light: LightDesc {
+        colour: [0.49, 0.69, 1.0],
+        intensity: 16.0,
+        radius: 900.0,
+        flicker: 0.25,
+    },
+    sound: Some("Portal01"),
+    volume: 0.1,
+    density: 0,
+    dose: 0.0,
 };
 
-/// The dissolve burst's particles: 60 a second, 0.5 s, 36 cm, 48 cm/s.
-pub const DISSOLVE: ParticleSpec = ParticleSpec {
-    rate_per_second: 60.0,
-    life_seconds: 0.5,
-    half_size_cm: 36.0,
-    speed_cm_per_second: 48.0,
-    growth: 2.0,
+/// The dissolve's template: 60 a second for 0.5 s, half size 36 cm, speed
+/// 48 cm/s, no velocity loss, growth 1, stretch 2, spread 1, a pool of
+/// 2048, flags 0x4000_2B11 (as the sparks' with the one-shot bit and
+/// without the wide pitch walk), no light and no sound.
+pub const DISSOLVE: Descriptor = Descriptor {
+    rate: 60,
+    life: 0.5,
+    half_size: 36.0,
+    speed: 48.0,
+    retention: -1.0,
+    growth: 1.0,
+    stretch: 2.0,
+    spawn_radius: 0.0,
+    spread: 1.0,
+    buoyancy: 0.0,
+    centring: 0.0,
+    pool: 2048,
+    flags: 0x4000_2B11,
+    keys: Keys {
+        count: 6,
+        entries: DISSOLVE_KEYS,
+    },
+    light: LightDesc::NONE,
+    sound: None,
+    volume: 0.0,
+    density: 0,
+    dose: 0.0,
 };
 
 /// The soft blue light a portal marker adds, 50 cm above its node.
@@ -118,13 +184,11 @@ pub const PORTAL_LIGHT: LightSpec = LightSpec {
 pub const SYSTEM_SCALE: f32 = 1.0;
 pub const SYSTEM_KIND_WORD: u32 = PORTAL_EFFECT_KIND;
 pub const SYSTEM_CLEAR_FLAG: u32 = 0x0002_0000;
-/// A seeding pass clears this bit of the dissolve system's flags.
-pub const BURST_CLEAR_FLAG: u32 = 0x2;
 
-/// The spark system a level's portal marker becomes.
+/// The spark system a level's portal marker becomes (its template is
+/// [`SPARKS`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PortalSpark {
-    pub particle: ParticleSpec,
     pub light: LightSpec,
     /// The geometry's sub-object kind and node flag.
     pub sub_object_kind: i32,
@@ -140,7 +204,6 @@ pub struct PortalSpark {
 
 /// The marker's spark system: `_PrtlPrt01` sparks and the blue light.
 pub const PORTAL: PortalSpark = PortalSpark {
-    particle: SPARKS,
     light: PORTAL_LIGHT,
     sub_object_kind: SUB_OBJECT_KIND,
     geometry_flag: GEOMETRY_FLAG,
@@ -151,10 +214,10 @@ pub const PORTAL: PortalSpark = PortalSpark {
     cleared_flags: SYSTEM_CLEAR_FLAG,
 };
 
-/// The dissolve a body gets when it uses a portal.
+/// The dissolve a body gets when it uses a portal (its template is
+/// [`DISSOLVE`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PortalDissolve {
-    pub particle: ParticleSpec,
     pub material: &'static str,
     pub node_name: &'static str,
     /// The pull toward the body's centre each seeded particle takes; it is
@@ -168,7 +231,6 @@ pub struct PortalDissolve {
 /// The portal-use dissolve: `_PrtlPrt01` again, `_PrtlDisp`-named, pushed
 /// out from the body's centre, and `portaluse01` at 0.6.
 pub const DISSOLVE_EFFECT: PortalDissolve = PortalDissolve {
-    particle: DISSOLVE,
     material: PARTICLE_MATERIAL,
     node_name: DISSOLVE_NODE_NAME,
     pull: SEED_VELOCITY_PULL,
@@ -376,144 +438,217 @@ pub fn imported_marker(
     })
 }
 
-/// A particle system's ring: its per-slot life, look, position and previous
-/// position, its live count and capacity, and the template's lifetime. The
-/// original writes a slot's life at one array, its look
-/// at another and its two points at a third, and stops the seeding pass the
-/// moment the ring is full.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ParticleRing {
-    pub life: Vec<i32>,
-    pub look: Vec<u8>,
-    pub at: Vec<Vec3>,
-    pub before: Vec<Vec3>,
-    /// Live particles: the system's count word.
-    pub count: usize,
-    pub lifetime_ticks: i32,
-}
-
-impl ParticleRing {
-    /// A ring of `capacity` empty slots.
-    pub fn new(capacity: usize, lifetime_ticks: i32) -> Self {
-        Self {
-            life: vec![0; capacity],
-            look: vec![0; capacity],
-            at: vec![Vec3::ZERO; capacity],
-            before: vec![Vec3::ZERO; capacity],
-            count: 0,
-            lifetime_ticks,
-        }
-    }
-
-    /// How many particles the ring can hold.
-    pub fn capacity(&self) -> usize {
-        self.life.len()
-    }
-
-    pub fn is_full(&self) -> bool {
-        self.count == self.capacity()
-    }
-
-    /// Writes the seeded particles into the ring's slots, in order, and
-    /// sets the live count. The seeding pass stops at the ring's capacity.
-    pub fn write(&mut self, seeded: &[Seeded]) {
-        self.count = seeded.len().min(self.capacity());
-        for (slot, particle) in seeded.iter().take(self.count).enumerate() {
-            self.life[slot] = particle.life;
-            self.look[slot] = particle.look;
-            self.at[slot] = particle.at;
-            self.before[slot] = particle.before;
-        }
-    }
-}
-
-/// A burst that has just started: the seeded particles and the system flag
-/// word left after the pass.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BurstStart {
-    pub seeded: Vec<Seeded>,
-    pub flags_cleared: u32,
-}
-
-/// Start a dissolve burst on a body: stop the ring, seed the body's nodes
-/// around its root node's place, and clear the burst flag. The original's
-/// flush of the finished particle system is the caller's rebuild.
-#[allow(clippy::too_many_arguments)]
-pub fn start_dissolve(
-    nodes: &[SeedNode],
-    centre_cm: Vec3,
-    ring: &mut ParticleRing,
-    rng: &mut Rng,
-    mt: &mut Mt19937,
-    flags: u32,
-) -> BurstStart {
-    let seeded = seed_burst(
-        nodes,
-        centre_cm,
-        ring.life.len(),
-        ring.lifetime_ticks,
-        rng,
-        mt,
-    );
-    ring.write(&seeded);
-    BurstStart {
-        seeded,
-        flags_cleared: flags & !BURST_CLEAR_FLAG,
-    }
-}
-
-/// The box after a seeding pass: half way from the min to the max particle,
-/// half extents five centimetres past the max, and the sphere through the
-/// box's corner. No particles gives none.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BurstBounds {
-    pub centre: Vec3,
-    pub half: Vec3,
-    pub radius: f32,
-}
-
-/// The box over the seeded particles, in the particle system's arithmetic
-/// (the min and max themselves come from the system's own pass, outside
-/// this group).
-pub fn burst_bounds(points: &[Vec3]) -> Option<BurstBounds> {
-    let first = *points.first()?;
-    let (mut min, mut max) = (first, first);
-    for &p in points {
-        min = min.min(p);
-        max = max.max(p);
-    }
-    let centre = min + (max - min) * 0.5;
-    let half = (max - centre) + Vec3::splat(BOUNDS_MARGIN_CM);
-    let square = (half.x * half.x + half.y * half.y) + half.z * half.z;
-    Some(BurstBounds {
-        centre,
-        half,
-        radius: if 0.0 < square { square.sqrt() } else { square },
-    })
-}
-
-/// The portal light's node: a child of the marker 50 cm above it.
+/// The portal light's node: a child of the spark system 50 cm above it.
 #[derive(Component, Debug)]
 pub struct PortalLight;
 
-/// A loaded level portal marker gets the portal's blue light, as the
-/// original's import handler builds it on the marker's place when the
-/// marker is loaded into the game's scene (the game plugin running is that
-/// scene). The marker's spark system is not simulated. The light hangs
-/// 50 cm up the marker's own axis; the original's system takes only the
-/// marker's position, which is the same for an upright marker.
+/// A level portal's spark system (`_PortalPrt`), at its marker's place.
+#[derive(Component, Debug)]
+pub struct PortalSparks;
+
+/// A portal use's dissolve system (`_PrtlDisp`).
+#[derive(Component, Debug)]
+pub struct PortalDissolveNode;
+
+/// A loaded level portal marker gets the portal's spark system and blue
+/// light, as the original's import handler builds them on the marker's
+/// place when the marker is loaded into the game's scene (the game plugin
+/// running is that scene): the system node at the marker, scale 1, the
+/// portal effect's ring spawn, drawn with `_PrtlPrt01`; the light its
+/// child 50 cm up. The system's template light is not driven: the light
+/// keeps the import's 0.75 over 500 cm [guess: whether the system's frame
+/// pass rewrites the light it is handed is not read].
 pub fn light_portals(
     mut commands: Commands,
-    markers: Query<Entity, Added<exa_world::PortalMarker>>,
+    markers: Query<(Entity, &GlobalTransform), Added<exa_world::PortalMarker>>,
 ) {
-    for marker in &markers {
+    for (marker, place) in &markers {
+        info!(
+            "portal: sparks and light on the marker {marker:?} at {:?} m",
+            place.translation()
+        );
+        let mut emitter = Emitter::new(SPARKS, SYSTEM_SCALE, Vec::new());
+        emitter.spawn_rule = SpawnRule::PortalRing {
+            scale: SYSTEM_SCALE,
+        };
+        let seed = marker.index_u32().wrapping_mul(0x9E37_79B9) | 1;
+        let system = commands
+            .spawn((
+                Name::new(PORTAL_NODE_NAME),
+                PortalSparks,
+                Flame::new(emitter, 0.0, PARTICLE_TEXTURE, seed).additive(),
+                Transform::IDENTITY,
+                ChildOf(marker),
+            ))
+            .id();
         commands.spawn((
             Name::new(PORTAL_NODE_NAME),
             PortalLight,
             exa_world::light_bundle(&portal_light()),
             Transform::from_translation(PORTAL_LIGHT.offset_cm / 100.0),
-            ChildOf(marker),
+            ChildOf(system),
         ));
+    }
+}
+
+/// Run the portal use on a body: the dissolve burst over it and
+/// `portaluse01` ([`use_portals`]). The level exit's portal bit sends it
+/// for the player (`crate::flow`'s `Step::PortalUse`).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortalUse {
+    pub body: Entity,
+}
+
+/// The burst's random streams: the engine's linear sequence and the
+/// run-time library's twister, process-wide in the original.
+#[derive(Resource)]
+pub struct PortalUseDraws {
+    pub rng: Rng,
+    pub mt: Mt19937,
+}
+
+impl Default for PortalUseDraws {
+    fn default() -> Self {
+        Self {
+            rng: Rng(1),
+            mt: Mt19937::new(5489),
+        }
+    }
+}
+
+/// A body part as a seeded node: its spheres' box in its own space and
+/// its frames (cm) now and where the last tick began.
+pub fn part_seed_node(part: &exa_physics::body::Part) -> Option<SeedNode> {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for &(centre, radius) in part.spheres.iter() {
+        min = min.min(centre - Vec3::splat(radius));
+        max = max.max(centre + Vec3::splat(radius));
+    }
+    if !(min.cmple(max).all()) {
+        return None;
+    }
+    let frame = |affine: bevy::math::Affine3A| Frame {
+        x: affine.matrix3.x_axis.into(),
+        y: affine.matrix3.y_axis.into(),
+        z: affine.matrix3.z_axis.into(),
+        at: Vec3::from(affine.translation) * 100.0,
+    };
+    Some(SeedNode {
+        centre: (min + max) * 50.0,
+        half: (max - min) * 50.0,
+        current: frame(part.transform()),
+        previous: frame(part.previous_transform()),
+        children: Vec::new(),
+    })
+}
+
+/// The portal use ([`PortalUse`]): a `_PrtlDisp` system from [`DISSOLVE`]
+/// at scale 1, seeded over the body's model nodes (one per body part, its
+/// spheres' box [guess: the original walks the body's model nodes and
+/// their geometry boxes]) around the root part's place, the burst's
+/// ring then flying as the system's own; and `portaluse01` at the body's
+/// place, volume 0.6, pitch 1, flags 0, its buffer loaded once.
+#[allow(clippy::too_many_arguments)]
+pub fn use_portals(
+    mut commands: Commands,
+    mut uses: MessageReader<PortalUse>,
+    bodies: Query<(&exa_physics::body::Ragdoll, &GlobalTransform)>,
+    mut draws: ResMut<PortalUseDraws>,
+    game: Option<Res<exa_assets::Game>>,
+    mut bank: Option<ResMut<exa_audio::SoundBank>>,
+    mut sources: Option<ResMut<Assets<AudioSource>>>,
+    mut env: Option<ResMut<exa_audio::AudioEnvironment>>,
+    mut buffer: Local<Option<Option<u32>>>,
+) {
+    for request in uses.read() {
+        let Ok((body, at)) = bodies.get(request.body) else {
+            info!("portal use: {:?} has no body", request.body);
+            continue;
+        };
+        let nodes: Vec<SeedNode> = body.parts.iter().filter_map(part_seed_node).collect();
+        let centre = body
+            .parts
+            .first()
+            .map_or(at.translation(), |p| Vec3::from(p.transform().translation))
+            * 100.0;
+        let mut emitter = Emitter::new(DISSOLVE, SYSTEM_SCALE, Vec::new());
+        emitter.enter(NodeFrame::default());
+        let PortalUseDraws { rng, mt } = &mut *draws;
+        let seeded = seed_burst(
+            &nodes,
+            centre,
+            emitter.params.capacity,
+            emitter.params.start_life,
+            rng,
+            mt,
+        );
+        let seeds: Vec<Seed> = seeded
+            .iter()
+            .map(|p| Seed {
+                at: p.at,
+                before: p.before,
+                life: p.life,
+                variant: p.look,
+            })
+            .collect();
+        let written = emitter.seed(&seeds);
+        let seed = request.body.index_u32().wrapping_mul(0x85EB_CA6B) | 1;
+        commands.spawn((
+            Name::new(DISSOLVE_NODE_NAME),
+            PortalDissolveNode,
+            exa_world::level_lifecycle::LevelEntity,
+            Flame::new(emitter, 0.0, PARTICLE_TEXTURE, seed).additive(),
+            Transform::IDENTITY,
+        ));
+        let place = at.translation();
+        let played = match (
+            game.as_deref(),
+            bank.as_deref_mut(),
+            sources.as_deref_mut(),
+            env.as_deref_mut(),
+        ) {
+            (Some(game), Some(bank), Some(sources), Some(env)) => (*buffer
+                .get_or_insert_with(|| bank.load_buffer(game, sources, USE_SOUND)))
+            .and_then(|b| env.play_buffer(b, place, USE_SOUND_VOLUME, USE_SOUND_PITCH, 0)),
+            _ => None,
+        };
+        info!(
+            "portal use: {:?} at {place:?} m: {written} particles over {} nodes, {USE_SOUND} voice {played:?}",
+            request.body,
+            nodes.len()
+        );
+    }
+}
+
+/// `--debug-portal-use FRAME`: at that frame after the load the player
+/// runs the portal use, with no level change.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DebugPortalUse(pub Option<u32>);
+
+pub fn debug_portal_use(
+    script: Res<DebugPortalUse>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    players: Query<Entity, With<crate::player::PlayerBody>>,
+    mut uses: MessageWriter<PortalUse>,
+    mut frames: Local<u32>,
+) {
+    let Some(frame) = script.0 else {
+        return;
+    };
+    if loading.is_some() || *frames > frame {
+        return;
+    }
+    *frames += 1;
+    if *frames != frame {
+        return;
+    }
+    match players.iter().next() {
+        Some(body) => {
+            info!("debug portal use: the player at frame {frame}");
+            uses.write(PortalUse { body });
+        }
+        None => info!("debug portal use: no player at frame {frame}"),
     }
 }
 
@@ -564,13 +699,10 @@ mod tests {
         assert!(!replaces_marker(0));
         assert_eq!(PORTAL_NODE_NAME, "_PortalPrt");
         assert_eq!(DISSOLVE_NODE_NAME, "_PrtlDisp");
-        assert_eq!(PORTAL.particle, SPARKS);
         assert_eq!(PORTAL.light, PORTAL_LIGHT);
         assert_eq!(PORTAL.node_name, "_PortalPrt");
         assert_eq!(PORTAL.cleared_flags, 0x0002_0000);
         assert_eq!(PORTAL.kind_word, 0x3dd0_e004);
-        assert_eq!(BURST_CLEAR_FLAG, 0x2);
-        assert_eq!(DISSOLVE_EFFECT.particle, DISSOLVE);
         assert_eq!(DISSOLVE_EFFECT.pull, -0.015);
         assert_eq!(DISSOLVE_EFFECT.sound, "portaluse01");
         assert_eq!(DISSOLVE_EFFECT.volume, 0.6);
@@ -578,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_portal_marker_gets_its_light() {
+    fn a_loaded_portal_marker_gets_its_sparks_and_light() {
         let mut app = App::new();
         app.add_systems(Update, light_portals);
         let marker = app
@@ -589,18 +721,84 @@ mod tests {
             ))
             .id();
         app.update();
+        let mut systems = app
+            .world_mut()
+            .query_filtered::<(Entity, &ChildOf, &Flame), With<PortalSparks>>();
+        let found: Vec<_> = systems.iter(app.world()).collect();
+        assert_eq!(found.len(), 1);
+        let (system, parent, flame) = found[0];
+        assert_eq!(parent.parent(), marker);
+        assert_eq!(
+            flame.emitter().spawn_rule,
+            SpawnRule::PortalRing { scale: 1.0 }
+        );
+        assert_eq!(flame.emitter().params.capacity, 2048);
+        assert_eq!(flame.emitter().params.start_life, 124);
+        assert_eq!(flame.emitter().sound_name(), Some("Portal01"));
         let mut lights = app
             .world_mut()
             .query_filtered::<(&ChildOf, &Transform, &PointLight), With<PortalLight>>();
         let found: Vec<_> = lights.iter(app.world()).collect();
         assert_eq!(found.len(), 1);
         let (parent, at, light) = found[0];
-        assert_eq!(parent.parent(), marker);
+        assert_eq!(parent.parent(), system);
         assert_eq!(at.translation, Vec3::new(0.0, 0.5, 0.0));
         assert_eq!(light.intensity, 0.75 * exa_world::LUMENS_PER_INTENSITY);
-        // Run again: an old marker gets no second light.
+        // Run again: an old marker gets no second system.
         app.update();
         assert_eq!(lights.iter(app.world()).count(), 1);
+    }
+
+    /// The dissolve's template: a one-shot ring of 2048 that lives 41
+    /// ticks; its keys flash blue early in the life.
+    #[test]
+    fn the_dissolve_is_a_one_shot_ring_of_short_lives() {
+        let e = Emitter::new(DISSOLVE, 1.0, Vec::new());
+        assert_eq!(e.params.start_life, 41);
+        assert_eq!(e.params.capacity, 2048);
+        assert_eq!(DISSOLVE.flags & exa_world::particles::flags::ONE_SHOT, 0x10);
+        assert_eq!(SPARKS.flags & exa_world::particles::flags::ONE_SHOT, 0);
+        assert_eq!(DISSOLVE.keys.sample(3.0, false), [48, 64, 255, 255]);
+        assert!(!DISSOLVE.light.is_some());
+        assert!(SPARKS.light.is_some());
+    }
+
+    /// A portal use seeds a dissolve over the player's body parts and
+    /// leaves it in the level.
+    #[test]
+    fn a_portal_use_seeds_a_dissolve_over_the_body() {
+        let mut app = App::new();
+        app.add_message::<PortalUse>()
+            .init_resource::<PortalUseDraws>()
+            .add_systems(Update, use_portals);
+        use exa_physics::body::{PartSetup, Ragdoll};
+        let part = |bone: usize, parent: Option<usize>, y: f32| PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: bevy::math::Affine3A::from_translation(Vec3::new(0.0, y, 0.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: Some(vec![(Vec3::ZERO, 0.15), (Vec3::new(0.0, 0.2, 0.0), 0.1)]),
+        };
+        let ragdoll = Ragdoll::new(&[part(1, None, 1.0), part(2, Some(0), 1.4)]);
+        let body = app
+            .world_mut()
+            .spawn((ragdoll, GlobalTransform::from_translation(Vec3::Y)))
+            .id();
+        app.world_mut().write_message(PortalUse { body });
+        app.update();
+        let mut systems = app
+            .world_mut()
+            .query_filtered::<&Flame, With<PortalDissolveNode>>();
+        let flames: Vec<_> = systems.iter(app.world()).collect();
+        assert_eq!(flames.len(), 1);
+        let live = flames[0].emitter().live();
+        assert!(live > 20, "{live}");
     }
 
     /// A loaded node with the import flag is replaced by a marker at its
@@ -617,71 +815,6 @@ mod tests {
             imported_marker(IMPORT_FLAG, &payload[..3], Vec3::X, 1.0),
             None
         );
-    }
-
-    #[test]
-    fn a_dissolve_fills_its_ring_and_clears_the_burst_flag() {
-        let mut ring = ParticleRing::new(4, 41);
-        assert_eq!((ring.count, ring.capacity()), (0, 4));
-        assert!(!ring.is_full());
-        let start = start_dissolve(
-            &[node(Vec3::new(6.0, 6.0, 6.0))],
-            Vec3::ZERO,
-            &mut ring,
-            &mut Rng(1),
-            &mut Mt19937::new(1),
-            0xffff_ffff,
-        );
-        assert_eq!(start.seeded.len(), 4);
-        assert_eq!(ring.count, 4);
-        assert!(ring.is_full());
-        assert_eq!(start.flags_cleared, 0xffff_fffd);
-        // The ring holds the seeded particles in order.
-        for (slot, particle) in start.seeded.iter().enumerate() {
-            assert_eq!(ring.life[slot], particle.life);
-            assert_eq!(ring.look[slot], particle.look);
-            assert_eq!(ring.at[slot], particle.at);
-            assert_eq!(ring.before[slot], particle.before);
-        }
-        // A smaller ring takes only its capacity.
-        let mut small = ParticleRing::new(1, 41);
-        let start = start_dissolve(
-            &[node(Vec3::splat(6.0))],
-            Vec3::ZERO,
-            &mut small,
-            &mut Rng(1),
-            &mut Mt19937::new(1),
-            0x2,
-        );
-        assert_eq!(small.count, 1);
-        assert_eq!(start.seeded.len(), 1);
-        assert_eq!(start.flags_cleared, 0);
-    }
-
-    #[test]
-    fn a_burst_box_is_the_midpoint_with_a_five_centimetre_margin() {
-        assert_eq!(burst_bounds(&[]), None);
-        let boxed = burst_bounds(&[
-            Vec3::new(-6.0, 0.0, 0.0),
-            Vec3::new(6.0, 2.0, 0.0),
-            Vec3::new(0.0, 4.0, 0.0),
-        ])
-        .unwrap();
-        assert_eq!(boxed.centre, Vec3::new(0.0, 2.0, 0.0));
-        assert_eq!(boxed.half, Vec3::new(11.0, 7.0, 5.0));
-        assert_eq!(boxed.radius, (121.0f32 + 49.0 + 25.0).sqrt());
-    }
-
-    #[test]
-    fn the_lifetimes_are_truncated_tick_counts() {
-        assert_eq!(SPARKS.lifetime_ticks(), 124);
-        assert_eq!(DISSOLVE.lifetime_ticks(), 41);
-        assert_eq!(SPARKS.rate_per_second, 140.0);
-        assert_eq!(DISSOLVE.rate_per_second, 60.0);
-        assert_eq!(DISSOLVE.half_size_cm, 36.0);
-        assert_eq!(SPARKS.speed_cm_per_second, 16.0);
-        assert_eq!(DISSOLVE.speed_cm_per_second, 48.0);
-        assert_eq!(SPARKS.growth, 3.0);
     }
 
     #[test]

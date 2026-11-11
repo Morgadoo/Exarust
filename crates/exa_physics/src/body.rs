@@ -897,10 +897,20 @@ impl Part {
     /// frame through the rest basis, with the nearest rotation taken by
     /// Gram–Schmidt (the edges keep it near rigid).
     pub fn transform(&self) -> Affine3A {
+        self.frame_of(&self.positions)
+    }
+
+    /// The part's rigid world transform from its particles' previous
+    /// positions (where the last tick began), built as [`Part::transform`].
+    pub fn previous_transform(&self) -> Affine3A {
+        self.frame_of(&self.previous)
+    }
+
+    fn frame_of(&self, positions: &[Vec3; 4]) -> Affine3A {
         let edges = Mat3::from_cols(
-            self.positions[1] - self.positions[0],
-            self.positions[2] - self.positions[0],
-            self.positions[3] - self.positions[0],
+            positions[1] - positions[0],
+            positions[2] - positions[0],
+            positions[3] - positions[0],
         );
         let m = edges * self.rest_inverse;
         let x = m.x_axis.normalize_or(Vec3::X);
@@ -908,7 +918,7 @@ impl Part {
         let z = x.cross(y);
         let r = Mat3::from_cols(x, y, z);
         let rest_centre: Vec3 = self.rest.iter().copied().sum::<Vec3>() * 0.25;
-        let centre: Vec3 = self.positions.iter().copied().sum::<Vec3>() * 0.25;
+        let centre: Vec3 = positions.iter().copied().sum::<Vec3>() * 0.25;
         Affine3A::from_mat3_translation(r, centre - r * rest_centre)
     }
 
