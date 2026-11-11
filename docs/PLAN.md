@@ -1916,6 +1916,8 @@ Round 160 aitrig: the AI reads its directions through the engine routines as the
 
 Round 162 shell: torches draw the small fire texture, Constant Displacement wears its shell, and a vanishing body fades blended while its shadow dithers away.
 
+Round 173 gamegui: entering combat mode closes the open game screens and saves store the open screens first, as the original does.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
