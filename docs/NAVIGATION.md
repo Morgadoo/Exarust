@@ -362,7 +362,16 @@ Exarust leaves out two quirks of the off-floor search: the original adds
 to every distance the square of a register it never sets there (the same
 for every cell, so it changes nothing but the bound), and its met map is
 a shared buffer cleared only ±15 cells round the centre; Exarust starts
-each search with a fresh map.
+each search with a fresh map. The buffer is the planner's own stamp table
+(a word per window cell, a half for each layer): the flood clears window
+columns 112 to 143 of rows 112 to 144 and treats any cell holding a
+non-zero half as met, so a cell a previous plan or flood stamped outside
+that box (the planner clears its whole interior before it searches, the
+flood never does) is never entered, and the window's blocked border is
+never entered either. Reproducing it would make a flood's answer depend
+on which plans ran before it, on every thread, in an order the frame's
+schedule does not fix; it only matters to a flood that runs past 15
+cells from its start, which needs a long narrow strip of costly cells.
 
 ## Exarust
 
