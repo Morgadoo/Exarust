@@ -273,3 +273,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-11-11 | 29056e879 | clean | 82.3% | 5.1% | 73.7% | 90.6% | Rate round 197's lane |
 | 2026-11-11 | d2fb5ccd0 | clean | 82.3% | 5.1% | 73.7% | 90.6% | Rate round 198's lane |
 | 2026-11-11 | 6ec27b0bb | clean | 82.3% | 5.1% | 73.7% | 90.6% | Rate round 199's lane |
+| 2026-11-11 | d95f46906 | clean | 82.3% | 5.1% | 73.7% | 90.6% | Rate round 200's lane |
