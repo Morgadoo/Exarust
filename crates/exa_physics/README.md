@@ -39,7 +39,7 @@ in every pass of `FixedMain`, runs exactly one simulation step and waits
 for it, and `LockstepCheck` counts the steps against the snapshots' ticks
 (logged every 1000 steps). Without the bridge the simulation's world holds
 only its clock, so a body's every pose is the same bit for bit with or
-without the shell (`body_floor_test`).
+without the shell (`body_floor_test`). `EXA_ORPHAN_TRACE=1` (environment) logs, on either world, a `ChildOf` inserted with a parent that world does not hold (`sim_app::trace_orphans`).
 
 With `SimMode::Free` (the game's default; `--sim-lockstep`, `--fixed-frames`,
 `--sim-inline` and `--no-sim-bridge` step in lockstep) the

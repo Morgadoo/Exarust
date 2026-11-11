@@ -775,7 +775,50 @@ pub fn new_sim_app(reserved: &[Entity]) -> SubApp {
         .init_resource::<SimOutbox>()
         .init_schedule(SimStep)
         .add_systems(SimStep, (advance_clock, run_fixed_order).chain());
+    if orphan_trace() {
+        trace_orphans(sub.world_mut(), "simulation");
+    }
     sub
+}
+
+/// Debug tool (`EXA_ORPHAN_TRACE=1`, environment): logs every `ChildOf`
+/// inserted with a parent its world does not hold, with the side and the
+/// child's components, before Bevy's relationship hook drops the link
+/// ("relates to an entity that does not exist"). An entity the simulation
+/// parents to a frame-only node (or the reverse) shows here.
+fn orphan_trace() -> bool {
+    std::env::var_os("EXA_ORPHAN_TRACE").is_some_and(|v| v != "0")
+}
+
+/// Watches `world`'s `ChildOf` inserts for [`orphan_trace`].
+pub fn trace_orphans(world: &mut World, side: &'static str) {
+    world.add_observer(
+        move |insert: On<Insert<ChildOf>>,
+              links: Query<&ChildOf>,
+              entities: &bevy::ecs::entity::Entities,
+              all: Query<EntityRef>,
+              components: &bevy::ecs::component::Components| {
+            let child = insert.event().entity;
+            let Ok(link) = links.get(child) else {
+                return;
+            };
+            let parent = link.parent();
+            if entities.contains(parent) {
+                return;
+            }
+            let names: Vec<String> = all
+                .get(child)
+                .map(|e| {
+                    e.archetype()
+                        .components()
+                        .iter()
+                        .filter_map(|&id| components.get_name(id).map(|n| n.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            warn!("orphan trace ({side}): {child} takes ChildOf({parent}), which this world does not hold; it carries {names:?}");
+        },
+    );
 }
 
 /// Adds one step to the simulation's clock.
@@ -1401,6 +1444,9 @@ impl Plugin for SimShellPlugin {
             );
         }
         add_frame_start(app);
+        if orphan_trace() {
+            trace_orphans(app.world_mut(), "frame");
+        }
         app.world_mut()
             .resource_mut::<FixedMainScheduleOrder>()
             // First of all: the bridge moves the fixed step's schedules in

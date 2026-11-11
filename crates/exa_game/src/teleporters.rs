@@ -584,6 +584,11 @@ fn debug_slot(
         info!("debug slot: crystal {id:#x} on device {device:?}'s slot at {at:?}");
         crystals.push((id, at));
     }
+    info!(
+        "debug slot: {} crystals on {} placed devices at frame {frame}",
+        crystals.len(),
+        devices.iter().count()
+    );
     fixed.post(move |world| {
         for (id, at) in crystals {
             world.spawn((

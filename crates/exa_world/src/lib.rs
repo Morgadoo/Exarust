@@ -88,6 +88,22 @@ pub struct PartBounds {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct LevelLocalItems(pub Vec<Item>);
 
+/// The importer's hook for a level read from the archive (not from a
+/// save's own section): it gets the parsed level and rewrites its local
+/// records in place, and returns whether it ran (then the local tier it
+/// leaves is already migrated). The save unit installs it (the archive
+/// pass: the tier migration, then the world-load walk over the local
+/// records); a level loads without it as before.
+pub type ArchivePass = fn(&exa_assets::GameData, &mut Scene) -> bool;
+
+static ARCHIVE_PASS: std::sync::OnceLock<ArchivePass> = std::sync::OnceLock::new();
+
+/// Installs the archive pass every later level load from the archive runs
+/// (the first installation wins).
+pub fn set_archive_pass(pass: ArchivePass) {
+    let _ = ARCHIVE_PASS.set(pass);
+}
+
 /// Marks the root entity of a spawned level.
 #[derive(Component, Clone, Debug)]
 pub struct LevelRoot {
@@ -1940,13 +1956,20 @@ impl LevelLoad {
             None => std::sync::Arc::from(loader.game.pack(PackKind::Resource)?.get(&entry)?),
         };
         let bytes = &source[..];
-        let scene = match Scene::parse(bytes) {
+        let mut scene = match Scene::parse(bytes) {
             Ok(s) => s,
             Err(e) => {
                 loader.warn_once(format!("level {entry}: {e}"));
                 return None;
             }
         };
+        // The importer's hook: a level read from the archive runs the
+        // archive pass over its local records before anything reads them; a
+        // save's own section only migrates (in the live database below).
+        let archive_pass_ran = !from_save
+            && ARCHIVE_PASS
+                .get()
+                .is_some_and(|pass| pass(loader.game, &mut scene));
         for err in &scene.level_errors {
             loader.warn_once(format!("level {entry}: {err}"));
         }
@@ -1971,7 +1994,8 @@ impl LevelLoad {
         // database, as the level reader's local-database chunk replaces it
         // (the base tier is read first when nothing has asked for it yet),
         // and the importer's hook migrates the whole tier from its
-        // templates, for a save's section and the archive's file alike.
+        // templates, for a save's section and the archive's file alike (the
+        // archive pass above already did, for a level from the archive).
         let records = scene.local_database.clone();
         let strings = scene.local_strings.clone();
         let level = entry.clone();
@@ -1981,7 +2005,11 @@ impl LevelLoad {
             if let Some(game) = game {
                 live.ensure_base(&game.0);
             }
-            live.load_level(&level, records, strings);
+            if archive_pass_ran {
+                live.load_level_migrated(&level, records, strings);
+            } else {
+                live.load_level(&level, records, strings);
+            }
         });
         let root = commands
             .spawn((
