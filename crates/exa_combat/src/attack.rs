@@ -270,6 +270,10 @@ pub struct Busy {
     /// (or claws) the empty hands' set-up holds ([`held_strikers`]). The
     /// executor starts nothing without one.
     pub strikers: usize,
+    /// It plays Break Tangle (the motion 0x1C,
+    /// [`crate::strike_body::BREAK_TANGLE`]): out of a stall the executor
+    /// starts nothing until the clip has gone back to the stance.
+    pub breaking_tangle: bool,
 }
 
 /// How many held items a fighter strikes with, from the blades it wields:
@@ -306,9 +310,11 @@ impl Start {
 /// since the last attack tick, then an overhead unless a stab or an
 /// overhead plays, a stab unless a stab plays, else a side attack unless a
 /// side attack plays. A stab still has to pass the facing gate
-/// ([`stab_faces`]). Before any of that, a fighter that holds no striker
-/// (`strikers` 0: not even its fists) starts nothing; the original tests
-/// the held count first, as a signed count of at least 1.
+/// ([`stab_faces`]). Free, a fighter playing Break Tangle
+/// (`breaking_tangle`) starts nothing once the cooldown has passed either;
+/// a stalling one is not asked. Before any of that, a fighter that holds no
+/// striker (`strikers` 0: not even its fists) starts nothing; the original
+/// tests the held count first, as a signed count of at least 1.
 pub fn execute(request: Request, at: Busy) -> Option<Start> {
     if at.strikers < 1 {
         return None;
@@ -352,6 +358,9 @@ pub fn execute(request: Request, at: Busy) -> Option<Start> {
         .last_tick_ms
         .is_some_and(|last| last + cooldown > at.now_ms)
     {
+        return None;
+    }
+    if at.breaking_tangle {
         return None;
     }
     let kind = if request.overhead {
@@ -548,8 +557,11 @@ pub fn start_blend(motion: AttackMotion, primary_blend: Option<i32>, given: u32)
 /// (0.2·u + 0.8) / √scale, the second for the gain 0.4·v + 0.6, each
 /// worked in double precision and stored as single (the executor's
 /// sequence). The busy branch's Feint start plays none. Returns
-/// (gain, pitch). Not yet played by the running game: the sound handle
-/// the original passes is not identified.
+/// (gain, pitch). The sound is a variant of the swing set (`SwingHA`, the
+/// set the held refresh loads) on the first held item's voice. It never
+/// plays in 0.9.5: the body's set-up (the character's add to the world)
+/// sets the quiet byte, and nothing in the executable clears it, so the
+/// running game does not play it either.
 pub fn main_start_sound(first: f32, second: f32, size_root: f32) -> (f32, f32) {
     let pitch = ((f64::from(first) * 0.2 + 0.8) / f64::from(size_root)) as f32;
     let gain = (f64::from(second) * 0.4 + 0.6) as f32;
@@ -916,6 +928,41 @@ mod tests {
         start.map(|s| s.kind)
     }
 
+    /// Out of a stall, Break Tangle refuses every start, after the
+    /// cooldown as before it; a released swing's overhead while it stalls
+    /// is not asked about the tangle.
+    #[test]
+    fn break_tangle_refuses_a_free_start() {
+        let main = Request::default();
+        let breaking = Busy {
+            breaking_tangle: true,
+            ..free(5000, Some(1000), 330, None)
+        };
+        assert_eq!(execute(main, breaking), None);
+        let thrust = Request {
+            thrust: true,
+            ..main
+        };
+        assert_eq!(execute(thrust, breaking), None);
+        assert_eq!(
+            kind(execute(
+                main,
+                Busy {
+                    breaking_tangle: false,
+                    ..breaking
+                }
+            )),
+            Some(AttackKind::Main)
+        );
+        let stalling = Busy {
+            released: true,
+            stall_until_ms: 6000,
+            side_started_ms: Some(4900),
+            ..breaking
+        };
+        assert_eq!(kind(execute(main, stalling)), Some(AttackKind::Overhead));
+    }
+
     /// The held count comes first: with no striker held, not even the
     /// fists, nothing starts, neither a free side attack nor a released
     /// swing's overhead; the two fists count as two strikers, as the
@@ -1050,6 +1097,7 @@ mod tests {
             side_started_ms: Some(1000),
             feint: false,
             strikers: 1,
+            breaking_tangle: false,
         };
         let main = Request::default();
         assert_eq!(
@@ -1142,6 +1190,7 @@ mod tests {
             side_started_ms: Some(1000),
             feint: false,
             strikers: 1,
+            breaking_tangle: false,
         };
         let main = Request::default();
         assert_eq!(kind(execute(main, released)), Some(AttackKind::Overhead));

@@ -1553,6 +1553,7 @@ fn duellist(
             side_started_ms: attacker.side_started_ms,
             feint: fighter.feint(),
             strikers: attack::held_strikers(entity, blades.iter()),
+            breaking_tangle: anim.action == exa_combat::strike_body::BREAK_TANGLE,
         };
         let ready = attack::execute(attack::Request::default(), busy).is_some();
         // The foe's own combat skill: a brain's personality, else 0 (the
