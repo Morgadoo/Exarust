@@ -18,6 +18,7 @@
 
 use crate::arena_outfit_data as data;
 use exa_formats::objdb::Item;
+use exa_items::palette::Palette;
 use std::collections::BTreeMap;
 
 /// Number of bonus words and bonus floats an item carries.
@@ -767,6 +768,11 @@ pub struct GeneratedOutfit {
     pub condition: u8,
     /// The computed and fixed look values.
     pub look: OutfitLook,
+    /// The item palette rolled for the outfit's wealth (the look's
+    /// condition seed): around the profile's two company colours when its
+    /// flag 8 is set, else at random; the kit's paint layers take their
+    /// colours from it.
+    pub palette: Palette,
 }
 
 /// The outfit item tables, converted from the raw arena data with an
@@ -1159,6 +1165,7 @@ struct Dresser<'a> {
     rank_limit: i32,
     character_bonus: u32,
     pool: OutfitPool,
+    palette: Palette,
 }
 
 impl<'a> Dresser<'a> {
@@ -1178,6 +1185,7 @@ impl<'a> Dresser<'a> {
             rank_limit,
             character_bonus,
             pool: OutfitPool::new(),
+            palette: Palette::default(),
         }
     }
 
@@ -1353,8 +1361,18 @@ impl<'a> Dresser<'a> {
             quality: self.quality,
             condition: self.condition,
             look,
+            palette: self.palette,
         }
     }
+}
+
+/// The entropy word an outfit's palette roll starts from. [Exarust
+/// stand-in: the original reseeds the engine's shared generator from the
+/// clock there, so the draws after it are the clock's; Exarust takes the
+/// arena sequence's current word without stepping it, so the outfit's
+/// draws stay the deterministic sequence they were.]
+fn palette_entropy(lcg: &Lcg) -> u32 {
+    lcg.state()
 }
 
 /// Draw a stepped high word in `0..range`.
@@ -1496,10 +1514,27 @@ fn generate_profile_with(
     dresser.condition_value = skin;
     let condition_seed = (f64::from(unit(dresser.lcg)) + f64::from(rank) * 0.4) as f32;
 
+    // The palette for the outfit's wealth: a weapon's (kind 2) for a rank
+    // five fighter with an empty off hand, around the company's two colours
+    // (profile bytes five and six) when flag 8 is set.
+    let family = rank == 5 && dresser.hands[1].is_none();
+    let entropy = palette_entropy(dresser.lcg);
+    if flags & 8 == 0 {
+        dresser
+            .palette
+            .roll(condition_seed, if family { 2 } else { 0 }, entropy);
+    } else {
+        dresser.palette.roll_around(
+            condition_seed,
+            profile[5],
+            profile[6],
+            if family { 2 } else { 1 },
+            entropy,
+        );
+    }
     if flags & 8 != 0 {
         dresser.mode = 2;
     }
-    let family = rank == 5 && dresser.hands[1].is_none();
     if rank == 5 || (max_rank && rank > 1) {
         dresser.equip_apparel_id(tables, ITEM_402, GenerationMode(u32::from(dresser.mode)));
         dresser.equip_apparel_id(tables, ITEM_1359, GenerationMode(u32::from(dresser.mode)));
@@ -1588,11 +1623,12 @@ fn generate_profile_with(
     dresser.pick_masked(tables, &tables.belt, 0xffff, max_rank);
     if max_rank {
         if flags & 8 != 0 {
-            // The original picks mode three only while two of its globals
-            // are clear (one is a flag a previous piece's description sets
-            // in the description-phrase module, which is not modelled), and
-            // mode two otherwise. Both leave the rolls untouched.
-            dresser.mode = 3;
+            // Mode three only while the palette found no metal colour near
+            // the company's secondary and no earlier mode-three piece came
+            // out in colour 0xD3 (a flag the kit's paint roll sets, which
+            // Exarust's uninstanced kit does not roll); mode two otherwise.
+            // Both leave the rolls untouched.
+            dresser.mode = if dresser.palette.matched { 2 } else { 3 };
         }
         dresser.pick_masked(tables, &tables.armour_b, 0xffff, max_rank);
     } else {
@@ -1715,7 +1751,13 @@ fn generate_by_level_with(
     dresser.condition_value = skin;
     let condition_seed = (f64::from(unit(dresser.lcg)) + f64::from(rank) * 0.4) as f32;
 
+    // The palette for the outfit's wealth, a weapon's (kind 2) for a level
+    // five fighter with an empty off hand.
     let family = level == 5 && dresser.hands[1].is_none();
+    let entropy = palette_entropy(dresser.lcg);
+    dresser
+        .palette
+        .roll(condition_seed, if family { 2 } else { 0 }, entropy);
     if level == 5 || (max_rank && level > 1) {
         dresser.equip_apparel_id(tables, ITEM_402, GenerationMode(u32::from(dresser.mode)));
         dresser.equip_apparel_id(tables, ITEM_1359, GenerationMode(u32::from(dresser.mode)));
@@ -3594,6 +3636,22 @@ mod tests {
         // weapon up; an unknown one keeps the row's own rank.
         assert_eq!(tables.weapons_a[0].weight, 10);
         assert_eq!(tables.weapons_a[0].rank, 0);
+    }
+
+    #[test]
+    fn a_company_profile_rolls_its_palette_around_its_colours() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let plain = [0, 0, 0, 0, 0, 0x2F, 0x57, 0];
+        let company = [8, 0, 0, 0, 0, 0x2F, 0x57, 0];
+        let a = generate_profile(&plain, &mut Lcg::new(7), &tables, &character, unit_half);
+        let b = generate_profile(&company, &mut Lcg::new(7), &tables, &character, unit_half);
+        assert_eq!((b.palette.primary, b.palette.secondary), (0x2F, 0x57));
+        // The palette draws nothing from the arena sequence: the picks are
+        // the plain profile's.
+        assert_eq!(ids(&a), ids(&b));
+        let level = generate_by_level(2, 0.1, 0, &mut Lcg::new(7), &tables, &character, unit_half);
+        assert_ne!(level.palette, Palette::default());
     }
 
     #[test]

@@ -233,12 +233,22 @@ impl ShopFactories {
     /// model name after its `@`), reading `Factories.rpk` once per name.
     /// False when no factory has that name.
     pub fn pass(&mut self, game: Option<&exa_assets::Game>, name: &str, body: &mut [u8]) -> bool {
+        self.pass_in(game.map(|game| &*game.0), name, body)
+    }
+
+    /// [`Self::pass`] over the game's data itself.
+    pub fn pass_in(
+        &mut self,
+        game: Option<&exa_assets::GameData>,
+        name: &str,
+        body: &mut [u8],
+    ) -> bool {
         let key = name.to_ascii_lowercase();
         let factory = self
             .0
             .entry(key)
             .or_insert_with(|| {
-                let pack = game?.0.pack(exa_assets::PackKind::Factories)?;
+                let pack = game?.pack(exa_assets::PackKind::Factories)?;
                 let bytes = pack
                     .get(name)
                     .or_else(|| pack.get(&format!("{name}.fty")))?;
@@ -273,7 +283,7 @@ fn u16_at(b: &[u8], at: usize) -> Option<u16> {
 }
 
 /// The template a copy names: its header's parent word.
-fn template_of(payload: &[u8]) -> Option<u32> {
+pub(crate) fn template_of(payload: &[u8]) -> Option<u32> {
     section_range(payload, NAME).map(|r| u32_at(&payload[r], 0x14))
 }
 
@@ -299,7 +309,7 @@ fn sections(payload: &[u8]) -> Vec<(u32, std::ops::Range<usize>)> {
 /// the roll of its layers and variant (from the clock; the shared seed is
 /// left where the roll ends) and the condition pass, which scales the
 /// value word read before it.
-fn refresh_apparel_copy(
+pub(crate) fn refresh_apparel_copy(
     payload: &mut [u8],
     template: &[u8],
     palette: &Palette,
@@ -347,7 +357,7 @@ fn refresh_apparel_copy(
 /// The weapon refresh from the template: the model takes the template's
 /// value word; the weapon section the template's bytes and, for a factory
 /// model, its roll, the factory's stats and the condition pass.
-fn refresh_weapon_copy(
+pub(crate) fn refresh_weapon_copy(
     payload: &mut [u8],
     template: &[u8],
     entropy: u32,
