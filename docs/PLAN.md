@@ -1962,6 +1962,8 @@ frame writes no longer undo newer simulation steps in free mode: the power bar p
 
 a sweep for human assumptions about races fixed four reads against the assembly: the equipment panel core-crystal test now looks the race up by byte + 1 (golems take their own crystal); bodies are dressed by the race look bit (ogres and the exanima05_sw manipulators now wear their items); Mind casts read the race mind word; the underwear rule reads the body race.
 
+decals and blended surfaces now draw with the original scene pass depth bias (a fraction of a millimetre at 10 m); the research note on a compile fallback shader was wrong (the slot logs and skips).
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
