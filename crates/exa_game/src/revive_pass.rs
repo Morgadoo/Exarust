@@ -87,7 +87,7 @@ pub fn reset_brains(
         return;
     };
     queued.steps.remove(at);
-    let (mut reset, mut moved, mut refused) = (0, 0, 0);
+    let (mut reset, mut roamed, mut moved, mut refused) = (0, 0, 0, 0);
     for (entity, gt, parent, mut npc, mut fighter, mut combatant, condition, flags, duellist) in
         &mut brains
     {
@@ -100,6 +100,9 @@ pub fn reset_brains(
         // A roaming reset lifts the body's footprint off the grid before it
         // plans, so its own plans do not pay for it.
         let roams = !condition.dying() && !dormant && roaming && !npc.statue;
+        if roams {
+            roamed += 1;
+        }
         let lifted = match (roams, nav.as_deref_mut(), prints.as_deref_mut()) {
             (true, Some(grid), Some(prints)) => {
                 let at = prints.of(entity);
@@ -230,7 +233,7 @@ pub fn reset_brains(
         exa_ai::lifecycle::restart_idle(npc);
     }
     info!(
-        "revive pass: {reset} brain(s) reset, {moved} moved, {refused} refused by the space-free query"
+        "revive pass: {reset} brain(s) reset, {roamed} roaming, {moved} moved, {refused} refused by the space-free query"
     );
 }
 
