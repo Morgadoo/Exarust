@@ -1453,6 +1453,8 @@ Round 177 motilepart4: bodies scale their pins by the character size as they joi
 
 Round 182 combat2: the weapon stat record is fetched up the body chain, the holding pass mass redistribution runs on the registered weapon body (every armed body moves from tick 1; a debug flag restores main), the worn rules re-run on every possessions change with the original golem core nesting, the Force Shell damage callback and the clawed overhead hand restore are wired, and the NPC cast runs at the first place after its contact pass; weapons stay held in the GPU duels.
 
+the inventory now refuses items the character race cannot use (golem-only weapons, apparel on races without the look bit), as the original drag-over test does; the trade preview race lookup was wrong for non-humans.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
