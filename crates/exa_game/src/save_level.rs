@@ -283,6 +283,117 @@ pub fn scene_content(name: &str, object: Option<ObjectKinds>) -> Vec<SceneConten
     lists
 }
 
+/// The object database's kinds of one record, as the classifier reads
+/// them: the volume section's flags word and the operative section's
+/// first byte (its class).
+pub fn object_kinds(item: &exa_formats::objdb::Item) -> ObjectKinds {
+    ObjectKinds {
+        flags: item.volume.map(|v| v.flags),
+        kind_byte: item.operative.as_ref().map(|o| o.class),
+    }
+}
+
+/// The three lists the save unit's node hook fills while a level's nodes
+/// join the game scene (the hook is set on the scene when the save unit
+/// starts and called for every class-1 node added): each entry is the
+/// node's place in the loaded section, a placed object by its index in the
+/// placed-object list and a scene node by its index in the node list.
+#[derive(bevy::prelude::Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct SceneContentLists {
+    /// Volumes of kind pair `0x1100` or `0x1200` (the AI's door-side
+    /// checks walk this list).
+    pub first: Vec<SceneNodeRef>,
+    /// Bracket-named nodes without a record and volumes of kind pair
+    /// `0x2200` (the player controls' zone checks walk this list).
+    pub second: Vec<SceneNodeRef>,
+    /// Operative objects of class 2 (the player's scripted-device checks
+    /// walk this list).
+    pub third: Vec<SceneNodeRef>,
+    /// The section the lists were built from (its entry name and buffer).
+    pub source: Option<(String, usize)>,
+}
+
+/// A node the hook listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneNodeRef {
+    Placed(usize),
+    Node(usize),
+}
+
+/// The hook's lists for a whole loaded section, in the order the import
+/// adds the nodes (the scene's nodes, then the placed objects): a class-1
+/// scene node has no record, so only a bracket name lists it; a placed
+/// object is classified by its record ([`scene_content`]), which `record`
+/// finds (the level's own records for a local id, else the database's).
+pub fn scene_lists(
+    scene: &exa_formats::rfc::Scene,
+    record: impl Fn(u32) -> Option<exa_formats::objdb::Item>,
+) -> SceneContentLists {
+    let mut lists = SceneContentLists::default();
+    let mut add = |at: SceneNodeRef, content: Vec<SceneContent>| {
+        for list in content {
+            match list {
+                SceneContent::First => lists.first.push(at),
+                SceneContent::Second => lists.second.push(at),
+                SceneContent::Third => lists.third.push(at),
+            }
+        }
+    };
+    for (i, node) in scene.nodes.iter().enumerate() {
+        if node.flags & 0x5f == 1 {
+            add(SceneNodeRef::Node(i), scene_content(&node.name, None));
+        }
+    }
+    for (i, object) in scene.placed_objects.iter().enumerate() {
+        let kinds = record(object.id).map(|item| object_kinds(&item));
+        add(SceneNodeRef::Placed(i), scene_content("", kinds));
+    }
+    lists
+}
+
+/// Fills [`SceneContentLists`] for the running level whenever a load puts
+/// a new section in place, as the hook lists each node the import adds.
+pub fn track_scene_content(
+    source: Option<bevy::prelude::Res<exa_world::LevelSource>>,
+    live: Option<bevy::prelude::Res<exa_assets::live_objects::LiveObjects>>,
+    mut lists: bevy::prelude::ResMut<SceneContentLists>,
+) {
+    use bevy::ecs::change_detection::DetectChanges;
+    let Some(source) = source.filter(|s| s.is_changed()) else {
+        return;
+    };
+    let key = (source.entry.clone(), source.bytes.as_ptr() as usize);
+    if lists.source.as_ref() == Some(&key) {
+        return;
+    }
+    let Ok(scene) = exa_formats::rfc::Scene::parse(&source.bytes) else {
+        *lists = SceneContentLists {
+            source: Some(key),
+            ..Default::default()
+        };
+        return;
+    };
+    let mask = exa_formats::rfc::PlacedObject::ID_MASK;
+    *lists = scene_lists(&scene, |id| {
+        let local = scene
+            .local_items
+            .iter()
+            .find(|item| item.id == id & mask)
+            .filter(|_| id & 0x8000_0000 != 0);
+        local
+            .cloned()
+            .or_else(|| live.as_deref().and_then(|live| live.item(id)))
+    });
+    lists.source = Some(key);
+    bevy::log::info!(
+        "scene content of {}: {} door-side volumes, {} zones and markers, {} scripted devices",
+        source.locale(),
+        lists.first.len(),
+        lists.second.len(),
+        lists.third.len()
+    );
+}
+
 /// The grid-environment arrays a load allocates: one zero word per grid
 /// cell, a set update callback and the two flags the original writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -543,6 +654,32 @@ mod tests {
     fn the_terrain_file_replaces_the_locale_extension() {
         assert_eq!(terrain_file_name("exanima04"), "exanima04.rft");
         assert_eq!(terrain_file_name("arenao1.rfc"), "arenao1.rft");
+    }
+
+    #[test]
+    fn a_shipped_level_lists_its_scene_content() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let scene = exa_formats::rfc::Scene::parse(pack.get("exanima01.rfc").unwrap()).unwrap();
+        let lists = scene_lists(&scene, |id| {
+            scene
+                .local_items
+                .iter()
+                .find(|item| id & 0x8000_0000 != 0 && item.id == id & 0x3FFF_FFFF)
+                .cloned()
+        });
+        // Every listed placed object is the section's and carries the
+        // kind that lists it.
+        for at in lists.first.iter().chain(&lists.second).chain(&lists.third) {
+            match *at {
+                SceneNodeRef::Placed(i) => assert!(i < scene.placed_objects.len()),
+                SceneNodeRef::Node(i) => assert!(scene.nodes[i].name.starts_with('[')),
+            }
+        }
+        assert!(!(lists.first.is_empty() && lists.second.is_empty() && lists.third.is_empty()));
     }
 
     #[test]

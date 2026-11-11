@@ -347,6 +347,8 @@ impl Plugin for SaveLivePlugin {
             )
             .add_systems(Update, crate::follower_travel::restore_arrivals)
             .add_systems(Update, crate::level_save::restore_saved_state)
+            .init_resource::<crate::save_level::SceneContentLists>()
+            .add_systems(Update, crate::save_level::track_scene_content)
             .add_systems(
                 Update,
                 crate::world_characters::track_local_characters
