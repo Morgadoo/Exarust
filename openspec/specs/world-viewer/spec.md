@@ -440,3 +440,10 @@ The profiler SHALL report each frame's time in the brains' tick, its runs and it
 #### Scenario: Brains in the log
 - **WHEN** exanima01 runs with `--perf-log 5`
 - **THEN** the `brains` line reports the time and the runs of the brains' ticks of the last frames, not zero
+
+### Requirement: Grid batch exit
+With `--exit-when-done` and no `--restart`, the grid host SHALL exit once every quadrant that was given a scene has a game that ended.
+
+#### Scenario: Four scenes with their own frame counts
+- **WHEN** a grid runs four scenes with `--frames` and `--exit-when-done`
+- **THEN** the host exits once the last of the four games exits, without a screenshot

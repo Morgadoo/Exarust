@@ -78,6 +78,8 @@ struct GridConfig {
     gpu_need_mb: u32,
     restart: bool,
     settings: bool,
+    /// Exit once every scene's game has ended (`--exit-when-done`).
+    exit_when_done: bool,
     screenshot: Option<PathBuf>,
     frames: u32,
     inject: Vec<(Inject, std::ops::Range<u32>)>,
@@ -88,7 +90,7 @@ struct GridConfig {
 fn grid_usage() -> AppExit {
     eprintln!(
         "usage: exarust grid [--size WxH] [--game <dir>] [--child-args \"...\"] [--child-fps n] \
-         [--gpu-need MiB] [--restart] [--settings] [--screenshot out.png] [--frames n] \
+         [--gpu-need MiB] [--restart] [--settings] [--exit-when-done] [--screenshot out.png] [--frames n] \
          [--inject \"...\"] [--socket path] [--log-dir dir] <scene1> [scene2] [scene3] [scene4]\n\
          \x20      exarust grid-swap [--socket path] <1-4> <scene>\n\
          \x20      exarust grid-shot [--socket path] <file.png>"
@@ -158,6 +160,7 @@ fn parse_config(args: &[String]) -> Result<GridConfig, String> {
         gpu_need_mb: DEFAULT_GPU_NEED_MB,
         restart: false,
         settings: false,
+        exit_when_done: false,
         screenshot: None,
         frames: 600,
         inject: Vec::new(),
@@ -192,6 +195,7 @@ fn parse_config(args: &[String]) -> Result<GridConfig, String> {
             }
             "--restart" => config.restart = true,
             "--settings" => config.settings = true,
+            "--exit-when-done" => config.exit_when_done = true,
             "--screenshot" => config.screenshot = Some(value()?.into()),
             "--frames" => {
                 let v = value()?;
@@ -1404,6 +1408,19 @@ fn screenshot_when_ready(
     mut host: ResMut<GridHost>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    // `--exit-when-done`: every scene's game has ended (scenes that run
+    // their own `--frames` and exit), so the host has nothing left to show.
+    if host.config.exit_when_done
+        && !host.config.restart
+        && host
+            .quads
+            .iter()
+            .all(|q| q.args.is_empty() || (q.run.is_none() && q.exited.is_some()))
+    {
+        info!("grid: every scene's game has ended (--exit-when-done)");
+        exit.write(AppExit::Success);
+        return;
+    }
     let ready = host
         .quads
         .iter()

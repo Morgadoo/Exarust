@@ -447,3 +447,10 @@ The game's frame schedules SHALL hold no reader of a type the frame's world does
 #### Scenario: Debug options on
 - **WHEN** play mode runs exanima01, exanima04, exanima08 and the arena with the profiler, the traces, the digest and the debug views on
 - **THEN** the audit reports no frame reader
+
+### Requirement: Orphan link trace
+With `EXA_ORPHAN_TRACE` set, the frame's world and the simulation's SHALL each log every `ChildOf` inserted with a parent that world does not hold, naming the child, the parent, the side and the child's components.
+
+#### Scenario: A frame-only parent
+- **WHEN** the frame parents a bridged entity to a node the simulation does not hold
+- **THEN** the simulation's side logs the orphan link with the child's components

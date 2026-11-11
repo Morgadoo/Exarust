@@ -14,7 +14,8 @@ have a viewport a quarter of its size, recomputed on resize, as in Bevy's
 split-screen example. The host launches the games one at a time against
 `nvidia-smi`'s free memory and forwards input to the quadrant last
 clicked. `exarust grid-swap <n> <scene>` replaces one quadrant's game and
-`exarust grid-shot <file>` saves the composed window. A scene's leading
+`exarust grid-shot <file>` saves the composed window; `--exit-when-done`
+ends the host once every scene's game has exited. A scene's leading
 `exe=<path>` runs that build in its quadrant and `env:<KEY>=<value>` sets
 its environment, to compare two builds or settings under the same load
 ([`docs/PLAYER.md`](../../docs/PLAYER.md), Unattended runs). The host
