@@ -1958,6 +1958,8 @@ the second feature sweep (80 scenes, free and lockstep, 16 new scenes for rounds
 
 TMotilePart gaps rechecked against the assembly: the foot-child words, box sole and collapse passes were already live; the AI now aims at the target of its own tick, and death ends a running parry.
 
+frame writes no longer undo newer simulation steps in free mode: the power bar posts its casts to the step (as the original main-thread key handler writes state the simulation thread reads at its next step), flame rows and arcs keep their draw state frame-only, and the stay-zone latch, fight start, combat aim, armour layers and moveset config go through the step queue. Lockstep traces match main on the duel, exanima01 and two cast scenes. The bar casts now draw from the step effect streams, so the still-opponent torrent sweep scene spray no longer reaches the level in lockstep. Left: the clip player Animator advance on bodies without ticked clips, the practice lesson, one health write.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
