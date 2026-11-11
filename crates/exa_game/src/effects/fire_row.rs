@@ -633,25 +633,30 @@ impl FlameRow {
         if self.removed() {
             return None;
         }
-        if self.flags & EXTINGUISHING != 0 && f64::from(self.fade) < REMOVE_BELOW {
+        if self.fades_out() {
             self.flags = REMOVED;
             return None;
         }
         if !self.has_sound {
             return None;
         }
-        let mut pitch = ((pitch_unit - 0.5) * PITCH_STEP + f64::from(self.pitch)) as f32;
-        if f64::from(pitch) < 0.85 {
-            pitch = PITCH_MIN;
-        } else if f64::from(pitch) > 1.15 {
-            pitch = PITCH_MAX;
-        }
-        self.pitch = (f64::from(pitch) * PITCH_SCALE) as f32;
+        self.pitch = pitch_step(self.pitch, pitch_unit);
         Some(self.sound())
+    }
+
+    /// The frame's removal test: an extinguishing row whose fade is below
+    /// the removal threshold leaves the scene.
+    pub fn fades_out(&self) -> bool {
+        self.flags & EXTINGUISHING != 0 && f64::from(self.fade) < REMOVE_BELOW
     }
 
     /// The loop sound's volume and pitch from the current speed and fade.
     pub fn sound(&self) -> RowSound {
+        self.sound_at(self.pitch)
+    }
+
+    /// [`Self::sound`] with the pitch the frame walked ([`FlamePitch`]).
+    pub fn sound_at(&self, pitch: f32) -> RowSound {
         let mut volume = (f64::from(self.speed) * SOUND_VOLUME_SCALE) as f32;
         if volume > SOUND_VOLUME_MAX {
             volume = SOUND_VOLUME_MAX;
@@ -662,11 +667,21 @@ impl FlameRow {
         if self.flags & FADING_IN != 0 {
             volume = (volume + 0.5) - (self.fade - 0.5).abs();
         }
-        RowSound {
-            volume,
-            pitch: self.pitch,
-        }
+        RowSound { volume, pitch }
     }
+}
+
+/// One frame's step of the loop's pitch walk from a random unit: a step of
+/// `(u − 0.5)·PITCH_STEP`, held within 0.85..1.15 (compared in double
+/// precision), then scaled.
+pub fn pitch_step(pitch: f32, unit: f64) -> f32 {
+    let mut next = ((unit - 0.5) * PITCH_STEP + f64::from(pitch)) as f32;
+    if f64::from(next) < 0.85 {
+        next = PITCH_MIN;
+    } else if f64::from(next) > 1.15 {
+        next = PITCH_MAX;
+    }
+    (f64::from(next) * PITCH_SCALE) as f32
 }
 
 /// One lagging point: close a fifth of the gap to a point 20 cm above the
@@ -776,23 +791,61 @@ pub fn tick_rows(
     }
 }
 
+/// The loop sound's pitch a row's frame walks. Only the frame reads and
+/// writes it, so it lives on the frame's side alone (not bridged): a frame
+/// write to the bridged [`Flame`] would be sent whole to a free-running
+/// simulation and undo its newer steps.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct FlamePitch(pub f32);
+
 /// One frame of each row: a faded-out row leaves the scene; a live one
 /// steps its loop's pitch and shows its light.
+///
+/// The row's frame part writes no simulation state: the pitch walk is the
+/// frame's own ([`FlamePitch`]), and its unit is drawn from the row's one
+/// stream, which the tick's light walk draws from too. The original draws
+/// both from that stream, from its main and its simulation thread; here the
+/// frame draws from its copy and the same draw is posted to the
+/// simulation's copy for its next step
+/// ([`exa_physics::sim_app::FixedCommands::write`]), so the light walk's
+/// stream moves as it did with the frame's copy sent whole. The removal is
+/// the despawn alone (the flag it set lived until the despawn).
 pub fn frame_rows(
     mut commands: Commands,
-    mut rows: Query<(Entity, &mut Flame, Option<&mut PointLight>)>,
+    mut rows: Query<(
+        Entity,
+        &mut Flame,
+        Option<&mut FlamePitch>,
+        Option<&mut PointLight>,
+    )>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
-    for (entity, mut flame, light) in &mut rows {
-        let row = &mut flame.0;
+    for (entity, mut flame, pitch, light) in &mut rows {
+        let row = &flame.0;
         if row.removed() {
             continue;
         }
-        let unit = if row.has_sound { row.rng.unit() } else { 0.5 };
-        row.frame(unit);
-        if row.removed() {
+        if row.fades_out() {
             commands.entity(entity).despawn();
             continue;
         }
+        if row.has_sound {
+            let draw = |flame: &mut Flame| flame.0.rng.unit();
+            let unit = match fixed.as_deref_mut() {
+                Some(fixed) => fixed.write(entity, &mut flame, draw),
+                None => draw(&mut flame),
+            };
+            match pitch {
+                Some(mut pitch) => pitch.0 = pitch_step(pitch.0, unit),
+                None => {
+                    let start = flame.0.pitch;
+                    commands
+                        .entity(entity)
+                        .insert(FlamePitch(pitch_step(start, unit)));
+                }
+            }
+        }
+        let row = &flame.0;
         if let Some(mut light) = light {
             let shown = row.light();
             light.intensity = shown.intensity.max(0.0) * exa_world::LUMENS_PER_INTENSITY;

@@ -1504,7 +1504,11 @@ fn equip_outfits(
     children: Query<&Children>,
     names: Query<&Name>,
     parts: Query<(&BodyPart, Option<&PartBounds>)>,
-    (ragdolls, marks): (Query<&exa_physics::body::Ragdoll>, refit::DressMarks),
+    (ragdolls, marks, mut fixed): (
+        Query<&exa_physics::body::Ragdoll>,
+        refit::DressMarks,
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    ),
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
@@ -1763,12 +1767,21 @@ fn equip_outfits(
         };
         // The armour layers follow the outfit (the refit's equipment
         // refresh).
+        // The fighter is the simulation's (its health moves every step):
+        // the layers land on its copy at the next step, not as the frame's
+        // whole fighter, which a free-running simulation's newer steps
+        // would lose.
         if do_outfit && let Some(mut f) = fighter {
-            f.armour = exa_combat::damage::armour_layers(
+            let layers = exa_combat::damage::armour_layers(
                 f.natural.as_ref(),
                 &protection,
                 f.stats.deflection,
             );
+            let wear = move |f: &mut exa_combat::Fighter| f.armour = layers;
+            match fixed.as_deref_mut() {
+                Some(fixed) => fixed.write(body, &mut f, wear),
+                None => wear(&mut f),
+            }
         }
         if do_hands && refit.is_some() {
             // Only the main hand's item and fists are replaced; the off

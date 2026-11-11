@@ -504,6 +504,7 @@ pub(crate) fn ability_tick(
     mut arcs: Query<&mut LiveArcs>,
     draws: Option<ResMut<FrameEffectDraws>>,
     mut seed: Local<u32>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let (Some(time), Some(mut objects), Some(mut draws)) = (time, objects, draws) else {
         return;
@@ -581,7 +582,7 @@ pub(crate) fn ability_tick(
                         }
                         ArcsAction::End => {
                             if let Some(hum) = hum {
-                                end_arcs(&mut arcs, hum.arcs);
+                                end_arcs(fixed.as_deref_mut(), &mut arcs, hum.arcs);
                             }
                             commands.entity(blade).remove::<HumArcs>();
                             info!(
@@ -659,7 +660,12 @@ pub(crate) fn ability_tick(
                             if let Some(lit) = lit
                                 && let Ok(mut flame) = rows.get_mut(lit.row)
                             {
-                                flame.extinguish();
+                                step_write(
+                                    fixed.as_deref_mut(),
+                                    lit.row,
+                                    &mut flame,
+                                    Flame::extinguish,
+                                );
                             }
                             commands.entity(blade).remove::<LitBlade>();
                             info!(
@@ -705,10 +711,38 @@ fn set_slash(record: &mut Blade, held: Option<Mut<HeldRecord>>, slash: u8, share
 }
 
 /// Ends arcs: they stop respawning and leave once their points are gone.
-fn end_arcs(arcs: &mut Query<&mut LiveArcs>, entity: Entity) {
+fn end_arcs(
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
+    arcs: &mut Query<&mut LiveArcs>,
+    entity: Entity,
+) {
     if let Ok(mut live) = arcs.get_mut(entity) {
-        live.arcs.respawns = false;
-        live.arcs.ending = true;
+        step_write(fixed, entity, &mut live, |live: &mut LiveArcs| {
+            live.arcs.respawns = false;
+            live.arcs.ending = true;
+        });
+    }
+}
+
+/// A write of these frame systems to an effect the simulation steps (a
+/// flame row's extinguish flag, the arcs' end): the original's item list
+/// and hit hooks run in the body tick, so the write lands on the
+/// simulation's copy at the start of its next step
+/// ([`exa_physics::sim_app::FixedCommands::write`]), not as the frame's
+/// whole copy, which a free-running simulation's newer steps would lose.
+/// Without the queue (a test's bare app) a plain write.
+fn step_write<T, R>(
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
+    entity: Entity,
+    local: &mut Mut<T>,
+    write: impl Fn(&mut T) -> R + Send + Sync + 'static,
+) -> R
+where
+    T: Component<Mutability = bevy::ecs::component::Mutable>,
+{
+    match fixed {
+        Some(fixed) => fixed.write(entity, local, write),
+        None => write(local),
     }
 }
 
@@ -730,6 +764,7 @@ fn hit_hooks(
     objects: Option<ResMut<LiveObjects>>,
     mut arcs: Query<&mut LiveArcs>,
     draws: Option<ResMut<FrameEffectDraws>>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
     mut bank: ResMut<SoundBank>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut shocked: MessageWriter<ArcShocked>,
@@ -792,7 +827,7 @@ fn hit_hooks(
                 let (charged, spent) = lightning_hit_charge(word);
                 write_socket(&mut objects, id, charged);
                 if spent && let Some(hum) = hum {
-                    end_arcs(&mut arcs, hum.arcs);
+                    end_arcs(fixed.as_deref_mut(), &mut arcs, hum.arcs);
                     commands.entity(hit.striker).remove::<HumArcs>();
                 }
                 let mut burst = spark_burst(&mut draws.0.0);
@@ -970,7 +1005,7 @@ fn flame_row_loops(
     mut env: ResMut<AudioEnvironment>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut voices: ResMut<FlameRowVoices>,
-    rows: Query<(Entity, &Flame)>,
+    rows: Query<(Entity, &Flame, Option<&fire_row::FlamePitch>)>,
 ) {
     let gone: Vec<Entity> = voices
         .0
@@ -990,7 +1025,7 @@ fn flame_row_loops(
     if !env.is_live() {
         return;
     }
-    for (entity, flame) in &rows {
+    for (entity, flame, pitch) in &rows {
         let row = flame.row();
         if row.removed() || !row.has_sound {
             continue;
@@ -1002,7 +1037,7 @@ fn flame_row_loops(
             )
         });
         let Some(buffer) = buffer else { continue };
-        let sound = row.sound();
+        let sound = row.sound_at(pitch.map_or(row.pitch, |p| p.0));
         let position = (row.start + row.end) * 0.5 / 100.0;
         match env.handle_voice(handle) {
             Some(id) => {
