@@ -416,13 +416,18 @@ mod tests {
         );
         let turned = replace_placement(stored, false, point, goal, Vec3::ZERO);
         assert_eq!(turned.at_cm, point);
-        assert_eq!(turned.forward, Vec3::Z);
+        // The engine's normalise (the approximate reciprocal square root).
+        assert_eq!(
+            turned.forward,
+            exa_physics::engine_math::normalize_approx(Vec3::new(0.0, 0.0, 100.0))
+        );
+        assert!((turned.forward - Vec3::Z).length() < 1e-3);
         let f =
             |goal: Vec3| replace_placement(stored, false, point, Some(goal), Vec3::ZERO).forward;
-        assert_eq!(f(Vec3::new(0.0, 0.0, -100.0)), -Vec3::Z);
+        assert!((f(Vec3::new(0.0, 0.0, -100.0)) + Vec3::Z).length() < 1e-3);
         // The height is ignored: (300, 400) normalises to (0.6, 0.8).
         let d = f(Vec3::new(300.0, 900.0, 400.0));
-        assert!((d - Vec3::new(0.6, 0.0, 0.8)).length() < 1e-6, "{d}");
+        assert!((d - Vec3::new(0.6, 0.0, 0.8)).length() < 1e-3, "{d}");
         // A goal straight above the reference point keeps the stored facing.
         assert_eq!(f(Vec3::new(0.0, 100.0, 0.0)), Vec3::X);
     }

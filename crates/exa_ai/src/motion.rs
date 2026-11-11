@@ -122,46 +122,49 @@ fn sign(x: f32) -> f32 {
 }
 
 /// The yaw of a direction along the ground (0 toward +Z, positive toward
-/// +X), 0 for a flat offset shorter than 1e-8 (the engine's yaw helper).
+/// +X), 0 for a flat offset whose squared length is under 1e-8: the
+/// engine's heading ([`exa_physics::engine_math::heading`]), the arc
+/// cosine of `z / |xz|` by its fast arc cosine, negated for a negative
+/// `x`. The AI's look, turn, snap, settle and leave routines read every
+/// body direction through it.
 pub fn yaw_of(d: Vec3) -> f32 {
-    let flat = d.z * d.z + d.x * d.x;
-    if flat < 1e-8 {
-        return 0.0;
-    }
-    let c = d.z / flat.sqrt();
-    let a = if c > -1.0 {
-        if c <= 1.0 { c.acos() } else { 0.0 }
-    } else {
-        std::f32::consts::PI
-    };
-    if d.x < 0.0 { -a } else { a }
+    exa_physics::engine_math::heading(d)
 }
 
-/// The unit direction of a yaw along the ground.
+/// The yaw of a direction by the engine's fast two-argument arctangent
+/// of `(x, z)` ([`exa_physics::engine_math::atan2`]): the AI tick's idle
+/// look reads the body's look direction through it.
+pub fn yaw_atan2(d: Vec3) -> f32 {
+    exa_physics::engine_math::atan2(d.x, d.z)
+}
+
+/// The unit direction of a yaw along the ground by the engine's fast sine
+/// and cosine ([`exa_physics::engine_math::direction_from_yaw`]).
 pub fn dir_of(yaw: f32) -> Vec3 {
-    Vec3::new(yaw.sin(), 0.0, yaw.cos())
+    exa_physics::engine_math::direction_from_yaw(yaw)
 }
 
 /// A pitch and yaw as the engine builds a direction: `(cos p · sin y,
-/// −sin p, cos p · cos y)`.
+/// −sin p, cos p · cos y)` by its fast sine and cosine
+/// ([`exa_physics::engine_math::direction_from_pitch_yaw`]).
 pub fn pitched(pitch: f32, yaw: f32) -> Vec3 {
-    Vec3::new(
-        pitch.cos() * yaw.sin(),
-        -pitch.sin(),
-        pitch.cos() * yaw.cos(),
-    )
+    exa_physics::engine_math::direction_from_pitch_yaw(pitch, yaw)
 }
 
-/// The engine's normalise: the length squared is `(y² + 0) + (x² + z²)` and
-/// zero stays zero.
+/// The engine's normalise: the length squared is `(y² + 0) + (x² + z²)`,
+/// scaled by the processor's approximate reciprocal square root, and zero
+/// stays zero ([`exa_physics::engine_math::normalize_approx`]).
 pub fn unit(v: Vec3) -> Vec3 {
-    let sum = (v.y * v.y + 0.0) + (v.x * v.x + v.z * v.z);
-    if sum == 0.0 {
-        Vec3::ZERO
-    } else {
-        let s = 1.0 / sum.sqrt();
-        Vec3::new(v.x * s, v.y * s, v.z * s)
-    }
+    exa_physics::engine_math::normalize_approx(v)
+}
+
+/// The yaw Exarust turns a model to along a ground direction, by exact
+/// trigonometry: the inverse of `Quat::from_rotation_y`. This is not an
+/// original routine: the original never builds a model rotation from a
+/// yaw (its body controller turns the body); Exarust's stand-in turn and
+/// its placement use it so the model faces exactly the yaw they mean.
+pub fn model_yaw(d: Vec3) -> f32 {
+    d.x.atan2(d.z)
 }
 
 /// The AI's look state: the look yaw, the head's offset from it and where
@@ -271,10 +274,12 @@ pub struct Looking {
 /// built from them; with a look target still running nothing is written.
 /// Returns the direction to write and the yaw the look smoothing aims at.
 pub fn idle_look(gaze: &Gaze, at: Looking, look_target_running: bool) -> (Option<Vec3>, f32) {
-    let yaw = yaw_of(at.look);
+    // With a look target still running the yaw is the engine's heading of
+    // the look; otherwise its fast two-argument arctangent.
     if look_target_running {
-        return (None, yaw);
+        return (None, yaw_of(at.look));
     }
+    let yaw = yaw_atan2(at.look);
     let mut d = gap(gaze.offset, yaw);
     if d.abs() > HALF_PI {
         d = sign(d) * HALF_PI;
@@ -726,23 +731,25 @@ pub fn alert_look(
     })
 }
 
-/// The aim snap: the body's look yaw is taken as the AI's look, offset and
-/// offset target, and every body look direction the AI carries is set to
-/// it (the original copies the body's forward into its look, smoothing
-/// and head look and writes the facing too).
-pub fn snap_to_body(gaze: &mut Gaze, turn: &mut Turning, heading_yaw: f32) -> Vec3 {
-    let look = dir_of(heading_yaw);
+/// The aim snap: the yaw of the body's facing direction (the engine's
+/// heading) is taken as the AI's look, offset and offset target, and the
+/// facing direction itself is copied into the body's heading, its look
+/// smoothing and its look (the original copies the vector, so the body's
+/// directions keep the facing exactly; only the yaws go through the
+/// heading). Returns the yaw.
+pub fn snap_to_body(gaze: &mut Gaze, turn: &mut Turning, facing: Vec3) -> f32 {
+    let heading_yaw = yaw_of(facing);
     gaze.look = heading_yaw;
     gaze.offset = heading_yaw;
     gaze.target_offset = heading_yaw;
     gaze.sway = 0.0;
-    gaze.body_look = look;
-    gaze.body_smooth = look;
-    gaze.body_heading = look;
+    gaze.body_look = facing;
+    gaze.body_smooth = facing;
+    gaze.body_heading = facing;
     turn.heading = heading_yaw;
     turn.look = heading_yaw;
     turn.offset = heading_yaw;
-    look
+    heading_yaw
 }
 
 /// The look after combat is left: the AI's look, its heading and its eased
@@ -793,14 +800,8 @@ pub fn leave_combat(
 
 /// The aim: the look is snapped to the body's facing and a new sway draw is
 /// made 1–4 s out.
-pub fn aim(
-    gaze: &mut Gaze,
-    turn: &mut Turning,
-    heading_yaw: f32,
-    now_ms: u32,
-    roll: &mut u32,
-) -> Vec3 {
-    let look = snap_to_body(gaze, turn, heading_yaw);
+pub fn aim(gaze: &mut Gaze, turn: &mut Turning, facing: Vec3, now_ms: u32, roll: &mut u32) -> f32 {
+    let look = snap_to_body(gaze, turn, facing);
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
     let step = ((u64::from(*roll) * 3000) >> 32) as u32;
     turn.sway_at_ms = now_ms.wrapping_add(1000).wrapping_add(step);
@@ -841,25 +842,27 @@ mod tests {
     /// the engine's zero-safe unit.
     #[test]
     fn yaw_and_direction_agree() {
+        use exa_physics::engine_math as em;
+        // The helpers are the engine's routines.
+        let d = Vec3::new(0.3, 0.2, -0.9);
+        assert_eq!(yaw_of(d).to_bits(), em::heading(d).to_bits());
+        assert_eq!(yaw_atan2(d).to_bits(), em::atan2(0.3, -0.9).to_bits());
+        assert_eq!(dir_of(1.0), em::direction_from_yaw(1.0));
+        assert_eq!(pitched(0.5, 1.0), em::direction_from_pitch_yaw(0.5, 1.0));
+        assert_eq!(unit(d), em::normalize_approx(d));
+        // Within the fast arc cosine's error of the exact angles.
         assert!(yaw_of(Vec3::new(0.0, 0.0, 5.0)).abs() < 1e-6);
         assert!((yaw_of(Vec3::new(5.0, 0.0, 0.0)) - HALF_PI).abs() < 1e-6);
         assert!((yaw_of(Vec3::new(-5.0, 0.0, 0.0)) + HALF_PI).abs() < 1e-6);
         assert!((yaw_of(Vec3::new(0.0, 0.0, -5.0)).abs() - std::f32::consts::PI).abs() < 1e-5);
+        assert!((yaw_of(Vec3::new(1.0f32.sin(), 0.0, 1.0f32.cos())) - 1.0).abs() < 5e-4);
         assert_eq!(yaw_of(Vec3::ZERO), 0.0);
-        assert!((dir_of(HALF_PI) - Vec3::X).length() < 1e-6);
+        assert!((dir_of(HALF_PI) - Vec3::X).length() < 1e-5);
         assert!((dir_of(0.0) - Vec3::Z).length() < 1e-6);
-        assert!(
-            (pitched(0.5, 1.0)
-                - Vec3::new(
-                    0.5f32.cos() * 1.0f32.sin(),
-                    -0.5f32.sin(),
-                    0.5f32.cos() * 1.0f32.cos()
-                ))
-            .length()
-                < 1e-6
-        );
         assert_eq!(unit(Vec3::ZERO), Vec3::ZERO);
-        assert!((unit(Vec3::new(3.0, 4.0, 0.0)) - Vec3::new(0.6, 0.8, 0.0)).length() < 1e-6);
+        assert!((unit(Vec3::new(3.0, 4.0, 0.0)) - Vec3::new(0.6, 0.8, 0.0)).length() < 1e-3);
+        // The model's yaw is exact.
+        assert!((model_yaw(Vec3::new(1.0f32.sin(), 0.0, 1.0f32.cos())) - 1.0).abs() < 1e-6);
     }
 
     /// The gap wraps once and keeps a NaN.
@@ -878,8 +881,10 @@ mod tests {
     fn the_head_look_eases_and_rejects_the_back() {
         let mut gaze = Gaze::at(0.0);
         let look = look_at(&mut gaze, Vec3::ZERO, Vec3::new(100.0, 0.0, 100.0)).unwrap();
-        let target = std::f32::consts::FRAC_PI_4;
-        assert!((gaze.target_offset - target).abs() < 1e-6);
+        // The point's yaw is the engine's heading (within 5e-4 of π/4).
+        let target = yaw_of(Vec3::new(100.0, 0.0, 100.0));
+        assert!((target - std::f32::consts::FRAC_PI_4).abs() < 5e-4);
+        assert_eq!(gaze.target_offset, target);
         assert!((gaze.offset - (target * 0.02)).abs() < 1e-6);
         assert!((look - dir_of(target * 0.02)).length() < 1e-6);
         let mut gaze = Gaze::at(0.0);
@@ -941,14 +946,15 @@ mod tests {
             look_target_live: false,
         };
         let step = look_chain(&mut gaze, &turn, body);
-        // (0.3 · 0.1) in double, added in single.
-        assert!((yaw_of(step.look) - 0.03).abs() < 1e-6);
+        // (0.3 · 0.1) in double, added in single; the look is built by the
+        // engine's direction of the pitch and yaw.
+        assert!((step.look - pitched(0.005, 0.03)).length() < 1e-8);
         assert!(
             (step.look.y + 0.005f32.sin()).abs() < 1e-6,
             "1 % of the pitch"
         );
         // 0.03 · 0.4.
-        assert!((yaw_of(step.smooth) - 0.012).abs() < 1e-6);
+        assert_eq!(step.smooth, dir_of(0.012));
         assert!(step.turn.is_none(), "the look is within 30° of the body");
         assert_eq!(step.heading, None);
         // The gait helper's sway: (0.6 · 0.0062831854 + 0) · 0.7.
@@ -976,7 +982,7 @@ mod tests {
                 ..body
             },
         );
-        assert!((yaw_of(step.smooth) - (2.0 - 0.64)).abs() < 1e-6);
+        assert_eq!(step.smooth, dir_of(2.0 - 0.64));
         // A stepping body copies its look into the smoothing and heading.
         let mut gaze = Gaze::default();
         let step = look_chain(
@@ -1102,7 +1108,7 @@ mod tests {
         let along = Vec3::new(50.0, 0.0, 50.0).normalize() * 150.0;
         assert!((w.goal_cm - along).length() < 1e-4);
         assert!(
-            (yaw_of(w.look) - 0.07272).abs() < 1e-4,
+            (yaw_of(w.look) - 0.07272).abs() < 5e-4,
             "{}",
             yaw_of(w.look)
         );
@@ -1352,8 +1358,10 @@ mod tests {
         let mut gaze = Gaze::default();
         let mut turn = Turning::default();
         let mut roll = 0u32;
-        assert!((aim(&mut gaze, &mut turn, 0.5, 100, &mut roll) - dir_of(0.5)).length() < 1e-6);
-        assert_eq!((gaze.look, gaze.offset, turn.heading), (0.5, 0.5, 0.5));
+        let half = Vec3::new(0.5f32.sin(), 0.0, 0.5f32.cos());
+        let yaw = aim(&mut gaze, &mut turn, half, 100, &mut roll);
+        assert_eq!(yaw, yaw_of(half));
+        assert_eq!((gaze.look, gaze.offset, turn.heading), (yaw, yaw, yaw));
         assert_eq!(turn.sway_at_ms, 1100);
         let mut gaze = Gaze::default();
         let mut turn = Turning::default();
@@ -1363,14 +1371,16 @@ mod tests {
         assert_eq!(turn.sway_at_ms, 1294);
         let mut gaze = Gaze::default();
         let mut turn = Turning::default();
-        snap_to_body(&mut gaze, &mut turn, -0.5);
+        let back = Vec3::new((-0.5f32).sin(), 0.0, (-0.5f32).cos());
+        let yaw = snap_to_body(&mut gaze, &mut turn, back);
+        assert_eq!(yaw, yaw_of(back));
         assert_eq!(
             (gaze.look, gaze.offset, gaze.target_offset, turn.look),
-            (-0.5, -0.5, -0.5, -0.5)
+            (yaw, yaw, yaw, yaw)
         );
         assert_eq!(
             (gaze.body_look, gaze.body_smooth, gaze.body_heading),
-            (dir_of(-0.5), dir_of(-0.5), dir_of(-0.5))
+            (back, back, back)
         );
         // Leaving combat takes the body's look yaw into the look, offset
         // and heading; the head look and its target are kept and no new

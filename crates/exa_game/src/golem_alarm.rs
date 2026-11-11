@@ -797,7 +797,10 @@ fn send_guardian_home(
     face(locomotion, reset.angle);
     {
         let brain = &mut *npc;
-        exa_ai::motion::snap_to_body(&mut brain.gaze, &mut brain.turn, reset.angle);
+        // The snap reads the reset body's facing direction (the yaws
+        // through the engine's heading).
+        let facing = Quat::from_rotation_y(reset.angle) * Vec3::Z;
+        exa_ai::motion::snap_to_body(&mut brain.gaze, &mut brain.turn, facing);
     }
     // The sleep.
     let sleep = gone.sleep;

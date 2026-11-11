@@ -678,11 +678,14 @@ the sleep scales), and when one did the player is put 200 cm past the
 third-axis face of the `Alarm_` box holding the armed point, facing back
 across it, asking for motion 0x1d. Then the pass's second part,
 `revive_pass::reset_brains` (`flow::Step::ReviveBrains`), resets every AI
-brain through `exa_ai::presence::reenter`: healed, contacts cleared, and a
-roaming one moved along two rounds of wander and home-side plans, placed,
+brain through `exa_ai::presence::reenter`, at the start of the next fixed
+step in the world that holds the navigation grid (`revive_pass::revive_brains`):
+healed, contacts cleared, and a roaming one, its footprint lifted, moved
+room by room along two rounds of wander and home-side plans, placed,
 asked the space-free query (`exa_physics::sector_lists::space_taken`) and
 moved to the grid's nearest walkable point when its body meets another;
-it leaves combat and returns to idle. `golem_body::rest_sleepers` keeps a
+its footprint is stamped again where it ends, and it leaves combat and
+returns to idle. `golem_body::rest_sleepers` keeps a
 sleeper's statue byte and gait word as the same statue rest: the sleep
 activity's entry sets it and the sleeper's knock-out clears it
 (`exa_ai::brain::StatueByte`). A spawned body (the scene bodies, the arena's

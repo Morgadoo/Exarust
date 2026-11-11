@@ -1171,7 +1171,7 @@ pub fn follow_and_search(
         let feet_cm = feet * 100.0;
         let who = name.map_or("character", |n| n.as_str());
         if stepped {
-            let facing = exa_ai::motion::yaw_of(t.rotation * Vec3::Z);
+            let facing = npc.facing(t.rotation);
             let (_, turn, frame) = &mut *clock;
             let npc = &mut *npc;
             state.follower.place = feet_cm;
@@ -1488,12 +1488,12 @@ pub fn follow_and_search(
                 let order = exa_ai::order::follow(
                     &[feet, carrot / 100.0],
                     feet,
-                    exa_ai::motion::yaw_of(t.rotation * Vec3::Z),
+                    npc.facing(t.rotation),
                     urgency,
                 );
                 body.desired_velocity = order.velocity;
                 state.walk.velocity = order.velocity;
-                t.rotation = Quat::from_rotation_y(order.heading);
+                npc.turn_model(&mut t, order.heading);
                 if let Some(mut anim) = anim
                     && order.velocity != Vec3::ZERO
                     && anim.action != "Walk"

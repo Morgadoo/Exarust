@@ -225,6 +225,9 @@ pub struct Npc {
     pub head_took: bool,
     /// The attach step already snapped the AI's look to the body's facing.
     pub snapped: bool,
+    /// The model rotation Exarust's stand-in turn last wrote and the yaw it
+    /// turned the model to ([`Npc::turn_model`], [`Npc::facing`]).
+    pub stand_turn: Option<(Quat, f32)>,
     /// Applying roles chose the sleep activity: the next AI tick lies the
     /// body dormant (the sleep entry's body side).
     pub sleep_entry: bool,
@@ -277,6 +280,34 @@ pub fn death_hook(mut brains: Query<(&Condition, &mut Npc), Changed<Condition>>)
 }
 
 impl Npc {
+    /// The body's facing yaw as the AI's routines read it.
+    ///
+    /// The original reads the body's direction vectors through the
+    /// engine's heading every tick and never writes them: its body
+    /// controller turns the body. Exarust has no such controller for an
+    /// NPC, so its stand-in ([`Npc::turn_model`]) turns the model straight
+    /// to the yaw the AI eased. While the model still holds the rotation
+    /// that stand-in wrote, the facing is that yaw (as the body's own yaw
+    /// slot holds the yaw it turned to); once anything else moved the model
+    /// (a walk, physics, a placement), the facing is the engine's heading
+    /// of its forward. Reading the stand-in's own rotation back through the
+    /// fast heading would feed its error (up to 4e-4 rad) into the next
+    /// tick's turn and slowly turn a standing body.
+    pub fn facing(&self, rotation: Quat) -> f32 {
+        match self.stand_turn {
+            Some((written, yaw)) if written == rotation => yaw,
+            _ => motion::yaw_of(rotation * Vec3::Z),
+        }
+    }
+
+    /// Exarust's stand-in for the body controller's turn: the model is
+    /// turned to face `yaw` exactly and the turn is remembered for
+    /// [`Npc::facing`].
+    pub fn turn_model(&mut self, transform: &mut Transform, yaw: f32) {
+        transform.rotation = Quat::from_rotation_y(yaw);
+        self.stand_turn = Some((transform.rotation, yaw));
+    }
+
     /// The death hook's follower branch: a follower's activity word becomes
     /// 0 and it leaves the party. Returns whether it was following.
     pub fn death_hook(&mut self) -> bool {
@@ -358,6 +389,7 @@ impl Npc {
             walk: crate::walker::IdleWalk::default(),
             head_took: false,
             snapped: false,
+            stand_turn: None,
             sleep_entry: false,
             sleeping: false,
             investigation: crate::lifecycle::Investigation::default(),
@@ -1606,7 +1638,7 @@ pub fn ai_tick(
                 // yaw, the offsets and sway are zeroed, the alert look's
                 // wide pan waits 3 s and the sway and narrow pan 0.5 s.
                 if let Some(t) = transform.as_deref() {
-                    let body_look = motion::yaw_of(t.rotation * Vec3::Z);
+                    let body_look = npc.facing(t.rotation);
                     let brain = &mut *npc;
                     motion::leave_combat(
                         &mut brain.gaze,
@@ -1649,10 +1681,12 @@ pub fn ai_tick(
             && presence.is_none_or(|p| p.moves())
             && let Some(mut transform) = transform
         {
-            let facing = motion::yaw_of(transform.rotation * Vec3::Z);
+            // The facing the original's turn reads through the engine's
+            // heading of the body's direction ([`Npc::facing`]).
+            let facing = npc.facing(transform.rotation);
             // A brain that has never turned takes the body's placed facing
             // as its look through the attach step's snap, once.
-            attach_snap(&mut npc, facing);
+            attach_snap(&mut npc, transform.rotation * Vec3::Z);
             // The idle states' head: the investigation, the alert
             // look-around, then the attention to the attended contact; only
             // when none takes the tick is the in-combat mark cleared and
@@ -1774,7 +1808,8 @@ pub fn ai_tick(
             // fleeing brain is turned by its flight walk ([`flee_walk`]).
             // A roam's leg is turned by its walk ([`idle_walk`]).
             if npc.flight.is_none() && npc.walk.route.is_empty() {
-                transform.rotation = Quat::from_rotation_y(npc.turn.offset);
+                let offset = npc.turn.offset;
+                npc.turn_model(&mut transform, offset);
             }
         }
         npc.roll = roll;
@@ -1871,11 +1906,11 @@ pub fn follows_route(npc: Option<&Npc>, duellist: Option<&crate::Duellist>) -> b
 /// The attach step's snap, once: the AI's look yaws, aim, look and
 /// look-smoothing directions and the body's own look take the body's
 /// facing. A brain that already snapped keeps its look.
-pub fn attach_snap(npc: &mut Npc, facing_yaw: f32) {
+pub fn attach_snap(npc: &mut Npc, facing: Vec3) {
     if npc.snapped {
         return;
     }
-    motion::snap_to_body(&mut npc.gaze, &mut npc.turn, facing_yaw);
+    motion::snap_to_body(&mut npc.gaze, &mut npc.turn, facing);
     npc.snapped = true;
 }
 
@@ -2129,11 +2164,10 @@ pub fn flee_walk(
                     continue;
                 }
                 let path = [feet, carrot / 100.0];
-                let order =
-                    crate::order::follow(&path, feet, motion::yaw_of(t.rotation * Vec3::Z), 1);
+                let order = crate::order::follow(&path, feet, npc.facing(t.rotation), 1);
                 body.desired_velocity = order.velocity;
                 npc.flight_velocity = order.velocity;
-                t.rotation = Quat::from_rotation_y(order.heading);
+                npc.turn_model(&mut t, order.heading);
                 if let Some(mut anim) = anim
                     && anim.action != "Run"
                 {
@@ -2356,15 +2390,11 @@ pub fn idle_walk(
         let was_walking = npc.walk.velocity != Vec3::ZERO;
         match crate::walker::follow_walk(&mut npc.walk, feet_cm, now) {
             Some(carrot) => {
-                let order = crate::order::follow(
-                    &[feet, carrot / 100.0],
-                    feet,
-                    motion::yaw_of(t.rotation * Vec3::Z),
-                    0,
-                );
+                let order =
+                    crate::order::follow(&[feet, carrot / 100.0], feet, npc.facing(t.rotation), 0);
                 body.desired_velocity = order.velocity;
                 npc.walk.velocity = order.velocity;
-                t.rotation = Quat::from_rotation_y(order.heading);
+                npc.turn_model(&mut t, order.heading);
                 if let Some(mut anim) = anim
                     && order.velocity != Vec3::ZERO
                 {
@@ -2426,7 +2456,9 @@ pub fn face_entering(
             npc.walk.route.last().copied(),
             at_cm,
         );
-        t.rotation = Quat::from_rotation_y(motion::yaw_of(placed.forward));
+        // The model is placed facing the vector exactly (Exarust's scene
+        // placement, not an original yaw routine).
+        t.rotation = Quat::from_rotation_y(motion::model_yaw(placed.forward));
     }
 }
 
@@ -3959,8 +3991,23 @@ mod tests {
             ))
             .id();
         app.update();
-        let t = app.world().get::<Transform>(npc).unwrap();
-        assert!((t.rotation.to_euler(bevy::math::EulerRot::YXZ).0 - 1.0).abs() < 1e-5);
+        // The snap reads the placed facing through the engine's heading, so
+        // the look starts within its error (under 5e-4 rad) of the placed
+        // yaw, and the model turns there.
+        let yaw = |app: &App| {
+            let t = app.world().get::<Transform>(npc).unwrap();
+            t.rotation.to_euler(bevy::math::EulerRot::YXZ).0
+        };
+        let first = yaw(&app);
+        let heading = exa_physics::engine_math::heading(Quat::from_rotation_y(1.0) * Vec3::Z);
+        assert!((first - heading).abs() < 1e-6, "{first} vs {heading}");
+        assert!((first - 1.0).abs() < 5e-4);
+        // The stand-in turn does not read its own rotation back through the
+        // heading: a standing brain keeps that facing tick after tick.
+        for _ in 0..200 {
+            app.update();
+        }
+        assert!((yaw(&app) - first).abs() < 1e-6, "{} vs {first}", yaw(&app));
     }
 
     /// The AI tick decays the brain's group alert a step every ten seconds,
@@ -4339,18 +4386,23 @@ mod tests {
     #[test]
     fn the_attach_snap_takes_the_body_facing_once() {
         let mut npc = Npc::new([0.0; 4]);
-        attach_snap(&mut npc, 0.75);
+        let facing = Vec3::new(0.75f32.sin(), 0.0, 0.75f32.cos());
+        attach_snap(&mut npc, facing);
+        // The yaws go through the engine's heading; the directions are the
+        // facing vector itself.
+        let yaw = exa_physics::engine_math::heading(facing);
         assert_eq!(
             (npc.gaze.look, npc.gaze.offset, npc.turn.look),
-            (0.75, 0.75, 0.75)
+            (yaw, yaw, yaw)
         );
-        assert_eq!(npc.gaze.body_look, motion::dir_of(0.75));
-        assert_eq!(npc.gaze.body_smooth, motion::dir_of(0.75));
-        // A second attach (or a facing of 0) does not reset the look.
+        assert_eq!(npc.gaze.body_look, facing);
+        assert_eq!(npc.gaze.body_smooth, facing);
+        assert_eq!(npc.gaze.body_heading, facing);
+        // A second attach (or another facing) does not reset the look.
         npc.turn.look = 2.0;
-        attach_snap(&mut npc, 0.0);
+        attach_snap(&mut npc, Vec3::Z);
         assert_eq!(npc.turn.look, 2.0);
-        assert_eq!(npc.gaze.body_look, motion::dir_of(0.75));
+        assert_eq!(npc.gaze.body_look, facing);
     }
 
     #[test]
