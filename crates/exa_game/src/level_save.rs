@@ -47,7 +47,9 @@
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
-use exa_formats::characters::{ID_MASK, Placement, WORLD_DB};
+use exa_formats::characters::{
+    AiHome, ID_MASK, MotionState, Placement, PoseRecord, SavedPose, WORLD_DB,
+};
 use exa_formats::rfc::{PlacedObject, Scene};
 use exa_formats::rfc_level::LevelRaw;
 
@@ -202,7 +204,7 @@ pub fn placed_after(
 
 /// A character as it stands in the running scene, for the save's
 /// character section.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LiveCharacter {
     /// Its record's id (the world tag for a world record).
     pub id: u32,
@@ -212,7 +214,77 @@ pub struct LiveCharacter {
     pub yaw: f32,
     /// Its body is dead.
     pub dead: bool,
+    /// Its body's live pose tree ([`live_pose_tree`]), when it has a
+    /// physical body: written for a dead body and with the motion state.
+    pub pose: Option<Vec<PoseRecord>>,
+    /// Its current motion and that motion's progress, for a character an
+    /// AI drives (the original's AI in its attached mode 1).
+    pub motion: Option<MotionState>,
+    /// Its AI home, for an awake guardian (a race word whose `0xff00` pair
+    /// is `0x1000`, statue byte clear) that holds one.
+    pub ai_home: Option<AiHome>,
 }
+
+/// The pose tree a save writes for a body: its root part's world frame,
+/// then each child part's, depth first, each record with its bone number
+/// and its child count, as the exporter's pose walk writes the part nodes
+/// (`0xCAC0EB00`). `parts` are the body's parts as (bone, parent part,
+/// world transform); the root is bone 1's part, else the first part
+/// without a parent. Empty for a body without parts.
+pub fn live_pose_tree(parts: &[(usize, Option<usize>, Affine3A)]) -> Vec<PoseRecord> {
+    fn visit(
+        at: usize,
+        parts: &[(usize, Option<usize>, Affine3A)],
+        out: &mut Vec<PoseRecord>,
+        depth: usize,
+    ) {
+        let children: Vec<usize> = (0..parts.len())
+            .filter(|&k| k != at && parts[k].1 == Some(at))
+            .collect();
+        out.push(PoseRecord {
+            frame: exa_character::pose::frame_of_affine(&parts[at].2),
+            word: parts[at].0 as u32,
+            children: children.len() as u32,
+        });
+        // A malformed parent chain cannot loop the walk.
+        if depth > parts.len() {
+            return;
+        }
+        for child in children {
+            visit(child, parts, out, depth + 1);
+        }
+    }
+    let root = parts
+        .iter()
+        .position(|p| p.0 == 1 && p.1.is_none())
+        .or_else(|| parts.iter().position(|p| p.1.is_none()));
+    let mut out = Vec::new();
+    if let Some(root) = root {
+        visit(root, parts, &mut out, 0);
+    }
+    out
+}
+
+/// The motion state a save stores: the current motion and its progress.
+/// A load starts the motion with no blend and puts its progress back;
+/// an attack motion (5 to 12) is replaced by the defence stance (3) with
+/// no progress, as the original's character builder does.
+pub fn loaded_motion(saved: MotionState) -> MotionState {
+    if (5..=12).contains(&saved.state) {
+        MotionState {
+            state: DEFENCE_MOTION,
+            value: 0.0,
+        }
+    } else {
+        saved
+    }
+}
+
+/// The defence stance's motion number.
+pub const DEFENCE_MOTION: u32 = 3;
+
+/// The race word pair (`0xff00`) whose character saves its AI home.
+pub const HOME_RACE_PAIR: u32 = 0x1000;
 
 /// What the character pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -251,10 +323,15 @@ fn same_record(a: u32, b: u32) -> bool {
 /// with no live character stays as stored unless `gone` says its record
 /// left the level's store (a follower flushed at a door: its node left the
 /// scene); a live character with no placement is added at the end with its
-/// live place and condition (living 0, dead `0xA00`) and no saved pose.
-/// A character who died since the load keeps the stored pose, if any, and
-/// one stored dead keeps its whole placement [Exarust's: the original
-/// writes the live pose tree of a dead body].
+/// live place and condition (living 0, dead `0xA00`).
+///
+/// What follows the place is the live body's, as the exporter writes it
+/// ([`live_state`]): a body that died since the load writes its live pose
+/// tree; a living character an AI drives writes its AI home (an awake
+/// guardian's), its live pose tree and its motion state. One stored dead
+/// keeps its whole placement [Exarust's: the original writes every dead
+/// body's live pose tree; a level's corpse is registered asleep and stays
+/// on its stored pose].
 pub fn characters_after(
     stored: &[Placement],
     live: &[LiveCharacter],
@@ -286,7 +363,7 @@ pub fn characters_after(
         };
         used[i] = true;
         counts.kept += 1;
-        let character = live[i];
+        let character = &live[i];
         let mut placement = placement.clone();
         if placement.is_dead() {
             // A level's dead lie on their stored pose and do not walk.
@@ -305,11 +382,12 @@ pub fn characters_after(
                 placement.condition = exa_formats::characters::DEAD;
             }
         }
+        live_state(&mut placement, character);
         out.push(placement);
     }
     for (character, _) in live.iter().zip(&used).filter(|(_, used)| !**used) {
         counts.added += 1;
-        out.push(Placement {
+        let mut placement = Placement {
             id: character.id,
             position: character.position,
             yaw: character.yaw,
@@ -318,12 +396,105 @@ pub fn characters_after(
             } else {
                 0
             },
-            pose: exa_formats::characters::SavedPose::None,
+            pose: SavedPose::None,
             motion: None,
             ai_home: None,
-        });
+        };
+        live_state(&mut placement, character);
+        out.push(placement);
     }
     (out, counts)
+}
+
+/// The live body's chunks on a placement, as the exporter's character
+/// section writes them after the place: a dead body its live pose tree
+/// (`0xCAC0EB00`; a body with no physical parts keeps a stored tree, else
+/// writes one record at its feet [Exarust's: the original's every
+/// character has a body]); a living one an AI drives its AI home
+/// (`0xCACE0F77`, only for an awake guardian), its live pose tree and its
+/// motion state (`0xCAC0EA00`). A living character no AI drives keeps the
+/// stored chunks.
+pub fn live_state(placement: &mut Placement, character: &LiveCharacter) {
+    if placement.is_dead() {
+        if let Some(pose) = character.pose.clone().filter(|p| !p.is_empty()) {
+            placement.pose = SavedPose::Tree(pose);
+        } else if !matches!(placement.pose, SavedPose::Tree(_)) {
+            let at = Affine3A::from_translation(Vec3::from_array(character.position));
+            placement.pose = SavedPose::Tree(vec![PoseRecord {
+                frame: exa_character::pose::frame_of_affine(&at),
+                word: 1,
+                children: 0,
+            }]);
+        }
+        placement.motion = None;
+        placement.ai_home = None;
+        return;
+    }
+    let Some(motion) = character.motion else {
+        return;
+    };
+    placement.ai_home = character.ai_home;
+    // The motion state goes with the pose tree; a body without parts
+    // writes neither.
+    match character.pose.clone().filter(|p| !p.is_empty()) {
+        Some(pose) => {
+            placement.pose = SavedPose::Tree(pose);
+            placement.motion = Some(motion);
+        }
+        None => placement.motion = None,
+    }
+}
+
+/// The saved state a loaded character's placement carried (`0xCAC0EA00`,
+/// `0xCACE0F77`), put on the spawned living body for
+/// [`restore_saved_state`].
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct SavedCharacterState {
+    pub motion: Option<MotionState>,
+    pub ai_home: Option<AiHome>,
+}
+
+/// Puts a loaded character's saved state back once, as the original's
+/// character builder does after the body is made: the saved motion
+/// ([`loaded_motion`]) starts with no blend and takes its saved progress
+/// (without one the spawn's start motion stays); the AI home becomes the
+/// guardian's home (cm) and heading, and its statue byte is cleared.
+#[allow(clippy::type_complexity)]
+pub fn restore_saved_state(
+    mut commands: Commands,
+    motions: Option<Res<exa_anim::Motions>>,
+    mut loaded: Query<(
+        Entity,
+        &SavedCharacterState,
+        Option<&mut exa_anim::Animator>,
+        Option<&mut exa_ai::brain::Npc>,
+        Option<&exa_character::record::CharacterData>,
+    )>,
+) {
+    for (entity, saved, animator, npc, data) in &mut loaded {
+        let who = data.map_or("?", |d| d.record.name.as_str());
+        if let (Some(motion), Some(mut anim), Some(motions)) =
+            (saved.motion, animator, motions.as_deref())
+        {
+            let motion = loaded_motion(motion);
+            if let Some(action) = motions.action_name(motion.state).map(str::to_string) {
+                let loops = motions.clip(&anim, &action).is_some_and(|c| c.loops());
+                let then = (!loops).then(|| "Idle".to_string());
+                anim.start(&action, loops, then, 0, exa_anim::Ease::Linear);
+                anim.progress = motion.value;
+                info!(
+                    "load: {who} resumes motion {:#x} ({action}) at {:.3}",
+                    motion.state, motion.value
+                );
+            }
+        }
+        if let (Some(home), Some(mut npc)) = (saved.ai_home, npc) {
+            npc.guard_home = Some((Vec3::from_array(home.position) * 100.0, home.heading));
+            npc.statue = false;
+            info!("load: {who} takes its saved AI home {:?}", home.position);
+        }
+        commands.entity(entity).remove::<SavedCharacterState>();
+    }
 }
 
 /// The character part of a story save's level section: the live scene's
@@ -410,6 +581,7 @@ pub struct LevelSaveScene<'w, 's> {
     parents: Query<'w, 's, &'static ChildOf>,
     characters: Query<'w, 's, SceneCharacter, Without<crate::player::PlayerBody>>,
     local: Option<ResMut<'w, crate::world_characters::LocalCharacters>>,
+    motions: Option<Res<'w, exa_anim::Motions>>,
 }
 
 /// A scene character as the save's flush reads it.
@@ -422,6 +594,10 @@ type SceneCharacter = (
     Option<&'static exa_combat::Condition>,
     Option<&'static crate::thaum::cast::PowerCaster>,
     Option<&'static exa_physics::body::locomotion::Locomotor>,
+    Option<&'static exa_physics::body::Ragdoll>,
+    Option<&'static exa_anim::Animator>,
+    Option<&'static exa_ai::brain::Npc>,
+    Option<&'static exa_ai::roles::Roles>,
 );
 
 impl LevelSaveScene<'_, '_> {
@@ -501,13 +677,27 @@ impl LevelSaveScene<'_, '_> {
     ) -> Vec<LiveCharacter> {
         let mut out = Vec::new();
         let (mut to_world, mut to_local) = (0, 0);
-        for (transform, data, possessions, fighter, flags, condition, caster, locomotor) in
-            &self.characters
+        let (mut posed, mut moving, mut homes) = (0, 0, 0);
+        for (
+            transform,
+            data,
+            possessions,
+            fighter,
+            flags,
+            condition,
+            caster,
+            locomotor,
+            ragdoll,
+            animator,
+            npc,
+            roles,
+        ) in &self.characters
         {
             let record = crate::save_live::scene_character_record(
                 data,
                 possessions,
                 fighter.map(|f| (f, flags.copied(), condition.copied(), caster)),
+                roles,
             );
             if record.id & WORLD_DB != 0 {
                 if let Some(world) = world.as_deref_mut() {
@@ -525,13 +715,51 @@ impl LevelSaveScene<'_, '_> {
                 || transform.rotation().to_euler(EulerRot::YXZ).0,
                 |locomotor| locomotor.yaw,
             );
+            let dead = condition.is_some_and(|c| c.is_dead());
+            let pose = ragdoll.map(|body| {
+                let parts: Vec<_> = body
+                    .parts
+                    .iter()
+                    .map(|part| (part.bone, part.parent, part.transform()))
+                    .collect();
+                live_pose_tree(&parts)
+            });
+            // The AI's attached mode: a living character with a brain.
+            let motion = npc.filter(|_| !dead).and_then(|_| {
+                let animator = animator?;
+                let state = self.motions.as_deref()?.action_index(&animator.action)?;
+                Some(MotionState {
+                    state,
+                    value: animator.progress,
+                })
+            });
+            // An awake guardian's home.
+            let ai_home = npc
+                .filter(|npc| {
+                    !dead && !npc.statue && data.record.profession() & 0xff00 == HOME_RACE_PAIR
+                })
+                .and_then(|npc| npc.guard_home)
+                .map(|(at, heading)| AiHome {
+                    position: (at / 100.0).to_array(),
+                    heading,
+                });
+            posed += usize::from(pose.as_ref().is_some_and(|p| !p.is_empty()));
+            moving += usize::from(motion.is_some());
+            homes += usize::from(ai_home.is_some());
             out.push(LiveCharacter {
                 id: record.id,
                 position: transform.translation().to_array(),
                 yaw,
-                dead: condition.is_some_and(|c| c.is_dead()),
+                dead,
+                pose,
+                motion,
+                ai_home,
             });
         }
+        info!(
+            "save: scene character state: {posed} live pose trees, {moving} motion states, {homes} AI homes, {} dead",
+            out.iter().filter(|c| c.dead).count()
+        );
         // The scene's order is the entities'; keep it stable.
         info!(
             "save: {} scene characters flushed ({to_world} into the world character database, {to_local} into the level's)",
@@ -816,7 +1044,89 @@ mod tests {
             position: [x, 0.0, 0.0],
             yaw: 1.0,
             dead,
+            pose: None,
+            motion: None,
+            ai_home: None,
         }
+    }
+
+    /// A two-part body: the pelvis at `x` and a thigh 10 cm below it.
+    fn two_parts(x: f32) -> Vec<PoseRecord> {
+        let pelvis = Affine3A::from_translation(Vec3::new(x, 1.0, 0.0));
+        let thigh = Affine3A::from_translation(Vec3::new(x, 0.9, 0.0));
+        live_pose_tree(&[(2, Some(1), thigh), (1, None, pelvis)])
+    }
+
+    /// The live pose tree starts at the pelvis and lists each child part
+    /// after its parent with its bone number and child count.
+    #[test]
+    fn the_live_pose_tree_walks_the_parts_from_the_pelvis() {
+        let tree = two_parts(3.0);
+        assert_eq!(tree.len(), 2);
+        assert_eq!((tree[0].word, tree[0].children), (1, 1));
+        assert_eq!((tree[1].word, tree[1].children), (2, 0));
+        assert_eq!(tree[0].frame[3], [3.0, 1.0, 0.0]);
+        assert_eq!(tree[1].frame[3], [3.0, 0.9, 0.0]);
+        let turned = Affine3A::from_rotation_y(0.7);
+        let back = exa_character::pose::affine(&exa_character::pose::frame_of_affine(&turned));
+        assert!(back.abs_diff_eq(turned, 1e-6));
+        assert!(live_pose_tree(&[]).is_empty());
+    }
+
+    /// A death since the load writes the body's live pose tree; a living
+    /// character an AI drives writes its pose, motion state and home; one
+    /// without a body writes no motion; a corpse with no parts gets one
+    /// record at its feet so the section still exports.
+    #[test]
+    fn the_live_body_state_goes_with_the_placement() {
+        let mut died = standing(8, 5.0, true);
+        died.pose = Some(two_parts(5.0));
+        let mut walker = standing(4, 1.0, false);
+        walker.pose = Some(two_parts(1.0));
+        walker.motion = Some(MotionState {
+            state: 0x13,
+            value: 0.25,
+        });
+        walker.ai_home = Some(AiHome {
+            position: [1.0, 0.0, 2.0],
+            heading: 0.5,
+        });
+        let mut bodiless = standing(5, 2.0, false);
+        bodiless.motion = walker.motion;
+        let (out, _) = characters_after(
+            &[stored(8, 5.0), stored(4, 1.0), stored(5, 2.0)],
+            &[died, walker, bodiless, standing(9, 7.0, true)],
+            |_| false,
+        );
+        assert!(out[0].is_dead());
+        assert!(matches!(&out[0].pose, SavedPose::Tree(t) if t.len() == 2));
+        assert!(matches!(&out[1].pose, SavedPose::Tree(t) if t.len() == 2));
+        assert_eq!(out[1].motion.map(|m| m.state), Some(0x13));
+        assert_eq!(out[1].ai_home.map(|h| h.heading), Some(0.5));
+        assert_eq!(out[2].motion, None);
+        assert!(matches!(&out[3].pose, SavedPose::Tree(t)
+            if t.len() == 1 && t[0].frame[3] == [7.0, 0.0, 0.0]));
+    }
+
+    /// An attack motion loads as the defence stance with no progress.
+    #[test]
+    fn a_loaded_attack_motion_becomes_the_defence_stance() {
+        let attack = MotionState {
+            state: 7,
+            value: 0.4,
+        };
+        assert_eq!(
+            loaded_motion(attack),
+            MotionState {
+                state: DEFENCE_MOTION,
+                value: 0.0
+            }
+        );
+        let walk = MotionState {
+            state: 0x13,
+            value: 0.4,
+        };
+        assert_eq!(loaded_motion(walk), walk);
     }
 
     /// An idling character keeps its placement, a moved one takes its live
@@ -895,6 +1205,9 @@ mod tests {
             position: [1.0, 0.5, 2.0],
             yaw: 0.25,
             dead: false,
+            pose: None,
+            motion: None,
+            ai_home: None,
         }];
         let held: Vec<u32> = local.db.ids().collect();
         let records = scene
@@ -933,6 +1246,82 @@ mod tests {
         // Elsewhere (level 2) the locale gate keeps him out.
         let elsewhere = exa_world::placed_characters(&back, &[], Some(2), &world);
         assert!(!elsewhere.iter().any(|c| c.name == "Derrin"));
+    }
+
+    /// A level character who died since the load, and one walking, are
+    /// written into the saved section with their live pose trees (the
+    /// walker with its motion state too) and read back so (skipped without
+    /// the game). Without a pose the dead body's placement would not export.
+    #[test]
+    fn a_new_corpse_and_a_walker_save_their_live_bodies() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let source = pack.get("exanima02.rfc").unwrap();
+        let scene = Scene::parse(source).unwrap();
+        let chars = scene.characters.clone().unwrap();
+        let living: Vec<&Placement> = chars.placements.iter().filter(|p| !p.is_dead()).collect();
+        let (a, b) = (living[0], living[1]);
+        let mut died = LiveCharacter {
+            id: a.id,
+            position: a.position,
+            yaw: a.yaw,
+            dead: true,
+            pose: Some(two_parts(a.position[0])),
+            motion: None,
+            ai_home: None,
+        };
+        died.position[0] += 0.5;
+        let walker = LiveCharacter {
+            id: b.id,
+            position: b.position,
+            yaw: b.yaw,
+            dead: false,
+            pose: Some(two_parts(b.position[0])),
+            motion: Some(MotionState {
+                state: 0x13,
+                value: 0.5,
+            }),
+            ai_home: None,
+        };
+        let mut local = crate::world_characters::LocalCharacters::of_section(source);
+        let held: Vec<u32> = local.db.ids().collect();
+        let records = scene
+            .local_database
+            .clone()
+            .map(|db| db.write())
+            .unwrap_or_default();
+        let strings = scene.local_strings.clone().unwrap_or_default().write();
+        let (saved, _) = saved_section(
+            source,
+            &[],
+            &[],
+            records,
+            strings,
+            true,
+            SettingsState::reset(),
+            Some(SectionCharacters {
+                live: &[died, walker],
+                held: &held,
+                world: &[],
+                database: local.section_body(),
+            }),
+        )
+        .unwrap();
+        let back = Scene::parse(&saved).unwrap();
+        let back = back.characters.unwrap();
+        let corpse = back.placements.iter().find(|p| p.id == a.id).unwrap();
+        assert!(corpse.is_dead());
+        let SavedPose::Tree(tree) = &corpse.pose else {
+            panic!("no pose tree");
+        };
+        assert_eq!(tree.len(), 2);
+        assert!((tree[0].frame[3][1] - 1.0).abs() < 1e-4);
+        let moving = back.placements.iter().find(|p| p.id == b.id).unwrap();
+        assert_eq!(moving.motion.map(|m| m.state), Some(0x13));
+        assert!(matches!(&moving.pose, SavedPose::Tree(t) if t.len() == 2));
     }
 
     #[test]

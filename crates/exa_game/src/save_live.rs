@@ -346,6 +346,7 @@ impl Plugin for SaveLivePlugin {
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             )
             .add_systems(Update, crate::follower_travel::restore_arrivals)
+            .add_systems(Update, crate::level_save::restore_saved_state)
             .add_systems(
                 Update,
                 crate::world_characters::track_local_characters
@@ -686,6 +687,29 @@ pub fn record_with_health(
     data.into_record()
 }
 
+/// A record with the character's live roles written back, as the
+/// original's role list lives in the record itself: a role added while
+/// the level ran (the follow a recruit takes) is saved with the record,
+/// and the spawn reads it back ([`exa_ai::roles::Roles::of_record`]).
+/// Only a version 7 record keeps its list as held; an older one is left
+/// alone (its roles are rebuilt from the list at every spawn).
+pub fn record_with_roles(mut record: CharacterRecord, roles: &exa_ai::roles::Roles) -> CharacterRecord {
+    if record.version >= exa_formats::characters::RECORD_VERSION {
+        record.roles = roles
+            .0
+            .iter()
+            .map(|r| exa_formats::characters::Role {
+                id: r.id,
+                weight: r.weight,
+                explicit: r.explicit,
+                inherited: r.inherited,
+                variables: r.values.clone(),
+            })
+            .collect();
+    }
+    record
+}
+
 /// What a fighting body's health is read from: its fighter, state flags,
 /// condition and caster.
 pub type FightingBody<'a> = (
@@ -697,16 +721,21 @@ pub type FightingBody<'a> = (
 
 /// A scene character's record as the save's flush stores it: the body's
 /// record with its live possessions written back and, for a body that
-/// fights, its health ([`body_health`], [`record_with_health`]); the
-/// door's follower flush stores the same.
+/// fights, its health ([`body_health`], [`record_with_health`]), and its
+/// live roles ([`record_with_roles`]); the door's follower flush stores the
+/// same.
 pub fn scene_character_record(
     data: &exa_character::record::CharacterData,
     possessions: Option<&exa_items::possession::Possessions>,
     body: Option<FightingBody<'_>>,
+    roles: Option<&exa_ai::roles::Roles>,
 ) -> CharacterRecord {
     let mut record = data.record.clone();
     if let Some(possessions) = possessions {
         record = record_with_possessions(record, possessions);
+    }
+    if let Some(roles) = roles {
+        record = record_with_roles(record, roles);
     }
     if let Some((fighter, flags, condition, caster)) = body {
         let focus = caster.map_or(record_focus(&record), |caster| caster.body.focus);

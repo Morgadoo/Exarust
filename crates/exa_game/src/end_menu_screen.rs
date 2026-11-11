@@ -311,6 +311,7 @@ impl Plugin for EndMenuScreenPlugin {
         app.init_resource::<EndMenuScreen>()
             .add_message::<ScriptedEnd>()
             .add_message::<EndMenuConfirm>()
+            .add_message::<crate::menu_screen::MenuSound>()
             .add_systems(
                 Update,
                 (update, draw)
@@ -331,18 +332,39 @@ fn update(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut pad: MessageReader<EndMenuConfirm>,
+    mut roll: Option<ResMut<crate::menu_screen::MenuSoundRoll>>,
+    mut sounds: MessageWriter<crate::menu_screen::MenuSound>,
 ) {
     let pad_confirm = pad.read().count() > 0;
     // The pad's Select: a menu that is not showing does nothing; one that
-    // shows confirms its selected row ([`Flow::menu_confirm`]; Exarust's
-    // end menu has no click sound to play).
-    if pad_confirm
-        && let Some(flow) = flow.as_mut()
-        && flow
-            .menu_confirm(screen.open, false, 0.0)
-            .contains(&Step::MenuConfirm)
-    {
-        info!("end menu: the pad's Select confirms {:?}", screen.selected);
+    // shows plays the menus' shared `MenuClick` (the title menu's
+    // constructor loads it; its pitch drawn from the run-time library's
+    // generator, 0.8 to 1.2) and confirms its selected row
+    // ([`Flow::menu_confirm`]).
+    let confirmed = if pad_confirm && let Some(flow) = flow.as_mut() {
+        let has_sound = roll.is_some();
+        let draw = match roll.as_mut() {
+            Some(roll) if screen.open => roll.roll(),
+            _ => 0.0,
+        };
+        let out = flow.menu_confirm(screen.open, has_sound, draw);
+        for step in &out {
+            if let Step::Hover { pitch, .. } = *step {
+                sounds.write(crate::menu_screen::MenuSound {
+                    cue: crate::menu_screen::MenuCue::Click,
+                    pitch,
+                });
+            }
+        }
+        out.contains(&Step::MenuConfirm)
+    } else {
+        false
+    };
+    if confirmed && let Some(flow) = flow.as_mut() {
+        info!(
+            "end menu: the pad's Select clicks and confirms {:?}",
+            screen.selected
+        );
         let out = screen.confirm(flow);
         if let Some(scripted) = screen.scripted.take() {
             scripts.write(scripted);
@@ -519,6 +541,48 @@ mod tests {
             GuiTexture::from_top_down(448, 896, &blank).unwrap(),
         );
         textures
+    }
+
+    /// The pad's Select on a showing end menu plays the menus' click with a
+    /// drawn pitch and confirms the row; on a hidden one it does neither.
+    #[test]
+    fn the_pads_confirm_clicks_the_showing_end_menu() {
+        #[derive(Resource, Default)]
+        struct Heard(Vec<crate::menu_screen::MenuSound>);
+        fn listen(
+            mut sounds: MessageReader<crate::menu_screen::MenuSound>,
+            mut heard: ResMut<Heard>,
+        ) {
+            heard.0.extend(sounds.read().copied());
+        }
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GuiFrames>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<Heard>()
+            .init_resource::<crate::menu_screen::MenuSoundRoll>()
+            .insert_resource({
+                let mut flow = Flow::default();
+                flow.mode = Mode::Practice;
+                flow
+            })
+            .add_plugins(EndMenuScreenPlugin)
+            .add_systems(Update, listen.after(update));
+        app.world_mut().write_message(EndMenuConfirm);
+        app.update();
+        assert!(app.world().resource::<Heard>().0.is_empty());
+        app.world_mut()
+            .resource_mut::<EndMenuScreen>()
+            .show(end_menu(MENU_WON, Mode::Practice));
+        app.world_mut().write_message(EndMenuConfirm);
+        app.update();
+        let heard = &app.world().resource::<Heard>().0;
+        assert_eq!(heard.len(), 1);
+        assert_eq!(heard[0].cue, crate::menu_screen::MenuCue::Click);
+        assert!((0.8..1.2).contains(&heard[0].pitch));
+        assert!(!app.world().resource::<FlowSteps>().steps.is_empty());
     }
 
     #[test]

@@ -3587,6 +3587,7 @@ impl Plugin for FlowPlugin {
                 Update,
                 (
                     (apply_menu_choices, tick, follow_player).chain(),
+                    notify_gui_scale.before(FlowSystems::ApplySteps),
                     (
                         open_named_level,
                         travel,
@@ -4054,6 +4055,31 @@ fn request_action(
     }
 }
 
+/// The window's resize notification, as the game main unit registers it at
+/// boot ([`BootTask::GuiScale`]): the GUI scale is taken again from the
+/// window's height and, when it moved, both menus lay out again
+/// ([`Flow::gui_scale_changed`]). The first frame takes the boot's scale.
+fn notify_gui_scale(
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    flow: Option<Res<Flow>>,
+    mut steps: ResMut<FlowSteps>,
+    mut last: Local<Option<f32>>,
+) {
+    let (Some(flow), Ok(window)) = (flow, windows.single()) else {
+        return;
+    };
+    let height = window.physical_height() as i32;
+    let Some(previous) = *last else {
+        *last = Some(gui_scale(height));
+        return;
+    };
+    let out = flow.gui_scale_changed(previous, height);
+    if !out.is_empty() {
+        *last = Some(gui_scale(height));
+        steps.steps.extend(out);
+    }
+}
+
 /// Applies the flow's steps to the running app's own pieces: the menu and
 /// end-menu forms, the title logo, the interface and controls flags and the
 /// practice heal's health. A level load or world teardown becomes an
@@ -4202,6 +4228,15 @@ fn apply_steps(
                 if let Some(menu) = menu.as_mut() {
                     menu.set_covered(help);
                 }
+            }
+            Step::GuiScale(scale) => {
+                // Both menus lay out again: the title menu redraws its
+                // cached rows; the end menu lays out from the window at
+                // every draw.
+                if let Some(menu) = menu.as_mut() {
+                    menu.relayout();
+                }
+                info!("gui scale: {scale} (the menus lay out again)");
             }
             Step::TitleLogo(shown) => {
                 if let Some(logo) = logo.as_mut() {

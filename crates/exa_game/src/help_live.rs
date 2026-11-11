@@ -407,16 +407,22 @@ fn manual_input(
     time: Res<Time<Real>>,
     mut screen: ResMut<ManualScreen>,
     mut steps: Option<ResMut<FlowSteps>>,
+    mut flow: Option<ResMut<crate::flow::Flow>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     if !screen.is_open() {
         return;
     }
-    let close = |screen: &mut ManualScreen, steps: &mut Option<ResMut<FlowSteps>>| {
+    // The help screen's close notifies the game main unit, whose handler
+    // clears the menu's help flag ([`crate::flow::Flow::help_closed`]).
+    let mut close = |screen: &mut ManualScreen, steps: &mut Option<ResMut<FlowSteps>>| {
         screen.close();
         info!("manual: closed");
         if let Some(steps) = steps.as_mut() {
-            steps.steps.push(Step::MenuHelp(false));
+            match flow.as_mut() {
+                Some(flow) => steps.steps.extend(flow.help_closed()),
+                None => steps.steps.push(Step::MenuHelp(false)),
+            }
         }
     };
     if keys.just_pressed(KeyCode::Escape)

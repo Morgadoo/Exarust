@@ -102,6 +102,18 @@ pub fn rows_of(t: &Transform) -> Frame {
     ]
 }
 
+/// An affine map's frame, the inverse of [`affine`]: what a saved pose
+/// record stores for a part placed by it.
+pub fn frame_of_affine(a: &Affine3A) -> Frame {
+    let m = a.matrix3;
+    [
+        [m.x_axis.x, m.y_axis.x, m.z_axis.x],
+        [m.x_axis.y, m.y_axis.y, m.z_axis.y],
+        [m.x_axis.z, m.y_axis.z, m.z_axis.z],
+        a.translation.to_array(),
+    ]
+}
+
 /// Places `pose` on the model's `nodes`, returning the character frame's
 /// translation and every node's local frame (its parent's frame under the
 /// frame). With no saved pose the built pose is kept: the frame still sits
