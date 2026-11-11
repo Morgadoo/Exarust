@@ -1425,6 +1425,8 @@ Round 147 itemgui: the weapon card material swatch was really the Flip weapon bu
 
 Round 154 motilepart3: the living step restores every part edges after the pose drive, and the link muscles damp and saturate with the original precision.
 
+Round 165 fists: unarmed strikes go through the hand hit event and fighters keep the original combat target.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
