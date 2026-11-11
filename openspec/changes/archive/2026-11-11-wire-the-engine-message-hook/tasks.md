@@ -9,6 +9,6 @@
 ## 2. Checks
 
 - [x] 2.1 Grid, arena1 with the probe: the overlay shows "Script : Invalid role set for the witness event." wrapped in the top-left corner and is gone later; the log file holds the line with CR LF
-- [x] 2.2 Lockstep digests of arena1 and exanima01 against round 182's build
+- [x] 2.2 Lockstep traces (`determinism_grid.sh`, exanima01, 2 scenes): byte-identical to the base build (24a6f8288) over the common rows to tick 971; with the probe during the load the values match and body ids are one lower (the GUI canvas spawned earlier)
 - [x] 2.3 fmt, clippy -D warnings, exa_game, exa_ui and exarust tests on the worker
 - [x] 2.4 docs/PERFORMANCE.md, docs/DEBUGGING.md, crate READMEs; docs/PLAN.md and docs/COMPONENT-MAP.md unchanged
