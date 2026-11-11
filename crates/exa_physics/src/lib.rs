@@ -24,6 +24,7 @@ pub mod kdtree;
 pub mod lever;
 pub mod mechanism;
 pub mod mechanism_sound;
+pub mod mesh_query;
 pub mod mesh_tree;
 pub mod motile;
 pub mod part;

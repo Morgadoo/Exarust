@@ -970,10 +970,21 @@ pub fn sim_push(push: f32) -> f32 {
 /// body's, a limb's own after a limb's, 0 before any). Returns whether any
 /// point was met.
 pub fn hit_sim_object(blast: &Blast, object: &mut SimPoints, scale: f32) -> bool {
-    let k = sim_push(blast.setup.character_push);
+    hit_sim_points(&blast.chunks, &blast.setup, object, scale)
+}
+
+/// [`hit_sim_object`] over any chunk list with its setup: the force wave's
+/// chunks take the blast's walk.
+pub fn hit_sim_points(
+    chunks: &[BlastChunk],
+    setup: &BlastSetup,
+    object: &mut SimPoints,
+    scale: f32,
+) -> bool {
+    let k = sim_push(setup.character_push);
     let mut hit = false;
-    for chunk in &blast.chunks {
-        let reach = contact_reach(chunk, scale, blast.setup.margin, SIM_EXTRA);
+    for chunk in chunks {
+        let reach = contact_reach(chunk, scale, setup.margin, SIM_EXTRA);
         let r2 = reach * reach;
         let span = reach + object.radius;
         if !(dist_sq(chunk.at, object.centre) <= span * span) {
