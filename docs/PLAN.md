@@ -1942,6 +1942,8 @@ Round 175 sweep: a reusable feature smoke sweep (64 scenes, free and lockstep) f
 
 concern and contact alarm now come from the player contact list, and hit and AddConcern writes reach the brain. Brains enter combat earlier (tick 82, level 1), and with Fear plus attacks a story NPC flees (exanima01). Lockstep matches main except in brain scenes.
 
+the second feature sweep (80 scenes, free and lockstep, 16 new scenes for rounds 169 to 181) runs clean; it found that in free mode the frame draw writes to the force effects were copied back over newer simulation state, so an AI Force Blast never released. The six force effects are now drawn copies of the bridge; lockstep traces unchanged. The armed parry logs its link taking hold.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
