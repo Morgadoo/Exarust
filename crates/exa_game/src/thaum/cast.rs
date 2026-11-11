@@ -682,6 +682,10 @@ fn dispatch_domain(
     }
 }
 
+/// The level a cast's creators read: the physics world and the static
+/// colliders' records.
+type Level<'a> = (Option<&'a Physics>, Option<&'a exa_physics::StaticColliders>);
+
 /// The context a cast's creator reads besides the body.
 struct CastContext {
     now: u32,
@@ -720,7 +724,10 @@ pub(crate) fn run_bar_commands(
     hand: Option<Res<Hand>>,
     ground: Option<Res<CursorGround>>,
     throw_pick: Option<Res<super::throw_live::ThrowPick>>,
-    physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
+    (physics, statics): (
+        Option<Res<exa_physics::collision_share::FramePhysics>>,
+        Option<Res<exa_physics::StaticColliders>>,
+    ),
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
     mut draws: ResMut<FrameEffectDraws>,
@@ -1024,7 +1031,7 @@ pub(crate) fn run_bar_commands(
                     entry.result > 0,
                     start,
                     &place,
-                    physics.as_deref().map(|p| &p.0),
+                    (physics.as_deref().map(|p| &p.0), statics.as_deref()),
                     &armed,
                     &mut draws,
                     &mut roll,
@@ -1084,7 +1091,7 @@ fn begin_cast(
     started: bool,
     start: Option<CastStart>,
     place: &CastPlace,
-    physics: Option<&Physics>,
+    level: Level<'_>,
     weapons: &[WeaponArc],
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
@@ -1110,7 +1117,7 @@ fn begin_cast(
             start,
             &context,
             place.ragdoll,
-            physics,
+            level,
             weapons,
             draws,
             roll,
@@ -1260,7 +1267,10 @@ fn cast_for_duellists(
         Option<&Ragdoll>,
         Option<&exa_ai::presence::Presence>,
     )>,
-    physics: Option<Res<Physics>>,
+    (physics, statics): (
+        Option<Res<Physics>>,
+        Option<Res<exa_physics::StaticColliders>>,
+    ),
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
     target_bodies: Query<&Ragdoll>,
@@ -1362,7 +1372,7 @@ fn cast_for_duellists(
             result > 0,
             start,
             &place,
-            physics.as_deref(),
+            (physics.as_deref(), statics.as_deref()),
             &armed,
             &mut draws,
             &mut roll,
@@ -1511,7 +1521,7 @@ fn create_active(
     start: CastStart,
     context: &CastContext,
     ragdoll: Option<&Ragdoll>,
-    physics: Option<&Physics>,
+    level: Level<'_>,
     weapons: &[WeaponArc],
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
@@ -1524,7 +1534,7 @@ fn create_active(
             start,
             context,
             ragdoll,
-            physics,
+            level,
             draws,
             roll,
         ),
@@ -1559,10 +1569,11 @@ fn create_force(
     start: ForceStart,
     context: &CastContext,
     ragdoll: Option<&Ragdoll>,
-    physics: Option<&Physics>,
+    level: Level<'_>,
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
 ) -> Option<Entity> {
+    let physics = level.0;
     match start {
         ForceStart::Blast { setup, cost } if setup != WAVE_SETUP => {
             let body = ragdoll?;
@@ -1702,7 +1713,7 @@ fn create_force(
                 debug!("force barricade: the ground pick meets nothing");
                 return None;
             }
-            let place = barricade_place(context, physics, roll);
+            let place = barricade_place(context, level, roll);
             let frame = WallFrame::facing(place.centre, place.facing);
             let now = context.now;
             let trim = |start: Vec3, dir: Vec3, len: f32| {
@@ -2249,10 +2260,12 @@ fn push_active(
 
 /// Place a barricade: the player's ground pick under the cursor; without a
 /// cursor ray the cast's point (the aim plane's, or the AI's target), else
-/// two metres ahead, taken as it stands; the floor probe is the level's.
+/// two metres ahead, taken as it stands. The floor probe is the original's
+/// floor cast: the static meshes of floor nodes only
+/// ([`Physics::static_floor_below`]).
 fn barricade_place(
     context: &CastContext,
-    physics: Option<&Physics>,
+    (physics, statics): Level<'_>,
     roll: &mut EffectRoll,
 ) -> super::force::BarricadePlace {
     let hit = context
@@ -2266,9 +2279,18 @@ fn barricade_place(
             exact: true,
         });
     let floor = |from: Vec3, reach: f32| {
-        physics
-            .and_then(|p| p.fixed_hit(from / CM, Vec3::NEG_Y, reach / CM))
-            .map(|d| d * CM)
+        let depth = physics
+            .zip(statics)
+            .and_then(|(p, s)| p.static_floor_below(s, from / CM, reach / CM))
+            .map(|d| d * CM);
+        debug!(
+            "barricade floor cast: from {:.0} cm, {}",
+            from.y,
+            depth.map_or("no floor node within reach".to_string(), |d| format!(
+                "a floor node {d:.1} cm down"
+            ))
+        );
+        depth
     };
     place_barricade(hit, context.caster, floor, roll.0.unit())
 }
