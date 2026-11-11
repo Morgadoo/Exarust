@@ -20,7 +20,7 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
-use exa_physics::body::{Ragdoll, TickedCharacter};
+use exa_physics::body::{BodyTicks, Ragdoll, TickedCharacter};
 
 use crate::{Attacking, Condition, Fighter};
 
@@ -282,9 +282,16 @@ pub fn hands_in_frame(body: &Ragdoll) -> Vec<Vec3> {
 /// start is a no-op for the motion already playing). The original also
 /// stamps the hand with a timer and a motion-state word no Exarust system
 /// reads.
+///
+/// Debug aid: `EXA_FORCE_TANGLE=<ms>` starts one tangle break on every
+/// fighter whose tick comes at or after that game clock (once each), as
+/// if its counter had passed 60, to watch what a tangle break holds.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn break_tangles(
     mut commands: Commands,
     ticked: Res<TickedCharacter>,
+    ticks: Option<Res<BodyTicks>>,
+    mut forced: Local<Option<(u64, Vec<Entity>)>>,
     motions: Option<Res<Motions>>,
     mut fighters: Query<(
         &Fighter,
@@ -302,8 +309,21 @@ pub(crate) fn break_tangles(
         return;
     }
     let hands = hands_in_frame(body);
-    let (next, starts) = break_tangle(count.0, fighter.parry.active, &hands);
+    let (next, mut starts) = break_tangle(count.0, fighter.parry.active, &hands);
     count.0 = next;
+    let force_at = forced.get_or_insert_with(|| {
+        let at = std::env::var("EXA_FORCE_TANGLE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(u64::MAX);
+        (at, Vec::new())
+    });
+    if ticks.is_some_and(|t| t.millis() >= force_at.0) && !force_at.1.contains(&entity) {
+        force_at.1.push(entity);
+        count.0 = 0;
+        starts = true;
+        info!("{entity:?} is made to break a tangle (EXA_FORCE_TANGLE)");
+    }
     if !starts || anim.action == BREAK_TANGLE {
         return;
     }

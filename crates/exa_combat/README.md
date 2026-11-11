@@ -10,7 +10,9 @@ strike, by the original's attack executor shared by the player and the AI
 weapon as one; 80 % of the most energy, the cooldown from the last attack tick
 on the 12 ms game clock, 400 ms or round(300 × the primary's recoil) +
 300 ms, nothing while a swing stalls but a released swing's overhead
-within 300 ms or Feint's renewal, the choice of attack and the side's
+within 300 ms or Feint's renewal, nothing out of a stall while Break
+Tangle plays, no main-side start sound (the original's quiet byte is set
+for every body and never cleared), the choice of attack and the side's
 pick without repeat, the motion's hand with the fists; rules in
 [`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode), and resolves the
 contacts of blades and fists by the original's damage model

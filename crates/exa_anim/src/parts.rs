@@ -13,7 +13,12 @@
 //! The controller's own state (three lists of gait/pose records) is opaque
 //! here: Exarust's parts do not keep the original's controller, so the
 //! transfer is generic over the state a part carries. Nothing in the
-//! running game calls this module yet.
+//! running game calls this module: the original runs the start when a
+//! character is added to the world and the id copy when the character
+//! generator rebuilds a body's parts, both to keep the shared controller's
+//! per-part records; Exarust's clip player keeps its state on the
+//! character, which a rebuild leaves in place, so there is nothing to
+//! carry.
 
 /// The controller a body part carries.
 #[derive(Debug, Clone, PartialEq)]
