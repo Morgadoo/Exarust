@@ -1715,6 +1715,8 @@ Round 151 core: the oriented-box slab tests use the original approximate recipro
 
 Round 158 kernel2: the body twist, spine, hunch and headings normalise with the original approximate reciprocal root and engine trig.
 
+Round 172 kernel3: every foot grips at full strength each balance tick as in the original, and placements write the original facing.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
