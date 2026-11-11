@@ -308,6 +308,13 @@ impl CellLights {
             .map(|e| (e.1, e.2))
     }
 
+    /// The cells light `key` was recorded in, in the order the flood
+    /// recorded them (a cell already full when the light reached it is not
+    /// among them).
+    pub fn cells_of(&self, key: u32) -> &[usize] {
+        self.touched.get(&key).map_or(&[], |cells| &cells[..])
+    }
+
     /// The lights a cell records.
     pub fn lights(&self, cell: usize) -> impl Iterator<Item = u32> + '_ {
         self.cells[cell].iter().map(|e| e.0)

@@ -2571,6 +2571,25 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   the test. The GI takes its lights from the same cell lists, sector by
   sector (see [Voxel GI](#voxel-gi)).
 
+- **Lights per sector** (tile-grid levels): a mesh is lit only by the
+  lights that have an alias in the sector it is registered in, as the
+  original gives a mesh one light bucket per alias of its sector. A light
+  has an alias in the sector it stands in (the room of its cell, the
+  scene's own sector off the rooms) and, through the room manager's cell
+  hook, in the room of every cell its flood records it in (a cell already
+  holding twelve other lights records nothing and adds nothing). The lists
+  (`exa_world::rooms::RoomLights`) are rebuilt each time a light floods; a
+  mesh moved to another sector (a character crossing a doorway) is
+  relinked. The same links choose the light's cube casters. Nothing passes
+  the lists through the doors at load: the binary's only alias makers are
+  the activation, the cell hook, the non-grid spread and fill, and the
+  room-mode-off hook. Because the wall windows already keep each light in
+  the cells it floods, the test changes only meshes registered in a room
+  the light's flood never entered: mostly character parts reaching through
+  a doorway from their root's room, and door-edge pieces. The shipped
+  dungeons refuse 1–10 thousand links over 1800 frames, and grid shots
+  with and without it (`--no-room-lights`) differ within the noise floor.
+
 - **Cached cube shadows** (`exa_render::cube_shadows`): every caster,
   characters included, casts into cube maps kept across frames, as the
   original keeps its shadow maps:

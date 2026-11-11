@@ -16,6 +16,16 @@
 //! face masks into its lights. Every light keeps a render layer of its own
 //! as the key of its links. Links are kept current incrementally: a moved
 //! light is relinked against every mesh, a moved mesh against every light.
+//!
+//! In tile-grid levels a light lights, and takes casters from, only the
+//! meshes of the sectors it has an alias in ([`crate::rooms::RoomLights`],
+//! kept as [`RoomLightLists`]): the room it stands in (the scene's own
+//! sector off the rooms) and the rooms of the cells its flood recorded it
+//! in, as the original's room manager adds an alias to a cell's room from
+//! the flood's cell hook and gives each mesh one light bucket per alias of
+//! its sector. A mesh's sector is the one the live scene registered it in
+//! ([`crate::scene_live::LiveScene::sector_of`]). `--no-room-lights` turns
+//! the test off to compare.
 //! Rules: `docs/RENDERING.md` (Shadow links).
 
 use bevy::camera::primitives::{Aabb, MeshAabb};
@@ -32,6 +42,9 @@ use exa_render::lights::{LightId, LightsSystems, MAX_MESH_LIGHTS, MeshLights};
 use exa_render::supersample::SceneCamera;
 
 use crate::light_flood::{CellLights, FloodLight, NodeBounds, WallGrid};
+use crate::room_view::LevelRooms;
+use crate::rooms::RoomLights;
+use crate::scene_live::LiveScene;
 
 pub struct ShadowLinksPlugin;
 
@@ -40,6 +53,8 @@ impl Plugin for ShadowLinksPlugin {
         app.init_resource::<LinkedLights>()
             .init_resource::<CasterCells>()
             .init_resource::<LinkStats>()
+            .init_resource::<RoomLightGate>()
+            .init_resource::<RoomLightLists>()
             .add_systems(
                 PostUpdate,
                 (
@@ -51,6 +66,7 @@ impl Plugin for ShadowLinksPlugin {
                     .chain()
                     .after(TransformSystems::Propagate)
                     .after(VisibilitySystems::CalculateBounds)
+                    .after(crate::scene_live::run_scene)
                     .after(LightsSystems::Ids)
                     .before(LightsSystems::Cubes)
                     .before(VisibilitySystems::CheckVisibility)
@@ -127,6 +143,44 @@ impl LevelWalls {
             .flat_map(move |cell| self.cells.lights(cell))
     }
 }
+
+/// Whether a light reaches only the sectors it has an alias in
+/// (`--no-room-lights` turns it off, to compare).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct RoomLightGate(pub bool);
+
+impl Default for RoomLightGate {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// The live room light lists of the loaded tile-grid level: per room the
+/// lights with an alias there, rebuilt for a light each time it floods.
+/// Empty (and unused) in levels without rooms.
+#[derive(Resource, Default)]
+pub struct RoomLightLists {
+    pub lists: RoomLights,
+    /// The rooms the lists were built for.
+    rooms: Option<std::sync::Arc<crate::rooms::Rooms>>,
+    /// Links the alias test refused since the level loaded, and since the
+    /// last log line.
+    pub refused: u64,
+    refused_logged: u64,
+    /// Refused links by light id, for the log's top entries, with the first
+    /// few refused meshes' centres (m) and sectors.
+    refused_by: HashMap<u32, (u64, Vec<RefusedMesh>)>,
+    frames: u64,
+}
+
+/// A mesh a light's alias test refused: its centre (m) and its sector's
+/// room.
+type RefusedMesh = (Vec3, Option<u16>);
+
+/// The sector a mesh was last linked in: its room, or `None` for the
+/// scene's own sector.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkedSector(pub Option<u16>);
 
 /// A mesh the wall test leaves alone: terrain tiles, far larger than the
 /// original's 6 m terrain blocks, span many cells.
@@ -259,6 +313,8 @@ fn track_lights(
     lights: LightQuery,
     changed: Query<(), LightMoved>,
     walls: Option<ResMut<LevelWalls>>,
+    rooms: Option<Res<LevelRooms>>,
+    mut lists: ResMut<RoomLightLists>,
 ) {
     if table.next_layer == 0 {
         table.next_layer = FIRST_LIGHT_LAYER;
@@ -313,11 +369,33 @@ fn track_lights(
         };
         table.moved.push(index);
     }
-    let Some(mut walls) = walls else { return };
-    for id in gone {
+    let Some(mut walls) = walls else {
+        if lists.rooms.is_some() {
+            *lists = RoomLightLists::default();
+        }
+        return;
+    };
+    for &id in &gone {
         walls.cells.remove(id);
+        lists.lists.forget(id);
     }
-    if walls.is_added() {
+    // New rooms start new lists: every light is placed and flooded again.
+    let level = rooms.filter(|level| level.rooms.width() as usize == walls.size().0);
+    let new_rooms = match &level {
+        Some(level) => !lists
+            .rooms
+            .as_ref()
+            .is_some_and(|r| std::sync::Arc::ptr_eq(r, &level.rooms)),
+        None => lists.rooms.is_some(),
+    };
+    if new_rooms {
+        *lists = RoomLightLists::default();
+        if let Some(level) = &level {
+            lists.lists = RoomLights::new(level.rooms.len());
+            lists.rooms = Some(level.rooms.clone());
+        }
+    }
+    if walls.is_added() || new_rooms {
         table.moved = (0..table.lights.len()).collect();
     }
     // Flood in the order the lights came: a full cell keeps its first
@@ -341,6 +419,78 @@ fn track_lights(
             shaped: l.reach.shaped,
         };
         walls.cells.flood(&walls.grid, l.id, &light);
+        // The light's aliases: the sector it stands in, then the room of
+        // every cell its flood recorded it in (the cell hook).
+        if let Some(level) = &level {
+            let rooms = &level.rooms;
+            let before = lists.lists.rooms_of(l.id).to_vec();
+            lists
+                .lists
+                .place(rooms, l.id, Vec2::new(l.position.x, l.position.z));
+            for &cell in walls.cells.cells_of(l.id) {
+                lists.lists.add_cell(rooms, l.id, cell as u32);
+            }
+            if !new_rooms && before != lists.lists.rooms_of(l.id) {
+                debug!(
+                    "room light lists: light {} at {:?} moved from rooms {:?} to {:?}",
+                    l.id,
+                    l.position,
+                    before,
+                    lists.lists.rooms_of(l.id)
+                );
+            }
+        }
+    }
+    lists.frames += 1;
+    let periodic = lists.frames.is_multiple_of(600) && lists.refused != lists.refused_logged;
+    if (new_rooms && level.is_some()) || periodic {
+        lists.refused_logged = lists.refused;
+        let rooms = lists.lists.len().max(1);
+        let listed: usize = (0..lists.lists.len())
+            .map(|r| lists.lists.of(r as u16).len())
+            .sum();
+        let unranged = table.lights.iter().filter(|l| !l.reach.ranged).count();
+        let spread = table
+            .lights
+            .iter()
+            .filter(|l| lists.lists.rooms_of(l.id).len() > 1)
+            .count();
+        info!(
+            "room light lists: {} lights ({} unranged, {} listed in more than one room) over {} rooms, {:.1} lights a room; {} links refused by the alias test since the level loaded",
+            table.lights.len(),
+            unranged,
+            spread,
+            lists.lists.len(),
+            listed as f32 / rooms as f32,
+            lists.refused
+        );
+        let mut top: Vec<(u32, u64)> = lists.refused_by.iter().map(|(&k, v)| (k, v.0)).collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (id, count) in top.into_iter().take(6) {
+            if let Some(l) = table.lights.iter().find(|l| l.id == id) {
+                info!(
+                    "room light lists: light {id} at ({:.1}, {:.1}, {:.1}) m, radius {:.1} m, luma {:.3}, ranged {}, in rooms {:?}: {count} links refused, first meshes (centre, sector room, centre cell room) {:?}",
+                    l.position.x,
+                    l.position.y,
+                    l.position.z,
+                    l.reach.radius,
+                    l.reach.luma,
+                    l.reach.ranged,
+                    lists.lists.rooms_of(id),
+                    lists.refused_by.get(&id).map(|e| e
+                        .1
+                        .iter()
+                        .map(|(at, room)| (
+                            *at,
+                            *room,
+                            level
+                                .as_ref()
+                                .and_then(|l| l.rooms.room_of_node(Vec2::new(at.x, at.z)))
+                        ))
+                        .collect::<Vec<_>>())
+                );
+            }
+        }
     }
 }
 
@@ -352,7 +502,11 @@ type CasterQuery<'w, 's> = Query<
         (Option<&'static Aabb>, &'static Mesh3d),
         &'static GlobalTransform,
         Option<&'static ShadowExclude>,
-        (Option<&'static LightLinks>, Option<&'static LinkedAt>),
+        (
+            Option<&'static LightLinks>,
+            Option<&'static LinkedAt>,
+            Option<&'static LinkedSector>,
+        ),
         Has<Unwalled>,
         (Has<SkinnedMesh>, Has<exa_assets::SkinnedPart>),
     ),
@@ -472,6 +626,9 @@ fn link_casters(
     casters: CasterQuery,
     moved_casters: Query<Entity, CasterMoved>,
     walls: Option<Res<LevelWalls>>,
+    live: Res<LiveScene>,
+    gate: Res<RoomLightGate>,
+    mut lists: ResMut<RoomLightLists>,
     mut cubes: Query<(&mut CubeCasters, &mut CubeShadow)>,
     mut cells: ResMut<CasterCells>,
     mut stats: ResMut<LinkStats>,
@@ -481,13 +638,37 @@ fn link_casters(
 ) {
     let moved: Vec<usize> = std::mem::take(&mut table.moved);
     let all_moved = !moved.is_empty();
-    let fresh: EntityHashSet = moved_casters.iter().collect();
+    let mut fresh: EntityHashSet = moved_casters.iter().collect();
+    // A mesh registered in another sector is relinked in full: its sector's
+    // aliases are the lights it may take.
+    let gated = gate.0 && lists.rooms.is_some();
+    let room_of = |entity: Entity| -> Option<Option<u16>> {
+        let sector = live.sector_of(entity)?;
+        Some(sector.checked_sub(1).map(|room| room as u16))
+    };
+    let mut resectored = EntityHashSet::default();
+    if gated {
+        for &entity in &live.sector_changes {
+            if fresh.contains(&entity) {
+                continue;
+            }
+            let Ok((.., (_, _, stored), _, _)) = casters.get(entity) else {
+                continue;
+            };
+            if stored.map(|s| s.0) != room_of(entity) {
+                resectored.insert(entity);
+            }
+        }
+        fresh.extend(resectored.iter().copied());
+    }
     stats.lights_moved = moved.len();
     stats.casters_moved = fresh.len();
     stats.casters_near = 0;
     if !all_moved && fresh.is_empty() && !shadows.is_changed() {
         return;
     }
+    let refused = std::cell::RefCell::new(Vec::<(u32, Vec3, Option<u16>)>::new());
+    let room_lists = gated.then_some(&lists.lists);
     let mut relinked: Vec<Relinked> = Vec::new();
     let lights = &table.lights;
     // Only the casters a moved light can reach, or linked to it, can gain or
@@ -515,20 +696,43 @@ fn link_casters(
                       aabb: &Aabb,
                       transform: &GlobalTransform,
                       exclude: Option<&ShadowExclude>,
-                      current: Option<&LightLinks>,
-                      at: Option<&LinkedAt>,
+                      (current, at, stored): (
+        Option<&LightLinks>,
+        Option<&LinkedAt>,
+        Option<&LinkedSector>,
+    ),
                       unwalled: bool,
                       skinned: bool,
                       only: Option<&[usize]>| {
         let (c, r) = sphere(aabb, transform);
         cells.place(entity, c, r);
+        let sector = room_lists.and(room_of(entity));
+        let resector = sector.is_some_and(|s| stored.map(|x| x.0) != Some(s));
         if skinned
             && only.is_none()
+            && !resector
             && current.is_some()
             && at.is_some_and(|a| a.0.distance(c) < RELINK_DISTANCE)
         {
             return;
         }
+        if resector && let Some(s) = sector {
+            commands.entity(entity).insert(LinkedSector(s));
+        }
+        // In tile-grid levels a light reaches only the sectors it has an
+        // alias in.
+        let aliased = |l: &LinkedLight| match (room_lists, sector) {
+            (Some(lists), Some(room)) if !unwalled => {
+                let ok = lists.reaches(l.id, room);
+                // Counted for the log: a mesh still in the scene's own
+                // sector is waiting for its room (it moves and is relinked).
+                if !ok && room.is_some() {
+                    refused.borrow_mut().push((l.id, c, room));
+                }
+                ok
+            }
+            _ => true,
+        };
         let bounds = bounds(aabb, transform);
         // In tile-grid levels a ranged light must see the mesh past the
         // walls.
@@ -543,6 +747,7 @@ fn link_casters(
                 .then(|| link_weight(l, c, r))
                 .flatten()
                 .filter(|_| seen(l))
+                .filter(|_| aliased(l))
                 .map(|w| (l.layer, l.id, w))
         };
         let links = match only {
@@ -581,11 +786,10 @@ fn link_casters(
         }
     };
     for entity in &fresh {
-        if let Ok((e, (aabb, mesh), t, x, (current, at), unwalled, (skin, part))) =
-            casters.get(*entity)
+        if let Ok((e, (aabb, mesh), t, x, linked, unwalled, (skin, part))) = casters.get(*entity)
             && let Some(aabb) = box_of(aabb, mesh)
         {
-            relink(e, &aabb, t, x, current, at, unwalled, skin || part, None);
+            relink(e, &aabb, t, x, linked, unwalled, skin || part, None);
         }
     }
     if all_moved {
@@ -593,28 +797,26 @@ fn link_casters(
             if fresh.contains(entity) {
                 continue;
             }
-            let Ok((e, (aabb, mesh), t, x, (current, at), unwalled, (skin, part))) =
-                casters.get(*entity)
+            let Ok((e, (aabb, mesh), t, x, linked, unwalled, (skin, part))) = casters.get(*entity)
             else {
                 continue;
             };
             let Some(aabb) = box_of(aabb, mesh) else {
                 continue;
             };
-            relink(
-                e,
-                &aabb,
-                t,
-                x,
-                current,
-                at,
-                unwalled,
-                skin || part,
-                Some(&moved),
-            );
+            relink(e, &aabb, t, x, linked, unwalled, skin || part, Some(&moved));
         }
     }
     apply_relinks(&table, relinked, &mut cubes);
+    let refused = refused.into_inner();
+    lists.refused += refused.len() as u64;
+    for (id, at, room) in refused {
+        let entry = lists.refused_by.entry(id).or_default();
+        entry.0 += 1;
+        if entry.1.len() < 3 {
+            entry.1.push((at, room));
+        }
+    }
 }
 
 /// Moves meshes in and out of their lights' cube caster lists. A mesh

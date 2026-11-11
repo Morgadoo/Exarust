@@ -295,6 +295,24 @@ In tile-grid levels the system SHALL flood each ranged light through the cell gr
 - **WHEN** a light shines through a doorway
 - **THEN** only meshes within the beam through the door's opening are lit by it in the next room
 
+### Requirement: Lights per sector
+In tile-grid levels the system SHALL light a mesh only with lights that have an alias in the sector the mesh is registered in, as the original lights a mesh through its sector's aliases. A light SHALL have an alias in the sector it stands in (the room of its cell, or the scene's own sector off the rooms) and in the room of every cell its flood records it in.
+
+#### Scenario: Character in a doorway
+- **WHEN** a character's root stands in one room and its arm reaches into the next room, whose lamp does not flood into the character's room
+- **THEN** the lamp neither lights the character nor takes it as a caster
+
+#### Scenario: Compare
+- **WHEN** the game runs with `--no-room-lights`
+- **THEN** every light links as before, by weight and wall window only
+
+### Requirement: Sector light list upkeep
+A light's sector lists SHALL be rebuilt when the light floods again, and a mesh that moves to another sector SHALL be relinked. Terrain tiles SHALL skip the sector test. The same lists SHALL choose the light's shadow casters.
+
+#### Scenario: A character walks into the next room
+- **WHEN** a character's mesh moves to another room's sector
+- **THEN** it is relinked to that sector's lights
+
 ### Requirement: Cached cube shadows
 The system SHALL keep every caster's cube shadow maps across frames, characters' skinned meshes included, as the original does. A face SHALL be rendered only when it is needed (it reaches into the camera's view) and dirty, and SHALL draw only the casters whose bounding sphere touches it. A face the renderer could not draw SHALL stay dirty. It SHALL hold distance / (R·k_c), compared against 0.995·d / (R·k_r) on receivers.
 
