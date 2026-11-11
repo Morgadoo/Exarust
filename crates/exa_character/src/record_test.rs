@@ -44,6 +44,9 @@ fn item(id: u32, occupancy: u64) -> Item {
         has_body: false,
         has_weapon: false,
         has_shield: false,
+        coverage_units: [0; 20],
+        weapon_word: 0,
+        shield_word: 0,
     }
 }
 

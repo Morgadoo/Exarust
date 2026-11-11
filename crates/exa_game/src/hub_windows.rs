@@ -67,6 +67,14 @@ pub const CENTRE: u32 = 0x8000 | 0x800;
 /// The button style the screens' constructors share.
 pub const BUTTON_STYLE: u32 = 0x40_3320;
 
+/// A confirmed trade at the hub's shop or merchant: the sell basket's
+/// items and the buy basket's, in basket order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShopTrade {
+    pub sold: Vec<u32>,
+    pub bought: Vec<u32>,
+}
+
 /// The career the hub's windows read. A session host replaces the default
 /// with the loaded save's company.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -992,16 +1000,17 @@ impl HubWindows {
     }
 
     /// The shop's trade button from a form-local click: the button is inside
-    /// the page's bottom row.
-    pub fn shop_click(&mut self, point: (i32, i32), career: &mut ArenaCareer) -> bool {
-        let Some(shop) = self.shop.as_mut() else {
-            return false;
-        };
+    /// the page's bottom row. A confirmed trade takes the sold items out of
+    /// the pack and returns both baskets: the arena's trade hooks send the
+    /// bought items to the arsenal, not to the pack
+    /// ([`crate::arsenal::Arsenal::trade`]).
+    pub fn shop_click(&mut self, point: (i32, i32), career: &mut ArenaCareer) -> Option<ShopTrade> {
+        let shop = self.shop.as_mut()?;
         // The bottom row's own record places are not traced; the guessed
         // rect is where the page's bottom-left "Trade" button draws.
         let trade = GuiRect::new(0, SHOP_SIZE.1 - 32, 120, 28);
         if !trade.contains(point.0, point.1) {
-            return false;
+            return None;
         }
         let bought: Vec<u32> = shop
             .window
@@ -1018,18 +1027,21 @@ impl HubWindows {
             .filter(|id| *id != 0)
             .collect();
         let done = shop.window.confirm(&mut career.company);
-        if done {
-            shop.window.money = career.company.copper;
-            shop.panels.settle();
-            career.goods.extend(bought);
-            for id in sold {
-                if let Some(at) = career.goods.iter().position(|held| *held == id) {
-                    career.goods.remove(at);
-                }
-            }
-            career.goods_changed = true;
+        if !done {
+            return None;
         }
-        done
+        shop.window.money = career.company.copper;
+        // The arena's bought hook shelves the bought items in the arsenal,
+        // so they do not join the pack.
+        let icons = shop.panels.settle_bought_away();
+        self.released_icons.extend(icons);
+        for id in &sold {
+            if let Some(at) = career.goods.iter().position(|held| held == id) {
+                career.goods.remove(at);
+            }
+        }
+        career.goods_changed = true;
+        Some(ShopTrade { sold, bought })
     }
 
     /// Opens the board on a career.
@@ -2452,7 +2464,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sale_leaves_the_goods_and_a_purchase_joins_them() {
+    fn a_sale_leaves_the_goods_and_a_purchase_leaves_the_window() {
         let mut career = career();
         career.company.stock = vec![7];
         career.goods = vec![9];
@@ -2466,7 +2478,7 @@ mod tests {
         drag(&mut windows, ShopPanel::Pack, 0, ShopPanel::Sell);
         assert_eq!(windows.shop.as_ref().unwrap().window.sell_items, [9]);
         let point = (10, SHOP_SIZE.1 - 20);
-        assert!(windows.shop_click(point, &mut career));
+        assert!(windows.shop_click(point, &mut career).is_some());
         assert_eq!(career.goods, Vec::<u32>::new());
         assert!(career.company.stock.contains(&9));
         // The sold item is on the shop's side now.
@@ -2475,12 +2487,20 @@ mod tests {
         open(&mut windows, false, &career);
         windows.price_shop_items(|id| if id == 7 { 5 } else { 0 });
         drag(&mut windows, ShopPanel::Stock, 0, ShopPanel::Buy);
-        assert!(windows.shop_click(point, &mut career));
-        assert_eq!(career.goods, [7]);
+        let trade = windows.shop_click(point, &mut career).unwrap();
+        assert_eq!(
+            trade,
+            ShopTrade {
+                sold: vec![],
+                bought: vec![7]
+            }
+        );
+        // The purchase goes to the arsenal through the arena's bought
+        // hook, not into the pack.
+        assert_eq!(career.goods, Vec::<u32>::new());
         assert!(!career.company.stock.contains(&7));
         let shop = windows.shop.as_ref().unwrap();
-        assert_eq!(shop.panels.ids(ShopPanel::Pack), [7]);
-        assert_eq!(shop.panels.pack.entries[0].flags, 0);
+        assert!(shop.panels.ids(ShopPanel::Pack).is_empty());
     }
 
     /// The stock's and the buy basket's items are held with the shop's
@@ -2546,7 +2566,7 @@ mod tests {
         open(&mut windows, false, &career);
         windows.shop.as_mut().unwrap().window.add_buy(3);
         let point = (10, SHOP_SIZE.1 - 20);
-        assert!(windows.shop_click(point, &mut career));
+        assert!(windows.shop_click(point, &mut career).is_some());
         assert_eq!(career.company.copper, 340);
     }
 

@@ -22,10 +22,16 @@
 //! a holder left with fewer than two copies has the item taken from each of
 //! his loadouts past what he keeps.
 //!
+//! The arena's shop and the company merchant trade through the arsenal:
+//! the trade window's two arena hooks give up each sold item as above and
+//! stow each bought item, made the world's own copy, on its shelf with no
+//! flags, so a purchase never joins the manager's pack.
+//!
 //! Evidence: the retail arena's arsenal routines read from `Exanima.exe`
 //! (`context/re/arena-match.md`).
 
 use exa_character::record::CharacterData;
+use exa_formats::characters::Loadout;
 
 /// Shelves in the arsenal, and boxes on a shelf.
 pub const SHELVES: usize = 5;
@@ -111,10 +117,40 @@ pub const UNIQUE: u32 = 0xc000_0000;
 pub const GIVEN_FIRST: u32 = 0x200;
 
 /// A holder of company items: the manager or an employee, the item list
-/// the arsenal keeps for him and his record.
+/// the arsenal keeps for him (the manager's stash, an employee's kit) and
+/// his six loadouts.
 pub struct Holder<'a> {
     pub items: &'a mut Vec<u32>,
-    pub record: &'a mut CharacterData,
+    pub loadouts: &'a mut [Loadout],
+    /// What his record itself carries, holds and wears, when it is kept
+    /// apart from the loadouts (a specialist's own items).
+    pub own: Option<OwnItems<'a>>,
+}
+
+/// The items a holder's record itself carries, holds and wears.
+pub struct OwnItems<'a> {
+    pub carried: &'a mut Vec<u32>,
+    pub hands: &'a mut [u32; 2],
+    pub worn: &'a mut Vec<(u32, u32)>,
+}
+
+impl Holder<'_> {
+    /// Forgets `item` everywhere on the holder's record: what it carries,
+    /// holds and wears, and every loadout.
+    fn remove_everywhere(&mut self, item: u32) {
+        if let Some(own) = &mut self.own {
+            own.carried.retain(|held| *held != item);
+            for hand in own.hands.iter_mut() {
+                if *hand == item {
+                    *hand = 0;
+                }
+            }
+            own.worn.retain(|(worn, _)| *worn != item);
+        }
+        for loadout in self.loadouts.iter_mut() {
+            CharacterData::loadout_forget_item(loadout, item);
+        }
+    }
 }
 
 /// Remove every entry of `item` from a list, from its end.
@@ -156,7 +192,7 @@ fn strip_holder(holder: &mut Holder, item: u32, allowance: &mut i32) {
     *allowance -= removed;
     let kept = seen - removed;
     if kept < 2 {
-        for loadout in &mut holder.record.record.loadouts {
+        for loadout in holder.loadouts.iter_mut() {
             CharacterData::loadout_remove_item(loadout, item, kept as usize);
         }
     }
@@ -216,7 +252,7 @@ impl Arsenal {
                 }
             }
             for holder in holders.iter_mut() {
-                holder.record.remove_everywhere(item);
+                holder.remove_everywhere(item);
                 drop_all(&mut *holder.items, |held| *held == item);
             }
             return;
@@ -251,6 +287,37 @@ impl Arsenal {
         for holder in holders.iter_mut() {
             strip_holder(holder, item, &mut allowance);
         }
+    }
+
+    /// A confirmed trade at the arena's shop or the company merchant, as
+    /// the trade window's two arena hooks run it. The window settles the
+    /// sell basket first: each sold item leaves the company
+    /// ([`Arsenal::give_up`] over `holders`, the manager then the staff).
+    /// Then each bought item, instead of joining the manager's pack, is made
+    /// the world's own copy (`promote`) and stowed with no flags on its
+    /// shelf's first box. Returns each bought item's id after the copy and
+    /// the shelf it went on (none for an item no shelf takes, which the
+    /// original also drops).
+    pub fn trade(
+        &mut self,
+        sold: &[u32],
+        bought: &[u32],
+        kind: impl Fn(u32) -> ItemKind,
+        mut promote: impl FnMut(u32) -> u32,
+        holders: &mut [Holder],
+    ) -> Vec<(u32, Option<usize>)> {
+        for &item in sold {
+            self.give_up(item, kind(item), holders);
+        }
+        bought
+            .iter()
+            .map(|&item| {
+                let copy = promote(item);
+                let item_kind = kind(copy);
+                let shelf = self.stow(copy, item_kind, 0).then(|| shelf_of(item_kind));
+                (copy, shelf.flatten())
+            })
+            .collect()
     }
 
     /// Empty every shelf, as a new career does.
@@ -416,18 +483,24 @@ mod tests {
         }
     }
 
-    fn wearing(item: u32, copies: usize) -> CharacterData {
-        use exa_formats::characters::{ItemRef, Loadout};
-        let mut data = CharacterData::new();
+    fn wearing(item: u32, copies: usize) -> Vec<Loadout> {
+        use exa_formats::characters::ItemRef;
         let worn = ItemRef { id: item, flags: 0 };
-        data.record.loadouts = vec![
+        vec![
             Loadout {
                 worn: vec![worn; copies],
                 ..Loadout::default()
             };
             2
-        ];
-        data
+        ]
+    }
+
+    fn holder<'a>(items: &'a mut Vec<u32>, loadouts: &'a mut [Loadout]) -> Holder<'a> {
+        Holder {
+            items,
+            loadouts,
+            own: None,
+        }
     }
 
     #[test]
@@ -442,21 +515,14 @@ mod tests {
         arsenal.shelves[WEAPONS][3] = vec![entry(7, 0x400), entry(9, 0)];
         let mut manager_items = vec![7, 3];
         let mut manager = wearing(7, 1);
-        arsenal.give_up(
-            7,
-            sword,
-            &mut [Holder {
-                items: &mut manager_items,
-                record: &mut manager,
-            }],
-        );
+        arsenal.give_up(7, sword, &mut [holder(&mut manager_items, &mut manager)]);
         // Box 3 is searched first but holds no flagged copy; box 1 does.
         assert_eq!(arsenal.shelves[WEAPONS][1], vec![entry(7, 0x400)]);
         assert_eq!(arsenal.shelves[WEAPONS][3].len(), 2);
         // Two copies are left, so the manager keeps his; holding fewer
         // than two, each loadout still takes off its worn copy.
         assert_eq!(manager_items, vec![7, 3]);
-        assert!(manager.record.loadouts.iter().all(|l| l.worn.is_empty()));
+        assert!(manager.iter().all(|l| l.worn.is_empty()));
     }
 
     #[test]
@@ -476,24 +542,18 @@ mod tests {
             7,
             sword,
             &mut [
-                Holder {
-                    items: &mut first_items,
-                    record: &mut first,
-                },
-                Holder {
-                    items: &mut second_items,
-                    record: &mut second,
-                },
+                holder(&mut first_items, &mut first),
+                holder(&mut second_items, &mut second),
             ],
         );
         assert!(arsenal.shelves[WEAPONS][0].is_empty());
         // Nothing is left: both copies close up (the last one needs no
         // move); the list keeps three entries.
         assert_eq!(first_items, vec![5, 5, 7]);
-        assert!(first.record.loadouts.iter().all(|l| l.worn.len() == 1));
+        assert!(first.iter().all(|l| l.worn.len() == 1));
         // The allowance fell to −2, so the second holder loses his copy.
         assert_eq!(second_items, vec![7]);
-        assert!(second.record.loadouts.iter().all(|l| l.worn.is_empty()));
+        assert!(second.iter().all(|l| l.worn.is_empty()));
     }
 
     #[test]
@@ -507,25 +567,86 @@ mod tests {
         arsenal.give_up(
             unique,
             ItemKind::default(),
-            &mut [Holder {
-                items: &mut items,
-                record: &mut record,
-            }],
+            &mut [holder(&mut items, &mut record)],
         );
         assert_eq!(arsenal.shelves[ARMOUR][2], vec![entry(4, 0)]);
         assert!(arsenal.shelves[WEAPONS][0].is_empty());
         assert_eq!(items, vec![4]);
-        assert!(record.record.loadouts.iter().all(|l| l.worn.is_empty()));
+        assert!(record.iter().all(|l| l.worn.is_empty()));
         // An ordinary item with no shelf is left alone.
         let mut kept = vec![9];
         arsenal.give_up(
             9,
             ItemKind::default(),
-            &mut [Holder {
-                items: &mut kept,
-                record: &mut record,
-            }],
+            &mut [holder(&mut kept, &mut record)],
         );
         assert_eq!(kept, vec![9]);
+    }
+
+    #[test]
+    fn a_trade_gives_up_the_sold_and_shelves_the_bought() {
+        let sword = ItemKind {
+            known: true,
+            weapon: true,
+            ..ItemKind::default()
+        };
+        let kind = |item: u32| match item & 0xff {
+            1..=3 => sword,
+            4 => apparel(4),
+            _ => ItemKind::default(),
+        };
+        let mut arsenal = Arsenal::default();
+        let unique = 0x4000_0001;
+        arsenal.shelves[WEAPONS][2] = vec![entry(unique, 0)];
+        let mut stash = vec![unique, 9];
+        let mut loadouts = wearing(unique, 1);
+        let mut carried = vec![unique];
+        let mut hands = [unique, 0];
+        let mut worn = vec![(unique, 0)];
+        let mut kit = vec![unique];
+        let mut employee_loadouts = wearing(unique, 1);
+        let mut holders = [
+            holder(&mut stash, &mut loadouts),
+            Holder {
+                items: &mut kit,
+                loadouts: &mut employee_loadouts,
+                own: Some(OwnItems {
+                    carried: &mut carried,
+                    hands: &mut hands,
+                    worn: &mut worn,
+                }),
+            },
+        ];
+        // The bought local copy comes back as a world id.
+        let promote = |item: u32| {
+            if item & 0xc000_0000 == 0x8000_0000 {
+                (item & 0x3fff_ffff) | 0x4000_0000
+            } else {
+                item
+            }
+        };
+        let went = arsenal.trade(
+            &[unique],
+            &[0x8000_0003, 0x4000_0004, 0x4000_0005],
+            kind,
+            promote,
+            &mut holders,
+        );
+        assert_eq!(
+            went,
+            [
+                (0x4000_0003, Some(WEAPONS)),
+                (0x4000_0004, Some(ARMOUR)),
+                (0x4000_0005, None),
+            ]
+        );
+        assert_eq!(arsenal.shelves[WEAPONS][2], vec![]);
+        assert_eq!(arsenal.shelves[WEAPONS][0], vec![entry(0x4000_0003, 0)]);
+        assert_eq!(arsenal.shelves[ARMOUR][0], vec![entry(0x4000_0004, 0)]);
+        assert_eq!(stash, vec![9]);
+        assert!(loadouts.iter().all(|l| l.worn.is_empty()));
+        assert!(kit.is_empty() && carried.is_empty() && worn.is_empty());
+        assert_eq!(hands, [0, 0]);
+        assert!(employee_loadouts.iter().all(|l| l.worn.is_empty()));
     }
 }

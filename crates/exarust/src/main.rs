@@ -99,6 +99,8 @@
 //!                                     shop, and arsenal, the arsenal view Manage Company's Arsenal opens)
 //!          --shop-buy ROW             with --open-hub-window shop: click stock row ROW into the buy basket, confirm
 //!                                     the trade, then open the bought copy's card at the pointer (debug)
+//!          --shop-sell ID             with --open-hub-window shop: put item ID (hex with 0x) in the manager's pack,
+//!                                     click it into the sell basket and confirm the trade (debug)
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
 //!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
 //!                                     stand-in for a loaded career's employee); its weapons and shields are held,
@@ -666,6 +668,8 @@ pub struct Options {
     pub open_hub_window: Option<String>,
     /// `--shop-buy ROW`: the scripted shop's purchase.
     pub shop_buy: Option<usize>,
+    /// `--shop-sell ID`: the scripted shop's sale.
+    pub shop_sell: Option<u32>,
     /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
     /// the company once the hub is entered (a debug tool).
     pub hub_employee_kit: Option<(String, Vec<u32>)>,
@@ -1311,6 +1315,21 @@ fn main() -> AppExit {
                     Ok(row) => options.shop_buy = Some(row),
                     Err(_) => {
                         eprintln!("--shop-buy: cannot read {value:?} (a row number)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--shop-sell" => {
+                let value = args.next().unwrap_or_default();
+                let value = value.trim();
+                let parsed = match value.strip_prefix("0x") {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => value.parse().ok(),
+                };
+                match parsed {
+                    Some(id) => options.shop_sell = Some(id),
+                    None => {
+                        eprintln!("--shop-sell: cannot read {value:?} (an item id)");
                         return AppExit::from_code(2);
                     }
                 }

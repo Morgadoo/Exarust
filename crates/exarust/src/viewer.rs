@@ -130,8 +130,11 @@ fn setup(
             done: false,
         });
     }
-    if let Some(row) = options.shop_buy {
-        commands.insert_resource(exa_game::arena_hub_live::ShopBuyScript::of_row(row));
+    if options.shop_buy.is_some() || options.shop_sell.is_some() {
+        commands.insert_resource(exa_game::arena_hub_live::ShopBuyScript::of_trade(
+            options.shop_buy,
+            options.shop_sell,
+        ));
     }
     if !options.hub_arsenal.is_empty() {
         commands.insert_resource(exa_game::hub_forms::HubArsenal {
