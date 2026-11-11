@@ -463,7 +463,8 @@ impl Plugin for CollapsePlugin {
             .bridge_copy::<Collapse>()
             .bridge_copy::<exa_anim::Animator>()
             .bridge_copy::<crate::Fighter>()
-            .bridge_copy::<Hands>();
+            .bridge_copy::<Hands>()
+            .bridge_copy::<exa_physics::grip::HeldGrip>();
     }
 }
 
