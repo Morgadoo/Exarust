@@ -1526,6 +1526,8 @@ fn create_force(
             let generation = caster.body.cast_generation;
             let mut blast = Blast::new(setup, cost, TICK_MS, &view, &mut draws.0);
             blast.link();
+            // The start's charge loop takes its start from the next draw.
+            let charge_roll = draws.0.unit() as f32;
             let hazard = Hazard::Blast {
                 at: blast.centre,
                 released: blast.state >= crate::effects::blast::THROWN,
@@ -1540,6 +1542,10 @@ fn create_force(
                         hooked,
                         generation,
                         contact_scale: 0.0,
+                        sounds: super::blast_sound::BlastSounds {
+                            charge_roll,
+                            release_pitch: None,
+                        },
                     },
                     hazard,
                 ))

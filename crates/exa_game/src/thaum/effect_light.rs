@@ -1051,6 +1051,7 @@ mod tests {
                 hooked: false,
                 generation: 0,
                 contact_scale: 0.0,
+                sounds: Default::default(),
             })
             .id();
         app.update();
@@ -1102,6 +1103,7 @@ mod tests {
                 hooked: false,
                 generation: 0,
                 contact_scale: 0.0,
+                sounds: Default::default(),
             })
             .id();
         app.update();

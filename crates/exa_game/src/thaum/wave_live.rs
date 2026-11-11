@@ -12,11 +12,13 @@
 //! - **Each tick** ([`Wave::tick_paying`]): a charging wave pays its drain
 //!   once its chunks are placed; a shortfall calls the hook (it fizzles)
 //!   and ends the cast. The charge passing 1 throws the ring and clears the
-//!   caster's hook and power id. Thrown, its live chunks strike the other
-//!   bodies' limbs through the blast's own contact ([`strike_chunks`]), the
-//!   wave's setup giving the pushes, and a struck character takes the
-//!   blast's knock. The entity leaves the scene when the wave is spent or
-//!   fizzled.
+//!   caster's hook and power id. Thrown, its live chunks take the blast's
+//!   contact slots, which the wave's class shares: the level's static
+//!   meshes, the cloths and each other body part by part
+//!   ([`super::blast_live::strike_part`]), the wave's setup giving the
+//!   pushes; a struck character takes the blast's knock, counter, concern
+//!   and loosened pins, and a body met is woken. The entity leaves the
+//!   scene when the wave is spent or fizzled.
 //!
 //! Not wired, as for the blast: the alert at the throw (reach 1200 cm), the
 //! sounds, the light, the stun and the draw; and the contact's wear, which
