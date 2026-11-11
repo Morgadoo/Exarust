@@ -263,6 +263,14 @@ impl GripLinks {
         }
     }
 
+    /// The item's parry link holds (enabled as a world link to the parry
+    /// point, as [`Self::aim_parry`] leaves it).
+    pub fn parry_held(&self) -> bool {
+        self.world_soft
+            .and_then(|i| self.links.get(i))
+            .is_some_and(|link| link.flags == 0)
+    }
+
     /// The item has a parry link.
     pub fn has_parry_link(&self) -> bool {
         self.world_soft.is_some()
