@@ -13,5 +13,5 @@
 
 ## 3. Check
 - [x] 3.1 fmt, clippy, tests
-- [ ] 3.2 GPU: the sparks and the burst, before and after (blocked: every grid scene ran out of GPU memory under the external process and the other lanes' games)
-- [ ] 3.3 The plain arena duel's lockstep traces identical to main (blocked: GPU memory)
+- [x] 3.2 GPU: the sparks in exanima03/04 and the burst (arena, and the real exit in exanima03/04), before and after (`context/artifacts/2026-10-30-portal`)
+- [x] 3.3 The plain arena duel and exanima01 lockstep traces identical to r155 on every common tick (the body id column aside)
