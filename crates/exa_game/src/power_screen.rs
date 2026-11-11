@@ -639,6 +639,10 @@ fn hotkeys(
         *sound = tree.show(now).sound;
         tree.open_bar_if_closed(bar, record, now);
         *dirty = true;
+        info!(
+            "power tree: the key opens it on domain {domain} ({} known powers)",
+            record.pairs.len()
+        );
         return;
     }
     // Escape with the tree closed puts the bar away.

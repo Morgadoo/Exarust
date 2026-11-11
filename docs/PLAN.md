@@ -1431,6 +1431,8 @@ Round 154 motilepart3: the living step restores every part edges after the pose 
 
 Round 165 fists: unarmed strikes go through the hand hit event and fighters keep the original combat target.
 
+Round 176 palette: levels read from the archive roll their apparel colours, variants and condition before dressing, and arena outfits roll the palette.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1717,6 +1719,8 @@ Round 158 kernel2: the body twist, spine, hunch and headings normalise with the 
 
 Round 172 kernel3: every foot grips at full strength each balance tick as in the original, and placements write the original facing.
 
+Round 174 balance: stepping, knockback re-targets and the armed parry follow the original, and parry ends no longer drop the weapon grip.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1917,6 +1921,8 @@ Round 160 aitrig: the AI reads its directions through the engine routines as the
 Round 162 shell: torches draw the small fire texture, Constant Displacement wears its shell, and a vanishing body fades blended while its shadow dithers away.
 
 Round 173 gamegui: entering combat mode closes the open game screens and saves store the open screens first, as the original does.
+
+Round 175 sweep: a reusable feature smoke sweep (64 scenes, free and lockstep) found no panics; the held load no longer stalls every fire-lit level 60 s on the GI (the arena loads in about 4 s, not 63), and the summoned demon shell takes its body size. Left: Raise Dead and Command Dead refused, Spirit Form sometimes not ending in free mode, an orphaned arc light link, an intermittent late free-mode exit.
 
 ### Phase 7 — Game modes and content
 

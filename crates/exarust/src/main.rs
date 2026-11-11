@@ -13,7 +13,7 @@
 //! exarust grid-shot <file.png>        save the running grid's window
 //!
 //! grid options: --size WxH (default 2560x1440), --game <dir>, --child-args "...", --child-fps n (default 60),
-//!          --gpu-need MiB (default 4600, 0 off), --restart, --settings, --screenshot out.png, --frames n,
+//!          --gpu-need MiB (default 4600, 0 off), --restart, --settings, --exit-when-done, --screenshot out.png, --frames n,
 //!          --inject "click:X,Y@f;cursor:X,Y@f;KEY@f[-g];...", --socket path, --log-dir dir
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
