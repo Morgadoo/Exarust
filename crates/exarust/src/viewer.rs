@@ -1068,6 +1068,7 @@ fn play_level(
         start,
         cast_start,
         since: std::time::Instant::now(),
+        streamed: None,
     });
 }
 
@@ -1126,6 +1127,57 @@ struct PendingCollision {
     /// How the line cast places a new player at the start.
     cast_start: StartCast,
     since: std::time::Instant,
+    /// The level characters' bodies handed to the content stream while the
+    /// collision builds: when, how many, and how many came back.
+    streamed: Option<StreamedBodies>,
+}
+
+/// The level characters' bodies on the content stream's thread.
+struct StreamedBodies {
+    posted: std::time::Instant,
+    count: usize,
+    arrived: usize,
+    /// The thread's build time of the arrived ones.
+    built: std::time::Duration,
+}
+
+/// The level characters' bodies for the content stream's streamed pass:
+/// each character's body model morphed by its record's physique, as
+/// [`spawn_placed_characters`] asks for it, once per model variant and
+/// only when it is not built yet.
+fn streamed_bodies(
+    loader: &mut ModelLoader,
+    characters: &[exa_world::PlacedCharacter],
+) -> Vec<exa_game::content_requests::StreamedBody> {
+    let races = loader
+        .game
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("races.rdb"))
+        .and_then(|b| exa_formats::races::parse(b).ok())
+        .unwrap_or_default();
+    let mut keys = std::collections::HashSet::new();
+    let mut bodies = Vec::new();
+    for c in characters {
+        let race = exa_formats::races::of_character(&races, c.race);
+        let model_name = race.map_or_else(|| model::BODY_MODEL.to_string(), |r| r.model());
+        let morph = exa_assets::BodyMorph::of_model(
+            &model_name,
+            exa_formats::morph::Physique::of_record(&c.record),
+        );
+        let key = loader.morphed_key(PackKind::Resource, &model_name, Some(&morph));
+        if !keys.insert(key)
+            || loader
+                .loaded_morphed_model(PackKind::Resource, &model_name, Some(&morph))
+                .is_some()
+        {
+            continue;
+        }
+        bodies.push(exa_game::content_requests::StreamedBody {
+            job: loader.pending_morphed_job(PackKind::Resource, &model_name, Some(&morph)),
+            position: c.position,
+        });
+    }
+    bodies
 }
 
 /// What a new player is made from: the level change's hold, the created
@@ -1180,6 +1232,48 @@ fn finish_collision(
     (mut time, (travelling, placement)): (ResMut<Time<Virtual>>, ArrivalSources),
     (hold, created, saved, streamed, requests): SpawnSources,
 ) {
+    // The level's characters go to the content stream's streamed pass
+    // while the collision builds (the original hands the level's character
+    // chunk to its stream thread, which builds them nearest the player
+    // first); the pump hands each body over as it is built and it is added
+    // to the model cache here, where the spawn below finds it.
+    if let Some(requests) = requests.as_deref() {
+        let mut loader = ModelLoader {
+            game: &game.0,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: model::bc_supported(support.as_deref()),
+        };
+        if pending.streamed.is_none() {
+            let bodies = streamed_bodies(&mut loader, &pending.start.characters);
+            let count = bodies.len();
+            if count > 0 {
+                info!(
+                    "content stream: {count} level character bodies handed to the stream thread (nearest {} first)",
+                    pending.start.position
+                );
+                requests.stream_characters(pending.start.position, bodies);
+            }
+            pending.streamed = Some(StreamedBodies {
+                posted: std::time::Instant::now(),
+                count,
+                arrived: 0,
+                built: std::time::Duration::ZERO,
+            });
+        }
+        let ready = requests.take_streamed();
+        if !ready.is_empty()
+            && let Some(streamed) = pending.streamed.as_mut()
+        {
+            for built in ready {
+                streamed.arrived += 1;
+                streamed.built += built.took;
+                loader.finish_model(built.model);
+            }
+        }
+    }
     if building.contains(pending.root) {
         if stage_waits(pending.since, &options) {
             if let Some(status) = status.as_mut() {
@@ -1226,6 +1320,21 @@ fn finish_collision(
                 commands.remove_resource::<exa_game::save_live::LoadedPlayerStream>();
             }
         }
+    }
+    if let (Some(requests), Some(streamed)) = (requests.as_deref(), pending.streamed.as_ref())
+        && streamed.count > 0
+    {
+        // The spawn does not wait: what the thread has not built yet the
+        // spawn builds itself, as before.
+        let left = requests.end_streamed_characters();
+        info!(
+            "content stream: {} of {} level character bodies built on the stream thread ({:.1} ms there) in the {:.0} ms before the spawn; {} not started",
+            streamed.arrived,
+            streamed.count,
+            streamed.built.as_secs_f64() * 1000.0,
+            streamed.posted.elapsed().as_secs_f64() * 1000.0,
+            left
+        );
     }
     commands.remove_resource::<PendingCollision>();
     // A new player at the level's own start: the original casts its start
@@ -2624,6 +2733,14 @@ fn screenshot_after_frames(
         return;
     }
     *frames += 1;
+    if *frames == 1 {
+        // The frames the count skipped for the texture loader: they run the
+        // simulation, so a lockstep trace's length depends on them.
+        info!(
+            "--frames: counting from here, after {} frames waiting for textures",
+            *texture_waits
+        );
+    }
     let Some(path) = &options.screenshot else {
         if *frames == options.frames {
             info!("--frames: {} frames played, exiting", options.frames);
