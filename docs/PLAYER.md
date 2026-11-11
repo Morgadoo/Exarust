@@ -2168,7 +2168,10 @@ exarust grid-shot /tmp/grid.png       # save the window as composed
   waits for. Its label shows the scene, the game's frame rate and
   "loading" while the loading screen is up. A game that ends shows its
   exit code and last log line. Enter, with its quadrant active, starts it
-  again, and `--restart` restarts it after 3 s. Child logs go to
+  again, and `--restart` restarts it after 3 s. With `--exit-when-done`
+  the host exits once every scene's game has ended (scenes that run their
+  own `--frames`), for unattended batches such as
+  `context/tools/feature_sweep.sh`. Child logs go to
   `--log-dir` (default `$TMPDIR/exarust-grid-<pid>/quadrant-N.log`).
 - **Input.** Clicking a quadrant makes it the active one (outlined): the
   keyboard, the mouse buttons, the wheel, the mouse motion and the cursor
