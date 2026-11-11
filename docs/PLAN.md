@@ -305,6 +305,8 @@ Round 127 terrain: a spectated arena match shows only the room at its spawn spot
 
 Round 159 roomlights: a dungeon mesh is lit only by the lights its room lists, as the original sector aliases decide; the existing wall-window flood already kept light in its rooms, so the picture is unchanged.
 
+Round 166 terrain3: terrain blocks cull by the original descriptors and the sun casts only drawn blocks.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
