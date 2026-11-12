@@ -13,6 +13,7 @@ The analysis behind it is in
 | [`phase-d-release.md`](phase-d-release.md) | Phase D: performance, platform, release |
 | [`DECISIONS.md`](DECISIONS.md) | decisions taken and decisions waiting for the owner |
 | [`ledger-summary.md`](ledger-summary.md) | generated totals of the function ledger |
+| [`findings.md`](findings.md) | defects the audits found, waiting for Phase B |
 
 ## The two goals
 
