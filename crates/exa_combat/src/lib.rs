@@ -167,7 +167,7 @@ impl Plugin for CombatPlugin {
             // The hit chain, every body tick after the solver, on the
             // simulation's thread behind the bridge: the original's
             // post-step deals each character's pending hit through its
-            // damage routine every 12 ms step (`0x1001592d0` calls it,
+            // damage routine every 12 ms step (the post-step calls it,
             // then clears the pending kind). The strikers are tracked from
             // the bodies the tick left, the held bodies' contacts are
             // classified, then the sweep of the strikers with no body, the

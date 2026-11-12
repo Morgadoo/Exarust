@@ -583,7 +583,7 @@ Sources: Structs.txt; Mod-Launcher `GameSettings.cs`; 0.8.3 devlog.
 - **Architecture history:**
   - The game was **32-bit until 0.9.5**, with a 3 GB RAM limit.
   - The whole engine, game and tools were ported to **64-bit** (Coffee Diary Jan 2024; shipped in 0.9.5 on 2026-05-20), with rewritten assembly and new low-level optimisations.
-  - The 64-bit exe has image base `0x100000000` and **no ASLR** (Physique-matters README).
+  - The 64-bit exe uses Free Pascal's default Win64 image base and has **no ASLR** (Physique-matters README).
   - **[inference]** That default image base is Free Pascal's for Win64; Delphi's default is `0x400000`. The 64-bit build may use FPC or a customised Delphi, which is unresolved. The function prologue `53 56 48 8D 64 24 D8` (push rbx; push rsi; lea rsp, [rsp-0x28]) is also FPC-like.
 - **Team:** a single engine/game programmer (Madoc Evans) for most of development; a second programmer (Jimmini) joined around 2025 for tools. (0.9.5 devlog; Coffee Diary Nov 2025)
 - **Modding hooks:** `winmm.dll` proxy loading is the de-facto mod loader (Horse4Horse ModLoader, zh-CN patch, Mod-Launcher). EMTK instead injects with Detours.
@@ -811,7 +811,7 @@ Selected names, useful for mapping subsystems. The source is https://github.com/
 8. **Weapon and shield objdb classes** (`0x4000`, `0x8000`): field meanings. FTY v`0x0F01` (0.9) part layout is `u8[0x54]`, not decoded.
 9. **Audio:** which API (OpenAL? DirectSound? custom mixer), the reverb/3D model, and how impact sounds are chosen (material pairs?).
 10. **Character physics model:** the number of bodies and joints in a human, the muscle model, the balancer and the hit-damage formula are not public. A faithful reimplementation will need either new design work or RE of `TMotileDynamics`. REA (https://rea.tools/) plus Ghidra/IDA on the no-ASLR 64-bit exe, together with the ExanimaREP database, is the practical route.
-11. **Delphi vs Free Pascal** for the 64-bit build (image base `0x100000000` points to FPC). This matters for interpreting RTTI and strings while doing RE.
+11. **Delphi vs Free Pascal** for the 64-bit build (the default Win64 image base points to FPC). This matters for interpreting RTTI and strings while doing RE.
 12. **Licensing and legal:**
     - The game assets are Bare Mettle's. Like OpenMW, Exarust should load them from the user's own install and never redistribute them.
     - Several community sources are unlicensed or restrictively licensed (Turkish patch: no modification or redistribution; gnalvesteffer: CC BY-NC-SA; many: none). Use them as factual documentation only and re-implement independently.

@@ -21,12 +21,12 @@ the master notes marked inferred.
   --opponent`: 1409, none differs. exanima01: 994 ticks, 41 bodies, none
   differs. A hub-launched match with the manager entered loads and plays.
 
-Grip placement (REA): the placement routine `0x1001539e0` sets the node's
+Grip placement (REA): the placement routine sets the node's
 translation from the table's offset times the character size (the alt
 offset, unscaled, for character class 0x300), adds 0.1 times the race's
 three held-offset bytes (x subtracted in the right hand), then calls the
-rotation builder `0x10001dab0` with the table's x, y and z angles. The
-builder's sincos (`0x10025e310`) returns sine and then cosine. Its rows
+rotation builder with the table's x, y and z angles. The
+builder's sincos returns sine and then cosine. Its rows
 are the item's axes. Exarust's `Grip::rotation` (glam YZX from (y, z, x))
 gives the same three columns: a test now pins them for every grip, flipped
 and not. The item's world is the local times the hand part's node matrix,

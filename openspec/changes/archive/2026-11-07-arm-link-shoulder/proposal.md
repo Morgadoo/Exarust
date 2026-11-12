@@ -21,13 +21,13 @@ and only just recovered.
     11.6 cm from the shoulder's (two-hander 29.0 vs 13.3 cm, greatsword
     29.8 vs 14.5 cm).
 - REA:
-  - The character init (around 0x100174966) stores, per side, the
+  - The character init stores, per side, the
     torso's child with a body as the arm chain's root (`+0xe60`/`+0xe68`,
     the shoulder) and walks its first children down to the hand
     (`+0xe78`/`+0xe80`).
-  - The grip link builder (0x100153210) ties the arm link to the chain
+  - The grip link builder ties the arm link to the chain
     root of the grip's hand.
-  - The shield's attach (0x100154130) registers it under the hand's
+  - The shield's attach registers it under the hand's
     parent, the forearm.
   - Exarust gave a weapon's arm link the forearm.
 - The grip placement (table entry, Euler order) and the clip choice

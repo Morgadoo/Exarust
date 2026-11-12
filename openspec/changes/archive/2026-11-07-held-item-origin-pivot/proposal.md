@@ -19,15 +19,12 @@ player's sword through entering combat, the attack and its release:
   rigid item free to turn about the line through them, and the stance and
   attack clips swing it about that line.
 
-REA, the attach (equip `0x100154e50`, shield `0x100154130`, torch
-`0x100155c20`): each calls the register-under-parent routine
-(`0x10007fb80`). That routine makes the hand (or forearm) the item's parent
-body, resets the item's link count, and adds the part's origin pivot
-(`0x10008ac10`): from the item's own origin to its node's translation in
-the parent's frame, slack 0, strength 1, flags `0x410000`. The grip links
-(`0x100153210`) are appended after it: the second hand and arm, the stab
+REA, the attach (equip, shield, torch):
+each calls the register-under-parent routine. That routine makes the hand (or forearm) the item's parent
+body, resets the item's link count, and adds the part's origin pivot: from the item's own origin to its node's translation in
+the parent's frame, slack 0, strength 1, flags `0x410000`. The grip links are appended after it: the second hand and arm, the stab
 link, then the table's points, with the main grip index the last. The
-re-grip (`0x100153bb0`) rewrites that first link as the origin pivot again.
+re-grip rewrites that first link as the origin pivot again.
 The polearm callback checks that its arm index is at least 1, since index
 0 is taken. Exarust built only the grip links, so its held items had one
 free turn.
