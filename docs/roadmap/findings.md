@@ -100,6 +100,69 @@ here; the rows in `context/re/ledger/` carry them.
 | F89 | ui-05 | ui | Editable combos (the journal's New Entry, the merchant boxes) never get the caret press or drag: option_forms::focused_field accepts only TEXT_FIELD, so the combo's state-0x20000 press and its 0x30 drag have no Exarust path | B4 |
 | F90 | ui-05 | ui | Neither the text field nor the combo box nor the swatch handles the 0xc0/0x100 gamepad accept (Steam on-screen keyboard, open list, owner call with 0x800) | B4 |
 
+| F91 | ui-06 | ui | exa_formats::hw_config::Screen::settings_lines writes 'InputMode = 51' for the controller; retail writes 'InputMode = 3'. Behaviour is the same because the reader treats any positive value as the controller, but the file text differs. | B4 |
+| F92 | ui-06 | ui | HardwareConfig::apply sets live.shadow_detail but nothing live reads it: Apply's shadow-detail push to the renderer (RF_ShadowMap is missing. | B4 |
+| F93 | ui-06 | ui | First-run auto-detection (SG_GameMain ->(1): benchmark or Deck preset, then Apply writing the file) is not done. flow::BootTask names it but does not perform it; --benchmark writes nothing. | B4 |
+| F94 | ui-06 | ui | SuperSampling is a bool, so super-sampling levels 1, 3 and 4 render the same; only the texture LOD bias follows the level. | B4 |
+| F95 | ui-06 | ui | The quality>5 shading flag (exa_render::quality::shading_high) has no live reader. | B4 |
+| F96 | ui-06 | ui | Bindings::key_name returns 'Left mouse'/'Right mouse' for codes 1/2; retail's key-name routine gives an empty string for 0x8001/0x8002. | B4 |
+| F97 | ui-07 | ui | GuiTask::set_cursor stores GuiTask.cursor, but nothing reads it. system_cursor::CursorTable::show has no live caller, so the window pointer never changes shape over grips or text | B4 |
+| F98 | ui-07 | ui | PointerState.limit stays 2: gui_core::drag_limit has no live caller. The original sets max(2, round(h/540)) on every level switch, which is 4 at 2160 px, so the drag threshold is too small on tall windows | B4 |
+| F99 | ui-07 | ui | The glyph sheet GlphCommon_rfi is never loaded into the large icon atlas. Only the constants gui_rescale::GLYPH_SHEET/SHEET_ICONS exist | B4 |
+| F100 | ui-07 | ui | The pointer-confine wrapper (ClipCursor) has no Exarust counterpart (no CursorGrabMode anywhere). Its callers include TPlayerBehaviour and RF_Navigation | B4 |
+| F101 | ui-07 | ui | Message boxes with the 0x80 flag (emblem COMPANY_NAME_BOX_WORD 0xc1) are never made the GuiTask modal form. HubForms keeps them on top instead | B4 |
+| F102 | ui-07 | ui | GuiTask.gamepad and DropState.kind are never set outside tests, so the gamepad focus arms/ac0) and the whole drop path, are dead code live | B4 |
+| F103 | ui-07 | ui | Every live TextBox measures with no pictures, so a [rimg] tag in help or journal text adds no height | B4 |
+| F104 | ui-08 | ui | The glyph builder never reads GUISymbl. exa_ui::gui_level passes None to build_glyphs, so glyph 1 is the fallback cross where retail shows the pack's GUISymbl 48x48 symbol. | B4 |
+| F105 | ui-08 | ui | In layout_records, only the trackbar's class init runs. The original calls every class record's init hook during layout. | B4 |
+| F106 | ui-08 | ui | The push-button hint arm leaves out the tooltip call that the original makes when the GUI flag is set. | B4 |
+| F107 | ui-08 | ui | There is no live port of, which finds the owner's view, runs and clears the job. It is called by the attach finalisers and the equipment-effect routines; only the FinishSteps.callback flag exists, and it is used in tests only. | B4 |
+| F108 | ui-08 | ui | The live table row hits (match_board TableLayout::row_at, hub_forms::manage_table_row) ignore the scroll's first visible row and the growing-table line that the original row hit uses. | B4 |
+| F109 | ui-08 | ui | The character view's background wash, race-share easing and frame counter are ported but never called. | B4 |
+| F110 | ui-08 | ui | gui_controls::set_steps computes value = at/steps in f32. The original divides in double and then narrows, so the rounding can differ in rare cases. | B4 |
+| F111 | ui-09 | ui | : leaving the title for the creator or class select clears the viewport's version-line flag in the original. Exarust's creator_screen::open_screens does not clear ViewOverlays.title (only Step::SessionTask(true) does), so 'V 0.9.5.2g' likely stays drawn over the setup forms | B4 |
+| F112 | ui-09 | ui | : NEW CAREER opens the emblem generator in the original. Exarust maps MenuCommand::NewCareer to the free creator in arena mode (CreatorEntry::arena), so the emblem form never opens from the menu | B4 |
+| F113 | ui-09 | ui | : in the original, dragging off the pressed menu row sets the selection to 0. menu_screen::input keeps the old selection | B4 |
+| F114 | ui-09 | ui | : Up/Down go through the select slot, which plays MenuSel (200 ms limit). MenuScreen::move_selection plays no cue | B4 |
+| F115 | ui-09 | ui | : back from page 1/8 plays MenuClick at pitch 1.0 in the original. MenuScreen::back plays nothing | B4 |
+| F116 | ui-09 | ui | : the class-select show warps the pointer to (W/2, round(f*370)+(H-f*1024)/2) and selects the first card with a pad. open_screens does neither, and class_select_place is test-only | B4 |
+| F117 | ui-09 | ui | /: [rimg=NAME] pictures in text boxes are never drawn. Every live TextBox::draw call passes a picture lookup that returns None, so pictures get size 0, no texture is loaded and the text is not pushed down | B4 |
+| F118 | ui-09 | ui | : the view-to-pixel conversion snaps a point at or behind the eye to the screen edges and returns depth -z. player::window_point (Bevy world_to_viewport) returns no point instead | B4 |
+| F119 | ui-09 | ui | TCompactSkillUI (11 functions, 5838 B): the ported compact_skill module is not mounted. creator_screen::paint_equipment draws the skills panel as an empty panel | B4 |
+| F120 | ui-09 | ui | : the read-only text field navigation (navigate_key) is never driven because every live text field is editable (style bits 0xd) | B4 |
+
+| F121 | ui-10 | ui | destination.rs: JourneySave (the adapter journey's save) is written but nothing outside tests reads it; TravelStep::stop_controls is computed and ignored (retail stops the player's controls via /. | B4 |
+| F122 | ui-10 | ui | Destination screen leave: retail slot 37 closes on any key (it does not read the key code); Exarust's portal_pointer passes only Escape. | B4 |
+| F123 | ui-10 | ui | DestinationScreen::close does not pop the controller action layer when form word has bit 0x20). | B4 |
+| F124 | ui-10 | ui | open_screen passes the markers as an empty Vec, so every row's marker word is 0. The destination mark goes through journey.device unconditionally, while retail requires marker bit 31 and an existing record. | B4 |
+| F125 | ui-10 | ui | Manual topic-list pick: also gives the text box focus, -1). Exarust's list click calls Manual::select directly, and list_picked is test-only. | B4 |
+| F126 | ui-10 | ui | The manual's close is not driven from the menu's hide routines (retail TMainMenu / call. | B4 |
+| F127 | ui-10 | ui | Text renderer: no live caller supplies a picture lookup, so [rimg] pictures in the manual/journal/item cards are never drawn. | B4 |
+| F128 | ui-10 | ui | SG_GUI_Skills (compact skill form for character creation) has no live port; the skill window page arm (SkillScreen::open with page > 0) is never driven. | B4 |
+| F129 | ui-10 | ui | XA_HelpSystem show_tip (one-time tips) has no live caller: the inventory mode-8, transition-screen and arena tip calls are not wired. | B4 |
+| F130 | ui-10 | ui | ColourSwatch::command (pad/Steam actions on the palette popup) has no live caller. | B4 |
+| F131 | ui-10 | ui | The emblem form, palette popup and colour picker are reachable only through debug openers (--open-hub-window company / picker); there is no New Career front end. | B4 |
+| F132 | ui-11 | ui | TDropDownList: the live combo popup (option_forms popup_input) handles the pointer only. DropDownList::command (keys and pad: 0x100 choose, 0x200 close, step up/down) has no caller, and a list cut at 16 rows gets no scrollbar hit or drag (hit and drag slots and are bypassed through row_at) | B4 |
+| F133 | ui-11 | ui | Transition screen: retail's hit slot returns -1, so the form takes every pointer hit while it is up. The live Bevy overlay node captures nothing (transition_hit is test-only) | B4 |
+| F134 | ui-11 | ui | Transition 'TO BE CONTINUED' hold: begin_continued, continued_text_origin and menu::draw_transition_fade have no live caller | B4 |
+| F135 | ui-11 | ui | The live KeyDef hotkey dispatch (commands::queue_binding_lines) fires every binding whose modifiers are held. Retail's TGUITask key slot runs only the best modifier score (earliest wins a tie) and forwards unmatched keys to the parent layer | B4 |
+| F136 | ui-11 | ui | The warm-up screen's per-frame step only counts the 29 rows (warm_row). Retail steps the GPU program warm-up there. No DEC entry covers this | B4 |
+| F137 | ui-11 | ui | The guiskin atlas is loaded once at Startup at its file size. Retail resamples it to 40x20 units and reloads it on every GUI scale change | B4 |
+| F138 | ui-11 | ui | Modal screens (key capture, warm-up): settings_form marks the full-window black backdrop and the palette text shade as guesses | B4 |
+| F139 | ui-12 | ui | The Company Status window draws no company emblem: status_emblem_place has no non-test caller, while the original draws it at. | B4 |
+| F140 | ui-12 | ui | In the four confirmation dialogs (reset to portal, delete, dismiss, yes/no), a press off the controls does not close the dialog with 0x40 (slot 27). dialog_click is test-only. | B4 |
+| F141 | ui-12 | ui | The arena help popup (THelpScreen via XA_HelpSystem, opened from XA_Arena, TTransitionScreen and SG_GameGUI) is not ported. The help-seen mask is never written to settings (TipStore has no write). | B4 |
+| F142 | ui-12 | ui | When the manual is destroyed while the arena is up, the arena form's mode is not set to -1 (help_destroy_mode is test-only). | B4 |
+| F143 | ui-12 | ui | No live GUI record carries tooltip hint text, so the default tooltip never shows in play (only --debug-hint sets one). | B4 |
+| F144 | ui-12 | ui | Controller actions (Steam Input slot 30) are not sent to forms: no message box confirm or cancel by action, and no manual page scroll or close by action. | B4 |
+| F145 | powers-02 | powers | The Sense Minds casts (mind_sense, mind_sense_persistent) return MindRequest::SenseOverlay, but nothing consumes it. Casting Sense Minds shows no sight overlay and no spheres; only the power entry and its ticking are live. | B4 |
+| F146 | powers-02 | powers | The particle body-contact pass (Emitter::contact and take_dose, class slot 31) is never driven from the physics step. Particles pass through bodies and the dose never reaches limbs. | B4 |
+| F147 | powers-02 | powers | The fire emissive only reaches the host's first-part material (fire::drive_hosts). The original also writes the parent node's scale and every geometry child's. particles::apply_emissive does this but has no caller. | B4 |
+| F148 | powers-02 | powers | (end Spirit Form or Control Mind) is not called from the bar toggle or from the character AI. Only the blow break and the cast end_control are wired. | B4 |
+| F149 | powers-02 | powers | Calm leaves out the original's write one past the end of the contact array. The code comment says it is not reproduced, but there is no DEC- entry for it. | B4 |
+| F150 | powers-02 | powers | Mind restore constructors and restore_mind_power are test-only. Persistent Mind powers saved with a character are not rebuilt on load, and their focus reserve is not re-taken. | B4 |
+| F151 | powers-02 | powers | Particle quad mode 0 (screen_quad), the UV_8 variants and flat colour are ported but no live template sets their flags, so those branches never run. | B4 |
+
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers
 a power yet"); the GI texture cache and `follow_camera` comments; the

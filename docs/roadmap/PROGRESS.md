@@ -14,9 +14,9 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **12.34%** | **100%** |
-| Ledger: functions audited | — | 618 of 6,478 | 6,478 |
-| Ledger: audit packages accepted | — | 9 of 90 | 90 |
+| **Ledger: bytes in a final state** | — | **20.7%** | **100%** |
+| Ledger: functions audited | — | 2,020 of 6,478 | 6,478 |
+| Ledger: audit packages accepted | — | 26 of 90 | 90 |
 | Live rows with scene or retail evidence | — | not measured | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
@@ -46,8 +46,8 @@ State: `todo`, `doing`, `done`, `blocked`.
 | A1 | Ledger skeleton and packages | done | 8,783 rows, 90 packages (2026-11-12) |
 | A2 | Reachability, second pass | done | walk through unit init, class tables, data blocks, callbacks and unwind handlers; dead candidates 740 → 49 functions (8 KB); the editor is wholly unreached; exceptions all explained (RTL libraries, never-constructed base classes) |
 | A3 | Audit brief and three pilot packages | done | 3 pilots in 7-9 min and 136k-256k tokens each; brief and tools improved; Phase A now estimated at 25-30M tokens |
-| A4 | Audit packages | doing | 10 of 90 audited (world-01 in review); batch runner at 4 packages per run, 72 in the queue |
-| A5 | Review of each package | doing | 9 accepted, none rejected; reviewers changed 0-2 states per package |
+| A4 | Audit packages | doing | 26 of 90 audited and accepted (all of rendering and UI); batches of 4 run in about 15 min |
+| A5 | Review of each package | doing | 26 accepted, none rejected |
 | A6 | Coverage computed from the ledger | todo | |
 | A7 | Check the excluded code | todo | 1,343 not-applicable, 933 engine rows |
 | A8 | Phase B work list | todo | |
@@ -96,14 +96,14 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Rendering & GPU | 10 | 4 | 793 | 338,599 |
-| UI | 12 | 3 | 958 | 319,585 |
-| Thaumaturgy & effects | 9 | 1 | 682 | 302,385 |
-| Physics, bodies & cloth | 7 | 1 | 355 | 245,070 |
+| Thaumaturgy & effects | 9 | 2 | 578 | 242,415 |
+| Physics, bodies & cloth | 7 | 1 | 340 | 239,791 |
 | AI & behaviour | 8 | 0 | 435 | 210,653 |
 | Characters, motion & animation | 8 | 0 | 504 | 201,621 |
 | Game modes, arena & session | 7 | 0 | 642 | 197,307 |
-| World, levels & terrain | 5 | 0 | 452 | 178,208 |
+| UI | 12 | 12 | 469 | 185,518 |
+| Rendering & GPU | 10 | 10 | 343 | 174,256 |
+| World, levels & terrain | 5 | 1 | 401 | 162,981 |
 | Items, materials & crafting | 5 | 0 | 341 | 143,285 |
 | Data, assets & I/O | 6 | 0 | 437 | 92,732 |
 | Script, dialogue & story | 2 | 0 | 182 | 47,478 |
@@ -112,7 +112,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 0 | 58 | 18,534 |
 | Combat, weapons & damage | 1 | 0 | 14 | 3,229 |
 | Other, tools & editor | 1 | 0 | 5 | 468 |
-| **Total** | **90** | **9** | **6,478** | **2,370,494** |
+| **Total** | **90** | **26** | **5,369** | **1,991,608** |
 
 ## Open decisions
 
@@ -124,6 +124,7 @@ DEC-6 composite terrain.
 
 | date | round | what |
 |---|---|---|
+| 2026-11-12 | 203 | Rendering and UI fully audited: 26 packages accepted, ledger 20.7%, 151 findings. Round 203: the save slot kinds fixed (B0.1). |
 | 2026-11-12 | — | 9 packages accepted, ledger 12.3%. The audits found 38 defects so far (`findings.md`), among them blank terrain blocks drawn and shadowing, glow link rings scrolling backwards, no refraction, the journal buttons unwired. |
 | 2026-11-12 | — | A2 done (reachability through class tables and callbacks: 49 dead candidates left). Pilots accepted on review: physics-02, render-01, ui-01. Batch runner for the other 87 packages running. Ledger 6.9%. |
 | 2026-11-12 | — | Phase A started: pilots physics-02 and render-01 audited. Both show the component ratings overstate: TVXGIManager is rated 97% but 58% of its bytes are open at function level; TMotileDynamics 97% with 88% of the package's bytes partial (mostly the two biggest routines, not re-audited block by block). Retail addresses removed from a code comment and five archived proposals. |
