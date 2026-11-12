@@ -247,7 +247,10 @@
 //!          --portal-reset yes|no      with --open-saves: answer the "Reset to portal" box (a pre-0.9.5 story save
 //!                                     past the portal raises it) 120 frames after it comes up
 //!          --load-slot n[:save|:checkpoint]  with --save-dir: once loaded, open the story saves' screen and CONTINUE
-//!                                     ExanimaNNN from it (the checkpoint first by default)
+//!                                     ExanimaNNN from it (the save first by default, as the screen's kind 1)
+//!          --saves-press name,...      with --open-saves (debug): press the screen's buttons in turn, one every 120
+//!                                     frames (previous, next, delete, toggle, continue, back; the delete box's
+//!                                     confirm and cancel)
 //!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading
 //!                                     frames do not count), logging entity, physics-body and asset counts per level;
 //!                                     reset:lvl changes behind a world reset (session start, save load, arena round)
@@ -625,6 +628,8 @@ pub struct Options {
     /// `--portal-reset yes|no`: answer the saves' screen's "Reset to
     /// portal" box (`exa_game::save_screen::ScriptedSaveScreen`).
     pub portal_reset: Option<bool>,
+    /// `--saves-press`: the saves' screen's buttons pressed in turn (debug).
+    pub saves_press: Vec<exa_game::save_screen::Target>,
     /// `--load-slot`: the story slot continued from the saves' screen, and
     /// whether its checkpoint is read first.
     pub load_slot: Option<(u32, bool)>,
@@ -1667,11 +1672,25 @@ fn main() -> AppExit {
                     }
                 };
             }
+            "--saves-press" => {
+                let list = args.next().unwrap_or_default();
+                let targets: Option<Vec<_>> = list
+                    .split(',')
+                    .map(exa_game::save_screen::press_target)
+                    .collect();
+                match targets {
+                    Some(targets) => options.saves_press = targets,
+                    None => {
+                        eprintln!(
+                            "--saves-press: cannot read {list:?} (previous, next, delete, toggle, continue, back, confirm, cancel)"
+                        );
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--load-slot" => {
                 let text = args.next().unwrap_or_default();
-                let (number, kind) = text
-                    .split_once(':')
-                    .unwrap_or((text.as_str(), "checkpoint"));
+                let (number, kind) = text.split_once(':').unwrap_or((text.as_str(), "save"));
                 match (number.parse::<u32>(), kind) {
                     (Ok(n), "save" | "checkpoint") if (1..=999).contains(&n) => {
                         options.load_slot = Some((n, kind == "checkpoint"));
@@ -2217,6 +2236,8 @@ fn main() -> AppExit {
             done: false,
             portal_reset: options.portal_reset,
             reset_frames: 0,
+            presses: options.saves_press.clone(),
+            press_frames: 0,
         });
     }
     // The simulation's own world (`exa_physics::sim_app`).

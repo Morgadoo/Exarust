@@ -1296,7 +1296,9 @@ The delete box (`Delete Character`, 392 × 112, attributes | 0x800 |
 
 The entry scans the manager: none falls back to the free creator;
 otherwise it selects slot 0 with kind 1 directly and the form keeps index
-0 and kind 0. The form's select stores the index, makes kind 0 kind 1,
+0 and takes kind 2 when the availability is 2 (only the `.rcp`), else
+kind 1. The kinds are the name builder's: 1 the save (`.rsg`), 2 the
+checkpoint (`.rcp`); availability bit 1 is the `.rsg`, bit 2 the `.rcp`. The form's select stores the index, makes kind 0 kind 1,
 asks the manager (availability; on nonzero the character becomes the
 form's record and the kind moves to the file that is there), then the
 refresh writes the record's name (fifteen bytes) as the combo box's text,
