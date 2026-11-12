@@ -2563,6 +2563,8 @@ Round 178 raisedead: Raise Dead and Command Dead raise and lay down corpses, and
 
 Round 180 mind2: the Mind powers change the live NPC brains as the original does, and Control Mind and Spirit Form write their minds on the simulation world.
 
+the save slot kinds now follow the original name builder (1 = the save, 2 = the checkpoint); a fresh saves screen had continued from the checkpoint, and the portal reset had deleted the checkpoint and dropped the slot while its save stayed on disk unlisted. Tests over built save folders and grid runs on scratch folders. Roadmap task B0.1.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
