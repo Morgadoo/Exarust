@@ -56,8 +56,8 @@ State: `todo`, `doing`, `done`, `blocked`.
 
 | id | task | state | note |
 |---|---|---|---|
-| B0.1 | Save slot kinds | doing | check before any save-deleting change |
-| B0.2 | Level-exit save position | todo | |
+| B0.1 | Save slot kinds | done | inverted: a fresh saves screen continued from the checkpoint, and the portal reset deleted the checkpoint while the save stayed unlisted; fixed (round 203). Creator-side names left to the other session |
+| B0.2 | Level-exit save position | doing | |
 | B0.3 | Control Mind end frame writes | todo | |
 | B0.4 | Torrent stream in lockstep | todo | |
 | B1 | Wire the uncalled | todo | size after A8 |
@@ -77,7 +77,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 | C4 | Unit-test-only ports | todo | first entries: ui-01 picker title band and hovered label (two_ink_band, glow_text), promoted by review from code reading |
 | C5 | Playthroughs | todo | |
 | C6 | Free mode clean | todo | one conflict known |
-| C7 | Retail saves | todo | after B0.1 |
+| C7 | Retail saves | todo | unblocked by B0.1 |
 
 ### Phase D ([detail](phase-d-release.md))
 

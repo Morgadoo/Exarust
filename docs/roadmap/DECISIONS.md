@@ -44,6 +44,8 @@ only), and leave the ports with the other session.
 
 **Blocks:** B6.
 
+**Note (2026-11-12):** the slot-kind fix (round 203) left three creator-side items for the other session: `create.rs` `SaveKind` names are swapped (numbers correct, not wired); the `continue_label` comment; the character-creation spec's continue-button wording.
+
 ### DEC-4. Start and budget of Phase A
 **Question:** start the audits, and at what scale?
 
