@@ -1046,9 +1046,9 @@ impl Slots {
 /// What the character screen's select of a slot found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScreenSelect {
-    /// 2 when the save file opens, 1 more when the checkpoint does; 0 when
-    /// the slot is not listed, has neither file, or its player data does
-    /// not read.
+    /// 1 when the save file (`.rsg`, the name builder's kind 1) opens, 2
+    /// more when the checkpoint (`.rcp`, kind 2) does; 0 when the slot is
+    /// not listed, has neither file, or its player data does not read.
     pub availability: u32,
     /// The file read with the character screen's mask.
     pub loaded: Option<LoadedSave>,
@@ -1169,16 +1169,17 @@ impl SlotList {
     }
 
     /// The character screen's select of the listed slot at `index` with the
-    /// asked `kind` (1 the checkpoint, 2 the save), as the continue screen
-    /// calls it for every slot it shows: an index outside the list answers
-    /// 0 and changes nothing; otherwise the slot becomes current (it is not
-    /// moved in the order), the availability is 2 when its save file opens
-    /// and 1 more when its checkpoint does, and the file read is the save
-    /// when it is available and either asked for or alone, else the
-    /// checkpoint when that is available. That file's player data is read
-    /// with the character screen's mask ([`Slots::load_character_screen`]);
-    /// a read that fails answers 0. On success the availability is the
-    /// answer and the loaded save is returned with it.
+    /// asked `kind` (the original's name-builder kinds: 1 the save `.rsg`,
+    /// 2 the checkpoint `.rcp`), as the continue screen calls it for every
+    /// slot it shows: an index outside the list answers 0 and changes
+    /// nothing; otherwise the slot becomes current (it is not moved in the
+    /// order), the availability is 2 when its checkpoint opens and 1 more
+    /// when its save does, and the file read is the checkpoint when it is
+    /// available and either asked for or alone, else the save when that is
+    /// available. That file's player data is read with the character
+    /// screen's mask ([`Slots::load_character_screen`]); a read that fails
+    /// answers 0. On success the availability is the answer and the loaded
+    /// save is returned with it.
     pub fn character_screen_select(&mut self, index: i32, kind: i32) -> ScreenSelect {
         let none = ScreenSelect {
             availability: 0,
@@ -1192,16 +1193,17 @@ impl SlotList {
         };
         self.current = number as i32;
         let mut availability = 0;
-        if self.slots.opens(number, SlotKind::Save) {
-            availability = 2;
-        }
         if self.slots.opens(number, SlotKind::Checkpoint) {
-            availability |= 1;
+            availability = SlotKind::Checkpoint.code() as u32;
         }
-        let file = if availability & 2 != 0 && (kind == 2 || availability & 1 == 0) {
-            SlotKind::Save
-        } else if availability & 1 != 0 {
+        if self.slots.opens(number, SlotKind::Save) {
+            availability |= SlotKind::Save.code() as u32;
+        }
+        let asked_checkpoint = kind == SlotKind::Checkpoint.code();
+        let file = if availability & 2 != 0 && (asked_checkpoint || availability & 1 == 0) {
             SlotKind::Checkpoint
+        } else if availability & 1 != 0 {
+            SlotKind::Save
         } else {
             return none;
         };

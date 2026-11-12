@@ -2156,7 +2156,11 @@ zone's nearer side) before the floor cast. The saves' screen raises the
 `Reset to portal` box over a pre-0.9.5 story save past the portal
 (`slots::offers_portal_reset`); its Yes deletes the file the select read and
 drops a slot left without a checkpoint (`SlotList::reset_to_portal`), and
-`--portal-reset yes|no` answers it.
+`--portal-reset yes|no` answers it. The screen's kinds and availability bits
+are the original name builder's (`SlotKind::code`): 1 the save (`.rsg`), 2
+the checkpoint (`.rcp`). A fresh screen reads and continues the save, so the
+reset deletes the save and keeps the slot for its checkpoint; the toggle
+switches to the checkpoint (`SlotList::character_screen_select`).
 A plain teardown (the menu's creator or save screens, a session leave)
 takes the surviving player's body out of the scene (`level_change::OutOfWorld`:
 out of the solver and the character ticks, hidden) until a level is in

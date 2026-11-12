@@ -17,7 +17,9 @@
 //! * opening scans the manager: no slot falls back (the original opens the
 //!   free creator; the menu greys CONTINUE out then, so Exarust opens
 //!   nothing); otherwise the first slot is selected with kind 1 and the form
-//!   shows index 0 with kind 0;
+//!   shows index 0 with kind 2 when only the checkpoint is there, else
+//!   kind 1 (the kinds are the name builder's: 1 the save `.rsg`, 2 the
+//!   checkpoint `.rcp`);
 //! * a select ([`SaveScreen::select`]) stores the index, makes a kind of 0
 //!   kind 1, asks the manager for the slot
 //!   ([`SlotList::character_screen_select`]); a nonzero availability is kept,
@@ -27,7 +29,7 @@
 //!   mirror and enable ([`crate::create::creation_continue_button`]);
 //! * Previous and Next step the index with kind 1, the combo's pick selects
 //!   its item with kind 1 when it is not the shown one, the toggle swaps the
-//!   kind between the save (2) and the checkpoint (1) when that file is
+//!   kind between the save (1) and the checkpoint (2) when that file is
 //!   there;
 //! * Delete asks `Are you sure you want to delete <name>?` in the `Delete
 //!   Character` box; its Delete deletes the slot ([`SlotList::delete_index`]),
@@ -35,13 +37,14 @@
 //!   menu when the list is empty;
 //! * BACK (and Escape [guess: the creator's cancel key]) leaves to the menu;
 //! * CONTINUE loads the current slot: the story's full load
-//!   ([`crate::save_live::StorySlotLoad`], the checkpoint first unless the
-//!   kind is 2) or, in the arena, the hub with that slot
+//!   ([`crate::save_live::StorySlotLoad`], the checkpoint first only for
+//!   kind 2) or, in the arena, the hub with that slot
 //!   ([`crate::save_live::ArenaSlotLoad`]).
 //!
 //! `--open-saves story|arena` opens the screen once the load ends and
 //! `--load-slot N[:save|:checkpoint]` also continues slot N from it
-//! ([`ScriptedSaveScreen`]).
+//! ([`ScriptedSaveScreen`]); `--saves-press` presses its buttons in turn
+//! (debug).
 //!
 //! Guesses (labelled where they are made): the delete box's records are laid
 //! out in its client at its design size; the drop-down's row height is the
@@ -157,10 +160,10 @@ pub struct SaveScreen {
     pub opened: Option<SlotKind>,
     /// The shown slot's index in the list.
     pub index: i32,
-    /// The file the CONTINUE reads: 2 the save, 1 the checkpoint (0 until a
-    /// select from the form).
+    /// The file the CONTINUE reads first: 1 the save, 2 the checkpoint (the
+    /// name builder's kinds, [`SlotKind::code`]).
     pub kind: i32,
-    /// The last select's availability (2 save, 1 checkpoint).
+    /// The last select's availability (1 save, 2 checkpoint).
     pub availability: u32,
     /// The list's numbers and names, as the combo box lists them.
     pub numbers: Vec<u32>,
@@ -217,8 +220,9 @@ impl SaveScreen {
     }
 
     /// The character screen's entry over `list`: `None` when the manager
-    /// holds no slot; otherwise the first slot is selected with kind 1 (the
-    /// form keeps kind 0) and the form refreshes.
+    /// holds no slot; otherwise the first slot is selected with kind 1, the
+    /// form takes kind 2 when only the checkpoint is there and kind 1
+    /// otherwise (the creator's show in continue mode), and it refreshes.
     pub fn open(
         list: &mut SlotList,
         game_mode: i32,
@@ -231,8 +235,13 @@ impl SaveScreen {
         }
         let mut s = Self::new(game_mode, screen, unit);
         s.item_names = item_names;
-        let found = list.character_screen_select(0, 1);
+        let found = list.character_screen_select(0, SlotKind::Save.code());
         s.availability = found.availability;
+        s.kind = if found.availability == SlotKind::Checkpoint.code() as u32 {
+            SlotKind::Checkpoint.code()
+        } else {
+            SlotKind::Save.code()
+        };
         let asks = found
             .loaded
             .as_ref()
@@ -518,7 +527,7 @@ impl SaveScreen {
         }
     }
 
-    /// Previous: the slot before, read from its checkpoint first.
+    /// Previous: the slot before, read from its save first.
     pub fn previous(&mut self, list: &mut SlotList) {
         if self.index > 0 {
             self.kind = 1;
@@ -526,7 +535,7 @@ impl SaveScreen {
         }
     }
 
-    /// Next: the slot after, read from its checkpoint first.
+    /// Next: the slot after, read from its save first.
     pub fn next(&mut self, list: &mut SlotList) {
         if i64::from(self.index) < list.count() as i64 - 1 {
             self.kind = 1;
@@ -542,8 +551,8 @@ impl SaveScreen {
         }
     }
 
-    /// The toggle: the save when the checkpoint is shown and the save is
-    /// there, else the checkpoint when it is there.
+    /// The toggle: the save (kind 1) when the checkpoint (kind 2) is shown
+    /// and the save is there, else the checkpoint when it is there.
     pub fn toggle(&mut self, list: &mut SlotList) {
         if self.kind == 2 {
             if self.availability & 1 == 0 {
@@ -606,7 +615,7 @@ impl SaveScreen {
         }
         SaveAction::Continue {
             number: list.current() as u32,
-            prefer_checkpoint: self.kind != 2,
+            prefer_checkpoint: self.kind == SlotKind::Checkpoint.code(),
         }
     }
 
@@ -895,6 +904,28 @@ pub struct ScriptedSaveScreen {
     pub portal_reset: Option<bool>,
     /// Frames the reset box has been up for the scripted answer.
     pub reset_frames: u32,
+    /// `--saves-press`: the screen's buttons pressed in turn, one every
+    /// [`PORTAL_RESET_WAIT`] frames while no reset box is up (a debug
+    /// trigger).
+    pub presses: Vec<Target>,
+    /// Frames since the screen opened or the last scripted press.
+    pub press_frames: u32,
+}
+
+/// Reads one `--saves-press` name: `previous`, `next`, `delete`, `toggle`,
+/// `continue`, `back`, and the delete box's `confirm` and `cancel`.
+pub fn press_target(name: &str) -> Option<Target> {
+    Some(match name {
+        "previous" => Target::Control(saves::PREVIOUS),
+        "next" => Target::Control(saves::NEXT),
+        "delete" => Target::Control(saves::DELETE),
+        "toggle" => Target::Control(saves::CHECKPOINT),
+        "continue" => Target::Control(saves::CONTINUE),
+        "back" => Target::Control(saves::BACK),
+        "confirm" => Target::Confirm(delete_box::DELETE),
+        "cancel" => Target::Confirm(delete_box::CANCEL),
+        _ => return None,
+    })
 }
 
 /// The frames the scripted answer to the reset box waits, so a screenshot
@@ -1060,7 +1091,11 @@ fn saves_input(
         scripted.done = true;
         match list.numbers().iter().position(|&n| n == number) {
             Some(index) => {
-                saves.kind = if checkpoint { 1 } else { 2 };
+                saves.kind = if checkpoint {
+                    SlotKind::Checkpoint.code()
+                } else {
+                    SlotKind::Save.code()
+                };
                 saves.select(list, index as i32);
                 info!(
                     "saves: scripted CONTINUE of slot {number} (kind {})",
@@ -1085,6 +1120,18 @@ fn saves_input(
             }
         } else {
             scripted.reset_frames = 0;
+        }
+    }
+    if !scripted.presses.is_empty() && saves.reset.is_none() {
+        scripted.press_frames += 1;
+        if scripted.press_frames >= PORTAL_RESET_WAIT {
+            scripted.press_frames = 0;
+            let target = scripted.presses.remove(0);
+            info!(
+                "saves: --saves-press {target:?} (slot index {}, kind {}, availability {})",
+                saves.index, saves.kind, saves.availability
+            );
+            actions.push(saves.answer(list, target));
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
@@ -1552,20 +1599,26 @@ mod tests {
         assert_eq!(s.names, vec![b"Bran".to_vec(), b"Ash".to_vec()]);
         assert_eq!(s.record.name, "Bran");
         assert_eq!(s.main[saves::SLOTS].text, b"Bran");
-        assert_eq!((s.index, s.kind, s.availability), (0, 0, 2));
+        // Only the save is there: availability 1, kind 1.
+        assert_eq!((s.index, s.kind, s.availability), (0, 1, 1));
         assert_eq!(s.main[saves::PREVIOUS].state, gui_controls::state::DISABLED);
         assert_eq!(s.main[saves::NEXT].state, 0);
-        // The toggle shows the checkpoint and cannot switch (kind 0 < 2).
+        // The toggle offers the checkpoint and cannot switch (kind 1 is not
+        // below 1).
         assert_eq!(s.main[saves::CHECKPOINT].text, b"Continue from checkpoint");
+        assert_ne!(
+            s.main[saves::CHECKPOINT].state & gui_controls::state::DISABLED,
+            0
+        );
         {
             let at = centre(&s, saves::NEXT);
             click(&mut s, &mut list, at)
         };
         assert_eq!(s.index, 1);
         assert_eq!(s.record.name, "Ash");
-        // Only the save is there, so the kind moves to it.
-        assert_eq!(s.kind, 2);
-        assert_eq!(s.main[saves::CHECKPOINT].text, b"Continue from save");
+        // Only the save is there, so the kind stays on it.
+        assert_eq!(s.kind, 1);
+        assert_eq!(s.main[saves::CHECKPOINT].text, b"Continue from checkpoint");
         assert_eq!(s.main[saves::NEXT].state, gui_controls::state::DISABLED);
         {
             let at = centre(&s, saves::PREVIOUS);
@@ -1595,8 +1648,8 @@ mod tests {
         list.slots().copy_save_over_checkpoint(number).unwrap();
         let mut list = SlotList::new(Slots::story(&dir));
         let mut s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
-        assert_eq!(s.availability, 3);
-        // Kind 0: the checkpoint first.
+        assert_eq!((s.kind, s.availability), (1, 3));
+        // Kind 1: the save first.
         assert_eq!(
             {
                 let at = centre(&s, saves::CONTINUE);
@@ -1604,20 +1657,21 @@ mod tests {
             },
             SaveAction::Continue {
                 number,
-                prefer_checkpoint: true
+                prefer_checkpoint: false
             }
         );
-        // The toggle switches to the save.
+        // The toggle switches to the checkpoint.
         {
             let at = centre(&s, saves::CHECKPOINT);
             click(&mut s, &mut list, at)
         };
         assert_eq!(s.kind, 2);
+        assert_eq!(s.opened, Some(SlotKind::Checkpoint));
         assert_eq!(
             s.continue_action(&list),
             SaveAction::Continue {
                 number,
-                prefer_checkpoint: false
+                prefer_checkpoint: true
             }
         );
         assert_eq!(
@@ -1747,6 +1801,155 @@ mod tests {
         let mut idle = SlotList::new(Slots::story(&dir));
         assert!(!idle.reset_to_portal(SlotKind::Checkpoint).unwrap());
         assert!(list.slots().file(number, SlotKind::Checkpoint).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder whose slot 1 has a save holding "Ash" and a checkpoint
+    /// holding "Bran" (slot 2's save renamed), so a read names its file.
+    fn slot_with_both(name: &str) -> (std::path::PathBuf, u32) {
+        let dir = folder(name);
+        let mut list = SlotList::new(Slots::story(&dir));
+        let number = story_slot(&mut list, "Ash");
+        let other = story_slot(&mut list, "Bran");
+        let slots = Slots::story(&dir);
+        std::fs::rename(
+            slots.file(other, SlotKind::Save),
+            slots.file(number, SlotKind::Checkpoint),
+        )
+        .unwrap();
+        assert!(dir.join(format!("Exanima{number:03}.rsg")).is_file());
+        assert!(dir.join(format!("Exanima{number:03}.rcp")).is_file());
+        (dir, number)
+    }
+
+    fn shown(found: &crate::slots::ScreenSelect) -> (u32, Option<SlotKind>, String) {
+        let loaded = found.loaded.as_ref();
+        (
+            found.availability,
+            loaded.map(|l| l.kind),
+            loaded
+                .and_then(|l| l.player_record())
+                .map(|r| r.name)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// The select's kinds and availability bits are the name builder's:
+    /// kind 1 and bit 1 the `.rsg`, kind 2 and bit 2 the `.rcp`.
+    #[test]
+    fn the_select_reads_the_save_for_kind_1_and_the_checkpoint_for_kind_2() {
+        let (dir, number) = slot_with_both("kinds");
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(list.any());
+        assert_eq!(list.numbers(), &[number]);
+        let save = shown(&list.character_screen_select(0, 1));
+        assert_eq!(save, (3, Some(SlotKind::Save), "Ash".to_string()));
+        let checkpoint = shown(&list.character_screen_select(0, 2));
+        assert_eq!(
+            checkpoint,
+            (3, Some(SlotKind::Checkpoint), "Bran".to_string())
+        );
+        // Only the checkpoint: availability 2, read whatever the kind.
+        std::fs::remove_file(dir.join(format!("Exanima{number:03}.rsg"))).unwrap();
+        let alone = shown(&list.character_screen_select(0, 1));
+        assert_eq!(alone, (2, Some(SlotKind::Checkpoint), "Bran".to_string()));
+        // The screen opens on kind 2 then.
+        let mut fresh = SlotList::new(Slots::story(&dir));
+        let s = SaveScreen::open(&mut fresh, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        assert_eq!((s.kind, s.availability), (2, 2));
+        assert_eq!(s.record.name, "Bran");
+        let _ = std::fs::remove_dir_all(&dir);
+        // Only the save: availability 1, read whatever the kind.
+        let dir = folder("kinds-save");
+        let mut list = SlotList::new(Slots::story(&dir));
+        story_slot(&mut list, "Ash");
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(list.any());
+        let alone = shown(&list.character_screen_select(0, 2));
+        assert_eq!(alone, (1, Some(SlotKind::Save), "Ash".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTINUE on a fresh screen loads the save; after the toggle it
+    /// loads the checkpoint (which then is copied over the save).
+    #[test]
+    fn continue_loads_the_save_by_default_and_the_checkpoint_when_toggled() {
+        let (dir, number) = slot_with_both("continue-kinds");
+        let mut list = SlotList::new(Slots::story(&dir));
+        let mut s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        assert_eq!(s.record.name, "Ash");
+        let SaveAction::Continue {
+            prefer_checkpoint, ..
+        } = s.continue_action(&list)
+        else {
+            panic!("no continue");
+        };
+        let loaded = list.load_current(prefer_checkpoint).unwrap();
+        assert_eq!(loaded.kind, SlotKind::Save);
+        assert_eq!(loaded.player_record().unwrap().name, "Ash");
+        s.toggle(&mut list);
+        assert_eq!(s.record.name, "Bran");
+        let SaveAction::Continue {
+            prefer_checkpoint, ..
+        } = s.continue_action(&list)
+        else {
+            panic!("no continue");
+        };
+        let loaded = list.load_current(prefer_checkpoint).unwrap();
+        assert_eq!(loaded.kind, SlotKind::Checkpoint);
+        assert_eq!(loaded.player_record().unwrap().name, "Bran");
+        // The checkpoint read is copied over the save.
+        let rsg = dir.join(format!("Exanima{number:03}.rsg"));
+        let rcp = dir.join(format!("Exanima{number:03}.rcp"));
+        assert_eq!(std::fs::read(&rsg).unwrap(), std::fs::read(&rcp).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The reset to the portal deletes the file the select read: the save
+    /// on a fresh screen (the slot stays for its checkpoint); the
+    /// checkpoint after the toggle (the slot leaves the list though its
+    /// save is still on disk, as in the original).
+    #[test]
+    fn the_portal_reset_deletes_the_file_the_select_read() {
+        let (dir, number) = slot_with_both("reset-kinds");
+        let rsg = dir.join(format!("Exanima{number:03}.rsg"));
+        let rcp = dir.join(format!("Exanima{number:03}.rcp"));
+        let mut list = SlotList::new(Slots::story(&dir));
+        let mut s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        assert_eq!(s.opened, Some(SlotKind::Save));
+        s.confirm_portal_reset(&mut list);
+        assert!(!rsg.exists());
+        assert!(rcp.is_file());
+        assert_eq!((list.count(), list.current()), (1, number as i32));
+        // The select again finds the checkpoint alone.
+        assert_eq!((s.kind, s.availability), (2, 2));
+        assert_eq!(s.record.name, "Bran");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, number) = slot_with_both("reset-kinds-checkpoint");
+        let rsg = dir.join(format!("Exanima{number:03}.rsg"));
+        let rcp = dir.join(format!("Exanima{number:03}.rcp"));
+        let mut list = SlotList::new(Slots::story(&dir));
+        let mut s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        s.toggle(&mut list);
+        assert_eq!(s.opened, Some(SlotKind::Checkpoint));
+        assert!(list.reset_to_portal(SlotKind::Checkpoint).unwrap());
+        assert!(!rcp.exists());
+        assert!(rsg.is_file());
+        assert_eq!((list.count(), list.current()), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The delete removes both of the slot's files.
+    #[test]
+    fn delete_removes_the_save_and_the_checkpoint() {
+        let (dir, number) = slot_with_both("delete-kinds");
+        let mut list = SlotList::new(Slots::story(&dir));
+        let mut s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        s.ask_delete();
+        assert_eq!(s.confirm_delete(&mut list), SaveAction::Leave);
+        assert!(!dir.join(format!("Exanima{number:03}.rsg")).exists());
+        assert!(!dir.join(format!("Exanima{number:03}.rcp")).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
