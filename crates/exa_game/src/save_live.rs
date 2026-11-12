@@ -2469,7 +2469,8 @@ mod tests {
         assert_eq!(list.names()[0].as_deref(), Some("Ash"));
         // The character screen's select reads it with its mask.
         let found = list.character_screen_select(0, 1);
-        assert_eq!(found.availability, 2);
+        // Only the save (kind 1) is there.
+        assert_eq!(found.availability, 1);
         assert_eq!(list.current(), number as i32);
         assert_eq!(found.loaded.unwrap().player_record().unwrap().name, "Ash");
         let restored = restore_story(&mut list, number, true).unwrap();

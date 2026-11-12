@@ -103,16 +103,36 @@ pub const EXT_SAVE: &str = ".rsg";
 /// A checkpoint's extension.
 pub const EXT_CHECKPOINT: &str = ".rcp";
 
-/// Which of a slot's two files it is.
+/// Which of a slot's two files it is. The original's name builder numbers
+/// them 1 (`.rsg`) and 2 (`.rcp`), and the character screen's kind and
+/// availability bits use the same numbers ([`SlotKind::code`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotKind {
-    /// The save itself (`.rsg`).
+    /// The save itself (`.rsg`, kind 1).
     Save,
-    /// The death-reload point (`.rcp`).
+    /// The death-reload point (`.rcp`, kind 2).
     Checkpoint,
 }
 
 impl SlotKind {
+    /// The name builder's number for the kind: 1 the save, 2 the
+    /// checkpoint (its extension table's first and second entries).
+    pub fn code(self) -> i32 {
+        match self {
+            SlotKind::Save => 1,
+            SlotKind::Checkpoint => 2,
+        }
+    }
+
+    /// The kind the name builder's number names, if any.
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            1 => Some(SlotKind::Save),
+            2 => Some(SlotKind::Checkpoint),
+            _ => None,
+        }
+    }
+
     /// The extension, including its dot.
     pub fn extension(self) -> &'static str {
         match self {
@@ -1675,6 +1695,19 @@ mod tests {
         );
         // Both extensions and the number rules are unchanged.
         assert_eq!(slot_file_name("Arena", 999, SlotKind::Save), "Arena999.rsg");
+        // The name builder's kinds: 1 the save, 2 the checkpoint.
+        assert_eq!(SlotKind::Save.code(), 1);
+        assert_eq!(SlotKind::Checkpoint.code(), 2);
+        assert_eq!(
+            SlotKind::from_code(1).map(SlotKind::extension),
+            Some(".rsg")
+        );
+        assert_eq!(
+            SlotKind::from_code(2).map(SlotKind::extension),
+            Some(".rcp")
+        );
+        assert_eq!(SlotKind::from_code(0), None);
+        assert_eq!(SlotKind::from_code(3), None);
         assert_eq!(slot_file_name("Arena", 0, SlotKind::Save), "Arena000.rsg");
         // The number is a signed word: a value with the top bit set is
         // negative and the formatter emits "00".

@@ -756,13 +756,18 @@ heal-pool and potion entries; [RFC.md](RFC.md), Saving), and the player
 spawned from a loaded record loads it back, so a load restores the
 player's wounds, focus, heal pool and potion. The saves' character screen's select
 (`SlotList::character_screen_select`) is the original's: the slot becomes
-current without moving, the availability is 2 for an opening `.rsg` plus 1
-for an opening `.rcp` (the test only opens the file), the `.rsg` is read
-when it is there and asked for (kind 2) or alone, else the `.rcp`, with
-mask `0x100010`; a failed read answers 0. Its CONTINUE passes the form's
-kind to the full load, which reads the `.rsg` first only for kind 2 (the
-form starts at kind 0, so a fresh screen continues from the checkpoint
-when there is one). A session saved
+current without moving, the availability is 2 for an opening `.rcp` plus 1
+for an opening `.rsg` (the test only opens the file), the `.rcp` is read
+when it is there and asked for (kind 2) or alone, else the `.rsg`, with
+mask `0x100010`; a failed read answers 0. The kinds are the name
+builder's: its extension table holds `.rsg` first and `.rcp` second, so
+kind 1 is the save and kind 2 the checkpoint (`SlotKind::code`). Its
+CONTINUE passes the form's kind to the full load, which reads the `.rcp`
+first only for kind 2 (the form opens at kind 1, or 2 when only the
+`.rcp` is there, so a fresh screen continues from the save when there is
+one). The delete removes the `.rsg` then the `.rcp`; the reset to the
+portal deletes the file the select read, so with both files there it
+deletes the `.rsg` and keeps the slot for its `.rcp`. A session saved
 **over** a retail save of the same mode keeps the save's placement, its
 other sections and the chunks Exarust does not produce, so the original
 still loads it; the Exarust chunk is an id it skips. Exarust lists its own
