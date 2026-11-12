@@ -18,7 +18,16 @@ splits and renames of the component map, and the cross-reference export.
 `make_packages.py` cuts the open rows into 90 packages.
 **Done when:** the ledger builds with no unplaced function. Done 2026-11-12.
 
-### A2. Reachability, second pass
+### A2. Reachability, second pass — done 2026-11-12
+Result: roots are the entry point, the TLS callback and the 131 units'
+init and final procedures; classes, data blocks, stored callbacks and
+unwind handlers are walked. Dead candidates fell from 740 functions to 49
+(8 KB). The check passes when the two runtime libraries are left out:
+7 of 2,241 rows of game components rated 95% or more are unreached (base
+class stubs and editor-only code), 5 not-applicable rows are reached from
+live code (hooks that return early). The builder now needs
+`scan_pe.py`'s output.
+
 The first pass walks from the entry point and from every function a data
 table points at. It is wrong in both directions: it reaches unused runtime
 classes (every class table is a root), and it misses calls through
@@ -38,7 +47,14 @@ registered callbacks, so units known to run show as unreached.
 **Done when:** the check in step 3 passes with under 1% exceptions, each
 explained.
 
-### A3. Audit brief and pilot
+### A3. Audit brief and pilot — done 2026-11-12
+Results: physics-02 (26 functions, 7 min, 136k tokens), render-01 (41,
+8 min, 256k), ui-01 (73, 9 min, 190k). The brief gained the tools
+`check_resolved.py`, `show_fn.py`, `callers.py`, `rust_live.py`, a reading
+list, rules for large functions, adaptations, shader logic and undriven
+arms. Corrected cost of the remaining packages: about 200k tokens per
+audit plus about 100k per review, so 25 to 30 million tokens in all.
+
 1. The brief is in `context/tools/rounds/audit-brief.md`.
 2. Run three pilot packages of different kinds: one physics (large
    routines), one UI (many small ones), one rendering (much engine-replaced
