@@ -513,6 +513,61 @@ here; the rows in `context/re/ledger/` carry them.
 | F487 | script-01 | script | Trust reads the mirrored contact's attitude, so a non-contact gets 0. The original's TCombatant trust works for any character. | B4 |
 | F488 | script-01 | script | LastEnc with a negative actor slot assumes slot 0 instead of the conversation field at (left undecoded in the Rust comment). | B4 |
 
+| F489 | script-02 | script | exa_ui::game_gui::right_release_closes returns false for GameScreen::Journal, but the journal's mouse slot closes on a right release (0x2002) just like the inventory and loot windows. The journal never closes on a right release in Exarust. | B4 |
+| F490 | script-02 | script | CrystalDrain.drain.sources is never cleared on a level load. The original clears its source list at every scene load from, so in Exarust socketed-item sources from earlier levels pile up. | B4 |
+| F491 | script-02 | script | Crystal drain_sources runs in every game mode on Time<Virtual>. The original calls the drain only from the story frame hook. | B4 |
+| F492 | script-02 | script | Activity and IdleActivity written by encounter, dialogue, zone or object scripts go into the cast's Character.activity, which nothing copies back to the AI. Only role init scripts (exa_ai::activity::InitHost) reach the AI. | B4 |
+| F493 | script-02 | script | The game tip banner is drawn as a square black quad. The original uses rounded_fill_fixed (corner 4, alpha 0xa0) with a colour set beforehand; prelude.rs and help_live.rs both guess black. | B4 |
+| F494 | script-02 | script | Teleporter and selection glow pulses go through a second task list (teleporters::DeviceGlow): voxel lights only, no emissive, and not cleared by the level-load cancel. The original uses the single SG_GameFunctions pulse task list. | B4 |
+| F495 | script-02 | script | Object 0x24c's once-only use is kept per session (DeviceClock::once_used) and never calls Flow::game_event. The original sets unlock bit 2 of and calls. | B4 |
+| F496 | script-02 | script | exa_formats::roles::Dialogue::parse treats node sizes 1 to 4 as empty nodes and steps 4 bytes; the original treats only size 0 as empty. Possible divergence on unusual data; the shipped files were not checked. | B4 |
+| F497 | script-02 | script | The journal text box takes no typing, so the journal's close and save store back the text that was loaded. | B4 |
+| F498 | core-01 | core | : the global engine generator is one shared stream in the original. Exarust uses several separate streams, so random choices across systems interleave differently. | B4 |
+| F499 | core-01 | core | Vector-times-4x3/4x4 point transforms, 4x3/4x4 products, vec4-times-4x4-transposed and lerp: the original adds in a different order from glam's transform_point3, mul_mat4, dot and lerp (glam lerp is a*(1-t)+b*t). Results differ by rounding only. | B4 |
+| F500 | core-01 | core | Rigid 4x3 inverse and the frame-relative helpers,,: the original uses the transpose. Exarust call sites that use glam Affine3A::inverse take a full 3x3 inverse, which is equal only for orthonormal frames. | B4 |
+| F501 | core-01 | core | : a typed character or save name longer than 16 bytes keeps 15 bytes plus 0x85 in the original. The port Name16::from_ansi is unused, so Exarust's name truncation was not checked. | B4 |
+| F502 | core-01 | core | /: the original compares case-insensitively by raising a-z to capitals, so '_' and other bytes 0x5B-0x60 sort after letters. Any Rust code that sorts with lower-cased compares would order these names differently (equality is the same). | B4 |
+| F503 | core-01 | core | The original's UTF-8 stream string read/write (RF_DataIO/ maps to DataStream::read_utf8/write_utf8, which only tests call. | B4 |
+| F504 | core-02 | core | Thaum tree node flash: the original's in-place scale multiplies whatever is left in xmm2 by the colour word read as a float. That gives NaN when alpha is 0xFF, and zero under DAZ when alpha is 0, so the flash is likely black in retail. exa_ui::tree_draw::scale_rgb scales the colour by the fade as intended, and there is no DEC entry for the difference | B4 |
+| F505 | core-02 | core | exa_assets::model::group_mesh passes vertex colour bytes through unscaled, where the original's group mesh code/ calls the per-channel colour scale on them | B4 |
+| F506 | core-02 | core | exa_game::gamepad::pick_control (the Steam Input menu stick pick, which uses gamepad::normalized for is called only from gamepad_test.rs | B4 |
+| F507 | core-02 | core | Negation helpers/780/7a0 compute 0 - v (a zero component becomes +0), but glam negation gives -0: a sign-of-zero difference | B4 |
+| F508 | core-02 | core | exa_physics::contact::evicted adds the squared vec4 distance terms one after another, while the original adds them as (dx2+dz2)+(dy2+dw2). The last bit differs, so a near tie can evict a different contact point | B4 |
+| F509 | core-02 | core | No Exarust counterpart for the thread priority the original sets on its terrain and VXGI worker threads | B4 |
+| F510 | core-02 | core | The fast length and fast distance in hand press_hand, in thaum wisps) use exact glam lengths in Rust, where the original keeps the RSQRTSS product | B4 |
+| F511 | core-03 | core | Two sRGB decode ports disagree on NaN: exa_world presets::srgb_to_linear sends NaN to the power branch, while exa_assets human_skin::srgb_decode (wide > 0.04045) sends NaN to the linear branch. Only one can match the original's COMISD/JBE. | B4 |
+| F512 | core-03 | core | exa_render::material::linear and linear_rgb (used for material and light colours in material_state, gi.rs and shader_uniforms) use powf(2.4) where the original uses the engine's fast ln/exp, so the results differ in the low bits from the original's linearised colours. | B4 |
+| F513 | core-03 | core | exa_game item_icon_render has its own srgb_to_linear/linear_to_srgb with powf and round, rather than the engine's fast curves (it may not correspond to an original routine). | B4 |
+| F514 | core-03 | core | text::title_case (which matches the original is unused, while the help/manual path uses exa_ui text_layout::title_case and hw_config::title_case, which also lower-case letters and replace underscores. Worth checking that the manual's caller really wants that behaviour. | B4 |
+
+| F515 | runtime-05 | runtime | exa_ui::gui_core::DOUBLE_CLICK = 450 is the original's.data default before unit init. Retail overwrites it with GetDoubleClickTime (Windows default 500), so GUI double clicks in Exarust have a shorter window than retail. TGUIItemContainer reads the same value. | B4 |
+| F516 | runtime-05 | runtime | No single-instance check: retail finds a running 'Exanima' window, restores it and exits. | B4 |
+| F517 | runtime-05 | runtime | No window icon is set (retail uses the MAINICON resource). | B4 |
+| F518 | runtime-05 | runtime | The live user folder (exarust::user_settings::folder) ignores <root>/Userdata and the project name. The ported user_folder rules in exa_rpk::project and exa_formats::settings_ini have no non-test caller. | B4 |
+| F519 | runtime-05 | runtime | exa_game::window::fit_window (the work-area fit) has no non-test caller. | B4 |
+| F520 | audio-01 | audio | Listener mismatch: rodio pans around the camera's SpatialListener (viewer.rs) and heard_gain uses anchor + camera-up x 3 m. The original sends AL listener = anchor + x 300 with orientation,, and no in-game writer of is known. Panning and distance gain may differ in third person | B4 |
+| F521 | audio-01 | audio | finish_voice (play out, then free) has no live caller. The force-effect ports (blast_sound, dome_sound, shell_hum) call free_handle at their end, so a playing one-shot is cut where the original lets it finish | B4 |
+| F522 | audio-01 | audio | Ambience one-shot distance draws from a stand-in Lcg rather than the FPC RTL Random stream (an undocumented adaptation, no DEC entry) | B4 |
+| F523 | audio-01 | audio | LoopSources (loops.rs, the per-character held/voice/foley loop handles) is exported but has no live user. The body post-step's looping voices stay missing | B4 |
+| F524 | audio-01 | audio | Original quirk, not an Exarust bug: is passed the buffer-table index but queries alGetBufferi as if it were the AL buffer name. Exarust reads the indexed record's own length, which matches only while AL ids and table slots coincide | B4 |
+| F525 | combat-01 | combat | Spray jets are dropped on a door level change (reset_sprays listens to LevelChangeRequest teardown), but the original keeps them because its door path skips the world teardown | B4 |
+| F526 | combat-01 | combat | WeaponBlood spot scale/inv are filled from Blade.length (the item record length) with length_b = 0, not from the node's bbox top (c.y + e.y); nothing reads them today, but they would be wrong if anything used them | B4 |
+| F527 | combat-01 | combat | Stain Fade input is always 0, so the original's per-node fade toward white is not reproduced | B4 |
+
+| F528 | runtime-01 | runtime | exa_ui::gui_core::DOUBLE_CLICK = 450 is the static value of retail global. The always-run OS unit init overwrites that global with GetDoubleClickTime (500 ms by default), so Exarust's GUI double-click window is 50 ms shorter than retail. exa_game::player_controls already uses 500 | B4 |
+| F529 | runtime-01 | runtime | The pad is read once per frame in PreUpdate. Retail runs the gameplay pad frame both from the camera frame driver and from the per-tick player poll, so edges and step repeats are taken per sim tick | B4 |
+| F530 | runtime-01 | runtime | PlayPad step repeat (300 ms) and Powers hold (500 ms) use Time<Real>. Retail uses the sim clock, which stops while paused and advances 12 ms per tick | B4 |
+| F531 | runtime-01 | runtime | PlayContext.raw_aim is never set by read_pad, so the aim-stick look path from TPlayerBehaviour) is never driven | B4 |
+| F532 | runtime-01 | runtime | The variant swap's menu-layer select with mode 0: block/spectate) has no counterpart, so a blocked or spectating player's pad is not switched to the menu set | B4 |
+| F533 | runtime-01 | runtime | The Alt+Enter toggle always goes borderless. Retail restores the settings' display mode when ScreenWidth/Height differ from the desktop, and fits/centres the framed window in the work area on the way back | B4 |
+| F534 | runtime-01 | runtime | form_input::drive sends only left-button presses to the GUI. There are no modifier bits (Ctrl 0x40, Shift 0x20, Alt 0x80) and no middle or right button press to the GUI root, | B4 |
+| F535 | runtime-04 | runtime | exa_game::window::ADAPTIVE_VSYNC = true: with vsync on, Exarust presents AutoVsync/FifoRelaxed. The original always uses swap interval 1 (Fifo), because its adaptive switch is only read and never written. The window.rs comment explains this was kept for frame time, but there is no DEC entry; row is partial | B4 |
+| F536 | runtime-04 | runtime | Frame pacing is off by default in Exarust (frame_loop.rs: 'no frame is slowed by default'), while retail's FPSLimit default of -1 paces automatically; no DEC entry | B4 |
+| F537 | runtime-04 | runtime | No single-instance guard: retail finds an existing 'Exanima' window, restores it and exits; Exarust starts a second instance | B4 |
+| F538 | runtime-04 | runtime | Settings Touchscreen (sets root GUI = 7) and StereoMode are parsed but nothing reads them | B4 |
+| F539 | runtime-04 | runtime | The ViewportStack model (exa_render::view) has no non-test caller; GUI clipping uses flat per-layer clip rects with no nesting, overflow or underflow log | B4 |
+| F540 | runtime-04 | runtime | is a split artefact: the 'code pointer' at is the WGL attribute value 0x2010. Its bytes are the tails of the Touchscreen setter and the StereoMode setter, so the function table may also lack rows for and | B4 |
+
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers
 a power yet"); the GI texture cache and `follow_camera` comments; the

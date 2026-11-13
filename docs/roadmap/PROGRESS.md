@@ -16,9 +16,9 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **46.66%** | **100%** |
-| Ledger: functions audited | — | 5,891 of 6,478 | 6,478 |
-| Ledger: audit packages accepted | — | 78 of 90 | 90 |
+| **Ledger: bytes in a final state** | — | **48.41%** | **100%** |
+| Ledger: functions audited | — | 6,478 of 6,478 | 6,478 |
+| Ledger: audit packages accepted | — | 89 of 90 | 90 |
 | Live rows with scene or retail evidence | — | not measured | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
@@ -48,10 +48,10 @@ State: `todo`, `doing`, `done`, `blocked`.
 | A1 | Ledger skeleton and packages | done | 8,783 rows, 90 packages (2026-11-12) |
 | A2 | Reachability, second pass | done | walk through unit init, class tables, data blocks, callbacks and unwind handlers; dead candidates 740 → 49 functions (8 KB); the editor is wholly unreached; exceptions all explained (RTL libraries, never-constructed base classes) |
 | A3 | Audit brief and three pilot packages | done | 3 pilots in 7-9 min and 136k-256k tokens each; brief and tools improved; Phase A now estimated at 25-30M tokens |
-| A4 | Audit packages | doing | 54 of 90 audited; two rejected packages (characters-01, characters-03) redone and accepted; brief gained the driven-state and empty-input rules |
+| A4 | Audit packages | doing | 89 of 90 accepted; core-03 being redone. Five packages were rejected and redone (characters-01, characters-03, items-03, physics-05, core-03) and two were settled by a second review (physics-01, ai-04) |
 | A5 | Review of each package | doing | 2 rejections so far, both for live rows whose state or input nothing live supplies |
-| A6 | Coverage computed from the ledger | todo | |
-| A7 | Check the excluded code | todo | 1,343 not-applicable, 933 engine rows |
+| A6 | Coverage computed from the ledger | doing | |
+| A7 | Check the excluded code | doing | 1,343 not-applicable, 933 engine rows |
 | A8 | Phase B work list | todo | |
 
 ### Phase B ([detail](phase-b-close.md))
@@ -62,7 +62,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 | B0.2 | Level-exit save position | doing | the save was right; the arrival was wrong (the simulation kept the old level's coordinates). Fixed on a lane; round 204 waits for the GPU smoke |
 | B0.3 | Control Mind end frame writes | todo | |
 | B0.4 | Torrent stream in lockstep | todo | |
-| B0.5 | New game creates no save slot; arena saves dropped | doing | found by audit modes-03 |
+| B0.5 | New game creates no save slot; arena saves dropped | doing | all four claims real and fixed on a lane (slot at session begin, arena saves, quit save, alarm and journal); round 205 stacks on 204 and waits for the GPU |
 | B1 | Wire the uncalled | todo | size after A8 |
 | B2 | Reclassify the engine-replaced | todo | |
 | B3 | Close the unreachable | todo | |
@@ -109,13 +109,13 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | World, levels & terrain | 5 | 5 | 172 | 88,138 |
 | Items, materials & crafting | 5 | 5 | 186 | 86,750 |
 | Data, assets & I/O | 6 | 6 | 162 | 46,004 |
-| Core, math & threading | 3 | 0 | 206 | 34,550 |
-| Runtime & platform | 5 | 0 | 344 | 33,789 |
-| Audio | 1 | 0 | 58 | 18,534 |
-| Script, dialogue & story | 2 | 1 | 35 | 7,554 |
-| Combat, weapons & damage | 1 | 0 | 14 | 3,229 |
-| Other, tools & editor | 1 | 0 | 5 | 468 |
-| **Total** | **90** | **78** | **3,099** | **1,339,679** |
+| Runtime & platform | 5 | 5 | 81 | 24,381 |
+| Core, math & threading | 3 | 2 | 95 | 16,750 |
+| Script, dialogue & story | 2 | 2 | 35 | 7,554 |
+| Audio | 1 | 1 | 7 | 3,295 |
+| Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
+| Other, tools & editor | 1 | 1 | 0 | 0 |
+| **Total** | **90** | **89** | **2,660** | **1,295,736** |
 
 ## Open decisions
 
