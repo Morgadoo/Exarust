@@ -2157,6 +2157,15 @@ zone's nearer side) before the floor cast. The saves' screen raises the
 (`slots::offers_portal_reset`); its Yes deletes the file the select read and
 drops a slot left without a checkpoint (`SlotList::reset_to_portal`), and
 `--portal-reset yes|no` answers it.
+A level change without a flow placement stands the arriving player on the
+destination's arrival marker (`level_change::LevelArrival`, the entrance
+and the left level's `locales.rdb` id; `level_change::arrival_placement`,
+the last transition marker naming both), as the original's level-change
+load does, and posts it to the simulation once the collision is in (a body
+carried by its root goes with the root; the old level's follow is dropped). The level exit's save is
+written before the destination loads, so it records the level being left
+and the player in its exit; a continue of it stands there (a save load
+names no level left) and the nudge moves it out.
 A plain teardown (the menu's creator or save screens, a session leave)
 takes the surviving player's body out of the scene (`level_change::OutOfWorld`:
 out of the solver and the character ticks, hidden) until a level is in

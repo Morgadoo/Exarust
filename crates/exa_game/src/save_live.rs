@@ -3151,6 +3151,109 @@ mod tests {
         assert_eq!(back.profession() & 0x0000_FF00, 0);
     }
 
+    /// The level exit's save: the original writes it before the
+    /// destination loads, so it records the level being left (its locale
+    /// and its own section), not the destination. In one frame the exit's
+    /// save step and its change request run; the save holds `exanima03`,
+    /// the level the player stands in, and not `exanima04`.
+    #[test]
+    fn the_exit_save_records_the_level_being_left() {
+        let dir = folder("exit-save");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        let level = app
+            .world_mut()
+            .spawn(exa_world::LevelRoot {
+                name: "exanima02.rfc".to_string(),
+            })
+            .id();
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        // The player walked on to the next level and now takes its exit.
+        app.world_mut().despawn(level);
+        app.world_mut().spawn(exa_world::LevelRoot {
+            name: "exanima03.rfc".to_string(),
+        });
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: false,
+        });
+        app.world_mut()
+            .write_message(exa_world::level_lifecycle::LevelChangeRequest::change(
+                "exanima04",
+                0,
+            ));
+        app.update();
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(list.any());
+        let restored = restore_story(&mut list, number, false).unwrap();
+        assert_eq!(restored.kind, SlotKind::Save);
+        assert_eq!(restored.level, "exanima03");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The exit save keeps the player where it stood, inside the exit zone
+    /// of the level it left. Its continue loads that level at the saved
+    /// position (the original's save load names no level it came from, so
+    /// no arrival marker applies) and the continue's nudge moves the player
+    /// out of the exit before it stands on the floor.
+    #[test]
+    fn a_continue_after_an_exit_save_stands_in_the_level_left_out_of_its_exit() {
+        let dir = folder("exit-continue");
+        let mut lists = SlotLists::new(&dir);
+        // The player in `exanima01`'s exit to `exanima02` (centimetres).
+        let player = StoryPlayer {
+            record: CharacterRecord::reset(),
+            position_cm: [-901.0, 20.0, -9980.0],
+            heading: 0.5,
+        };
+        let career = crate::hub_windows::ArenaCareer::default();
+        let mut session = live_session(Some("exanima01.rfc"), 60, &career, &ArenaStores::default());
+        let export = story_player_world(
+            &player,
+            &mut session,
+            &exa_formats::objdb::ObjectDb::default(),
+        )
+        .unwrap();
+        let number = save_new_slot(
+            &mut lists.story,
+            &session,
+            Some("Ash"),
+            &export.save_world(None, false),
+        )
+        .unwrap()
+        .unwrap();
+        let mut list = SlotList::new(Slots::story(&dir));
+        let restored = restore_story(&mut list, number, false).unwrap();
+        assert_eq!(restored.level, "exanima01");
+        let at = crate::level_change::PlayerPlacement::of_flow(&restored.placement.unwrap());
+        assert!((at.position - Vec3::new(-9.01, 0.2, -99.8)).length() < 1e-4);
+        let exit = exa_world::ExitVolume {
+            bounds: exa_physics::intersect::Obb::axis_aligned(
+                Vec3::new(-901.01166, 100.42999, -9980.086),
+                Vec3::new(225.0, 150.0, 225.0),
+            ),
+            radius: 350.0,
+            exit: exa_formats::objdb::LevelExit {
+                level: 3,
+                entrance: 0,
+                flagged: false,
+            },
+            destination: Some("exanima02".into()),
+            name: ">exanima02".into(),
+        };
+        let (moved, _, nudge) =
+            crate::level_change::nudge_out_of_exits(at.position, std::slice::from_ref(&exit))
+                .unwrap();
+        // Out past the box's nearer side by 75 cm.
+        assert!(nudge.distance > 75.0);
+        assert!(crate::level_change::nudge_out_of_exits(moved, &[exit]).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_plugin_saves_on_request_only_with_a_folder() {
         let dir = folder("plugin");
