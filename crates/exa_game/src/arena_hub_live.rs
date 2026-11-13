@@ -153,6 +153,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<HubRoll>()
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
+            .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::arsenal_view::OpenArsenal>()
             .add_message::<OpenHubShop>()
             .add_message::<bevy::input::keyboard::KeyboardInput>()
@@ -183,7 +184,7 @@ impl Plugin for ArenaHubPlugin {
                     crate::hub_windows::sync_hub_screen,
                     crate::arsenal::load_shelf_kinds,
                     enter_loaded_hub,
-                    auto_rematch,
+                    auto_rematch.before(crate::save_live::SaveLiveSystems::Steps),
                     crate::hub_forms::open_hub_window_on_load,
                     crate::hub_forms::hub_employee_kit_on_load,
                     crate::hub_forms::hub_arsenal_on_load,
@@ -195,7 +196,9 @@ impl Plugin for ArenaHubPlugin {
                         .chain(),
                     crate::loadout_kit::kit_input,
                     crate::loadout_kit::sync_kit,
-                    hub_clicks,
+                    // The Begin's save runs in the same frame, before the
+                    // launch's level change tears the hub down.
+                    hub_clicks.before(crate::save_live::SaveLiveSystems::Steps),
                     scripted_shop,
                     hub_restock,
                     hub_session_fall,
@@ -824,6 +827,7 @@ fn auto_rematch(
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     flow: Option<Res<Flow>>,
     mut launches: MessageWriter<ArenaMatchLaunch>,
+    mut saves: MessageWriter<crate::save_live::SaveStep>,
 ) {
     if !auto.is_some_and(|auto| auto.0) {
         return;
@@ -877,6 +881,10 @@ fn auto_rematch(
             "arena auto: rematch of template {} with slots {:?}",
             launch.template, board.team
         );
+        // The rematch saves the career as the board's Begin does.
+        saves.write(crate::save_live::SaveStep::Save {
+            drop_on_low_health: false,
+        });
         launches.write(launch);
         hub.busy = true;
     }
@@ -1463,7 +1471,10 @@ fn hub_clicks(
     mut windows: ResMut<HubWindows>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut shop: HubShop,
-    mut launches: MessageWriter<ArenaMatchLaunch>,
+    (mut launches, mut saves): (
+        MessageWriter<ArenaMatchLaunch>,
+        MessageWriter<crate::save_live::SaveStep>,
+    ),
     (mut last, mut rematch): (ResMut<LastHubClick>, ResMut<ArenaRematch>),
 ) {
     let hub_loaded = levels.iter().any(|root| is_hub_level(&root.name));
@@ -1532,6 +1543,12 @@ fn hub_clicks(
                                     if let Some(departure) = career.company.leave_before_match() {
                                         info!("arena begin: specialist left ({departure:?})");
                                     }
+                                    // The Begin saves the career (without
+                                    // the death rule) before the launch
+                                    // goes behind the transition.
+                                    saves.write(crate::save_live::SaveStep::Save {
+                                        drop_on_low_health: false,
+                                    });
                                     launches.write(launch);
                                     // The match the auto switch replays.
                                     rematch.board = Some(board);
@@ -2120,6 +2137,56 @@ mod tests {
     use crate::arena_hub::same_name;
     use crate::hand::Hit;
     use crate::hub_windows::HubWindowKind;
+
+    /// The auto switch's rematch saves the career before its launch, as
+    /// the board's Begin does.
+    #[test]
+    fn the_rematch_saves_the_career_before_it_launches() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.start_new_career();
+        let mut windows = HubWindows::default();
+        windows.open_board(&career);
+        let board = windows.board.clone().expect("the board opens");
+        let mut timers = crate::frame_timers::FrameTimers::new(0);
+        let id = timers.add(1, crate::frame_timers::TimerUser::ArenaRematch);
+        timers.run(10_000);
+        assert!(timers.fired(id));
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<ArenaMatchLaunch>()
+            .add_message::<crate::save_live::SaveStep>()
+            .insert_resource(crate::arena_live::ArenaAutoContinue(true))
+            .insert_resource(ArenaHub {
+                entered: true,
+                ..Default::default()
+            })
+            .insert_resource(timers)
+            .insert_resource(ArenaRematch {
+                board: Some(board),
+                timer: Some(id),
+                scheduled: true,
+            })
+            .insert_resource(career)
+            .add_systems(Update, auto_rematch);
+        app.update();
+        let launches = app
+            .world_mut()
+            .resource_mut::<Messages<ArenaMatchLaunch>>()
+            .drain()
+            .count();
+        let saves: Vec<crate::save_live::SaveStep> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::save_live::SaveStep>>()
+            .drain()
+            .collect();
+        assert_eq!(launches, 1);
+        assert_eq!(
+            saves,
+            vec![crate::save_live::SaveStep::Save {
+                drop_on_low_health: false
+            }]
+        );
+    }
 
     #[test]
     fn the_rematch_takes_the_combatants_after_the_manager() {

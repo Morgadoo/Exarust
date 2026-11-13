@@ -1349,6 +1349,9 @@ pub enum Step {
     },
     /// Delete the current slot's save.
     DropSave,
+    /// The new game's empty slot in the mode's manager, which becomes the
+    /// current slot the session's saves write.
+    NewSlot,
     /// Close the save manager's open package.
     CloseSave,
     /// Keep the save just written as the checkpoint.
@@ -3062,6 +3065,12 @@ impl Flow {
     /// first here.
     pub fn begin_session(&mut self, mut starter: Vec<Step>) -> Vec<Step> {
         self.phase = Phase::Playing;
+        // A new story or career first makes its empty slot in the mode's
+        // manager, before the mode's start; practice and the scripted modes
+        // make none.
+        if matches!(self.mode, Mode::Story | Mode::Arena) {
+            starter.insert(0, Step::NewSlot);
+        }
         // The begin itself does not touch the menu form: the starter's level
         // load hides it (see `Step::LoadLevel`).
         self.menu_open = false;
@@ -4517,6 +4526,9 @@ fn apply_steps(
             }
             Step::DropSave => {
                 out.saves.write(crate::save_live::SaveStep::Drop);
+            }
+            Step::NewSlot => {
+                out.saves.write(crate::save_live::SaveStep::NewSlot);
             }
             Step::PreparePlayerKit => {
                 for mut player in &mut players {
@@ -6977,9 +6989,11 @@ mod tests {
             spawn: 0,
             teardown: true,
         }]);
+        // A new story's begin makes its slot first.
         assert_eq!(
             steps,
             vec![
+                Step::NewSlot,
                 Step::LoadLevel {
                     locale: "exanima01",
                     spawn: 0,

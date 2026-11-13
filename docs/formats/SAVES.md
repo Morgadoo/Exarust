@@ -173,6 +173,20 @@ nothing); creating one puts the new slot at the front.
 that no slot uses (numbers above the length do not reserve anything), or
 one past the length when all are taken. It is named after the current
 player, its package is created empty, and it becomes the current slot.
+The session begin of a new story (game mode 4) creates one in the story
+manager and of a new career (mode 8) in the arena manager, before the
+mode's start; practice creates none. The story's begin keeps its start
+background word across the creation.
+
+**Which saves write where.** The writer always writes the current manager's
+current slot (the mode switch sets the current manager). The arena saves at
+the board's Begin and the auto rematch (before the launch), and at the
+quit: the quit hook (run when the application closes while the session
+plays) saves the story with the death rule; in the arena it reads the menu
+form's page: the in-game page saves, the arena's pause page forfeits the
+match and then writes the player data alone with the locale `arenahub`
+(no world databases, no level section, no promotion pass), unless the
+manager has fallen.
 
 **Deleting a slot** (by index in the list) closes the package, logs the
 index, deletes the `.rsg` and then the `.rcp`, and shifts the rest down.
@@ -245,8 +259,8 @@ original's character section stores each character's health into its
 record, flushes and writes the local database when it holds a record, then
 each placement (`0xCAC0CA00`: the record's id, the body's x, floor and z,
 heading, condition, then the pose for a dead body and the AI home and motion
-in save mode). The props, doors, the settings chunk's live words and a
-character's pose, motion and home are the loaded section's. A load imports the
+in save mode). The props, doors and a character's pose, motion and home
+are the loaded section's; the settings chunk carries the live golem alarm. A load imports the
 save's section instead of the archive's file
 (`exa_world::SavedLevelSection`, `LevelLoad::begin_from`) and migrates the
 whole local tier, as every import does.
@@ -416,6 +430,16 @@ zero: the slot is neither listed nor loaded.
   otherwise the current one: a zero, `1 100 000.0`, a zero) and the two
   words the settings store carries. `rfc_write::export_save_level` appends it after
   the scene's chunk tree.
+  The four globals behind it are the golem alarm's (established in the
+  assembly: the alarm trigger sets the gate byte, stores the zone's pass
+  word and the twelve-byte point and adds one to the count; the writer and
+  the settings hook are the only other users): the "old tag" gate is the
+  armed flag, the tag is the armed point (three floats; the reset point
+  `0, 1 100 000, 0` while disarmed), the first word the armed zone's pass
+  and the saved word the alarm count. The reader sets the armed flag when
+  the point's height is under `1 000 000.0`. Exarust writes the live alarm
+  (`GolemAlarm::saved_settings`) and restores it when a level is read from
+  a save's own section (`golem_alarm::restore_saved_alarm`).
 
 ### Chunks
 
