@@ -29,17 +29,22 @@
 //!   Form drains the spirit's focus each tick; at its end the spirit screen
 //!   fades and the transition screen brings the player home
 //!   ([`spirit_home`]).
-//! - **Possession** ([`possess`]): the caster's behaviour is held (its
-//!   locomotion stilled, as the combatant's step clear does), the target's
-//!   AI behaviour is set aside and the target gets a new player behaviour
-//!   whose aim is the caster's; the player root's markers move to the
-//!   target's root (the camera follows on the next frame, as the original's
-//!   queued camera call); the caster keeps [`HANDED_OVER`], the target gains
-//!   [`IN_CONTROL`] and the possession marker. **Release** ([`release`]) at
-//!   the transition's black: the target's status becomes the caster's less
-//!   the control bits (the original's own write), the caster's loses
-//!   [`HANDED_OVER`], the target's AI comes back and the caster's
-//!   behaviour runs again.
+//! - **Possession** ([`possess`], on the world that walks the powers, as
+//!   the original's swap runs on its simulation thread): the caster's
+//!   behaviour is held (its locomotion stilled, as the combatant's step
+//!   clear does), the target's AI behaviour is set aside and the target gets
+//!   a new player behaviour whose aim is the caster's; the player marker
+//!   moves to the target's root; the caster keeps [`HANDED_OVER`], the
+//!   target gains [`IN_CONTROL`] and the possession marker. Its frame part
+//!   ([`possess_view`], sent to the frame as the original posts its frame
+//!   callback) closes the GUI's forms and moves the rooms' anchor (the
+//!   camera follows the marker on the next frame). **Release** ([`release`])
+//!   at the transition's black, on the frame: the GUI's forms close, the
+//!   rooms' anchor goes back, and the hand-back ([`hand_back`]) is posted to
+//!   the next step, as the original posts it to its simulation thread's
+//!   ring: the target's status becomes the caster's less the control bits
+//!   (the original's own write), the caster's loses [`HANDED_OVER`], the
+//!   target's AI comes back and the caster's behaviour runs again.
 //! - **Spirit Form**: the cast asks the spirit body ([`SpiritBodyAsked`]):
 //!   a new record of race byte 14 placed 60 cm along the caster's facing on
 //!   its ground height. The game builds it and marks it [`SpiritOf`];
@@ -924,16 +929,13 @@ pub fn tick_minds(
     for action in actions {
         let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
         match action {
-            // The handover and the hand-back's transition are the frame's:
-            // they move the player behaviour and the view and write the
-            // control state the frame keeps, so behind the bridge they run
-            // on the frame's world after the step.
+            // The hand-back's transition is the frame's (it runs on the
+            // real clock), so behind the bridge it starts on the frame's
+            // world after the step.
+            // The swap runs here, on the world that walks the powers; it
+            // sends its frame part on.
             MindAction::Possess { caster, target } => {
-                let run = move |world: &mut World| possess(world, caster, target);
-                match frame.as_deref_mut() {
-                    Some(frame) => frame.send(run),
-                    None => commands.queue(run),
-                }
+                commands.queue(move |world: &mut World| possess(world, caster, target));
             }
             MindAction::BeginRelease { caster, target } => {
                 let run = move |world: &mut World| {
@@ -1264,19 +1266,42 @@ fn root_of(world: &World, body: Entity) -> Option<Entity> {
 /// Moves the player root's markers (the player, the rooms' anchor) from
 /// one body's root to another's.
 fn move_player_root(world: &mut World, from: Entity, to: Entity) {
+    move_root_marker::<Player>(world, from, to);
+    move_root_marker::<exa_world::room_view::RoomAnchor>(world, from, to);
+}
+
+/// Moves a marker of the player root from one body's root to another's,
+/// when the first root carries it.
+fn move_root_marker<M: Component>(world: &mut World, from: Entity, to: Entity) {
     let (Some(from_root), Some(to_root)) = (root_of(world, from), root_of(world, to)) else {
         return;
     };
     if from_root == to_root {
         return;
     }
-    let mut old = world.entity_mut(from_root);
-    let anchored = old.contains::<exa_world::room_view::RoomAnchor>();
-    old.remove::<(Player, exa_world::room_view::RoomAnchor)>();
-    let mut new = world.entity_mut(to_root);
-    new.insert(Player);
-    if anchored {
-        new.insert(exa_world::room_view::RoomAnchor);
+    if let Some(marker) = world.entity_mut(from_root).take::<M>() {
+        world.entity_mut(to_root).insert(marker);
+    }
+}
+
+/// Runs `change` on the world whose step comes next: posted to the next
+/// fixed step when there is a queue (behind the bridge the simulation's,
+/// as the original posts the call to its simulation thread's ring), else
+/// now (a bare world).
+fn on_step(world: &mut World, change: impl FnOnce(&mut World) + Send + 'static) {
+    match world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
+        Some(mut fixed) => fixed.post(change),
+        None => change(world),
+    }
+}
+
+/// Runs `change` on the frame's world: from the step it is sent there
+/// after the step (behind the bridge after the step's copy out), else (a
+/// bare world) it runs now.
+fn on_frame(world: &mut World, change: impl FnOnce(&mut World) + Send + 'static) {
+    match world.get_resource_mut::<exa_physics::sim_app::FrameCommands>() {
+        Some(mut frame) => frame.send(change),
+        None => change(world),
     }
 }
 
@@ -1305,20 +1330,19 @@ fn resume_player(world: &mut World, body: Entity) {
     }
 }
 
-/// Control Mind's handover: the target becomes the player's body.
+/// Control Mind's handover: the target becomes the player's body. It runs
+/// on the world that walks the powers (behind the bridge the
+/// simulation's), as the original's swap runs inside the power's step on
+/// its simulation thread: the minds, the held behaviours, the new player
+/// behaviour and the player marker change there, so no copy of them made by
+/// the frame before the swap can undo it. The swap's frame part (the GUI's
+/// sweep, the rooms' anchor, the held body the frame keeps) is sent to the
+/// frame, as the original posts its frame callback ([`possess_view`]).
 pub fn possess(world: &mut World, caster: Entity, target: Entity) {
     if world.get_entity(caster).is_err() || world.get_entity(target).is_err() {
         return;
     }
-    // The handover first sweeps the GUI's forms: the inventory, container,
-    // journal and loot windows close, then the power tree closes, or the
-    // shown bar falls.
-    crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::ContainerFamily);
-    // The status bits and the marker are written on the world that walks
-    // the powers (see `on_power_walk`).
-    on_power_walk(world, false, move |world: &mut World| {
-        possess_minds(world, caster, target);
-    });
+    possess_minds(world, caster, target);
     let aim = hold_player(world, caster);
     // The target's AI behaviour is set aside, held.
     let mut entity = world.entity_mut(target);
@@ -1333,9 +1357,21 @@ pub fn possess(world: &mut World, caster: Entity, target: Entity) {
         player.aim = aim;
     }
     entity.insert((held, player));
-    move_player_root(world, caster, target);
-    world.resource_mut::<MindControl>().held = Some(caster);
+    move_root_marker::<Player>(world, caster, target);
     info!("control mind: the player takes {target:?}; {caster:?} is held");
+    on_frame(world, move |world: &mut World| {
+        possess_view(world, caster, target);
+    });
+}
+
+/// The handover's frame part: the GUI's forms close (the inventory,
+/// container, journal and loot windows, then the power tree, or the shown
+/// bar falls), the rooms' anchor moves to the target's root and the frame
+/// keeps the held body.
+pub fn possess_view(world: &mut World, caster: Entity, target: Entity) {
+    crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::ContainerFamily);
+    move_root_marker::<exa_world::room_view::RoomAnchor>(world, caster, target);
+    world.resource_mut::<MindControl>().held = Some(caster);
 }
 
 /// The handover's minds: the caster keeps [`HANDED_OVER`], the target
@@ -1371,14 +1407,30 @@ fn release_minds(world: &mut World, caster: Entity, target: Entity) {
     info!("control mind: {caster:?}'s and {target:?}'s status words are handed back");
 }
 
-/// Control Mind's hand-back, at the transition's black.
+/// Control Mind's hand-back, at the transition's black (the frame's): the
+/// GUI's forms close, the rooms' anchor goes back to the caster's root and
+/// the frame forgets the held body; the hand-back itself ([`hand_back`]) is
+/// posted to the world that walks the powers, run at the start of its next
+/// step, as the original's transition callback posts it to its simulation
+/// thread's ring. Run on the frame's copies, it wrote the held duellist and
+/// player behaviour over a free-running simulation's newer values.
 pub fn release(world: &mut World, caster: Entity, target: Entity) {
-    // The hand-back sweeps the GUI's forms first, as the handover does.
     crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::ContainerFamily);
-    // The status words are written on the world that walks the powers.
-    on_power_walk(world, false, move |world: &mut World| {
-        release_minds(world, caster, target);
+    if world.get_entity(caster).is_ok() && world.get_entity(target).is_ok() {
+        move_root_marker::<exa_world::room_view::RoomAnchor>(world, target, caster);
+    }
+    world.resource_mut::<MindControl>().held = None;
+    on_step(world, move |world: &mut World| {
+        hand_back(world, caster, target)
     });
+}
+
+/// The hand-back, on the world that walks the powers: the status words
+/// ([`release_minds`]), the target's AI back and its player behaviour
+/// gone, the caster's behaviour running again and the player marker back on
+/// the caster's root.
+pub fn hand_back(world: &mut World, caster: Entity, target: Entity) {
+    release_minds(world, caster, target);
     if world.get_entity(target).is_ok() {
         let mut entity = world.entity_mut(target);
         entity.remove::<PlayerBody>();
@@ -1397,10 +1449,9 @@ pub fn release(world: &mut World, caster: Entity, target: Entity) {
     if world.get_entity(caster).is_ok() {
         resume_player(world, caster);
         if world.get_entity(target).is_ok() {
-            move_player_root(world, target, caster);
+            move_root_marker::<Player>(world, target, caster);
         }
     }
-    world.resource_mut::<MindControl>().held = None;
     info!("control mind: the player is back in {caster:?}; {target:?} has its own mind");
 }
 
@@ -2147,9 +2198,10 @@ mod tests {
         assert_eq!(world.resource::<MindControl>().held, None);
     }
 
-    /// Behind the bridge the handover, the hand-back and the spirit's end
-    /// write no mind on the frame: each posts its status words (and the
-    /// handover its marker) to the world that walks the powers.
+    /// Behind the bridge the handover runs on the world that walks the
+    /// powers and writes its minds there at once; the hand-back at the
+    /// transition's black writes nothing of the bodies on the frame and
+    /// posts itself to the step; the spirit's end posts its status word.
     #[test]
     fn behind_the_bridge_the_control_writes_its_minds_on_the_step() {
         let mut world = world();
@@ -2160,11 +2212,12 @@ mod tests {
         let target = character(&mut world, false);
         possess(&mut world, caster, target);
         assert!(world.get::<PlayerBody>(target).is_some());
+        assert_eq!(status_of(&world, caster), HANDED_OVER);
+        assert_eq!(status_of(&world, target), IN_CONTROL);
         assert_eq!(
-            (status_of(&world, caster), status_of(&world, target)),
-            (0, 0)
+            world.get::<MindBody>(target).unwrap().powers[0].id,
+            POSSESSION_MARK
         );
-        assert!(world.get::<MindBody>(target).unwrap().powers.is_empty());
         let run_posts = |world: &mut World| {
             let posts = world
                 .resource_mut::<exa_physics::sim_app::FixedCommands>()
@@ -2175,17 +2228,20 @@ mod tests {
             }
             n
         };
-        assert_eq!(run_posts(&mut world), 1);
-        assert_eq!(status_of(&world, caster), HANDED_OVER);
-        assert_eq!(status_of(&world, target), IN_CONTROL);
-        assert_eq!(
-            world.get::<MindBody>(target).unwrap().powers[0].id,
-            POSSESSION_MARK
-        );
+        assert_eq!(run_posts(&mut world), 0);
         release(&mut world, caster, target);
-        assert!(world.get::<PlayerBody>(caster).is_some());
+        // The frame's part only: the bodies and the words wait for the step.
+        assert!(world.get::<PlayerBody>(caster).is_none());
+        assert!(world.get::<PlayerBody>(target).is_some());
+        assert!(world.get::<Duellist>(target).is_none());
         assert_eq!(status_of(&world, caster), HANDED_OVER);
+        assert_eq!(world.resource::<MindControl>().held, None);
         assert_eq!(run_posts(&mut world), 1);
+        assert!(world.get::<PlayerBody>(caster).is_some());
+        assert!(world.get::<PlayerBody>(target).is_none());
+        assert!(world.get::<Duellist>(target).is_some());
+        let caster_root = root_of(&world, caster).unwrap();
+        assert!(world.get::<Player>(caster_root).is_some());
         assert_eq!(
             (status_of(&world, caster), status_of(&world, target)),
             (0, HANDED_OVER)
@@ -2197,6 +2253,111 @@ mod tests {
         assert_eq!(status_of(&world, caster), HANDED_OVER);
         assert_eq!(run_posts(&mut world), 1);
         assert_eq!(status_of(&world, caster), 0);
+    }
+
+    /// Each step a duellist's roll counts up (the AI's draws) and a player
+    /// behaviour's aim turns (the player's cursor).
+    fn behave(mut duellists: Query<&mut Duellist>, mut players: Query<&mut PlayerBody>) {
+        for mut duellist in &mut duellists {
+            duellist.roll = duellist.roll.wrapping_add(1);
+        }
+        for mut player in &mut players {
+            player.aim += 1.0;
+        }
+    }
+
+    /// Bevy's real time and frame pacing for a free simulation: frames of
+    /// about `frame_ms`, for `ms`, calling `each` after every frame.
+    fn run_free(app: &mut App, ms: u64, frame_ms: u64, mut each: impl FnMut(&mut App)) {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < until {
+            app.update();
+            each(app);
+            std::thread::sleep(std::time::Duration::from_millis(frame_ms));
+        }
+    }
+
+    /// A Control Mind run against a free-running simulation (B0.3): the
+    /// swap on the step, the hand-back posted from the frame at the
+    /// transition's black. The frame never writes the held duellist or the
+    /// caster's player behaviour over the simulation's newer values, so the
+    /// roll and the aim the frame sees never go back, and both bodies end
+    /// as one world leaves them.
+    #[test]
+    fn a_free_simulation_keeps_the_control_minds_end() {
+        use exa_physics::sim_app::{FixedCommands, SimMode, SimPause, SimShellPlugin};
+        use exa_physics::sim_bridge::{SimBridgeAppExt, SimBridgePlugin};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<MindControl>()
+            .add_systems(FixedUpdate, behave);
+        exa_physics::sim_app::add_fixed_commands(&mut app);
+        exa_physics::sim_app::add_frame_commands(&mut app);
+        app.add_plugins((
+            SimShellPlugin {
+                mode: SimMode::Free,
+            },
+            SimBridgePlugin { extra: Vec::new() },
+        ))
+        .bridge_copy::<Duellist>()
+        .bridge_copy::<PlayerBody>()
+        .bridge_copy::<HeldBehaviour>()
+        .bridge_copy::<Player>()
+        .bridge_copy::<MindBody>();
+        let caster = character(app.world_mut(), true);
+        let target = character(app.world_mut(), false);
+        app.world_mut().resource_mut::<SimPause>().hold(false);
+        // What the frame saw of the two values, frame after frame.
+        let mut rolls: Vec<u32> = Vec::new();
+        let mut aims: Vec<f32> = Vec::new();
+        let mut watch = |app: &mut App| {
+            let world = app.world();
+            if let Some(d) = world.get::<Duellist>(target) {
+                rolls.push(d.roll);
+            }
+            if let Some(p) = world.get::<PlayerBody>(caster) {
+                aims.push(p.aim);
+            }
+        };
+        // Frames of 30 ms: two or three steps arrive in most frames.
+        run_free(&mut app, 200, 30, &mut watch);
+        // The swap on the step, as the power walk runs it.
+        app.world_mut()
+            .resource_mut::<FixedCommands>()
+            .post(move |world: &mut World| possess(world, caster, target));
+        run_free(&mut app, 300, 30, &mut watch);
+        {
+            let world = app.world();
+            assert!(world.get::<PlayerBody>(target).is_some());
+            assert!(world.get::<PlayerBody>(caster).is_none());
+            assert!(world.get::<Duellist>(target).is_none());
+            assert_eq!(world.resource::<MindControl>().held, Some(caster));
+        }
+        let held_roll = app
+            .world()
+            .get::<HeldBehaviour>(target)
+            .and_then(|h| h.duellist.as_ref())
+            .map(|d| d.roll)
+            .unwrap();
+        // The transition's black, on the frame.
+        release(app.world_mut(), caster, target);
+        run_free(&mut app, 400, 30, &mut watch);
+        exa_physics::sim_app::hold_and_drain(app.world_mut());
+        let world = app.world();
+        assert!(world.get::<PlayerBody>(caster).is_some());
+        assert!(world.get::<PlayerBody>(target).is_none());
+        assert!(world.get::<HeldBehaviour>(target).is_none());
+        let roll = world.get::<Duellist>(target).unwrap().roll;
+        assert!(roll > held_roll, "{roll} after the held {held_roll}");
+        assert!(
+            rolls.windows(2).all(|w| w[1] >= w[0]),
+            "the duellist's roll went back: {rolls:?}"
+        );
+        assert!(
+            aims.windows(2).all(|w| w[1] >= w[0]),
+            "the caster's aim went back: {aims:?}"
+        );
+        assert_eq!(world.resource::<exa_physics::sim_app::FreeLink>().gaps, 0);
     }
 
     /// A Mind cast's changes run on the live brain: its values are read off

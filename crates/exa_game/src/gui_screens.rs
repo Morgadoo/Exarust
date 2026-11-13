@@ -1878,19 +1878,27 @@ fn store_containers(
 /// frame, the open popups' contents go into their records (and from there
 /// into the level section the save writes) and the journal keeps its text.
 #[allow(clippy::too_many_arguments)]
-pub fn save_open_screens_for_saves(
+pub fn save_open_screens_for_saves<const AT_QUIT: bool>(
     mut new_slots: MessageReader<crate::save_live::SaveToNewSlot>,
     mut steps: MessageReader<crate::save_live::SaveStep>,
     screens: Option<ResMut<GameScreens>>,
     mut objects: Query<&mut exa_world::ObjectSections>,
     mut items: Option<ResMut<crate::doll_view::DollItems>>,
-    live: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
+    (live, quit): (
+        Option<ResMut<exa_assets::live_objects::LiveObjects>>,
+        Option<Res<crate::save_live::QuitAutosave>>,
+    ),
 ) {
     let new_slot = new_slots.read().count() > 0;
-    let writes = steps
-        .read()
-        .any(|step| !matches!(step, crate::save_live::SaveStep::Drop));
-    if !new_slot && !writes {
+    let writes = steps.read().any(|step| {
+        !matches!(
+            step,
+            crate::save_live::SaveStep::Drop | crate::save_live::SaveStep::NewSlot
+        )
+    });
+    // The frame's and the quit's instances both read every frame; only
+    // the one for the app's state saves ([`crate::save_live::quitting`]).
+    if (!new_slot && !writes) || crate::save_live::quitting(quit) != AT_QUIT {
         return;
     }
     let (Some(mut screens), Some(mut live)) = (screens, live) else {

@@ -339,6 +339,9 @@ pub struct PlayerMarker {
     pub previous_level: u32,
     /// The marker's world position, metres.
     pub position: Vec3,
+    /// The marker's rotation rows, as the placement stores them: the frame
+    /// a level change stands the arriving player in.
+    pub rotation: [[f32; 3]; 3],
 }
 
 /// Every transition marker a level places, in placement order, from its
@@ -368,6 +371,11 @@ pub fn player_markers(scene: &Scene, global: &[Item]) -> Vec<PlayerMarker> {
             entrance: words[0],
             previous_level: words[1],
             position: Vec3::new(t[0], t[1], t[2]),
+            rotation: [
+                object.transform[0],
+                object.transform[1],
+                object.transform[2],
+            ],
         });
     }
     out
@@ -3065,6 +3073,36 @@ mod tests {
         assert!((markers[0].position.x + 8.948565).abs() < 1e-3);
         assert!((markers[0].position.y - 0.49198326).abs() < 1e-3);
         assert!((markers[0].position.z + 94.14694).abs() < 1e-3);
+    }
+
+    /// `exanima02` has the arrival marker for the way in from `exanima01`
+    /// (locale id 2) at entrance 0, near its exit back (skipped without the
+    /// game).
+    #[test]
+    fn shipped_exanima02_has_the_arrival_from_exanima01() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let locales = resource.get("locales.rdb").unwrap();
+        let from = exa_formats::roles::locale_id(locales, "exanima01.rfc").unwrap();
+        assert_eq!(from, 2);
+        let scene = Scene::parse(resource.get("exanima02.rfc").unwrap()).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let markers = player_markers(&scene, &exa_formats::objdb::items(&db));
+        let arrival = markers
+            .iter()
+            .rev()
+            .find(|m| m.entrance == 0 && m.previous_level == from)
+            .expect("an arrival marker from exanima01");
+        // The exit back to exanima01 is at (8.93, 0.88, 85.77) m.
+        let exit_back = Vec3::new(8.925, 0.879, 85.768);
+        assert!(
+            arrival.position.distance(exit_back) < 10.0,
+            "arrival at {} (markers {markers:?})",
+            arrival.position
+        );
     }
 
     /// `exanima06` places the game's 14 alarm zones, each a 340 × 200 ×

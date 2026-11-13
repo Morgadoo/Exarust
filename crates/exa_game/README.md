@@ -762,7 +762,11 @@ any sphere of a dormant or parked body was inside an active world
 camera's frustum in the last frame (`exa_physics::body::InView`), the posture stage parks an
 undrawn dormant body (`Ragdoll::park_unseen`) and the AI manager's frame
 unparks a drawn one before its rise (`park::wake_parked`);
-`EXA_NO_PARK=1` turns the note off. `golem_alarm` runs their alarm zones live: the AI
+`EXA_NO_PARK=1` turns the note off. A story save's level section carries the golem
+alarm (armed flag, point, pass, alarm count) in its settings chunk
+(`GolemAlarm::saved_settings`), and a level read from a save's section
+restores it over the level start's reset (`golem_alarm::restore_saved_alarm`).
+`golem_alarm` runs their alarm zones live: the AI
 manager's zone check for the player (past 3 cm from its last checked
 point), the pass item search, and the ring that wakes the statue golems
 within 800 cm of the zone (statue bit and byte cleared, `golem_act`, home
@@ -1332,6 +1336,21 @@ no live follower travels yet). The next practice fight carries the player's
 kit through the kit's temporary database across the arena's load
 (`Step::PreparePlayerKit`, `Step::EquipPlayerKit`, `save_kit::KitScratch`)
 instead of promoting it.
+The flow's save steps (`save_live::SaveStep`) run on the current slot of the
+mode's manager (the story's in story mode, the arena's in arena mode or on a
+hub level): a new story's or career's begin makes its empty slot first
+(`flow::Step::NewSlot`, named after the created character and current at
+once), so the story's exit, revive, level-exit and checkpoint saves land in
+it; the arena saves with its tables and the manager at the board's Begin and
+the auto rematch (before the launch, in the same frame) and at the quit. The
+app's close while a session plays runs the quit hook in `Last`
+(`save_live::QuitAutosave`, `Flow::quit_session` with the menu's page): the
+story saves with the death rule, the arena hub saves from the in-game page,
+and from the arena's pause page the match is forfeited and the settled
+career's player data alone is saved (`SaveStep::ForfeitSave`). Every save
+writes the live journal (`GameScreens::journal`) as its journal chunk, and a
+story load gives the in-game journal the saved pages
+(`save_live::apply_loaded_journal`).
 
 The pick meets a character's limb at the nearest front face of its node mesh, through the limb's kd-tree with the ray in the limb's frame (`hand::character_hit`, logged at debug: "mesh pick: … (bone) face …"); a limb without a tree is met by its collision spheres. A prop body put into the scene after the level was built (a GUI drop, a weapon let go of) has no stand-in collider, so the pick also asks each such body's part meshes for their nearest front face (`hand::loose_prop_hit`, `exa_physics::mesh_tree::ray_mesh`: the tree, or every triangle of a mesh of ten or fewer; a part with no triangles by its spheres), as the original's cursor pick asks every mesh node of the scene; a body a hand holds (its parts' held bit) is left out, as it hangs under its holder. A dropped item can be lifted again. `--gui-drop ID@FRAME,ID@FRAME…` drops several items (a later one at the same pointer lands on the earlier). The lift's release prints the item's countdown and settling ticks and drops its world contacts (`Ragdoll::clear_world_contacts`), as the original's place does.
 A left click that is not a drag sends `hand::WorldClick`. A static mesh
@@ -1747,6 +1766,17 @@ fight start's engage and combat mode (the binary's `start_fight`), the
 outfit's armour layers and the held moveset choice's animator config
 (`exa_character`).
 
+Control Mind's two halves follow the original's threads. The handover
+(`mind::runtime::possess`) runs in the step that decides it, as the
+original's swap runs inside the power's step: the minds, the held
+behaviours, the target's new player behaviour and the `Player` marker
+change there. Its frame part (`possess_view`: the GUI sweep, the rooms'
+anchor, the held body) is sent to the frame. The hand-back's transition
+runs on the frame; at its black `release` does the frame's part and posts
+`hand_back` to the next step, as the original posts it to its simulation
+thread's ring. Run on the frame, both had written held copies over a free
+simulation's newer duellist and player behaviour.
+
 ## Debug commands
 
 `commands` is the original's named debug-command registry: units register
@@ -2161,6 +2191,15 @@ are the original name builder's (`SlotKind::code`): 1 the save (`.rsg`), 2
 the checkpoint (`.rcp`). A fresh screen reads and continues the save, so the
 reset deletes the save and keeps the slot for its checkpoint; the toggle
 switches to the checkpoint (`SlotList::character_screen_select`).
+A level change without a flow placement stands the arriving player on the
+destination's arrival marker (`level_change::LevelArrival`, the entrance
+and the left level's `locales.rdb` id; `level_change::arrival_placement`,
+the last transition marker naming both), as the original's level-change
+load does, and posts it to the simulation once the collision is in (a body
+carried by its root goes with the root; the old level's follow is dropped). The level exit's save is
+written before the destination loads, so it records the level being left
+and the player in its exit; a continue of it stands there (a save load
+names no level left) and the nudge moves it out.
 A plain teardown (the menu's creator or save screens, a session leave)
 takes the surviving player's body out of the scene (`level_change::OutOfWorld`:
 out of the solver and the character ticks, hidden) until a level is in
