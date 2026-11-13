@@ -32,8 +32,8 @@ function yet; see the [README](README.md).
 
 | phase | state | next step |
 |---|---|---|
-| A — measure every function | doing | A2, A3 pilot |
-| B — close every open function | doing | B0 open leads |
+| A — measure every function | doing | A7 follow-up (36 engine rows), then done |
+| B — close every open function | doing | B0 leads; then B1 (1,018 uncalled) |
 | C — behaviour | not started | C1 tools |
 | D — release | not started | D1 infrastructure |
 
@@ -48,9 +48,9 @@ State: `todo`, `doing`, `done`, `blocked`.
 | A1 | Ledger skeleton and packages | done | 8,783 rows, 90 packages (2026-11-12) |
 | A2 | Reachability, second pass | done | walk through unit init, class tables, data blocks, callbacks and unwind handlers; dead candidates 740 → 49 functions (8 KB); the editor is wholly unreached; exceptions all explained (RTL libraries, never-constructed base classes) |
 | A3 | Audit brief and three pilot packages | done | 3 pilots in 7-9 min and 136k-256k tokens each; brief and tools improved; Phase A now estimated at 25-30M tokens |
-| A4 | Audit packages | doing | 89 of 90 accepted; core-03 being redone. Five packages were rejected and redone (characters-01, characters-03, items-03, physics-05, core-03) and two were settled by a second review (physics-01, ai-04) |
-| A5 | Review of each package | doing | 2 rejections so far, both for live rows whose state or input nothing live supplies |
-| A6 | Coverage computed from the ledger | doing | |
+| A4 | Audit packages | done | 90 of 90 audited (5 redone after rejection, 2 settled by a second review) |
+| A5 | Review of each package | done | 90 accepted |
+| A6 | Coverage computed from the ledger | done | published 2026-11-13: ledger 48.3% closed (37.8% live, 8.8% engine, 1.7% no code), 39.6% partial, 12.1% open |
 | A7 | Check the excluded code | doing | 102 of 103 reached not-applicable rows confirmed, 1 moved into the count; engine sample 92 of 94 hold (the RTL random group is ported code, reopened); 36 unaudited game-class engine rows being checked |
 | A8 | Phase B work list | done | `phase-b-worklist.md`: 1,038 uncalled (291 KB), 1,548 partial (988 KB), 74 missing (16 KB) |
 
@@ -128,6 +128,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions.
 
 | date | round | what |
 |---|---|---|
+| 2026-11-13 | — | Phase A audits complete: all 90 packages accepted; coverage now published from the ledger (48.3% closed beside the 82.3% estimate); Phase B work list generated; 540 findings. Rounds 204-206 (arrival, new-game slot and saves, Control Mind on the step) pass their checks and wait for the GPU. |
 | 2026-11-13 | — | UI, rendering, thaumaturgy and world audited. Two packages rejected and redone. The RTX 3090 dropped off the host after an out-of-memory error; `gpu_grid.sh` now queues GPU runs. Round 204 (arrival placement, B0.2) passes its checks and waits for the GPU. |
 | 2026-11-12 | 203 | Rendering and UI fully audited: 26 packages accepted, ledger 20.7%, 151 findings. Round 203: the save slot kinds fixed (B0.1). |
 | 2026-11-12 | — | 9 packages accepted, ledger 12.3%. The audits found 38 defects so far (`findings.md`), among them blank terrain blocks drawn and shadowing, glow link rings scrolling backwards, no refraction, the journal buttons unwired. |
