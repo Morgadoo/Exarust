@@ -281,3 +281,4 @@ ledger have a dash.
 | 2026-11-11 | be03338a3 | clean | 82.3% | 5.1% | 73.8% | 90.6% | - | Rate round 202's lanes |
 | 2026-11-12 | a087a77c4 | clean | 82.3% | 5.1% | 73.8% | 90.6% | - | Rate round 203's lane |
 | 2026-11-13 | 6c60d6409 | dirty | 82.3% | 5.1% | 73.8% | 90.6% | 48.3% | Coverage from the function ledger (Phase A) |
+| 2026-11-13 | 776ce6c7b | clean | 82.3% | 5.1% | 73.8% | 90.6% | 48.3% | Rate rounds 204-206 |
