@@ -89,7 +89,10 @@ A second agent, which did not write the package:
    `deviation`), because those raise coverage with no new code;
 2. re-checks a random 15% of the `live` rows against the assembly;
 3. rejects the package if more than 5% of the sampled rows are wrong; the
-   lane then redoes it.
+   lane then redoes it. When the rejection rests on a single wrong row in a
+   small sample, and the reviewer has already corrected that row, a second
+   reviewer may instead check every row the first did not; the package is
+   accepted if those hold (added 2026-11-13).
 
 **Done when:** every package is accepted. `PROGRESS.md` lists each one.
 

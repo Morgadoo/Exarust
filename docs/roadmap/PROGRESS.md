@@ -16,9 +16,9 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **33.69%** | **100%** |
-| Ledger: functions audited | — | 3,646 of 6,478 | 6,478 |
-| Ledger: audit packages accepted | — | 49 of 90 | 90 |
+| **Ledger: bytes in a final state** | — | **37.21%** | **100%** |
+| Ledger: functions audited | — | 4,170 of 6,478 | 6,478 |
+| Ledger: audit packages accepted | — | 57 of 90 | 90 |
 | Live rows with scene or retail evidence | — | not measured | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
@@ -98,23 +98,23 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 1 | 340 | 239,791 |
-| AI & behaviour | 8 | 0 | 435 | 210,653 |
 | Game modes, arena & session | 7 | 0 | 642 | 197,307 |
+| AI & behaviour | 8 | 2 | 391 | 189,244 |
 | UI | 12 | 12 | 469 | 185,518 |
+| Physics, bodies & cloth | 7 | 6 | 163 | 175,989 |
 | Rendering & GPU | 10 | 10 | 343 | 174,256 |
 | Thaumaturgy & effects | 9 | 9 | 206 | 129,720 |
 | Characters, motion & animation | 8 | 8 | 262 | 116,341 |
 | Data, assets & I/O | 6 | 0 | 437 | 92,732 |
-| Items, materials & crafting | 5 | 4 | 220 | 89,796 |
 | World, levels & terrain | 5 | 5 | 172 | 88,138 |
+| Items, materials & crafting | 5 | 5 | 186 | 86,750 |
 | Script, dialogue & story | 2 | 0 | 182 | 47,478 |
 | Core, math & threading | 3 | 0 | 276 | 37,551 |
 | Runtime & platform | 5 | 0 | 344 | 33,789 |
 | Audio | 1 | 0 | 58 | 18,534 |
 | Combat, weapons & damage | 1 | 0 | 14 | 3,229 |
 | Other, tools & editor | 1 | 0 | 5 | 468 |
-| **Total** | **90** | **49** | **4,405** | **1,665,301** |
+| **Total** | **90** | **57** | **4,150** | **1,577,044** |
 
 ## Open decisions
 

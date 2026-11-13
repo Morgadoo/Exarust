@@ -291,6 +291,84 @@ here; the rows in `context/re/ledger/` carry them.
 | F273 | items-01 | items | figure_pick removes the held entry by item id; the original matches it by icon slot | B4 |
 | F274 | items-01 | items | The worn panel layout seeds DOLL_SEED on every open instead of the shared engine generator (marked [stand-in], with no DEC entry) | B4 |
 
+| F275 | items-02 | items | exa_game::use_cursor::repair_record rewrites a repaired weapon's record but never repaints the held weapon node. The original's timed list calls the repaint. | B4 |
+| F276 | items-02 | items | ModelLoader::repaint_factory replays stored choices through Factory::build. The original repaint re-runs the random roll from the seeds. | B4 |
+| F277 | items-02 | items | exa_ai::search's put-on step plays no handling sound. In the original, calls to play it. | B4 |
+| F278 | items-02 | items | Character-view mind cost: weapon_value is never computed live, so the / desirability callers in TCharacterView are not wired. | B4 |
+| F279 | items-02 | items | instance::NO_SPREAD is 0x34000000 but the image threshold is 0x33ffffd7. This cannot be observed, because spread codes are eighths or quarters. | B4 |
+| F280 | items-03 | items | Factory weapon _procmatr choice: weapon.rs names the material _procmatr when any area material has passes.alpha, which is true for 23 Gemstone and 24 Resin. Retail picks it from table, where only id 23 is set, so resin weapons get the wrong name. factory_atlas_material also forces alpha = false, so gemstone factory parts paint opaque where retail uses an sRGB-alpha colour target. | B4 |
+| F281 | items-03 | items | doll_view::hold_shield does not clear the weapon part when the class word has no 0x30 bits, unlike (doll::take_shield does this but has only test callers). | B4 |
+| F282 | items-03 | items | The live script HasItem (exa_script dialogue host) checks the character's flat item list only. Retail saves open packs and searches nested containers (Possessions::has_item does this but has only test callers). | B4 |
+| F283 | items-03 | items | forget_loose runs only on Added<Collapse> (equip::forget_collapsed_hands). Retail calls it from the TMotilePart part-came-loose callback, so any loose held part triggers it, not only a collapse. | B4 |
+| F284 | items-03 | items | Unresolved item ids show no error box: PanelIcons::reserve keeps an empty slot, and icon_cache::unresolved has only test callers. | B4 |
+| F285 | items-03 | items | The scheduled take-out runs at once instead of as a deferred task, and the content-stream icon wait polls once per frame instead of spinning. | B4 |
+| F286 | items-04 | items | Icon render: the weapon variant bit 0x4000000 is never set on the live render variant (PendingIcon.variant is the cache key, which drops it). Weapon icons get the non-weapon sun preset (-0.21, 0.7516) instead of (-0.16, 0.6516), and apparel plus weapon icons are never turned. Card icons (reserve_card) never get the 0x80000000 subdivide bit. | B4 |
+| F287 | items-04 | items | The icon cache (PanelIcons) is never cleared on a level or save load. The original clears it through from SG_GameMain and XA_SaveGames. | B4 |
+| F288 | items-04 | items | PanelIcons::release at refs 0 returns false silently; the original shows 'Item reference underflow.'. | B4 |
+| F289 | items-04 | items | A repair or clean (original, which then calls refreshes the open card but re-renders no icon. The pour path's refresh_spent_icon reserves a new slot instead of re-rendering in place, so an unchanged key is not refreshed. | B4 |
+| F290 | items-04 | items | The inventory doll camera is fixed (doll_view::camera_transform). The original sets the camera field to the model height x 10. | B4 |
+| F291 | items-04 | items | Inventory bind: the pack's used bulk does not include the worn bulk, and the weapon-set tab words are not set. | B4 |
+| F292 | items-04 | items | Arsenal window: ArsenalKey and ArsenalScroll messages are never written outside arsenal_view.rs. Escape, the inventory toggle and the scroll buttons are therefore not driven, and the close with its store save (arsenal_close) never runs, so the window may have no way to close in play. | B4 |
+| F293 | items-04 | items | Loot equipment drag-off: removing a core crystal does not set body flag 0x100, post the event or deactivate the body, and the body is neither re-dressed nor has its held item detached. | B4 |
+| F294 | items-04 | items | Container fill: a picked row's item is not copied, and the row's condition word is not applied (apply_row and fill_children have no live caller). | B4 |
+| F295 | items-04 | items | The gemstone and resin alpha pass and the gemstone pattern pass are not painted by the CPU painter. | B4 |
+| F296 | items-05 | items | exa_formats::procedural::families maps Family::Suede to the 'leather' programs, but the original TSuedeA01 setup names the family 'suede', and suede_d/suede_s/suede_n exist in Resource.rpk. Today only tests reach programs/draw_program, so nothing visible changes yet. | B4 |
+| F297 | items-05 | items | The arena arsenal cannot close in the running game: ArsenalWindow::close is reached only through ArsenalWindow::key, and nothing live writes ArsenalKey. exa_items::arsenal::closes_on_release (the right-release close) has no live caller either. | B4 |
+| F298 | items-05 | items | exa_ui::popups::CONTAINER_FIELD (0x100, which the constructor stores at form is only read by container_form, which only tests call. What the field means has not been identified. | B4 |
+
+| F299 | physics-01 | physics | placement probe: contact::height_below stands in for the 10 cm sphere sweep through static meshes and bodies with the own-body filter | B4 |
+| F300 | physics-01 | physics | can-act gate: the player behaviour's caller has no Rust use of the gate; exa_physics motile::action_allowed is test-only | B4 |
+| F301 | physics-01 | physics | clinch clear: strike_body::clear_clinch has test-only callers; arm bit 8 not cleared | B4 |
+| F302 | physics-01 | physics | Test-only duplicates beside the live ports: exa_physics body_stagger::recoil and stagger_strength (live: swing.rs recoil/follow_through), bite::stuck_layers (live: Ragdoll::raise_grab_layer), body_feet::clear_foot_state (live: Ragdoll::clear_feet), motile::action_allowed (live: exa_ai can_act) | B4 |
+| F303 | physics-01 | physics | MOTILE_ENVIRONMENT constant has no non-test reader | B4 |
+| F304 | physics-03 | physics | exa_game rise.rs revive_corpse restores the voice volume but does not re-pick the voice set (the original's Mind revive calls the voice-set routine, which picks the undead voice when the feral level is above 0) | B4 |
+| F305 | physics-03 | physics | exa_game thaum casting::start_cast does not clear the clinch when the body is clinching (original calls the clinch clear before starting the cast motion) | B4 |
+| F306 | physics-03 | physics | Health has no displayed (interpolated) health value; the original's render interpolation lerps one between the previous and current yellow | B4 |
+| F307 | physics-03 | physics | Animator::start lacks the cast-hook signal, the clinch clear on leaving attacks and the start notice (map row 92) | B4 |
+| F308 | physics-04 | physics | Edge constraint uses the wrong branch. tests, which is 1 in.data with a single read xref and no stored pointer, so retail always runs ->. That pass is an RSQRTSS full correction: f = 0.5 - rsqrt(/d/^2)*(L/2), with the rest stored as distance*0.5 by. Exarust's cloth::correct_edge implements the dead form (L^2/(/d/^2+L^2) - 0.5)*0.8774, which is about 12% softer per pass. | B4 |
+| F309 | physics-04 | physics | Cloth wind is never driven: nothing writes Cloth::wind or Cloth::tile, so the wind tile sample and noise walk, never run. | B4 |
+| F310 | physics-04 | physics | The cloth rustle sound is computed (rustle, rustle_volume, rustle_pitch), but nothing outside cloth.rs reads it, so no sound plays. | B4 |
+| F311 | physics-04 | physics | Cloth mesh write-back updates positions only: normals are not recomputed after deformation, and tangents are not rebuilt either. | B4 |
+| F312 | physics-04 | physics | When a body is re-placed (TMotileDynamics placements calling, the original resets the cloth to its saved pose. Exarust's carry_into_frame instead keeps a particle-mode cloth's world places, so a teleported character's hair may stretch across the move. | B4 |
+| F313 | physics-04 | physics | The two-pass double-sided draw items (cloth_draw_materials, ExaMaterial::cloth_draws) have no live caller. | B4 |
+| F314 | physics-05 | physics | and: the original multiplies scale times weight first, then times the vector ((s*w_i)*delta). Ragdoll::iterate and solve_pair compute (delta*s)*w_i. Only rounding differs, but the order is not the original's. | B4 |
+| F315 | physics-05 | physics | body_pairs::shove adds push.length to the strain, which sums x2+y2+z2. The original's weighted push sums (x2+z2)+y2, as Ragdoll::push_part_weighted already does. Only rounding differs. | B4 |
+| F316 | physics-05 | physics | : sector::impact_scale (1/v^2 and the (sqrt v + v)/2 sound factor) is never applied when a body registers. The live impact sound does not use these scales. | B4 |
+| F317 | physics-05 | physics | (class slot 32): this reset is not in Exarust. When word is 1 it clears the word, sets flag bit 1 and resets the three motion buffers. | B4 |
+| F318 | physics-05 | physics | Every body runs the same fixed LINK_ITERATIONS. The per-root link_iterations count is kept, but iterations_reached and iterate_links have no caller. | B4 |
+| F319 | physics-05 | physics | : draw_bodies takes one global overstep fraction. The original adds each body's tick lag (body_draw_fraction, which has only test callers). | B4 |
+| F320 | items-03 | items | The item GUI dot size is the constant 22; the original reads the GUI level's dot size (16/20/28/32/42/64), so rating dots, sliders and socket icons are off at every GUI level. | B4 |
+| F321 | items-03 | items | Committing an AR crystal to a socket never fires the original's game-function event; an apparel socket commit skips the player equipment refresh. | B4 |
+| F322 | items-03 | items | The weapon-set swap happens on the request frame: the swap animation and its state are not played, and the open-pack swap is never reached (hotkeys pass pack_open=false). | B4 |
+| F323 | items-03 | items | Right-clicking a socket crystal does not open its card; the socket drag-over answer is not ported. | B4 |
+| F324 | items-03 | items | An item given back into an open pack lands at the exact centre, without the original's random placement and relax. | B4 |
+| F325 | items-03 | items | An item id with no record gets an icon slot instead of the original's 'Unable to resolve item' box; an invalid procedural material id is silent where the original shows a box. | B4 |
+
+| F326 | physics-06 | physics | Live code uses correctly rounded sqrt.recip and recip where the original uses rsqrtss and rcpps, with no DEC entry. Affected: Sweep::new and ConvexVolume::refresh (and the plane normalisation through clip_polygon). engine_math::reciprocal_sqrt and reciprocal_approx3 exist but are not used here. | B4 |
+| F327 | physics-06 | physics | body::Part::transform returns a Gram-Schmidt rigid frame. The original's helper is an affine particle-times-basis product that is not orthonormalised, so a stretched body differs. | B4 |
+| F328 | physics-06 | physics | No placed character gets the settling state: the original's is called on respawn, level change, save load and displacement. Ragdoll::settle_for is set only by the hand's item release. | B4 |
+| F329 | physics-06 | physics | Ragdoll::freeze sets a bit only. The original also places the particles at the given matrix and sets countdown 2 (dynamics::World::freeze does this but nothing live calls it). | B4 |
+| F330 | physics-06 | physics | Wake and unpark act on one Ragdoll. The original recurses through child nodes, so bodies of items held under the character node are not woken or unparked. | B4 |
+| F331 | physics-06 | physics | The barricade cast pick (cast_pick::segment_meets_wall) uses the slab test segment_obb_hit. The original's caller uses the separating-axis test, so edge cases may differ. | B4 |
+| F332 | physics-06 | physics | mobility_shares returns 0.5/0.5 for a zero or non-finite sum, where the original divides. The parent class check has no counterpart. | B4 |
+| F333 | physics-07 | physics | shape::sort_spheres: when no sphere qualifies and the cursor has run off the end, Exarust keeps the last sphere. The original reads one past the array. This edge is documented only as a code comment, with no DEC entry. | B4 |
+| F334 | physics-07 | physics | assembled_item_body takes the weapon node box from the union of the merged triangles rather than from the node's stored box, and builds the body at equip/drop rather than at item creation. It is probably equivalent; I did not verify it. | B4 |
+| F335 | physics-07 | physics | Cloth import: exa_assets passes CLOTH_SCENE as a constant, so the original's non-cloth arm (clearing node flag bits 0x10000 and 0x10/0x8000) is never modelled. The node +0xc bit 0x10 and the routine pointer are not modelled either. | B4 |
+| F336 | ai-01 | ai | exa_ai::brain::grab_timeout (the AI tick's 500 ms grabbed-flag release) has no non-test caller | B4 |
+| F337 | ai-01 | ai | PassReport::refresh is computed by contacts::refresh_slot, but nothing reads it and no dialogue refresh is called | B4 |
+| F338 | ai-01 | ai | brain::ai_tick passes seen=true for every candidate to contacts::nearby, so the nearby insert never runs a sight test | B4 |
+| F339 | ai-01 | ai | combat::tick's Exit::Down writes only mind.aim. The original's down exit also writes the body state word, requests motion 3, copies the place into the move goals and sets the heading words, and Exarust does none of these | B4 |
+| F340 | ai-01 | ai | The duellist re-stamps a lifted foe's footprint only when the tick placed. The original's finally frame re-stamps it on every exit | B4 |
+| F341 | ai-01 | ai | motion::alert_look is always called with foe None, so its foe branch (turn_towards) is never driven | B4 |
+| F342 | ai-01 | ai | activity::apply_roles always gets marked=false, so the -1 phase word never happens. Npc::apply_with also installs Routine::wait for the follow activity | B4 |
+| F343 | ai-02 | ai | flee_walk (crates/exa_ai/src/brain.rs) passes has_foe: npc.flee_focus.is_none, so has_foe // has_focus is always true and flee::tick's 'no foe and no focus' end never fires | B4 |
+| F344 | ai-02 | ai | flee::cornered has no non-test caller: a cornered flight (no way out) never returns to combat at level 3 with courage x2; flee_walk only clears the flight | B4 |
+| F345 | ai-02 | ai | The target-pass leave path in brain::ai_tick calls motion::leave_combat but not lifecycle::restart_idle; the original's leave routine always restores the idle state and its step 1 | B4 |
+| F346 | ai-02 | ai | Sleep entry computes gait 2 (Sleeper::gait) but write_sleeper never writes it to the body; only the log reads it | B4 |
+| F347 | ai-02 | ai | The wait state never runs the scripted action hook first: lifecycle::scripted_action has only test callers | B4 |
+| F348 | ai-02 | ai | The follow state's closing replan (ClosePlanned) plans no goal: the 400 cm point near the leader, motion 0x14, radius 300 | B4 |
+| F349 | ai-02 | ai | The leave-combat and walk-settle routines copy the body frame origin into AI; Exarust has no counterpart (its reader is unidentified) | B4 |
+
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers
 a power yet"); the GI texture cache and `follow_camera` comments; the
