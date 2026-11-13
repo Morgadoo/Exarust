@@ -14,6 +14,7 @@ The analysis behind it is in
 | [`DECISIONS.md`](DECISIONS.md) | decisions taken and decisions waiting for the owner |
 | [`ledger-summary.md`](ledger-summary.md) | generated totals of the function ledger |
 | [`findings.md`](findings.md) | defects the audits found, waiting for Phase B |
+| [`phase-b-worklist.md`](phase-b-worklist.md) | generated: every open function by component and class |
 
 ## The two goals
 

@@ -7,7 +7,9 @@ mechanical checks before the number is quoted:
 * every cited Exarust path exists;
 * a component's status agrees with its percentage (the map's own rule);
 * components carrying credit are not silently excluded from the totals;
-* the tracked document's headline and section rows match the generated data;
+* the tracked document's headline and section rows match the generated data,
+  and so does the ledger's closed share when the data carries one;
+* no retail address reaches the tracked document or the generated data;
 * the two PNGs are not older than the data they are supposed to draw;
 * the inputs are reachable from a clean checkout (they live under the
   git-ignored ``context/`` tree);
@@ -39,6 +41,9 @@ PATH_RE = re.compile(r"\b((?:crates|docs|context|\.agents)/[\w./+-]+\.\w+)\b")
 DOC_HEADLINE = re.compile(r"\*\*([\d.]+)% reimplemented\*\*")
 DOC_ENGINE = re.compile(r"\*\*([\d.]+)% provided\*\*")
 DOC_ROW = re.compile(r"^\| ([^|]+?) \| [\d,]+ \| [\d,]+ \| \d+ \| ([\d.]+)% \| ([\d.]+)% \|", re.M)
+DOC_LEDGER = re.compile(r"([\d.]+)% closed\.?\*\*")
+# The same patterns build_map_data.py strips: hex addresses, Ghidra labels, raw image offsets.
+RETAIL_ADDR = re.compile(r"\b0x[0-9a-fA-F]{5,}\b|\b(?:FUN|DAT|LAB|PTR)_[0-9a-fA-F]+\b|\b1000[0-9a-f]{5}\b")
 RULE_BAND = 5.0  # below this the map calls a component "missing" and credits nothing
 
 
@@ -216,6 +221,25 @@ def main() -> int:
                 f"data {own:.0f}%/{engine:.0f}%"
             )
 
+    ledger = data["coverage"].get("ledger")
+    if ledger:
+        said = DOC_LEDGER.findall(doc)
+        if not said or any(abs(float(v) - ledger["closed"]) > 0.05 for v in said):
+            artifact_errors.append(
+                f"ledger drift: document says {', '.join(said) or 'nothing'}% closed, "
+                f"data says {ledger['closed']}%"
+            )
+    else:
+        warnings.append("the data carries no ledger shares (context/re/ledger/ledger.tsv not read)")
+
+    # ---- 4a. no retail address in what gets published ---------------------------
+    for label, text in (("docs/COMPONENT-MAP.md", doc), ("map/data.json", (mapdir / "map/data.json").read_text())):
+        hits = sorted(set(RETAIL_ADDR.findall(text)))
+        if hits:
+            artifact_errors.append(
+                f"{label} carries {len(hits)} retail address(es), e.g. {', '.join(hits[:3])}"
+            )
+
     # ---- 4b. the generated data is not ahead of its sources ---------------------
     # A generated rating that no source carries will be silently reverted by the
     # next rebuild. This is how hand-patched data loses work, so it is an error.
@@ -291,6 +315,7 @@ def main() -> int:
         errors = source_errors + artifact_errors
     report = {
         "headline": computed,
+        "ledger": data["coverage"].get("ledger"),
         "functions": data["coverage"]["functions"],
         "combat_rules": data["coverage"]["combat_rules"],
         "sections": {s["id"]: round(p, 1) for s, p in zip(data["sections"], section_pct.values())},
@@ -306,6 +331,10 @@ def main() -> int:
         print(f"coverage: {computed['reimplemented']}% reimplemented, "
               f"{computed['engine']}% engine-provided "
               f"({data['coverage']['functions']['reimplemented']}% by function count)")
+        if ledger:
+            print(f"ledger: {ledger['closed']}% closed ({ledger['live']}% live, {ledger['engine']}% engine, "
+                  f"{ledger['no_code']}% no code), {ledger['partial']}% partial, {ledger['open']}% open "
+                  f"of {ledger['counted_bytes']:,} counted bytes")
         print(f"sections: " + ", ".join(f"{k} {v:g}%" for k, v in report["sections"].items()))
         for label, items in (("ERROR", errors), ("WARN", warnings), ("NOTE", notes)):
             for item in items:

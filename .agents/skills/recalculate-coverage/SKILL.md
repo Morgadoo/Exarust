@@ -126,7 +126,15 @@ The runner:
   postflight is clean.
 
 Useful variants: `--check` (audit only), `--no-images` (page only, during
-debugging), `--force` (publish despite errors — the audit still runs).
+debugging), `--force` (publish despite errors — the audit still runs),
+`--dry-run` (rebuild and audit, print the history row without appending it).
+
+While Phase A runs the page carries two numbers: the estimate above and the
+function ledger's closed share (`context/re/ledger/ledger.tsv`: live, engine,
+no code = unreachable + deviation, partial, open = uncalled + missing +
+unaudited, by counted bytes). `build_map_data.py` reads the ledger directly;
+the audit checks the page's ledger figure against the data and scans the page
+and data for retail addresses. See `docs/roadmap/README.md`.
 
 ### 5. Read the result before quoting it
 

@@ -16,9 +16,9 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **48.41%** | **100%** |
-| Ledger: functions audited | — | 6,478 of 6,478 | 6,478 |
-| Ledger: audit packages accepted | — | 89 of 90 | 90 |
+| **Ledger: bytes in a final state** | — | **48.31%** | **100%** |
+| Ledger: functions audited | — | 6,588 of 6,478 | 6,478 |
+| Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | not measured | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
@@ -51,8 +51,8 @@ State: `todo`, `doing`, `done`, `blocked`.
 | A4 | Audit packages | doing | 89 of 90 accepted; core-03 being redone. Five packages were rejected and redone (characters-01, characters-03, items-03, physics-05, core-03) and two were settled by a second review (physics-01, ai-04) |
 | A5 | Review of each package | doing | 2 rejections so far, both for live rows whose state or input nothing live supplies |
 | A6 | Coverage computed from the ledger | doing | |
-| A7 | Check the excluded code | doing | 1,343 not-applicable, 933 engine rows |
-| A8 | Phase B work list | todo | |
+| A7 | Check the excluded code | doing | 102 of 103 reached not-applicable rows confirmed, 1 moved into the count; engine sample 92 of 94 hold (the RTL random group is ported code, reopened); 36 unaudited game-class engine rows being checked |
+| A8 | Phase B work list | done | `phase-b-worklist.md`: 1,038 uncalled (291 KB), 1,548 partial (988 KB), 74 missing (16 KB) |
 
 ### Phase B ([detail](phase-b-close.md))
 
@@ -60,9 +60,10 @@ State: `todo`, `doing`, `done`, `blocked`.
 |---|---|---|---|
 | B0.1 | Save slot kinds | done | inverted: a fresh saves screen continued from the checkpoint, and the portal reset deleted the checkpoint while the save stayed unlisted; fixed (round 203). Creator-side names left to the other session |
 | B0.2 | Level-exit save position | doing | the save was right; the arrival was wrong (the simulation kept the old level's coordinates). Fixed on a lane; round 204 waits for the GPU smoke |
-| B0.3 | Control Mind end frame writes | todo | |
-| B0.4 | Torrent stream in lockstep | todo | |
+| B0.3 | Control Mind end frame writes | doing | fixed on a lane: the swap runs on the step, the hand-back is posted (round 206, waits for the GPU) |
+| B0.4 | Torrent stream in lockstep | done | the original draws from the two process-wide generators, which the step streams stand for; the sweep scene needs retuning, not the code |
 | B0.5 | New game creates no save slot; arena saves dropped | doing | all four claims real and fixed on a lane (slot at session begin, arena saves, quit save, alarm and journal); round 205 stacks on 204 and waits for the GPU |
+| B0.6 | Spirit Form adopt/home and other frame-sent writes in free mode | todo | found by the mindend lane |
 | B1 | Wire the uncalled | todo | size after A8 |
 | B2 | Reclassify the engine-replaced | todo | |
 | B3 | Close the unreachable | todo | |
@@ -110,12 +111,12 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Items, materials & crafting | 5 | 5 | 186 | 86,750 |
 | Data, assets & I/O | 6 | 6 | 162 | 46,004 |
 | Runtime & platform | 5 | 5 | 81 | 24,381 |
-| Core, math & threading | 3 | 2 | 95 | 16,750 |
+| Core, math & threading | 3 | 3 | 98 | 18,405 |
 | Script, dialogue & story | 2 | 2 | 35 | 7,554 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **89** | **2,660** | **1,295,736** |
+| **Total** | **90** | **90** | **2,663** | **1,297,391** |
 
 ## Open decisions
 

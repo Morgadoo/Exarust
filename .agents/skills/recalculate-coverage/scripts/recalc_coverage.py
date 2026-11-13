@@ -13,7 +13,13 @@ this runner does four things in one shot:
 3. audits the result, including whether the images are newer than the data and
    whether the document's headline/section rows match;
 4. appends a dated row to ``docs/reviews/coverage-history.md`` with the figure,
-   the commit, whether the tree was dirty, and a per-component diff.
+   the ledger's closed share, the commit, whether the tree was dirty, and a
+   per-component diff.
+
+Two numbers are published while Phase A runs: the estimate (the reviewers'
+ratings per component) and the ledger (the share of the counted bytes whose
+functions are all in a final state, from ``context/re/ledger/ledger.tsv``).
+``--dry-run`` rebuilds and audits everything but leaves the history alone.
 
 It never commits. Publishing stays a human decision, made after reading the
 diff and the audit warnings.
@@ -22,6 +28,7 @@ Usage:
     python3 .agents/skills/recalculate-coverage/scripts/recalc_coverage.py --check
     python3 .agents/skills/recalculate-coverage/scripts/recalc_coverage.py
     python3 .agents/skills/recalculate-coverage/scripts/recalc_coverage.py --message "cloth + morphing"
+    python3 .agents/skills/recalculate-coverage/scripts/recalc_coverage.py --dry-run
 """
 from __future__ import annotations
 
@@ -80,11 +87,41 @@ def history_row(root: Path, cov: dict, commit: str, dirty: bool, moved: bool, me
     dirty_mark = "dirty" if dirty else "clean"
     moved_mark = ", HEAD moved during run" if moved else ""
     note = message.replace("|", "/") if message else ""
+    ledger = cov.get("ledger")
+    ledger_mark = f"{ledger['closed']}%" if ledger else "-"
     return (
         f"| {date} | {commit} | {dirty_mark}{moved_mark} | "
         f"{cov['bytes']['reimplemented']}% | {cov['bytes']['engine']}% | "
-        f"{cov['functions']['reimplemented']}% | {cov['combat_rules']['reimplemented']}% | {note} |\n"
+        f"{cov['functions']['reimplemented']}% | {cov['combat_rules']['reimplemented']}% | "
+        f"{ledger_mark} | {note} |\n"
     )
+
+
+HISTORY_COLUMNS = "| date | commit | state | reimplemented | engine | by functions | combat rules | ledger closed | note |\n"
+HISTORY_RULE = "|---|---|---|---:|---:|---:|---:|---:|---|\n"
+
+
+def migrate_history(path: Path) -> bool:
+    """Add the ledger column to a history written before it existed; old rows get a dash."""
+    lines = path.read_text().splitlines(keepends=True)
+    if any("ledger closed" in line for line in lines):
+        return False
+    out = []
+    for line in lines:
+        if line.startswith("| date |"):
+            out.append(HISTORY_COLUMNS)
+        elif line.startswith("|---"):
+            out.append(HISTORY_RULE)
+        elif line.startswith("| "):
+            # The note is the last cell (notes never hold a pipe); the dash goes in front of it.
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) == 8:
+                cells.insert(7, "-")
+            out.append("| " + " | ".join(cells) + " |\n")
+        else:
+            out.append(line)
+    path.write_text("".join(out))
+    return True
 
 
 def append_history(root: Path, row: str) -> Path:
@@ -94,13 +131,17 @@ def append_history(root: Path, row: str) -> Path:
         "Every row is a generated recalculation: the artifact set in the same commit\n"
         "(`docs/COMPONENT-MAP.md` and both `docs/img/coverage-map-*.png`) matches it.\n"
         "`dirty` means uncommitted work was rated; `HEAD moved` means the tree changed\n"
-        "while the map was being built, so treat the row as a best-effort snapshot.\n\n"
-        "| date | commit | state | reimplemented | engine | by functions | combat rules | note |\n"
-        "|---|---|---|---:|---:|---:|---:|---|\n"
+        "while the map was being built, so treat the row as a best-effort snapshot.\n"
+        "`ledger closed` is the function ledger's share of the counted bytes in a\n"
+        "final state (live, engine, unreachable or deviation); rows from before the\n"
+        "ledger have a dash.\n\n"
+        + HISTORY_COLUMNS
+        + HISTORY_RULE
     )
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(header)
+    migrate_history(path)
     with path.open("a") as fh:
         fh.write(row)
     return path
@@ -113,6 +154,11 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="rebuild even if the preflight audit fails")
     ap.add_argument("--no-images", action="store_true", help="rebuild the page but not the PNGs")
     ap.add_argument("--message", default="", help="short note for the history row")
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="rebuild and audit, print the history row, but do not append it",
+    )
     ap.add_argument(
         "--allow-reverts",
         action="store_true",
@@ -203,9 +249,22 @@ def main() -> int:
         return post.returncode
 
     cov = headline(root)
+    ledger = cov.get("ledger")
+    if ledger:
+        print(
+            f"\nestimate {cov['bytes']['reimplemented']}% + {cov['bytes']['engine']}% engine; "
+            f"ledger {ledger['closed']}% closed ({ledger['live']}% live, {ledger['engine']}% engine, "
+            f"{ledger['no_code']}% no code), {ledger['partial']}% partial, {ledger['open']}% open"
+        )
+    else:
+        print("\nno ledger read: the page carries the estimate alone", file=sys.stderr)
     commit_after = git(root, "rev-parse", "--short", "HEAD") or "unknown"
     moved = commit_before != commit_after
     row = history_row(root, cov, commit_before, dirty, moved, args.message)
+    if args.dry_run:
+        print("\ndry run: the history row would be:")
+        print(row.rstrip())
+        return post.returncode
     path = append_history(root, row)
     print(f"\nappended to {path.relative_to(root)}:")
     print(row.rstrip())
