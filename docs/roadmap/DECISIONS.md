@@ -83,6 +83,30 @@ confirm the picture.
 
 **Blocks:** part of B4 (world), two terrain components' last gaps.
 
+### DEC-7. Approximate float instructions
+**Question:** reproduce the original's approximate reciprocal and
+reciprocal-square-root instructions (`rcpss`, `rcpps`, `rsqrtss`), or keep
+Exarust's exact results as a deviation?
+
+**Facts:** the physics audits (physics-05, physics-06) found the original
+uses these in the slab test, weight normalisations, the sweep set-up and
+other helpers, where Exarust computes exactly. These instructions are only
+specified to about 12 bits, and Intel and AMD processors return different
+values, so the original itself does not behave the same on every machine.
+Exarust already has the approximations (`engine_math::reciprocal_sqrt`,
+`reciprocal_approx3`) but does not use them there. The same audits found
+related float details: constants in double where Exarust uses f32, a few
+summation orders, and NaN branch choices; those are exact behaviour and
+should be matched.
+
+**Recommendation:** match the double constants, the summation orders and
+the NaN branches (they are deterministic). For the approximate instructions,
+use one fixed software approximation equal to a common Intel result, so
+runs repeat on every machine; record it as a deviation if the owner prefers
+exact maths.
+
+**Blocks:** part of B4 (physics); about a dozen `partial` rows.
+
 ## Taken
 
 | date | decision |

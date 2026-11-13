@@ -1766,6 +1766,17 @@ fight start's engage and combat mode (the binary's `start_fight`), the
 outfit's armour layers and the held moveset choice's animator config
 (`exa_character`).
 
+Control Mind's two halves follow the original's threads. The handover
+(`mind::runtime::possess`) runs in the step that decides it, as the
+original's swap runs inside the power's step: the minds, the held
+behaviours, the target's new player behaviour and the `Player` marker
+change there. Its frame part (`possess_view`: the GUI sweep, the rooms'
+anchor, the held body) is sent to the frame. The hand-back's transition
+runs on the frame; at its black `release` does the frame's part and posts
+`hand_back` to the next step, as the original posts it to its simulation
+thread's ring. Run on the frame, both had written held copies over a free
+simulation's newer duellist and player behaviour.
+
 ## Debug commands
 
 `commands` is the original's named debug-command registry: units register

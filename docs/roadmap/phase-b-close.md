@@ -32,6 +32,14 @@ Possible defects found on 2026-11-11. Each gets a small lane.
    the bar's casts draw from the step's random streams. Confirm against the
    original which stream the player's cast uses.
 
+5. **No save slot for a new game** (found by the modes-03 audit). The
+   original creates a slot for both managers when a new story or career
+   starts; Exarust creates one only for a scripted debug save, so the
+   story's exit, revive and checkpoint saves write nothing until a slot is
+   continued from the save screen. The arena's own saves (match begin,
+   in-game quit, forfeit) are dropped because the save steps run only in
+   story mode. The golem alarm state and the journal are not saved.
+
 **Done when:** each is fixed with a test and a scene, or shown correct.
 
 ### B1. Wire the uncalled

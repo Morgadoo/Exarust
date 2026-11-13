@@ -16,9 +16,9 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **37.21%** | **100%** |
-| Ledger: functions audited | — | 4,170 of 6,478 | 6,478 |
-| Ledger: audit packages accepted | — | 57 of 90 | 90 |
+| **Ledger: bytes in a final state** | — | **46.66%** | **100%** |
+| Ledger: functions audited | — | 5,891 of 6,478 | 6,478 |
+| Ledger: audit packages accepted | — | 78 of 90 | 90 |
 | Live rows with scene or retail evidence | — | not measured | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
@@ -62,6 +62,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 | B0.2 | Level-exit save position | doing | the save was right; the arrival was wrong (the simulation kept the old level's coordinates). Fixed on a lane; round 204 waits for the GPU smoke |
 | B0.3 | Control Mind end frame writes | todo | |
 | B0.4 | Torrent stream in lockstep | todo | |
+| B0.5 | New game creates no save slot; arena saves dropped | doing | found by audit modes-03 |
 | B1 | Wire the uncalled | todo | size after A8 |
 | B2 | Reclassify the engine-replaced | todo | |
 | B3 | Close the unreachable | todo | |
@@ -98,29 +99,29 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Game modes, arena & session | 7 | 0 | 642 | 197,307 |
-| AI & behaviour | 8 | 2 | 391 | 189,244 |
+| Physics, bodies & cloth | 7 | 7 | 194 | 188,931 |
 | UI | 12 | 12 | 469 | 185,518 |
-| Physics, bodies & cloth | 7 | 6 | 163 | 175,989 |
 | Rendering & GPU | 10 | 10 | 343 | 174,256 |
 | Thaumaturgy & effects | 9 | 9 | 206 | 129,720 |
+| AI & behaviour | 8 | 8 | 190 | 120,216 |
 | Characters, motion & animation | 8 | 8 | 262 | 116,341 |
-| Data, assets & I/O | 6 | 0 | 437 | 92,732 |
+| Game modes, arena & session | 7 | 7 | 253 | 105,681 |
 | World, levels & terrain | 5 | 5 | 172 | 88,138 |
 | Items, materials & crafting | 5 | 5 | 186 | 86,750 |
-| Script, dialogue & story | 2 | 0 | 182 | 47,478 |
-| Core, math & threading | 3 | 0 | 276 | 37,551 |
+| Data, assets & I/O | 6 | 6 | 162 | 46,004 |
+| Core, math & threading | 3 | 0 | 206 | 34,550 |
 | Runtime & platform | 5 | 0 | 344 | 33,789 |
 | Audio | 1 | 0 | 58 | 18,534 |
+| Script, dialogue & story | 2 | 1 | 35 | 7,554 |
 | Combat, weapons & damage | 1 | 0 | 14 | 3,229 |
 | Other, tools & editor | 1 | 0 | 5 | 468 |
-| **Total** | **90** | **57** | **4,150** | **1,577,044** |
+| **Total** | **90** | **78** | **3,099** | **1,339,679** |
 
 ## Open decisions
 
 See [`DECISIONS.md`](DECISIONS.md): DEC-1 definition of 100%, DEC-2 Steam, DEC-3
 character creator, DEC-4 start and budget of Phase A, DEC-5 kept deviations,
-DEC-6 composite terrain.
+DEC-6 composite terrain, DEC-7 approximate float instructions.
 
 ## Log
 
