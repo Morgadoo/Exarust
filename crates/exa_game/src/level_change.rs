@@ -116,6 +116,43 @@ impl PlayerPlacement {
     }
 }
 
+/// A level change's arrival: the entrance the change named (a level exit's
+/// spawn word; zero otherwise) and the `locales.rdb` id of the level it
+/// left. The original's level-change load keeps both in its session and
+/// makes the destination's transition marker that names both the player's
+/// spawn frame. A save's load names no level it left
+/// ([`exa_assets::content_stream::NO_PREVIOUS_LEVEL`]), so no marker
+/// matches there.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelArrival {
+    pub entrance: u32,
+    pub previous_level: u32,
+}
+
+/// Where a level change stands the arriving player: the last transition
+/// marker, in placement order, whose words are the arrival's entrance and
+/// the level it left (the original's load overwrites its spawn node with
+/// each match), at the marker's position and heading. `None` when no
+/// marker matches: the original then uses the identity frame at the
+/// world's origin. [Exarust's: the caller keeps the level's own start
+/// there.] The floor probe (100 cm over the frame, 300 cm down) is the
+/// placement's ([`crate::save_level::landing_feet`]).
+pub fn arrival_placement(
+    markers: &[exa_world::PlayerMarker],
+    arrival: LevelArrival,
+) -> Option<PlayerPlacement> {
+    markers
+        .iter()
+        .rev()
+        .find(|marker| {
+            marker.entrance == arrival.entrance && marker.previous_level == arrival.previous_level
+        })
+        .map(|marker| PlayerPlacement {
+            position: marker.position,
+            yaw: marker.rotation[2][0].atan2(marker.rotation[0][0]),
+        })
+}
+
 /// The story continue's exit nudge, pending: the next [`PlayerPlacement`]
 /// is moved out of the level exit that holds it ([`nudge_out_of_exits`])
 /// before the player is stood on the floor, and the marker goes with the
@@ -176,6 +213,44 @@ mod tests {
         let at = PlayerPlacement::of_flow(&placement);
         assert!((at.position - Vec3::new(81.0, 0.3, 39.2)).length() < 1e-5);
         assert!((at.yaw - 150.0f32.to_radians()).abs() < 1e-5);
+    }
+
+    /// A level change stands the player on the destination's marker that
+    /// names both the entrance and the level it left; the last match wins,
+    /// another entrance or level does not match, and no match gives none.
+    #[test]
+    fn the_arrival_is_the_marker_naming_the_entrance_and_the_level_left() {
+        let marker = |entrance, previous_level, x: f32, degrees: f32| exa_world::PlayerMarker {
+            entrance,
+            previous_level,
+            position: Vec3::new(x, 0.5, -94.0),
+            rotation: crate::flow::yaw(degrees),
+        };
+        let markers = [
+            marker(0, 2, 1.0, 0.0),
+            marker(1, 2, 2.0, 0.0),
+            marker(0, 4, 3.0, 0.0),
+            marker(0, 2, 4.0, 90.0),
+        ];
+        let from = |entrance, previous_level| LevelArrival {
+            entrance,
+            previous_level,
+        };
+        let at = arrival_placement(&markers, from(0, 2)).unwrap();
+        assert_eq!(at.position, Vec3::new(4.0, 0.5, -94.0));
+        assert!((at.yaw - 90f32.to_radians()).abs() < 1e-5);
+        assert_eq!(
+            arrival_placement(&markers, from(1, 2)).unwrap().position.x,
+            2.0
+        );
+        assert_eq!(
+            arrival_placement(&markers, from(0, 4)).unwrap().position.x,
+            3.0
+        );
+        assert!(arrival_placement(&markers, from(2, 2)).is_none());
+        // A save's load left no level: nothing matches.
+        let none = from(0, exa_assets::content_stream::NO_PREVIOUS_LEVEL);
+        assert!(arrival_placement(&markers, none).is_none());
     }
 
     /// A plain teardown takes the player's body out of the scene, a change

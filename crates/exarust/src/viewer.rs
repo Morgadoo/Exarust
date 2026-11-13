@@ -59,7 +59,9 @@ impl Plugin for ViewerPlugin {
             )
             .add_systems(
                 Update,
-                apply_player_placement.after(finish_lighting),
+                (apply_player_placement, trace_placed_player)
+                    .chain()
+                    .after(finish_lighting),
             )
             .add_systems(
                 Update,
@@ -448,6 +450,20 @@ fn stage_waits(since: std::time::Instant, options: &Options) -> bool {
     options.fixed_frames || since.elapsed() < STAGE_TIMEOUT
 }
 
+/// The pending [`exa_game::level_change::PlayerPlacement`] is a level
+/// change's arrival for the surviving player: it is applied as soon as the
+/// destination's collision is in, before the game time runs on, so the
+/// player does not fall where it stood in the old level while the rest of
+/// the level loads.
+#[derive(Resource, Debug, Clone, Copy)]
+struct ArrivalPlacement;
+
+/// The level play mode last stood in, for the next level change's arrival
+/// ([`exa_game::level_change::LevelArrival`]); a teardown with no level
+/// after it clears it.
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+struct LastLevel(String);
+
 /// A level being built a step per frame, behind the loading screen.
 #[derive(Resource)]
 struct PendingLevel {
@@ -477,6 +493,7 @@ fn apply_level_change(
     saved: Option<Res<exa_world::SavedLevelSection>>,
     travelling: Option<Res<exa_game::follower_travel::TravellingFollowers>>,
     mut world: Option<ResMut<exa_game::world_characters::WorldCharacters>>,
+    last: Option<Res<LastLevel>>,
 ) {
     let Some(ready) = ready else {
         return;
@@ -500,8 +517,25 @@ fn apply_level_change(
     let Some(level) = level else {
         debug!("level change: the world was torn down");
         cache.clear();
+        // No level is left behind: the next load comes from no level.
+        commands.remove_resource::<LastLevel>();
         return;
     };
+    // The arrival the destination's transition marker is matched against:
+    // the entrance the change named and the id of the level it leaves.
+    let previous_level = last
+        .as_ref()
+        .and_then(|last| {
+            game.0
+                .pack(PackKind::Resource)
+                .and_then(|p| p.get("locales.rdb"))
+                .and_then(|b| exa_formats::roles::locale_id(b, &last.0))
+        })
+        .unwrap_or(exa_assets::content_stream::NO_PREVIOUS_LEVEL);
+    commands.insert_resource(exa_game::level_change::LevelArrival {
+        entrance: spawn,
+        previous_level,
+    });
     // The old level's parsed models, decoded texels and painted variants are
     // no longer reachable from any entity; drop the cache so the next load
     // reads them again and the old geometry and CPU texels are freed now.
@@ -644,6 +678,11 @@ fn continue_level(
     let landing = pending_arena.landing.as_deref();
     let career = pending_arena.career.as_deref();
     let launch = pending_arena.launch.as_deref().map(|launch| &launch.0);
+    let arrival = pending_arena
+        .arrival
+        .as_deref()
+        .copied()
+        .map(|arrival| (arrival, pending_arena.placement.is_some()));
     let mut loader = ModelLoader {
         game: &game.0,
         cache: &mut cache,
@@ -696,9 +735,11 @@ fn continue_level(
                 landing,
                 career,
                 launch,
+                arrival,
             );
-            // A landing plan is used once.
+            // A landing plan is used once, and so is the arrival.
             commands.remove_resource::<exa_game::level_transition::PendingLanding>();
+            commands.remove_resource::<exa_game::level_change::LevelArrival>();
         }
         _ => {
             begin_lighting(&mut commands, &gi, BUILT_AT);
@@ -830,8 +871,10 @@ fn play_level(
     landing: Option<&exa_game::level_transition::PendingLanding>,
     career: Option<&exa_game::hub_windows::ArenaCareer>,
     launch: Option<&exa_game::arena_hub_live::ArenaMatchLaunch>,
+    arrival: Option<(exa_game::level_change::LevelArrival, bool)>,
 ) {
     commands.entity(root).insert(exa_physics::StaticGeometry);
+    commands.insert_resource(LastLevel(name.to_string()));
     // The level's alarm zones; a level start disarms the alarm.
     if !info.alarm_volumes.is_empty() {
         info!("level {name}: {} alarm zones", info.alarm_volumes.len());
@@ -1050,7 +1093,47 @@ fn play_level(
         yaw = heading;
         cast_start = StartCast::None;
     }
-    if let Some(at) = options.at {
+    // A level change into a story level stands the player at the arrival
+    // marker. The flow's own placement (a story start, a continue), a
+    // save's landing plan and an arena's layout come first; with no marker
+    // matching the level's own start stays. The placement is posted for the
+    // surviving player, which the simulation otherwise keeps where it stood
+    // in the old level.
+    let arena = exa_game::arena_hub_live::is_hub_level(name)
+        || exa_game::arena_match::arena_index(name).is_some();
+    let arriving = arrival.filter(|&(_, placed)| {
+        !placed
+            && !arena
+            && landing.and_then(|landing| landing.player).is_none()
+            && launch.is_none()
+            && options.arena_match.is_none()
+    });
+    if let Some((arrival, _)) = arriving {
+        match exa_game::level_change::arrival_placement(&info.player_markers, arrival) {
+            Some(at) => {
+                info!(
+                    "level {name}: the arrival marker for entrance {} from level {} stands the player at {} (yaw {:.1} deg)",
+                    arrival.entrance,
+                    arrival.previous_level,
+                    at.position,
+                    at.yaw.to_degrees()
+                );
+                position = at.position;
+                yaw = at.yaw;
+            }
+            None => info!(
+                "level {name}: no arrival marker for entrance {} from level {} among {}; the level's start stays",
+                arrival.entrance,
+                arrival.previous_level,
+                info.player_markers.len()
+            ),
+        }
+        commands.insert_resource(exa_game::level_change::PlayerPlacement { position, yaw });
+        commands.insert_resource(ArrivalPlacement);
+    }
+    // `--at` places the first level's player; a level change has its own
+    // arrival.
+    if let Some(at) = options.at.filter(|_| arrival.is_none()) {
         position = Vec3::from_array(at);
         cast_start = StartCast::None;
     }
@@ -1104,6 +1187,8 @@ pub(crate) struct PendingArena<'w> {
     landing: Option<Res<'w, exa_game::level_transition::PendingLanding>>,
     career: Option<Res<'w, exa_game::hub_windows::ArenaCareer>>,
     launch: Option<Res<'w, PendingArenaLaunch>>,
+    arrival: Option<Res<'w, exa_game::level_change::LevelArrival>>,
+    placement: Option<Res<'w, exa_game::level_change::PlayerPlacement>>,
 }
 
 /// Play mode waiting for the level's collision, behind the loading screen.
@@ -1204,6 +1289,7 @@ type SpawnSources<'w> = (
 type ArrivalSources<'w> = (
     Option<Res<'w, exa_game::follower_travel::TravellingFollowers>>,
     Option<Res<'w, exa_game::level_change::PlayerPlacement>>,
+    Option<Res<'w, ArrivalPlacement>>,
 );
 
 /// How long the player spawn waits on the loaded player's character
@@ -1237,7 +1323,7 @@ fn finish_collision(
             Without<exa_game::player::Player>,
         ),
     >,
-    (mut time, (travelling, placement)): (ResMut<Time<Virtual>>, ArrivalSources),
+    (mut time, (travelling, placement, arrival)): (ResMut<Time<Virtual>>, ArrivalSources),
     (hold, created, saved, streamed, requests): SpawnSources,
 ) {
     // The level's characters go to the content stream's streamed pass
@@ -1411,9 +1497,10 @@ fn finish_collision(
         commands.remove_resource::<exa_game::follower_travel::TravellingFollowers>();
     }
     let existing = players.iter().next().map(|(entity, _)| entity);
-    if let Some((_, mut transform)) = players.into_iter().next() {
+    if let Some((_, mut transform)) = players.into_iter().next().filter(|_| arrival.is_none()) {
         // The player survives a level change; the new level's start moves
-        // it (the collision is in, so it cannot fall through).
+        // it (the collision is in, so it cannot fall through). An arrival
+        // moves it with its body's parts ([`apply_player_placement`]).
         transform.translation = pending.start.position + Vec3::Y * 0.2;
     }
     if let Ok(mut transform) = bodies.single_mut() {
@@ -2358,6 +2445,8 @@ fn apply_player_placement(
     exits: Option<Res<exa_game::zone_scripts::ExitVolumes>>,
     frame_physics: Res<exa_physics::collision_share::FramePhysics>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    (arrival, level_pending): (Option<Res<ArrivalPlacement>>, Option<Res<PendingLevel>>),
+    collision_pending: Option<Res<PendingCollision>>,
     mut players: Query<(Entity, &mut Transform), With<exa_game::player::Player>>,
     mut bodies: Query<
         &mut Transform,
@@ -2367,7 +2456,14 @@ fn apply_player_placement(
         ),
     >,
 ) {
-    if loading.is_some() {
+    // An arrival waits for the collision only; any other placement for
+    // the whole load.
+    let waits = if arrival.is_some() {
+        level_pending.is_some() || collision_pending.is_some()
+    } else {
+        loading.is_some()
+    };
+    if waits {
         return;
     }
     let Some(placement) = placement else {
@@ -2414,7 +2510,43 @@ fn apply_player_placement(
         transform.rotation = Quat::from_rotation_y(placement.yaw);
     }
     fixed.run(place_player_in_step, (at, by, placement.yaw));
+    commands.insert_resource(PlacedTrace(1200));
     commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
+    commands.remove_resource::<ArrivalPlacement>();
+}
+
+/// Frames left to log the placed player's root and pelvis.
+#[derive(Resource)]
+struct PlacedTrace(u32);
+
+/// Logs, for a few frames after a placement, where the player's root and
+/// its body's pelvis are as the frame sees them.
+fn trace_placed_player(
+    mut commands: Commands,
+    trace: Option<ResMut<PlacedTrace>>,
+    roots: Query<&Transform, With<exa_game::player::Player>>,
+    bodies: Query<&exa_physics::body::Ragdoll, With<exa_game::player::PlayerBody>>,
+) {
+    let Some(mut trace) = trace else {
+        return;
+    };
+    if trace.0 == 0 {
+        commands.remove_resource::<PlacedTrace>();
+        return;
+    }
+    if trace.0 % 20 == 0 && trace.0 < 900 {
+        let pelvis = bodies.iter().next().and_then(|body| {
+            body.parts
+                .iter()
+                .find(|p| p.parent.is_none())
+                .map(|p| Vec3::from(p.transform().translation))
+        });
+        info!(
+            "level placement: after the placement the root is at {:?}, the pelvis at {pelvis:?}",
+            roots.iter().next().map(|t| t.translation)
+        );
+    }
+    trace.0 -= 1;
 }
 
 /// The level placement on the simulation's side: the player's root goes to
@@ -2425,7 +2557,7 @@ fn apply_player_placement(
 fn place_player_in_step(
     In((at, by, yaw)): In<(Vec3, Vec3, f32)>,
     mut roots: Query<
-        &mut Transform,
+        (&mut Transform, Option<&mut exa_physics::CharacterBody>),
         (
             With<exa_game::player::Player>,
             Without<exa_game::player::PlayerBody>,
@@ -2438,23 +2570,72 @@ fn place_player_in_step(
             Without<exa_game::player::Player>,
         ),
     >,
+    physics: Option<Res<exa_physics::Physics>>,
 ) {
-    for mut root in &mut roots {
-        root.translation = at;
+    if let Some(physics) = physics.as_deref() {
+        info!(
+            "level placement: the simulation's floor under {at}: {:?}",
+            physics.line_cast(at + Vec3::Y, Vec3::NEG_Y, 3.0)
+        );
     }
+    let mut was = None;
+    for (mut root, capsule) in &mut roots {
+        was = Some(root.translation);
+        root.translation = at;
+        // The last tick's follow and ground were measured where the body
+        // stood: left, the next step would carry the character back there.
+        if let Some(mut capsule) = capsule {
+            capsule.follow = None;
+            capsule.ground = None;
+            capsule.vertical_velocity = 0.0;
+        }
+    }
+    // The parts' lowest point, for the log: where the body stood.
+    let lowest = |ragdoll: &exa_physics::body::Ragdoll| {
+        ragdoll
+            .parts
+            .iter()
+            .map(|p| p.transform().translation.y)
+            .fold(f32::INFINITY, f32::min)
+    };
     for (mut transform, ragdoll) in &mut bodies {
+        // The parts turn with the body about the root (as the frame saw it)
+        // and move with it.
+        let turn = Quat::from_rotation_y(yaw) * transform.rotation.inverse();
         transform.rotation = Quat::from_rotation_y(yaw);
-        if let Some(mut ragdoll) = ragdoll
-            && by != Vec3::ZERO
+        // A standing body carried by its root (a surviving player) follows
+        // the root's move and turn at its next tick: moving its parts too
+        // would move it twice.
+        if let Some(ragdoll) = ragdoll.as_ref().filter(|ragdoll| ragdoll.carried()) {
+            info!(
+                "level placement: the body is carried by its root; its lowest part at {:.2} m goes with it",
+                lowest(ragdoll)
+            );
+        } else if let Some(mut ragdoll) = ragdoll
+            && (by != Vec3::ZERO || turn.angle_between(Quat::IDENTITY) > 1e-4)
         {
-            let shift = bevy::math::Affine3A::from_translation(by);
-            let worlds: Vec<bevy::math::Affine3A> = ragdoll
-                .parts
-                .iter()
-                .map(|p| shift * p.transform())
-                .collect();
-            ragdoll.place_at(&worlds);
+            let before = lowest(&ragdoll);
+            // A pure displacement first: the particles' histories, contacts
+            // and foot anchors travel too, so the move carries no velocity
+            // (a placement that left the feet anchored in the old level
+            // dragged the body through the new floor).
+            ragdoll.translate(by);
+            if turn.angle_between(Quat::IDENTITY) > 1e-4 {
+                let shift = bevy::math::Affine3A::from_translation(at)
+                    * bevy::math::Affine3A::from_quat(turn)
+                    * bevy::math::Affine3A::from_translation(-at);
+                let worlds: Vec<bevy::math::Affine3A> = ragdoll
+                    .parts
+                    .iter()
+                    .map(|p| shift * p.transform())
+                    .collect();
+                ragdoll.place_at(&worlds);
+            }
             ragdoll.wake();
+            info!(
+                "level placement: the body's lowest part was at {before:.2} m, now {:.2} m (root was {was:?} in the simulation)",
+                lowest(&ragdoll)
+            );
         }
     }
     info!("level placement: the simulation's player root at {at}, its body's parts moved by {by}");

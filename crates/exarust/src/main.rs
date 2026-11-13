@@ -17,7 +17,7 @@
 //!          --inject "click:X,Y@f;cursor:X,Y@f;KEY@f[-g];...", --socket path, --log-dir dir
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
-//!          --at x,y,z                 play mode: start here (metres)
+//!          --at x,y,z                 play mode: start the first level here (metres)
 //!          --corpse x,y,z             play mode: a dead human lies here (metres); repeatable
 //!          --spawn-race n@x,y,z       play mode: a living character of race byte n stands here (metres), the first
 //!                                     actor template of that race (a fresh record of the race without one); repeatable
