@@ -16,8 +16,8 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **48.31%** | **100%** |
-| Ledger: functions audited | — | 6,588 of 6,478 | 6,478 |
+| **Ledger: bytes in a final state** | — | **48.41%** | **100%** |
+| Ledger: functions audited | — | 6,624 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | not measured | 100% |
 | Retail references | — | 8 | about 50 |
@@ -32,7 +32,7 @@ function yet; see the [README](README.md).
 
 | phase | state | next step |
 |---|---|---|
-| A — measure every function | doing | A7 follow-up (36 engine rows), then done |
+| A — measure every function | done | — |
 | B — close every open function | doing | B0 leads; then B1 (1,018 uncalled) |
 | C — behaviour | not started | C1 tools |
 | D — release | not started | D1 infrastructure |
@@ -51,7 +51,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 | A4 | Audit packages | done | 90 of 90 audited (5 redone after rejection, 2 settled by a second review) |
 | A5 | Review of each package | done | 90 accepted |
 | A6 | Coverage computed from the ledger | done | published 2026-11-13: ledger 48.3% closed (37.8% live, 8.8% engine, 1.7% no code), 39.6% partial, 12.1% open |
-| A7 | Check the excluded code | doing | 102 of 103 reached not-applicable rows confirmed, 1 moved into the count; engine sample 92 of 94 hold (the RTL random group is ported code, reopened); 36 unaudited game-class engine rows being checked |
+| A7 | Check the excluded code | done | 102 of 103 reached not-applicable rows confirmed; the RTL random group reopened as ported code; 36 game-class engine rows checked (33 engine, 1 partial, 2 unreachable) |
 | A8 | Phase B work list | done | `phase-b-worklist.md`: 1,038 uncalled (291 KB), 1,548 partial (988 KB), 74 missing (16 KB) |
 
 ### Phase B ([detail](phase-b-close.md))
@@ -64,7 +64,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 | B0.4 | Torrent stream in lockstep | done | the original draws from the two process-wide generators, which the step streams stand for; the sweep scene needs retuning, not the code |
 | B0.5 | New game creates no save slot; arena saves dropped | doing | all four claims real and fixed on a lane (slot at session begin, arena saves, quit save, alarm and journal); round 205 stacks on 204 and waits for the GPU |
 | B0.6 | Spirit Form adopt/home and other frame-sent writes in free mode | todo | found by the mindend lane |
-| B1 | Wire the uncalled | todo | size after A8 |
+| B1 | Wire the uncalled | doing | logic families first (headless tests) while the GPU is down: mind powers, character data, physics dynamics |
 | B2 | Reclassify the engine-replaced | todo | |
 | B3 | Close the unreachable | todo | |
 | B4 | Port what is missing | todo | |
@@ -106,17 +106,17 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Thaumaturgy & effects | 9 | 9 | 206 | 129,720 |
 | AI & behaviour | 8 | 8 | 190 | 120,216 |
 | Characters, motion & animation | 8 | 8 | 262 | 116,341 |
-| Game modes, arena & session | 7 | 7 | 253 | 105,681 |
+| Game modes, arena & session | 7 | 7 | 248 | 103,149 |
 | World, levels & terrain | 5 | 5 | 172 | 88,138 |
 | Items, materials & crafting | 5 | 5 | 186 | 86,750 |
-| Data, assets & I/O | 6 | 6 | 162 | 46,004 |
+| Data, assets & I/O | 6 | 6 | 161 | 45,896 |
 | Runtime & platform | 5 | 5 | 81 | 24,381 |
 | Core, math & threading | 3 | 3 | 98 | 18,405 |
 | Script, dialogue & story | 2 | 2 | 35 | 7,554 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,663** | **1,297,391** |
+| **Total** | **90** | **90** | **2,657** | **1,294,751** |
 
 ## Open decisions
 

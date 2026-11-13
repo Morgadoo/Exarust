@@ -1,5 +1,8 @@
 # Phase A — Measure every function
 
+**Done 2026-11-13.** All 8,783 functions have a reviewed row; coverage is
+published from the ledger (48.3% closed beside the 82.3% estimate).
+
 **Goal:** no function is `unaudited`. Coverage is computed from the ledger.
 
 **Starting point (2026-11-12):** 8,783 functions. 2,305 are closed by their

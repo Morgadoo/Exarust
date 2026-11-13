@@ -5,9 +5,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 1,018 | 287,014 | B1 wire (or prove unreachable) |
-| partial | 1,579 | 995,137 | B4 complete the port |
-| missing | 73 | 15,938 | B4 port |
+| uncalled | 1,014 | 286,586 | B1 wire (or prove unreachable) |
+| partial | 1,579 | 993,295 | B4 complete the port |
+| missing | 72 | 15,780 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
 ## By section (open bytes)
@@ -16,14 +16,14 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 159,383 | 27,483 | 2,065 |
 | ui | 97,130 | 86,693 | 1,695 |
-| render | 127,946 | 43,078 | 3,232 |
+| render | 128,158 | 43,078 | 3,232 |
 | powers | 113,666 | 13,005 | 3,049 |
 | ai | 110,222 | 9,587 | 407 |
 | characters | 90,418 | 23,826 | 2,097 |
-| modes | 84,060 | 20,521 | 1,100 |
+| modes | 82,006 | 20,201 | 942 |
 | world | 66,182 | 21,393 | 563 |
 | items | 72,908 | 13,172 | 670 |
-| data | 32,023 | 13,981 | 0 |
+| data | 32,023 | 13,873 | 0 |
 | runtime | 16,565 | 7,524 | 990 |
 | core | 13,668 | 4,678 | 59 |
 | script | 5,740 | 1,803 | 11 |
@@ -37,7 +37,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMotileDynamics | physics | 48 / 99,121 | 5 / 5,469 | 1 / 38 | 104,628 |
 | TMotileAI | ai | 31 / 35,910 | 7 / 3,725 | 3 / 360 | 39,995 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
-| XA_Arena (unit routines) | modes | 46 / 25,816 | 9 / 1,729 | 8 / 942 | 28,487 |
+| XA_Arena (unit routines) | modes | 47 / 25,993 | 9 / 1,729 | 8 / 942 | 28,664 |
 | SG_PlayerControls (unit routines) | ai | 44 / 23,983 | 6 / 993 | 1 / 47 | 25,023 |
 | TSimSector | physics | 33 / 23,628 | 1 / 224 | 0 / 0 | 23,852 |
 | TVCCloth | physics | 20 / 19,103 | 8 / 2,551 | 1 / 1,638 | 23,292 |
@@ -49,11 +49,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGUIForm | ui | 30 / 9,518 | 32 / 8,274 | 1 / 153 | 17,945 |
 | TGUIItemContainer | items | 16 / 13,877 | 6 / 3,483 | 0 / 0 | 17,360 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
-| XA_SaveGames (unit routines) | modes | 28 / 15,233 | 10 / 1,346 | 1 / 158 | 16,737 |
 | TMatchBoard | modes | 11 / 9,965 | 8 / 5,999 | 0 / 0 | 15,964 |
 | FLX_GPUPrograms (unit routines) | render | 10 / 8,729 | 28 / 6,589 | 0 / 0 | 15,318 |
 | TMesh | render | 20 / 13,220 | 4 / 1,746 | 0 / 0 | 14,966 |
 | RF_Morphing (unit routines) | characters | 7 / 7,937 | 9 / 6,346 | 1 / 154 | 14,437 |
+| XA_SaveGames (unit routines) | modes | 25 / 12,816 | 8 / 1,162 | 0 / 0 | 13,978 |
 | TGUIItemView | ui | 0 / 0 | 27 / 12,862 | 0 / 0 | 12,862 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
 | TShaderBuilder | render | 0 / 0 | 13 / 12,787 | 0 / 0 | 12,787 |
@@ -72,8 +72,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TTextBox | ui | 1 / 230 | 17 / 8,985 | 0 / 0 | 9,215 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTetraRBD | physics | 17 / 8,115 | 4 / 917 | 1 / 151 | 9,183 |
-| FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 14 / 1,408 | 0 / 0 | 9,170 |
-| SG_GameMain (unit routines) | modes | 20 / 7,420 | 4 / 1,436 | 0 / 0 | 8,856 |
+| FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 13 / 1,300 | 0 / 0 | 9,062 |
+| SG_GameMain (unit routines) | modes | 21 / 7,606 | 3 / 1,300 | 0 / 0 | 8,906 |
 | RF_GUI_Main (unit routines) | ui | 7 / 5,075 | 19 / 2,486 | 3 / 1,167 | 8,728 |
 | RF_Dynamics (unit routines) | physics | 8 / 2,263 | 22 / 6,364 | 0 / 0 | 8,627 |
 | RF_OS_Functions (unit routines) | runtime | 13 / 6,781 | 5 / 1,749 | 1 / 49 | 8,579 |
@@ -321,6 +321,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGameTips | script | 1 / 229 | 0 / 0 | 0 / 0 | 229 |
 | TPwrMindSense_C | powers | 3 / 170 | 2 / 53 | 0 / 0 | 223 |
 | TPopupParchment | ui | 2 / 220 | 0 / 0 | 0 / 0 | 220 |
+| TCamera | render | 1 / 212 | 0 / 0 | 0 / 0 | 212 |
 | TAbstractPathFinder | ai | 0 / 0 | 11 / 210 | 0 / 0 | 210 |
 | RFE_Dynamics_Cloth (unit routines) | physics | 2 / 210 | 0 / 0 | 0 / 0 | 210 |
 | TTexLoaderThread | render | 1 / 209 | 0 / 0 | 0 / 0 | 209 |
