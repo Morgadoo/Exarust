@@ -585,6 +585,9 @@ pub struct LevelSaveScene<'w, 's> {
     characters: Query<'w, 's, SceneCharacter, Without<crate::player::PlayerBody>>,
     local: Option<ResMut<'w, crate::world_characters::LocalCharacters>>,
     motions: Option<Res<'w, exa_anim::Motions>>,
+    /// The golem alarm the story's section carries in its settings chunk
+    /// (the frame's copy).
+    alarm: Option<Res<'w, crate::golem_alarm::GolemAlarm>>,
 }
 
 /// A scene character as the save's flush reads it.
@@ -834,7 +837,9 @@ impl LevelSaveScene<'_, '_> {
             records,
             strings,
             story,
-            SettingsState::reset(),
+            self.alarm
+                .as_deref()
+                .map_or_else(SettingsState::reset, |alarm| alarm.saved_settings()),
             characters
                 .as_ref()
                 .map(|(live, world, held, database)| SectionCharacters {

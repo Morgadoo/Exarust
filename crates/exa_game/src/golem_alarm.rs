@@ -120,6 +120,87 @@ impl Default for GolemAlarm {
     }
 }
 
+impl GolemAlarm {
+    /// The alarm as a story save's level section carries it (its settings
+    /// chunk, [`crate::level_transition::SettingsState`]): the armed flag
+    /// (the chunk's "old tag" gate), the armed point as the twelve-byte
+    /// tag (three little-endian floats), the zone's pass word and the
+    /// alarm count. The exporter writes the chunk only while an alarm is
+    /// armed or one has rung, and the point only while armed (the reset
+    /// point otherwise).
+    pub fn saved_settings(&self) -> crate::level_transition::SettingsState {
+        let mut tag = [0; 12];
+        for (to, from) in tag
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.armed.at.to_array())
+        {
+            *to = from.to_le_bytes();
+        }
+        crate::level_transition::SettingsState {
+            old: self.armed.armed,
+            tag,
+            first: self.armed.pass,
+            saved: self.rung,
+        }
+    }
+
+    /// The alarm a saved level section restores, as the load's settings
+    /// hook reads its chunk over the load's reset: the point from the tag,
+    /// armed when the point's height is under one million (the reset point
+    /// stands at [`golem::RESET_HEIGHT`]), the pass and the count from the
+    /// two words. A section without the chunk (or that does not parse)
+    /// answers `None`: the reset stands.
+    pub fn from_saved_section(section: &[u8]) -> Option<Self> {
+        let body = section.get(4..)?;
+        let chunks = exa_formats::save_package::parse_chunks(body).ok()?;
+        let chunk = chunks
+            .iter()
+            .find(|chunk| chunk.id == exa_formats::save_chunk::SAVE_SETTINGS_ID)?;
+        let payload = chunk.payload.get(..20)?;
+        let float =
+            |at: usize| f32::from_le_bytes(payload[at..at + 4].try_into().unwrap_or([0; 4]));
+        let word = |at: usize| u32::from_le_bytes(payload[at..at + 4].try_into().unwrap_or([0; 4]));
+        let read = exa_formats::save_chunk::read_save_settings(
+            chunk.id,
+            float(4),
+            word(12) as i32,
+            word(16) as i32,
+        );
+        Some(Self {
+            armed: AlarmZone {
+                armed: read.old,
+                at: Vec3::new(float(0), float(4), float(8)),
+                pass: read.first as u32,
+            },
+            rung: read.second as u32,
+        })
+    }
+}
+
+/// The saved alarm comes back with a level read from a save's own section:
+/// once the level is in, its section's settings chunk is read over the
+/// level start's reset ([`GolemAlarm::from_saved_section`]). A level from
+/// the archive keeps the reset.
+pub fn restore_saved_alarm(
+    source: Option<Res<exa_world::LevelSource>>,
+    mut alarm: ResMut<GolemAlarm>,
+    mut fixed: Option<ResMut<FixedCommands>>,
+) {
+    let Some(source) = source.filter(|source| source.is_changed() && source.from_save) else {
+        return;
+    };
+    let Some(saved) = GolemAlarm::from_saved_section(&source.bytes) else {
+        return;
+    };
+    info!(
+        "load: level {} restores the golem alarm: armed {} at {:?} (pass {}), {} rung",
+        source.entry, saved.armed.armed, saved.armed.at, saved.armed.pass, saved.rung
+    );
+    exa_physics::sim_app::write_resource(fixed.as_deref_mut(), &mut alarm, move |a| *a = saved);
+}
+
 /// The point (cm) the player's zones were last checked at.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub struct AlarmCheckPoint(pub Vec3);
@@ -160,6 +241,7 @@ impl Plugin for GolemAlarmPlugin {
                 exa_physics::sim_app::SimPreStep,
                 check_alarm_zones.after(crate::rise::restore_revived),
             )
+            .add_systems(Update, restore_saved_alarm)
             .add_systems(
                 Update,
                 (return_from_alarm, crate::revive_pass::reset_brains)
@@ -1320,5 +1402,90 @@ mod tests {
         );
         let ahead = moved.transform_point3(Vec3::Z);
         assert!((ahead - Vec3::new(8.0, 0.0, 69.0)).length() < 1e-5);
+    }
+
+    /// A bare level section exported with the alarm's settings.
+    fn alarm_section(alarm: &GolemAlarm) -> Vec<u8> {
+        let level = exa_formats::rfc_write::export_save_level(
+            &exa_formats::rfc_write::ExportScene {
+                whole_scene: true,
+                ..Default::default()
+            },
+            &exa_formats::rfc_write::ExportOptions::default(),
+            None,
+        )
+        .unwrap();
+        crate::level_transition::exported_level_section(&level, true, alarm.saved_settings())
+            .unwrap()
+    }
+
+    /// The alarm's settings chunk: written while armed or once one rang,
+    /// the point only while armed; it reads back to the same alarm.
+    #[test]
+    fn the_alarm_round_trips_through_the_settings_chunk() {
+        // The reset alarm writes no chunk: the load's reset stands.
+        assert_eq!(
+            GolemAlarm::from_saved_section(&alarm_section(&GolemAlarm::default())),
+            None
+        );
+        let armed = GolemAlarm {
+            armed: AlarmZone {
+                armed: true,
+                at: Vec3::new(-75.25, 12.0, 6600.0),
+                pass: 474,
+            },
+            rung: 1,
+        };
+        assert_eq!(
+            GolemAlarm::from_saved_section(&alarm_section(&armed)),
+            Some(armed)
+        );
+        // Disarmed after a ring (a level start since): the count is kept,
+        // the point is the reset point and the alarm reads disarmed.
+        let rung = GolemAlarm {
+            armed: AlarmZone {
+                pass: 9,
+                ..AlarmZone::reset()
+            },
+            rung: 3,
+        };
+        let back = GolemAlarm::from_saved_section(&alarm_section(&rung)).unwrap();
+        assert!(!back.armed.armed);
+        assert_eq!(back.armed.at, AlarmZone::reset().at);
+        assert_eq!((back.armed.pass, back.rung), (9, 3));
+        // A short or foreign section is no chunk, never a panic.
+        assert_eq!(GolemAlarm::from_saved_section(b"xx"), None);
+    }
+
+    /// A level read from a save's own section restores the saved alarm
+    /// over the level start's reset; an archive level keeps the reset.
+    #[test]
+    fn a_level_from_a_save_restores_its_alarm() {
+        let armed = GolemAlarm {
+            armed: AlarmZone {
+                armed: true,
+                at: Vec3::new(10.0, 0.0, 66.0),
+                pass: 474,
+            },
+            rung: 2,
+        };
+        for from_save in [false, true] {
+            let mut app = App::new();
+            app.init_resource::<GolemAlarm>()
+                .add_systems(Update, restore_saved_alarm)
+                .insert_resource(exa_world::LevelSource {
+                    entry: "exanima02.rfc".to_string(),
+                    bytes: alarm_section(&armed).into(),
+                    from_save,
+                    spawned: Vec::new(),
+                });
+            app.update();
+            let expected = if from_save {
+                armed
+            } else {
+                GolemAlarm::default()
+            };
+            assert_eq!(*app.world().resource::<GolemAlarm>(), expected);
+        }
     }
 }

@@ -170,14 +170,21 @@ pub struct StorySlotLoad {
     pub prefer_checkpoint: bool,
 }
 
-/// The flow's save work on the current story slot: a save (with the death
-/// rule or without), the death's drop of the save file, and the copy of the
-/// save over the checkpoint.
+/// The flow's save work on the current slot of the mode's manager: a
+/// save (with the death rule or without), the death's drop of the save
+/// file, the copy of the save over the checkpoint, a new game's slot and
+/// the arena forfeit's player-data save.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveStep {
-    Save { drop_on_low_health: bool },
+    Save {
+        drop_on_low_health: bool,
+    },
     Drop,
     Checkpoint,
+    /// A new story's or career's empty slot, which becomes current.
+    NewSlot,
+    /// The arena match quit's forfeit save: the player data alone.
+    ForfeitSave,
 }
 
 /// The engine clock (game milliseconds) the level-6 exit's checkpoint
@@ -295,6 +302,72 @@ pub struct SaveReport {
     pub story_loaded: Option<(u32, save_package::SlotKind)>,
 }
 
+/// The save unit's system sets: the frame's save steps, and the quit's
+/// autosave in `Last` (its gate, the arena match's forfeit, then the
+/// writes).
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SaveLiveSystems {
+    Steps,
+    QuitGate,
+    QuitForfeit,
+    QuitWrite,
+}
+
+/// The application is closing and the quit's autosave ran (the original's
+/// quit hook). Once set, the frame's save steps run in `Last` instead of
+/// `Update`, after the gate, so the quit's saves are written before the
+/// app exits.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QuitAutosave(pub bool);
+
+/// Whether the quit's autosave has run.
+pub fn quitting(quit: Option<Res<QuitAutosave>>) -> bool {
+    quit.is_some_and(|quit| quit.0)
+}
+
+/// The quit hook: when the app is asked to close (the title's or pause
+/// page's QUIT, the window's close) while a session plays, the session's
+/// quit runs as the original's quit hook does ([`crate::flow::Flow::quit_session`]
+/// with the menu's page): the story saves with the death rule; the arena
+/// saves from the in-game page and forfeits from the arena's pause page
+/// (the forfeit then saves the player data, [`SaveStep::ForfeitSave`]).
+/// The closing app needs none of the quit's other steps.
+fn quit_autosave(
+    mut exits: MessageReader<AppExit>,
+    mut quit: ResMut<QuitAutosave>,
+    flow: Option<ResMut<crate::flow::Flow>>,
+    menu: Option<Res<crate::menu_screen::MenuScreen>>,
+    mut steps: MessageWriter<SaveStep>,
+    mut forfeits: MessageWriter<crate::flow::ForfeitMatch>,
+) {
+    if exits.read().count() == 0 || quit.0 {
+        return;
+    }
+    quit.0 = true;
+    let Some(mut flow) = flow else {
+        return;
+    };
+    // Without a menu form the page matches no arena row [the original
+    // reads its menu form's page, and saves nothing without the form].
+    let page = menu.map_or(crate::menu_pages::Page::Title, |menu| menu.page);
+    let quit_steps = flow.quit_session(page);
+    info!(
+        "save: the app closes during {:?} ({:?}, page {page:?}): {quit_steps:?}",
+        flow.mode, flow.phase
+    );
+    for step in quit_steps {
+        match step {
+            crate::flow::Step::Save { drop_on_low_health } => {
+                steps.write(SaveStep::Save { drop_on_low_health });
+            }
+            crate::flow::Step::Forfeit => {
+                forfeits.write(crate::flow::ForfeitMatch);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The running game's save and load.
 pub struct SaveLivePlugin;
 
@@ -315,6 +388,9 @@ impl Plugin for SaveLivePlugin {
             .add_message::<crate::world_clock::RestoreWorldClock>()
             .init_resource::<ArenaStores>()
             .init_resource::<SaveReport>()
+            .init_resource::<QuitAutosave>()
+            .add_message::<AppExit>()
+            .add_message::<crate::flow::ForfeitMatch>()
             .init_resource::<crate::world_characters::WorldCharacters>()
             .init_resource::<crate::world_characters::LocalCharacters>()
             .init_resource::<exa_assets::live_objects::LiveObjects>()
@@ -327,13 +403,43 @@ impl Plugin for SaveLivePlugin {
                     scripted_saves,
                     run_checkpoint_scripts,
                     // Every save first saves the open screens.
-                    crate::gui_screens::save_open_screens_for_saves,
+                    crate::gui_screens::save_open_screens_for_saves::<false>,
                     save_to_new_slot,
-                    run_save_steps,
+                    run_save_steps::<false>.in_set(SaveLiveSystems::Steps),
                     load_arena_slot,
                     load_story_slot,
+                    take_loaded_journal,
                 )
                     .chain()
+                    .run_if(resource_exists::<SaveFolder>),
+            )
+            // The steps a frame asks for are written before a level change
+            // asked in the same frame tears the level down.
+            .configure_sets(
+                Update,
+                SaveLiveSystems::Steps
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+            )
+            .configure_sets(
+                Last,
+                (
+                    SaveLiveSystems::QuitGate,
+                    SaveLiveSystems::QuitForfeit,
+                    SaveLiveSystems::QuitWrite,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                Last,
+                (
+                    quit_autosave.in_set(SaveLiveSystems::QuitGate),
+                    (
+                        crate::gui_screens::save_open_screens_for_saves::<true>,
+                        run_save_steps::<true>,
+                    )
+                        .chain()
+                        .in_set(SaveLiveSystems::QuitWrite),
+                )
                     .run_if(resource_exists::<SaveFolder>),
             )
             .add_systems(
@@ -1329,9 +1435,10 @@ fn save_to_new_slot(
     mut report: ResMut<SaveReport>,
     flow: Option<Res<crate::flow::Flow>>,
     experience: Option<Res<crate::experience_live::StoryExperience>>,
-    (mut live, mut world): (
+    (mut live, mut world, screens): (
         ResMut<exa_assets::live_objects::LiveObjects>,
         Option<ResMut<crate::world_characters::WorldCharacters>>,
+        Option<Res<crate::gui_screens::GameScreens>>,
     ),
     mut scene: crate::level_save::LevelSaveScene,
 ) {
@@ -1371,6 +1478,7 @@ fn save_to_new_slot(
         .copied()
         .unwrap_or_default()
         .stamp(&mut session);
+    stamp_journal(&mut session, screens.as_deref());
     let mut characters: Option<Vec<crate::level_save::LiveCharacter>> = None;
     let (name, export) = match session.mode {
         Mode::Arena => {
@@ -1425,20 +1533,155 @@ fn save_to_new_slot(
     }
 }
 
-/// The flow's save steps on the current story slot. A save writes the
-/// live story session with the player's record and placement (the death
-/// rule first, when asked: a dead player's save is dropped instead); a drop
-/// deletes the save file, and without a checkpoint the slot leaves the
-/// list; a checkpoint copies the save over it. Nothing runs without a
-/// current story slot, or outside the story.
+/// The manager a save step writes through: the original's save unit
+/// writes the current manager, which the mode switch sets (the story's in
+/// story mode, the arena's in arena mode). Without a flow the story's
+/// [Exarust's: a test or debug app]; a hub level outside the story counts
+/// as the arena [Exarust's: a hub launched straight from the command line
+/// keeps the title's mode]. Practice and the scripted modes have none.
+fn save_mode(flow: Option<&crate::flow::Flow>, level: Option<&str>) -> Option<Mode> {
+    let hub = level.is_some_and(crate::arena_hub_live::is_hub_level);
+    match flow.map(|flow| flow.mode) {
+        None | Some(crate::flow::Mode::Story) => Some(Mode::Story),
+        Some(crate::flow::Mode::Arena) => Some(Mode::Arena),
+        Some(_) if hub => Some(Mode::Arena),
+        Some(_) => None,
+    }
+}
+
+/// The live journal a save writes as its journal chunk: the in-game
+/// journal's pages (the screens' copy, which the open journal stored into
+/// first, [`crate::gui_screens::save_open_screens_for_saves`]). Without the
+/// screens the session's own journal stays.
+pub fn stamp_journal(session: &mut Session, screens: Option<&crate::gui_screens::GameScreens>) {
+    let Some(screens) = screens else {
+        return;
+    };
+    let entries: Vec<exa_script::story::Entry> = screens
+        .journal
+        .entries
+        .iter()
+        .map(|entry| exa_script::story::Entry {
+            title: entry.title.clone(),
+            text: entry.text.clone(),
+        })
+        .collect();
+    if let Some(journal) = exa_script::story::Journal::from_entries(entries) {
+        *session.story.journal_mut() = journal;
+    }
+}
+
+/// A loaded save's journal as the in-game journal holds it: the reader's
+/// pages (one "New Entry" page when the save had none), the first page
+/// selected [guess: the reader's selection is not traced]; the window's
+/// place is kept.
+pub fn apply_loaded_journal(journal: &mut exa_ui::game_gui::Journal, session: &Session) {
+    journal.entries = session
+        .story
+        .journal()
+        .entries()
+        .iter()
+        .map(|entry| exa_ui::game_gui::JournalEntry {
+            title: entry.title.clone(),
+            text: entry.text.clone(),
+        })
+        .collect();
+    journal.ensure_entry();
+    journal.current = 0;
+}
+
+/// The story load hands its journal to the in-game journal once the load
+/// put the loaded session up ([`LoadedStory`]).
+fn take_loaded_journal(
+    loaded: Option<Res<LoadedStory>>,
+    screens: Option<ResMut<crate::gui_screens::GameScreens>>,
+) {
+    let (Some(loaded), Some(mut screens)) = (loaded, screens) else {
+        return;
+    };
+    if !loaded.is_changed() {
+        return;
+    }
+    apply_loaded_journal(&mut screens.journal, &loaded.0);
+    info!(
+        "save: the loaded journal's {} pages go into the in-game journal",
+        screens.journal.entries.len()
+    );
+}
+
+/// The arena's live session with the manager, as the arena's save writes
+/// it: the company and its tables and the manager's record (his six
+/// per-rank kits) with his placement, and the world databases. The world
+/// sync runs first when `promote` is set (the full save's promotion pass;
+/// the forfeit's player-data save runs none).
 #[allow(clippy::too_many_arguments)]
-fn run_save_steps(
+fn arena_save_session(
+    seconds: u32,
+    camera: SaveCamera,
+    career: Option<&mut crate::hub_windows::ArenaCareer>,
+    stores: &mut ArenaStores,
+    live: &mut exa_assets::live_objects::LiveObjects,
+    players: &mut PlayerSaveQuery,
+    created: Option<&crate::creator_screen::CreatedCharacter>,
+    scene: &mut crate::level_save::LevelSaveScene,
+    promote: bool,
+) -> (Session, crate::slots::WorldExport) {
+    let fallback = crate::hub_windows::ArenaCareer::default();
+    let career: &crate::hub_windows::ArenaCareer = match career {
+        Some(career) => {
+            if promote {
+                promote_arena_items(live.db_mut(), players, career, stores, scene);
+            }
+            career
+        }
+        None => &fallback,
+    };
+    let mut session = Session::career(career.company.name.clone());
+    session.company = career.company.clone();
+    session.capture_arena(career, &stores.staff, &stores.arsenal, &stores.stash);
+    session.clock = seconds;
+    camera.stamp(&mut session);
+    let player = live_story_player(players, created).map(|player| arena_manager(player, career));
+    let export = story_save_world(&mut session, player.as_ref(), live.db(), &[]);
+    (session, export)
+}
+
+/// The clocks a save step stamps and the quit's state.
+type SaveClocks<'w> = (
+    Option<Res<'w, exa_combat::remedy::WorldClock>>,
+    Option<Res<'w, exa_physics::body::BodyTicks>>,
+    Option<Res<'w, QuitAutosave>>,
+);
+
+/// The flow's save steps on the current slot of the mode's manager
+/// ([`save_mode`]).
+///
+/// * A new slot ([`SaveStep::NewSlot`], a new story's or career's start)
+///   is made in the manager ([`SlotList::create`]) under the created
+///   character's name and becomes the current slot.
+/// * A save writes the live session: the story's with the player's record
+///   and placement, the arena's with the company's tables and the manager
+///   (its promotion pass first). With the death rule a dead player's save
+///   is dropped instead.
+/// * A drop deletes the save file; without a checkpoint the slot leaves
+///   the list.
+/// * A checkpoint (the story's) copies the save over it.
+/// * The forfeit's save ([`SaveStep::ForfeitSave`], the arena match quit)
+///   writes only the arena's player data, under the hub's locale.
+///
+/// Nothing but the new slot runs without a current slot.
+///
+/// Two instances run: the frame's (`AT_QUIT` false, in `Update`) and the
+/// quit's (`AT_QUIT` true, in `Last` after the quit's gate). Each reads
+/// every frame, so neither sees a step twice, and only the one for the
+/// app's state writes.
+#[allow(clippy::too_many_arguments)]
+fn run_save_steps<const AT_QUIT: bool>(
     mut steps: MessageReader<SaveStep>,
     lists: Option<ResMut<SlotLists>>,
     flow: Option<Res<crate::flow::Flow>>,
     levels: Query<&exa_world::LevelRoot>,
-    clock: Option<Res<exa_combat::remedy::WorldClock>>,
-    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    (clock, ticks, quit): SaveClocks,
     camera: Option<Res<SaveCamera>>,
     transition: Option<Res<crate::level_transition::LiveTransition>>,
     mut players: PlayerSaveQuery,
@@ -1446,38 +1689,76 @@ fn run_save_steps(
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     experience: Option<Res<crate::experience_live::StoryExperience>>,
     mut report: ResMut<SaveReport>,
-    (mut live, mut world): (
+    (mut live, mut world, screens): (
         ResMut<exa_assets::live_objects::LiveObjects>,
         Option<ResMut<crate::world_characters::WorldCharacters>>,
+        Option<Res<crate::gui_screens::GameScreens>>,
+    ),
+    (mut career, mut stores): (
+        Option<ResMut<crate::hub_windows::ArenaCareer>>,
+        ResMut<ArenaStores>,
     ),
     mut scene: crate::level_save::LevelSaveScene,
 ) {
     let steps: Vec<SaveStep> = steps.read().copied().collect();
-    if steps.is_empty() {
+    if steps.is_empty() || quitting(quit) != AT_QUIT {
         return;
     }
     let Some(mut lists) = lists else {
         return;
     };
-    if flow
-        .as_ref()
-        .is_some_and(|flow| flow.mode != crate::flow::Mode::Story)
-    {
+    let level = levels.iter().next().map(|root| root.name.clone());
+    let Some(mode) = save_mode(flow.as_deref(), level.as_deref()) else {
+        debug!("save: no save manager in this mode for {steps:?}");
         return;
-    }
-    let list = &mut lists.story;
-    if list.current() <= 0 {
-        debug!("save: no current story slot for {steps:?}");
-        return;
-    }
-    let number = list.current() as u32;
+    };
+    let story = mode == Mode::Story;
+    let list = lists.of_mode(mode);
     let disabled = transition.as_ref().is_some_and(|t| t.saves_disabled());
     let health = fighters
         .iter()
         .next()
         .map_or(1.0, |fighter| fighter.health.red);
+    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+    let seconds = clock
+        .as_ref()
+        .map_or(0, |clock| crate::world_clock::stamped(clock, now));
+    let camera = camera.as_deref().copied().unwrap_or_default();
+    // The story's session at this tick, before its world sync.
+    let story_session = || {
+        let mut session = Session::story();
+        session.story = story_at(level.as_deref().unwrap_or(""));
+        session.clock = seconds;
+        camera.stamp(&mut session);
+        stamp_story(&mut session, flow.as_deref());
+        stamp_discovery(&mut session, experience.as_deref());
+        stamp_journal(&mut session, screens.as_deref());
+        session
+    };
     for step in steps {
+        if step == SaveStep::NewSlot {
+            // The original names the slot after the current player record:
+            // the created character at a new game's start.
+            let name = created
+                .as_deref()
+                .and_then(|created| created.0.as_ref())
+                .map(|record| record.name.clone())
+                .or_else(|| live_story_player(&players, created.as_deref()).map(|p| p.record.name));
+            match list.create(name.as_deref()) {
+                Ok(number) => info!(
+                    "save: new {mode:?} game: slot {number} created for {name:?} and made current"
+                ),
+                Err(error) => warn!("save: cannot create the new game's slot: {error}"),
+            }
+            continue;
+        }
+        if list.current() <= 0 {
+            debug!("save: no current {mode:?} slot for {step:?}");
+            continue;
+        }
+        let number = list.current() as u32;
         match step {
+            SaveStep::NewSlot => {}
             SaveStep::Save { drop_on_low_health } => {
                 if disabled {
                     warn!("save: saving is disabled after the last level change; nothing written");
@@ -1492,66 +1773,60 @@ fn run_save_steps(
                     }
                     continue;
                 }
-                let level = levels.iter().next().map(|root| root.name.as_str());
-                let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
-                let seconds = clock
-                    .as_ref()
-                    .map_or(0, |clock| crate::world_clock::stamped(clock, now));
-                let mut session = Session::story();
-                session.story = story_at(level.unwrap_or(""));
-                session.clock = seconds;
-                camera
-                    .as_deref()
-                    .copied()
-                    .unwrap_or_default()
-                    .stamp(&mut session);
-                stamp_story(&mut session, flow.as_deref());
-                stamp_discovery(&mut session, experience.as_deref());
-                sync_players(&mut live, &mut players);
-                let player = live_story_player(&players, created.as_deref());
-                let (others, characters) =
-                    flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
-                let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
+                let (session, export, section) = if story {
+                    let mut session = story_session();
+                    sync_players(&mut live, &mut players);
+                    let player = live_story_player(&players, created.as_deref());
+                    let (others, characters) =
+                        flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
+                    let export =
+                        story_save_world(&mut session, player.as_ref(), live.db(), &others);
+                    let section = scene.section(live.db(), true, Some((&characters, &others)));
+                    (session, export, section)
+                } else {
+                    let (mut session, export) = arena_save_session(
+                        seconds,
+                        camera,
+                        career.as_deref_mut(),
+                        &mut stores,
+                        &mut live,
+                        &mut players,
+                        created.as_deref(),
+                        &mut scene,
+                        true,
+                    );
+                    stamp_journal(&mut session, screens.as_deref());
+                    let section = scene.section(live.db(), false, None);
+                    (session, export, section)
+                };
                 log_world_export(&export);
-                let section = scene.section(live.db(), true, Some((&characters, &others)));
                 let level_section = section
                     .as_ref()
                     .map(|(name, bytes)| (name.as_str(), bytes.as_slice()));
                 match list.save_current(&session, &export.save_world(level_section, false)) {
                     Ok(_) => {
                         info!(
-                            "save: story slot {number} saved (level {level:?}, clock {seconds} s)"
+                            "save: {mode:?} slot {number} saved (level {level:?}, clock {seconds} s)"
                         );
                         report.saved = Some(number);
                     }
-                    Err(error) => warn!("save: cannot write story slot {number}: {error}"),
+                    Err(error) => warn!("save: cannot write {mode:?} slot {number}: {error}"),
                 }
             }
             SaveStep::Drop => match list.drop_after_death(0.0) {
                 Ok(dropped) => info!(
-                    "save: story slot {number}'s save is dropped (slot left the list: {dropped})"
+                    "save: {mode:?} slot {number}'s save is dropped (slot left the list: {dropped})"
                 ),
                 Err(error) => warn!("save: cannot drop slot {number}: {error}"),
             },
+            SaveStep::Checkpoint if !story => {
+                debug!("save: the arena keeps no checkpoint");
+            }
             SaveStep::Checkpoint => {
                 // The original's checkpoint routine saves first (with the
                 // writer's disable check) and only then copies the save over
                 // the checkpoint; an existing checkpoint is left alone.
-                let level = levels.iter().next().map(|root| root.name.as_str());
-                let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
-                let seconds = clock
-                    .as_ref()
-                    .map_or(0, |clock| crate::world_clock::stamped(clock, now));
-                let mut session = Session::story();
-                session.story = story_at(level.unwrap_or(""));
-                session.clock = seconds;
-                camera
-                    .as_deref()
-                    .copied()
-                    .unwrap_or_default()
-                    .stamp(&mut session);
-                stamp_story(&mut session, flow.as_deref());
-                stamp_discovery(&mut session, experience.as_deref());
+                let mut session = story_session();
                 // The checkpoint's pre-save world sync, as for a save.
                 if !disabled {
                     sync_players(&mut live, &mut players);
@@ -1577,6 +1852,33 @@ fn run_save_steps(
                         info!("save: story slot {number} already has a checkpoint; it stays")
                     }
                     Err(error) => warn!("save: cannot write slot {number}'s checkpoint: {error}"),
+                }
+            }
+            SaveStep::ForfeitSave if story => {
+                debug!("save: the forfeit's save is the arena's");
+            }
+            SaveStep::ForfeitSave => {
+                // The forfeit's save writes the player data alone, with the
+                // hub's locale (the arena writer's only locale), and no
+                // world sync, world databases or level section.
+                let (mut session, _) = arena_save_session(
+                    seconds,
+                    camera,
+                    career.as_deref_mut(),
+                    &mut stores,
+                    &mut live,
+                    &mut players,
+                    created.as_deref(),
+                    &mut scene,
+                    false,
+                );
+                stamp_journal(&mut session, screens.as_deref());
+                match list.save_current(&session, &SaveWorld::default()) {
+                    Ok(_) => {
+                        info!("save: arena slot {number}'s player data saved after the forfeit");
+                        report.saved = Some(number);
+                    }
+                    Err(error) => warn!("save: cannot write arena slot {number}: {error}"),
                 }
             }
         }
@@ -3277,6 +3579,293 @@ mod tests {
         app.update();
         assert_eq!(app.world().resource::<SaveReport>().saved, Some(1));
         assert!(Slots::story(&dir).file(1, SlotKind::Save).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An app over a scratch save folder with the flow in `mode` and a
+    /// created character named `name`, as a new game's commit leaves it.
+    fn new_game_app(dir: &std::path::Path, mode: crate::flow::Mode, name: &str) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.to_path_buf()))
+            .insert_resource({
+                let mut flow = crate::flow::Flow::default();
+                flow.mode = mode;
+                flow.phase = crate::flow::Phase::Playing;
+                flow
+            })
+            .insert_resource(crate::creator_screen::CreatedCharacter(Some(
+                CharacterRecord {
+                    name: name.to_string(),
+                    ..CharacterRecord::reset()
+                },
+            )));
+        app.update();
+        app
+    }
+
+    /// A new story makes its slot at the start (named after the created
+    /// character, current at once), so the story's first save lands in it
+    /// without a continue from the saves screen.
+    #[test]
+    fn a_new_story_creates_its_slot_and_its_first_save_lands_there() {
+        let dir = folder("new-story");
+        // Two older saves: the new slot takes the lowest free number and
+        // goes to the front.
+        let slots = Slots::story(&dir);
+        slots.create(&Session::story()).unwrap();
+        slots.create(&Session::story()).unwrap();
+        let mut app = new_game_app(&dir, crate::flow::Mode::Story, "Wanderer");
+        // Before the slot the flow's save writes nothing.
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: true,
+        });
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, None);
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        let lists = app.world().resource::<SlotLists>();
+        assert_eq!(lists.story.current(), 3);
+        assert_eq!(lists.story.numbers(), &[3, 2, 1]);
+        assert_eq!(lists.story.names()[0].as_deref(), Some("Wanderer"));
+        assert_eq!(lists.arena.current(), -1);
+        // The slot's package is there, empty until the first save.
+        let file = slots.file(3, SlotKind::Save);
+        assert!(file.is_file());
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: true,
+        });
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, Some(3));
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(list.any());
+        assert_eq!(list.numbers()[0], 3);
+        list.select(0);
+        let loaded = list.load_current(false).unwrap();
+        assert!(matches!(loaded.data.header, PlayerHeader::Story(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The flow's start of a story or a career begins with the new slot;
+    /// practice makes none.
+    #[test]
+    fn the_session_begin_asks_for_the_new_slot_in_story_and_arena_only() {
+        use crate::flow::{Flow, Mode as FlowMode, Step};
+        for (mode, slot) in [
+            (FlowMode::Story, true),
+            (FlowMode::Arena, true),
+            (FlowMode::Practice, false),
+        ] {
+            let mut flow = Flow::default();
+            flow.mode = mode;
+            let steps = flow.begin_session(vec![Step::LoadLevel {
+                locale: "exanima01",
+                spawn: 0,
+                teardown: true,
+            }]);
+            assert_eq!(steps.first() == Some(&Step::NewSlot), slot, "{mode:?}");
+        }
+    }
+
+    /// The arena's saves go to the arena manager's current slot: the new
+    /// career's slot, a save with the company's tables, and the forfeit's
+    /// player-data save.
+    #[test]
+    fn an_arena_career_saves_into_its_own_slot_and_the_forfeit_saves_its_player_data() {
+        let dir = folder("new-career");
+        let mut app = new_game_app(&dir, crate::flow::Mode::Arena, "Manager");
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.copper = 750;
+        career.company.day = 3;
+        app.insert_resource(career);
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        let lists = app.world().resource::<SlotLists>();
+        assert_eq!(lists.arena.current(), 1);
+        assert_eq!(lists.arena.names()[0].as_deref(), Some("Manager"));
+        assert_eq!(lists.story.current(), -1);
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: false,
+        });
+        app.update();
+        let arena = Slots::arena(&dir);
+        assert!(!Slots::story(&dir).file(1, SlotKind::Save).exists());
+        let money = |dir: &std::path::Path| {
+            let mut list = SlotList::new(Slots::arena(dir));
+            assert!(list.any());
+            list.select(0);
+            match list.load_current(false).unwrap().data.header {
+                PlayerHeader::Arena(header) => (header.money, header.day),
+                _ => panic!("not an arena save"),
+            }
+        };
+        assert_eq!(money(&dir), (750, 3));
+        // The forfeit's save rewrites the player data with the settled
+        // career; a checkpoint step does nothing in the arena.
+        app.world_mut()
+            .resource_mut::<crate::hub_windows::ArenaCareer>()
+            .company
+            .copper = 600;
+        app.world_mut().write_message(SaveStep::ForfeitSave);
+        app.world_mut().write_message(SaveStep::Checkpoint);
+        app.update();
+        assert_eq!(money(&dir), (600, 3));
+        assert!(!arena.file(1, SlotKind::Checkpoint).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The app's close while a session plays runs the quit's autosave in
+    /// the same frame: the story saves, the arena hub saves from its
+    /// in-game page, practice writes nothing.
+    #[test]
+    fn closing_the_app_saves_the_playing_session() {
+        for (mode, page, saved) in [
+            (crate::flow::Mode::Story, None, true),
+            (
+                crate::flow::Mode::Arena,
+                Some(crate::menu_pages::Page::InGame),
+                true,
+            ),
+            (crate::flow::Mode::Arena, None, false),
+            (crate::flow::Mode::Practice, None, false),
+        ] {
+            let dir = folder(&format!("quit-{mode:?}-{page:?}"));
+            let mut app = new_game_app(&dir, mode, "Quitter");
+            if let Some(page) = page {
+                let mut menu = crate::menu_screen::MenuScreen::default();
+                menu.page = page;
+                app.insert_resource(menu);
+            }
+            // The slot comes from the start (practice has no manager).
+            app.world_mut().write_message(SaveStep::NewSlot);
+            app.update();
+            assert_eq!(app.world().resource::<SaveReport>().saved, None);
+            app.world_mut().write_message(AppExit::Success);
+            app.update();
+            assert!(app.world().resource::<QuitAutosave>().0);
+            assert_eq!(
+                app.world().resource::<SaveReport>().saved,
+                saved.then_some(1),
+                "{mode:?} {page:?}"
+            );
+            // The next frame (a test app keeps running) writes nothing more.
+            let before = app.world().resource::<SaveReport>().clone();
+            app.update();
+            assert_eq!(*app.world().resource::<SaveReport>(), before);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A save writes the live journal's pages and a story load hands the
+    /// saved pages to the in-game journal.
+    #[test]
+    fn the_live_journal_is_saved_and_a_load_puts_it_back() {
+        let dir = folder("journal");
+        let mut app = new_game_app(&dir, crate::flow::Mode::Story, "Scribe");
+        let mut screens = crate::gui_screens::GameScreens::default();
+        screens.journal.entries = vec![
+            exa_ui::game_gui::JournalEntry {
+                title: "Gate".to_string(),
+                text: "The gate is shut.".to_string(),
+            },
+            exa_ui::game_gui::JournalEntry {
+                title: "Key".to_string(),
+                text: "A key in the well.".to_string(),
+            },
+        ];
+        app.insert_resource(screens);
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: false,
+        });
+        app.update();
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(list.any());
+        list.select(0);
+        let loaded = list.load_current(false).unwrap();
+        let pages: Vec<(String, String)> = loaded
+            .data
+            .journal_or_default()
+            .unwrap()
+            .into_iter()
+            .map(|record| (record.title, record.text))
+            .collect();
+        assert_eq!(
+            pages,
+            vec![
+                ("Gate".to_string(), "The gate is shut.".to_string()),
+                ("Key".to_string(), "A key in the well.".to_string()),
+            ]
+        );
+        // The load: the in-game journal (here back to its first page)
+        // takes the loaded session's pages.
+        let mut session = Session::story();
+        session.story.journal_mut().write("Gate");
+        session.story.journal_mut().add("Key");
+        session.story.journal_mut().write("A key in the well.");
+        app.world_mut()
+            .resource_mut::<crate::gui_screens::GameScreens>()
+            .journal = exa_ui::game_gui::Journal::default();
+        app.insert_resource(LoadedStory(session));
+        app.update();
+        let journal = &app
+            .world()
+            .resource::<crate::gui_screens::GameScreens>()
+            .journal;
+        assert_eq!(journal.entries.len(), 2);
+        assert_eq!(journal.entries[1].title, "Key");
+        assert_eq!(journal.entries[1].text, "A key in the well.");
+        assert_eq!(journal.current, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A story save's level section carries the armed golem alarm in its
+    /// settings chunk, and the section read back restores it.
+    #[test]
+    fn the_golem_alarm_is_saved_with_the_level_and_restored_from_it() {
+        let dir = folder("alarm");
+        let mut app = new_game_app(&dir, crate::flow::Mode::Story, "Thief");
+        let level = exa_formats::rfc_write::export_save_level(
+            &exa_formats::rfc_write::ExportScene {
+                whole_scene: true,
+                ..Default::default()
+            },
+            &exa_formats::rfc_write::ExportOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.insert_resource(exa_world::LevelSource {
+            entry: "exanima02.rfc".to_string(),
+            bytes: level.into(),
+            from_save: false,
+            spawned: Vec::new(),
+        });
+        let alarm = crate::golem_alarm::GolemAlarm {
+            armed: exa_ai::golem::AlarmZone {
+                armed: true,
+                at: Vec3::new(120.0, 35.5, -4410.0),
+                pass: 474,
+            },
+            rung: 2,
+        };
+        app.insert_resource(alarm);
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: false,
+        });
+        app.update();
+        let package = Slots::open(&Slots::story(&dir).file(1, SlotKind::Save)).unwrap();
+        let section = package
+            .section(&save_package::name("exanima02"))
+            .expect("the level section")
+            .to_vec();
+        assert_eq!(
+            crate::golem_alarm::GolemAlarm::from_saved_section(&section),
+            Some(alarm)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

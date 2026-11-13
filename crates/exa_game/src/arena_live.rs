@@ -343,11 +343,19 @@ impl Plugin for ArenaLivePlugin {
                     open_end_screen,
                     update_end_screen,
                     continue_round,
-                    forfeit_match,
+                    forfeit_match::<false>,
                     draw_end_screen,
                 )
                     .chain()
                     .after(crate::gui_screens::draw_screens),
+            )
+            // The quit's forfeit (the arena pause page's QUIT) settles the
+            // match before the quit's saves are written.
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::flow::ForfeitMatch>()
+            .add_systems(
+                Last,
+                forfeit_match::<true>.in_set(crate::save_live::SaveLiveSystems::QuitForfeit),
             );
     }
 }
@@ -1112,8 +1120,12 @@ fn finish_and_exit(
 /// The arena pause page's FORFEIT: a dead manager is ignored, anything else
 /// settles the match as forfeited and returns to the hub. The flow's pause
 /// page sends [`crate::flow::ForfeitMatch`] when its third row runs.
+///
+/// Two instances read the requests every frame: the frame's (`AT_QUIT`
+/// false) and the quit's (`AT_QUIT` true, in `Last`, after the quit's
+/// gate and before its saves); only the one for the app's state acts.
 #[allow(clippy::too_many_arguments)]
-fn forfeit_match(
+fn forfeit_match<const AT_QUIT: bool>(
     mut forfeits: Option<MessageReader<crate::flow::ForfeitMatch>>,
     mut arena: Option<ResMut<ArenaMatch>>,
     mut scene: Option<ResMut<ArenaScene>>,
@@ -1121,11 +1133,16 @@ fn forfeit_match(
     (fighters, drawn): (Query<MatchBody<'_>>, Query<DrawBody<'_>>),
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
+    (quit, mut saves): (
+        Option<Res<crate::save_live::QuitAutosave>>,
+        Option<MessageWriter<crate::save_live::SaveStep>>,
+    ),
 ) {
     let Some(forfeits) = forfeits.as_mut() else {
         return;
     };
-    if forfeits.read().next().is_none() {
+    let quitting = quit.as_ref().is_some_and(|quit| quit.0);
+    if forfeits.read().count() == 0 || quitting != AT_QUIT {
         return;
     }
     let (Some(arena), Some(scene)) = (arena.as_mut(), scene.as_mut()) else {
@@ -1156,6 +1173,11 @@ fn forfeit_match(
                 &mut commands,
                 &mut exits,
             );
+            // The quit's forfeit saves the settled career's player data
+            // (the pause page's own FORFEIT row saves nothing).
+            if quitting && let Some(saves) = saves.as_mut() {
+                saves.write(crate::save_live::SaveStep::ForfeitSave);
+            }
         }
     }
 }
@@ -1959,7 +1981,7 @@ mod tests {
             .add_message::<SceneCommand>()
             .add_message::<ArenaExit>()
             .add_message::<crate::flow::ForfeitMatch>()
-            .add_systems(Update, forfeit_match);
+            .add_systems(Update, forfeit_match::<false>);
         let mut arena = ArenaMatch::begin(1);
         arena.state = MatchState::Fighting;
         app.insert_resource(arena);
@@ -1994,6 +2016,52 @@ mod tests {
         assert_eq!(career.company.copper, 500);
         assert_eq!(career.company.lost, 1);
         assert_eq!(career.matches_today, 1);
+    }
+
+    /// The quit's forfeit (the app closing from the arena's pause page)
+    /// settles the match in `Last` and asks for the forfeit's player-data
+    /// save; the frame's instance stands aside, and a pause-page forfeit
+    /// asks for no save.
+    #[test]
+    fn the_quits_forfeit_settles_then_asks_for_the_player_data_save() {
+        for quitting in [false, true] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_message::<SceneCommand>()
+                .add_message::<ArenaExit>()
+                .add_message::<crate::flow::ForfeitMatch>()
+                .add_message::<crate::save_live::SaveStep>()
+                .insert_resource(crate::save_live::QuitAutosave(quitting))
+                .add_systems(Update, forfeit_match::<false>)
+                .add_systems(Last, forfeit_match::<true>);
+            let mut arena = ArenaMatch::begin(1);
+            arena.state = MatchState::Fighting;
+            app.insert_resource(arena);
+            app.insert_resource(scene());
+            app.insert_resource(crate::hub_windows::ArenaCareer::default());
+            app.world_mut().write_message(crate::flow::ForfeitMatch);
+            app.update();
+            let saves: Vec<crate::save_live::SaveStep> = app
+                .world_mut()
+                .resource_mut::<Messages<crate::save_live::SaveStep>>()
+                .drain()
+                .collect();
+            let settled = app
+                .world()
+                .resource::<crate::hub_windows::ArenaCareer>()
+                .company
+                .lost;
+            // One settle either way, by the instance for the app's state.
+            assert_eq!(settled, 1);
+            assert_eq!(
+                saves,
+                if quitting {
+                    vec![crate::save_live::SaveStep::ForfeitSave]
+                } else {
+                    Vec::new()
+                }
+            );
+        }
     }
 
     #[test]
