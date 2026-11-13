@@ -163,6 +163,134 @@ here; the rows in `context/re/ledger/` carry them.
 | F150 | powers-02 | powers | Mind restore constructors and restore_mind_power are test-only. Persistent Mind powers saved with a character are not rebuilt on load, and their focus reserve is not re-taken. | B4 |
 | F151 | powers-02 | powers | Particle quad mode 0 (screen_quad), the UV_8 variants and flat colour are ported but no live template sets their flags, so those branches never run. | B4 |
 
+| F152 | powers-03 | powers | Torrent sim-object slot 32 is not ported: tick_torrents has no cloth walk | B4 |
+| F153 | powers-03 | powers | Torrent voices are never played: Torrent.sounds (charge loop, stream loop volume/pitch bumped by walk_torrent_mesh) is written but nothing reads it | B4 |
+| F154 | powers-03 | powers | draw_blasts skips charging blasts, but the original builds the ribbon strip in every state, with a charge colour | B4 |
+| F155 | powers-03 | powers | Blast and torrent part contacts do not write body byte (blast only) or the kind-0x10 part's node 0x80 bit / part word; the knock is a flattened begin_knockback stand-in | B4 |
+| F156 | powers-03 | powers | Torrent part contact wakes the part in the original; Exarust touches the whole body | B4 |
+| F157 | powers-03 | powers | Level static contacts (blast, torrent walk triangles in rapier's order with no kd-tree, so the push-out order can differ from the original | B4 |
+| F158 | powers-04 | powers | Throw cast: in the original a failed cursor pick plays ThaumFail01 (fail sound. Exarust's ForceStart::ThrowMissed creates nothing and plays nothing (thaum/cast.rs create_force). | B4 |
+| F159 | powers-04 | powers | Kinesis-to-throw handover: the original also needs the held body's holder count (sim below 1. Exarust's kinesis_holds only checks for a non-ending kinesis with a target; force::kinesis_hands_over has no live caller. | B4 |
+| F160 | powers-04 | powers | Decorative shell is missing. The Force awakening game events (0xC10EC1/0xC10EC3) put a scale-3 _ForceAura01 shell on the player in the original; game_event_live only logs 'its body effect is not ported'. | B4 |
+| F161 | powers-04 | powers | Level electricity devices (exa_world::mechanisms::start_device_arc -> exa_world::arc::spawn_arc) use exa_render::electricity's lay-out-once jitter model instead of the TTendrilEmitter simulation. Level arcs therefore get no tick, branching, level clip, body strike, follow axis (slot 27) or light flicker from ArcEmitter. The electricity.rs header says this 'reproduces the presets... exactly', which | B4 |
+| F162 | powers-04 | powers | Arc frame: draw_arcs calls ArcEmitter::frame with fade 0.0, so the node fade never scales the voxel or GI light. | B4 |
+| F163 | powers-04 | powers | Persistent Force powers saved with a character (shell, strikes) are never restored: power::restore_persistent, the only caller of force::restore_force_power and Shell::new/Strikes::new in that path, has no non-test caller. | B4 |
+| F164 | powers-04 | powers | Many Force effect CPU models are test-only and the GPU materials stand in for them: effect_material::dress, GiPrograms, ShaderBook, effect_pass::PassKind, visuals::scroll_offsets, arcs::attach, add_to_world, remove_from_world, follow_parent, follow_axis. | B4 |
+| F165 | powers-05 | powers | TFireEffectRow is also the item's release hook, called from the hand-change routine. Exarust has no extinguish-on-release, so a lit blade that leaves the hand is only handled by the once-a-second check or by its entity being despawned | B4 |
+| F166 | powers-05 | powers | item_ability::ability_tick returns early when no held item has an ability, so HeldModifier (Flaming) and BurningGrip are not reset in that tick after the sword leaves both hands (not verified against the original's moveset recompute) | B4 |
+| F167 | powers-05 | powers | Barricade is silent: cast::create_force passes hum=None and sectors=None to add_to_world, so the AI entity has no 6 m sector; the impact sound and the hum gain/pitch are computed but never played | B4 |
+| F168 | powers-05 | powers | Barricade::destroy has no non-test caller; the teardown is done ad hoc in tick_barricades | B4 |
+| F169 | powers-05 | powers | The vanish and Long Door leave no tendril after-image (TVanishEffect calls; VanishNode.image is only a bool | B4 |
+| F170 | powers-05 | powers | spawn_body_wisps uses wisp size 12 and does not scale it by the body's size factor as does | B4 |
+| F171 | powers-05 | powers | veil::restore_shells, clear_shells and prune_meshes are test-only; the vanish, Long Door and summon activations never apply the shell restore/clear walks or the mesh prune order | B4 |
+| F172 | powers-05 | powers | FlameRowMaterial is shared by all rows, and its Anim follows the first row's fade only | B4 |
+| F173 | powers-05 | powers | The flame row blend is a guessed additive mode (flame_row.rs doc); there is one draw instead of one per supersample scissor branch | B4 |
+| F174 | powers-06 | powers | exa_world spawn_model spawns a fire for every model fire marker without checking the scene's world-fires flag 0x10000 that the original marker importer checks (fire::import_marker is test-only) | B4 |
+| F175 | powers-06 | powers | Level device arcs (exa_world::arc) bind a white 1x1 stand-in texture instead of _ElecMat01's emissive map; the power and weapon arcs in thaum::live load the real texture | B4 |
+| F176 | powers-06 | powers | The lightning mace hit runs charge and spark burst immediately instead of deferring them to the event queue, marked '[guess: Exarust runs them at once]' with no DEC entry | B4 |
+| F177 | powers-06 | powers | Barrier::tick_place (slot 28 sub-frame node placement) has no live caller | B4 |
+| F178 | powers-06 | powers | A closed constant displacement shell is removed rather than kept (open r162 gap, render step | B4 |
+| F179 | powers-06 | powers | ShellEffect / effects::shell::tick_shells is registered but nothing spawns a ShellEffect component; the live displacement shell runs through vanish_live instead (dead system) | B4 |
+
+| F180 | powers-07 | powers | exa_ai::combat::barricade_place (the live barricade avoidance) differs from the original slot 15. Reach is body.reach_cm (x1.4 above scale 1.3) where the original uses arm*1.5 or 1.4 plus base. The keep distance is reach+140 instead of the AI record's keep word. The window is never doubled for the alert state. effects::danger::avoid_barricade has the right rule but only test callers. | B4 |
+| F181 | powers-07 | powers | Dome::frame Phase::Ending resets the hum to 0.2/0.75 before adding the glow. The original leaves the words as they are in state 2 and adds the glow on every frame, so they accumulate. | B4 |
+| F182 | powers-07 | powers | Shock's thmnrg_chrga and thmnrg_shock sounds never play: ShockStep::charge_sound and release_sound are read by nothing live. | B4 |
+| F183 | powers-07 | powers | The Long Door's start and move sounds never play: LongDoor::start_sound and move_sound have only test callers. | B4 |
+| F184 | powers-07 | powers | The teleport bubble's 5.6 s post-process flash (BubbleStep::post_process) is computed but read by nothing live. | B4 |
+| F185 | powers-07 | powers | Barricade sight copies only seen.fear into the contact's alarm. The near, reach, urge, face and raised-alarm words are dropped. | B4 |
+| F186 | powers-07 | powers | ripple_strikes picks the aura on the striker's primary-slot weapon. The original matches the hooked object's node, so a blow from another held item does not ripple that item's own aura. | B4 |
+| F187 | powers-07 | powers | Running persistent powers are neither saved (save_power, slot 17) nor restored (restore_persistent, by the live save and load path. | B4 |
+| F188 | powers-07 | powers | The wave's charge loop voice (force_wave::wave_loop) and ribbon mesh (mesh_plan) are unwired, so a force wave is silent while charging and is never drawn. | B4 |
+| F189 | powers-08 | powers | mind::runtime::tick_minds calls mark.control(0, 0.0) for the Loyalty marker. The strength drift after 800 ticks uses relation 0 instead of the real relation (original | B4 |
+| F190 | powers-08 | powers | Mind powers (Spirit Form, Control Mind, Loyalty, Command Dead) live in MindBody.powers and are never passed to PowerBar::mark_running/load_running, so their bar slots are never lit. SlotMark::Lit/FadeOnEnd exist but are unused for them | B4 |
+| F191 | powers-08 | powers | Shock's ShockStep.charge_sound/release_sound are never played by thaum::cast::tick_casters | B4 |
+| F192 | powers-08 | powers | The fire row's FireS02 loop: frame_rows walks FlamePitch, but no audio system plays the loop | B4 |
+| F193 | powers-08 | powers | Displacement tendrils draw with DispTendrilMaterial (_TDispMat01 surface program), whereas TTendrilGeometry's own program is effectforce_v/effectsmoke_f. ForceRibbonMaterial::smoke has no live user | B4 |
+| F194 | powers-08 | powers | exa_ai::combat::blast_place writes only `danger` (close stays 0), while the original writes the same value to two score words (+4 and +8). The PlaceScore word mapping needs checking | B4 |
+| F195 | powers-08 | powers | see_force_effects builds Viewer { look: facing, facing } and copies only flags and fear into the contact. The look axis and the near/reach/urge/face words are lost | B4 |
+| F196 | powers-08 | powers | Vanish's object is an audio emitter (freed with and used as the move sound's source), but displacement::VanishNode models it as a 'light' | B4 |
+| F197 | powers-08 | powers | The after-image of Vanish/Long Door is only a bool flag that nothing draws | B4 |
+| F198 | powers-08 | powers | possess does not copy the caster's three body vectors// or the node words.. to the target; it copies only the aim | B4 |
+| F199 | powers-08 | powers | The spirit screen hook writes neither the scene-env colour/value nor the noise picture upload, so its stop has nothing to restore | B4 |
+| F200 | powers-09 | powers | Force Barricade: ending the power by event (clicking the wall again via force.rs Barricade arm power.state=2, or status broadcast) drops the ActiveEntry in thaum::cast::tick_casters without calling Barricade::end / setting TOLD_TO_END; only tick_barricades' range check (power_ends(0,..)) ends walls, so a cancelled barricade keeps standing | B4 |
+| F201 | powers-09 | powers | Mind powers (MindPowers list) never feed PowerBar::mark_running/load_running: persistent Sense Minds, Mask Mind, Command Dead caster, Loyalty, Control Mind slots are never lit/faded on the bar (SlotMark::Sense/Mask/FadeOnEnd have only test callers) | B4 |
+| F202 | powers-09 | powers | Command Dead marker end: no counterpart for (swap-remove of the body from the global list | B4 |
+| F203 | powers-09 | powers | Sense Minds persistent: MindRequest::SenseOverlay is never consumed and MindSense.overlay is unread, so no overlay shows or fades | B4 |
+| F204 | powers-09 | powers | Power save/load (save_power, restore_persistent, load_power) has no non-test caller: running powers are not saved or restored | B4 |
+| F205 | world-02 | world | cross-room light lists: Rust RoomLights::propagate feeds only the terrain block ranking (terrain::live::room_light_lists). The renderer's room light lists (shadow_links) never run it. The original runs it at the end of a save-game level load. Round 159 says REA shows it has no load-time effect, but this needs re-checking. | B4 |
+| F206 | world-02 | world | : the original writes the character's cell bytes at/. Rooms::cell_bytes has no live caller, and the room_view node hook takes the room from the position, not from those bytes (round 159 gap). | B4 |
+| F207 | world-02 | world | : the KdTree root box comes from the triangle vertices, not from the mesh's stored box (mesh/. The two differ if a stored box is not the vertex box. | B4 |
+| F208 | world-02 | world | : cloth sweeps (TVCCloth, the only caller) visit triangles through a TriangleGrid in list order instead of tree leaf order. Pushes move the sweep end, so the order can change the result. | B4 |
+| F209 | world-02 | world | : the room occluder depth-only pre-pass is replaced by opaque black draws. This adaptation has no DEC entry. | B4 |
+
+| F210 | world-03 | world | exa_audio::mechanisms keeps mechanism voices by entity and was not seen releasing them on despawn. A door leaf despawned mid-creak may keep its voice; the original destructor releases it. Not confirmed. | B4 |
+| F211 | world-03 | world | On Record levels in Auto sun mode, level_lighting_scene tests lights == 0 only. The original's rule also needs no grid rooms and removes the sun when there is more than one room. | B4 |
+| F212 | world-03 | world | Plants::load falls back to tint [0.72,0.68,0.76] when a palette has no plants and uses three channels; the original copies four floats only when plants exist. | B4 |
+| F213 | world-03 | world | scale_rule_heights (the original constructor scales height-rule bounds by 100) has no live caller. Whether RuleTree's height inputs are already in matching units was not checked. | B4 |
+| F214 | world-04 | world | exa_world::mechanisms::order_doors drops the Sounds and object word returned by mechanism::open_doors / close_and_lock_doors / toggle_doors. A signalled open plays no unlock sound, a close-and-lock plays no lock sound, and the node's object-word bit 0 is never saved. Only open_doors_under sends LockSounded. | B4 |
+| F215 | world-04 | world | Lever timed return: Lever::return_word has no caller, so the remaining return time is never written into the object word (bits 16+). A save made during a return loses it. | B4 |
+| F216 | world-04 | world | The load-time switch-off and daylight put-out (put_out_light) only zero LightSource intensity on the node and its direct children. The fixture's part flag 0x10/value and class 0x41 children are not touched, and the light search is not depth-first (find/daylight_target are test-only). | B4 |
+| F217 | world-04 | world | Operative records missing at load are not reported: the original logs 'Operative data not found: <name>'. | B4 |
+| F218 | world-04 | world | The tileset load does not log 'Failed to load tileset: <name>' and silently uses the fallback set. | B4 |
+| F219 | world-04 | world | AI door handling (exa_ai::path::pass_door/give_up_door -> door::toggle/open_span) has no live caller, so NPCs never toggle doors as TMotileAI does. | B4 |
+| F220 | world-04 | world | The grid floor/wall transparent-vertex channel (mark_transparent_triangles), set-node activation (link_grid_nodes) and 20 cm piece subdivision (subdivides_piece_child) are ported but never called by the live grid spawn. | B4 |
+| F221 | world-04 | world | No Rust port of the T3DNode instance sync from master (class slot 17: scale-ratio box/radius, geometry clone). | B4 |
+| F222 | world-05 | world | exa_world::scene_nodes::Scene::light_reaches returns true for the scene's own sector, marked in code as a guess. The original scene sector has a frame block of its own. | B4 |
+| F223 | world-05 | world | exa_game::teleporters::DeviceReads::decide measures the device reach from the user's root (feet), marked in code as a guess for the original's body point. | B4 |
+| F224 | world-05 | world | Level teardown (level_lifecycle::teardown) has no counterpart to the original's reparent walk or its streamer drain. Nodes shared with holder scenes are not re-owned. | B4 |
+| F225 | world-05 | world | exa_world::presets::PresetTable is never built by the running game, so the start-up linear-lighting 0.75 scale and the empty ambient fill of the six presets do not apply. | B4 |
+| F226 | characters-01 | characters | Hit and foley material: exa_audio::hits::impact_play and exa_audio::footsteps call exa_combat::sounds::part_hit_sound and foley with golem and skeleton hard-coded to false, so golems and skeletons get the flesh or armour sets. | B4 |
+| F227 | characters-01 | characters | exa_audio::loops::LoopSources reserve and free have no caller outside tests. The original creates and frees the voice and body sound sources in the AI tick, revive and death,. | B4 |
+| F228 | characters-01 | characters | Nothing in exa_ai or exa_combat writes the grip mode. The original's AI grip-mode writers (SG_CharacterAI, TMotileAI and TFireEffectRow have no counterpart. GripLinks::set_mode is test-only; animate_grips has its own inline copy of the logic. | B4 |
+| F229 | characters-01 | characters | ReplaceHeld is requested only by limp::place_on_ground and the Long Door. Arena spawns, save loads, level changes, AI and player teleports never re-place held items. | B4 |
+| F230 | characters-01 | characters | Wounds: the immediate paint uses radius squared x 6 ((30r+10)^2*6). No x6 factor was found in Exarust, which maps this to BladeBlood and stain_weapons. | B4 |
+| F231 | characters-01 | characters | is listed as a cleanup stub in the motilepart11 table, but it is a deferred apparel-mesh wound paint job (RF_Mesh, then FreeMem). | B4 |
+
+| F232 | characters-02 | characters | exa_combat::burn::Burn::add_dose has no live caller. Nothing writes Burn.strength, so burn_upkeep runs but fire particles never burn anyone (retail: brazier and floor-fire damage over time). | B4 |
+| F233 | characters-02 | characters | weapon_record::step_reach rounds 80*sqrt(scale) in f32 before the double-precision factors and applies the feral factor only when feral > 0. The original multiplies the sqrt-scale word last, in double, and applies the factor when feral >= 0 or NaN. | B4 |
+| F234 | characters-02 | characters | Holder.half_sword and Holder.weightless are never set on the live path (CharacterStats::holder uses..AVERAGE), so the half-sword hold branch of the holding pass never runs. | B4 |
+| F235 | characters-02 | characters | The assign_tree_material doc says 'a leaf part takes it', but the original gates the write on part word < 1, not on having no children. Not verified further. | B4 |
+| F236 | characters-03 | characters | exa_assets::model::merge_dressed always passes occlude:false, so the generator's occlusion alpha (exa_assets::merge::occlusion_alpha) never runs in the game; only tests set occlude | B4 |
+| F237 | characters-03 | characters | exa_character::factory::PIXEL_FORMAT is fixed at 2, so the skin job side is always 512; the original reads the texture-detail setting (1024 from 3 up) | B4 |
+| F238 | characters-03 | characters | exa_character::offhand::insert_equipped skips Attach::Torch: an off-hand torch and its light effect are not attached by the equip/attach path | B4 |
+| F239 | characters-03 | characters | hair::attach_hair tints every part of a style. The original gives the hair material only to parts with opacity > 0.5 and writes owner word per node (exa_assets::hair::hair_material_part is test-only) | B4 |
+| F240 | characters-03 | characters | Living placed characters' saved poses (tree and flat) are not restored; pose::place runs only for dead placements (viewer: c.dead && !c.fall) | B4 |
+| F241 | characters-03 | characters | rebuild::dress_plan fills GarmentMerge.merge (runtime::merge_order) but nothing live reads it | B4 |
+| F242 | characters-03 | characters | Creator roles (spawn::creator_role) and limb scale (look::limb_scale) have no live caller, though the original's body build applies both | B4 |
+| F243 | characters-03 | characters | Held-item mesh flag 0x10000 (runtime::Body::mark_held/unmark_held/mark_hands) and the lit held-item material raise (runtime::raise_material_flags) have no live caller | B4 |
+| F244 | characters-05 | characters | skin::GroupStack (push limit, overflow error, push_empty past the limit) is only called from tests. The live SkinPass passes frames down by recursion with no 16-frame limit and no overflow error. | B4 |
+| F245 | characters-05 | characters | Original and the other builder loops read triangle indices from the incidence table as u16, so a mesh with more than 65535 triangles would wrap. Rust uses full indices. This only matters on oversized meshes. | B4 |
+
+| F246 | characters-06 | characters | Skill unlearn: the faithful port (CharacterData::unlearn_level plus unlearn_dependents) has no live caller. The live skill screen (exa_ui::skill::unlearn_skill_level/unlearn_in_block) runs a different cascade: it walks from the last funded level down, by level, while the original rescans the first four slots from 0. Results may differ from the original. | B4 |
+| F247 | characters-06 | characters | The arena's arsenal Holder::remove_everywhere forgets an item in carried, one hand pair, worn and loadouts. The original also clears the second hand pair and the staged list. CharacterData::remove_everywhere does that but is test-only. | B4 |
+| F248 | characters-06 | characters | Level-placed characters (viewer spawn_placed_characters) take no health pools from their record. The original import spawn builder writes red and yellow. | B4 |
+| F249 | characters-06 | characters | Morph transfer barycentrics: the live path uses closest_on_triangle (region test, clamped). The original uses a plane projection with an /x///y/ sum branch. The faithful morph_barycentric is test-only. | B4 |
+| F250 | characters-06 | characters | Morph diffusion in MorphBody::transfer skips zero-distance neighbours, where the original divides by zero. | B4 |
+| F251 | characters-06 | characters | Many CharacterData rules have no live caller: mark/unmark equipped, stow/unstow hands, take_equipped, drop_surplus_refs, remove_item (trade), remap_items, retain/release, strip, can_spend_level, shared_item_refs, clear_items, push_carried/add_carried_unique/pick_up, equip_weight, worn_weight, remove_worn. The live inventory, trade and AI paths do these jobs with their own code or not at all. | B4 |
+| F252 | characters-06 | characters | save_kit::instantiate_prepared uses ObjectDb::copy_record_from where the original save path uses the instance copy (copy_instance). copy_instance is test-only. | B4 |
+| F253 | characters-06 | characters | CharacterRecord::duplicate (write then read back) has no live caller. Live code copies records with Clone, so the round trip's normalisation (for example of non-canonical voice names) is skipped. | B4 |
+| F254 | characters-07 | characters | exa_game::item_effects::WornEffects::run passes lit=false and 0.0 to step_worn and drops the WornStep and ApparelStep results. Worn-item light and garment switches/dc0/1110/1190) never take effect, and fade_material has no live caller. | B4 |
+| F255 | characters-07 | characters | run_worn_effects ignores EffectRun.flash, so the healing charge never shows the player's HUD for 1000 ms. | B4 |
+| F256 | characters-07 | characters | exa_character::blood::paint draws its wound edge from a fixed xorshift WoundRng and works g and the value in f32. The original uses the game's Random and computes in double. | B4 |
+| F257 | characters-07 | characters | exa_formats::rsq::sort_by_abs_x is never applied in Sequences::parse. Skeleton children keep the file's order instead of the original's sort by absolute x. | B4 |
+| F258 | characters-07 | characters | No lookup by record id for the Command Dead and Loyalty re-link after a load; their control is always fed None. | B4 |
+| F259 | characters-07 | characters | The perception term for status marker 0x102 (seen body with flag 0x10000, factors/ is absent from exa_ai. | B4 |
+| F260 | characters-07 | characters | The shock release in combat does not reset the swing, and a grab is not released. | B4 |
+| F261 | characters-07 | characters | exa_anim::bind_skins numbers joints by the bone number in node names, not in registration order. The 0x80000000 node-frame reset branch of has no counterpart. | B4 |
+| F262 | characters-08 | characters | exa_ai::behaviour (BehaviourBase::attach/notify, MotileBehaviour trait) has no implementor or caller outside tests. No live controller uses the shared base: event counts, attach clears and the shared reset are absent in play. | B4 |
+| F263 | characters-08 | characters | Keyframe tracks (exa_anim::tracks) start only from the F7 debug key. The original starts an object's tracks when the object is used, and that is not wired. | B4 |
+| F264 | items-01 | items | Pack moves are probably lost: in panel_live's drop, a drop on the same panel returns before any write to Possessions, and save_list is never called. So moving an item inside the player's pack likely snaps back when the pack is opened again, because bind_pack reloads it from the record. Not confirmed with a run | B4 |
+| F265 | items-01 | items | A container popup never clamps its entries after loading the record. The original calls after; Exarust's open_container_popup does not, so a child stored outside the panel stays outside it | B4 |
+| F266 | items-01 | items | Item panel hit test: panel_live::entry_at passes alpha=true, so the icon-pixel test and the second, looser pass are missing. Clicks on transparent icon corners hit the item | B4 |
+| F267 | items-01 | items | item_card::request_card ignores PanelEvent::ShowCard.run_use, so a right press on a use-kind-2 item never runs the game's use before its card | B4 |
+| F268 | items-01 | items | Dropping the AR crystal (item 499) into a panel never runs the game function: DropResult.fired is unused | B4 |
+| F269 | items-01 | items | Card builder fixes the rank and points gates off and the value gate on at build_for, and the pronoun sex is always male (female=false) | B4 |
+| F270 | items-01 | items | Centre adds (doll undress, socket give-back, shop) never run the place pass, so returned items stack at the panel centre | B4 |
+| F271 | items-01 | items | Pack to hand: equip_dropped removes the pack entry and re-adds it held at the centre instead of marking it held at its own cell | B4 |
+| F272 | items-01 | items | Container::rescale (slot 22) has no live caller, so entry places are not rescaled when the interface unit changes | B4 |
+| F273 | items-01 | items | figure_pick removes the held entry by item id; the original matches it by icon slot | B4 |
+| F274 | items-01 | items | The worn panel layout seeds DOLL_SEED on every open instead of the shared engine generator (marked [stand-in], with no DEC entry) | B4 |
+
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers
 a power yet"); the GI texture cache and `follow_camera` comments; the
