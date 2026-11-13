@@ -369,6 +369,150 @@ here; the rows in `context/re/ledger/` carry them.
 | F348 | ai-02 | ai | The follow state's closing replan (ClosePlanned) plans no goal: the 400 cm point near the leader, motion 0x14, radius 300 | B4 |
 | F349 | ai-02 | ai | The leave-combat and walk-settle routines copy the body frame origin into AI; Exarust has no counterpart (its reader is unidentified) | B4 |
 
+| F350 | ai-03 | ai | The item-cursor turn (hand::hold_hand: items.rotation *= turn_delta) never re-orthonormalises the rotation. The original does it after every turn; Exarust's Frame::orthonormalized exists but only tests call it. The rotation can drift after long turning. | B4 |
+| F351 | ai-03 | ai | A lifted world item cannot be dropped onto a GUI window to put it into the pack: the 'other control' branches of/ have no Exarust path. | B4 |
+| F352 | ai-03 | ai | The drop scripts within 5 of a put-down lifted item never run; player_controls::nearby_scripts is test-only. | B4 |
+| F353 | ai-03 | ai | Using an object (double click, usable kind 0) does not start its node's keyframe tracks. exa_anim::tracks::start_tracks is only driven by the F7 debug key, so the secret-switch brick does not move on use. | B4 |
+| F354 | ai-03 | ai | The hotkey permission mask is always allow::PLAY. player_controls::permissions (the spirit-form/document switch has no live caller, so during spirit form the windows, swap and talk are not gated. | B4 |
+| F355 | ai-03 | ai | Entering combat while lifting an item sets Hand::holding to Nothing with no put-back to the saved frames (hotkeys::enter_combat); the original cancels the lift and restores the item. | B4 |
+| F356 | ai-03 | ai | The block pairs// do not model the drag reach-limit flag; hand::lets_go always applies the 330 cm limit. | B4 |
+| F357 | ai-03 | ai | Nothing ends a held GUI mouse drag on block or respawn has no counterpart). | B4 |
+| F358 | ai-03 | ai | The kit timed list does not refresh the worn model or weapon textures after each dirt or wear write, and a clean sends no CardRefresh (only repairs do). | B4 |
+| F359 | ai-03 | ai | The lift press does not move the OS pointer to the lifted item's screen point is called with warp = 1 from the press). | B4 |
+| F360 | ai-04 | ai | Queued power slot is never retried. thaum::tree computes queued_slot when a power answers 'not now' (-3), but thaum::cast only logs it. PlayerControl has no PowerHold, so the original's 500 ms retry from the pad routine is lost. | B4 |
+| F361 | ai-04 | ai | The player's ChaseCamera is built from GAME_CAMERA_PRESET (the Spectate record's flags, including the free press drag bit 1). The Character mode's record (0x200300) is not used. The preset numbers are the same, so the visible effect is probably limited to the handler bits. | B4 |
+| F362 | ai-04 | ai | GameModes resource is registered but nothing live reads it (output unread). | B4 |
+| F363 | ai-04 | ai | PlayerControl.hotkey_mask is never read by live code. | B4 |
+| F364 | ai-05 | ai | exa_ai::route::NavRouter is built with size: 0 in brain.rs, chase via lib.rs, npc_search.rs and revive_pass.rs, and it calls nav::find_path, whose penalty shift is fixed at 0. The original AI constructor writes goal-struct size class 3, shift 1 and stop 10. So NPCs plan with a clearance limit of 180 instead of 45, and footprint and barricade penalties are not doubled. | B4 |
+| F365 | ai-05 | ai | nav::query::line_walk's block clamp (Raster::clamp/place) returns the backed-up raster point. Slot 23 projects that point onto the start-to-end direction normalised with rsqrtss, so the clamped end differs slightly. | B4 |
+| F366 | ai-05 | ai | The raise and refresh sample voxel/cell rounding (sample_voxel, axis in f64) transforms in metres and then scales. The original pre-scales the node matrix in single precision (y row in double), so ties can round differently. | B4 |
+| F367 | ai-05 | ai | remove_footprint recomputes the character patch at the stored standing point instead of subtracting the stamped patch. If a refresh changes floors between the stamp and the removal, the penalty bytes can drift. | B4 |
+| F368 | ai-06 | ai | brain::perceive_all calls combatant::trust(third, raw, false, effects): resist_mind is always false for third-party trust, while the original reads the observer's resist-technique flag (0x10000) | B4 |
+| F369 | ai-06 | ai | struck::react_to_blows passes Blow.removed = false always, so take_hit's removed gate never applies | B4 |
+| F370 | ai-06 | ai | Goal radius callbacks/ are not used: route::Goal.radius_cm is never read and walks end at a fixed 100 cm flat reach (walker::follow_walk) instead of the goal's 150/100 cm radius | B4 |
+| F371 | ai-06 | ai | An off-grid footprint overflow branch) stamps nothing. It does not fall back to cell 8, set flag 0x80000, unlink from the room list, notify the scene or log 'Character position overflow' | B4 |
+| F372 | ai-06 | ai | NPCs have no look snap in combat called by the AI tick) and no head tracking (slot 33) | B4 |
+| F373 | ai-06 | ai | RoomCells::remove has no caller, so reset/overflow/dynamics paths never unlink a character from its room cell | B4 |
+
+| F374 | ai-07 | ai | The search constructor's = 4.0 is used. The target pass, read at starts its notice-best from it while the idle activity is busy. brain.rs passes attended: None, and Search::new's doc calls the value unused. | B4 |
+| F375 | ai-07 | ai | The AI relation store (exa_ai::roles::Relations) and the script cast's relations are split. Script AddRelation, RemRelation and the dialogue's relation write-back never reach roles::attitude. script_cast.rs documents the split; there is no DEC entry. | B4 |
+| F376 | ai-07 | ai | Partner.former is always None, so last_attitude never migrates a former-level relation is never driven). | B4 |
+| F377 | ai-07 | ai | The tournament spawn's pairwise team allies with base 100.0) are not reproduced; no arena code creates relations. | B4 |
+| F378 | ai-07 | ai | find_leader input in npc_search always has dead: false and identifies the leader by player identity, so a dead player still counts as the leader (the original checks != 0xa00 and HasRole 7). | B4 |
+| F379 | ai-07 | ai | The wear job's handling sound at volume 0.3) is not played in Deed::Wear. | B4 |
+| F380 | ai-07 | ai | drop_item refuses a locked pack and the drop is not retried; the original deferred job stays queued. drop_item also accepts an item that is only in a hand. | B4 |
+| F381 | ai-07 | ai | sync_container places a dropped item at (0,0) instead of (u16 +8 x 0x28, u16 +0xa x 0x28). | B4 |
+| F382 | ai-07 | ai | exa_script::dialogue::role_set_invalid checks only the character's own roles, not its relation roles toward the partner, and keeps no failure counters. | B4 |
+| F383 | ai-07 | ai | The 'Invalid role ID: <hex>' error report from the lookup, AddRole, RemoveRole, the entry finder and the encounter is not reproduced anywhere. | B4 |
+| F384 | ai-08 | ai | : Exarust builds the nav grid asynchronously and nothing waits for NavState::Built, so a level runs with no grid (fallback answers) for its first frames; the original builds the grid before play. | B4 |
+| F385 | ai-08 | ai | : keep_off is not applied to the player's footwork or to the body's queued-step end (TMotileDynamics), only to the AI duellist. | B4 |
+| F386 | ai-08 | ai | : the refused-stab arm (body = 2 and grip mode via has no AI writer; the reset of the per-striker records at each attack start (stab, overhead, side, combo) is not shown in Rust. | B4 |
+| F387 | ai-08 | ai | : the per-tick concern integration in exa_ai::contacts writes concern without raising the 1.2 / 4.0 event bits (only add_concern from hits uses set_concern). | B4 |
+| F388 | ai-08 | ai | : InstalledPathfinder is written live but nothing reads its query methods, and the per-character pathfinder selection/ has no counterpart. | B4 |
+| F389 | ai-08 | ai | /: the search activity's perceived goal entity (TObjectEntity, weight 5, attraction 1-d/1200 capped 0.99) is never built live; the live search sets a look-at goal directly. | B4 |
+| F390 | modes-01 | modes | Company deaths in a match are lost: arena_match::tick_arena_match and arena_live::sweep_fallen build SceneFighter with name: None. log_fall then returns false for Fall::Died, so no 0x60000 death record is written, the deaths count stays the same, and match_tick never calls remove: the dead fighter stays on career.company.roster,,. | B4 |
+| F391 | modes-01 | modes | A manager who falls while teammates still stand gets no end screen 2/3 and no camera hand-over. ManagerDown.ours_standing is never read and manager_screen only feeds end_action/forfeit. | B4 |
+| F392 | modes-01 | modes | Kept fighters are not reset between rounds: match_layout::stand_rematch (repose, condition 0, behaviour mode 3, AI clocks now+10000+jitter) has no live caller, and arena_live::stand_next_round only redresses the kept fighter,,. | B4 |
+| F393 | modes-01 | modes | The day's special matches are not saved or restored: arena_tables::from_live writes previous.day.specials instead of ArenaCareer::daily_rows, and the loader does not rebuild them (arena::restore_special is test-only),. | B4 |
+| F394 | modes-01 | modes | The tournament chunk loader drops the whole week board when an event id is unknown (event_from_entry returns None; the original falls back to row 4). It also keeps an empty field instead of drawing one with. | B4 |
+| F395 | modes-01 | modes | The tournament generator never runs the reward duplicate check: arena::prize_conflict ('Reward Error' / 'Item duplicated in shop.') is test-only. | B4 |
+| F396 | modes-01 | modes | After a continue-career load, nothing renumbers the fighters, generates a missing tournament or drops the unfit: arena_session::hub_arrival is test-only. | B4 |
+| F397 | modes-01 | modes | A live new career is the default ArenaCareer with fixed seeds (0x12345678) for the board, tournament and hire list. ArenaCareer::start_new_career (counter seeds) is test-only, and the start kit is not stowed in the arsenal with 0x600. | B4 |
+| F398 | modes-01 | modes | Company entrants' health uses word/65535 in f32 (scene_bodies::company_plan) instead of the original's double product f32(double(max)*double(word)*1/65535); arena_match::health_from_word is exact but test-only. | B4 |
+| F399 | modes-01 | modes | The wind wake and the recruit creator flow, and the uncalled Staff::recruit for are not ported. | B4 |
+| F400 | modes-02 | modes | ArenaCareer::fill_hire_pool_at is reached only through ArenaCareer::default (fixed seed 0x12345678) and renew_hire_pool; start_new_career has no live caller. | B4 |
+| F401 | modes-02 | modes | arena_tables::apply keeps the previous hire list when the saved hireables chunk is empty; the original clears the count before loading. | B4 |
+| F402 | modes-02 | modes | HubForms.marked is never set outside tests, so a box is never sorted once on switch (BoxSwitch.sorted is only logged). | B4 |
+| F403 | modes-02 | modes | The loadout form's encumbrance control (loadout::ENCUMBRANCE) never gets a value; the original writes mass^2*10 on a tab switch. | B4 |
+| F404 | modes-02 | modes | hirelings::repair_loadouts (count != 6 rebuild, trim and 'Loadout corrupted' box) has no live caller. | B4 |
+| F405 | modes-02 | modes | Company::leave_before_match writes no 0x60000/0xA0000 log record and does not release the leaver's kit or unlink the world character. | B4 |
+| F406 | modes-02 | modes | The End Day answer never clears ArenaLog; the original zeroes the log count every night. | B4 |
+| F407 | modes-02 | modes | arena_outfit::mark_quality is never called from equip_apparel, so generated outfits get no quality-layer markers. | B4 |
+| F408 | modes-02 | modes | Company Status draws no company emblem; the board's item slots open no item card. | B4 |
+| F409 | modes-02 | modes | The Rust hub_forms END_DAY passes career.entries.map(/row/ row.team_id) to Company::end_day as the six event winners. | B4 |
+
+| F410 | modes-03 | modes | A new game never creates a save slot. The original's calls for both managers, but SlotList::create is reached only from scripted --save-at saves. Story exit, revive and level-exit saves therefore do nothing until a slot is continued from the save screen. | B4 |
+| F411 | modes-03 | modes | run_save_steps ignores every SaveStep outside story mode, so the arena's autosaves (board Begin, in-game quit) and its forfeit save are never written. | B4 |
+| F412 | modes-03 | modes | The golem alarm state (armed flag, point, zone, alarm count) is never saved or restored: level_save always passes SettingsState::reset, and the reader hook has no live caller. | B4 |
+| F413 | modes-03 | modes | The journal is not saved or loaded from the live journal: the writer uses a fresh Session::story journal, and the loaded journal goes into LoadedStory, which nothing applies to GameScreens. | B4 |
+| F414 | modes-03 | modes | The per-locale indoor fog variants 1.8 and 1.4 and, chosen by XA_ExperienceSys are not applied. Every exanima level uses fog 2.0. | B4 |
+| F415 | modes-03 | modes | SaveCamera is never inserted live, so every save header carries camera origin and zoom 1. | B4 |
+| F416 | modes-03 | modes | The story writer adds an Exarust-only chunk (EXARUST_CHUNK) to #playerdata with no DEC entry. | B4 |
+| F417 | modes-03 | modes | The 'Save delete index:' log line from is not written. | B4 |
+| F418 | modes-03 | modes | SceneContentLists (the scene node hook) is filled at every load but nothing reads it. | B4 |
+| F419 | modes-03 | modes | The arena load builds the identity-reset content-stream request but does not post it. | B4 |
+| F420 | modes-04 | modes | Board.entries (participants and winners) and week_winners are never filled by live code (hub_forms only clears entries on a forfeit). Because of that the tournament status, the winner column, the forced tournament tab on show, and the tournament lineup branch never get real data | B4 |
+| F421 | modes-04 | modes | Flow::leave_session pushes Step::ScriptMode{ARENA_MODE, Leave} for the arena. apply_steps only logs it, so the original's arena leave (XA_Arena does not run on leave | B4 |
+| F422 | modes-04 | modes | The viewer's story_companion places Derrin for every new story's first level. The original's start passes the companion for the unknown background only, and the record flag 0x500 is not written | B4 |
+| F423 | modes-04 | modes | The first-run defaults in the startup entry (cursor size, GUI size, GI low precision and engine flags) are not applied; user_settings only writes FirstRun=0 | B4 |
+| F424 | modes-04 | modes | Ledger reachability walk: shows refs 0 and reached 0, but its address is stored in.data at (a form record next to, so it may be reachable. It is filed as partial, not unreachable | B4 |
+| F425 | modes-04 | modes | Step::Camera applies only bearing and zoom. The shot's view position, forced speed and cursor warp are dropped, which affects and | B4 |
+| F426 | modes-04 | modes | The story start's torch is not laid when the player carries Exarust's default torch (only with --no-torch). There is no DEC entry for this, so is filed as partial | B4 |
+| F427 | modes-05 | modes | creator_screen::entry_record clears record.inventory whenever plan.filter is set. The original filter leaves the inventory alone for story backgrounds 1-3 and for versus (0x1010), so a named background's template inventory is lost | B4 |
+| F428 | modes-05 | modes | entry_record calls filter_creation_gear with an empty arena kit (&[]), so arena game mode 8 clears every hand item instead of only those missing from the kit table | B4 |
+| F429 | modes-05 | modes | entry_record always passes record_present=false and preset_loaded=false, so plan_free_create never runs: practice opens without the three starting skill slots, and the arena never loads its saved career preset (key 0x6431bc01) | B4 |
+| F430 | modes-05 | modes | No commit saves the preset to Exanima.set has no live port), so story/arena presets are never written by Exarust | B4 |
+| F431 | modes-05 | modes | The story creator never applies the global-experience skill budget, and the practice final page never rewrites the starting skills; committed records keep unbudgeted skills | B4 |
+| F432 | modes-05 | modes | Adopting a background template does not clear the template's known powers and power slots | B4 |
+| F433 | modes-05 | modes | Sex change does not reset CharacterRecord::undead_voice (the variant DA voice;/ not ported live) | B4 |
+| F434 | modes-05 | modes | Hub loadout: the encumbrance value control is never written. The specialist (page 2) and event-lineup (page 3) pages show no item views, so their drop rules (release_for_key, the 0x200 mark, the lineup write on close) are not driven | B4 |
+| F435 | modes-06 | modes | The divination reading cannot be closed with the mouse. DivinationClick has no non-test writer, so click_reading never runs (div_card_screen.rs). Row. | B4 |
+| F436 | modes-06 | modes | Every divination reading deals the same three cards. use_cursor.rs and object_click.rs both send OpenDivination { seed: 0 }, and DivinationScreen::open seeds a fresh Mt19937 with that seed each time. | B4 |
+| F437 | modes-06 | modes | The divination paint hard-codes GUI unit 4 in draw_order and div_card::frame, so card size and shadow do not follow the screen's GUI scale. | B4 |
+| F438 | modes-06 | modes | The class picker's input calls class_hover(hover, false), so the hover sound never plays. The confirm sound is also not played. | B4 |
+| F439 | modes-06 | modes | Experience: experience::join has no live caller, so StoryExperience.party is always empty. Companion conversion, auto technique and companion discovery shares never happen. | B4 |
+| F440 | modes-06 | modes | Experience: a rise in the armour skill does not redo the armour; Conversion.raised is never read by the live path. | B4 |
+| F441 | modes-06 | modes | The creator preview has no live item drop routing (create::equip_drop and mode_container_drop are test-only). Its close does not refresh the apparel items (creation_form_close is test-only). | B4 |
+| F442 | modes-06 | modes | Arena save/load: the saved-id preparation (prepare_ids) and the post-load arsenal id remap (remap_arsenal_ids) are never called. Item ids are not remapped after a load as the original does. | B4 |
+| F443 | modes-06 | modes | The trade transaction settles the shelf from the shop's side, not the player's basket (trade::settle; apply_to_basket is test-only). The Trade button's hit rect in shop_click is a guess. | B4 |
+| F444 | modes-06 | modes | ActorCache's cached-template arm (cached=true) is never driven live. | B4 |
+
+| F445 | modes-07 | modes | End-session menu arena CONTINUE (EndMenuScreen::confirm, EndAction::ArenaContinue) leaves to the title as a stand-in instead of continuing the arena session | B4 |
+| F446 | modes-07 | modes | Arena New Career (creator_screen MenuCommand::NewCareer) opens the creator directly and skips the company-name/emblem dialog that the original opens first | B4 |
+| F447 | modes-07 | modes | The emblem editor keeps no cross-dialog emblem global: the original restores the last emblem when the dialog reopens and copies colour and mirror changes into it | B4 |
+| F448 | modes-07 | modes | Company dialog BACK only removes the form; the original runs the transition and returns to the main menu (close_company_back is unused) | B4 |
+| F449 | modes-07 | modes | Company dialog NEXT stores the name and emblem but does not start character creation or run the company_named step (mode 2, resets) | B4 |
+| F450 | data-01 | data | exa_game::arena::pack_money/unpack_money store gold as a byte capped at 255; the original/ keeps it as a 16-bit word, so amounts of 36864 copper or more differ (match_board::pack_coins and career::coin_total are correct) | B4 |
+| F451 | data-01 | data | Spreads::set_quality/ never runs live: grade_object always passes SHOP_GRADE 1, and no live path writes an apparel quality spread (char creation and arena callers are not ported) | B4 |
+| F452 | data-01 | data | ItemCatalogue::bulk takes an instance's own model bulk before its template's ([guess]); the original's always reads the template's bulk for a tagged id | B4 |
+| F453 | data-01 | data | ObjectDb::promote_at has a PROMOTION_DEPTH recursion cap that the original's does not have | B4 |
+| F454 | data-01 | data | Store::parse returns BadMagic for an unknown magic, where the original logs 'Invalid or obsolete database format.' and empties the table | B4 |
+| F455 | data-01 | data | Item::light_share is applied only when a placed object spawns; the original's re-scale after a condition change callers) is missing | B4 |
+| F456 | data-01 | data | exa_items::randomise::apply_row/row_condition/adjust_paint_seed (container fill row condition) still have no live caller, so RowCondition::of and four FractionWord getters) is uncalled | B4 |
+| F457 | data-02 | data | objdb::Store::parse feeds the 0D06 body conversion a fixed LCG paint-seed stream (fixed_paint_seeds, which the code itself calls 'a guess'). The original draws random(0xFFFFFFFF) from its process RNG. Store::parse_with_seeds has no non-test caller, so the live save and actor loaders always use the fixed stream. This only matters for 0D06 files. | B4 |
+| F458 | data-02 | data | In upgrade.rs, OLD_CLASSES.get returns 0 for an old class byte of 12 or more (old_kind does the same for kind bytes 28 or more). The original indexes table without a bound check and reads the bytes that follow it. Only invalid data is affected. | B4 |
+| F459 | data-03 | data | exa_assets::model::ModelLoader::body_material and thin_for_gi use scene.material(name) before library_material. When a file and the library both have a material of the same name, the file's record sets the mobility divisor, the collision sound set and GI thinness. The original keeps the library record in that case, and ModelLoader::material already follows that order. | B4 |
+| F460 | data-03 | data | exa_formats::rfc::Scene::parse_with and parse_database loop with `c.remaining >= 8`. Retail's root loop requires pos + 8 < size (strictly more than 8 bytes left), so a file ending in an empty 8-byte chunk header is dispatched by Exarust and skipped by the original. | B4 |
+| F461 | data-03 | data | Not a bug in practice: read_light does not set second-word bit 0x100 on a non-spot light as retail does. Live consumers only test & 0x300 == 0x200, so nothing changes today. | B4 |
+| F462 | data-03 | data | In read_sub_chunks, sub-chunk 0x3DD0B110 (registered by RF_Dynamics_Animation) only goes to Node::unknown_sub_chunks. Who consumes it in Exarust was not traced. | B4 |
+
+| F463 | data-04 | data | Story save level sections keep the 3DC2/3DC3 triangle chunks. The retail save exporter is created with options = 4 (skip triangle data, asm, but level_transition::export_level_scene passes ExportOptions { save_mode: true,..default } with skip_triangle_data false | B4 |
+| F464 | data-04 | data | rfc_level::level_scene always passes shared_materials empty. The saved BA00 list then counts and writes materials that the shared libraries hold, which retail leaves out | B4 |
+| F465 | data-04 | data | LevelLoad.arrival and previous_level are never set off NO_ARRIVAL_WORD/NO_PREVIOUS_LEVEL. The content stream's player-by-kind and marker-record tests (adopt) can never fire in the running game | B4 |
+| F466 | data-04 | data | No live caller for ContentStream::reset/StreamWorker::reset (retail queue reset hook, called from RF_OS_Functions) or for wait_for_characters (retail arena drain hook) | B4 |
+| F467 | data-04 | data | Retail generic jobs (refit requests from through hook have no Exarust poster, so the job and completion rings stay empty | B4 |
+| F468 | data-04 | data | Content-stream rings grow when full (RingQueue growth 1) instead of the poster spinning with Sleep(0); no DEC entry covers this | B4 |
+| F469 | data-04 | data | The live player placement (write_character_state) always gets condition 0, a default AI and no attachments ('[guess]' in save_live.rs). The flat-pose, motion and attached-objects branches never run | B4 |
+| F470 | data-05 | data | Recursive 0x80000 flag not applied: RF_DBObjects sets node flag 0x80000 on a placed object's node and on every node below it when the placement flags have 0x10, and also copies the bit into children. Exarust treats this bit as 'level geometry' but marks only the object's root (LevelGeometry::Root in exa_world spawn_placed_object). The code comment there says the original does not spread the flag,  | B4 |
+| F471 | data-05 | data | Sliding doors get no body by default: the original builds the door collision body for every record of kind 0x40000. Exarust leaves sliding-door leaves static unless --sliding-doors is passed (MechanismBodies::default sliding=false). | B4 |
+| F472 | data-05 | data | exa_rpk Project::parse requires the magic to equal 0xAFDFBD10 exactly, but the original only tests (word & 0xAFDFBD10) == 0xAFDFBD10. On a bad magic the original logs 'Invalid project data' and carries on, while Exarust exits with code 2. Exarust also reads the name as 20 bytes, which only works when the first project string is empty. | B4 |
+| F473 | data-05 | data | Project::resolve_path treats any ':' as an absolute path, but the original treats a ':' at index 0 as relative. | B4 |
+| F474 | data-05 | data | On first run with the small-display flag, the original's SG_GameMain also saves CursorSize, GUISize and GILowPrecision to the ini. Exarust only writes FirstRun. | B4 |
+| F475 | data-05 | data | The macro runner first sets a target global, taken from or; exa_game::commands has nothing that does this. | B4 |
+| F476 | data-05 | data | In the live path, file reads drop the original's 'File IO' log lines: read_whole_file returns None without logging. | B4 |
+| F477 | data-06 | data | The pack loader treats any bad or unreadable pack as fatal. GameData::open fails the whole start-up on a bad magic or a malformed table in any pack it opens, including the optional extra packs, where the original logs 'Invalid Package format' and continues. | B4 |
+| F478 | data-06 | data | Library::parse and Archive::parse errors are dropped without a log line (slots.rs world_object_tier and the catalogue use.ok; help_live and ActorTemplates fall back to empty). The original logs 'Invalid library format' or 'Invalid Package format'. | B4 |
+| F479 | data-06 | data | UidDatabase::load clears the records on a wrong magic and returns Ok without logging 'Invalid or obsolete database format.'. | B4 |
+| F480 | data-06 | data | exa_formats::rfc_write::Exporter's doc says texture renames 'build up over every export it runs, as the original's list does over a session'. But export_save_level creates a new Exporter for every export, so the list never builds up across a session. | B4 |
+| F481 | data-06 | data | ObjectDb::instantiate's own-description branch (Library::alloc and Library::set) can never run, as its own comment admits. If the original also never takes it, it is dead code. | B4 |
+| F482 | script-01 | script | Conversations.locale and Conversations.world_base are never written outside tests (crates/exa_script/src/lib.rs fields; only object_click/with_scene read them). Effect: InLocale and InZone compare against locale 0, and WorldTime plus every topic cooldown or activation run on seconds since the session's virtual clock started, not the saved world clock. | B4 |
+| F483 | script-01 | script | exa_script::cast::Character fields items, zones, skills, context_item and actions are never mirrored or read by live code. HasItem, SkillTecs and ContextObj always give their defaults, and AddAction's output is never read. | B4 |
+| F484 | script-01 | script | Engine::end_all has no non-test caller. Conversations, pending narration and the reply panel survive story exit, leave session and load (the original calls it from, and. | B4 |
+| F485 | script-01 | script | Engine::ai_events has no caller. AI event dialogues (Purpose::Events, EventsOnly, Reply) never run; PassReport::refresh is computed but unread. | B4 |
+| F486 | script-01 | script | AddRelation/RemRelation change only the script cast. exa_ai::roles::Relations never sees a relation role added by a script (likely gap). | B4 |
+| F487 | script-01 | script | Trust reads the mirrored contact's attitude, so a non-contact gets 0. The original's TCombatant trust works for any character. | B4 |
+| F488 | script-01 | script | LastEnc with a negative actor slot assumes slot 0 instead of the conversation field at (left undecoded in the Rust comment). | B4 |
+
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers
 a power yet"); the GI texture cache and `follow_camera` comments; the
