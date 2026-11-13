@@ -1968,6 +1968,8 @@ decals and blended surfaces now draw with the original scene pass depth bias (a 
 
 the last three frame writers found by the round 187 sweep are gone: bodies without a body tick now tick their clips once per simulation step and the frame only places their parts (menu figures keep a frame clock); the player practice lesson from a struck character is taken in the step, as the original damage routine raises it on the simulation thread; the arena-fell debug drop is posted to the step. The bridge write log ignores equal values and names what an applied value undid. Lockstep traces now differ from main from tick 1 because standing bodies clips tick per step before they turn physical (deterministic, 4 runs identical). Left: the Control Mind end frame writes (Duellist, PlayerBody).
 
+Control Mind's swap now runs on the simulation step and its hand-back is posted from the frame's black to the next step, as the original splits them across its threads; in free mode the frame no longer undoes the duellist and player body (a free-bridge test fails on the old code). The torrent's draws were checked against the original: the two process-wide generators, which the step streams stand for. Roadmap tasks B0.3 and B0.4.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
@@ -2564,6 +2566,10 @@ Round 178 raisedead: Raise Dead and Command Dead raise and lay down corpses, and
 Round 180 mind2: the Mind powers change the live NPC brains as the original does, and Control Mind and Spirit Form write their minds on the simulation world.
 
 the save slot kinds now follow the original name builder (1 = the save, 2 = the checkpoint); a fresh saves screen had continued from the checkpoint, and the portal reset had deleted the checkpoint and dropped the slot while its save stayed on disk unlisted. Tests over built save folders and grid runs on scratch folders. Roadmap task B0.1.
+
+a level change now stands the arriving player on the destination arrival marker (the last transition marker naming the entrance and the level left), as the original level-change load does, and the simulation follows it; before, the drawn player moved but the simulation kept the old level coordinates, so a later save mixed the new level with the old position and the player often fell out of the world. The level-exit save itself was already right (it records the level being left). Roadmap task B0.2.
+
+a new story or career now makes its save slot at the session begin, so the story exit, revive, level-exit and checkpoint saves write from the first play; the arena saves are written (board Begin, auto rematch, the quit save, the forfeit player data); closing the app runs the original quit hook; the golem alarm rides in the level section settings chunk and comes back with a saved level; the journal is saved from and loaded into the live journal. Proved by headless tests over scratch save folders. Roadmap task B0.5.
 
 ### Phase 8 — Polish and release
 
