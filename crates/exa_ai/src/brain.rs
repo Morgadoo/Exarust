@@ -1985,14 +1985,20 @@ pub fn ai_tick(
                 }
             }
             let mut alert = npc.alert;
-            // [guess: out of combat the body keeps no foe, so the look pans.]
+            // The foe is the body's target (a flight's end and the combat
+            // state's leave clear it): its yaw from the body, else the look
+            // pans.
+            let foe_yaw = combatant
+                .target
+                .and_then(|t| targets.get(t).ok())
+                .map(|(_, g)| motion::yaw_of(g.translation() * 100.0 - observer_cm));
             let looked = motion::alert_look(
                 npc.morale.panic,
                 alert.marked,
                 &mut alert,
                 &mut npc.turn,
                 facing,
-                None,
+                foe_yaw,
                 encumbrance,
                 now,
                 &mut roll,
@@ -2286,6 +2292,9 @@ pub fn flee_walk(
             && presence.is_none_or(|p| p.moves())
             && condition.0 & combatant::CONDITION_OUT == 0
         {
+            // The flee state marks the body in combat every tick, so the
+            // alert look runs once the flight is over.
+            npc.alert.marked = true;
             let flight = crate::flee::Flight {
                 now_ms: now,
                 fresh: npc.integration.fresh,
@@ -2308,6 +2317,7 @@ pub fn flee_walk(
                 npc.pass.level = level;
                 npc.integration.level = level;
                 npc.flee_focus = None;
+                combatant.target = None;
                 npc.flee_calm_until_ms = calm_until_ms;
                 info!(
                     "{entity}: the flight ends in room {} (threat room {}, home {}, fresh {}): \
@@ -5085,6 +5095,52 @@ mod tests {
         let cast = |app: &App, e| app.world().get::<crate::Duellist>(e).unwrap().mind.casting;
         assert!(!cast(&app, idle), "the cast is let go");
         assert!(cast(&app, casting), "a casting body keeps it");
+    }
+
+    /// Out of combat, a marked body whose panic is still up looks at the
+    /// body's target when it has one (past 45 degrees the look takes the
+    /// foe's yaw) instead of panning.
+    #[test]
+    fn the_alert_look_turns_to_the_bodys_target() {
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(10))
+            .add_systems(Update, ai_tick);
+        let foe = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(5.0, 0.0, 0.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.alert.marked = true;
+        brain.morale.panic = 0.5;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant {
+                    target: Some(foe),
+                    ..Combatant::default()
+                },
+                crate::Duellist::new(foe),
+                Mind::new(0.0),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.update();
+        let brain = app.world().get::<Npc>(npc).unwrap();
+        let toward = motion::yaw_of(Vec3::new(500.0, 0.0, 0.0));
+        assert!(
+            (brain.turn.look - toward).abs() < 1e-6,
+            "{}",
+            brain.turn.look
+        );
+        assert!(brain.alert.marked);
     }
 
     #[test]
