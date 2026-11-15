@@ -602,6 +602,10 @@ struct DuelChase<'a> {
     frame: u32,
     body: ChaseBody,
     foe: ChaseFoe,
+    /// The brain's goal record and alert count (a brainless fighter's are
+    /// the constructor's), written back after the tick.
+    plan_goal: crate::route::PlanGoal,
+    alert_count: i32,
     outcome: Option<chase::Outcome>,
 }
 
@@ -623,10 +627,7 @@ impl combat::Field for DuelField<'_> {
         // original's mark is set when the target is taken].
         c.mind.fresh = true;
         c.mind.estimate = estimate;
-        let mut router = NavRouter {
-            grid: c.grid,
-            size: 0,
-        };
+        let mut router = NavRouter::new(c.grid, &mut c.plan_goal, c.alert_count);
         let outcome = chase::chase(
             c.mind,
             c.who,
@@ -1807,6 +1808,18 @@ fn duellist(
             let ai_target_bits = ai.target.to_bits();
             let focused = if ai.dropped { None } else { ai.focus };
             let no_foe = focused.is_some() || ai.dropped;
+            // The brain's goal record, alert count and phase word the chase
+            // plans with (a fighter without a brain: the constructor's).
+            let plan_record =
+                brains
+                    .get(entity)
+                    .map_or((crate::route::PlanGoal::default(), 1, 0), |npc| {
+                        (
+                            npc.plan_goal,
+                            npc.alert_count,
+                            npc.applied.as_ref().map_or(0, |a| a.phase_word),
+                        )
+                    });
             let Duellist {
                 mind,
                 roll,
@@ -1831,13 +1844,17 @@ fn duellist(
                         ground_y_cm: feet.y * CM,
                         scale: fighter.stats.scale,
                         motion: me.motion,
+                        phase_word: plan_record.2,
                         voice: None,
                         now_ms: now as u32,
                     },
                     foe: ChaseFoe {
                         id: ai_target_bits,
                         ground_y_cm: target.translation().y * CM,
+                        down: target_condition.off_feet(),
                     },
+                    plan_goal: plan_record.0,
+                    alert_count: plan_record.1,
                     outcome: None,
                 }),
                 powers: powers.as_deref_mut(),
@@ -2022,7 +2039,14 @@ fn duellist(
             {
                 walk.slow_turn = false;
             }
-            let chased = field.chase.and_then(|c| c.outcome);
+            let chased = field.chase.and_then(|c| {
+                if let Ok(mut npc) = brains.get_mut(entity)
+                    && npc.plan_goal != c.plan_goal
+                {
+                    npc.plan_goal = c.plan_goal;
+                }
+                c.outcome
+            });
             if marked && contacts.iter().any(|c| c.is_foe && !c.unreachable) {
                 // The foe is in reach again.
                 combatant.contacts[index].flags &= !crate::contacts::UNREACHABLE;

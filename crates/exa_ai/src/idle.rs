@@ -483,8 +483,9 @@ pub const CLOSE_BACK_CM: f32 = 400.0;
 /// The closing goal moves only a follower within this of the leader (cm,
 /// squared, 3-D).
 pub const CLOSE_NEAR_CM2: f32 = 40_000.0;
-/// The closing walk's motion word.
-pub const CLOSE_MOTION: i32 = 0x14;
+/// The closing walk's accept distance (two cells): the planner reads the
+/// word the callback writes as its accept distance, not as a motion.
+pub const CLOSE_ACCEPT: i32 = 0x14;
 /// The closing walk's goal radius, set when the goal lies farther than
 /// [`CLOSE_RADIUS_FROM_CM2`] across the ground (cm).
 pub const CLOSE_RADIUS_CM: f32 = 300.0;
@@ -496,8 +497,10 @@ pub const CLOSE_RADIUS_FROM_CM2: f32 = 2_500.0;
 pub struct CloseGoal {
     /// The walk's goal (cm).
     pub point: Vec3,
-    /// The walk's motion word, when the goal was moved off the leader.
-    pub motion: Option<i32>,
+    /// The planner's accept distance the callback writes (heuristic units,
+    /// ten a cell), when the goal was moved off the leader; the planner
+    /// then counts any end as near enough.
+    pub accept: Option<i32>,
     /// The goal's radius, when it was set (cm).
     pub radius_cm: Option<f32>,
 }
@@ -507,15 +510,16 @@ pub struct CloseGoal {
 /// aim point. A follower within 200 cm of the leader (3-D, squared; a NaN
 /// distance passes) takes the point [`CLOSE_BACK_CM`] from the aim point
 /// along the leader-to-follower vector (that vector times 400 over its
-/// length, in single precision), the walk's motion [`CLOSE_MOTION`], and
-/// the closing mode; the radius becomes [`CLOSE_RADIUS_CM`] when that goal
+/// length, in single precision), the planner's accept distance
+/// [`CLOSE_ACCEPT`] (with the end test that never finds an end too far),
+/// and the closing mode; the radius becomes [`CLOSE_RADIUS_CM`] when that goal
 /// lies over 50 cm from the follower across the ground.
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn closing_goal(follower: &mut Follower, leader: &Leader) -> CloseGoal {
     follower.goal = leader.aim;
     let mut out = CloseGoal {
         point: leader.aim,
-        motion: None,
+        accept: None,
         radius_cm: None,
     };
     let d = follower.place - leader.place;
@@ -529,7 +533,7 @@ pub fn closing_goal(follower: &mut Follower, leader: &Leader) -> CloseGoal {
     follower.goal = goal;
     follower.mode = CLOSING;
     out.point = goal;
-    out.motion = Some(CLOSE_MOTION);
+    out.accept = Some(CLOSE_ACCEPT);
     let dx = follower.place.x - goal.x;
     let dz = follower.place.z - goal.z;
     if dz * dz + dx * dx > CLOSE_RADIUS_FROM_CM2 {
@@ -1343,7 +1347,7 @@ mod tests {
         };
         let close = closing_goal(&mut f, &leader);
         assert_eq!(close.point, Vec3::new(240.0, 10.0, 320.0));
-        assert_eq!((close.motion, close.radius_cm), (Some(0x14), Some(300.0)));
+        assert_eq!((close.accept, close.radius_cm), (Some(0x14), Some(300.0)));
         assert_eq!((f.mode, f.goal), (CLOSING, close.point));
         let mut far = Follower {
             place: Vec3::new(201.0, 0.0, 0.0),
@@ -1352,7 +1356,7 @@ mod tests {
         };
         let close = closing_goal(&mut far, &leader);
         assert_eq!(close.point, leader.aim);
-        assert_eq!((close.motion, close.radius_cm, far.mode), (None, None, 0));
+        assert_eq!((close.accept, close.radius_cm, far.mode), (None, None, 0));
     }
 
     fn quiet(now_ms: u32) -> Moment {
