@@ -1219,6 +1219,35 @@ mod tests {
         assert_eq!(screen.picked_topic(), Some(1));
     }
 
+    /// The pad's words reach the manual's key slot (the two-pane help
+    /// screen's): a navigation step down picks the next topic and shows
+    /// it, a plain MenuBak closes the manual.
+    #[test]
+    fn the_pad_steps_the_manual_topics_and_closes_it() {
+        use crate::pad_menu::{PadForm, PadMenu};
+        let (mut app, _) = manual_app();
+        app.init_resource::<PadMenu>();
+        let word = |app: &mut App, key: u32| {
+            app.world_mut().resource_mut::<PadMenu>().dispatch(
+                crate::gamepad::MenuFrame {
+                    key,
+                    ..Default::default()
+                },
+                Some(PadForm::Manual.id()),
+                true,
+            );
+            app.update();
+        };
+        word(&mut app, 0x8001);
+        {
+            let screen = app.world().resource::<ManualScreen>();
+            assert_eq!(screen.list.as_ref().unwrap().selected, 2);
+            assert_eq!(screen.manual.as_ref().unwrap().text, b"Moving about.");
+        }
+        word(&mut app, 0x200);
+        assert!(!app.world().resource::<ManualScreen>().is_open());
+    }
+
     /// The pages' tags: 9 combat mode (Tab's slot 12), 10 the inventory
     /// (I, slot 11), 13 the alternate attack (slot 7), 14 the set switch
     /// (R, slot 14), 17 the power tree (slot 19).

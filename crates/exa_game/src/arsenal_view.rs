@@ -600,6 +600,34 @@ mod tests {
         assert!(window.open);
     }
 
+    /// The pad's scroll stick reaches the live window's key slot: right
+    /// scrolls the columns on, left back; a navigation word does nothing.
+    #[test]
+    fn the_pads_scroll_words_scroll_the_live_window() {
+        use crate::pad_menu::{PadForm, PadMenu};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ArsenalViewPlugin)
+            .init_resource::<PadMenu>()
+            .insert_resource(window());
+        let word = |app: &mut App, key: u32| {
+            app.world_mut().resource_mut::<PadMenu>().dispatch(
+                crate::gamepad::MenuFrame {
+                    key,
+                    ..Default::default()
+                },
+                Some(PadForm::Arsenal.id()),
+                true,
+            );
+            app.update();
+            app.world().resource::<ArsenalWindow>().scroll
+        };
+        assert_eq!(word(&mut app, 0x2002), 1);
+        assert_eq!(word(&mut app, 0x2002), 2);
+        assert_eq!(word(&mut app, 0x1002), 1);
+        assert_eq!(word(&mut app, 0x2001), 1);
+    }
+
     #[test]
     fn scrolling_stops_at_the_ends() {
         let mut window = window();

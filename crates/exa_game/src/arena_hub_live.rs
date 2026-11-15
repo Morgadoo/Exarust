@@ -2758,6 +2758,28 @@ mod tests {
         assert!(!app.world().resource::<HubWindows>().is_open());
     }
 
+    /// A message box over the board takes the pad's word through its key
+    /// slot: a scroll step is answered and leaves it up, MenuBak closes it
+    /// with −1 and leaves the board open.
+    #[test]
+    fn the_pad_closes_a_message_box_over_the_board() {
+        use exa_ui::match_board::BoardTab;
+        let mut app = board_app(BoardTab::Matches);
+        app.init_resource::<crate::pad_menu::PadMenu>()
+            .init_resource::<ArenaHub>()
+            .add_systems(Update, hub_pad);
+        app.world_mut()
+            .resource_mut::<HubWindows>()
+            .forms
+            .open_message("Title", "Text", 0, (1280, 720), 4);
+        pad_word(&mut app, 0x8002, Vec2::ZERO);
+        assert!(app.world().resource::<HubWindows>().forms.message_on_top());
+        pad_word(&mut app, 0x200, Vec2::ZERO);
+        let windows = app.world().resource::<HubWindows>();
+        assert!(!windows.forms.message_on_top());
+        assert!(windows.is_open());
+    }
+
     #[test]
     fn the_board_table_steps_read() {
         use exa_ui::match_board::TableSlot;
