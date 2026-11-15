@@ -4590,7 +4590,7 @@ mod tests {
         let layout = InventoryLayout::at(4);
         let textures = GuiTextures::default();
         let cell = vec![255u8; 64 * 64 * 4];
-        let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64).unwrap();
+        let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64, 22).unwrap();
         let paint = crate::doll_view::DollPaint {
             punch: true,
             dots: Some(2.5),

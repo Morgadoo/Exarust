@@ -214,7 +214,8 @@ pub struct CardView {
     sockets_tried: Option<i32>,
     /// The rating dots' cells (the inventory's sheet), loaded once.
     pub dots: Option<crate::doll_view::DotSheet>,
-    dots_tried: bool,
+    /// The dot side the rating-dot cells were last tried at.
+    dots_tried: Option<i32>,
     /// The coin control's three icons, made at the coin manager's side.
     pub coins: Option<CoinSheet>,
     /// The coin side the icons were last tried at.
@@ -1738,14 +1739,16 @@ pub fn draw_card(
             None => warn!("item card: the socket sheets did not load"),
         }
     }
-    if !view.dots_tried
+    if view.dots_tried != Some(side)
         && view
             .shown
             .as_ref()
             .is_some_and(|c| c.built.content.is_some())
     {
-        view.dots_tried = true;
-        view.dots = game.as_deref().and_then(crate::doll_view::load_dot_sheet);
+        view.dots_tried = Some(side);
+        view.dots = game
+            .as_deref()
+            .and_then(|game| crate::doll_view::load_dot_sheet(game, side));
         if view.dots.is_none() {
             warn!("item card: the rating-dot sheet did not load");
         }
@@ -2087,7 +2090,8 @@ fn paint_slider(
 ) {
     let (x, y, w, h) = place;
     let mid = (((h as u32) >> 1) as i32) + y;
-    let drawn = exa_items::item_gui::slider(x, w, share);
+    let dot = dots.map_or(exa_items::item_gui::DOT, |sheet| sheet.side);
+    let drawn = exa_items::item_gui::slider(x, w, share, dot);
     let mut batch = exa_ui::skin::SkinBatch::new();
     batch.select(1, 0, false);
     batch.set_ink(palette.text[6]);
