@@ -20,8 +20,8 @@ bus next to the rodio sources) are in.
 | `efx` | OpenAL Soft 1.21's EAX reverb (`ReverbDsp`) and a source's send to it (`wet_send`) |
 | `efx_bus` | the reverb slot as a Bevy audio source: wet copies of the sending source slots, summed into the reverb on rodio's audio thread; `EXA_EFX_LOG`, `EXA_EFX_RECORD` |
 | `hits`, `footsteps` | the game's first two users of the mixer; the footsteps read the body's gait plants (`exa_physics::body::Footstep`) with the original's gain and pitch, and keep a speed timer for bodies without a ragdoll |
-| `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the part impact's classes in the item byte's order (`BdyCol` or `SkelHit` for 0, then `HitClt`, `HitLtr`, `HitChn`, `HitPlt`, `HitHbr`, `HitGlm`) and the foley loops (`FoleyClt`, `FoleyLtr`, `FoleyChn`, `FoleyPlt`, `FoleyHbr` by class, `FoleyPlH`, `Golem_Foley`) |
-| `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair |
+| `sounds` | the body's named sets: `SwingHA`, `StmHeal01` (played at the fighter when its second wind fires), the part impact's classes in the item byte's order (`BdyCol` or `SkelHit` for 0, then `HitClt`, `HitLtr`, `HitChn`, `HitPlt`, `HitHbr`, `HitGlm`) and the foley loops (`FoleyClt`, `FoleyLtr`, `FoleyChn`, `FoleyPlt`, `FoleyHbr` by class, `FoleyPlH`, `Golem_Foley`) |
+| `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair (the swing voice reserves the pair at a fighter's first swing, the rustle plays on its foley source, and frees it at death) |
 | `bodies` | the plain rigid bodies' collision one-shots and scrape loops (`exa_physics::prop::BodySounds`) |
 | `mechanisms` | the doors', levers' and push surfaces' restarted creak voices, their one-shots and the lever's return tick loop (`exa_physics::mechanism_sound`) |
 | `playback` | one Bevy audio entity per real source slot, driven by the mixer's commands; the listener anchor |

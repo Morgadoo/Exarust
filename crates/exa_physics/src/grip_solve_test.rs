@@ -181,6 +181,10 @@ fn a_dropped_item_clears_its_strike_flags() {
         released: false,
         head_extra: 0.0,
     };
+    let torch = HeldGrip {
+        kind: HeldKind::Torch,
+        ..grip.clone()
+    };
     let mut app = App::new();
     app.add_message::<crate::grip::CameLoose>()
         .add_systems(Update, crate::grip_solve::release_freed_grips);
@@ -214,6 +218,18 @@ fn a_dropped_item_clears_its_strike_flags() {
     assert!(body.held_by.is_none());
     assert!(app.world().get::<HeldGrip>(entity).is_none());
     assert!(app.world().get::<GripRelease>(entity).is_none());
+    // A torch let go of tells its holder nothing.
+    let torch_body = rigid(Entity::from_raw_u32(22).unwrap(), Vec3::ZERO, 1.0);
+    let freed = app.world_mut().spawn((torch_body, torch, GripRelease)).id();
+    app.update();
+    assert!(app.world().get::<HeldGrip>(freed).is_none());
+    assert_eq!(
+        app.world()
+            .resource::<Messages<crate::grip::CameLoose>>()
+            .iter_current_update_messages()
+            .count(),
+        0
+    );
 }
 
 /// A torch and a shield take the held and mark bits (`0x20002`) when they

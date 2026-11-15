@@ -693,3 +693,21 @@ fn shipped_garments_take_finite_morphs() {
     eprintln!("garment pieces transferred: {checked}, elements off the body: {off_body}");
     assert!(checked > 100, "{checked}");
 }
+
+/// The transfer's weights are the original's plane solve: a point beyond an
+/// edge keeps a negative weight (no clamp), the three sum to one, a point
+/// above the plane is projected onto it first, and a degenerate triangle's
+/// normal is zero.
+#[test]
+fn transfer_weights_are_solved_on_the_plane() {
+    let (a, b, c) = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    // The estimate is good to about 12 bits.
+    let n = face_normal(a, b, c);
+    assert!((0..3).all(|k| (n[k] - [0.0, 0.0, 1.0][k]).abs() < 1e-3), "{n:?}");
+    let w = plane_barycentric(n, [a, b, c], [0.75, 0.5, 0.0]);
+    assert!(w.iter().any(|&v| v < 0.0), "{w:?}");
+    assert!(close(w[0] + w[1] + w[2], 1.0));
+    let above = plane_barycentric([0.0, 0.0, 1.0], [a, b, c], [0.25, 0.25, 3.0]);
+    assert!(close3(above, [0.5, 0.25, 0.25]), "{above:?}");
+    assert_eq!(face_normal(a, b, [2.0, 0.0, 0.0]), [0.0; 3]);
+}

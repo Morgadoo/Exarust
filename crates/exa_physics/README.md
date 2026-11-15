@@ -1260,7 +1260,12 @@ its holder (a `grip::ReplaceHeld` on the holder's body: the player's
 ground placement, a Long Door) `grip_solve::replace_held` puts every item
 back there at rest, turned half a turn if it was flipped since, wakes it,
 and gives an armed weapon's enabled second-hand link its new span as slack
-and held length (logged at info, "held re-place: …").
+and held length (logged at info, "held re-place: …"). A freed item
+(`grip_solve::release_freed_grips`) becomes the root of its own tree, its
+link-iteration count 2 plus its parts less one, as the original's unlink
+writes it; a weapon whose holder is still in the world sends
+`grip::CameLoose`, the holder's came-loose hook (shields and torches send
+none).
 
 A link without the runtime pivot flag is a **limit link**
 (`body::MODEL_LINK_PIVOT`, marked through `Ragdoll::set_link_flags`): the

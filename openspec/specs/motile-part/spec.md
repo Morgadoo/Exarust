@@ -334,7 +334,7 @@ When a character's collapse starts, every hand that does not hold a shield SHALL
 - **THEN** its main hand is empty, the shield stays, and on the next tick its fists are set up again
 
 #### Scenario: Record drop
-- **WHEN** a character whose record holds a sword in the main hand starts to collapse
+- **WHEN** a character whose record holds a sword in the main hand starts to collapse and lets the sword go
 - **THEN** the record's main hand is empty and the sword's held entry is gone from the carried list
 
 ### Requirement: Unarmed set-up on a rise
@@ -629,3 +629,17 @@ A plain part of a living body SHALL step as a rigid body: its motion kept by the
 #### Scenario: Slow plain part
 - **WHEN** every part of a living body moves 0.0012 cm a tick and one part is plain
 - **THEN** the plain part keeps the resting retention and falls by gravity, and the muscled parts keep the living retention
+
+### Requirement: Came-loose hook
+When the grip stage frees a held weapon whose holder is still in the world, the holder SHALL be told the weapon came loose, and its possessions record SHALL then lose every non-shield out-set item with its held entry, once per weapon; a freed shield or torch SHALL tell nothing.
+
+#### Scenario: A weapon let go
+- **WHEN** a character still in the world lets go of its held sword
+- **THEN** it is told the sword came loose and its record's main hand is empty
+
+### Requirement: Freed body link iterations
+A held item freed by the grip stage SHALL become the root of its own tree with a link-iteration count of 2 plus its parts less one.
+
+#### Scenario: A one-part weapon freed
+- **WHEN** a one-part held weapon whose count was 15 is freed
+- **THEN** its count is 2
