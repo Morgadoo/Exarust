@@ -19,7 +19,7 @@
 //! ([`paint_top_form`], [`paint_held_form`]) with their constructors' words
 //! ([`FormWords`]).
 
-use exa_ui::form::FormMetrics;
+use exa_ui::form::{ClientRect, FormMetrics};
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture, SKIN_TEXTURE, text_batch};
 use exa_ui::gui_font::GuiFont;
@@ -642,6 +642,31 @@ pub const MANUAL_PAGE_WORDS: FormWords = FormWords {
     attributes: TEXT_BOX_WORDS.attributes | 0x280,
 };
 
+/// The journal's text box: the text box words with the opener's
+/// stretched-down style bits (0xc0000) and the vertical scroll bar
+/// attribute (0x200).
+pub const JOURNAL_BOX_WORDS: FormWords = FormWords {
+    style: TEXT_BOX_WORDS.style | exa_ui::game_gui::JOURNAL_BOX_STYLE_BITS,
+    attributes: TEXT_BOX_WORDS.attributes | exa_ui::game_gui::JOURNAL_BOX_ATTRIBUTE_BITS,
+};
+
+/// The client of a held form with a vertical scroll bar (form-local): the
+/// base form's inside `border` less the scroll inset.
+pub fn scrolling_client(rect: GuiRect, border: i32, attributes: u32) -> ClientRect {
+    exa_ui::form::client_rect(
+        rect.width(),
+        rect.height(),
+        border,
+        0,
+        attributes,
+        0,
+        exa_ui::settings::SCROLL_INSET,
+        0,
+        15,
+        BORDER,
+    )
+}
+
 /// Paints a held child with a vertical scroll bar: the panel frame's
 /// scroll-bar branch with the thumb where the line skin's scroll refresh
 /// puts it for `fraction`, the client being the base form's inside its
@@ -658,21 +683,39 @@ pub fn paint_held_scrolling(
     fraction: f32,
     hover_mark: i32,
 ) -> LineFormLayers {
+    paint_held_scrolling_in(
+        rect,
+        BORDER,
+        client,
+        owner_attributes,
+        unit,
+        palette,
+        fade,
+        words,
+        fraction,
+        hover_mark,
+    )
+}
+
+/// [`paint_held_scrolling`] for a form with its own `border` (the journal's
+/// text box has none).
+#[allow(clippy::too_many_arguments)]
+pub fn paint_held_scrolling_in(
+    rect: GuiRect,
+    border: i32,
+    client: GuiRect,
+    owner_attributes: u32,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    words: FormWords,
+    fraction: f32,
+    hover_mark: i32,
+) -> LineFormLayers {
     let committed = commit_words(words.style, words.attributes, false);
     let mut at = LineFormAt::child(rect, client, owner_attributes);
     at.hover_mark = hover_mark;
-    let inner = exa_ui::form::client_rect(
-        rect.width(),
-        rect.height(),
-        BORDER,
-        0,
-        words.attributes,
-        0,
-        exa_ui::settings::SCROLL_INSET,
-        0,
-        15,
-        BORDER,
-    );
+    let inner = scrolling_client(rect, border, words.attributes);
     let rail = exa_ui::line_skin::refresh_line_scroll(
         exa_ui::line_skin::LineScrollPlace {
             style: committed.state,

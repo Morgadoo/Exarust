@@ -920,7 +920,8 @@ one on the floor for retail comparisons (optionally in a given frame,
 torch lays the start's torch, item 0x1f, at its pose: `StoryTorch`), the
 tip banner and the manual in play (`help_live`: `Step::Tip` shows the
 prelude's line, the menu's MANUAL rows open `manualkm.fds` over the
-covered menu), the debug light listing around
+covered menu; the topic list is the item view and the page the text box,
+driven through their own slots), the debug light listing around
 the player, or the camera in a level view (`light_probe`, `--debug-lights`), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
 request finds the device's crystal slot and the placed object on it; a
 teleporter asks for the destination screen with its rows and level ids, a
@@ -1842,7 +1843,9 @@ rescaled by `exa_ui::gui_rescale::rescale_form`, so at unit 8 the form is
 488 × 1288 at (16, 16) and its pack and records follow (the pack's hit
 rectangle in `panel_live` too). The loot window (`ScreenLayout::loot`: 484 ×
 876 at x 800 at unit 8, its panels 452 wide) and the journal
-(`ScreenLayout::journal`: 484 × 1028, its text box 456 × 824) are rescaled
+(`ScreenLayout::journal`: 484 × 1028, its text box 456 × 824; the box is
+live, `gui_screens::JournalBox`, typed into while the focus is on it, and
+New and Erase add and remove entries) are rescaled
 the same way, their 2-pixel borders kept. The character view's panel frame
 is drawn and `doll_view` draws the player's dressed figure inside it while
 the inventory is open: a copy of the player's body on a render layer of

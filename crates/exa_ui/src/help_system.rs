@@ -21,7 +21,7 @@ use crate::form::{ClientRect, DEFAULT_BORDER, attribute, style};
 use crate::gui_controls::state as control_state;
 use crate::gui_font::GuiFont;
 use crate::item_view::{ItemView, ViewEntry, style as view_style};
-use crate::text_box::fit_height;
+use crate::text_box::{TextBox, fit_height};
 
 /// The manual window's title.
 pub const MANUAL_TITLE: &str = "MANUAL";
@@ -138,14 +138,15 @@ pub struct ManualWindow {
     pub text_options: u32,
     pub text_flags: u32,
     pub text_style: u32,
-    /// The word the text box keeps at its spacing field.
-    pub text_spacing: i32,
+    /// The text box's margin in pixels at the design unit 4 (the show's
+    /// rescale makes it two units).
+    pub text_margin: i32,
 }
 
 /// The manual window's constants: the form's 0x120 options and 0xb800
 /// style flags over an upper-layer window, the list's 0x9100000 style, and
-/// the text box's 0x280 options, 0xc0000 flags, 0x4000000 style bit and
-/// spacing 8.
+/// the text box's 0x280 options, 0xc0000 flags, 0x4000000 style bit (read
+/// only) and margin 8.
 pub const MANUAL_WINDOW: ManualWindow = ManualWindow {
     title: MANUAL_TITLE,
     size: MANUAL_SIZE,
@@ -157,7 +158,7 @@ pub const MANUAL_WINDOW: ManualWindow = ManualWindow {
     text_options: 0x280,
     text_flags: 0xc0000,
     text_style: 0x400_0000,
-    text_spacing: 8,
+    text_margin: 8,
 };
 
 /// A list entry's title from a record's first 16 bytes: cut at the first
@@ -273,6 +274,23 @@ impl Manual {
         view
     }
 
+    /// The topic list as the shown manual has it: [`Manual::list`], then
+    /// the show's rescale from the design unit 4 ([`ItemView::rescale`]):
+    /// the icon becomes four units, a row the icon and a unit, and the
+    /// view is measured again. The selection is the record shown.
+    pub fn shown_list(&self, unit: i32, client: ClientRect, font: &GuiFont) -> ItemView {
+        let mut view = self.list(unit, client, font);
+        view.rescale(unit, font);
+        if let Some(i) = self
+            .topics
+            .iter()
+            .position(|topic| topic.record == self.record && topic.record != 0)
+        {
+            view.selected = i as i32 + 1;
+        }
+        view
+    }
+
     /// Picks a list entry: one from 1 to the record count shows its
     /// record's text; any other does nothing. Returns whether it picked.
     pub fn select(&mut self, topic: i32, source: &impl ManualSource) -> bool {
@@ -302,6 +320,26 @@ impl Manual {
         self.select(selected, source);
         -1
     }
+}
+
+/// The manual page's text box as the manual's open builds it in `client`
+/// (the held form's client at `unit`): read only, with markup, in the GUI
+/// level's main font, its margin 8 pixels, which the show's rescale from
+/// the design unit 4 makes `8 / 4 * unit` ([`TextBox::rescale`]). Laid out
+/// and empty.
+pub fn page_text_box(
+    unit: i32,
+    main: &'static GuiFont,
+    small: &'static GuiFont,
+    client: ClientRect,
+) -> TextBox {
+    let mut text_box = TextBox::new(unit, main, small, client);
+    text_box.read_only = true;
+    text_box.markup = true;
+    text_box.margin = MANUAL_WINDOW.text_margin;
+    text_box.rescale(4, unit);
+    text_box.realign();
+    text_box
 }
 
 /// The manual's close call: an open manual closes and the slot empties.
@@ -504,7 +542,7 @@ mod tests {
                 MANUAL_WINDOW.text_options,
                 MANUAL_WINDOW.text_flags,
                 MANUAL_WINDOW.text_style,
-                MANUAL_WINDOW.text_spacing
+                MANUAL_WINDOW.text_margin
             ),
             (0x280, 0xc0000, 0x400_0000, 8)
         );
@@ -582,6 +620,39 @@ mod tests {
         assert_eq!(view.entries[0].name, b"Short_One");
         assert_eq!(view.entries[0].item, 2);
         assert_eq!(view.selected, 1);
+    }
+
+    /// The shown list is rescaled from the design unit: at unit 6 the icon
+    /// is 24 and a row 30 pixels, the pitch retail's 1080-line manual shows.
+    #[test]
+    fn the_shown_list_rows_are_five_units() {
+        let mut manual = Manual::open(parse_topics(&table()), 0, &Source);
+        let client = ClientRect {
+            left: 0,
+            top: 0,
+            right: 0x90 * 6 / 4,
+            bottom: 600,
+        };
+        let view = manual.shown_list(6, client, &RAYFORM_10);
+        assert_eq!((view.icon, view.row), (24, 30));
+        assert_eq!(view.selected, 1);
+        manual.select(3, &Source);
+        assert_eq!(manual.shown_list(6, client, &RAYFORM_10).selected, 3);
+    }
+
+    #[test]
+    fn the_page_box_is_read_only_markup_with_a_two_unit_margin() {
+        let client = ClientRect {
+            left: 2,
+            top: 2,
+            right: 500,
+            bottom: 400,
+        };
+        for unit in [4, 6, 8] {
+            let page = page_text_box(unit, &RAYFORM_10, &RAYFORM_10, client);
+            assert!(page.read_only && page.markup);
+            assert_eq!(page.margin, 2 * unit);
+        }
     }
 
     #[test]
