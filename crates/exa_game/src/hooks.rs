@@ -11,10 +11,13 @@
 //! removes by code *and* data, the procedure list by code alone and refuses
 //! a code it already holds.
 //!
-//! Exarust's own systems use Bevy's messages and events; these lists exist
-//! for the parts of the engine that keep an ordered hook list, with the
-//! code and data identities carried as words because a Rust closure has no
-//! address to compare.
+//! The running game keeps no such list: each registrant's work is a Bevy
+//! system, and a list's priority order is the schedule's order of those
+//! systems (`docs/re/hook-lists.md` maps every list of the original to its
+//! systems; `hooks_order_test.rs` checks the orders with
+//! `exa_physics::schedule_order`). These types model the lists themselves,
+//! with the code and data identities carried as words because a Rust
+//! closure has no address to compare.
 //!
 //! Evidence: the insert, remove, dispatch and clear routines of the base
 //! library, read from their assembly.
@@ -326,3 +329,7 @@ mod tests {
         assert_eq!(list.entries().next(), Some((2, 0)));
     }
 }
+
+#[cfg(test)]
+#[path = "hooks_order_test.rs"]
+mod order_tests;

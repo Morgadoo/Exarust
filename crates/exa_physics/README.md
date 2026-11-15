@@ -791,8 +791,10 @@ blend and its bleeds, the gait columns from the race's per-tick table
 the speed along the heading and the locomotion clock's step) or the fall
 of its run blend while it stands (`stand`; `src/body_gait.rs`); its
 capsule carries the decision out until the body walks by its carry
-(`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`), and the
-drive is kept, not yet added to the carry. The pose is put on the original's character
+(`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`). While the
+body locomotes the carry takes the drive (drive × S² × the gait's push
+gain × the feet's lag, `body_lift.rs`) before the lift servo runs, whatever
+the servo then finds (no support, a pelvis over its target). The pose is put on the original's character
 frame, whose origin follows the pelvis by its rules: on the pelvis while
 moving, frozen while standing steady, behind dead-bands of 5 and 10 cm
 otherwise (`src/body_frame.rs`, `body::Drive::anchor`). The controller
@@ -1670,6 +1672,12 @@ sets the instability counter (the barricade sets it to 100).
 `Ragdoll::push_part_weighted` pushes a part at given particle weights (a
 force blast's contact, weighed at the chunk), counting the push's length
 toward the strain the same way.
+
+`schedule_order` answers, for a built schedule, whether it forces one
+system before another (through chains, `before`/`after` and system sets),
+whether two systems it leaves unordered conflict in their data, and where
+a schedule sits in the main frame. The hook-list checks
+(`docs/re/hook-lists.md`) use it to show the original's priority orders.
 
 ## Scope
 

@@ -15,8 +15,13 @@
 //! with the intensity 0.01 and rising to 0.4: each frame, while it is
 //! under 0.4 less the single-precision epsilon, it gains 0.0005 per
 //! millisecond of the frame (in double precision, then single), clamped
-//! to 0.4. Each frame it is placed 80 cm above the player's head; when
-//! that is more than 1 cm above the head, a 10 cm ball swept up from the
+//! to 0.4. Each frame it is placed 80 cm above the player's head as the
+//! frame draws it: the original's light hook comes after the simulation's
+//! hook in the scene's frame list, which has moved every body node between
+//! its last two ticks, so the light reads the head node where it is drawn
+//! ([`drawn_head`], the pose `exa_physics::body::draw_bodies` gives the
+//! mesh), not where the last tick left it. When that is more than 1 cm
+//! above the head, a 10 cm ball swept up from the
 //! head through the level (not the props) puts it where the ball first
 //! meets the ceiling. Not while the game is paused.
 //!
@@ -223,6 +228,7 @@ fn switch_player_light(
 /// The light's frame: its ramp, then its place over the head.
 fn place_player_light(
     time: Res<Time<Virtual>>,
+    fixed: Option<Res<Time<Fixed>>>,
     physics: Option<Res<exa_physics::collision_share::FramePhysics>>,
     players: Query<&Ragdoll, With<PlayerBody>>,
     mut lights: Query<(&mut PlayerLight, &mut PointLight, &mut Transform)>,
@@ -239,12 +245,8 @@ fn place_player_light(
         light.intensity = intensity;
         point.intensity = intensity * exa_world::LUMENS_PER_INTENSITY;
     }
-    let Some(head) = players
-        .iter()
-        .next()
-        .and_then(|b| b.part_of(HEAD))
-        .map(|p| Vec3::from(p.transform().translation))
-    else {
+    let alpha = fixed.map_or(1.0, |f| f.overstep_fraction());
+    let Some(head) = players.iter().next().and_then(|b| drawn_head(b, alpha)) else {
         return;
     };
     let y = height(head.y * CM, |gap| {
@@ -257,6 +259,13 @@ fn place_player_light(
     if at.translation != place {
         at.translation = place;
     }
+}
+
+/// Where the frame draws the head of `body`: its part `alpha` of the way
+/// between its last two ticks, as its mesh and the camera's focus are.
+pub fn drawn_head(body: &Ragdoll, alpha: f32) -> Option<Vec3> {
+    body.part_of(HEAD)
+        .map(|part| Vec3::from(part.drawn(alpha).translation))
 }
 
 #[cfg(test)]
@@ -301,6 +310,36 @@ mod tests {
     fn the_light_hangs_over_the_head_under_the_ceiling() {
         assert_eq!(height(150.0, |_| None), 230.0);
         assert_eq!(height(150.0, |gap| (gap == 80.0).then_some(35.0)), 185.0);
+    }
+
+    /// The light follows the head part (bone 10) where the frame draws it;
+    /// a body without a head has nowhere to put it.
+    #[test]
+    fn the_light_reads_the_drawn_head() {
+        let part = |bone, parent, at: Vec3| exa_physics::body::PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: bevy::math::Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.08),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let pelvis = Vec3::new(1.0, 1.0, 2.0);
+        let head = Vec3::new(1.0, 1.7, 2.1);
+        let body = Ragdoll::new(&[part(1, None, pelvis), part(HEAD, Some(0), head)]);
+        for alpha in [0.0, 0.5, 1.0] {
+            let drawn = drawn_head(&body, alpha).unwrap();
+            let expected = Vec3::from(body.part_of(HEAD).unwrap().drawn(alpha).translation);
+            assert_eq!(drawn, expected);
+            assert!((drawn - head).length() < 1e-5, "{drawn}");
+        }
+        let headless = Ragdoll::new(&[part(1, None, pelvis)]);
+        assert_eq!(drawn_head(&headless, 0.5), None);
     }
 
     #[test]

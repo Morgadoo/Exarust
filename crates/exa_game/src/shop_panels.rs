@@ -45,6 +45,7 @@
 
 use crate::hub_windows::SHOP_ITEM_FLAGS;
 use crate::item_container::{Cell, Container, Drag, DropDrag, ListChild, grid_layout};
+use crate::item_panel_draw::PanelIcons;
 use crate::shop_window::{BUY_BASKET, PACK_PANEL, SELL_BASKET, WINDOW_SIZE, stock_panel};
 
 /// The inset a panel's entries keep from its edges, as the item panels of
@@ -426,24 +427,33 @@ impl ShopPanels {
 
     /// The confirmed trade's items change hands: the buy basket's join the
     /// pack without the shop's flag and the sell basket's join the stock
-    /// with it, each at its panel's centre [guess: the "Trade" button's
-    /// callback lies outside the window and is not read].
-    pub fn settle(&mut self) {
+    /// with it, each added at its panel's centre [guess: the "Trade"
+    /// button's callback lies outside the window and is not read] and,
+    /// with the icon cache, placed by the panel's place pass
+    /// ([`PanelIcons::add_placed`]), as every centre add of the shop window
+    /// is.
+    pub fn settle(&mut self, mut icons: Option<&mut PanelIcons>) {
         let bought = std::mem::take(&mut self.buy.entries);
         for entry in bought {
-            self.pack
-                .add_at_centre(entry.id, entry.icon, entry.flags & !SHOP_ITEM_FLAGS, 0);
+            let flags = entry.flags & !SHOP_ITEM_FLAGS;
+            add_to(
+                &mut self.pack,
+                icons.as_deref_mut(),
+                entry.id,
+                entry.icon,
+                flags,
+            );
         }
-        self.settle_sold();
+        self.settle_sold(icons);
     }
 
     /// The arena's settle: the window's bought hook takes the buy basket's
     /// items to the company's arsenal, so they leave the window (their icon
     /// handles are returned for release); the sell basket's join the stock
     /// as in [`Self::settle`].
-    pub fn settle_bought_away(&mut self) -> Vec<usize> {
+    pub fn settle_bought_away(&mut self, icons: Option<&mut PanelIcons>) -> Vec<usize> {
         let bought = std::mem::take(&mut self.buy.entries);
-        self.settle_sold();
+        self.settle_sold(icons);
         bought
             .into_iter()
             .map(|entry| entry.icon)
@@ -451,13 +461,19 @@ impl ShopPanels {
             .collect()
     }
 
-    fn settle_sold(&mut self) {
+    fn settle_sold(&mut self, mut icons: Option<&mut PanelIcons>) {
         self.buy.used = 0;
         self.sell.used = 0;
         let sold = std::mem::take(&mut self.sell.entries);
         for entry in sold {
-            self.stock
-                .add_at_centre(entry.id, entry.icon, entry.flags | SHOP_ITEM_FLAGS, 0);
+            let flags = entry.flags | SHOP_ITEM_FLAGS;
+            add_to(
+                &mut self.stock,
+                icons.as_deref_mut(),
+                entry.id,
+                entry.icon,
+                flags,
+            );
         }
     }
 
@@ -469,6 +485,20 @@ impl ShopPanels {
             .flat_map(|panel| self.get(panel).entries.iter().map(|e| e.icon))
             .filter(|&icon| icon != 0)
             .collect()
+    }
+}
+
+/// One centre add of the shop window: with the icon cache, the add and its
+/// place pass ([`PanelIcons::add_placed`]); without it, the centre add
+/// alone.
+fn add_to(panel: &mut Container, icons: Option<&mut PanelIcons>, id: u32, icon: usize, flags: u32) {
+    match icons {
+        Some(icons) => {
+            icons.add_placed(panel, id, icon, flags, 0);
+        }
+        None => {
+            panel.add_at_centre(id, icon, flags, 0);
+        }
     }
 }
 
@@ -583,7 +613,7 @@ mod tests {
             ShopDrop::Moved { id: 9, .. }
         ));
         // Settled: the sold item joins the stock with the shop's flag.
-        panels.settle();
+        panels.settle(None);
         assert!(panels.sell.entries.is_empty());
         assert_eq!(panels.stock.entries[0].flags, SHOP_ITEM_FLAGS);
     }

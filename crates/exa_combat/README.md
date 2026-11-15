@@ -172,7 +172,11 @@ a muscled limb of another fighter is the classifier's wound
 (`Struck::Limb`) at the contact point, measured along the weapon in the
 striking part's frame, once a target a swing, refused while a clash or
 block waits and on the hand holding the struck fighter's shield; a clash
-or block in the same tick replaces it, and it replaces nothing. There is no
+or block in the same tick replaces it, and it replaces nothing. A wound
+on a limb is met as flesh whatever the struck fighter's guard:
+`react_to_hits` picks the parry, the clash and the block by what the
+blade touched (`Struck`), as the original's damage routine branches on
+the contact's kind and reads the parry flag only in the weapon branch. There is no
 speed gate. A fist strikes the same way, through its own hand: the
 unarmed set-up gives both hands the weapon bit, and while the swing's
 window is open for a slot its hand part carries the strike-chain bit

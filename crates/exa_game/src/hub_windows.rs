@@ -915,6 +915,11 @@ pub struct BoardTables {
     pub last_press: Option<(TableSlot, usize, i64)>,
     pub drag: Option<TableDrag>,
     pub took: bool,
+    /// The table the pad has focused ([`HubWindows::board_pad_key`]).
+    pub pad_table: Option<TableSlot>,
+    /// The focused table view's activation-key flag (its MenuSel press
+    /// state, which [`table_view::TableView::command`] keeps).
+    pub pad_pressed: bool,
 }
 
 /// A row a table's press picked up ([`table_view::TableReply::Drag`]):
@@ -972,6 +977,15 @@ pub enum BoardTableAction {
     Joined,
     /// The lineup fighter at this row went back to the company table.
     Left(usize),
+}
+
+/// What the pad's word did on the board.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardPad {
+    /// The tables' answer.
+    Table(BoardTableAction),
+    /// `MenuBak`: the form's back slot (the window closes, as Escape).
+    Back,
 }
 
 /// The hub's windows: the window manager, the one open, and the models the
@@ -1223,6 +1237,118 @@ impl HubWindows {
         }
     }
 
+    /// The pad's menu word on the open board (the hub window on the focus
+    /// stack), whose key slot is the base form's: every word is
+    /// unanswered ([`crate::pad_menu::fallback`]). `MenuBak` is the form's
+    /// back slot ([`BoardPad::Back`]); a navigation step is the directional
+    /// pick among the visible tables, each placed by its slot 31
+    /// ([`table_view::TableView::centre_and_default`]: its client's centre,
+    /// a table with no selection selecting its first row), from the focused
+    /// table's centre; the rest (`& 0xf322`) is the focused table's slot 30
+    /// ([`table_view::TableView::command`]): a scroll step moves its
+    /// selection, `MenuSel` arms then activates the selected row, and the
+    /// company and lineup tables' activation words (the scroll stick right
+    /// or left) move the selected fighter across as the double press does.
+    pub fn board_pad_key(&mut self, key: crate::pad_menu::MenuKey) -> BoardPad {
+        use crate::pad_menu::{Fallback, UNANSWERED, fallback};
+        if self.kind != HubWindowKind::Board || !self.forms.is_empty() {
+            return BoardPad::Table(BoardTableAction::None);
+        }
+        let back_closes = exa_ui::form::DEFAULT_ATTRIBUTES & 2 != 0;
+        match fallback(UNANSWERED, key.key, false, back_closes) {
+            Fallback::Answered => BoardPad::Table(BoardTableAction::None),
+            Fallback::Back => BoardPad::Back,
+            Fallback::Pick => {
+                self.board_pad_pick(key.cursor);
+                BoardPad::Table(BoardTableAction::Took)
+            }
+            Fallback::Control(word) => BoardPad::Table(self.board_pad_command(word)),
+        }
+    }
+
+    /// The directional pick among the board's visible tables.
+    fn board_pad_pick(&mut self, cursor: Vec2) {
+        use crate::gamepad::{PickTarget, pick_control};
+        let Some(board) = self.board.as_mut() else {
+            return;
+        };
+        let current = self.board_tables.pad_table;
+        let mut slots = Vec::new();
+        let mut targets = Vec::new();
+        let mut origin = IVec2::ZERO;
+        for &slot in board.visible_tables() {
+            let client = board.table_layout(slot).client();
+            let (_, centre) = board.table_view(slot).centre_and_default();
+            let centre = IVec2::new(client.x + centre.0, client.y + centre.1);
+            if current == Some(slot) {
+                origin = centre;
+            }
+            targets.push(PickTarget {
+                id: slots.len() as i32,
+                centre,
+                reachable: true,
+                current: current == Some(slot),
+            });
+            slots.push(slot);
+        }
+        let Some(id) = pick_control(cursor, origin, &targets, board.unit) else {
+            return;
+        };
+        let slot = slots[id as usize];
+        let mut view = board.table_view(slot);
+        let before = view.selected;
+        let (selected, _) = view.centre_and_default();
+        if selected != before && selected > 0 {
+            board.select_table_row(slot, (selected - 1) as usize);
+        }
+        self.board_tables.pad_table = Some(slot);
+        self.board_tables.pad_pressed = false;
+        info!("hub board: the pad picks the {slot:?} table (row {selected})");
+    }
+
+    /// The focused table's command word.
+    fn board_pad_command(&mut self, word: u32) -> BoardTableAction {
+        let (Some(slot), Some(board)) = (self.board_tables.pad_table, self.board.as_mut()) else {
+            return BoardTableAction::None;
+        };
+        if !board.visible_tables().contains(&slot) {
+            self.board_tables.pad_table = None;
+            return BoardTableAction::None;
+        }
+        let mut view = board.table_view(slot);
+        view.pressed = self.board_tables.pad_pressed;
+        let events = view.command(word);
+        self.board_tables.pad_pressed = view.pressed;
+        let mut action = BoardTableAction::Took;
+        for event in events {
+            match event {
+                table_view::TableEvent::Selected(row) => {
+                    board.select_table_row(slot, (row - 1) as usize);
+                    info!("hub board: the pad selects {slot:?} row {row}");
+                }
+                table_view::TableEvent::Activated(row) => {
+                    let at = (row - 1) as usize;
+                    let input = match slot {
+                        TableSlot::Roster => BoardInput::DoubleClickAvailable(at),
+                        TableSlot::Lineup => BoardInput::DoubleClickTeam(at),
+                        _ => continue,
+                    };
+                    if board.handle(input) == BoardAction::Changed {
+                        remove_moved_row(board, slot, at, view.clone());
+                        info!("hub board: the pad moves {slot:?} row {row} across");
+                        action = if slot == TableSlot::Roster {
+                            BoardTableAction::Joined
+                        } else {
+                            BoardTableAction::Left(at)
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
+        action
+    }
+
     /// A form-local point of the trade window in its client, where the
     /// panels' places are.
     fn shop_client(point: (i32, i32)) -> (i32, i32) {
@@ -1304,7 +1430,12 @@ impl HubWindows {
     /// the pack and returns both baskets: the arena's trade hooks send the
     /// bought items to the arsenal, not to the pack
     /// ([`crate::arsenal::Arsenal::trade`]).
-    pub fn shop_click(&mut self, point: (i32, i32), career: &mut ArenaCareer) -> Option<ShopTrade> {
+    pub fn shop_click(
+        &mut self,
+        point: (i32, i32),
+        career: &mut ArenaCareer,
+        icons: Option<&mut crate::item_panel_draw::PanelIcons>,
+    ) -> Option<ShopTrade> {
         let shop = self.shop.as_mut()?;
         // The bottom row's own record places are not traced; the guessed
         // rect is where the page's bottom-left "Trade" button draws.
@@ -1333,7 +1464,7 @@ impl HubWindows {
         shop.window.money = career.company.copper;
         // The arena's bought hook shelves the bought items in the arsenal,
         // so they do not join the pack.
-        let icons = shop.panels.settle_bought_away();
+        let icons = shop.panels.settle_bought_away(icons);
         self.released_icons.extend(icons);
         for id in &sold {
             if let Some(at) = career.goods.iter().position(|held| held == id) {
@@ -3032,7 +3163,7 @@ mod tests {
         drag(&mut windows, ShopPanel::Pack, 0, ShopPanel::Sell);
         assert_eq!(windows.shop.as_ref().unwrap().window.sell_items, [9]);
         let point = (10, SHOP_SIZE.1 - 20);
-        assert!(windows.shop_click(point, &mut career).is_some());
+        assert!(windows.shop_click(point, &mut career, None).is_some());
         assert_eq!(career.goods, Vec::<u32>::new());
         assert!(career.company.stock.contains(&9));
         // The sold item is on the shop's side now.
@@ -3041,7 +3172,7 @@ mod tests {
         open(&mut windows, false, &career);
         windows.price_shop_items(|id| if id == 7 { 5 } else { 0 });
         drag(&mut windows, ShopPanel::Stock, 0, ShopPanel::Buy);
-        let trade = windows.shop_click(point, &mut career).unwrap();
+        let trade = windows.shop_click(point, &mut career, None).unwrap();
         assert_eq!(
             trade,
             ShopTrade {
@@ -3120,7 +3251,7 @@ mod tests {
         open(&mut windows, false, &career);
         windows.shop.as_mut().unwrap().window.add_buy(3);
         let point = (10, SHOP_SIZE.1 - 20);
-        assert!(windows.shop_click(point, &mut career).is_some());
+        assert!(windows.shop_click(point, &mut career, None).is_some());
         assert_eq!(career.company.copper, 340);
     }
 

@@ -53,9 +53,11 @@ use exa_ui::gui_draw::{GuiTexture, GuiTextures};
 use exa_ui::gui_font::{FONTBASE_24, GuiFont, font_with_fallback, gui_level, level_for_unit};
 use exa_ui::icon_atlas::{IconAtlas, IconImage};
 use exa_ui::skill::{
-    ExperienceRates, SkillBounds, SkillHit, SkillHoverInput, SkillPointInput, SkillPointer,
-    SkillScreen, clamp_tooltip, hit_skill_point, leave_skill_ui, skill_hover, skill_node_hit,
-    skill_popup_fade, skill_ring_position, skill_satellite,
+    ExperienceRates, NODE_LOCKED, NODE_OPEN, NODES_PER_GROUP, REQUIREMENT_MET, SkillBounds,
+    SkillHit, SkillHoverInput, SkillKeyInput, SkillLinkInput, SkillPointInput, SkillPointer,
+    SkillScreen, clamp_tooltip, hit_skill_point, leave_skill_ui, pick_skill_satellite, skill_hover,
+    skill_node_hit, skill_node_state, skill_popup_fade, skill_position, skill_requirements,
+    skill_ring_position, skill_satellite, skill_screen_key,
 };
 use exa_ui::skill_draw::{
     SkillDraw, SkillDrawInput, SkillLabel, SkillProgram, SkillTexture, SkillTip, SkillVertex,
@@ -163,6 +165,10 @@ pub struct SkillUi {
     pub hover_since: i32,
     /// The reveal value the last draw stored (it turns the ring).
     pub turn: f32,
+    /// The pointer's place when the pad last moved the selection: the
+    /// pointer's hover waits until it moves (the window manager hit tests
+    /// only a moved pointer).
+    pub pad_pointer: Option<Option<(i32, i32)>>,
     pub atlases: Option<SkillAtlases>,
     /// The last rasterised draw, its size and when.
     last: Option<(SkillDraw, (u32, u32))>,
@@ -388,6 +394,7 @@ fn pointer(
     mut ui: ResMut<SkillUi>,
     mut commands: Commands,
     mut control: Option<ResMut<PlayerControl>>,
+    mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
 ) {
     let now = clock(&time);
     // A key goes to the screen's key method, which with the player's
@@ -416,7 +423,7 @@ fn pointer(
     if buttons.just_pressed(MouseButton::Right) {
         mask |= 2;
     }
-    let cursor = windows.single().ok().and_then(|window| {
+    let mut cursor = windows.single().ok().and_then(|window| {
         // A scripted pointer stands in for the mouse in unattended runs.
         let at = match scripted.as_deref() {
             Some(scripted) => scripted.position(window)?,
@@ -425,6 +432,53 @@ fn pointer(
         let scale = window.scale_factor();
         Some(((at.x * scale) as i32, (at.y * scale) as i32))
     });
+    // The pad's word goes to the screen's key slot.
+    if let Some(key) = pad
+        .as_deref_mut()
+        .and_then(|pad| pad.take(crate::pad_menu::PadForm::Skills))
+    {
+        let turn = ui.turn;
+        let outcome = match (ui.screen.as_mut(), players.single_mut()) {
+            (Some(screen), Ok((_, mut data))) => {
+                Some(pad_key(screen, key.key, key.cursor, turn, now, &mut data))
+            }
+            _ => None,
+        };
+        ui.pad_pointer = Some(cursor);
+        match outcome {
+            Some(PadSkill::Close) => {
+                info!("skills: the pad closes the skill screen");
+                let player = players.single().ok();
+                close(
+                    &mut ui,
+                    player,
+                    story.as_deref_mut(),
+                    &mut commands,
+                    control.as_deref_mut(),
+                );
+                return;
+            }
+            Some(PadSkill::Changed) => {
+                if let (Some(story), Ok((_, data))) = (story.as_deref_mut(), players.single()) {
+                    story.player.skills = data.record.skills;
+                }
+            }
+            _ => {}
+        }
+        if let Some(screen) = ui.screen.as_ref() {
+            info!(
+                "skills: the pad's word {:#x} selects {:#x} (learning {:#x}, forgetting {:#x})",
+                key.key, screen.hover, screen.learning, screen.forgetting
+            );
+        }
+    }
+    // A pointer that has not moved since the pad's last word keeps the
+    // pad's selection.
+    if ui.pad_pointer.is_some_and(|at| at == cursor) {
+        cursor = None;
+    } else {
+        ui.pad_pointer = None;
+    }
     let player = players.single_mut().ok();
     let outcome = {
         let SkillUi {
@@ -484,6 +538,142 @@ fn pointer(
         }
         _ => {}
     }
+}
+
+/// What the pad's word did to the skill screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadSkill {
+    Handled,
+    /// A level was learnt or forgotten.
+    Changed,
+    /// `MenuBak` on the ring outside a hide: the open routine's toggle
+    /// closes the screen.
+    Close,
+}
+
+/// The skill screen's key slot for the pad's `key` word with the menu
+/// `cursor` ([`skill_screen_key`]). With no choice pending, `MenuSel`
+/// presses the selected node (a learnt level asks to forget it, an open
+/// one opens its learning row on its first free slot); a navigation step
+/// asks the link search for the node along the cursor
+/// ([`pad_link`]); `MenuBak` closes the ring. With a choice pending, the
+/// steps move along the row's free slots or the dialog's two buttons,
+/// `MenuSel` commits the selected one and `MenuBak` closes the popup; the
+/// selection then goes back to the pending node.
+pub fn pad_key(
+    screen: &mut SkillScreen,
+    key: u32,
+    cursor: Vec2,
+    turn: f32,
+    now: i32,
+    data: &mut CharacterData,
+) -> PadSkill {
+    let skills = data.record.skills;
+    let pending = screen.learning != 0 || screen.forgetting != 0;
+    let index = screen.hover;
+    let repage = if !pending && key == 0x100 {
+        i32::from(skill_node_state(&skills, index, screen.ready))
+    } else {
+        0
+    };
+    // The learn branch fills the row's requirements before it scans them.
+    let grid = if repage == i32::from(NODE_OPEN) {
+        usize::try_from((index >> 8) & 7)
+            .ok()
+            .and_then(|group| group.checked_sub(1))
+            .map_or([REQUIREMENT_MET; NODES_PER_GROUP], |skill| {
+                skill_requirements(skill, &skills)
+            })
+    } else {
+        screen.requirements
+    };
+    let hit = if !pending && key & 1 != 0 {
+        pad_link(screen, index, cursor, turn, &skills)
+    } else {
+        0
+    };
+    let out = skill_screen_key(SkillKeyInput {
+        key: key as i32,
+        low: screen.learning,
+        high: screen.forgetting,
+        index,
+        state: u16::from(screen.state),
+        hide: screen.popup,
+        deadline: screen.popup_deadline,
+        // The compact tree's flag: the ring screen is not compact.
+        closing: 0,
+        clock: now,
+        grid,
+        repage,
+        hit,
+        flags: 0,
+    });
+    screen.learning = out.low;
+    screen.forgetting = out.high;
+    if repage == i32::from(NODE_OPEN) {
+        screen.requirements = grid;
+    }
+    screen.popup = out.hide;
+    screen.popup_deadline = out.deadline;
+    let mut result = PadSkill::Handled;
+    if out.base && screen.commit(data, index, now, RATES) {
+        result = PadSkill::Changed;
+    }
+    if let Some(selected) = out.published {
+        screen.hover = selected;
+    }
+    if let Some(selected) = out.hit_published {
+        screen.hover = selected;
+    }
+    if out.clear_call && key_closes(screen, now) {
+        result = PadSkill::Close;
+    }
+    result
+}
+
+/// The screen's link search for a navigation step (its slot 31): from the
+/// selected node's place (slot 26, [`skill_position`]: the level's
+/// satellite, or the client's centre) along the normalised menu cursor,
+/// over the ring's nodes and the levels a press reaches.
+pub fn pad_link(
+    screen: &SkillScreen,
+    index: i32,
+    cursor: Vec2,
+    turn: f32,
+    skills: &[Skill; SKILLS],
+) -> i32 {
+    let point = skill_position(index, screen.bounds, false, (0, 0), |group, sample| {
+        satellite(screen, (group << 8) | sample, turn).unwrap_or((0.0, 0.0))
+    });
+    let length = (cursor.y * cursor.y + cursor.x * cursor.x).sqrt();
+    let inverse = 1.0 / length;
+    let direction = (cursor.x * inverse, cursor.y * inverse);
+    let ring = screen.ring(turn);
+    let hit = hit_code(screen, turn, point.0, point.1);
+    let node_point = usize::try_from((hit >> 8) & 0xff)
+        .ok()
+        .and_then(|group| group.checked_sub(1))
+        .and_then(|group| screen.group_slot(group))
+        .map_or((0.0, 0.0), |slot| skill_ring_position(slot, &ring));
+    let nodes: Vec<(i32, (f32, f32))> = (1..=screen.count)
+        .filter_map(|slot| {
+            let group = screen.slot_group(slot)?;
+            Some(((group as i32 + 1) << 8, skill_ring_position(slot, &ring)))
+        })
+        .collect();
+    let ready = screen.ready;
+    let reachable = |code: i32| skill_node_state(skills, code, ready) != NODE_LOCKED;
+    pick_skill_satellite(SkillLinkInput {
+        point,
+        direction,
+        hit,
+        node_point,
+        nodes: &nodes,
+        reachable: &reachable,
+        unit: screen.unit,
+        turn,
+    })
+    .code
 }
 
 /// One frame's pointer input.
@@ -1200,5 +1390,89 @@ mod tests {
         // Its first satellite, straight up.
         let (sx, sy) = satellite(&screen, 0x101, 1.0).unwrap();
         assert_eq!(hit_code(&screen, 1.0, sx as i32, sy as i32), 0x101);
+    }
+
+    /// Hands the screen the pad's `key` word at `ms` as the dispatch does
+    /// and runs a frame.
+    fn pad_at(app: &mut App, ms: u64, key: u32, cursor: Vec2) {
+        use crate::gamepad::MenuFrame;
+        use crate::pad_menu::{PadForm, PadMenu};
+        let mut time = app.world_mut().resource_mut::<Time>();
+        let elapsed = time.elapsed();
+        time.advance_by(std::time::Duration::from_millis(ms) - elapsed);
+        app.world_mut().resource_mut::<PadMenu>().dispatch(
+            MenuFrame {
+                key,
+                exit_hook: false,
+                cursor,
+                scroll_cursor: Vec2::ZERO,
+            },
+            Some(PadForm::Skills.id()),
+            true,
+        );
+        app.update();
+    }
+
+    /// The live screen takes the pad's words through its key slot: a
+    /// navigation step picks a reachable level along the stick, MenuSel on
+    /// an open level opens its learning row on the first free slot, MenuBak
+    /// closes the row and gives the selection back to the level, and
+    /// MenuBak with nothing pending closes the ring.
+    #[test]
+    fn the_pad_steps_opens_a_row_and_closes_the_ring() {
+        let (mut app, _) = open_screen_app();
+        app.init_resource::<crate::pad_menu::PadMenu>();
+        {
+            let mut ui = app.world_mut().resource_mut::<SkillUi>();
+            ui.turn = 1.0;
+            let screen = ui.screen.as_mut().unwrap();
+            screen.ready = true;
+            screen.hover = 0x101;
+        }
+        // Right along the stick (the analog bit set, y down).
+        pad_at(&mut app, 200, 0x2011, Vec2::new(1.0, 0.0));
+        let hover = app
+            .world()
+            .resource::<SkillUi>()
+            .screen
+            .as_ref()
+            .unwrap()
+            .hover;
+        assert!(hover > 0 && hover != 0x101, "picked {hover:#x}");
+        app.world_mut()
+            .resource_mut::<SkillUi>()
+            .screen
+            .as_mut()
+            .unwrap()
+            .hover = 0x101;
+        pad_at(&mut app, 300, 0x100, Vec2::ZERO);
+        {
+            let ui = app.world().resource::<SkillUi>();
+            let screen = ui.screen.as_ref().unwrap();
+            assert_eq!(screen.learning, 0x101);
+            assert_eq!(screen.popup, 1);
+            assert_eq!(screen.popup_deadline, 600);
+            // The first free slot of the row.
+            let free = screen.requirements.iter().position(|r| *r == 0).unwrap();
+            assert_eq!(screen.hover, free as i32 + 1);
+        }
+        pad_at(&mut app, 400, 0x200, Vec2::ZERO);
+        {
+            let ui = app.world().resource::<SkillUi>();
+            let screen = ui.screen.as_ref().unwrap();
+            // The popup's state was still opening, so it is not restarted.
+            assert_eq!(screen.popup, 1);
+            assert_eq!(screen.hover, 0x101);
+        }
+        // Once the popup has closed (its fade clears the choice), MenuBak
+        // closes the ring.
+        {
+            let mut ui = app.world_mut().resource_mut::<SkillUi>();
+            let screen = ui.screen.as_mut().unwrap();
+            screen.learning = 0;
+            screen.popup = 0;
+        }
+        pad_at(&mut app, 500, 0x200, Vec2::ZERO);
+        assert!(app.world().resource::<SkillUi>().screen.is_none());
     }
 }

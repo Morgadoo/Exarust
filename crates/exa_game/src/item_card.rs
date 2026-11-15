@@ -169,11 +169,39 @@ impl ShownCard {
     }
 }
 
+/// What the card builder reads from the running game besides the item:
+/// the rank and points gates the mode switch sets (on in the arena, off in
+/// the story and a practice entered from outside the practice family,
+/// [`exa_items::card::card_gates`]), the value gate the trade window
+/// raises while it is open and lowers when it closes (off otherwise), and
+/// the sex of the player's record, which picks the pronoun words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardContext {
+    pub gates: CardGates,
+    pub value_shown: bool,
+    pub female: bool,
+}
+
+impl Default for CardContext {
+    fn default() -> Self {
+        Self {
+            gates: CardGates {
+                rank: false,
+                points: false,
+            },
+            value_shown: false,
+            female: false,
+        }
+    }
+}
+
 /// The live card's state. The request timer itself is [`GameScreens::card`]
 /// (the panel's [`CardWindow`](crate::item_container::CardWindow)).
 #[derive(Resource, Default)]
 pub struct CardView {
     pub shown: Option<ShownCard>,
+    /// The card builder's game state ([`sync_card_context`]).
+    pub context: CardContext,
     /// The generator the description sentences draw from. The original
     /// draws from the engine's one shared generator; Exarust keeps the
     /// card's own, seeded from the clock at the first card. [Exarust stand-in]
@@ -186,7 +214,8 @@ pub struct CardView {
     sockets_tried: Option<i32>,
     /// The rating dots' cells (the inventory's sheet), loaded once.
     pub dots: Option<crate::doll_view::DotSheet>,
-    dots_tried: bool,
+    /// The dot side the rating-dot cells were last tried at.
+    dots_tried: Option<i32>,
     /// The coin control's three icons, made at the coin manager's side.
     pub coins: Option<CoinSheet>,
     /// The coin side the icons were last tried at.
@@ -298,7 +327,7 @@ pub fn build_for(
     roll: &mut u32,
     item: u32,
     flags: u32,
-    female: bool,
+    context: CardContext,
 ) -> Option<(String, BuiltCard)> {
     let facts = catalogue.card_facts(item)?;
     // The card builder shows nothing when the name does not resolve.
@@ -339,17 +368,10 @@ pub fn build_for(
         sockets: facts.sockets,
         flip: facts.flip,
         skill: facts.skill,
-        // The live screens are story and practice, where the original's
-        // rank and points rows are off. [guess: no mode resource is read]
-        gates: CardGates {
-            rank: false,
-            points: false,
-        },
-        // The value gate is a settings byte in the original. Exarust shows
-        // the value. [guess]
-        value_shown: true,
+        gates: context.gates,
+        value_shown: context.value_shown,
         description: &description,
-        female,
+        female: context.female,
     })?;
     *roll = next_roll;
     Some((title, built))
@@ -638,7 +660,8 @@ fn show(
     if view.roll == 0 {
         view.roll = now | 1;
     }
-    let Some((name, built)) = build_for(catalogue, phrases, &mut view.roll, item, flags, false)
+    let context = view.context;
+    let Some((name, built)) = build_for(catalogue, phrases, &mut view.roll, item, flags, context)
     else {
         debug!(
             "item card: {item:#x} has no card (facts {})",
@@ -707,6 +730,7 @@ fn request_card(
     mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
     flow: Option<Res<crate::flow::Flow>>,
     parchment: Res<crate::parchment::ParchmentView>,
+    devices: Option<ResMut<crate::player_controls::DeviceClock>>,
 ) {
     // The press that ended the use cursor is the cursor's, and one on the
     // parchment is the parchment's.
@@ -726,6 +750,34 @@ fn request_card(
     // The card is the topmost form: once it takes the pointer, a right press
     // is its own (it fades out) and reaches no panel under it.
     let card_unit = card_unit(window, &screens);
+    // A right press on a socket of the shown card's row that holds a
+    // crystal is the socket control's: it opens the crystal's card (its
+    // charge in the flags), in place of the card's own fade.
+    if let Some(card) = view.shown.as_ref()
+        && let Some(i) = crate::socket_drag::socket_at(card, IVec2::new(pointer.0, pointer.1))
+        && let Some((crystal, flags)) = card.sockets.and_then(|s| s.card_at(i))
+        && let Some(catalogue) = catalogue.as_deref()
+    {
+        let (world, unit) = (card.world, card_unit);
+        debug!(
+            "item card: socket {i} of {:#x} shows crystal {crystal}'s card",
+            card.item
+        );
+        show(
+            &mut view,
+            &mut screens,
+            &mut icons,
+            catalogue,
+            phrases.as_deref().unwrap_or(&PhraseBook::default()),
+            crystal,
+            flags,
+            pointer,
+            unit,
+            now,
+            world,
+        );
+        return;
+    }
     if let Some(card) = view.shown.as_mut()
         && card.hit(pointer, card_unit)
     {
@@ -746,7 +798,7 @@ fn request_card(
     let Some(panel_container) = container(&screens, panel) else {
         return;
     };
-    let Some(index) = entry_at(panel_container, local) else {
+    let Some(index) = entry_at(panel_container, Some(&*icons), local) else {
         if view.shown.is_some() {
             let _ = screens.card.close(now);
             if let Some(card) = &mut view.shown {
@@ -768,12 +820,32 @@ fn request_card(
         panel_container.icon_size,
         pending,
     );
-    let PanelEvent::ShowCard { delayed, .. } = event else {
+    let PanelEvent::ShowCard { delayed, run_use } = event else {
         return;
     };
     let Some(catalogue) = catalogue.as_deref() else {
         return;
     };
+    // A use-kind-2 item (the Proctor's Seal in 0.9.5) runs the game's
+    // object use first, with no object and the item's usable section: the
+    // device rules by its second byte ([`crate::player_controls::device_use`]),
+    // whose answer the card ignores.
+    if run_use
+        && let Some(mut devices) = devices
+        && let Some([_, kind]) = catalogue.usable(entry.id)
+    {
+        let used = crate::player_controls::device_use(
+            kind,
+            entry.id & exa_formats::characters::ID_MASK,
+            u64::from(now),
+            &mut devices,
+            || false,
+        );
+        debug!(
+            "item card: {:#x}'s use runs before its card: {used}",
+            entry.id
+        );
+    }
     if delayed {
         // The card is built by the timer system a hundred milliseconds per
         // GUI step later; the icon is acquired then.
@@ -1697,14 +1769,16 @@ pub fn draw_card(
             None => warn!("item card: the socket sheets did not load"),
         }
     }
-    if !view.dots_tried
+    if view.dots_tried != Some(side)
         && view
             .shown
             .as_ref()
             .is_some_and(|c| c.built.content.is_some())
     {
-        view.dots_tried = true;
-        view.dots = game.as_deref().and_then(crate::doll_view::load_dot_sheet);
+        view.dots_tried = Some(side);
+        view.dots = game
+            .as_deref()
+            .and_then(|game| crate::doll_view::load_dot_sheet(game, side));
         if view.dots.is_none() {
             warn!("item card: the rating-dot sheet did not load");
         }
@@ -2043,7 +2117,8 @@ fn paint_slider(
 ) {
     let (x, y, w, h) = place;
     let mid = (((h as u32) >> 1) as i32) + y;
-    let drawn = exa_items::item_gui::slider(x, w, share);
+    let dot = dots.map_or(exa_items::item_gui::DOT, |sheet| sheet.side);
+    let drawn = exa_items::item_gui::slider(x, w, share, dot);
     let mut batch = exa_ui::skin::SkinBatch::new();
     batch.select(1, 0, false);
     batch.set_ink(palette.text[6]);
@@ -2057,7 +2132,7 @@ fn paint_slider(
     }
     painted.push(GuiLayer::new(batch, LayerTexture::None));
     if let Some(sheet) = dots {
-        let half = exa_items::item_gui::DOT >> 1;
+        let half = sheet.side >> 1;
         let quads = sheet
             .atlas
             .draw(sheet.whole, drawn.knob as f32, (mid - half) as f32);
@@ -2072,7 +2147,7 @@ fn paint_slider(
 
 /// Whether an item entry is under a physical point, for the right-release
 /// screen close to leave the panel's card request alone.
-pub fn entry_under(screens: &GameScreens, at: IVec2) -> bool {
+pub fn entry_under(screens: &GameScreens, icons: Option<&PanelIcons>, at: IVec2) -> bool {
     open_panels(screens)
         .iter()
         .find_map(|(panel, client)| {
@@ -2080,8 +2155,38 @@ pub fn entry_under(screens: &GameScreens, at: IVec2) -> bool {
                 .contains(at.x, at.y)
                 .then(|| (*panel, Cell::new(at.x - client.left, at.y - client.top)))
         })
-        .and_then(|(panel, local)| container(screens, panel).and_then(|c| entry_at(c, local)))
+        .and_then(|(panel, local)| {
+            container(screens, panel).and_then(|c| entry_at(c, icons, local))
+        })
         .is_some()
+}
+
+/// Keeps the card builder's game state ([`CardContext`]) on the running
+/// game: a mode change runs the mode switch's gate rule on the rank and
+/// points gates (the previous mode's word against the new one's), the
+/// value gate follows the trade window (the arena hub's shop), and the sex
+/// is the player's record's.
+pub fn sync_card_context(
+    flow: Option<Res<crate::flow::Flow>>,
+    hub: Option<Res<crate::hub_windows::HubWindows>>,
+    players: Query<&exa_character::record::CharacterData, With<crate::player::PlayerBody>>,
+    mut view: ResMut<CardView>,
+    mut mode: Local<Option<u32>>,
+) {
+    let mut context = view.context;
+    if let Some(flow) = flow.as_deref() {
+        let word = flow.mode.word();
+        let was = mode.replace(word).unwrap_or(crate::flow::Mode::Menu.word());
+        context.gates = exa_items::card::card_gates(was, word, context.gates);
+    }
+    context.value_shown = hub.as_deref().is_some_and(|hub| hub.shop.is_some());
+    if let Some(data) = players.iter().next() {
+        context.female = data.record.female;
+    }
+    if context != view.context {
+        debug!("item card: the builder's state is now {context:?}");
+        view.context = context;
+    }
 }
 
 /// The card's input, build and draw systems.
@@ -2097,6 +2202,7 @@ impl Plugin for ItemCardPlugin {
             .add_systems(
                 Update,
                 (
+                    sync_card_context,
                     refresh_cards,
                     crate::parchment::parchment_press,
                     card_press,
@@ -2123,6 +2229,186 @@ impl Plugin for ItemCardPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_builder_follows_the_mode_the_trade_window_and_the_players_sex() {
+        let mut app = App::new();
+        app.init_resource::<CardView>()
+            .init_resource::<crate::flow::Flow>()
+            .init_resource::<crate::hub_windows::HubWindows>()
+            .add_systems(Update, sync_card_context);
+        let record = exa_formats::characters::CharacterRecord {
+            female: true,
+            ..Default::default()
+        };
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_character::record::CharacterData::of_record(record),
+        ));
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Story;
+        app.update();
+        let context = app.world().resource::<CardView>().context;
+        assert!(!context.gates.rank && !context.gates.points);
+        assert!(!context.value_shown);
+        assert!(context.female);
+        // Entering the arena turns the rank and points rows on.
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Arena;
+        app.update();
+        let gates = app.world().resource::<CardView>().context.gates;
+        assert!(gates.rank && gates.points);
+        // The menu leaves them as they were; the story turns them off.
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Menu;
+        app.update();
+        assert!(app.world().resource::<CardView>().context.gates.rank);
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Story;
+        app.update();
+        assert!(!app.world().resource::<CardView>().context.gates.rank);
+    }
+
+    /// A right press on a socket that holds crystal B opens the crystal's
+    /// card with its charge (shipped records, skipped without the game).
+    #[test]
+    fn a_right_press_on_a_socketed_crystal_opens_its_card() {
+        use exa_items::possession::crystal;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(resource) = data.pack(exa_assets::PackKind::Resource) else {
+            return;
+        };
+        let Some(db) = resource
+            .get("objdb.rdb")
+            .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let strings = resource
+            .get("objstrings.rdb")
+            .and_then(|bytes| exa_formats::objstrings::Library::parse(bytes).ok());
+        let catalogue = ItemCatalogue::of_database_with_strings(&db, strings.as_ref());
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<CardView>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::parchment::ParchmentView>()
+            .init_resource::<Time>()
+            .insert_resource(catalogue)
+            .insert_resource(ScriptedPointer(Some(Vec2::new(1005.0, 605.0))))
+            .add_systems(Update, request_card);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.world_mut().resource_mut::<GameScreens>().task.screen = (1280, 720);
+        let row = GuiRect::new(1000, 600, 80, 22);
+        app.world_mut().resource_mut::<CardView>().shown = Some(ShownCard {
+            item: 0x1234,
+            flags: 0,
+            name: String::new(),
+            built: BuiltCard {
+                page: exa_items::card::CardPage::Plain,
+                value: 0,
+                title_colour: None,
+                content: None,
+                description: String::new(),
+            },
+            icon: 0,
+            at: (900, 300),
+            size: (300, 400),
+            pointer: (900, 300),
+            fade: PopupFade::default(),
+            form_flags: 0,
+            world: false,
+            sockets: Some(Sockets([0x3082, 0x80, 0, 0])),
+            socket_row: Some((row, 4)),
+            sides: [[0; 3]; 2],
+            flip: FlipButton::default(),
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        let shown = app
+            .world()
+            .resource::<CardView>()
+            .shown
+            .as_ref()
+            .map(|c| (c.item, c.flags));
+        assert_eq!(shown, Some((crystal::B, 0x30 << 16)));
+    }
+
+    /// A right press on the Proctor's Seal in the pack runs its use before
+    /// the delayed card (shipped records, skipped without the game).
+    #[test]
+    fn a_right_press_on_a_use_kind_two_item_runs_its_use_first() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(db) = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+            .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let catalogue = ItemCatalogue::of_database(&db);
+        let seal = crate::player_controls::DEVICE_ONCE_ID;
+        assert_eq!(catalogue.card_kind(seal), Some(2));
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<CardView>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::parchment::ParchmentView>()
+            .init_resource::<crate::player_controls::DeviceClock>()
+            .init_resource::<Time>()
+            .insert_resource(catalogue)
+            .add_systems(Update, request_card);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let (slot, _) = app
+            .world_mut()
+            .resource_mut::<PanelIcons>()
+            .reserve(seal, 0, None);
+        let point = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.task.screen = (1280, 720);
+            screens.open_inventory(true, true, 4);
+            screens.pack.add_at_centre(seal, slot, 0, 0);
+            let cell = screens.pack.entries[0].cell;
+            let client = crate::panel_live::open_panels(&screens)
+                .into_iter()
+                .find(|(panel, _)| *panel == crate::panel_live::Panel::PlayerPack)
+                .unwrap()
+                .1;
+            Vec2::new(
+                (client.left + cell.x + 20) as f32,
+                (client.top + cell.y + 20) as f32,
+            )
+        };
+        app.insert_resource(ScriptedPointer(Some(point)));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<crate::player_controls::DeviceClock>()
+                .once_used
+        );
+        // The card itself waits on the delay timer.
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .card
+                .timer
+                .due
+                .is_some()
+        );
+    }
 
     #[test]
     fn the_card_stays_over_a_raised_trade_window() {
@@ -2358,8 +2644,28 @@ mod tests {
         let catalogue = ItemCatalogue::default();
         let phrases = PhraseBook::default();
         let mut roll = 1;
-        assert!(build_for(&catalogue, &phrases, &mut roll, 7, 0, false).is_none());
-        assert!(build_for(&catalogue, &phrases, &mut roll, 0, 0, false).is_none());
+        assert!(
+            build_for(
+                &catalogue,
+                &phrases,
+                &mut roll,
+                7,
+                0,
+                CardContext::default()
+            )
+            .is_none()
+        );
+        assert!(
+            build_for(
+                &catalogue,
+                &phrases,
+                &mut roll,
+                0,
+                0,
+                CardContext::default()
+            )
+            .is_none()
+        );
         assert_eq!(roll, 1);
     }
 
@@ -2592,16 +2898,40 @@ mod tests {
         });
         assert!(entry_under(
             &screens,
+            None,
             IVec2::new(client.left + 15, client.top + 15)
         ));
         assert!(!entry_under(
             &screens,
+            None,
             IVec2::new(client.left + 300, client.top + 300)
         ));
         // Inside the panel but on no entry.
         assert!(!entry_under(
             &screens,
+            None,
             IVec2::new(client.right - 2, client.bottom - 2)
         ));
+    }
+
+    #[test]
+    fn the_slider_knob_centres_on_the_level_dot() {
+        // A 28-pixel dot (GUI level 5): the knob's top sits half a dot above
+        // the row's middle, not half of the pre-level 22.
+        let cell = vec![255u8; 64 * 64 * 4];
+        let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64, 28)
+            .expect("a dot sheet");
+        let palette = exa_ui::line_skin::shown_palette(1.0);
+        let mut painted = gui_paint::Painted::default();
+        paint_slider(&mut painted, (0, 100, 200, 30), 0.5, &palette, Some(&sheet));
+        let knob = painted.layers.last().expect("the knob layer");
+        let top = knob
+            .batch
+            .vertices
+            .iter()
+            .map(|v| v.y)
+            .fold(f32::INFINITY, f32::min);
+        // The row's middle is 100 + 15 = 115; the knob starts 14 above it.
+        assert_eq!(top, 101.0);
     }
 }

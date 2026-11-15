@@ -321,6 +321,7 @@ fn panel_double_click(
     mut last: Local<Option<(IVec2, u64, Panel, usize)>>,
     mut pending: ResMut<PendingDoubleClick>,
     mut out: DoubleClickOut,
+    icons: Option<Res<crate::item_panel_draw::PanelIcons>>,
 ) {
     let now = real.elapsed().as_millis() as u64;
     if let Some((id, slot)) = pending.0.take() {
@@ -351,7 +352,7 @@ fn panel_double_click(
     let Some(panel_container) = container(&screens, panel) else {
         return;
     };
-    let Some(index) = entry_at(panel_container, local) else {
+    let Some(index) = entry_at(panel_container, icons.as_deref(), local) else {
         *last = None;
         return;
     };
@@ -566,6 +567,7 @@ struct UseUnder<'w, 's> {
     objects: Query<'w, 's, ObjectIds>,
     over: Option<Res<'w, PointerOverGui>>,
     screens: Res<'w, GameScreens>,
+    icons: Option<Res<'w, crate::item_panel_draw::PanelIcons>>,
 }
 
 /// The use cursor's end on the next mouse press (see the module notes).
@@ -618,7 +620,7 @@ fn end_use(
                 .and_then(|at| panel_at(&panels, at))
                 .and_then(|(panel, local)| {
                     let c = container(&under.screens, panel)?;
-                    let index = entry_at(c, local)?;
+                    let index = entry_at(c, under.icons.as_deref(), local)?;
                     subject_entry = Some((panel, index));
                     Some(c.entries[index].id)
                 });
