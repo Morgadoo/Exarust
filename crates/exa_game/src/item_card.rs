@@ -730,6 +730,7 @@ fn request_card(
     mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
     flow: Option<Res<crate::flow::Flow>>,
     parchment: Res<crate::parchment::ParchmentView>,
+    devices: Option<ResMut<crate::player_controls::DeviceClock>>,
 ) {
     // The press that ended the use cursor is the cursor's, and one on the
     // parchment is the parchment's.
@@ -819,12 +820,29 @@ fn request_card(
         panel_container.icon_size,
         pending,
     );
-    let PanelEvent::ShowCard { delayed, .. } = event else {
+    let PanelEvent::ShowCard { delayed, run_use } = event else {
         return;
     };
     let Some(catalogue) = catalogue.as_deref() else {
         return;
     };
+    // A use-kind-2 item (the Proctor's Seal in 0.9.5) runs the game's
+    // object use first, with no object and the item's usable section: the
+    // device rules by its second byte ([`crate::player_controls::device_use`]),
+    // whose answer the card ignores.
+    if run_use
+        && let Some(mut devices) = devices
+        && let Some([_, kind]) = catalogue.usable(entry.id)
+    {
+        let used = crate::player_controls::device_use(
+            kind,
+            entry.id & exa_formats::characters::ID_MASK,
+            u64::from(now),
+            &mut devices,
+            || false,
+        );
+        debug!("item card: {:#x}'s use runs before its card: {used}", entry.id);
+    }
     if delayed {
         // The card is built by the timer system a hundred milliseconds per
         // GUI step later; the icon is acquired then.
@@ -2330,6 +2348,61 @@ mod tests {
         app.update();
         let shown = app.world().resource::<CardView>().shown.as_ref().map(|c| (c.item, c.flags));
         assert_eq!(shown, Some((crystal::B, 0x30 << 16)));
+    }
+
+    /// A right press on the Proctor's Seal in the pack runs its use before
+    /// the delayed card (shipped records, skipped without the game).
+    #[test]
+    fn a_right_press_on_a_use_kind_two_item_runs_its_use_first() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(db) = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+            .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let catalogue = ItemCatalogue::of_database(&db);
+        let seal = crate::player_controls::DEVICE_ONCE_ID;
+        assert_eq!(catalogue.card_kind(seal), Some(2));
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<CardView>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::parchment::ParchmentView>()
+            .init_resource::<crate::player_controls::DeviceClock>()
+            .init_resource::<Time>()
+            .insert_resource(catalogue)
+            .add_systems(Update, request_card);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let (slot, _) = app.world_mut().resource_mut::<PanelIcons>().reserve(seal, 0, None);
+        let point = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.task.screen = (1280, 720);
+            screens.open_inventory(true, true, 4);
+            screens.pack.add_at_centre(seal, slot, 0, 0);
+            let cell = screens.pack.entries[0].cell;
+            let client = crate::panel_live::open_panels(&screens)
+                .into_iter()
+                .find(|(panel, _)| *panel == crate::panel_live::Panel::PlayerPack)
+                .unwrap()
+                .1;
+            Vec2::new((client.left + cell.x + 20) as f32, (client.top + cell.y + 20) as f32)
+        };
+        app.insert_resource(ScriptedPointer(Some(point)));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        assert!(app.world().resource::<crate::player_controls::DeviceClock>().once_used);
+        // The card itself waits on the delay timer.
+        assert!(app.world().resource::<GameScreens>().card.timer.due.is_some());
     }
 
     #[test]
