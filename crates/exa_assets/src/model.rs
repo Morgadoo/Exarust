@@ -261,6 +261,11 @@ pub struct ClothMesh {
     /// For each drawn part of the node, in [`ModelNode::parts`] order, the
     /// position element of each of its vertices.
     pub part_elements: Vec<Vec<u32>>,
+    /// The cloth's links over the elements, in the order its edge pass
+    /// visits them: the original's walk out from the pins over the mesh's
+    /// incidence ([`exa_physics::cloth::walk_links`]), from each element's
+    /// position in centimetres.
+    pub links: Vec<(u32, u32)>,
 }
 
 impl ClothMesh {
@@ -298,12 +303,43 @@ impl ClothMesh {
                     .collect()
             })
             .collect();
+        let links = Self::walk(mesh, &faces, &face_flags);
         Self {
             elements: mesh.position_count,
             faces,
             face_flags,
             part_elements,
+            links,
         }
+    }
+
+    /// The link walk over the whole mesh, as the original's cloth set-up
+    /// runs it: every element at its first vertex's position (centimetres),
+    /// the pins its face flags give, the faces and their incidence as the
+    /// load leaves it.
+    fn walk(mesh: &RfcMesh, faces: &[[u32; 3]], face_flags: &[u32]) -> Vec<(u32, u32)> {
+        let count = mesh.position_count;
+        let mut positions = vec![bevy::math::Vec3::ZERO; count];
+        let mut placed = vec![false; count];
+        for (vertex, &element) in mesh.position_ids.iter().enumerate() {
+            let element = element as usize;
+            if element < count && !placed[element] {
+                placed[element] = true;
+                let p = mesh.positions.get(vertex).copied().unwrap_or_default();
+                positions[element] = bevy::math::Vec3::from_array(p) * 100.0;
+            }
+        }
+        let faces: Vec<[usize; 3]> = faces.iter().map(|f| f.map(|e| e as usize)).collect();
+        let element_faces: Vec<[u32; 3]> = faces.iter().map(|f| f.map(|e| e as u32)).collect();
+        let pins: Vec<usize> = exa_physics::cloth::face_flag_pins(count, &element_faces, face_flags)
+            .into_iter()
+            .map(|(element, _)| element)
+            .collect();
+        let (starts, fans) = mesh.element_incidence();
+        exa_physics::cloth::walk_links(&positions, &faces, &starts, &fans, &pins)
+            .into_iter()
+            .map(|(a, b)| (a as u32, b as u32))
+            .collect()
     }
 }
 

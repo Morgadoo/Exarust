@@ -157,6 +157,35 @@ impl ClothObjects {
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ClothContacts(pub bool);
 
+/// The scene's wind the cloths are blown by: the environment's preset wind
+/// (0 indoors), which the frame owns and the simulation reads.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct SceneWind(pub f32);
+
+/// The simulation's wind ([`cloth::Wind`]): the original's step hook walks
+/// its noise tile once a step, before the objects' steps, whether or not a
+/// cloth reads it.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ClothWind(pub cloth::Wind);
+
+/// The frame hands the simulation the live environment's wind when it
+/// changes.
+fn publish_scene_wind(
+    runtime: Option<Res<crate::environment::SceneEnvRuntime>>,
+    mut wind: ResMut<SceneWind>,
+) {
+    let now = runtime.map_or(0.0, |runtime| runtime.env.wind);
+    if wind.0.to_bits() != now.to_bits() {
+        wind.0 = now;
+    }
+}
+
+/// The step's wind hook ([`cloth::Wind::advance`]), once a simulation step
+/// before the cloths step.
+fn advance_cloth_wind(scene: Option<Res<SceneWind>>, mut wind: ResMut<ClothWind>) {
+    wind.0.advance(scene.map_or(0.0, |scene| scene.0));
+}
+
 impl Default for ClothContacts {
     fn default() -> Self {
         Self(std::env::var_os("EXA_CLOTH_CONTACTS").is_none_or(|v| v != "0"))
@@ -441,31 +470,49 @@ pub fn cloth_of(vertices: &[Vec3], triangles: &[[usize; 3]], pins: &[(usize, f32
 
 /// Builds the cloth of a marked mesh part from its file's data, as the
 /// original's controller does: one particle per position element the part
-/// uses (at its first vertex, `vertices` in metres), the part's triangles
-/// over those particles, and the pins `pins` lists by element (from
-/// [`cloth::face_flag_pins`] over the node's faces; an element the part
-/// does not use is skipped). `elements` is each vertex's position element.
-/// Returns the cloth and the particle each vertex draws.
+/// uses, in element order (at its first vertex, `vertices` in metres), the
+/// part's triangles over those particles, the pins `pins` lists by element
+/// (from [`cloth::face_flag_pins`] over the node's faces; an element the
+/// part does not use is skipped) and the links `links` lists by element
+/// (the node's walk, [`exa_assets::ClothMesh::links`]; a link to an element
+/// the part does not use is left out). `elements` is each vertex's
+/// position element. Returns the cloth and the particle each vertex draws.
 pub fn cloth_of_elements(
     vertices: &[Vec3],
     triangles: &[[usize; 3]],
     elements: &[u32],
     pins: &[(usize, f32)],
+    links: &[(u32, u32)],
 ) -> (Cloth, Vec<usize>) {
-    let mut particle_of = std::collections::HashMap::<u32, usize>::new();
-    let mut points = Vec::new();
-    let vertex_particle: Vec<usize> = vertices
-        .iter()
-        .enumerate()
-        .map(|(vertex, &position)| {
-            let element = elements
+    // The element of each vertex, and the elements the part uses in order.
+    let element_of: Vec<u32> = (0..vertices.len())
+        .map(|vertex| {
+            elements
                 .get(vertex)
                 .copied()
-                .unwrap_or(u32::MAX - vertex as u32);
-            *particle_of.entry(element).or_insert_with(|| {
-                points.push(position);
-                points.len() - 1
-            })
+                .unwrap_or(u32::MAX - vertex as u32)
+        })
+        .collect();
+    let mut used: Vec<u32> = element_of.clone();
+    used.sort_unstable();
+    used.dedup();
+    let particle_of: std::collections::HashMap<u32, usize> = used
+        .iter()
+        .enumerate()
+        .map(|(particle, &element)| (element, particle))
+        .collect();
+    let mut points = vec![Vec3::ZERO; used.len()];
+    let mut placed = vec![false; used.len()];
+    let vertex_particle: Vec<usize> = element_of
+        .iter()
+        .enumerate()
+        .map(|(vertex, element)| {
+            let particle = particle_of[element];
+            if !placed[particle] {
+                placed[particle] = true;
+                points[particle] = vertices[vertex];
+            }
+            particle
         })
         .collect();
     let welded: Vec<[usize; 3]> = triangles
@@ -480,7 +527,17 @@ pub fn cloth_of_elements(
             particle_of.get(&element).map(|&p| (p, weight))
         })
         .collect();
-    (cloth_of(&points, &welded, &held), vertex_particle)
+    let linked: Vec<(usize, usize)> = links
+        .iter()
+        .filter_map(|(a, b)| Some((*particle_of.get(a)?, *particle_of.get(b)?)))
+        .collect();
+    let cm: Vec<Vec3> = points.iter().map(|v| *v * 100.0).collect();
+    let indices: Vec<usize> = held.iter().map(|(i, _)| *i).collect();
+    let mut cloth = Cloth::from_mesh_linked(&cm, &welded, &indices, &linked);
+    for (pin, (_, weight)) in cloth.pins.iter_mut().zip(&held) {
+        pin.weight = *weight;
+    }
+    (cloth, vertex_particle)
 }
 
 /// The countdown a placement's word gives a cloth: the word itself, or
@@ -555,7 +612,7 @@ fn build_cloth_nodes(
         let (cloth, vertex_particle) = match elements {
             Some((part, file)) => {
                 let pins = cloth::face_flag_pins(file.elements, &file.faces, &file.face_flags);
-                cloth_of_elements(&vertices, &triangles, part, &pins)
+                cloth_of_elements(&vertices, &triangles, part, &pins, &file.links)
             }
             None => {
                 let pins = pins_from_skin(vertices.len(), None);
@@ -647,6 +704,7 @@ fn step_cloths(
     mut objects: ResMut<ClothObjects>,
     live_contacts: Res<ClothContacts>,
     mut debug: ResMut<ClothDebug>,
+    wind: Res<ClothWind>,
     names: Query<&Name>,
     mut part_cells: Local<sector::CellGrid>,
     mut index: Local<PartCells>,
@@ -828,6 +886,7 @@ fn step_cloths(
         statics: statics.as_deref(),
         live_contacts: live_contacts.0,
         gravity,
+        wind: &wind.0,
         on,
     };
     instances
@@ -883,6 +942,7 @@ struct StepShared<'a, 'p> {
     statics: Option<&'a exa_physics::StaticColliders>,
     live_contacts: bool,
     gravity: Vec3,
+    wind: &'a cloth::Wind,
     on: bool,
 }
 
@@ -993,7 +1053,16 @@ fn step_one(
         // contacts, so the level's records are culled by where the step
         // left the cloth ([`cloth::step_before_level`] and
         // [`cloth::finish_step`]).
-        let stepped = cloth::step_before_level(&mut instance.cloth, gravity);
+        // The wind meets the cloth in the world: its particles are in the
+        // node's frame, in centimetres.
+        let to_world = Affine3A::from_scale(Vec3::splat(100.0))
+            * frame
+            * Affine3A::from_scale(Vec3::splat(0.01));
+        let wind = cloth::WindAt {
+            wind: shared.wind,
+            to_world,
+        };
+        let stepped = cloth::step_before_level_in(&mut instance.cloth, gravity, Some(wind));
         if let Some(t) = step_started {
             work.step_micros = t.elapsed().as_micros() as u64;
         }
@@ -1231,13 +1300,18 @@ impl Plugin for ClothPlugin {
         bridge_cloth_types(app);
         app.init_resource::<ClothObjects>()
             .init_resource::<ClothContacts>()
+            .init_resource::<SceneWind>()
+            .init_resource::<ClothWind>()
             .insert_resource(ClothDebug::from_env())
-            .add_systems(Update, build_cloth_nodes)
+            .add_systems(Update, (build_cloth_nodes, publish_scene_wind))
             // The sector runs its simulated objects after the bodies' tick
-            // (the original's object step and contacts are inside it).
+            // (the original's object step and contacts are inside it); the
+            // wind hook runs once a step before them.
             .add_systems(
                 FixedUpdate,
-                step_cloths.after(exa_physics::body::BodyPostStep),
+                (advance_cloth_wind, step_cloths)
+                    .chain()
+                    .after(exa_physics::body::BodyPostStep),
             )
             // The meshes take the particles once a frame, after its ticks.
             .add_systems(
@@ -1266,7 +1340,9 @@ fn bridge_cloth_types(app: &mut App) {
         // exanima01 and exanima06.
         .bridge_copy_in::<crate::cloth::ClothInstance>()
         .bridge_message::<ClothMeshUpdate>()
-        .bridge_move_resource::<crate::cloth::ClothObjects>();
+        .bridge_move_resource::<crate::cloth::ClothObjects>()
+        .bridge_copy_in_resource::<crate::cloth::SceneWind>()
+        .bridge_move_resource::<crate::cloth::ClothWind>();
 }
 
 #[cfg(test)]
@@ -1337,13 +1413,50 @@ mod tests {
         let faces = [[0, 1, 2], [0, 2, 3]];
         let pins = cloth::face_flag_pins(4, &faces, &[0x8000_0000, 0]);
         assert_eq!(pins, vec![(1, cloth::FIRM_PIN)]);
-        let (cloth, drawn) = cloth_of_elements(&vertices, &triangles, &elements, &pins);
+        // The node's walk out from the pin (worked by hand from the
+        // original's assembly): the four sides from the pin outward, then
+        // the two pairs at right angles, the square's diagonals.
+        let points: Vec<Vec3> = vertices[..4].iter().map(|v| *v * 100.0).collect();
+        let element_faces: Vec<[usize; 3]> = faces.iter().map(|f| f.map(|e| e as usize)).collect();
+        let (starts, fans) = cloth::incidence(&element_faces, 4);
+        let walked = cloth::walk_links(&points, &element_faces, &starts, &fans, &[1]);
+        assert_eq!(walked, vec![(1, 0), (1, 2), (0, 3), (2, 3), (0, 2), (3, 1)]);
+        let links: Vec<(u32, u32)> = walked.iter().map(|&(a, b)| (a as u32, b as u32)).collect();
+        let (cloth, drawn) = cloth_of_elements(&vertices, &triangles, &elements, &pins, &links);
         assert_eq!(cloth.particles.len(), 4);
         assert_eq!(drawn, vec![0, 1, 2, 3, 0, 2]);
         assert_eq!(cloth.pins.len(), 1);
         assert_eq!((cloth.pins[0].index, cloth.pins[0].weight), (1, 1.0));
-        // Four sides and the diagonal, plus the bend link 1-3.
-        assert_eq!(cloth.edges.len(), 6);
+        let pairs: Vec<(usize, usize)> = cloth.edges.iter().map(|e| (e.a, e.b)).collect();
+        assert_eq!(pairs, walked);
+        // Each at half its rest distance: the sides are 1 m.
+        assert_eq!(cloth.edges[0].half_rest, 50.0);
+    }
+
+    /// The particles are the elements the part uses in element order, as
+    /// the original numbers them, whatever order the part's vertices first
+    /// use them in; a link to an element the part lacks is left out.
+    #[test]
+    fn the_particles_follow_the_elements_order() {
+        let vertices = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let elements = [7, 2, 5];
+        let (cloth, drawn) = cloth_of_elements(
+            &vertices,
+            &[[0, 1, 2]],
+            &elements,
+            &[(2, cloth::FIRM_PIN)],
+            &[(2, 5), (5, 7), (7, 9)],
+        );
+        assert_eq!(drawn, vec![2, 0, 1]);
+        assert_eq!(cloth.particles[0].position, Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(cloth.pins[0].index, 0);
+        let pairs: Vec<(usize, usize)> = cloth.edges.iter().map(|e| (e.a, e.b)).collect();
+        assert_eq!(pairs, vec![(0, 1), (1, 2)]);
+        assert_eq!(cloth.triangles[0], cloth::ClothTri { a: 2, b: 0, c: 1 });
     }
 
     /// A placement's word is the cloth's starting countdown, asleep under 1
@@ -1644,6 +1757,74 @@ mod tests {
     /// A 1 m cloth dropped from 1-2 m onto a floor quad at y = 0.5 m, in
     /// the world and in the sector's grid, after 150 ticks. With `own`, the
     /// floor belongs to the scene node the cloth hangs under.
+    /// A loose square cloth in a headless app with the cloth plugin, under
+    /// a live environment whose preset wind is `wind`, after `steps`
+    /// simulation steps (the frame publishes the wind first).
+    fn windy_cloth(wind: f32, steps: usize) -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ClothPlugin))
+            .init_resource::<Assets<Mesh>>();
+        let mut env = crate::scene_env::SceneEnvironment::new(1);
+        env.wind = wind;
+        app.insert_resource(crate::environment::SceneEnvRuntime::new(env, 1));
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let corners = [
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let cloth = cloth_of(&corners, &[[0, 1, 2], [0, 2, 3]], &[]);
+        let drawn = (0..cloth.particles.len()).collect();
+        let entity = app
+            .world_mut()
+            .spawn((ClothInstance::new(cloth, mesh, drawn), GlobalTransform::default()))
+            .id();
+        app.world_mut().run_schedule(Update);
+        for _ in 0..steps {
+            app.world_mut().run_schedule(FixedUpdate);
+        }
+        (app, entity)
+    }
+
+    /// The step's wind hook runs once a simulation step, drawing for every
+    /// tile sample with or without wind, at the scene's preset wind times
+    /// 0.3; a cloth in an outdoor wind drifts along it, one indoors (no
+    /// wind) does not.
+    #[test]
+    fn the_scenes_wind_blows_the_live_cloths() {
+        let (windy, blown) = windy_cloth(2.0, 20);
+        let (calm, still) = windy_cloth(0.0, 20);
+        assert_eq!(windy.world().resource::<SceneWind>().0, 2.0);
+        let wind = &windy.world().resource::<ClothWind>().0;
+        assert_eq!(wind.strength, (2.0f64 * 0.3) as f32);
+        let mut roll = 0u32;
+        for _ in 0..20 * cloth::NOISE_CELLS * cloth::NOISE_CELLS {
+            cloth::next_random(&mut roll);
+        }
+        assert_eq!(wind.roll, roll);
+        assert_eq!(calm.world().resource::<ClothWind>().0.roll, roll);
+        assert_eq!(calm.world().resource::<ClothWind>().0.strength, 0.0);
+        let x = |app: &App, entity: Entity| {
+            let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
+            instance.cloth.particles.iter().map(|p| p.position.x).sum::<f32>()
+        };
+        let z = |app: &App, entity: Entity| {
+            let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
+            instance.cloth.particles.iter().map(|p| p.position.z).sum::<f32>()
+        };
+        // The direction is (0.6, 0, 0.3) normalised: along +x and +z.
+        assert!(x(&windy, blown) > x(&calm, still) + 1.0, "{} {}", x(&windy, blown), x(&calm, still));
+        assert!(z(&windy, blown) > z(&calm, still) + 0.5);
+        assert!(z(&calm, still).abs() < 1e-3);
+    }
+
     fn falling_cloth(own: bool) -> (App, Entity) {
         use exa_physics::Physics;
         use exa_physics::StaticColliders;
