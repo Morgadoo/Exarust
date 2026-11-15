@@ -1657,15 +1657,19 @@ fn duellist(
             other_skill: foe_skill,
         };
         // The AI tick, before its state: a cast whose body is not casting
-        // 500 ms after it began is let go (64-bit compare). A duellist runs
-        // only the combat state, so the other states' hook call with 0x10
-        // on a casting body does not arise.
-        if ai.mind.casting
-            && *condition != Condition::CASTING
-            && u64::from(ai.mind.cast_start_ms) + 500 < u64::from(now as u32)
-        {
-            ai.mind.casting = false;
-        }
+        // 500 ms after it began is let go. A brain's AI tick has already run
+        // it this tick (the same clock, so this does nothing more); a
+        // brainless duellist runs only the combat state, so the other
+        // states' hook call with 0x10 on a casting body does not arise.
+        ai.mind.casting = brain::cast_timeout(
+            ai.mind.casting,
+            *condition,
+            true,
+            None,
+            ai.mind.cast_start_ms,
+            now as u32,
+        )
+        .held;
         // The AI tick lifts the fighter's own footprint before its state
         // and stamps it again after, so the state's ground costs, line
         // walks and sight see only the others' footprints.

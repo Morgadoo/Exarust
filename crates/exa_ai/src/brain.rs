@@ -1467,6 +1467,30 @@ pub fn ai_tick(
         // The AI tick's group alert decays one step every ten seconds.
         (npc.alert_count, npc.alert_until_ms) =
             crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
+        // Then the casting flag the combat state's cast chooser set: let go
+        // 500 ms after the cast began unless the body still casts. Outside
+        // the combat state a casting body's event hook is asked (event
+        // 0x10) whether the cast goes on [not modelled: Exarust's bodies
+        // carry no event hook, so the cast is never stopped here].
+        if let Some(duellist) = duellist.as_deref_mut() {
+            let in_combat_state = duellist.fighting();
+            let mind = &mut duellist.mind;
+            let hold = cast_timeout(
+                mind.casting,
+                *condition,
+                in_combat_state,
+                None,
+                mind.cast_start_ms,
+                now,
+            );
+            if mind.casting && !hold.held {
+                debug!(
+                    "{talking}: the cast begun at {} ms is let go",
+                    mind.cast_start_ms
+                );
+            }
+            mind.casting = hold.held;
+        }
         // After the alert decay, a knocked-out, collapsed or dead body only
         // refreshes its nav footprint: no morale, contacts, state or look
         // (the original's out-of-the-fight condition branch; the footprint
@@ -2067,65 +2091,54 @@ pub fn stamps_footprint(following_route: bool, moving: bool, speed_cm: f32) -> b
     !following_route || !moving || speed_cm < 1.0
 }
 
-/// The grabbed condition word the body reports while a grip holds it.
-pub const GRABBED_CONDITION: u32 = 0x20;
-/// How long a grab may hold the flag outside the grabbed condition (ms).
-pub const GRAB_TIMEOUT_MS: u32 = 500;
+/// How long a cast may keep the AI's casting flag while the body does not
+/// read casting (ms).
+pub const CAST_TIMEOUT_MS: u32 = 500;
 
-/// What the AI tick's grabbed-flag step does: whether the flag stays set
-/// and whether the grip is released.
+/// What the AI tick's casting-flag step does: whether the flag stays set
+/// and whether the cast is stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Grab {
+pub struct CastHold {
     /// The flag stays set after the step.
     pub held: bool,
-    /// The mechanic is told to release the grip (the body's own call, which
-    /// Exarust does not model).
-    pub released: bool,
+    /// The body's cast is stopped (the body's own call, which Exarust does
+    /// not model).
+    pub stopped: bool,
 }
 
-/// The AI tick's grabbed flag: a flag that is not set is untouched. While
-/// the body is in the grabbed condition the flag stays, unless the tick's
-/// state is not the combat state and the body's hook refuses event 0x10
-/// (an answer under zero): then the grip is released and the flag clears.
-/// Outside that condition the flag clears once 500 ms have passed since the
-/// grab began; at exactly 500 ms it still holds, and the sum is widened so
-/// it cannot wrap.
-pub fn grab_timeout(
+/// The AI tick's casting flag (the flag the combat state's cast chooser
+/// sets with the cast's start time), before the current state runs: a flag
+/// that is not set is untouched. While the body's condition reads casting
+/// the flag stays, unless the current state is not the combat state and
+/// the body's event hook answers event 0x10 under zero: then the cast is
+/// stopped and the flag clears. Otherwise the flag clears once 500 ms have
+/// passed since the cast began; at exactly 500 ms it still holds, and the
+/// sum is widened so it cannot wrap (a 64-bit compare).
+pub fn cast_timeout(
     held: bool,
-    condition: u32,
+    condition: Condition,
     in_combat_state: bool,
     hook_answer: Option<i32>,
-    grabbed_at_ms: u32,
+    cast_start_ms: u32,
     now_ms: u32,
-) -> Grab {
+) -> CastHold {
+    let kept = |held| CastHold {
+        held,
+        stopped: false,
+    };
     if !held {
-        return Grab {
-            held: false,
-            released: false,
-        };
+        return kept(false);
     }
-    if condition == GRABBED_CONDITION {
+    if condition == Condition::CASTING {
         if !in_combat_state && hook_answer.is_some_and(|answer| answer < 0) {
-            return Grab {
+            return CastHold {
                 held: false,
-                released: true,
+                stopped: true,
             };
         }
-        return Grab {
-            held: true,
-            released: false,
-        };
+        return kept(true);
     }
-    if u64::from(grabbed_at_ms) + u64::from(GRAB_TIMEOUT_MS) < u64::from(now_ms) {
-        return Grab {
-            held: false,
-            released: false,
-        };
-    }
-    Grab {
-        held: true,
-        released: false,
-    }
+    kept(u64::from(cast_start_ms) + u64::from(CAST_TIMEOUT_MS) >= u64::from(now_ms))
 }
 
 /// The original's route-following flag, as Exarust keeps it: a brain walks
@@ -5007,32 +5020,71 @@ mod tests {
     }
 
     #[test]
-    fn the_grabbed_flag_holds_the_condition_and_times_out() {
+    fn the_casting_flag_holds_the_condition_and_times_out() {
+        let casting = Condition::CASTING;
+        let other = Condition::NORMAL;
         // A flag that is not set changes nothing.
         assert_eq!(
-            grab_timeout(false, 0, false, Some(-1), 0, 10_000),
-            Grab {
+            cast_timeout(false, other, false, Some(-1), 0, 10_000),
+            CastHold {
                 held: false,
-                released: false
+                stopped: false
             }
         );
-        // In the grabbed condition the hook's refusal releases the grip; a
+        // While the body casts the hook's refusal stops the cast; a
         // non-negative answer, no hook, or the combat state keeps it.
         assert_eq!(
-            grab_timeout(true, GRABBED_CONDITION, false, Some(-1), 0, 0),
-            Grab {
+            cast_timeout(true, casting, false, Some(-1), 0, 0),
+            CastHold {
                 held: false,
-                released: true
+                stopped: true
             }
         );
-        assert!(grab_timeout(true, GRABBED_CONDITION, false, Some(0), 0, 0).held);
-        assert!(grab_timeout(true, GRABBED_CONDITION, false, None, 0, 0).held);
-        assert!(grab_timeout(true, GRABBED_CONDITION, true, Some(-1), 0, 0).held);
-        // Outside it the flag clears strictly after 500 ms.
-        assert!(grab_timeout(true, 1, false, None, 1_000, 1_500).held);
-        assert!(!grab_timeout(true, 1, false, None, 1_000, 1_501).held);
-        // The sum is widened: a grab near the top does not wrap away.
-        assert!(grab_timeout(true, 1, false, None, u32::MAX, 100).held);
+        assert!(cast_timeout(true, casting, false, Some(0), 0, 0).held);
+        assert!(cast_timeout(true, casting, false, None, 0, 0).held);
+        assert!(cast_timeout(true, casting, true, Some(-1), 0, 0).held);
+        assert!(cast_timeout(true, casting, true, None, 0, 10_000).held);
+        // Otherwise the flag clears strictly after 500 ms.
+        assert!(cast_timeout(true, other, false, None, 1_000, 1_500).held);
+        assert!(!cast_timeout(true, other, false, None, 1_000, 1_501).held);
+        // The sum is widened: a cast near the top does not wrap away.
+        assert!(cast_timeout(true, other, false, None, u32::MAX, 100).held);
+    }
+
+    /// The AI tick lets an out-of-combat brain's cast go once 500 ms have
+    /// passed while its body does not read casting; a casting body keeps it.
+    #[test]
+    fn the_ai_tick_lets_a_stale_cast_go() {
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(50))
+            .add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((GlobalTransform::IDENTITY, Fighter::default(), RatedPlayer))
+            .id();
+        let spawn = |app: &mut App, condition: Condition| {
+            let mut duellist = crate::Duellist::new(player);
+            duellist.mind.casting = true;
+            duellist.mind.cast_start_ms = 0;
+            app.world_mut()
+                .spawn((
+                    Npc::new([0.0; 4]),
+                    Combatant::default(),
+                    duellist,
+                    Mind::new(0.0),
+                    GlobalTransform::IDENTITY,
+                    Fighter::default(),
+                    condition,
+                ))
+                .id()
+        };
+        let idle = spawn(&mut app, Condition::NORMAL);
+        let casting = spawn(&mut app, Condition::CASTING);
+        assert!(app.world().resource::<BodyTicks>().millis() > 500);
+        app.update();
+        let cast = |app: &App, e| app.world().get::<crate::Duellist>(e).unwrap().mind.casting;
+        assert!(!cast(&app, idle), "the cast is let go");
+        assert!(cast(&app, casting), "a casting body keeps it");
     }
 
     #[test]
