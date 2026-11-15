@@ -1481,6 +1481,10 @@ the line skin's control draws are the live painters: separators, label fronts, t
 
 the content stream resets at quit, as the original's quit paths do, and the free loop yields on a zero wait; the engine maths call sites take the engine's own arctangent, angle wrap, floor and ceiling and sine-cosine, and the contact eviction sums its squared distance in pairs. The data-stream primitives are closed as engine (byte-for-byte write-back tests), and the older grid layout is unreachable (no shipped grid holds it). 27 of 320 runtime, data and core rows closed; most of the rest wait on DEC-7, the OS window and input port, and per-list order proofs for the hook lists and the deferred ring.
 
+the arena's tables (the match board's eight and Manage Company's two) run through the ported table view: press, double press, drag, drop and the moved row's removal, with the selected-row bands and the drag label drawn as the original does; a greyed tier can no longer be selected. The skill ring closes on any key past the reveal's first moments and on a second skills request (F76, F77). No table in 0.9.5 is editable, has a choice column or grows, so the edit, choice and grow rows are unreachable.
+
+NPC flight reads the body's target, clears it at the escape and fights when cornered (level 3, courage doubled); the leave restores the idle state; the combat state stamps the lifted foe's footprint back on every exit and looks where the body faces while down; the alert look turns to the body's target; the nearby gather walks the level room and the rooms behind its exits through the scene's light-reach sight test; the casting flag times out for every brain; a follower too close backs off to four metres. Lockstep traces of exanima01 and the arena unchanged.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
