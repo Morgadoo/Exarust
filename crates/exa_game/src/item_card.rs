@@ -169,11 +169,39 @@ impl ShownCard {
     }
 }
 
+/// What the card builder reads from the running game besides the item:
+/// the rank and points gates the mode switch sets (on in the arena, off in
+/// the story and a practice entered from outside the practice family,
+/// [`exa_items::card::card_gates`]), the value gate the trade window
+/// raises while it is open and lowers when it closes (off otherwise), and
+/// the sex of the player's record, which picks the pronoun words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardContext {
+    pub gates: CardGates,
+    pub value_shown: bool,
+    pub female: bool,
+}
+
+impl Default for CardContext {
+    fn default() -> Self {
+        Self {
+            gates: CardGates {
+                rank: false,
+                points: false,
+            },
+            value_shown: false,
+            female: false,
+        }
+    }
+}
+
 /// The live card's state. The request timer itself is [`GameScreens::card`]
 /// (the panel's [`CardWindow`](crate::item_container::CardWindow)).
 #[derive(Resource, Default)]
 pub struct CardView {
     pub shown: Option<ShownCard>,
+    /// The card builder's game state ([`sync_card_context`]).
+    pub context: CardContext,
     /// The generator the description sentences draw from. The original
     /// draws from the engine's one shared generator; Exarust keeps the
     /// card's own, seeded from the clock at the first card. [Exarust stand-in]
@@ -298,7 +326,7 @@ pub fn build_for(
     roll: &mut u32,
     item: u32,
     flags: u32,
-    female: bool,
+    context: CardContext,
 ) -> Option<(String, BuiltCard)> {
     let facts = catalogue.card_facts(item)?;
     // The card builder shows nothing when the name does not resolve.
@@ -339,17 +367,10 @@ pub fn build_for(
         sockets: facts.sockets,
         flip: facts.flip,
         skill: facts.skill,
-        // The live screens are story and practice, where the original's
-        // rank and points rows are off. [guess: no mode resource is read]
-        gates: CardGates {
-            rank: false,
-            points: false,
-        },
-        // The value gate is a settings byte in the original. Exarust shows
-        // the value. [guess]
-        value_shown: true,
+        gates: context.gates,
+        value_shown: context.value_shown,
         description: &description,
-        female,
+        female: context.female,
     })?;
     *roll = next_roll;
     Some((title, built))
@@ -638,7 +659,8 @@ fn show(
     if view.roll == 0 {
         view.roll = now | 1;
     }
-    let Some((name, built)) = build_for(catalogue, phrases, &mut view.roll, item, flags, false)
+    let context = view.context;
+    let Some((name, built)) = build_for(catalogue, phrases, &mut view.roll, item, flags, context)
     else {
         debug!(
             "item card: {item:#x} has no card (facts {})",
@@ -2106,6 +2128,34 @@ pub fn entry_under(screens: &GameScreens, icons: Option<&PanelIcons>, at: IVec2)
         .is_some()
 }
 
+/// Keeps the card builder's game state ([`CardContext`]) on the running
+/// game: a mode change runs the mode switch's gate rule on the rank and
+/// points gates (the previous mode's word against the new one's), the
+/// value gate follows the trade window (the arena hub's shop), and the sex
+/// is the player's record's.
+pub fn sync_card_context(
+    flow: Option<Res<crate::flow::Flow>>,
+    hub: Option<Res<crate::hub_windows::HubWindows>>,
+    players: Query<&exa_character::record::CharacterData, With<crate::player::PlayerBody>>,
+    mut view: ResMut<CardView>,
+    mut mode: Local<Option<u32>>,
+) {
+    let mut context = view.context;
+    if let Some(flow) = flow.as_deref() {
+        let word = flow.mode.word();
+        let was = mode.replace(word).unwrap_or(crate::flow::Mode::Menu.word());
+        context.gates = exa_items::card::card_gates(was, word, context.gates);
+    }
+    context.value_shown = hub.as_deref().is_some_and(|hub| hub.shop.is_some());
+    if let Some(data) = players.iter().next() {
+        context.female = data.record.female;
+    }
+    if context != view.context {
+        debug!("item card: the builder's state is now {context:?}");
+        view.context = context;
+    }
+}
+
 /// The card's input, build and draw systems.
 pub struct ItemCardPlugin;
 
@@ -2119,6 +2169,7 @@ impl Plugin for ItemCardPlugin {
             .add_systems(
                 Update,
                 (
+                    sync_card_context,
                     refresh_cards,
                     crate::parchment::parchment_press,
                     card_press,
@@ -2145,6 +2196,41 @@ impl Plugin for ItemCardPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_builder_follows_the_mode_the_trade_window_and_the_players_sex() {
+        let mut app = App::new();
+        app.init_resource::<CardView>()
+            .init_resource::<crate::flow::Flow>()
+            .init_resource::<crate::hub_windows::HubWindows>()
+            .add_systems(Update, sync_card_context);
+        let record = exa_formats::characters::CharacterRecord {
+            female: true,
+            ..Default::default()
+        };
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_character::record::CharacterData::of_record(record),
+        ));
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Story;
+        app.update();
+        let context = app.world().resource::<CardView>().context;
+        assert!(!context.gates.rank && !context.gates.points);
+        assert!(!context.value_shown);
+        assert!(context.female);
+        // Entering the arena turns the rank and points rows on.
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Arena;
+        app.update();
+        let gates = app.world().resource::<CardView>().context.gates;
+        assert!(gates.rank && gates.points);
+        // The menu leaves them as they were; the story turns them off.
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Menu;
+        app.update();
+        assert!(app.world().resource::<CardView>().context.gates.rank);
+        app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Story;
+        app.update();
+        assert!(!app.world().resource::<CardView>().context.gates.rank);
+    }
 
     #[test]
     fn the_card_stays_over_a_raised_trade_window() {
@@ -2380,8 +2466,8 @@ mod tests {
         let catalogue = ItemCatalogue::default();
         let phrases = PhraseBook::default();
         let mut roll = 1;
-        assert!(build_for(&catalogue, &phrases, &mut roll, 7, 0, false).is_none());
-        assert!(build_for(&catalogue, &phrases, &mut roll, 0, 0, false).is_none());
+        assert!(build_for(&catalogue, &phrases, &mut roll, 7, 0, CardContext::default()).is_none());
+        assert!(build_for(&catalogue, &phrases, &mut roll, 0, 0, CardContext::default()).is_none());
         assert_eq!(roll, 1);
     }
 
