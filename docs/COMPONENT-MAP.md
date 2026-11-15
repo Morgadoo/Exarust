@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 51.6% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 51.9% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **51.6% closed**, of which 39.9% live (reimplemented), 9.6% engine and 2.1% closed without code (unreachable or deviation). Still open: 39.2% partial and 9.1% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **51.9% closed**, of which 40.1% live (reimplemented), 9.6% engine and 2.2% closed without code (unreachable or deviation). Still open: 39.1% partial and 9.0% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -28,12 +28,12 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 40% | 37% | 2% | 1% | 50% | 10% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 43% | 40% | 1% | 2% | 52% | 5% |  |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 44% | 41% | 1% | 2% | 52% | 5% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 61% | 59% | 1% | 0% | 37% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 12% | 4% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 52% | 50% | 2% | 0% | 40% | 8% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 49% | 40% | 1% | 8% | 32% | 19% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 50% | 41% | 1% | 9% | 31% | 18% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -345,7 +345,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TWiredGripA01 | Items, materials & crafting | 0 | 60% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TPopUpContainer | Items, materials & crafting | 0 | 85% | 46% | 46% | 0% | 0% | 54% | 0% |
 | TArsenalContFrame | Items, materials & crafting | 0 | 0% | 0% | 0% | 0% | 0% | 0% | 100% |
-| TMotileAI | AI & behaviour | 60 | 99% | 35% | 31% | 0% | 3% | 58% | 7% |
+| TMotileAI | AI & behaviour | 60 | 99% | 38% | 34% | 0% | 3% | 56% | 6% |
 | SG_PlayerControls | AI & behaviour | 47 | 99% | 48% | 46% | 1% | 0% | 50% | 2% |
 | TPathFinder | AI & behaviour | 32 | 91% | 41% | 41% | 0% | 0% | 52% | 7% |
 | TPlayerBehaviour | AI & behaviour | 17 | 99% | 55% | 52% | 3% | 0% | 45% | 0% |
@@ -494,7 +494,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TIconManager | UI | 10 | 85% | 44% | 42% | 1% | 1% | 0% | 56% |
 | RF_GUI_Controls | UI | 8 | 80% | 14% | 13% | 1% | 0% | 71% | 15% |
 | TCharacterView | UI | 8 | 76% | 8% | 8% | 0% | 0% | 74% | 18% |
-| TGUITableView | UI | 7 | 90% | 6% | 1% | 4% | 0% | 52% | 42% |
+| TGUITableView | UI | 7 | 90% | 61% | 33% | 4% | 23% | 34% | 6% |
 | RF_GUI_Icons | UI | 7 | 90% | 84% | 74% | 1% | 9% | 9% | 7% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 7 | 87% | 84% | 83% | 1% | 0% | 0% | 16% |
 | T3DViewport | UI | 6 | 66% | 6% | 0% | 4% | 2% | 77% | 17% |
