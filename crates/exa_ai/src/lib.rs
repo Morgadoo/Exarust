@@ -1212,8 +1212,27 @@ fn duellist(
         };
         body.desired_velocity = Vec3::ZERO;
         // Down, getting up, collapsing or dead (or Exarust's fall), it does
-        // nothing.
+        // nothing more. The combat state's down exit (its condition's down
+        // bit) still runs while it is the current state: the AI's look,
+        // heading and head look take the yaw of the body's facing and the
+        // body's look and smoothing directions the facing itself. [Not
+        // reproduced: the exit's AI state word (0 or 4), the body's stance
+        // word 3 written without the set-stance call, and its pose word 0.]
         if condition.fallen_or_dying() || fallen {
+            if ai.in_combat && condition.0 & combat::DOWN != 0 {
+                let facing = t.rotation * Vec3::Z;
+                ai.mind.aim = combat::yaw(facing);
+                ai.mind.heading = ai.mind.aim;
+                if let Ok(mut brain) = brains.get_mut(entity) {
+                    let brain = &mut *brain;
+                    brain.turn.look = ai.mind.aim;
+                    brain.turn.heading = ai.mind.aim;
+                    brain.gaze.look = ai.mind.aim;
+                    brain.gaze.body_look = facing;
+                    brain.gaze.body_smooth = facing;
+                    brain.gaze.body_heading = facing;
+                }
+            }
             continue;
         }
         if let Some(at) = ai.engage_at_ms {
@@ -1657,15 +1676,19 @@ fn duellist(
             other_skill: foe_skill,
         };
         // The AI tick, before its state: a cast whose body is not casting
-        // 500 ms after it began is let go (64-bit compare). A duellist runs
-        // only the combat state, so the other states' hook call with 0x10
-        // on a casting body does not arise.
-        if ai.mind.casting
-            && *condition != Condition::CASTING
-            && u64::from(ai.mind.cast_start_ms) + 500 < u64::from(now as u32)
-        {
-            ai.mind.casting = false;
-        }
+        // 500 ms after it began is let go. A brain's AI tick has already run
+        // it this tick (the same clock, so this does nothing more); a
+        // brainless duellist runs only the combat state, so the other
+        // states' hook call with 0x10 on a casting body does not arise.
+        ai.mind.casting = brain::cast_timeout(
+            ai.mind.casting,
+            *condition,
+            true,
+            None,
+            ai.mind.cast_start_ms,
+            now as u32,
+        )
+        .held;
         // The AI tick lifts the fighter's own footprint before its state
         // and stamps it again after, so the state's ground costs, line
         // walks and sight see only the others' footprints.
@@ -1678,10 +1701,8 @@ fn duellist(
             _ => None,
         };
         // The combat state lifts its foe's footprint too, so its place
-        // scores do not pay for the foe it closes on; it stamps the foe's
-        // again after the place pass, and an earlier exit (down, leave,
-        // chase, charge) leaves it to the foe's own controller, which
-        // stamps it on its next tick.
+        // scores do not pay for the foe it closes on; its finally frame
+        // stamps the foe's again however the state ends.
         let foe_print = match (
             target_fighter_entity,
             nav.as_deref_mut(),
@@ -1693,7 +1714,6 @@ fn duellist(
             }),
             _ => None,
         };
-        let mut placed = runs == 0;
         let mut feet_started = false;
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
@@ -2003,7 +2023,6 @@ fn duellist(
                 walk.slow_turn = false;
             }
             let chased = field.chase.and_then(|c| c.outcome);
-            placed = matches!(out.exit, None | Some(combat::Exit::NoPlace));
             if marked && contacts.iter().any(|c| c.is_foe && !c.unreachable) {
                 // The foe is in reach again.
                 combatant.contacts[index].flags &= !crate::contacts::UNREACHABLE;
@@ -2434,16 +2453,13 @@ fn duellist(
         {
             prints.stamp(grid, entity, at);
         }
-        if let Some((foe, at)) = foe_print {
-            if placed
-                && let (Some(grid), Some(prints)) = (nav.as_deref_mut(), footprints.as_deref_mut())
-            {
-                prints.stamp(grid, foe, at);
-            } else {
-                debug!(
-                    "duellist {entity:?}: its foe's footprint stays off until the foe's own tick"
-                );
-            }
+        // The combat state's finally frame stamps the lifted foe's
+        // footprint back on every exit (the place pass's and the early
+        // ones: down, leave, chase, charge).
+        if let Some((foe, at)) = foe_print
+            && let (Some(grid), Some(prints)) = (nav.as_deref_mut(), footprints.as_deref_mut())
+        {
+            prints.stamp(grid, foe, at);
         }
         // Only a character in the scene moves its body. A hidden one's AI
         // still runs its combat state above, as the original's AI manager
@@ -3423,6 +3439,35 @@ mod tests {
         assert_eq!(npc.alert.narrow_at_ms, 3 * 12 + 500);
     }
 
+    /// While the body is down the combat state takes its down exit every
+    /// tick: the AI's look and heading and the brain's look directions
+    /// follow the body's facing.
+    #[test]
+    fn a_downed_fighter_looks_where_its_body_faces() {
+        let (mut app, fighter, _) = duel(8.0, false);
+        engage(&mut app, fighter);
+        step(&mut app);
+        assert!(app.world().get::<Duellist>(fighter).unwrap().fighting());
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert((brain::Npc::new([0.0; 4]), Condition(combat::DOWN)));
+        let yaw = 1.25f32;
+        app.world_mut()
+            .get_mut::<Transform>(fighter)
+            .unwrap()
+            .rotation = Quat::from_rotation_y(yaw);
+        step(&mut app);
+        let facing = Quat::from_rotation_y(yaw) * Vec3::Z;
+        let ai = app.world().get::<Duellist>(fighter).unwrap();
+        assert_eq!(ai.mind.aim, combat::yaw(facing));
+        assert_eq!(ai.mind.heading, ai.mind.aim);
+        let npc = app.world().get::<brain::Npc>(fighter).unwrap();
+        assert_eq!(npc.turn.look, ai.mind.aim);
+        assert_eq!(npc.turn.heading, ai.mind.aim);
+        assert_eq!(npc.gaze.look, ai.mind.aim);
+        assert!((npc.gaze.body_look - facing).length() < 1e-6);
+    }
+
     #[test]
     fn a_combat_step_is_the_measured_goal() {
         let (stepping, goal) = step_measure(None, Some(Vec3::new(1.0, 0.0, 2.0)), Vec3::ZERO);
@@ -4309,6 +4354,76 @@ mod chase_tests {
         assert!(combatant.contacts.iter().all(|c| c.flags & 0x10 == 0));
         let body = app.world().get::<CharacterBody>(root).unwrap();
         assert!(body.desired_velocity.z > 0.0, "it walks the route");
+    }
+
+    /// The combat state lifts its foe's footprint for its place pass and
+    /// its finally frame stamps it back however the state ends: a tick that
+    /// ends at the chase leaves the foe's footprint on the grid.
+    #[test]
+    fn the_foes_footprint_is_back_after_a_chase_exit() {
+        use exa_world::nav::NavFootprints;
+        let floor = Vec3::new(0.0, 10.0, 0.0);
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<NavFootprints>()
+            .add_message::<exa_combat::AttackAskedHook>()
+            .add_systems(Update, duellist)
+            .insert_resource(yard());
+        let at = floor + Vec3::new(0.0, 0.0, 8.0);
+        let target = app
+            .world_mut()
+            .spawn((GlobalTransform::from_translation(at), Fighter::default()))
+            .id();
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, mut prints: Mut<NavFootprints>| {
+                let mut grid = world.resource_mut::<NavGrid>();
+                prints.stamp(&mut grid, target, at);
+            });
+        }
+        let stamped = app.world().resource::<NavGrid>().clone();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::from_translation(floor),
+            ))
+            .id();
+        let mut ai = Duellist::new(target);
+        ai.engaged = true;
+        let fighter = app
+            .world_mut()
+            .spawn((
+                ai,
+                Transform::from_translation(floor),
+                GlobalTransform::from_translation(floor),
+                Animator::new("Default", "Idle"),
+                Fighter::default(),
+                ChildOf(root),
+            ))
+            .id();
+        app.insert_resource(BodyTicks(1));
+        app.update();
+        app.world_mut()
+            .get_mut::<Duellist>(fighter)
+            .unwrap()
+            .mind
+            .stuck = 20;
+        for tick in 2..=6 {
+            app.world_mut().resource_mut::<BodyTicks>().0 = tick;
+            app.update();
+        }
+        assert!(app.world().get::<Duellist>(fighter).unwrap().chasing);
+        assert_eq!(app.world().resource::<NavFootprints>().of(target), Some(at));
+        let (x, z) = stamped.cell_at(at).unwrap();
+        let was = stamped.cell(x, z, Layer::Lower).penalty;
+        assert!(was > 0, "the foe stands on its footprint");
+        let now = app
+            .world()
+            .resource::<NavGrid>()
+            .cell(x, z, Layer::Lower)
+            .penalty;
+        assert_eq!(now, was, "the foe's footprint is stamped again");
     }
 
     /// The foe's swing word decides the published blow: its cleaving bit

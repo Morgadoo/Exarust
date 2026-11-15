@@ -56,7 +56,7 @@ use crate::sim_bridge::{
     BridgeCoverage, BridgeIn, BridgeOut, FrameBridge, POOL_BATCH, frame_apply, frame_gather,
     reserve_ids, run_fixed_order, sim_apply, sim_apply_nothing, sim_bridge_started, sim_gather,
 };
-use crate::step_driver::{PAUSED_SLEEP_MS, Poll, StepDriver};
+use crate::step_driver::{LONGEST_WAIT_MS, PAUSED_SLEEP_MS, Poll, StepDriver};
 
 /// Work the frame hands the simulation, run on the simulation's world at
 /// the start of the next step, in post order.
@@ -1115,14 +1115,7 @@ fn run_free(
                     }
                     continue;
                 }
-                // The original waits a millisecond short of the step on a
-                // waitable timer; below a millisecond, a short sleep. The
-                // wait is in clock time, the sleep in real time.
-                Poll::Wait { ms: 0 } => Duration::from_micros(200),
-                Poll::Wait { ms } => {
-                    Duration::from_secs_f64(f64::from(ms) / 1000.0 / f64::from(clock.speed))
-                        .min(Duration::from_millis(100))
-                }
+                Poll::Wait { ms } => free_wait(ms, clock.speed),
             }
         };
         match inbox.recv_timeout(wait) {
@@ -1133,6 +1126,9 @@ fn run_free(
                 (&mut singles, &mut acks),
                 &mut clock,
             ),
+            // A zero wait gives the rest of the time slice away, as the
+            // original's sleep of zero does.
+            Err(RecvTimeoutError::Timeout) if wait.is_zero() => std::thread::yield_now(),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 crate::exit_trace::stage("simulation thread: the frame closed the channel");
@@ -1140,6 +1136,22 @@ fn run_free(
             }
         }
     }
+}
+
+/// How long the free loop waits for the frame's packets when the step
+/// driver asks for `ms` milliseconds at the clock's `speed`.
+///
+/// The original's sleep takes milliseconds: zero yields the thread's time
+/// slice (`Sleep(0)`) and gives zero here, which the loop turns into a
+/// yield after looking at its inbox; any other wait is a relative waitable
+/// timer of that many milliseconds. The wait is in clock time, so a slowed
+/// clock waits longer in real time, at most the driver's longest wait.
+pub fn free_wait(ms: u32, speed: f32) -> std::time::Duration {
+    if ms == 0 {
+        return std::time::Duration::ZERO;
+    }
+    std::time::Duration::from_secs_f64(f64::from(ms) / 1000.0 / f64::from(speed))
+        .min(std::time::Duration::from_millis(u64::from(LONGEST_WAIT_MS)))
 }
 
 enum Runner {
@@ -2045,5 +2057,22 @@ mod tests {
         assert_eq!(links.entity(a), None);
         assert_eq!(links.id(e), Some(b));
         assert_eq!(links.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod free_wait_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A zero wait yields instead of sleeping; others follow the clock's
+    /// speed, capped at the driver's longest wait.
+    #[test]
+    fn a_zero_wait_yields_and_others_follow_the_clock() {
+        assert_eq!(free_wait(0, 1.0), Duration::ZERO);
+        assert_eq!(free_wait(0, 0.25), Duration::ZERO);
+        assert_eq!(free_wait(11, 1.0), Duration::from_millis(11));
+        assert_eq!(free_wait(10, 0.5), Duration::from_millis(20));
+        assert_eq!(free_wait(90, 0.5), Duration::from_millis(100));
     }
 }

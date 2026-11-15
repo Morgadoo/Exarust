@@ -529,3 +529,85 @@ fn a_follower_searches_a_dead_body() {
         "{mine:?}"
     );
 }
+
+/// A follower standing inside its personal stop replans with the closing
+/// goal: it backs off along the line from the player to 400 cm from the
+/// player, in the closing mode, with the 300 cm radius.
+#[test]
+fn a_follower_too_close_backs_off_to_four_metres() {
+    let mut app = App::new();
+    app.init_resource::<SearchItems>()
+        .init_resource::<SearchWorld>()
+        .init_resource::<OpenSearchScreens>()
+        .insert_resource(BodyTicks(1))
+        .add_systems(Update, follow_and_search);
+    app.world_mut().spawn((
+        Player,
+        GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 20.0)),
+    ));
+    let root = app
+        .world_mut()
+        .spawn((
+            CharacterBody::default(),
+            GlobalTransform::from_translation(Vec3::new(20.5, 0.0, 20.0)),
+        ))
+        .id();
+    let mut npc = Npc::new([0.0; 4]);
+    npc.applied = Some(exa_ai::activity::Applied {
+        activity: 4,
+        idle_activity: 6,
+        state: IdleState::Follow,
+        leaves_party: false,
+        follow_band_cm: Some(400.0),
+        phase_word: 1,
+        create_idle: None,
+        drop_idle: false,
+        skipped: Vec::new(),
+    });
+    let player = app.world_mut().spawn_empty().id();
+    let follower = app
+        .world_mut()
+        .spawn((
+            npc,
+            exa_ai::Duellist::new(player),
+            Condition::default(),
+            Transform::default(),
+            GlobalTransform::from_translation(Vec3::new(20.5, 0.0, 20.0)),
+            ChildOf(root),
+        ))
+        .id();
+    app.update();
+    let world = app.world().resource::<SearchWorld>();
+    let state = &world.following[&follower];
+    assert_eq!(state.follower.mode, exa_ai::idle::CLOSING);
+    let goal = Vec3::new(2400.0, 0.0, 2000.0);
+    assert!(
+        (state.follower.goal - goal).length() < 1e-3,
+        "{:?}",
+        state.follower.goal
+    );
+    assert_eq!(state.walk.route.last().copied(), Some(state.follower.goal));
+    // The walk over, the closing mode ends with it.
+    app.world_mut()
+        .resource_mut::<SearchWorld>()
+        .following
+        .get_mut(&follower)
+        .unwrap()
+        .walk
+        .route
+        .clear();
+    app.world_mut().resource_mut::<BodyTicks>().0 = 2;
+    app.world_mut()
+        .entity_mut(root)
+        .insert(GlobalTransform::from_translation(Vec3::new(
+            24.0, 0.0, 20.0,
+        )));
+    app.update();
+    let world = app.world().resource::<SearchWorld>();
+    // Four metres off it follows again (the pursuit's mode), no longer
+    // closing.
+    assert_eq!(
+        world.following[&follower].follower.mode,
+        exa_ai::idle::FOLLOWING
+    );
+}

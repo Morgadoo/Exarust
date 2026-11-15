@@ -477,6 +477,67 @@ pub fn follow_leader(
     FollowAct::Pursue
 }
 
+/// A follower inside its personal stop backs off to this distance from the
+/// leader (cm).
+pub const CLOSE_BACK_CM: f32 = 400.0;
+/// The closing goal moves only a follower within this of the leader (cm,
+/// squared, 3-D).
+pub const CLOSE_NEAR_CM2: f32 = 40_000.0;
+/// The closing walk's motion word.
+pub const CLOSE_MOTION: i32 = 0x14;
+/// The closing walk's goal radius, set when the goal lies farther than
+/// [`CLOSE_RADIUS_FROM_CM2`] across the ground (cm).
+pub const CLOSE_RADIUS_CM: f32 = 300.0;
+/// See [`CLOSE_RADIUS_CM`] (cm, squared).
+pub const CLOSE_RADIUS_FROM_CM2: f32 = 2_500.0;
+
+/// What the follow state's closing-walk goal callback set.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloseGoal {
+    /// The walk's goal (cm).
+    pub point: Vec3,
+    /// The walk's motion word, when the goal was moved off the leader.
+    pub motion: Option<i32>,
+    /// The goal's radius, when it was set (cm).
+    pub radius_cm: Option<f32>,
+}
+
+/// The follow state's closing-walk goal callback, which the closing replan
+/// ([`FollowAct::ClosePlanned`]) plans with: the goal starts at the leader's
+/// aim point. A follower within 200 cm of the leader (3-D, squared; a NaN
+/// distance passes) takes the point [`CLOSE_BACK_CM`] from the aim point
+/// along the leader-to-follower vector (that vector times 400 over its
+/// length, in single precision), the walk's motion [`CLOSE_MOTION`], and
+/// the closing mode; the radius becomes [`CLOSE_RADIUS_CM`] when that goal
+/// lies over 50 cm from the follower across the ground.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn closing_goal(follower: &mut Follower, leader: &Leader) -> CloseGoal {
+    follower.goal = leader.aim;
+    let mut out = CloseGoal {
+        point: leader.aim,
+        motion: None,
+        radius_cm: None,
+    };
+    let d = follower.place - leader.place;
+    let squared = d.z * d.z + (d.y * d.y + d.x * d.x);
+    // The unordered compare is the original's: a NaN distance goes on.
+    if squared > CLOSE_NEAR_CM2 {
+        return out;
+    }
+    let scale = CLOSE_BACK_CM / squared.sqrt();
+    let goal = leader.aim + d * scale;
+    follower.goal = goal;
+    follower.mode = CLOSING;
+    out.point = goal;
+    out.motion = Some(CLOSE_MOTION);
+    let dx = follower.place.x - goal.x;
+    let dz = follower.place.z - goal.z;
+    if dz * dz + dx * dx > CLOSE_RADIUS_FROM_CM2 {
+        out.radius_cm = Some(CLOSE_RADIUS_CM);
+    }
+    out
+}
+
 /// Gait a sleeper writes. The pelvis rest uses the taller offset at this value.
 pub const SLEEP_GAIT: i32 = 2;
 /// The sleep activity. Seeing a contact removes it.
@@ -1264,6 +1325,35 @@ pub fn tick(routine: &mut Routine, moment: &Moment) -> Act {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The closing goal: within 200 cm the follower backs off to 400 cm
+    /// from the leader's aim along the leader-to-follower line (radius 300
+    /// past 50 cm across the ground); farther, the goal stays on the aim.
+    #[test]
+    fn the_closing_goal_backs_off_to_four_metres() {
+        let leader = Leader {
+            place: Vec3::ZERO,
+            aim: Vec3::new(0.0, 10.0, 0.0),
+            facing: Vec3::Z,
+            sprinting: false,
+        };
+        let mut f = Follower {
+            place: Vec3::new(60.0, 0.0, 80.0),
+            ..follower_at(0.0)
+        };
+        let close = closing_goal(&mut f, &leader);
+        assert_eq!(close.point, Vec3::new(240.0, 10.0, 320.0));
+        assert_eq!((close.motion, close.radius_cm), (Some(0x14), Some(300.0)));
+        assert_eq!((f.mode, f.goal), (CLOSING, close.point));
+        let mut far = Follower {
+            place: Vec3::new(201.0, 0.0, 0.0),
+            mode: 0,
+            ..f
+        };
+        let close = closing_goal(&mut far, &leader);
+        assert_eq!(close.point, leader.aim);
+        assert_eq!((close.motion, close.radius_cm, far.mode), (None, None, 0));
+    }
 
     fn quiet(now_ms: u32) -> Moment {
         Moment {

@@ -365,7 +365,26 @@ impl Plugin for ContentRequestsPlugin {
                 pump,
             )
                 .chain(),
-        );
+        )
+        .add_systems(Last, reset_at_quit);
+    }
+}
+
+/// The quit's stream reset: when the run is asked to end, every ring and
+/// the streamed list are emptied and the thread stops after its current
+/// pass, so nothing posted and not yet built is built any more.
+///
+/// The original's quit paths (the quit handler and the window procedure's
+/// close branch) call the stream's reset hook right before they set the
+/// quitting flag, and the thread is stopped when the engine shuts down.
+fn reset_at_quit(mut exits: MessageReader<AppExit>, requests: Option<Res<ContentRequests>>) {
+    if exits.read().count() == 0 {
+        return;
+    }
+    if let Some(requests) = requests {
+        requests.worker.reset();
+        requests.worker.terminate();
+        info!("content stream: reset at quit");
     }
 }
 
@@ -388,6 +407,77 @@ fn pump(requests: Option<Res<ContentRequests>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A builder that records what it builds and holds each object build
+    /// until the test lets it go.
+    struct Held {
+        entered: std::sync::mpsc::Sender<u32>,
+        gate: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl ContentBuilders for Held {
+        fn level_object(&mut self, _: usize) -> Option<LevelNode> {
+            None
+        }
+        fn object(&mut self, request: &ObjectRequest) -> Option<u64> {
+            self.entered.send(request.id).ok();
+            self.gate.recv_timeout(Duration::from_secs(5)).ok();
+            Some(u64::from(request.id))
+        }
+        fn character(&mut self, _: &CharacterRequest) -> Option<u64> {
+            None
+        }
+        fn streamed_character(&mut self, _: &StreamedCharacter) -> Option<u64> {
+            None
+        }
+    }
+
+    /// The quit empties the stream's rings in the running app: the request
+    /// being built when the run is asked to end is dropped with its result,
+    /// the ones queued behind it are never built, and a post after the quit
+    /// builds nothing.
+    #[test]
+    fn the_quit_resets_the_stream_and_nothing_queued_is_built() {
+        let (entered, built) = std::sync::mpsc::channel();
+        let (open, gate) = std::sync::mpsc::channel();
+        let worker = StreamWorker::new(Held { entered, gate });
+        let post = |id| {
+            worker.request_object(ObjectRequest {
+                id,
+                flags: STREAMED,
+                parent: ICON_SCENE,
+            })
+        };
+        post(1);
+        // The thread takes the first request and waits at the gate.
+        assert_eq!(built.recv_timeout(Duration::from_secs(5)), Ok(1));
+        post(2);
+        post(3);
+        let mut app = App::new();
+        app.add_plugins(ContentRequestsPlugin);
+        app.insert_resource(ContentRequests {
+            worker: worker.clone(),
+            payloads: Arc::new(Mutex::new(Payloads::default())),
+        });
+        app.update();
+        assert_eq!(worker.queued().0, 3, "nothing is reset before the quit");
+        app.world_mut().write_message(AppExit::Success);
+        app.update();
+        assert_eq!(worker.queued(), (0, 0));
+        open.send(()).ok();
+        post(4);
+        let started = Instant::now();
+        while !worker.is_idle() {
+            assert!(started.elapsed() < Duration::from_secs(5), "never idle");
+            std::thread::yield_now();
+        }
+        assert!(built.try_recv().is_err(), "a queued request was built");
+        assert!(matches!(
+            worker.fetch_object(1, STREAMED, ICON_SCENE),
+            Fetch::Pending | Fetch::Missing
+        ));
+        assert_eq!(worker.missing_requested(), 0);
+    }
 
     /// The stream over the installed game (with `EXANIMA_DIR`).
     fn requests() -> Option<ContentRequests> {

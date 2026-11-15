@@ -2182,6 +2182,33 @@ up a unit less one first. Down
 passes greyed rows, Up does not. Owner-drawn columns start at the first
 visible row. The table never sorts.
 
+The selected row draws a band under the cells, the client's width and the
+row less two pixels, one row pitch per row down: with the pointer on it
+(and no edit open) a quarter-strength gradient from the highlight group's
+fifth shade at the bottom to its first at the top goes under the skin's
+selected band, otherwise the unselected band is drawn alone. A dragged
+row's label follows the pointer less the grab (the press point less a unit
+across, half a row down): its first cell's width less one and the row less
+two pixels, a quarter-strength gradient from the form group's fifth shade to
+its first and the unselected band, the text in the label group's ninth
+shade at half the row plus the ascent. A drop on a table is taken when the
+drag's kind is the table's own and the owner's accept check passes; the
+table's drop then runs the owner's drop callback.
+
+In the game only the arena's tables are table views: the match board's
+eight (standard matches, ranks, tiers, daily events, tournament winners,
+company, lineup and season) and Manage Company's roster and report. None
+has an editable or choice column and none grows, so the edit field, the
+choice list and the added row never run. A press goes through the view: a
+greyed tier or event, the selected row and a press off the rows change
+nothing; the company and lineup tables and the roster begin a drag of the
+pressed row (the fighters' drag kind) and draw its label once the pointer
+has moved past the drag distance; a fighter moved by a double press or a
+drop leaves its row in the table it came from (a selection past the new end
+moves to the new last row). Manage Company's roster opens with its
+first row selected. The pad's words (the activation word, the stick steps)
+have no reader in Exarust yet.
+
 ## Item views
 
 The item view (`exa_ui::item_view`) shows named entries with icons as a
@@ -2863,6 +2890,11 @@ pass a sixth level read the next skill's bytes, as the original's do.
   and out over 200 ms. The icon atlas cell of icon `n` is `n − 1` counted
   along rows of `width / cell` cells, its texture size divided in double
   precision.
+- **Keys.** With the player's controls off the screen's key method hears
+  every key. On the ring (not a page, not the compact tree) any key closes
+  the screen through the open routine's toggle, except in the reveal's first
+  100 ms (so the key that opened it does not shut it) and while it hides. A
+  request to open while it is up also closes it.
 - **Fades.** The screen reveals over 500 ms from its creation (the alpha
   `t(2 − t)` capped at 1, the ring's spread that eased again) and hides
   over 256 ms. The draw keeps the content alpha and the opening scale
