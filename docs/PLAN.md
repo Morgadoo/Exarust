@@ -1469,6 +1469,14 @@ DEC-8 checked: `exa-tool shader --variants` maps all 147 shipped surface-program
 
 the match board reads the career's tournament rows, event values, week winners and the staff's lineup order; its company and lineup tables take double presses and drag-and-drop, written back to the event row or the lineup order. The week verdict records its winner and the save keeps it; the end-session arena CONTINUE runs the arena's continue, the arena's leave runs on session leave, and the manage report gets the hire list and fighter names.
 
+the morph transfer uses the original's plane-projected barycentrics and keeps its 1/0 diffusion weight for a neighbour at the same place (no shipped garment reaches it); the second wind's heal sound plays; the swing voice's looping sources are reserved and freed at death; the grip stage tells the holder when a weapon came loose (the record forgets it, F283) and gives the freed body the original's link iterations. The numbered-node morph fallback is unreachable with the shipped morph files. Lockstep traces move by up to 0.004 cm from tick 1 for every morphed body.
+
+refraction (23 records, 178 draws: glass, gems, the crystal ball) now reads the previous frame's post-chain field with the template's push, weight, tint and gains; the subsurface program draws for all seven shipped subsurface groups (candles, soap, ceramics, plants, demon skin), not only the race skin; the fast light loop's shadows use the unturned three-float taps with the original's bias. FPS unchanged in exanima01. Left: the bit-19 shadow bias (one mesh) and the point-shadow prepass cut.
+
+running powers are saved with the player's placement in the original's chunk and rebuilt on load through the Mind and Force restore rows, with the reserve and held focus checked against the assembly; a loaded Sense Minds starts its overlay and a loaded Loyalty or Command Dead finds its target by character id. The level section writes no running powers, as the original's character walk has none. The save unit's GUI reset runs on every level change (death fade, screen sweep, crystal sources, icon cache); the journey save refreshes the checkpoint; the slot delete logs its line.
+
+the dynamics unit's held-tree trio is wired (hold, drop the kept pairs, release) at the revive pass, the golem return, the spawn snap, the teleport (Long Door and Vanish's come-back) and the cursor's lift, in the original's order; Spirit Form's new body is built disabled and the level gate is now the original's (a disabled body still meets the level). F542 closed: a respawn load takes the session-start arrival word, so the level's reconstruction device is the respawn portal; CloseSave is applied. exanima01 traces unchanged; Spirit Form scenes change from the spirit's build tick.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
