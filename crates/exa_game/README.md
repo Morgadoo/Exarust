@@ -325,9 +325,20 @@ only when it holds a record) and the player's placement
 record in save mode, the record flush skipped while a respawn is pending;
 `Session::placement` writes it first after the header). A story load of a
 save written while a respawn was pending turns its transition word to 1,
-places the player at the respawn portal 15 cm up (when a portal is known)
-and settles it 16 ticks (`save_live::take_pending_respawn`,
-`settle_after_placement`). The arena's load
+loads the level with the session-start arrival word, so the level's
+reconstruction device names the player's object, and places the player at
+that respawn portal 15 cm up and settles it 16 ticks when the level has one
+(the saved placement stands otherwise; `save_live::take_pending_respawn`,
+`portal_after_placement`, `level_change::PortalArrival`). The story respawn
+loads `exanima05` the same way and stands the player over its device
+(`flow::Step::PlaceAtPortal`); the viewer records the device as
+`Flow::respawn_portal`. The story revive's pass (`revive_pass::hold_revived`)
+holds every living character's body and the bodies the alarm return held,
+drops the solver's kept pairs with them and releases them, as do the
+player's spawn snap (`limp::GroundPlacement::held`), a teleport (the Long
+Door's move and Vanish's come-back to where the body stands,
+`thaum::cast::apply_otherwhere`) and the cursor's lift (posted to the
+step); Spirit Form's body is built disabled (`limp::DisabledWhenBuilt`). The arena's load
 regenerates its lists (`arena_ids::regenerate_lists`: each employee's own
 list, emptied for class 4, and the manager's take their loadout items by
 the unique append, lose their special duplicates and are shelved with the
