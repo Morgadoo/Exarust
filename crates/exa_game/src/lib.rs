@@ -110,6 +110,7 @@ pub mod mind;
 pub mod nav_camera;
 pub mod nav_drag;
 pub mod nav_pick;
+pub mod new_game;
 pub mod npc_search;
 pub mod object_click;
 pub mod option_forms;
@@ -304,6 +305,7 @@ impl Plugin for GamePlugin {
             body_overlay::BodyOverlayPlugin,
             joint_trace::JointTracePlugin,
             look_overlay::LookOverlayPlugin,
+            new_game::NewGamePlugin,
             pair_trace::PairTracePlugin,
             path_probe::PathProbePlugin,
             sim_control::SimControlPlugin,
