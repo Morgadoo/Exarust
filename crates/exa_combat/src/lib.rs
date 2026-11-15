@@ -1124,8 +1124,10 @@ fn react_to_hits(
             };
             // How the blow is met: a struck shield blocks it with its
             // holder's guard (parrying with it while the holder parries); a
-            // struck weapon takes the clash; a limb meets the fighter's own
-            // guard.
+            // struck weapon takes the clash; a struck limb is flesh,
+            // whatever the fighter does: the original's routine picks the
+            // clash and the block by what the blade touched, and its parry
+            // only answers a blow on the parrying weapon.
             let guard = match hit.struck {
                 Struck::Shield { item } => {
                     // The holder's block factors: its shield's, or for a
@@ -1137,7 +1139,7 @@ fn react_to_hits(
                     })
                 }
                 Struck::Weapon { .. } => damage::Guard::Parry,
-                Struck::Limb => f.guard,
+                Struck::Limb => damage::Guard::Open,
             };
             // A guarded blow meets a shield or a weapon: no armour, no roll.
             let guarded = guard != damage::Guard::Open;
@@ -2029,12 +2031,50 @@ mod tests {
         .unwrap()
     }
 
-    /// Cuts `target` on `bone` and runs one update.
+    /// What a blow on `target` touches: its parrying weapon while its
+    /// guard parries, its shield while it holds one (the guard a test gave
+    /// the fighter moves onto a shield hold), else a limb.
+    fn struck_on(app: &mut App, target: Entity) -> Struck {
+        let guard = app.world().get::<Fighter>(target).map(|f| f.guard);
+        match guard {
+            Some(damage::Guard::Parry) => Struck::Weapon {
+                primary: false,
+                item: Entity::PLACEHOLDER,
+                part: 0,
+            },
+            Some(damage::Guard::Shield(guard)) => {
+                let item = app.world_mut().spawn_empty().id();
+                let mut e = app.world_mut().entity_mut(target);
+                e.get_mut::<Fighter>().unwrap().guard = damage::Guard::Open;
+                e.insert((block::ShieldHold { item, guard }, GuardedByShield));
+                Struck::Shield { item }
+            }
+            _ => match app.world().get::<block::ShieldHold>(target) {
+                Some(hold) if app.world().get::<GuardedByShield>(target).is_some() => {
+                    Struck::Shield { item: hold.item }
+                }
+                _ => Struck::Limb,
+            },
+        }
+    }
+
+    /// A test fighter whose shield guard [`struck_on`] moved onto a hold:
+    /// its later blows strike the shield too.
+    #[derive(Component)]
+    struct GuardedByShield;
+
+    /// The guard a test's shield holder has after a blow.
+    fn shield_of(app: &App, target: Entity) -> damage::ShieldGuard {
+        app.world().get::<block::ShieldHold>(target).unwrap().guard
+    }
+
+    /// Cuts `target` on `bone` (or what guards it) and runs one update.
     fn strike(app: &mut App, target: Entity, bone: usize) {
+        let struck = struck_on(app, target);
         app.world_mut().write_message(Hit {
             attacker: Entity::PLACEHOLDER,
             striker: Entity::PLACEHOLDER,
-            struck: Struck::Limb,
+            struck,
             target,
             bone,
             point: Vec3::ZERO,
@@ -2096,10 +2136,11 @@ mod tests {
     }
 
     fn swung(app: &mut App, attacker: Entity, blade: Entity, target: Entity, strike: Strike) {
+        let struck = struck_on(app, target);
         app.world_mut().write_message(Hit {
             attacker,
             striker: blade,
-            struck: Struck::Limb,
+            struck,
             target,
             bone: 9,
             point: Vec3::ZERO,
@@ -2834,6 +2875,8 @@ mod tests {
                 blocked_at: 0,
                 parrying: true,
             });
+            // The struck shield parries while its holder parries.
+            fighter.parry.active = true;
             fighter.second_wind.granted = true;
             fighter.second_wind.ready_at = ready_at;
             let id = app
@@ -2990,12 +3033,69 @@ mod tests {
         let f = app.world().get::<Fighter>(id).unwrap();
         assert_eq!(f.health.yellow.to_bits(), 0x3e67_a625);
         assert_eq!(f.health.red, 0.25);
-        assert!(matches!(f.guard, damage::Guard::Shield(s) if s.stamina == 0.0));
+        assert_eq!(shield_of(&app, id).stamina, 0.0);
         assert_eq!(shoves(&app)[0].daze.to_bits(), 0x3e12_1b21);
         assert_eq!(shoves(&app)[0].sag, None);
         let striker = app.world().get::<SwingState>(attacker).unwrap();
         assert!(striker.has(swing::flags::RECOILED));
         assert!(striker.has(swing::flags::WEAPON_RUNG | swing::flags::SHIELD_RUNG));
+    }
+
+    /// A blade that slips past the parrying weapon onto a limb meets flesh:
+    /// the original's damage routine picks its branch by what the blade
+    /// touched (the struck part's kind: flesh, a held weapon, a shield) and
+    /// reads the parry flag only in the weapon branch. So a parrying
+    /// fighter struck on a limb is wounded exactly as an open one, the
+    /// striker reacts the same, and the parry stays up.
+    #[test]
+    fn a_limb_struck_through_a_parry_is_wounded() {
+        let run = |parrying: bool| {
+            let mut app = reactions();
+            let (attacker, blade) = swordsman(&mut app);
+            let id = app
+                .world_mut()
+                .spawn((
+                    Fighter {
+                        guard: if parrying {
+                            damage::Guard::Parry
+                        } else {
+                            damage::Guard::Open
+                        },
+                        parry: parry::ParryState {
+                            active: parrying,
+                            ..parry::ParryState::default()
+                        },
+                        ..Fighter::default()
+                    },
+                    Animator::new("Default", "Idle"),
+                ))
+                .id();
+            app.world_mut().write_message(Hit {
+                attacker,
+                striker: blade,
+                struck: Struck::Limb,
+                target: id,
+                bone: 9,
+                point: Vec3::ZERO,
+                velocity: Vec3::new(3.0, 0.0, 0.0),
+                weapon: damage::sword_a(),
+                strike: cut(),
+            });
+            app.update();
+            let f = app.world().get::<Fighter>(id).unwrap();
+            let striker = app.world().get::<SwingState>(attacker).unwrap();
+            (
+                f.health.red.to_bits(),
+                f.health.yellow.to_bits(),
+                f.parry.active,
+                striker.flags,
+            )
+        };
+        let (red, yellow, active, flags) = run(true);
+        let open = run(false);
+        assert!(f32::from_bits(red) < 0.25);
+        assert_eq!((red, yellow, flags), (open.0, open.1, open.3));
+        assert!(active);
     }
 
     /// A parrying body that turns blows (state flag 0x400) is checked
