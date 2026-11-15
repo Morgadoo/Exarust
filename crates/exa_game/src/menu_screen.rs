@@ -27,11 +27,13 @@ use exa_ui::gui_text::{MenuFont, menu_font_scale};
 use exa_ui::icon_atlas::IconQuad;
 use exa_ui::menu::{
     CLICK_SOUND, MENU_SOUND_FLAGS, MENU_SOUND_GAIN, MENU_TITLE_INK, MENU_TITLE_TEXTURE,
-    SELECT_SOUND, back_main_menu, menu_row_scale, menu_sound_pitch, select_main_menu, title_place,
+    MainMenuKeyAction, MainMenuKeyInput, SELECT_SOUND, back_main_menu, main_menu_key,
+    menu_row_scale, menu_sound_pitch, select_main_menu, title_place,
 };
 use exa_ui::skin::{SkinBatch, SkinInk};
 
 use crate::flow::Flow;
+use crate::pad_menu::PadForm;
 use crate::menu_pages::{
     MenuCommand, MenuGeometry, MenuHit, Page, PageState, Row, RowKind, game_mode, menu_command,
     menu_hit, page_origin, page_rows, paint, row_h, session_state,
@@ -386,10 +388,14 @@ fn toggle(
     manual: Option<Res<crate::help_live::ManualScreen>>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    pad_menu: Option<Res<crate::pad_menu::PadMenu>>,
 ) {
     let paused = pad_status.is_some_and(|s| s.active())
         && pad.is_some_and(|p| p.frame().pressed & crate::gamepad::command::PAUSE != 0);
-    if !keys.just_pressed(KeyCode::F1) && !paused {
+    // The menu set's exit hook: `MenuExit` on whatever form has the focus
+    // runs the toggle (the main menu's constructor installs it).
+    let exit = pad_menu.is_some_and(|p| p.exit);
+    if !keys.just_pressed(KeyCode::F1) && !paused && !exit {
         return;
     }
     // An open manual takes F1 to close itself, leaving the menu up.
@@ -427,6 +433,10 @@ fn input(
     mut router: ResMut<MenuRouter>,
     settings: Option<Res<crate::settings_form::SettingsForm>>,
     manual: Option<Res<crate::help_live::ManualScreen>>,
+    (mut pad, mut flow): (
+        Option<ResMut<crate::pad_menu::PadMenu>>,
+        Option<ResMut<Flow>>,
+    ),
 ) {
     if !menu.open
         || settings.is_some_and(|settings| settings.is_open())
@@ -441,6 +451,60 @@ fn input(
             pitch: menu_sound_pitch(roll.roll()),
         });
     };
+    // The show in pad mode starts the selection on the first row.
+    if let Some(pad) = pad.as_deref_mut()
+        && pad.take_focus_request(PadForm::MainMenu)
+    {
+        menu.selected = 0;
+        menu.dirty = true;
+    }
+    // The pad's word for the menu: its key slot.
+    if let Some(key) = pad
+        .as_deref_mut()
+        .and_then(|pad| pad.take(PadForm::MainMenu))
+    {
+        let limit = page_rows(menu.page, menu.state).len() as i32;
+        let out = main_menu_key(MainMenuKeyInput {
+            mask: key.key,
+            selection: menu.selected as i32 + 1,
+            limit,
+            confirm_arg: 0,
+            sub_result: 0,
+        });
+        match out.action {
+            MainMenuKeyAction::Confirm { index, .. } => {
+                info!("menu: the pad selects row {index}");
+                cue(&mut roll, MenuCue::Click);
+                menu.pressed = Some(index as usize - 1);
+                run(&mut menu, index as usize, &mut exit, &mut choices);
+                return;
+            }
+            MainMenuKeyAction::Forward => {
+                menu.back();
+                return;
+            }
+            MainMenuKeyAction::Back => {
+                menu.close();
+                if let Some(flow) = flow.as_mut() {
+                    flow.menu_closed();
+                }
+                return;
+            }
+            MainMenuKeyAction::Move(row) => {
+                // The select slot: the row and its cue, at most once per
+                // 200 units.
+                let selected = select_main_menu(row, menu.sound_stamp as i32, now as i32, true);
+                menu.selected = (selected.index - 1).max(0) as usize;
+                menu.sound_stamp = selected.stamp as u32;
+                if selected.sound {
+                    cue(&mut roll, MenuCue::Select);
+                }
+                menu.dirty = true;
+                info!("menu: the pad moves to row {}", menu.selected + 1);
+            }
+            MainMenuKeyAction::None => {}
+        }
+    }
     if keys.just_pressed(KeyCode::Escape) {
         if !menu.back() {
             menu.close();

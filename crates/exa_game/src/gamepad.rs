@@ -461,6 +461,36 @@ impl PadSample {
     pub fn set_analog(&mut self, id: Id, value: Vec2) {
         self.analog[id.index()] = value;
     }
+
+    /// The sample as the active set reads it: Steam answers an action of
+    /// an inactive set as not active and released, so the menus see only
+    /// the menu actions and a gameplay set only its own (the emulated left
+    /// button belongs to the gameplay sets). The menu reader takes
+    /// `MenuSel`'s active flag for the whole set's, so a sample without
+    /// the menus is not connected for it ([`Self::menus_active`]).
+    pub fn for_set(&self, active: ActiveSet) -> Self {
+        let menus = matches!(active, ActiveSet::Menus);
+        let mut out = *self;
+        for id in Id::ALL {
+            if id.in_set(Set::Menus) != menus {
+                out.digital[id.index()] = false;
+                out.analog[id.index()] = Vec2::ZERO;
+            }
+        }
+        if menus {
+            out.mouse_left = false;
+        }
+        out
+    }
+
+    /// The menu reader's sample: the menu actions while the menus are the
+    /// active set, else a sample whose set is not active.
+    pub fn menus_active(&self, active: ActiveSet) -> Self {
+        match active {
+            ActiveSet::Menus => self.for_set(active),
+            ActiveSet::Gameplay { .. } => Self::default(),
+        }
+    }
 }
 
 /// The GUI's directional key codes the menu reader emits: left, right, down
@@ -847,7 +877,7 @@ pub enum ActiveSet {
 /// which only becomes active while no form has the focus, and which the
 /// last form's pop restores ([`FocusChange::Restore`]). A newly selected
 /// layer primes its reader, as the original's activation callback does.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
 pub struct SetRegistry {
     names: Vec<&'static str>,
     active: ActiveSet,
@@ -1724,12 +1754,15 @@ impl Plugin for GamepadPlugin {
             .init_resource::<PlayPad>()
             .init_resource::<PadStatus>()
             .init_resource::<FocusStack>()
+            .init_resource::<SetRegistry>()
+            .init_resource::<crate::pad_menu::PadMenu>()
             .init_resource::<crate::bindings::Bindings>()
             .add_systems(First, raw_axis_settings)
             .add_systems(
                 PreUpdate,
                 (
                     raw_axis_settings,
+                    crate::pad_menu::sync_focus,
                     read_pad
                         .after(bevy::input::gamepad::gamepad_event_processing_system)
                         .run_if(resource_exists::<crate::bindings::Bindings>),
@@ -1757,9 +1790,25 @@ fn raw_axis_settings(mut pads: Query<&mut GamepadSettings, With<Gamepad>>) {
     }
 }
 
+/// The menu side of the pad reader: the focus stack, the set table, the
+/// menu reader and the dispatch it feeds.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct MenuSide<'w> {
+    focus: Res<'w, FocusStack>,
+    registry: ResMut<'w, SetRegistry>,
+    menu: ResMut<'w, MenuPad>,
+    dispatch: ResMut<'w, crate::pad_menu::PadMenu>,
+    /// The main menu's constructor installs its toggle as the menu set's
+    /// exit hook; Exarust's menu exists whenever its plugin runs.
+    hook: Option<Res<'w, crate::menu_screen::MenuScreen>>,
+}
+
 /// Reads the first connected gamepad into [`PadSample`] and runs both
-/// readers. The gameplay variant follows the player's combat mode; the
-/// camera's basis comes from the chase camera.
+/// readers, each on the actions of the active set. The gameplay layer
+/// follows the player's combat mode (the variant swap); it is the active
+/// set only while no form has the focus. The menu reader's frame goes to
+/// the focus stack's top form ([`crate::pad_menu::PadMenu`]). The camera's
+/// basis comes from the chase camera.
 #[allow(clippy::too_many_arguments)]
 fn read_pad(
     time: Res<Time<Real>>,
@@ -1767,10 +1816,9 @@ fn read_pad(
     players: Query<&crate::player::PlayerBody, With<crate::player::Player>>,
     cameras: Query<&GlobalTransform, With<crate::player::ChaseCamera>>,
     bindings: Res<crate::bindings::Bindings>,
-    focus: Res<FocusStack>,
+    mut side: MenuSide,
     conversations: Option<Res<exa_script::Conversations>>,
     casters: Query<&crate::thaum::cast::PowerCaster, With<crate::player::PlayerBody>>,
-    mut menu: ResMut<MenuPad>,
     mut play: ResMut<PlayPad>,
     mut status: ResMut<PadStatus>,
     scripted: Option<ResMut<ScriptedPad>>,
@@ -1799,17 +1847,19 @@ fn read_pad(
         }
         (None, None) => None,
     };
+    let focused = side.focus.focused();
     let Some(sample) = sample else {
         status.connected = false;
-        menu.frame(
+        let frame = side.menu.frame(
             now,
             &PadSample::default(),
             MenuContext {
-                focused: focus.focused(),
+                focused,
                 ready: false,
                 ..MenuContext::default()
             },
         );
+        side.dispatch.dispatch(frame, None, false);
         return;
     };
     let variant = if players.iter().next().is_some_and(|body| body.combat) {
@@ -1817,18 +1867,32 @@ fn read_pad(
     } else {
         Variant::Interact
     };
-    let top = focus.entries().last();
-    menu.frame(
+    // The player controls' variant swap selects the gameplay layer; under
+    // a focused form it waits for the last pop.
+    side.registry.set_variant(variant, focused);
+    let active = side.registry.active();
+    let top = side.focus.entries().last().copied();
+    let frame = side.menu.frame(
         now,
-        &sample,
+        &sample.menus_active(active),
         MenuContext {
-            focused: focus.focused(),
+            focused,
             ready: status.connected,
             fast_nav: top.is_some_and(|e| e.flags & 0x2000 != 0),
             fast_scroll: top.is_some_and(|e| e.flags & 0x4000 != 0),
-            exit_hook: false,
+            exit_hook: side.hook.is_some(),
         },
     );
+    if frame.key != 0 || frame.exit_hook {
+        debug!(
+            "pad: menu word {:#x} (exit {}) for form {:?}",
+            frame.key,
+            frame.exit_hook,
+            top.map(|e| e.form)
+        );
+    }
+    side.dispatch
+        .dispatch(frame, top.map(|e| e.form), status.controller);
     let (right, forward) = cameras.iter().next().map_or((Vec3::X, Vec3::Z), |t| {
         (
             t.right().with_y(0.0).normalize_or(Vec3::X),
@@ -1847,7 +1911,7 @@ fn read_pad(
         camera_forward: forward,
         ..PlayContext::default()
     };
-    play.update(now, &sample, ctx);
+    play.update(now, &sample.for_set(active), ctx);
 }
 
 /// `--pad-press`: a scripted gamepad for checks without one (a debug aid,
@@ -1855,8 +1919,10 @@ fn read_pad(
 /// from the first frame after the load: `talk`, `select` and the other
 /// digital actions by their Exarust names, `up` and `down` the move stick
 /// pushed fully up or down, `attack` the emulated left mouse button
-/// ([`EMULATED_LEFT_BUTTON`]). While it is set it stands in for a connected
-/// pad in controller mode.
+/// ([`EMULATED_LEFT_BUTTON`]); the menu set's `menu-select`, `menu-back`,
+/// `menu-exit`, `menu-up`/`down`/`left`/`right` (the navigation stick) and
+/// `scroll-up`/`down`/`left`/`right` (the scroll stick). While it is set it
+/// stands in for a connected pad in controller mode.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct ScriptedPad {
     /// The action, its stick value (for the move stick) and its frames.
@@ -1923,6 +1989,18 @@ impl ScriptedPad {
             "skills" => (Id::Skills, Vec2::ZERO),
             "swap" => (Id::SwapWeapon, Vec2::ZERO),
             "power-tree" => (Id::PowerTree, Vec2::ZERO),
+            // The menu set: its buttons and both sticks pushed fully.
+            "menu-select" => (Id::MenuSelect, Vec2::ZERO),
+            "menu-back" => (Id::MenuBack, Vec2::ZERO),
+            "menu-exit" => (Id::MenuExit, Vec2::ZERO),
+            "menu-up" => (Id::MenuNav, Vec2::Y),
+            "menu-down" => (Id::MenuNav, Vec2::NEG_Y),
+            "menu-left" => (Id::MenuNav, Vec2::NEG_X),
+            "menu-right" => (Id::MenuNav, Vec2::X),
+            "scroll-up" => (Id::MenuScreen, Vec2::Y),
+            "scroll-down" => (Id::MenuScreen, Vec2::NEG_Y),
+            "scroll-left" => (Id::MenuScreen, Vec2::NEG_X),
+            "scroll-right" => (Id::MenuScreen, Vec2::X),
             _ => return None,
         })
     }
