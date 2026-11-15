@@ -121,6 +121,12 @@ fn low_field_image(size: UVec2) -> Image {
     image
 }
 
+/// A one-texel low field, for tests elsewhere in the crate.
+#[cfg(test)]
+pub(crate) fn low_field_image_for_tests() -> Image {
+    low_field_image(UVec2::ONE)
+}
+
 /// The low field's size for a window: a quarter on each axis, as the post
 /// chain's blurred texture (integer division, at least one texel).
 pub fn low_field_size(window: UVec2) -> UVec2 {
@@ -203,12 +209,12 @@ fn bind_scene_low(
     for id in ids {
         let Some(m) = materials.get(id) else { continue };
         if m.params.flags2 & flags2::LOCAL_REFLECTION == 0
-            || m.scene_low.as_ref() == Some(&field.image)
+            || m.scene_field.as_ref() == Some(&field.image)
         {
             continue;
         }
         if let Some(mut m) = materials.get_mut(id) {
-            m.scene_low = Some(field.image.clone());
+            m.scene_field = Some(field.image.clone());
             if **debug {
                 m.params.flags2 |= flags2::DEBUG_LOCAL_REFLECTION;
             }

@@ -116,8 +116,45 @@ the surface reads the previous frame:
 `exa_render::local_reflection` keeps the low field as an image a quarter
 of the post camera's target, copied from the post chain's blurred texture
 after each frame's post pass, and binds it to every local-reflection
-material (`ExaMaterial::scene_low`). `EXA_LOCAL_REF_DEBUG=1` shows the read
+material (`ExaMaterial::scene_field`). `EXA_LOCAL_REF_DEBUG=1` shows the read
 × 4 on those surfaces.
+
+## Refraction
+
+A lit type-1 record in the liquid mode (material word `0x300` = `0x200`,
+`Mat.Refract`) refracts: 23 shipped records, 178 draws (the coloured glass
+bottles `gls*opq01` and `glsclearopq01`, the gems, the crystal ball, the
+ornate lamps' glass, the teleporter and resonance devices). The loader
+draws it opaque (its transparent blend word is rewritten). The material
+writer binds a field of the previous frame on the screen-copy unit
+(`FrmBuf`): the post chain's half-size bright pass (the high field) for a
+glossiness above 0.85, else its quarter-size blurred bright pass (the low
+field the local reflection reads). The compare reads the record's
+glossiness widened to double, whatever its specular bit. The view's
+constructor asks for the scene's fields on every view; the built-in
+`BkgRfr01`/`BkgRfr02` pictures are only for a view that does not, and
+Exarust does not load them.
+
+The program's `{$refraction}` snippet, after the ambient:
+
+- `r` is the view-space normal; inside the GI volume `r *= 1.5 − r.z`
+  and `r.xy *= 0.01·s`, outside it `r *= r.z·0.01·s`, with `s` the
+  record's refraction word (`0x58`, kept in hundredths as a 16-bit word,
+  in `OpcFll.w`);
+- the read sits at the fragment's screen position plus
+  `r.xy · ViewPrj / w`, as the local reflection's;
+- with `a` = (eye → surface)·N, the read is weighted by
+  `min(max(1 − |a + 0.9|·1.5, 0) + (1 + a)³·0.7, 1)` and tinted by
+  `mix(difCol, 0.2, −0.1 − 0.2·a)`, then × 8 inside the GI volume and
+  × 12 outside;
+- the lit colour becomes `lit · difCol · alpha + read · (1 − alpha)`,
+  alpha the diffuse alpha (unclamped), and the fragment is opaque; the
+  specular, the reflection and the fog follow as on any PBR surface.
+
+`exa_render::refraction` keeps the high field (copied from the post
+chain's bright texture after each frame's post pass, beside the low
+field) and binds each refracting material to its field
+(`flags2::REFRACTION`, `flags2::FRAME_HIGH`).
 
 ## Post-processing
 
@@ -226,10 +263,12 @@ translucent or refracting mode keeps its emissive unexposed. `MatDsp` and
 exist; the texel counts, displacement step and bias are widened to double,
 scaled and narrowed, while the tap offset `1 + 0.125·PassIdx` stays in
 single precision. A liquid record binds a refraction background: the
-built-in `BkgRfr01` up to an opacity of 0.85 and `BkgRfr02` above it (the
-compare widens the opacity to double; a NaN takes the low branch), or, when
-the scene asks for its own refraction, that texture's low and high fields; a
-program with local reflections binds the scene texture's low field.
+built-in `BkgRfr01` up to a glossiness of 0.85 and `BkgRfr02` above it (the
+compare widens the record's glossiness to double; a NaN takes the low
+branch), or, when the scene asks for its own refraction (every view the
+constructor makes), that texture's low and high fields
+([Refraction](#refraction)); a program with local reflections binds the
+scene texture's low field.
 
 **Draw state.** A draw reads the drawing state's material key (taken from
 the material; its lit bits gather lights) and three words of the render
@@ -478,23 +517,34 @@ and blood, `AlphaTst` to the alpha mask, `Twosided` to the back-face rule,
 colour stream, `QuadRender` to the supersampled taps; the `Env.` and light
 words to the scene's fog, GI, sky and lights. What still differs:
 
-- **Refraction** (`Mat.Refract`, 23 records, 178 draws: the coloured glass
-  bottles `gls*opq01`, the gems, a lamp's glass, the crystal ball). The
-  original mixes the frame copy behind the surface, shifted by the normal
-  and tinted, into the diffuse (`refraction`); Exarust blends the surface
-  over what is behind it with its alpha, unshifted and untinted.
-- **Subsurface records other than the race skin** (`shadesss_f`, 7 groups,
-  about 250 draws: wax candles, soap, ceramic bottles, plant growths, the
-  demon's skin). A record with a secondary colour is lifted to the skin
-  program; Exarust feeds its skin branch only for the race skin
-  (`exa_assets::human_skin`) and draws the rest with the PBR (or, for
-  type 0, the legacy) branch.
-- **The fast loop's shadows** (`lightsfst`: the translucent foliage and
-  the `FastLgt` plants): the original offsets the cube lookup by each tap's
-  three floats, unturned, with the bias `a²·0.008`; Exarust takes the main
-  loop's turned disc.
 - **The shadow-bias variant with render flag bit 19** (one mesh,
   `Pave03Brk`), drawn at level 0 (Lights, Filter).
+
+Reproduced since the first listing (round 215):
+
+- **Refraction** (`Mat.Refract`, 23 records, 178 draws: the coloured glass
+  bottles `gls*opq01`, the gems, a lamp's glass, the crystal ball): the
+  read of the previous frame's scene field behind the surface, pushed by
+  the normal, weighted and tinted, mixed into the lit colour by one less
+  the alpha ([Refraction](#refraction)). Before, Exarust blended the
+  surface over what was behind it, unshifted and untinted.
+- **Subsurface records other than the race skin** (`shadesss_f`, 7 groups,
+  about 250 draws: wax candles, soap, ceramic bottles, plant growths, the
+  demon's skin): a record whose shader word selects the subsurface program
+  (class 5 or 6, a record with a secondary colour) draws the skin branch
+  (`flags::SUBSURFACE`, with the packed specular map and no older variant).
+  Of its diffuse colour the secondary colour's share scatters, lit against
+  the normal map read at mip `MatEmi.w`, the rest is plain diffuse; without
+  a diffuse or specular map the program's colour is `MatDif` itself, so
+  the plain share is `MatDif`² (the scattered one once). Its alpha is the
+  material opacity, with no fall-off, no parallax darkening of the ambient
+  and no emissive colour of its own; its blood (dirt mode 4) is the skin's.
+- **The fast loop's shadows** (`lightsfst`: the translucent foliage and
+  the `FastLgt` plants): each cube lookup is the tap's three floats ×
+  the filter radius minus the light direction, unturned, with no normal
+  offset, against the distance lowered by `a²·0.008`, `a = 1 − max(N·L, 0)`
+  on the vertex normal (signed in the translucent program without a normal
+  map); the sun's taps are unturned too (`light_shadow_fast`, `fast_taps`).
 
 ## Pass order
 
@@ -4168,8 +4218,7 @@ fire and electricity sounds, body contacts being driven from the physics
 step, the jittered supersampling pattern (by decision, see
 Supersampling), the sun and terrain in the GI volume,
 several resident GI blocks (and their margin copies), the GI injection's
-cube-shadow test and dynamic occupancy updates, glass
-refraction, effect programs (smoke, powers), the hair program, terrain
+cube-shadow test and dynamic occupancy updates, effect programs (smoke, powers), the hair program, terrain
 parallax and wetness, the day record table
 (a constant table in the executable, not decoded) and a driven time of day
 and weather, and the sun light's cloud dimmer (the model has it, the light

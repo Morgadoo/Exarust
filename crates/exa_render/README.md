@@ -57,11 +57,17 @@ renderer (Bevy owns the pipelines, draws and lights). Decision DEC-8
 closes the template machinery as engine-replaced: `exa-tool shader
 --variants` lists every program variant 0.9.5's records build with the
 `exa.wesl` branch each draws with, and the branches that still differ
-(refraction, the non-race subsurface records, the fast loop's shadow taps)
-are listed in `docs/RENDERING.md` (Shader builder, Shipped variants).
+(the render flag bit 19 shadow-bias variant) are listed in
+`docs/RENDERING.md` (Shader builder, Shipped variants).
 `exa.wesl`'s translucent (`flags2::TRANSLUCENT`, `shadetrl_f`) and
 fast-light (`flags2::FAST_LIGHT`, `Shd.FastLgt`) branches light with
-`shading.wesl`'s `light_translucent` and `light_fast`.
+`shading.wesl`'s `light_translucent` and `light_fast`, and both take the
+fast loop's shadows (`light_shadow_fast`: each tap's three floats,
+unturned, bias `a²·0.008`; the sun's taps unturned through `fast_taps`).
+The refraction branch (`flags2::REFRACTION`, `Mat.Refract`) mixes the
+scene field behind the surface into the lit colour (`refraction`), and the
+skin branch (`flags::SUBSURFACE`) serves every record whose shader word
+selects the subsurface program, not only the race skin.
 Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Shader builder).
 
@@ -103,6 +109,7 @@ component; no effect registers one yet, so the pass also carries a white
 shape texel), draw box, program names, quad and shared uniforms, the three linked programs' sampler units and uniforms (`GiPass::layout`: `Shadow<i>` on 2 + i, `LVox` 0, `OVox` 1; the emission program sets only `OVox`), the neighbour margin copy's columns, UV offsets and quad, the dynamic update's dirty region, and the occupancy sub-upload
 (`GiOccupancyPatch`) a moving mesh's changed box goes out as. A voxel light carries the node's base colour, current and base intensity, base and active radius and flag word, with the 3× modern and double-precision 0.6 legacy colour paths, the activation copy, the clone copy and the constructor's class 0x41 white unit-intensity default.
 - `local_reflection`: the original's local reflection (`Shd.LocalRef`; it has no planar reflection): the scene's low field (`SceneLowField`, a quarter of the post camera's target), copied from the post chain's blurred bright pass after each frame and bound to every `flags2::LOCAL_REFLECTION` material (`glsdark02`), which `exa.wesl` reads pushed along the view-space normal and mixes into the GI-volume cube reflection; `ViewPrj` (the projection's scale × 500 cm); `EXA_LOCAL_REF_DEBUG` ([`docs/RENDERING.md`](../../docs/RENDERING.md), Local reflection).
+- `refraction`: the original's refraction (`Mat.Refract`, `{$refraction}`): the scene's high field (`SceneHighField`, half the post camera's target), copied from the post chain's bright pass after each frame beside the low field, and the binding of each `flags2::REFRACTION` material to its field (the high one with `flags2::FRAME_HIGH`, a glossiness above 0.85: `field_of`); the record's strength (carried in `ExaParams::opacity_falloff.w`, through `exa_assets::texture`'s hundredths) and the read's offset, weight and tint as `exa.wesl` computes them ([`docs/RENDERING.md`](../../docs/RENDERING.md), Refraction).
 - `gi_tag`: each surface's GI block cell from its world bounds centre (the original's per-object `VXGIPos` takes the node's bounding-sphere centre), carried in the mesh tag's bits 20–31 (`GiCellTag`, composed with the light-list slot by `lights`) and read by `shading.wesl`'s `gi_slot_tagged` ([`docs/RENDERING.md`](../../docs/RENDERING.md), Voxel GI).
 - `post`: the original's grading chain (the fade and desaturation controls with their exact ramps, the two cached program variants the sharpen amount and shader-restore switch pick, the bloom filter's `(x²·24)` weight curve over one sample more than it uploads, with its doubled-sum normalisation and 1.5 or double `level·0.016 + 1` scale, and the pass's uniform values); the `post` files hold Exarust's Bevy implementation of the bloom/grade chain.
 - `image_noise`: the original's procedural noise: white noise from its
