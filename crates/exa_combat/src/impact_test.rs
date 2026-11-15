@@ -211,7 +211,8 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
 }
 
 /// A weapon body struck while its owner's window is open rings its own set
-/// and records the overhead's impact strength; the item's clock is stamped
+/// and records the overhead's impact strength, which stalls the owner's
+/// turn; the swing's strength is spent (0); the item's clock is stamped
 /// with the weapon sound's cooldown.
 #[test]
 fn a_struck_weapon_body_rings_and_records_its_strength() {
@@ -235,7 +236,7 @@ fn a_struck_weapon_body_rings_and_records_its_strength() {
         .world_mut()
         .spawn((
             Fighter::default(),
-            ball(1, 1, Vec3::new(0.0, 100.0, 0.0)),
+            ball(1, 1, Vec3::new(0.0, 100.0, 0.0)).with_drive(),
             SwingState {
                 flags: flags::WINDOW_OPENED,
                 ..SwingState::default()
@@ -278,6 +279,11 @@ fn a_struck_weapon_body_rings_and_records_its_strength() {
     let swing = app.world().get::<SwingState>(owner).unwrap();
     assert_eq!(swing.flags & 0x6, 0x6);
     assert!(swing.strike_strength > 0);
+    assert_eq!(swing.strength, 0.0);
+    let owner_body = app.world().get::<Ragdoll>(owner).unwrap();
+    let timers = owner_body.drive.as_ref().unwrap().timers;
+    assert_eq!(timers.turn_stall, swing.strike_strength as i32);
+    assert!(owner_body.turn_stalled());
     let body = app.world().get::<Ragdoll>(item).unwrap();
     assert!(body.parts[0].sound_ready_ms > 100);
 }
