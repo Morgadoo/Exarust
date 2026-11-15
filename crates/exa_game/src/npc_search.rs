@@ -73,7 +73,7 @@ use exa_assets::{Game, PackKind};
 use exa_combat::Condition;
 use exa_formats::characters::ItemRef;
 use exa_items::catalogue::ItemCatalogue;
-use exa_items::possession::{Carried, Hand, Possessions};
+use exa_items::possession::{Carried, GIVEN_BACK_AT, Hand, Possessions};
 use exa_physics::CharacterBody;
 use exa_physics::body::BodyTicks;
 
@@ -490,8 +490,10 @@ pub fn pack_of(possessions: &Possessions) -> Pack {
 
 /// Writes a pack the search changed back to the possessions: the worn and
 /// carried entries it kept keep their flags and places (each matched once,
-/// in order), new ones come in with no flags at the pack's origin, and a
-/// hand slot that holds another item takes it with no flags.
+/// in order), new worn ones come in with no flags, new carried ones with
+/// their flags at the record's default cell ([`GIVEN_BACK_AT`], the word
+/// the record's append writes), and a hand slot that holds another item
+/// takes it with no flags.
 pub fn sync_possessions(possessions: &mut Possessions, pack: &Pack) {
     let mut worn = std::mem::take(&mut possessions.worn);
     possessions.worn = pack
@@ -512,8 +514,8 @@ pub fn sync_possessions(possessions: &mut Possessions, pack: &Pack) {
             None => Carried {
                 id: c.item,
                 flags: c.flags,
-                x: 0,
-                y: 0,
+                x: GIVEN_BACK_AT.0,
+                y: GIVEN_BACK_AT.1,
             },
         })
         .collect();

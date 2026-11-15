@@ -863,6 +863,17 @@ pub fn scene_character_record(
     record
 }
 
+/// A level-placed character's pools loaded from its record, as the
+/// original's spawn builder for imported characters writes them after the
+/// body is built: yellow and red as the record's shares of the fighter's
+/// maximum ([`exa_formats::characters::Pools::restore`], in double
+/// precision). The focus, the heal pool and a potion are not loaded there.
+pub fn restore_placed_pools(record: &CharacterRecord, fighter: &mut exa_combat::Fighter) {
+    let max = fighter.health.max;
+    fighter.health.red = exa_formats::characters::Pools::restore(record.pools.red, max);
+    fighter.health.yellow = exa_formats::characters::Pools::restore(record.pools.yellow, max);
+}
+
 /// A spawned body's health loaded from its record, as the player spawn's
 /// last write does ([`exa_character::record::restore_record_health`]): red
 /// and yellow as the record's shares of the fighter's maximum, the focus,
@@ -3030,6 +3041,38 @@ mod tests {
         let mut focus = 1.0;
         restore_body_health(record, &mut fighter, &mut flags, &mut focus);
         (fighter, flags, focus)
+    }
+
+    /// A level-placed character takes its record's yellow and red shares
+    /// of its maximum, and nothing else of the saved health: the focus,
+    /// heal pool and potion stay as the fighter was built.
+    #[test]
+    fn a_placed_character_takes_its_records_red_and_yellow() {
+        let mut record = CharacterRecord::reset();
+        record.pools = exa_formats::characters::Pools {
+            yellow: 26214,
+            red: 47185,
+            focus: 100,
+        };
+        record.saved.push(exa_formats::characters::SavedState {
+            tag: exa_formats::characters::SAVED_HEAL_POOL,
+            value: 0.03f32.to_bits(),
+        });
+        let mut fighter = exa_combat::Fighter::default();
+        assert_eq!(fighter.health.max, 0.25);
+        restore_placed_pools(&record, &mut fighter);
+        let share = |stored: u16| (0.25f64 * (f64::from(stored) * (1.0 / 65535.0))) as f32;
+        assert_eq!(fighter.health.yellow, share(26214));
+        assert_eq!(fighter.health.red, share(47185));
+        assert_eq!(
+            fighter.health.heal_pool,
+            exa_combat::Fighter::default().health.heal_pool
+        );
+        // A full record gives full pools.
+        let mut fresh = exa_combat::Fighter::default();
+        restore_placed_pools(&CharacterRecord::reset(), &mut fresh);
+        assert_eq!(fresh.health.yellow, 0.25);
+        assert_eq!(fresh.health.red, 0.25);
     }
 
     #[test]

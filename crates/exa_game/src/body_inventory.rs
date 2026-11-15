@@ -131,6 +131,50 @@ pub fn bind_pack(
     )
 }
 
+/// Fills the inventory window's pack from the character it binds, as the
+/// original's inventory bind does: the carried list is loaded and clamped
+/// ([`bind_pack`]), then the pack's used capacity grows by the bulk of
+/// every worn item (the character record's worn-weight rule,
+/// [`exa_items::inventory_window::worn_bulk`], with the item bulk the pack
+/// itself counts). Returns the number of entries loaded.
+pub fn bind_inventory_pack(
+    container: &mut Container,
+    possessions: &Possessions,
+    icons: &mut PanelIcons,
+    catalogue: Option<&ItemCatalogue>,
+) -> usize {
+    let loaded = bind_pack(container, possessions, icons, catalogue);
+    let worn =
+        exa_items::inventory_window::worn_bulk(possessions, |id| item_bulk(id, catalogue) as u32);
+    container.used += worn as i32;
+    loaded
+}
+
+/// Runs one of the character record's item rules
+/// ([`exa_character::record::CharacterData`]) on a body's live
+/// possessions: the four hands (the set in the hands as the first pair),
+/// the worn list and the carried list with its pack cells go into a record,
+/// the rule runs on it, and the three lists come back. The record word and
+/// the rest of the possessions are left alone; the record's loadouts and
+/// staged list start empty (the possessions keep neither).
+pub fn with_record_items<R>(
+    possessions: &mut Possessions,
+    rule: impl FnOnce(&mut exa_character::record::CharacterData) -> R,
+) -> R {
+    let record = crate::save_live::record_with_possessions(
+        exa_formats::characters::CharacterRecord::default(),
+        possessions,
+    );
+    let mut data = exa_character::record::CharacterData::of_record(record);
+    let result = rule(&mut data);
+    let back = Possessions::of_record(&data.record);
+    possessions.out = back.out;
+    possessions.stowed = back.stowed;
+    possessions.worn = back.worn;
+    possessions.carried = back.carried;
+    result
+}
+
 /// Fills a body's equipment panel with the worn/scatter pass: every worn
 /// item and every shield in a hand, placed at the panel's random spot and
 /// pushed apart over the original's four rounds. `client` is the panel's

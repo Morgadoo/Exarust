@@ -168,12 +168,15 @@ fn pick_compass(
 /// Exarust (it has no switch for it), the player is the HUD's, and the
 /// marker shows while the player's caster knows powers and none of them is
 /// a new pick ([`exa_ui::game_gui::status_marker`] over the known pairs'
-/// flags). The running game keeps no skill record for the player, so the
-/// alert's rule ([`exa_ui::game_gui::ready_alert`]) has nothing to read and
-/// the alert stays off.
+/// flags). The alert reads the player's record as the original's status
+/// routine reads its player record: it shows while the six skills' levels
+/// sum below fifteen and none holds a technique ahead of its level
+/// ([`exa_ui::game_gui::ready_alert`]). A player body without a record
+/// (a viewer scene) has no alert.
 fn pick_status(
     players: Query<&Children, With<Player>>,
     casters: Query<&PowerCaster, With<PlayerBody>>,
+    records: Query<&exa_character::record::CharacterData, With<PlayerBody>>,
     hud: Res<HudBars>,
     mut status: ResMut<StatusView>,
 ) {
@@ -187,7 +190,11 @@ fn pick_status(
         enabled: true,
         player: hud.active,
         marker: exa_ui::game_gui::status_marker(&flags),
-        ready: false,
+        ready: players
+            .iter()
+            .flat_map(|children| children.iter())
+            .find_map(|child| records.get(child).ok())
+            .is_some_and(|data| exa_ui::game_gui::ready_alert(&data.record.skills)),
     };
     if *status != next {
         *status = next;
@@ -326,7 +333,7 @@ mod tests {
     }
 
     /// The power marker shows while the player's caster knows powers and
-    /// none is a new pick; the alert has no skill record to read.
+    /// none is a new pick; without a record the alert stays off.
     #[test]
     fn the_power_marker_reads_the_players_known_powers() {
         let run = |powers: &[u32], new_pick: bool| {
@@ -355,6 +362,42 @@ mod tests {
         );
         assert!(!run(&[], false).marker);
         assert!(!run(&[0x201], true).marker);
+    }
+
+    /// The skill-ready alert reads the player's record through the live
+    /// status pick: on with levels to spend, off at fifteen levels and off
+    /// while a skill holds a technique ahead of its level.
+    #[test]
+    fn the_skill_ready_alert_reads_the_players_record() {
+        use exa_character::record::CharacterData;
+        let run = |data: Option<CharacterData>| {
+            let mut app = App::new();
+            app.init_resource::<HudBars>()
+                .init_resource::<StatusView>()
+                .add_systems(Update, (pick_hud, pick_status).chain());
+            let body = app
+                .world_mut()
+                .spawn((PlayerBody::new(0.0), PowerCaster::new(&[])))
+                .id();
+            if let Some(data) = data {
+                app.world_mut().entity_mut(body).insert(data);
+            }
+            app.world_mut().spawn(Player).add_children(&[body]);
+            app.update();
+            app.world().resource::<StatusView>().ready
+        };
+        assert!(!run(None));
+        let fresh = CharacterData::new();
+        assert!(run(Some(fresh.clone())));
+        let mut capped = fresh.clone();
+        for skill in capped.record.skills.iter_mut().take(3) {
+            skill.points = 5 * 5000;
+        }
+        assert_eq!(capped.total_levels(), 15);
+        assert!(!run(Some(capped)));
+        let mut ahead = fresh;
+        ahead.record.skills[0].techniques[0] = 1;
+        assert!(!run(Some(ahead)));
     }
 
     /// The focus bar shows the player's caster: its pool and its capacity.
