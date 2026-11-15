@@ -152,7 +152,13 @@ pub(crate) fn decide_movement(
     // rebuilds it from the new yaw after its sampler).
     let frame = body.yaw;
     body.frame_yaw = frame;
-    if held {
+    // The arms' turn floor reads the turn error as the posture block finds
+    // it, ahead of this tick's turn: last tick's (0 after a held turn).
+    let last_error = body.error;
+    // A stab's or overhead's hard hit stalls the turn while its count is 1
+    // or more.
+    let stalled = ragdoll.as_deref().is_some_and(Ragdoll::turn_stalled);
+    if held || stalled {
         locomotion::hold_turn(&mut body);
     } else {
         let attack =
@@ -179,6 +185,10 @@ pub(crate) fn decide_movement(
         let rate = locomotion::turn_rate(&by, body.speed);
         let keys = req.moving && req.has(flags::KEYS);
         locomotion::turn(&mut body, req.heading, rate, scale, keys);
+        // The turn lowers the support adapter by its error.
+        if let Some(r) = ragdoll.as_mut() {
+            r.lower_support_by_turn(body.error);
+        }
     }
     let facing = body.facing();
     let pelvis = ragdoll
@@ -295,7 +305,7 @@ pub(crate) fn decide_movement(
         // This tick's speed: the carry reads it for the moving blend.
         d.bearing.speed = body.speed;
         d.bearing.legs = body.leg;
-        d.bearing.turn = if held { 0.0 } else { req.turn_left(&body) };
+        d.bearing.turn = last_error;
         d.bearing.push = body.drive;
         d.bearing.push_gain = body.gait.push;
         d.bearing.facing = facing;
@@ -633,6 +643,44 @@ mod tests {
         let law = Swing::FISTS.turn_rate(0.5, 1.0, 0.0, 1.0);
         assert!((body.yaw - law).abs() < 1e-6, "{} {law}", body.yaw);
         assert!((law.to_degrees() * 83.0 - 168.0).abs() < 1e-2);
+    }
+
+    /// A muscled body whose stab hit hard holds its turn while the stall
+    /// is 1 or more: no yaw step, no error. Once the posture stage's tick
+    /// takes it under 1 the body turns (the brisk rate, 1.25·B) and the
+    /// turn lowers the support adapter by 10·|error| (0.9 − 10·π/2 floors
+    /// at 0). The arms' floor reads the error the turn found a tick late:
+    /// 0 after the held tick, π/2 after the first turning one.
+    #[test]
+    fn a_hard_hits_stall_holds_the_turn_and_the_arms_read_it_late() {
+        let (mut app, _, model) = setup();
+        let mut ragdoll = Ragdoll::new(&[]).with_drive();
+        ragdoll.stall_turn(1);
+        app.world_mut().entity_mut(model).insert(ragdoll);
+        request(&mut app, model).heading = FRAC_PI_2;
+        app.update();
+        let body = *app.world().get::<Locomotor>(model).unwrap();
+        assert_eq!((body.yaw, body.error), (0.0, 0.0));
+        let drive = |app: &App| {
+            let r = app.world().get::<Ragdoll>(model).unwrap();
+            let d = r.drive.as_ref().unwrap();
+            (d.bearing.turn, d.timers.support)
+        };
+        assert_eq!(drive(&app), (0.0, 0.9));
+        // The posture stage's tick: the stall goes from 1 to 0.
+        app.world_mut()
+            .get_mut::<Ragdoll>(model)
+            .unwrap()
+            .tick_timers();
+        let support = drive(&app).1;
+        app.update();
+        let body = *app.world().get::<Locomotor>(model).unwrap();
+        assert_eq!(body.error, FRAC_PI_2);
+        assert!((body.yaw - locomotion::BASE_TURN * 1.25).abs() < 1e-6);
+        assert_eq!(drive(&app), (0.0, 0.0));
+        assert!(support > 0.0);
+        app.update();
+        assert_eq!(drive(&app).0, FRAC_PI_2);
     }
 
     /// The capsule moves at its character's own walk (the duellist's 1.2

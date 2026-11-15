@@ -237,7 +237,12 @@ epsilon rings its class's set from the damage routine's own table
 (`sounds::LAYER_SETS`: `FlsCol`, `HitClt`, `HitLtr`, `HitChn`, `HitPlt`,
 `HitHbr`, `HitGlm`) as a `sounds::LayerSounded`. Each contact's
 striker is dealt right after its struck side, as the original's routine
-runs per contact. The blow sag rides the `Shove` to the struck body.
+runs per contact. The blow sag rides the `Shove` to the struck body, and
+so does a blow's knockback step over impact 0.5 (`knockback_offset`):
+the striker's tracked slot vector (`swing::Tracker`, cm a tick, not
+normalised; the tip's velocity without one), its height zeroed, times
+2·(20·strikes + 10)·J, plus 20 ticks of the chest's fast velocity, cut to
+the step length, so most such blows take a whole step.
 
 A clash on a weapon parry takes one of the original's three branches
 (`parry::clash_branch`): a raised parry clears the victim's attack state,
@@ -323,9 +328,12 @@ item's own hit set at `0.005·I + 0.3·(0.01·I)²` (volume at most
 1, silent under 0.005), pitch `0.3·v + 0.7`, cooldown `200 − round(80·v)`
 stamped on the item, its first-child chain and its striking weapon
 ancestors, and interrupts or stalls the owner's swing by the same
-`part::hard_impact` rules as an overhead or stab, recording
-`round(5√impact)` on the swing (`SwingState::strike_strength`) with a
-zero stall that ends at the tick clock. The
+`part::hard_impact` rules as an overhead or stab: an interrupt sets the
+swing's stall rate to 1 and its strength to 0 (the clip stands still until
+the stance returns 600 ms on); a stab or overhead records
+`round(5√impact)` (`SwingState::strike_strength`), which also stalls the
+owner's turn (`Ragdoll::stall_turn`), with no strength left and its end
+at the tick clock. The
 contact classifier (`part::classify`) reads the striker's state for the
 kind when the other side is itself striking; the message carries it. A
 weapon whose window is open no longer takes this branch against a held

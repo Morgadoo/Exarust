@@ -1494,7 +1494,18 @@ pub(crate) fn steer_player(
                 steering.request(&mut req, body, &input, segment, state);
             }
             steering.aim(&mut req, to_cursor, state.off_feet());
-            steering.explore(&mut req, body, &input, now, standing, state, &line);
+            // A hovering body (its race's hover flag, the wraith) looks
+            // ahead by the grid's straight walk, which follows the floor
+            // down; any other by the line walk.
+            let hovers = pb.hovers;
+            let ahead = |from: Vec3, to: Vec3| {
+                if hovers {
+                    straight_walk(nav.as_deref(), &physics, from, to)
+                } else {
+                    line_walk(nav.as_deref(), &physics, from, to)
+                }
+            };
+            steering.explore(&mut req, body, &input, now, standing, state, &ahead);
             pb.steering = steering;
             let gait = gait_of(body, &req, &anim.action);
             explore_clip(&mut anim, gait);
@@ -1537,6 +1548,24 @@ fn line_walk(
         ),
         None => (to, false),
     }
+}
+
+/// The exploration look-ahead of a hovering body: the navigation grid's
+/// straight walk ([`exa_world::nav::straight_walk`]: static floors, five
+/// steps up, following the floor down), as the original's steer takes it
+/// for a body with its race's hover flag; without a grid the same ray as
+/// [`line_walk`]'s.
+fn straight_walk(
+    nav: Option<&exa_world::nav::NavGrid>,
+    physics: &Physics,
+    from: Vec3,
+    to: Vec3,
+) -> (Vec3, bool) {
+    if let Some(grid) = nav {
+        let hit = exa_world::nav::straight_walk(grid, from, to);
+        return (hit.end, hit.blocked);
+    }
+    line_walk(None, physics, from, to)
 }
 
 /// The gait clip of a body by its last movement decision: none standing;
@@ -3907,6 +3936,55 @@ mod tests {
         } else {
             keys.release(key);
         }
+    }
+
+    /// The exploration look-ahead of a hovering body (its race's hover
+    /// flag, the wraith) takes the grid's straight walk, which climbs a
+    /// floor five steps up; any other body's line walk is blocked there.
+    /// Each walks forward by W toward such a rise half a metre ahead.
+    #[test]
+    fn a_hovering_body_looks_ahead_by_the_straight_walk() {
+        use exa_world::nav::{Layer, NavCell, NavGrid};
+        let blocked = |hovers: bool| {
+            let (mut app, body) = steered_app("Idle", Stance::Idle);
+            let mut grid = NavGrid::empty(16, 16, 0.0);
+            let rise_z = grid.cell_at(Vec3::new(0.0, 1.0, 0.5)).unwrap().1;
+            for z in 0..16 {
+                for x in 0..16 {
+                    let floor = if z == rise_z { 15 } else { 10 };
+                    let cell = NavCell {
+                        floor,
+                        ..NavCell::default()
+                    };
+                    grid.set_cell(x, z, Layer::Lower, cell);
+                }
+            }
+            app.insert_resource(grid);
+            {
+                let mut pb = app.world_mut().get_mut::<PlayerBody>(body).unwrap();
+                pb.set_combat(false);
+                pb.hovers = hovers;
+            }
+            let root = app.world().get::<ChildOf>(body).unwrap().parent();
+            app.world_mut()
+                .get_mut::<Transform>(root)
+                .unwrap()
+                .translation = Vec3::Y;
+            set_key(&mut app, KeyCode::KeyW, true);
+            for _ in 0..3 {
+                behaviour_tick(&mut app);
+            }
+            let line = app
+                .world()
+                .get::<PlayerBody>(body)
+                .unwrap()
+                .line_asked()
+                .expect("no look-ahead");
+            assert_eq!(line.asked, crate::steering::Asked::LookAhead);
+            line.blocked
+        };
+        assert!(blocked(false));
+        assert!(!blocked(true));
     }
 
     /// The original's exploration steering starts no clip but the walk:

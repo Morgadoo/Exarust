@@ -269,7 +269,9 @@ pub struct Bearing {
     /// How far it crouches, 0 to 1: its chest is measured 10 cm back at a
     /// full crouch.
     pub crouch: f32,
-    /// What is left of its turn toward its heading (rad).
+    /// Its last turn's error (rad): the heading less the yaw before that
+    /// tick's step, 0 after a held turn. The arms' turn floor reads it
+    /// ahead of this tick's turn, as the original's posture block does.
     pub turn: f32,
     /// How high (m) its lowest ankle sits in the gait pose a moving body
     /// stands on: the walk's first key, that key slerped 0.7 of the way

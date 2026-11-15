@@ -3803,6 +3803,28 @@ impl Ragdoll {
         }
     }
 
+    /// A stab's or overhead's hard weapon-body hit of strength `ticks`
+    /// stalls the body's turn ([`BodyTimers::stall_turn`]); a body without
+    /// muscles keeps no timers.
+    pub fn stall_turn(&mut self, ticks: u32) {
+        if let Some(d) = self.drive.as_mut() {
+            d.timers.stall_turn(ticks);
+        }
+    }
+
+    /// The body's turn holds this tick for a hard hit's stall
+    /// ([`BodyTimers::turn_stalled`]).
+    pub fn turn_stalled(&self) -> bool {
+        self.drive.as_ref().is_some_and(|d| d.timers.turn_stalled())
+    }
+
+    /// The turn's write on the support adapter ([`BodyTimers::turned`]).
+    pub fn lower_support_by_turn(&mut self, error: f32) {
+        if let Some(d) = self.drive.as_mut() {
+            d.timers.turned(error);
+        }
+    }
+
     /// One tick of the body tick's adapters, look rate and counters, from
     /// what the last tick measured.
     pub fn tick_timers(&mut self) {
