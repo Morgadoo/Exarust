@@ -195,6 +195,11 @@ pub fn roam_step(
     let home_leg = routine.kind == Kind::Roam && routine.phase == Phase::PlanHome;
     if (routine.phase == Phase::PlanWander || home_leg) && place.turn.turn(place.who, place.frame) {
         step.planned = true;
+        let mut router = place.router;
+        // The state writes the size class before the pick.
+        if let Some(record) = router.as_deref_mut().and_then(|r| r.goal()) {
+            record.size = route::ROAM_SIZE;
+        }
         let exits = (place.exits)();
         let picked = if home_leg {
             idle::pick_home(place.room, &exits, walk.toward)
@@ -207,11 +212,16 @@ pub fn roam_step(
                 walk.toward = picked.node;
                 walk.cursor = picked.cursor;
             }
+            // The pick writes the goal record: stop at two cells, the flat
+            // end test at 150 cm.
+            if let Some(record) = router.as_deref_mut().and_then(|r| r.goal()) {
+                record.roam();
+            }
         }
         // [Exarust: the router chooses the grid layer by height; the goal
         // is at height 0 and its test ignores height, so it is routed at
         // the walker's own height.]
-        let points = match (walk.goal, place.router) {
+        let points = match (walk.goal, router) {
             (Some(goal), Some(router)) => {
                 router.route(place.at_cm, Vec3::new(goal.x, place.at_cm.y, goal.z))
             }

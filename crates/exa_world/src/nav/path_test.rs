@@ -194,6 +194,55 @@ fn a_failed_path_stops_before_rough_ground() {
     assert!(find_path(&grid, from, to, 1).points.is_empty());
 }
 
+/// A search that stops short asks the caller's end test instead of the
+/// 100 cm rule: the closest node's end (centimetres, on its floor) is what
+/// the test sees, and an end it finds near enough keeps the whole path.
+#[test]
+fn a_failed_search_asks_the_callers_end_test() {
+    let mut grid = corridor();
+    set(&mut grid, 16, 20, |c| c.floor = 0);
+    set(&mut grid, 15, 20, |c| c.clearance = 70);
+    let (from, to) = (at(&grid, 12, 20, 10.0), at(&grid, 19, 20, 10.0));
+    let ask = Search {
+        size: 0,
+        shift: 0,
+        accept: 10,
+    };
+    let seen = std::cell::Cell::new(Vec3::ZERO);
+    let never = |end: Vec3| {
+        seen.set(end);
+        false
+    };
+    let near = find_path_to(&grid, from, to, ask, Some(&never));
+    assert!(near.reached);
+    // Not reached, the rough node would have cut it at cell 14; reached,
+    // it runs to the closest node, cell 15.
+    assert_eq!(cell_of(&grid, *near.points.last().unwrap()), (15, 20));
+    let end = at(&grid, 15, 20, 10.0) * 100.0;
+    assert!(
+        (seen.get() - end).abs().max_element() < 1e-3,
+        "{:?}",
+        seen.get()
+    );
+    let always = |_: Vec3| true;
+    let far = find_path_to(&grid, from, to, ask, Some(&always));
+    assert!(!far.reached);
+    assert_eq!(far.points, vec![from, at(&grid, 14, 20, 10.0)]);
+}
+
+/// The AI's size class 3 refuses a cell whose clearance passes 180/4 = 45,
+/// where class 0 enters it (limit 180).
+#[test]
+fn size_class_three_keeps_off_low_clearance() {
+    let mut grid = corridor();
+    set(&mut grid, 15, 20, |c| c.clearance = 50);
+    let (from, to) = (at(&grid, 12, 20, 10.0), at(&grid, 17, 20, 10.0));
+    let small = find_path(&grid, from, to, 0);
+    assert!(small.reached);
+    let big = find_path(&grid, from, to, 3);
+    assert_eq!(cell_of(&grid, *big.points.last().unwrap()), (14, 20));
+}
+
 /// The line walk steps every cell after the far corner up to and including
 /// the kept point's, holds the far corner's floor and doubles the penalty
 /// against the budget plus ten.

@@ -306,7 +306,9 @@ cell's lower and upper floor and underside):
   node's heuristic is under the accept distance (`nav::find_path` uses 10,
   the goal's cell), with an empty open list, or at the 4096th node (the
   accept test still runs), and answers the closest node. A search that did
-  not reach the goal counts as reached when that node's centre lies within
+  not reach the goal asks the caller's end test (the AI's goal record:
+  the flat or half-height radius test, or one that never fails), or
+  without one counts as reached when that node's centre lies within
   100 cm of the goal; otherwise the path stops at the parent of the rough
   node (clearance over `64/(size + 1)`) nearest the start. The parent chain
   keeps the last node of each run of one direction and layer; from the
@@ -318,6 +320,14 @@ cell's lower and upper floor and underside):
   between the two plus ten. Points sit on cell centres at the node's layer
   floor; fewer than two corners give no points. Each thread keeps one set
   of window buffers, and a search clears only the window's interior.
+  The AI plans with its goal record: size class 3, accept 10 at
+  construction, the penalty shift its group-alert count; the roam and
+  patrol write class 4 and accept 20, the chase and the flight the roles'
+  phase word plus 3 (accept 10 and 30), the follower 0 or 4, the search 7.
+  The original shares one stamp table between the planner and the
+  nearest-walkable flood, which clears only part of it, so stale marks of
+  one can be met by the other; Exarust keeps a clean table per search
+  (DEC-5).
 - **Disturbance** (`nav::disturbance`): the original's sampler is a stub
   that always answers 0.
 - **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and

@@ -114,6 +114,9 @@ pub struct ChaseBody {
     pub scale: f32,
     /// The motion it is in, which the chase goal's motion follows.
     pub motion: i32,
+    /// The combatant phase word applying roles wrote; plus 3 it is the
+    /// chase's size class (a marked body's −1 gives 2).
+    pub phase_word: i32,
     pub voice: Option<Voice>,
     pub now_ms: u32,
 }
@@ -124,6 +127,8 @@ pub struct ChaseFoe {
     pub id: u64,
     /// Its ground height (cm), which the goal takes when it exists.
     pub ground_y_cm: f32,
+    /// It is down or getting up: the goal's end test widens to 300 cm.
+    pub down: bool,
 }
 
 /// How the chase ends.
@@ -232,7 +237,18 @@ pub fn chase(
         motion: me.motion + CHASE_MOTION,
     };
     let planned = match router {
-        Some(router) => crate::route::plan(turn, who, clock, me.position_cm, goal, false, router),
+        Some(router) => {
+            // The re-plan writes the goal record: stop at the goal's cell,
+            // the size class from the phase word, and the goal callback's
+            // half-height end test at 150 cm (300 cm for a foe that is
+            // down; the body's target is the foe).
+            if let Some(record) = router.goal() {
+                record.accept = 10;
+                record.size = crate::route::phase_size(me.phase_word);
+                record.toward_target(foe.is_some_and(|f| f.down));
+            }
+            crate::route::plan(turn, who, clock, me.position_cm, goal, false, router)
+        }
         None => None,
     };
     let Some(planned) = planned else {
@@ -310,6 +326,7 @@ mod tests {
             ground_y_cm: 1000.0,
             scale: 1.0,
             motion: 4,
+            phase_word: 0,
             voice: None,
             now_ms: now,
         }
@@ -325,10 +342,12 @@ mod tests {
     const FOE: Option<ChaseFoe> = Some(ChaseFoe {
         id: 7,
         ground_y_cm: 1000.0,
+        down: false,
     });
 
     fn run(grid: &NavGrid, mind: &mut ChaseMind, now: u32, roll: &mut u32) -> Outcome {
-        let mut router = crate::route::NavRouter { grid, size: 0 };
+        let mut record = crate::route::PlanGoal::default();
+        let mut router = crate::route::NavRouter::new(grid, &mut record, 1);
         chase(
             mind,
             1,
@@ -371,6 +390,56 @@ mod tests {
         let out = run(&grid, &mut mind, 1012, &mut 0);
         assert_eq!(out.end, End::Following);
         assert_eq!(out.planned, None);
+    }
+
+    /// The re-plan writes the goal record the search reads: stop at the
+    /// goal's cell, the phase word plus 3 as size class (a marked body's −1
+    /// gives 2), the half-height test at 150 cm, 300 cm for a foe that is
+    /// down.
+    #[test]
+    fn the_replan_writes_the_goal_record() {
+        let grid = yard();
+        for (phase_word, down, size, radius) in [(-1, false, 2, 150.0), (1, true, 4, 300.0)] {
+            let mut mind = ChaseMind {
+                estimate: at(&grid, 28, 20) + Vec3::new(0.0, 100.0, 0.0),
+                fresh: true,
+                ..ChaseMind::default()
+            };
+            let mut record = crate::route::PlanGoal {
+                accept: 50,
+                ..crate::route::PlanGoal::default()
+            };
+            let mut router = crate::route::NavRouter::new(&grid, &mut record, 1);
+            let me = ChaseBody {
+                phase_word,
+                ..body(&grid, 1000)
+            };
+            let foe = Some(ChaseFoe {
+                down,
+                ..FOE.unwrap()
+            });
+            chase(
+                &mut mind,
+                1,
+                &me,
+                foe,
+                None,
+                &mut turn(),
+                0,
+                &[ContactKey { id: 7 }],
+                Some(&mut router),
+                &mut 0,
+            );
+            assert_eq!(
+                record,
+                crate::route::PlanGoal {
+                    size,
+                    accept: 10,
+                    test: crate::route::GoalTest::HalfHeight,
+                    radius_cm: radius,
+                }
+            );
+        }
     }
 
     /// A route whose end lies more than a metre off the estimate's height

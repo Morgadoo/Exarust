@@ -367,28 +367,57 @@ pub fn find_path_with(
     accept: i32,
     shift: u32,
 ) -> Path {
-    SCRATCH.with(|scratch| {
-        search(
-            grid,
-            from,
-            to,
+    find_path_to(
+        grid,
+        from,
+        to,
+        Search {
             size,
-            accept,
             shift,
-            &mut scratch.borrow_mut(),
-        )
-    })
+            accept,
+        },
+        None,
+    )
+}
+
+/// What a search is asked besides its ends: the walker's size class (the
+/// clearance limit `180/(size + 1)`, the rough limit `64/(size + 1)`), the
+/// penalty byte's shift and the accept distance. The original reads them
+/// from the caller's goal record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Search {
+    pub size: u8,
+    pub shift: u32,
+    pub accept: i32,
+}
+
+/// A search that did not meet its accept distance asks `too_far` whether
+/// the closest node's end (its cell centre on its floor, centimetres) is
+/// too far from the goal: `false` counts the goal reached. Without one,
+/// an end farther than 100 cm in 3-D is too far.
+pub fn find_path_to(
+    grid: &NavGrid,
+    from: Vec3,
+    to: Vec3,
+    ask: Search,
+    too_far: Option<&dyn Fn(Vec3) -> bool>,
+) -> Path {
+    SCRATCH.with(|scratch| search(grid, from, to, ask, too_far, &mut scratch.borrow_mut()))
 }
 
 fn search(
     grid: &NavGrid,
     from: Vec3,
     to: Vec3,
-    size: u8,
-    accept: i32,
-    shift: u32,
+    ask: Search,
+    too_far: Option<&dyn Fn(Vec3) -> bool>,
     scratch: &mut Scratch,
 ) -> Path {
+    let Search {
+        size,
+        shift,
+        accept,
+    } = ask;
     let (width, depth) = grid.size();
     let goal = (planner_cell(to.x), planner_cell(to.z));
     let start = (planner_cell(from.x), planner_cell(from.z));
@@ -577,12 +606,17 @@ fn search(
     let mut end = nearest;
     if !reached {
         let at = centre_cm(&nodes[usize::from(end)]);
-        let goal_cm = [cm(to.x), cm(to.y), cm(to.z)];
-        let d = [at[0] - goal_cm[0], at[1] - goal_cm[1], at[2] - goal_cm[2]];
-        let squared = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        // Not farther than 100 cm; a NaN distance counts as near, as the
-        // original's compare does.
-        reached = squared.partial_cmp(&NEAR_ENOUGH_SQ) != Some(std::cmp::Ordering::Greater);
+        reached = match too_far {
+            Some(too_far) => !too_far(Vec3::from_array(at)),
+            None => {
+                let goal_cm = [cm(to.x), cm(to.y), cm(to.z)];
+                let d = [at[0] - goal_cm[0], at[1] - goal_cm[1], at[2] - goal_cm[2]];
+                let squared = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                // Not farther than 100 cm; a NaN distance counts as near, as
+                // the original's compare does.
+                squared.partial_cmp(&NEAR_ENOUGH_SQ) != Some(std::cmp::Ordering::Greater)
+            }
+        };
     }
     if !reached {
         let rough = (ROUGH / (i64::from(size) + 1)) as i32;
