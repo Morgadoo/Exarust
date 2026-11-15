@@ -111,7 +111,15 @@ the engine's two callback lists: the priority-sorted method list (code,
 data and priority records, insert before the first greater priority,
 remove by code and data) and the procedure list (one entry per code,
 duplicates refused), both dispatching in order and dropping every call
-that answers false. `window` holds the
+that answers false. The running game keeps no such list: each
+registrant's work is a system, and every list of the original is mapped
+to its systems and their schedule order in
+[`docs/re/hook-lists.md`](../../docs/re/hook-lists.md), checked by
+`hooks_order_test` (the scene frame list: the simulation's interpolation,
+the player light, the rooms, the scene's frame; the game task's list).
+The player light is placed over the head as the frame draws it (between
+its last two body ticks), as the original's light hook follows the
+simulation's interpolation hook. `window` holds the
 display-mode list (modes at least 640 wide, every refresh rate per size,
 the original's exchange sort by area), the refresh rate (unknown below
 30 Hz), work-area fitting, the 640 × 480 minimum track size, the full-screen
