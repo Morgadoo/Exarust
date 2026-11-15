@@ -29,7 +29,7 @@ original's; the lane's artifacts keep the retail addresses.
 | tile-inserted list (scene) | after the terrain stream inserts a tile | none | none | empty |
 | pivot list (scene) | never: no routine dispatches it | the GL geometry's pivot refresh, the navigation camera's point shift | none | unreachable |
 | game task list (GUI task) | once a frame, the game layer's frame step | the session's frame (0), the controls' frame or the held item (4, one replacing the other), the deferred scene start (5), the scene task's tick (5: the scene frame list above), the spirit screen (6) | `flow::tick`, `hand` (`HandSystems`), `player_controls`, the scene systems, `step_spirit_screen` (Update) | matches: the unordered pairs do not conflict, and the held item reads the camera's propagated transform (the previous frame's, as the original's controls, called before the camera's hook, see it); `test:the_game_task_list_keeps_its_order_by_schedule_or_by_data` |
-| modal task list (GUI task) | once a frame, the modal layer's frame step | the shader warm-up screen (0), the key-read screen (0), the transition screen (100) | `drive_warm_screen`, `rebind_keys`, `run_transition` (Update) | one screen at a time |
+| modal task list (GUI task) | once a frame, the modal layer's frame step | the shader warm-up screen (0), the key-read screen (0), the transition screen (100) | `drive_warm_screen`, `rebind_keys`, `run_transition` (Update) | matches: each pair is ordered as the list orders it or does not conflict; `test:the_modal_task_list_keeps_its_order_by_schedule_or_by_data` |
 | creator task list (GUI task) | the creator's frame step | the deferred preview rebuild (0) | the creator screen | single member |
 | renderer lists (renderer) | at fixed points of the scene pass | the lit list (weapon blood 0, terrain 10), plants (20), before-scene (vanish 100), the rooms' fade overlay (100), after-scene (vanish 100); the wireframe list is never dispatched | the render phases (`exa_render::passes::PASS_ORDER`) | belongs to the scene pass's own row |
 | after-draw list (view) | after a view draws | the mind sight's overlay (0) and glow (0) | `run_mind_sight`, `draw_mind_sight` | the dispatch point is not ported (the view's after-draw routine is missing) |
@@ -62,10 +62,15 @@ the tail passes the end every 128 posts in the life of the game, and many
 posted calls ask to run again for many passes (the glow pulse over its
 fade, the journey tick, the rotator's return until its deadline, a drop
 job while its pack is locked, a vanish's finish while its fade lasts), so
-at a wrap the ring often holds such a call ahead of others; three posts in
-one pass straddling the end are enough too. Exarust posts the same work as
+at a wrap the ring often holds such a call ahead of others; two one-shot
+posts in one pass into the last two slots are enough too (a tail of 0
+already stops the walk), the second waiting a pass. Exarust posts the same work as
 Bevy messages, systems and `sim_app::SimInbox`, which run every post in
-one pass: the wrap's delay is not reproduced.
+one pass: the wrap's delay is not reproduced. Reproducing it needs every
+original poster to post into one ring in the original's order: `SimInbox`
+also carries Exarust's own spawn and despawn links, which the original
+never queues, so giving it the ring's walk would delay posts the original
+does not delay. The ring rows stay open until the posters share one ring.
 
 ## Content stream rings
 
@@ -73,4 +78,8 @@ The content stream's rings (`exa_assets::stream::RingQueue`) differ the
 other way: the original's poster spins (yielding) while a ring is full
 until the stream thread takes an entry; Exarust's ring grows by one
 instead. Both keep insertion order, so the builds and results come in the
-same order; the original's poster is only held.
+same order; the original's poster is only held. A spin is not adopted:
+Exarust keeps every ring of the stream behind one lock, which the stream
+pass holds, and with `--sync-content` the pass runs on the posting thread,
+so a poster waiting there for room would wait for ever. The push rows stay
+open on this difference (a timing one: no order or result changes).

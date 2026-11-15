@@ -135,3 +135,40 @@ fn the_game_task_list_keeps_its_order_by_schedule_or_by_data() {
         assert!(!conflicting(&mut app, Update, a, b), "{a} and {b}");
     }
 }
+
+/// The modal task list, which the original calls once a frame in its
+/// priority order: the shader warm-up screen and the key-read screen (both
+/// priority 0, in their arrival order), then the transition screen (100).
+/// Exarust runs the two settings screens chained in `Update`; each pair is
+/// ordered as the list orders it or leaves the other's data alone, so the
+/// order cannot change what either computes.
+#[test]
+fn the_modal_task_list_keeps_its_order_by_schedule_or_by_data() {
+    let mut app = frame_app();
+    app.add_plugins((
+        crate::player::PlayerPlugin,
+        crate::hand::HandPlugin,
+        crate::menu_screen::MenuScreenPlugin,
+        crate::flow::FlowPlugin,
+        crate::mind::runtime::MindRuntimePlugin,
+        crate::hw_config::HardwareConfigPlugin,
+    ));
+    for name in [
+        "hw_config::drive_warm_screen",
+        "hw_config::rebind_keys",
+        "flow::run_transition",
+    ] {
+        assert_eq!(systems_named(&mut app, Update, name).len(), 1, "{name}");
+    }
+    for (first, then) in [
+        ("hw_config::rebind_keys", "flow::run_transition"),
+        ("hw_config::drive_warm_screen", "flow::run_transition"),
+        ("hw_config::rebind_keys", "hw_config::drive_warm_screen"),
+    ] {
+        assert!(
+            runs_before(&mut app, Update, first, then)
+                || !conflicting(&mut app, Update, first, then),
+            "{first} then {then}"
+        );
+    }
+}

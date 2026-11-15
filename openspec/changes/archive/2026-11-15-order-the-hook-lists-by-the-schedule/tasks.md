@@ -14,3 +14,4 @@
 - [x] 3.1 The scene frame list's order (interpolation, light, rooms, the scene's frame)
 - [x] 3.2 The game task list's order by schedule or by data
 - [x] 3.3 The light reads the drawn head
+- [x] 3.4 The modal task list's order by schedule or by data

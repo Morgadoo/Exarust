@@ -1227,6 +1227,26 @@ mod tests {
         assert_eq!(calls.len(), 4);
     }
 
+    /// The tail at slot 0 already counts as wrapped: two one-shot calls
+    /// posted in one pass into slots 126 and 127 run one a pass, since the
+    /// walk stops once the index is not below the tail.
+    #[test]
+    fn two_calls_ending_the_ring_run_one_a_pass() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut calls = DeferredCalls::new();
+        for _ in 0..126 {
+            calls.push(Box::new(|| false));
+        }
+        calls.run();
+        calls.push(counting(&log, 1, 1));
+        calls.push(counting(&log, 2, 1));
+        calls.run();
+        assert_eq!(*log.borrow(), [1]);
+        calls.run();
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert!(calls.is_empty());
+    }
+
     /// The wrap is reached in a long game without any burst: the tail
     /// passes the ring's end every 128 posts, and a call that keeps asking
     /// to run (a glow pulse over its fade, the rotator's timed return) and

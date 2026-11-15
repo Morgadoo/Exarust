@@ -14,6 +14,10 @@ Where the schedule leaves two pieces of one hook list's work unordered, they SHA
 - **WHEN** the session's frame, the held item, the camera, the player light and the spirit screen are built into `Update`
 - **THEN** the held item runs after the camera and no unordered pair of them conflicts
 
+#### Scenario: The modal task's list
+- **WHEN** the key-read screen, the shader warm-up screen and the transition screen are built into `Update`
+- **THEN** each pair runs in the list's order or does not conflict in its data
+
 ### Requirement: The player light at the drawn head
 The player light SHALL be placed 80 cm over the player's head part as the frame draws it, between the part's last two body ticks at the frame's fraction, as the original's light hook follows the simulation's interpolation hook.
 
