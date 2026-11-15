@@ -531,12 +531,7 @@ mod tests {
                     c.names().unwrap();
                     let words = [c.u32().unwrap(), c.u32().unwrap(), c.u32().unwrap()];
                     let skip = c.u32().unwrap();
-                    assert_eq!(
-                        (words[2], skip),
-                        (0, 600),
-                        "{kind:?} {}: {words:?}",
-                        e.name
-                    );
+                    assert_eq!((words[2], skip), (0, 600), "{kind:?} {}: {words:?}", e.name);
                     grids += 1;
                 }
             }

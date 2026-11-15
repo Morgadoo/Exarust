@@ -179,10 +179,7 @@ mod tests {
             Project::resolve_path(root, ":Resource.rpk"),
             root.join(":Resource.rpk")
         );
-        assert_eq!(
-            Project::resolve_path(root, ":a:b"),
-            root.join(":a:b")
-        );
+        assert_eq!(Project::resolve_path(root, ":a:b"), root.join(":a:b"));
     }
 
     #[test]
