@@ -1415,7 +1415,7 @@ fn scripted_shop(
             }
             let trade = (10, crate::hub_windows::SHOP_SIZE.1 - 20);
             let traded = if took {
-                windows.shop_click(trade, &mut career)
+                windows.shop_click(trade, &mut career, shop.icons.as_deref_mut())
             } else {
                 None
             };
@@ -1887,7 +1887,7 @@ fn hub_clicks(
                             }
                         }
                         HubWindowKind::Shop => {
-                            if let Some(trade) = windows.shop_click(local, &mut career) {
+                            if let Some(trade) = windows.shop_click(local, &mut career, shop.icons.as_deref_mut()) {
                                 let _ = shop.arena_trade(&trade, &mut career);
                             }
                         }
@@ -2246,11 +2246,17 @@ fn shop_drag(
                     shop.basket_changed(drag.source);
                 }
                 for &(id, flags) in &done.to_pack {
-                    let (icon, _) = icons
-                        .as_deref_mut()
-                        .map_or((0, (0, 0)), |icons| icons.reserve(id, flags, catalogue));
                     let bulk = crate::panel_live::bulk_of(id, catalogue);
-                    shop.panels.pack.add_at_centre(id, icon, flags, bulk);
+                    // The centre add and its place pass.
+                    match icons.as_deref_mut() {
+                        Some(icons) => {
+                            let (icon, _) = icons.reserve(id, flags, catalogue);
+                            icons.add_placed(&mut shop.panels.pack, id, icon, flags, bulk);
+                        }
+                        None => {
+                            shop.panels.pack.add_at_centre(id, 0, flags, bulk);
+                        }
+                    }
                 }
             }
             None => shop.panels.cancel(),

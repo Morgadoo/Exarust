@@ -1648,6 +1648,26 @@ impl Container {
         true
     }
 
+    /// The place pass the original runs after every centre add
+    /// ([`place_new`]): entry `at` takes a random spot in the middle half
+    /// of the client and is pushed out of the others. `halves` are every
+    /// entry's icon half extents, in entry order; the centres are the cells
+    /// plus half the icon size, as the original converts them, and only
+    /// entry `at` moves. `state` is the shared generator's.
+    pub fn place_at(&mut self, at: usize, halves: &[[i32; 2]], state: &mut u32) {
+        if at >= self.entries.len() || halves.len() != self.entries.len() {
+            return;
+        }
+        let shift = self.icon_size >> 1;
+        let mut pos: Vec<[i32; 2]> = self
+            .entries
+            .iter()
+            .map(|e| [e.cell.x + shift, e.cell.y + shift])
+            .collect();
+        place_new(&mut pos, halves, at, self.client.0, self.client.1, state);
+        self.entries[at].cell = Cell::new(pos[at][0] - shift, pos[at][1] - shift);
+    }
+
     /// Removes entry `at` and its bulk, shifting the tail left.
     pub fn remove_at(&mut self, at: usize, bulk: i32) -> Option<Entry> {
         let entry = remove_entry(&mut self.entries, at)?;

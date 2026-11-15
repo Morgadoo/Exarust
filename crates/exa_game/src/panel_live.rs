@@ -1574,4 +1574,110 @@ mod tests {
             vec![Source::Container(id)]
         );
     }
+
+    /// Crystals dragged from the pack onto a shipped weapon's first socket:
+    /// crystal B goes in, then the AR crystal takes its place, files the
+    /// weapon as a drain source, and B comes back into the pack by the
+    /// centre add and place pass (skipped without the game).
+    #[test]
+    fn a_socketed_ar_crystal_files_its_item_and_the_old_crystal_is_placed_back() {
+        use exa_items::possession::{Carried, crystal};
+        use exa_script::objects::Source;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let mut objects = exa_assets::live_objects::LiveObjects::default();
+        if !objects.ensure_base(&data) {
+            return;
+        }
+        let weapon_section = crate::crystal_drain::WEAPON_SECTION;
+        let socket = crate::crystal_drain::WEAPON_SOCKET;
+        let Some(weapon) = (1..4000u32).find(|&id| {
+            objects
+                .db()
+                .section(id, weapon_section)
+                .and_then(|body| body.get(socket).copied())
+                .is_some_and(|word| word & 0x80 != 0 && word & 0x7f == 0)
+        }) else {
+            return;
+        };
+        let (mut app, player) = live_app(vec![
+            Carried { id: crystal::B, flags: 0x20 << 16, x: 0, y: 0 },
+            Carried { id: crystal::AR, flags: 0x40 << 16, x: 400, y: 0 },
+        ]);
+        app.insert_resource(objects);
+        let sockets = crate::socket_drag::live_sockets(
+            app.world().resource::<exa_assets::live_objects::LiveObjects>(),
+            weapon,
+        );
+        let row = GuiRect::new(1000, 600, 80, 22);
+        app.world_mut().resource_mut::<crate::item_card::CardView>().shown =
+            Some(crate::item_card::ShownCard {
+                item: weapon,
+                flags: 0,
+                name: String::new(),
+                built: exa_items::card::BuiltCard {
+                    page: exa_items::card::CardPage::Plain,
+                    value: 0,
+                    title_colour: None,
+                    content: None,
+                    description: String::new(),
+                },
+                icon: 0,
+                at: (900, 300),
+                size: (300, 400),
+                pointer: (900, 300),
+                fade: Default::default(),
+                form_flags: 0,
+                world: false,
+                sockets,
+                socket_row: Some((row, 4)),
+                sides: [[0; 3]; 2],
+                flip: Default::default(),
+            });
+        let client = pack_client(&app);
+        let at = |app: &App, id: u32| {
+            let cell = app
+                .world()
+                .resource::<GameScreens>()
+                .pack
+                .entries
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap()
+                .cell;
+            IVec2::new(client.left + cell.x + 20, client.top + cell.y + 20)
+        };
+        let on_socket = IVec2::new(row.left + 5, row.top + 5);
+        let from = at(&app, crystal::B);
+        drag_between(&mut app, from, on_socket);
+        let from = at(&app, crystal::AR);
+        drag_between(&mut app, from, on_socket);
+        let card = app.world().resource::<crate::item_card::CardView>();
+        let words = card.shown.as_ref().unwrap().sockets.unwrap();
+        assert_eq!(words.0[0] & 0x7f, 0x11, "{:04x?}", words.0);
+        let drain = app.world().resource::<crate::crystal_drain::CrystalDrain>();
+        assert_eq!(drain.drain.sources, vec![Source::Socketed(weapon)]);
+        // Crystal B came back: into the open pack, placed off the centre,
+        // and onto the carried list at the same cell.
+        let screens = app.world().resource::<GameScreens>();
+        let back = *screens.pack.entries.iter().find(|e| e.id == crystal::B).unwrap();
+        let centre = crate::item_container::centre_cell(
+            screens.pack.client.0 as u32,
+            screens.pack.client.1 as u32,
+            screens.pack.icon_size as u32,
+        );
+        let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
+        let p = app.world().get::<Possessions>(player).unwrap();
+        let listed = p.carried.iter().find(|c| c.id == crystal::B).unwrap();
+        assert_eq!(
+            (listed.x, listed.y),
+            crate::item_container::to_list_pos(back.cell, unit, vscale)
+        );
+        assert_ne!(back.cell, centre);
+        assert!(!p.carried.iter().any(|c| c.id == crystal::AR));
+    }
 }

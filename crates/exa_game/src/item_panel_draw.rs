@@ -72,6 +72,11 @@ pub struct PanelIcons {
     revision: (u16, u16, u64),
     /// Bumped whenever an icon is added to the atlas.
     version: u64,
+    /// The generator the panels' place pass draws from. The original draws
+    /// from the engine's one shared generator, which Exarust does not keep;
+    /// the item GUI keeps its own, seeded with the scatter's run-time
+    /// library seed. [Exarust stand-in]
+    pub random: u32,
 }
 
 impl Default for PanelIcons {
@@ -90,6 +95,7 @@ impl PanelIcons {
             texture: None,
             revision: (0, 0, 0),
             version: 0,
+            random: crate::item_container::SCATTER_SEED,
         }
     }
 
@@ -301,6 +307,37 @@ impl PanelIcons {
             .entries
             .get(handle.checked_sub(1)?)
             .map(|entry| entry.cell)
+    }
+
+    /// The original's centre add followed by its place pass: the item goes
+    /// in at the panel's centre ([`Container::add_at_centre`]), then takes
+    /// a random spot in the middle half and is pushed out of the others
+    /// ([`Container::place_at`], each entry measured by its icon's half
+    /// extents, drawing from [`PanelIcons::random`]). Returns the cell it
+    /// ended at, `None` when the add refused it (no icon).
+    pub fn add_placed(
+        &mut self,
+        container: &mut Container,
+        id: u32,
+        icon: usize,
+        flags: u32,
+        bulk: i32,
+    ) -> Option<crate::item_container::Cell> {
+        if !container.add_at_centre(id, icon, flags, bulk) {
+            return None;
+        }
+        let fallback = self.icon_half();
+        let halves: Vec<[i32; 2]> = container
+            .entries
+            .iter()
+            .map(|e| {
+                let (a, b) = self.half(e.icon).unwrap_or(fallback);
+                [a, b]
+            })
+            .collect();
+        let at = container.entries.len() - 1;
+        container.place_at(at, &halves, &mut self.random);
+        Some(container.entries[at].cell)
     }
 
     /// The half extents of an icon slot, for the panel's clamps.

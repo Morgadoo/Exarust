@@ -1178,6 +1178,49 @@ pub fn hold_shield(p: &mut Possessions, id: u32, flags: u32) {
     p.out[1] = Hand { id, flags };
 }
 
+/// The inventory's give-back of an item a take-in freed from a hand: the
+/// open pack shows its held entry of the item again
+/// ([`crate::item_container::take_back_held`]); a pack that does not list
+/// it takes it by its centre add and place pass, and the carried list
+/// gains it at that cell. Without an open pack the carried list takes it
+/// at the give-back place ([`Possessions::give_back`]) unless it already
+/// lists it. The carried copy's held mark was cleared by the hand's
+/// release.
+pub fn give_back_displaced(
+    screens: &mut GameScreens,
+    icons: &mut PanelIcons,
+    catalogue: Option<&ItemCatalogue>,
+    p: &mut Possessions,
+    old: Hand,
+) {
+    let listed = p.carried.iter().any(|c| c.id == old.id);
+    let pack_open = crate::panel_live::open_panels(screens)
+        .iter()
+        .any(|(panel, _)| *panel == Panel::PlayerPack);
+    if !pack_open {
+        if !listed {
+            p.give_back(old.id, old.flags & !HELD);
+        }
+        return;
+    }
+    if crate::item_container::take_back_held(&mut screens.pack.entries, old.id) {
+        debug!("doll drop: {:#x} comes back to the pack's view", old.id);
+        return;
+    }
+    if screens.pack.entries.iter().any(|e| e.id == old.id) {
+        return;
+    }
+    let flags = old.flags & !HELD;
+    let (icon, _) = icons.reserve(old.id, flags, catalogue);
+    let bulk = catalogue.and_then(|c| c.bulk(old.id)).map_or(0, i32::from);
+    if let Some(cell) = icons.add_placed(&mut screens.pack, old.id, icon, flags, bulk)
+        && !listed
+    {
+        let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
+        body_inventory::give(p, old.id, flags, cell, unit, vscale);
+    }
+}
+
 /// Runs the character view's drop for the drops the panel input handed
 /// over: the drop's plan by the item's sections, then the source panel's
 /// drag end (the pack's linked view keeps its bulk), the record and the
@@ -1288,15 +1331,24 @@ fn equip_dropped(
                 continue;
             }
         };
-        // The source's drag ends: the inventory's pack is linked to the
-        // view and keeps the item's bulk; another panel loses it.
-        if let Some(container) = crate::panel_live::container_mut(&mut screens, drop.source) {
+        // The source's drag ends. A weapon or shield from the view's own
+        // pack stays in it at its cell, marked held (the original's hold
+        // of the dragged entry, in place of the source's drag end); from
+        // any other panel the drag ends: the inventory's pack is linked to
+        // the view and keeps the item's bulk; another panel loses it.
+        let into_hand = matches!(plan.kind, FigureDrop::Weapon | FigureDrop::Shield);
+        if into_hand && drop.source == Panel::PlayerPack {
+            if let Some(at) = crate::item_container::hold_dragged(&mut screens.pack.entries) {
+                debug!("doll drop: pack entry {at} ({:#x}) is held", drop.id);
+            }
+        } else if let Some(container) =
+            crate::panel_live::container_mut(&mut screens, drop.source)
+        {
             container.finish_drag(DOLL_PANEL, false, true, 0, drop.bulk);
         }
         // The record side: the item leaves its source's list (an item
         // from the player's own pack stays listed when it goes into a
         // hand, marked held).
-        let into_hand = matches!(plan.kind, FigureDrop::Weapon | FigureDrop::Shield);
         let flags = match drop.source {
             Panel::PlayerPack if into_hand => Some(drop.flags & !HELD),
             Panel::PlayerPack => target
@@ -1349,10 +1401,11 @@ fn equip_dropped(
                     let bulk = catalogue
                         .and_then(|c| c.bulk(piece.id))
                         .map_or(0, i32::from);
-                    let cell = centre(&screens);
-                    screens
-                        .pack
-                        .add_at_centre(piece.id, icon, piece.flags, bulk);
+                    // The centre add and its place pass: the piece's cell
+                    // is where the pass put it.
+                    let cell = icons
+                        .add_placed(&mut screens.pack, piece.id, icon, piece.flags, bulk)
+                        .unwrap_or_else(|| centre(&screens));
                     body_inventory::give(
                         &mut p,
                         piece.id,
@@ -1372,6 +1425,7 @@ fn equip_dropped(
                 }
             }
             FigureDrop::Weapon | FigureDrop::Shield => {
+                let before = [p.out[0], p.out[1]];
                 if plan.kind == FigureDrop::Weapon {
                     hold_item(&mut p, drop.id, flags, kind, plan.off_wanted, |id| {
                         catalogue.and_then(|c| c.kind(id))
@@ -1391,10 +1445,25 @@ fn equip_dropped(
                 } else {
                     hold_shield(&mut p, drop.id, flags);
                 }
+                // The hands the take-in freed give their items back to the
+                // pack ([`give_back_displaced`]).
+                for old in before {
+                    if old.id != 0 && old.id != drop.id && !p.out.iter().any(|h| h.id == old.id) {
+                        give_back_displaced(&mut screens, &mut icons, catalogue, &mut p, old);
+                    }
+                }
                 if drop.source == Panel::PlayerPack {
                     possession::mark_held(&mut p.carried, drop.id, 1);
                 } else {
-                    let cell = centre(&screens);
+                    // The view's pack takes the item marked held: its
+                    // centre add and place pass, the record at that cell.
+                    let cell = if plan.give_to_panel {
+                        icons
+                            .add_placed(&mut screens.pack, drop.id, drop.icon, flags | HELD, drop.bulk)
+                            .unwrap_or_else(|| centre(&screens))
+                    } else {
+                        centre(&screens)
+                    };
                     body_inventory::give(
                         &mut p,
                         drop.id,
@@ -1403,11 +1472,6 @@ fn equip_dropped(
                         pack_unit,
                         pack_vscale,
                     );
-                    if plan.give_to_panel {
-                        screens
-                            .pack
-                            .add_at_centre(drop.id, drop.icon, flags | HELD, drop.bulk);
-                    }
                 }
                 let mut next = crate::equip::hands_of(&p, |id| catalogue.and_then(|c| c.kind(id)));
                 if let Some(hands) = hands.as_mut() {
@@ -2059,5 +2123,111 @@ mod tests {
         }
         eprintln!("{} race-bound weapons and shields", bound.len());
         assert!(!bound.is_empty());
+    }
+
+    /// A shield dragged from the player's pack onto the figure, while
+    /// another is in the off hand: the dragged entry stays in the pack at
+    /// its cell, marked held, and the displaced shield's held entry shows
+    /// again (shipped records, skipped without the game).
+    #[test]
+    fn a_shield_from_the_pack_is_held_in_place_and_the_old_one_comes_back() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(bytes) = data
+            .pack(PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+        else {
+            return;
+        };
+        let Ok(db) = exa_formats::rdb::Database::parse(bytes) else {
+            return;
+        };
+        let catalogue = ItemCatalogue::of_database(&db);
+        let mut shields = exa_formats::objdb::items(&db)
+            .into_iter()
+            .map(|item| item.id)
+            .filter(|&id| catalogue.kind(id).is_some_and(|k| k.shield && k.weapon.is_none()));
+        let (Some(old), Some(new)) = (shields.next(), shields.next()) else {
+            return;
+        };
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<DollItems>()
+            .insert_resource(catalogue)
+            .insert_resource(Game(std::sync::Arc::new(data)))
+            .add_message::<DollDrop>()
+            .add_systems(Update, equip_dropped);
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                Possessions {
+                    out: [Hand::default(), Hand { id: old, flags: 0 }],
+                    carried: vec![
+                        possession::Carried {
+                            id: old,
+                            flags: HELD,
+                            x: 0,
+                            y: 0,
+                        },
+                        possession::Carried {
+                            id: new,
+                            flags: 0,
+                            x: 320,
+                            y: 160,
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let world = app.world_mut();
+        let possessions = world.get::<Possessions>(player).unwrap().clone();
+        world.resource_scope(|world, mut icons: Mut<PanelIcons>| {
+            let catalogue = world.resource::<ItemCatalogue>().clone();
+            let mut screens = world.resource_mut::<GameScreens>();
+            screens.task.screen = (1280, 720);
+            screens.open_inventory(true, true, 4);
+            screens.inventory_body = Some(player);
+            body_inventory::bind_pack(&mut screens.pack, &possessions, &mut icons, Some(&catalogue));
+        });
+        let (cell, icon) = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            let entry = screens.pack.entries.iter_mut().find(|e| e.id == new).unwrap();
+            entry.drag = 1;
+            (entry.cell, entry.icon)
+        };
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .pack
+                .entries
+                .iter()
+                .any(|e| e.id == old && e.flags & HELD != 0)
+        );
+        app.world_mut().write_message(DollDrop {
+            source: Panel::PlayerPack,
+            id: new,
+            flags: 0,
+            icon,
+            bulk: 0,
+            right_half: false,
+        });
+        app.update();
+        let p = app.world().get::<Possessions>(player).unwrap();
+        assert_eq!(p.out[1].id, new);
+        let screens = app.world().resource::<GameScreens>();
+        let held = screens.pack.entries.iter().find(|e| e.id == new).unwrap();
+        assert_eq!((held.cell, held.drag, held.flags & HELD), (cell, 0, HELD));
+        let back = screens.pack.entries.iter().find(|e| e.id == old).unwrap();
+        assert_eq!(back.flags & HELD, 0);
+        assert_eq!(screens.pack.entries.len(), 2);
+        assert!(p.carried.iter().any(|c| c.id == old && c.flags & HELD == 0));
+        assert!(p.carried.iter().any(|c| c.id == new && c.flags & HELD != 0));
     }
 }

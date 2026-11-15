@@ -10,7 +10,8 @@
 //!   row's x over five units; a socket that does not exist answers
 //!   nothing). Only the four power crystals are taken. The socket words are
 //!   read again from the item first. A crystal already there goes back to
-//!   the player: into the open pack at its centre, else onto the carried
+//!   the player: into the open pack (added at its centre, then placed at a
+//!   random spot and pushed out of the others), else onto the carried
 //!   list. The dropped crystal takes the socket's kind and its charge (the
 //!   drag's flags, bits 16–23), the row is committed into the item, and
 //!   the source's drag ends as accepted, so the crystal leaves the pack.
@@ -142,7 +143,8 @@ pub fn drop_on_socket(
 }
 
 /// Hands a crystal back to the player, as the socket control does: into the
-/// open pack at its centre, else onto the carried list.
+/// open pack (its centre add and place pass, [`PanelIcons::add_placed`]),
+/// else onto the carried list.
 pub fn give_back(
     screens: &mut GameScreens,
     icons: &mut PanelIcons,
@@ -156,12 +158,15 @@ pub fn give_back(
     if pack_open {
         let (icon, _) = icons.reserve(id, flags, catalogue);
         let half = screens.pack.icon_size >> 1;
-        let cell = Cell::new(
+        let centre = Cell::new(
             (screens.pack.client.0 >> 1) - half,
             (screens.pack.client.1 >> 1) - half,
         );
         let bulk = catalogue.and_then(|c| c.bulk(id)).map_or(0, i32::from);
-        screens.pack.add_at_centre(id, icon, flags, bulk);
+        // The centre add and its place pass.
+        let cell = icons
+            .add_placed(&mut screens.pack, id, icon, flags, bulk)
+            .unwrap_or(centre);
         let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
         crate::body_inventory::give(possessions, id, flags, cell, unit, vscale);
     } else {

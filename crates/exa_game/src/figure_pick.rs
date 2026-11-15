@@ -844,11 +844,16 @@ fn release_figure(
                 // destination takes it.
                 if plan.remove_held_icon {
                     let bulk = catalogue.and_then(|c| c.bulk(drag.id)).map_or(0, i32::from);
-                    if let Some(entry) = screens
-                        .pack
-                        .entries
-                        .iter()
-                        .rposition(|e| e.id == drag.id && e.flags & HELD != 0)
+                    // The held entry whose icon slot is the drag's, as the
+                    // original matches it. [Exarust guard: a held entry
+                    // whose slot differs (another cache key) is found by
+                    // the item instead, so no hidden entry is left behind.]
+                    if !screens.pack.remove_held_icon(drag.icon, |_| bulk)
+                        && let Some(entry) = screens
+                            .pack
+                            .entries
+                            .iter()
+                            .rposition(|e| e.id == drag.id && e.flags & HELD != 0)
                     {
                         screens.pack.remove_at(entry, bulk);
                     }
