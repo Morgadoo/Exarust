@@ -1227,6 +1227,66 @@ mod tests {
         assert_eq!(calls.len(), 4);
     }
 
+    /// The tail at slot 0 already counts as wrapped: two one-shot calls
+    /// posted in one pass into slots 126 and 127 run one a pass, since the
+    /// walk stops once the index is not below the tail.
+    #[test]
+    fn two_calls_ending_the_ring_run_one_a_pass() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut calls = DeferredCalls::new();
+        for _ in 0..126 {
+            calls.push(Box::new(|| false));
+        }
+        calls.run();
+        calls.push(counting(&log, 1, 1));
+        calls.push(counting(&log, 2, 1));
+        calls.run();
+        assert_eq!(*log.borrow(), [1]);
+        calls.run();
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert!(calls.is_empty());
+    }
+
+    /// The wrap is reached in a long game without any burst: the tail
+    /// passes the ring's end every 128 posts, and a call that keeps asking
+    /// to run (a glow pulse over its fade, the rotator's timed return) and
+    /// sits at the head when it does holds every call behind it until it
+    /// ends; then the waiting calls come one a pass until the head reaches
+    /// the last slot, and the rest in one.
+    #[test]
+    fn a_long_call_at_the_head_holds_the_wrapped_ring() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut calls = DeferredCalls::new();
+        // A game's worth of one-shot posts brings the head to slot 125.
+        for _ in 0..125 {
+            calls.push(Box::new(|| false));
+        }
+        calls.run();
+        // A five-pass call at 125, then one-shot calls at 126, 127 and 0.
+        calls.push(counting(&log, 9, 5));
+        for id in 1..=3 {
+            calls.push(counting(&log, id, 1));
+        }
+        let mut passes = Vec::new();
+        while !calls.is_empty() {
+            log.borrow_mut().clear();
+            calls.run();
+            passes.push(log.borrow().clone());
+        }
+        assert_eq!(
+            passes,
+            [
+                vec![9],
+                vec![9],
+                vec![9],
+                vec![9],
+                vec![9],
+                vec![1],
+                vec![2, 3],
+            ]
+        );
+    }
+
     #[test]
     fn the_idle_wait_follows_the_redraw_flags() {
         use redraw::*;

@@ -1671,6 +1671,12 @@ sets the instability counter (the barricade sets it to 100).
 force blast's contact, weighed at the chunk), counting the push's length
 toward the strain the same way.
 
+`schedule_order` answers, for a built schedule, whether it forces one
+system before another (through chains, `before`/`after` and system sets),
+whether two systems it leaves unordered conflict in their data, and where
+a schedule sits in the main frame. The hook-list checks
+(`docs/re/hook-lists.md`) use it to show the original's priority orders.
+
 ## Scope
 
 - The mesh voxeliser and its voxel map (`voxel`): the floor heightfield and
