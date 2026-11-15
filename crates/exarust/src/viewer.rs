@@ -4243,6 +4243,9 @@ fn spawn_placed_characters(
                     exa_combat::Fighter::of_stats(race, stats).with_perks(c.record.perks());
                 // A worn item of special kind 2 grants the second wind.
                 fighter.second_wind.granted = c.specials.second_wind;
+                // The import spawn builder's last write: the record's red
+                // and yellow shares (a saved level's wounds come back).
+                exa_game::save_live::restore_placed_pools(&c.record, &mut fighter);
                 fighter
             },
             // What it holds, wears and carries, as its record keeps it.

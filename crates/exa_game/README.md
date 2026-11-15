@@ -1085,8 +1085,9 @@ bar's 500 ms hold. A click on the player's own body shows the HUD bars for
 item, turns with the chase camera's backward axis and fades out behind
 the open power tree (the tree's window fade); the HUD's power
 marker (`exa_ui::hud_status`) pulses while the player's caster knows powers
-and none is a new pick (the skill-ready alert stays off: no skill record
-is kept for the player); a double click on it (with Ctrl in combat mode) opens the
+and none is a new pick, and the skill-ready alert shows while the player's
+record (`CharacterData`) holds fewer than fifteen levels and no technique
+ahead of its level (`hud::pick_status`); a double click on it (with Ctrl in combat mode) opens the
 existing inventory screen; a double click on a corpse runs its roles'
 corpse scripts through `exa_script` (the corpse as actor 0, the player as
 actor 1) and sends their effects on, and the other windows have no form and
@@ -2620,3 +2621,16 @@ keep their own copies and container lists) and the card's wear byte
 `equip::apply_head_height` finds each armed grip's holder through `exa_physics::body::first_by_key`.
 
 Status-effect broadcast (`thaum::cast`): a caster's active list is passed event 2 once when the body starts to collapse or dies and the player's event 8 at an in-process level change (`PowerCaster::broadcast`, `broadcast_level_change`), before the tick's own walk; each power's control answers as in the walk.
+
+Character record rules on the live paths (roadmap B1, the character-data
+unit): the inventory's bind adds the worn items' bulk to the pack's used
+capacity (`body_inventory::bind_inventory_pack`); a hand's item dragged off
+the figure and dropped outside the player's pack takes the last held copy
+off the carried list and the hands' references past the copies left
+(`CharacterData::take_equipped` and `drop_surplus_refs` through
+`body_inventory::with_record_items`); a unique item sold from the arena also
+leaves the manager's and each member's outfit (`arsenal::Holder::outfit`);
+an item a searching character picks up is listed at the record's default
+cell `0x28, 4` (`npc_search::sync_possessions`); and a level-placed
+character's body takes its record's yellow and red shares
+(`save_live::restore_placed_pools`, called by the viewer's placed spawn).

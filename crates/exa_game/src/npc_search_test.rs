@@ -49,7 +49,8 @@ fn a_pack_reads_the_possessions() {
 }
 
 /// Writing back keeps what stayed (flags and places), drops what left and
-/// adds what came with no flags at the origin; a hand that changed takes
+/// adds what came at the record's default cell (the record's append writes
+/// `0x28, 4`) and worn ones with no flags; a hand that changed takes
 /// the new item with no flags, one that did not keeps its flags.
 #[test]
 fn a_changed_pack_writes_back() {
@@ -77,8 +78,8 @@ fn a_changed_pack_writes_back() {
             Carried {
                 id: 21,
                 flags: 0,
-                x: 0,
-                y: 0
+                x: 0x28,
+                y: 4
             },
         ]
     );

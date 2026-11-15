@@ -1175,6 +1175,7 @@ impl HubShop<'_, '_> {
             items: stash,
             loadouts: &mut career.player.loadouts,
             own: None,
+            outfit: Some(&mut career.player.outfit),
         }];
         for (employee, member) in staff
             .employees
@@ -1184,6 +1185,7 @@ impl HubShop<'_, '_> {
             holders.push(crate::arsenal::Holder {
                 items: &mut employee.kit,
                 loadouts: &mut member.loadouts,
+                outfit: Some(&mut member.outfit),
                 own: Some(crate::arsenal::OwnItems {
                     carried: &mut employee.carried,
                     hands: &mut employee.hands,

@@ -2048,17 +2048,23 @@ fn open_requested_screens(
                     info!("GUI: the inventory of character {owner}: {action:?}");
                 }
                 // The pack is the character's own carried list, as the
-                // original's bind loads it when the inventory opens.
+                // original's bind loads it when the inventory opens, and
+                // what the character wears counts against its capacity.
                 if action == ScreenAction::Opened
                     && let Some(body) = body
                     && let Ok((_, possessions)) = possessions.get(body)
                     && let Some(icons) = icons.as_deref_mut()
                 {
-                    body_inventory::bind_pack(
+                    let loaded = body_inventory::bind_inventory_pack(
                         &mut screens.pack,
                         possessions,
                         icons,
                         catalogue.as_deref(),
+                    );
+                    info!(
+                        "GUI: the inventory pack binds {loaded} entries, {} of its capacity used with {} worn items",
+                        screens.pack.used,
+                        possessions.worn.len()
                     );
                 }
                 action
@@ -3437,6 +3443,50 @@ mod tests {
                 .resource::<GameScreens>()
                 .is_open(GameScreen::Inventory)
         );
+    }
+
+    /// The inventory's bind counts what the player wears against the pack:
+    /// the used capacity is the carried items' bulk plus the worn items'
+    /// (the record's worn-weight rule), read from the live possessions.
+    #[test]
+    fn the_inventory_bind_charges_the_pack_with_the_worn_bulk() {
+        use exa_formats::objdb::{Item, LOCAL};
+        let item = |id: u32, bulk: u8| Item {
+            model: format!("item{id}"),
+            equip_lock: bulk,
+            ..Item::parse(id, &[]).expect("an empty item")
+        };
+        let mut catalogue = exa_items::catalogue::ItemCatalogue::default();
+        catalogue.set_level_items(&[item(1, 3), item(2, 5), item(3, 7)]);
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .insert_resource(catalogue)
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions {
+                carried: vec![exa_items::possession::Carried {
+                    id: LOCAL | 1,
+                    flags: 0,
+                    x: 0x28,
+                    y: 4,
+                }],
+                worn: vec![
+                    exa_formats::characters::ItemRef::new(LOCAL | 2, 0),
+                    exa_formats::characters::ItemRef::new(LOCAL | 3, 0),
+                ],
+                ..Default::default()
+            },
+        ));
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Inventory, true, true));
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        assert_eq!(screens.pack.entries.len(), 1);
+        assert_eq!(screens.pack.used, 3 + 5 + 7);
     }
 
     #[test]
