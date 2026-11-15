@@ -497,35 +497,20 @@ fn label_draw(out: &mut TreeDraw, view: &WheelDrawView, label: WheelLabel) {
     };
     let width = view.font.text_width(name.as_bytes()) as u32;
     let ([x, y, w, h], text) = label_place(view, label.sector, width);
-    let grow = view.unit as f32 * 2.0 * 4.0;
-    let (rx0, ry0, rx1, ry1) = (x, y, x + w, y + h);
-    let scale = crate::skin::rounded_scale(
+    let mut panel = crate::skin::SkinBatch::new();
+    crate::skin::rounded_fill(
+        &mut panel,
         crate::skin::GuiRect {
-            x0: rx0,
-            y0: ry0,
-            x1: rx1,
-            y1: ry1,
+            x0: x,
+            y0: y,
+            x1: x + w,
+            y1: y + h,
         },
-        grow,
+        view.unit,
+        2.0,
+        label.fade * 0.6,
     );
-    let mut panel = Batch::new(Program::Rounded, Texture::None);
-    panel.uniforms.par0 = scale;
-    let shade = [
-        0.0,
-        0.0,
-        0.0,
-        f32::from(crate::skin::rounded_byte_wrap(label.fade * 0.6 * 255.0)) / 255.0,
-    ];
-    let at = |px: f32, py: f32, u: f32, v: f32| {
-        TreeVertex::new(view.left + px, view.top + py, u, v).with_colour(shade)
-    };
-    panel.quad([
-        at(rx0 - grow, ry0 - grow, 0.0, 0.0),
-        at(rx0 - grow, ry1 + grow, 0.0, 1.0),
-        at(rx1 + grow, ry1 + grow, 1.0, 1.0),
-        at(rx1 + grow, ry0 - grow, 1.0, 0.0),
-    ]);
-    out.submit(panel);
+    crate::tree_draw::submit_rounded(out, &panel, view.left, view.top);
     let text_ink = ink(
         rgb(view.label_ink),
         byte(f32::from(view.label_ink[3]) * label.fade),

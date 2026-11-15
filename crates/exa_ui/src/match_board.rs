@@ -22,8 +22,9 @@
 //! assembly (`docs/UI.md`, Arena match board).
 
 use crate::creation_forms::{FormRecord, record};
+use crate::form::ClientRect;
 use crate::record_form::FormSpec;
-use crate::table_view;
+use crate::table_view::{self, TableColumn, TableEvent, TableRow, TableView};
 
 /// The rank labels in the original's table order. A fighter's rank is one
 /// of the first six; a record's rank index past Master reads the dash and
@@ -99,6 +100,17 @@ pub const NO_MORE_EVENTS: &str = "No more events entered.";
 /// The lineup table's height on a weapon event's tournament tab: the
 /// interface scale of four times thirty.
 pub const WEAPON_LINEUP_HEIGHT: i32 = 120;
+
+/// The drag kind the company and lineup tables (and Manage Company's
+/// roster) give their rows: a row dragged from one drops only on a table
+/// of the same kind.
+pub const FIGHTER_DRAG: i32 = 0xab01_ac00_u32 as i32;
+/// The pad word that activates a company-table row (the scroll stick
+/// pushed right): the fighter joins the lineup.
+pub const ROSTER_ACTIVATE: u32 = 0x2002;
+/// The pad word that activates a lineup row (the scroll stick pushed
+/// left): the fighter goes back to the company table.
+pub const LINEUP_ACTIVATE: u32 = 0x1002;
 
 /// The form's table slot. The letters name the board's child views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +240,41 @@ impl TableLayout {
         }
         let row = (y - u) / (table_view::ROW_UNITS * u);
         (row >= 1).then(|| row as usize - 1)
+    }
+
+    /// The table as a table view (`TGUITableView`) holding `rows`: its
+    /// client at the origin, its columns at the view's unit, realigned
+    /// (rows six units tall, the content and scroll step for the rows).
+    pub fn view(&self, rows: Vec<TableRow>) -> TableView {
+        let client = self.client();
+        let mut view = TableView::new(
+            self.unit,
+            ClientRect {
+                left: 0,
+                top: 0,
+                right: client.w,
+                bottom: client.h,
+            },
+        );
+        view.columns = self
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(at, column)| TableColumn {
+                title: column.title.as_bytes().to_vec(),
+                width: self.column_width(at),
+                ..TableColumn::default()
+            })
+            .collect();
+        view.rows = rows;
+        view.realign();
+        view
+    }
+
+    /// A form-client point in the view's client.
+    pub fn to_client(&self, point: (i32, i32)) -> (i32, i32) {
+        let client = self.client();
+        (point.0 - client.x, point.1 - client.y)
     }
 
     /// The column under a form-client `x`: the first whose right edge
@@ -2250,6 +2297,126 @@ impl Board {
         table
     }
 
+    /// A table as the board's table view holds it: one row per entry
+    /// (the fighter tables list their pool slots, the others the
+    /// constructor's rows) with its first cell's text, greyed rows marked
+    /// disabled (tiers above the rank, daily events with the free-lineup
+    /// bit), the 1-based selection, and on the fighter tables the drag kind
+    /// and the pad's activation word.
+    pub fn table_view(&self, slot: TableSlot) -> TableView {
+        let table = self.table_layout(slot);
+        let row = |text: String, disabled: bool| TableRow {
+            flags: if disabled {
+                table_view::ROW_DISABLED
+            } else {
+                0
+            },
+            cells: vec![text.into_bytes()],
+        };
+        let fighter = |pool: usize| {
+            let name = self
+                .fighters
+                .get(pool)
+                .map(|fighter| fighter.name.clone())
+                .unwrap_or_default();
+            row(name, false)
+        };
+        let rows: Vec<TableRow> = match slot {
+            TableSlot::Match => MATCH_TYPES
+                .iter()
+                .map(|t| row(t.to_string(), false))
+                .collect(),
+            TableSlot::Rank => RANKS.iter().map(|r| row(r.to_string(), false)).collect(),
+            TableSlot::Tier => self
+                .tier_rows()
+                .iter()
+                .map(|&(label, grey)| row(label.to_string(), grey))
+                .collect(),
+            TableSlot::Events => self
+                .events
+                .iter()
+                .map(|event| row(event.name.clone(), event.flags & FLAG_FREE_LINEUP != 0))
+                .collect(),
+            TableSlot::Winners => self
+                .tournament_events
+                .iter()
+                .map(|event| row(event.name.clone(), false))
+                .collect(),
+            TableSlot::Roster => self.available.iter().map(|&pool| fighter(pool)).collect(),
+            TableSlot::Lineup => self.team.iter().map(|&pool| fighter(pool)).collect(),
+            TableSlot::Season => (0..table.rows)
+                .map(|at| row(self.season_winner(at), false))
+                .collect(),
+        };
+        let mut view = table.view(rows);
+        let selected = match slot {
+            TableSlot::Match => Some(self.match_type),
+            TableSlot::Rank => Some(self.rank),
+            TableSlot::Tier => Some(self.tier),
+            TableSlot::Events => Some(self.event_row),
+            TableSlot::Winners => Some(self.winner_selection),
+            TableSlot::Roster => self.available_selection,
+            TableSlot::Lineup => self.team_selection,
+            TableSlot::Season => self.season_selection,
+        };
+        view.selected = selected.map_or(0, |at| at as i32 + 1);
+        match slot {
+            TableSlot::Roster => {
+                view.drag_kind = FIGHTER_DRAG;
+                view.activate_keys = ROSTER_ACTIVATE;
+            }
+            TableSlot::Lineup => {
+                view.drag_kind = FIGHTER_DRAG;
+                view.activate_keys = LINEUP_ACTIVATE;
+            }
+            _ => {}
+        }
+        view
+    }
+
+    /// A press at a form-client point on a visible table, as its table view
+    /// takes it ([`TableView::press`]): the row there is hovered, and a
+    /// press on a row that is not greyed and not already selected selects
+    /// it; the table's select callback then does the board's part (a list
+    /// refreshes its tab, a fighter table keeps the row). A press on a
+    /// greyed row, on the selected row or off the rows changes nothing.
+    pub fn press_table(&mut self, slot: TableSlot, point: (i32, i32)) -> BoardAction {
+        let table = self.table_layout(slot);
+        let (x, y) = table.to_client(point);
+        let mut view = self.table_view(slot);
+        view.hover_at(y);
+        let font = crate::gui_font::gui_level(crate::gui_font::level_for_unit(self.unit)).main;
+        let mut events = Vec::new();
+        view.press(x, table_view::pointer::PRESS, font, &mut events);
+        let mut action = BoardAction::None;
+        for event in events {
+            let TableEvent::Selected(row) = event else {
+                continue;
+            };
+            let row = (row - 1) as usize;
+            action = match slot {
+                TableSlot::Match => self.handle(BoardInput::SelectMatch(row)),
+                TableSlot::Rank => self.handle(BoardInput::SelectRank(row)),
+                TableSlot::Tier => self.handle(BoardInput::SelectTier(row)),
+                TableSlot::Events => self.handle(BoardInput::ClickEvent(row)),
+                TableSlot::Winners => self.handle(BoardInput::ClickWinner(row)),
+                TableSlot::Roster => {
+                    self.available_selection = Some(row);
+                    BoardAction::Changed
+                }
+                TableSlot::Lineup => {
+                    self.team_selection = Some(row);
+                    BoardAction::Changed
+                }
+                TableSlot::Season => {
+                    self.season_selection = Some(row);
+                    BoardAction::Changed
+                }
+            };
+        }
+        action
+    }
+
     /// The board's hit test: a tab, the primary button, or a visible table
     /// cell, found as the table view finds its row and column
     /// ([`TableLayout::row_at`], [`TableLayout::column_at`]).
@@ -2303,25 +2470,7 @@ impl Board {
             BoardHit::Close => self.handle(BoardInput::Close),
             BoardHit::EndDay => BoardAction::EndDay,
             BoardHit::Forfeit => BoardAction::Forfeit,
-            BoardHit::Table { slot, row, .. } => match slot {
-                TableSlot::Match => self.handle(BoardInput::SelectMatch(row)),
-                TableSlot::Rank => self.handle(BoardInput::SelectRank(row)),
-                TableSlot::Tier => self.handle(BoardInput::SelectTier(row)),
-                TableSlot::Events => self.handle(BoardInput::ClickEvent(row)),
-                TableSlot::Winners => self.handle(BoardInput::ClickWinner(row)),
-                TableSlot::Roster => {
-                    self.available_selection = Some(row);
-                    BoardAction::Changed
-                }
-                TableSlot::Lineup => {
-                    self.team_selection = Some(row);
-                    BoardAction::Changed
-                }
-                TableSlot::Season => {
-                    self.season_selection = Some(row);
-                    BoardAction::Changed
-                }
-            },
+            BoardHit::Table { slot, .. } => self.press_table(slot, point),
             BoardHit::Outside => BoardAction::None,
         }
     }
@@ -3143,6 +3292,35 @@ mod tests {
     /// A board on a weekday with the Duel at Inept selected.
     fn board() -> Board {
         Board::new(true, 3, fighters())
+    }
+
+    /// A press on a table goes through its table view: a row that is not
+    /// greyed is selected and the board refreshes; a greyed tier (above
+    /// the rank) and the row already selected take nothing.
+    #[test]
+    fn a_table_press_selects_through_the_table_view() {
+        let mut board = Board::new(false, 3, fighters());
+        let centre = |board: &Board, slot: TableSlot, row: usize| {
+            let cell = board.table_layout(slot).cell(row, 0);
+            (cell.x + 2, cell.y + cell.h / 2)
+        };
+        assert_eq!((board.rank, board.tier), (0, 0));
+        let at = centre(&board, TableSlot::Tier, 3);
+        assert_eq!(board.click(at), BoardAction::None);
+        assert_eq!(board.tier, 0);
+        let at = centre(&board, TableSlot::Rank, 3);
+        assert_eq!(board.click(at), BoardAction::Changed);
+        assert_eq!((board.rank, board.tier), (3, 3));
+        assert_eq!(board.click(at), BoardAction::None);
+        let at = centre(&board, TableSlot::Tier, 1);
+        assert_eq!(board.click(at), BoardAction::Changed);
+        assert_eq!(board.tier, 1);
+        let view = board.table_view(TableSlot::Tier);
+        assert_eq!(view.selected, 2);
+        assert_eq!(view.rows[4].flags, table_view::ROW_DISABLED);
+        let roster = board.table_view(TableSlot::Roster);
+        assert_eq!(roster.drag_kind, FIGHTER_DRAG);
+        assert_eq!(roster.rows.len(), board.available.len());
     }
 
     #[test]

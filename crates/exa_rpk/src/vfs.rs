@@ -238,9 +238,16 @@ impl GameData {
     /// Resolves a material library path from the project (`Resource\Common.rml`)
     /// to its bytes inside the resource pack.
     pub fn resource_file(&self, path: &str) -> Option<&[u8]> {
-        let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-        self.pack(PackKind::Resource)?.get(name)
+        self.pack(PackKind::Resource)?.get(resource_name(path))
     }
+}
+
+/// The entry a project path names in the resource pack: the part after
+/// its last backslash, or the whole path when it has none. Only the
+/// backslash cuts, as the original's file-name helper; a forward slash is
+/// part of the name.
+fn resource_name(path: &str) -> &str {
+    path.rsplit('\\').next().unwrap_or(path)
 }
 
 /// Finds the installation: an explicit path, then `EXANIMA_DIR` from the
@@ -256,4 +263,19 @@ pub fn locate_install(explicit: Option<&Path>) -> Option<PathBuf> {
     env.lines()
         .find_map(|l| l.trim().strip_prefix("EXANIMA_DIR="))
         .map(|v| PathBuf::from(v.trim().trim_matches('"')))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A project path is cut at its last backslash only.
+    #[test]
+    fn a_resource_name_is_the_part_after_the_last_backslash() {
+        assert_eq!(resource_name("Resource\\Common.rml"), "Common.rml");
+        assert_eq!(resource_name("a\\b\\c.rml"), "c.rml");
+        assert_eq!(resource_name("humanbase.rml"), "humanbase.rml");
+        assert_eq!(resource_name("Resource/Common.rml"), "Resource/Common.rml");
+        assert_eq!(resource_name("Resource\\"), "");
+    }
 }

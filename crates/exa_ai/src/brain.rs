@@ -1467,6 +1467,30 @@ pub fn ai_tick(
         // The AI tick's group alert decays one step every ten seconds.
         (npc.alert_count, npc.alert_until_ms) =
             crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
+        // Then the casting flag the combat state's cast chooser set: let go
+        // 500 ms after the cast began unless the body still casts. Outside
+        // the combat state a casting body's event hook is asked (event
+        // 0x10) whether the cast goes on [not modelled: Exarust's bodies
+        // carry no event hook, so the cast is never stopped here].
+        if let Some(duellist) = duellist.as_deref_mut() {
+            let in_combat_state = duellist.fighting();
+            let mind = &mut duellist.mind;
+            let hold = cast_timeout(
+                mind.casting,
+                *condition,
+                in_combat_state,
+                None,
+                mind.cast_start_ms,
+                now,
+            );
+            if mind.casting && !hold.held {
+                debug!(
+                    "{talking}: the cast begun at {} ms is let go",
+                    mind.cast_start_ms
+                );
+            }
+            mind.casting = hold.held;
+        }
         // After the alert decay, a knocked-out, collapsed or dead body only
         // refreshes its nav footprint: no morale, contacts, state or look
         // (the original's out-of-the-fight condition branch; the footprint
@@ -1576,18 +1600,59 @@ pub fn ai_tick(
         // 600 cm cell, and the nearby list weighs the cell's characters.
         if let Some(rooms) = rooms.as_deref_mut() {
             rooms.move_to(_entity, observer_cm, &mut npc.room);
-            // The player carries no room cell, so the gather scans every
-            // character of the brain's cell rather than the cell's linked
-            // list (the original links every character with a behaviour).
-            let around: Vec<(u64, f32, bool)> = places
-                .iter()
-                .filter(|(e, _, cell)| *e != _entity && *cell == Some(npc.room.cell))
-                .map(|(e, at, _)| (e.to_bits(), (*at - observer_cm).length_squared(), true))
-                .collect();
-            npc.nearby = contacts::nearby(&around)
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect();
+            let candidate = |(e, at, _): &(Entity, Vec3, Option<i32>)| {
+                (
+                    e.to_bits(),
+                    (*at - observer_cm).length_squared(),
+                    crate::rooms::in_sight(level.as_deref(), observer_cm, *at),
+                )
+            };
+            if level.is_some() {
+                // The gather walks the characters of the brain's level room,
+                // then those of the room behind each of its exits in turn
+                // (an exit leading to the same room as the exit before it is
+                // skipped), each through the nearby insert and its sight
+                // test (the room-to-room light reach). A brain in no room
+                // keeps its list. Exarust keeps no per-room character list,
+                // so each room's characters are the fighters standing in it,
+                // in the fighters' order.
+                if room >= 0 {
+                    let mut order = vec![room];
+                    let mut before = -1;
+                    for exit in &exits {
+                        let behind = exit.room - 1;
+                        if behind != before {
+                            before = behind;
+                            order.push(behind);
+                        }
+                    }
+                    let mut around: Vec<(u64, f32, bool)> = Vec::new();
+                    for r in order {
+                        around.extend(
+                            places
+                                .iter()
+                                .filter(|p| p.0 != _entity && level_room(p.1) == r)
+                                .map(candidate),
+                        );
+                    }
+                    npc.nearby = contacts::nearby(&around)
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect();
+                }
+            } else {
+                // [Exarust: a level without a room table gathers the
+                // characters of the brain's 600 cm cell.]
+                let around: Vec<(u64, f32, bool)> = places
+                    .iter()
+                    .filter(|(e, _, cell)| *e != _entity && *cell == Some(npc.room.cell))
+                    .map(candidate)
+                    .collect();
+                npc.nearby = contacts::nearby(&around)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect();
+            }
         }
         // The target pass wakes a body whose flags are exactly the dormant
         // flag: a sleeper, not a body already knocked out (`0x30`).
@@ -1876,12 +1941,16 @@ pub fn ai_tick(
                         body_look,
                         now,
                     );
+                    // The leave routine also puts back the idle state as
+                    // the current state, at its step 1.
+                    crate::lifecycle::restart_idle(brain);
                     info!(
                         "{talking}: the target pass leaves combat looking at {body_look:.3} rad; \
                          the wide pan waits until {} ms, the narrow pan until {} ms",
                         brain.alert.wide_at_ms, brain.alert.narrow_at_ms
                     );
                 } else {
+                    crate::lifecycle::restart_idle(&mut npc);
                     info!("{talking}: the target pass leaves combat");
                 }
             }
@@ -1957,14 +2026,20 @@ pub fn ai_tick(
                 }
             }
             let mut alert = npc.alert;
-            // [guess: out of combat the body keeps no foe, so the look pans.]
+            // The foe is the body's target (a flight's end and the combat
+            // state's leave clear it): its yaw from the body, else the look
+            // pans.
+            let foe_yaw = combatant
+                .target
+                .and_then(|t| targets.get(t).ok())
+                .map(|(_, g)| motion::yaw_of(g.translation() * 100.0 - observer_cm));
             let looked = motion::alert_look(
                 npc.morale.panic,
                 alert.marked,
                 &mut alert,
                 &mut npc.turn,
                 facing,
-                None,
+                foe_yaw,
                 encumbrance,
                 now,
                 &mut roll,
@@ -2063,65 +2138,54 @@ pub fn stamps_footprint(following_route: bool, moving: bool, speed_cm: f32) -> b
     !following_route || !moving || speed_cm < 1.0
 }
 
-/// The grabbed condition word the body reports while a grip holds it.
-pub const GRABBED_CONDITION: u32 = 0x20;
-/// How long a grab may hold the flag outside the grabbed condition (ms).
-pub const GRAB_TIMEOUT_MS: u32 = 500;
+/// How long a cast may keep the AI's casting flag while the body does not
+/// read casting (ms).
+pub const CAST_TIMEOUT_MS: u32 = 500;
 
-/// What the AI tick's grabbed-flag step does: whether the flag stays set
-/// and whether the grip is released.
+/// What the AI tick's casting-flag step does: whether the flag stays set
+/// and whether the cast is stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Grab {
+pub struct CastHold {
     /// The flag stays set after the step.
     pub held: bool,
-    /// The mechanic is told to release the grip (the body's own call, which
-    /// Exarust does not model).
-    pub released: bool,
+    /// The body's cast is stopped (the body's own call, which Exarust does
+    /// not model).
+    pub stopped: bool,
 }
 
-/// The AI tick's grabbed flag: a flag that is not set is untouched. While
-/// the body is in the grabbed condition the flag stays, unless the tick's
-/// state is not the combat state and the body's hook refuses event 0x10
-/// (an answer under zero): then the grip is released and the flag clears.
-/// Outside that condition the flag clears once 500 ms have passed since the
-/// grab began; at exactly 500 ms it still holds, and the sum is widened so
-/// it cannot wrap.
-pub fn grab_timeout(
+/// The AI tick's casting flag (the flag the combat state's cast chooser
+/// sets with the cast's start time), before the current state runs: a flag
+/// that is not set is untouched. While the body's condition reads casting
+/// the flag stays, unless the current state is not the combat state and
+/// the body's event hook answers event 0x10 under zero: then the cast is
+/// stopped and the flag clears. Otherwise the flag clears once 500 ms have
+/// passed since the cast began; at exactly 500 ms it still holds, and the
+/// sum is widened so it cannot wrap (a 64-bit compare).
+pub fn cast_timeout(
     held: bool,
-    condition: u32,
+    condition: Condition,
     in_combat_state: bool,
     hook_answer: Option<i32>,
-    grabbed_at_ms: u32,
+    cast_start_ms: u32,
     now_ms: u32,
-) -> Grab {
+) -> CastHold {
+    let kept = |held| CastHold {
+        held,
+        stopped: false,
+    };
     if !held {
-        return Grab {
-            held: false,
-            released: false,
-        };
+        return kept(false);
     }
-    if condition == GRABBED_CONDITION {
+    if condition == Condition::CASTING {
         if !in_combat_state && hook_answer.is_some_and(|answer| answer < 0) {
-            return Grab {
+            return CastHold {
                 held: false,
-                released: true,
+                stopped: true,
             };
         }
-        return Grab {
-            held: true,
-            released: false,
-        };
+        return kept(true);
     }
-    if u64::from(grabbed_at_ms) + u64::from(GRAB_TIMEOUT_MS) < u64::from(now_ms) {
-        return Grab {
-            held: false,
-            released: false,
-        };
-    }
-    Grab {
-        held: true,
-        released: false,
-    }
+    kept(u64::from(cast_start_ms) + u64::from(CAST_TIMEOUT_MS) >= u64::from(now_ms))
 }
 
 /// The original's route-following flag, as Exarust keeps it: a brain walks
@@ -2205,7 +2269,8 @@ pub fn flee_walk(
     mut npcs: Query<(
         Entity,
         &mut Npc,
-        &crate::Duellist,
+        &mut crate::Duellist,
+        &mut Combatant,
         &Condition,
         &GlobalTransform,
         &mut Transform,
@@ -2236,8 +2301,19 @@ pub fn flee_walk(
         *frame = frame.wrapping_add(1);
         turn.next_turn();
     }
-    for (entity, mut npc, duellist, condition, gt, mut t, parent, presence, anim, mut walking) in
-        &mut npcs
+    for (
+        entity,
+        mut npc,
+        mut duellist,
+        mut combatant,
+        condition,
+        gt,
+        mut t,
+        parent,
+        presence,
+        anim,
+        mut walking,
+    ) in &mut npcs
     {
         if !steer {
             if npc.flight.is_some()
@@ -2257,13 +2333,18 @@ pub fn flee_walk(
             && presence.is_none_or(|p| p.moves())
             && condition.0 & combatant::CONDITION_OUT == 0
         {
+            // The flee state marks the body in combat every tick, so the
+            // alert look runs once the flight is over.
+            npc.alert.marked = true;
             let flight = crate::flee::Flight {
                 now_ms: now,
                 fresh: npc.integration.fresh,
                 threat_room: npc.flee_threat_room,
                 room: npc.level_room,
                 home: npc.previous_room,
-                has_foe: npc.flee_focus.is_none(),
+                // The body's target (a character threat) and the object
+                // focus (any other threat): with neither the flight ends.
+                has_foe: combatant.target.is_some(),
                 has_focus: npc.flee_focus.is_some(),
                 route_goal: npc.flight,
                 position: gt.translation() * 100.0,
@@ -2277,6 +2358,7 @@ pub fn flee_walk(
                 npc.pass.level = level;
                 npc.integration.level = level;
                 npc.flee_focus = None;
+                combatant.target = None;
                 npc.flee_calm_until_ms = calm_until_ms;
                 info!(
                     "{entity}: the flight ends in room {} (threat room {}, home {}, fresh {}): \
@@ -2346,7 +2428,7 @@ pub fn flee_walk(
             || near_goal
             || (nav.is_some() && npc.flight_walk.route.is_empty());
         let my_turn = nav.is_none() || (replan && turn.turn(entity.to_bits(), *frame));
-        if replan && my_turn && level_room >= 0 {
+        if replan && my_turn {
             let Some(level) = level.as_deref() else {
                 continue;
             };
@@ -2416,6 +2498,34 @@ pub fn flee_walk(
                 npc.flight_walk.route.len()
             );
             npc.flight = way.map(|way| way.goal);
+            if way.is_none() {
+                // Cornered (the way-out goal callback found no exit, or the
+                // brain stands in no room): the state becomes the combat
+                // state at level 3 with the courage doubled. The combat
+                // state fights the body's target; with none it has nothing
+                // to fight [inf: its tick then leaves combat], so only a
+                // character threat engages the duellist.
+                let mut level = npc.pass.level;
+                let mut morale = contacts::Morale {
+                    courage: npc.morale.courage,
+                    ..contacts::Morale::default()
+                };
+                crate::flee::cornered(&mut level, &mut morale);
+                npc.morale.courage = morale.courage;
+                npc.pass.level = level;
+                npc.integration.level = level;
+                npc.flight_walk.route.clear();
+                if let Some(foe) = combatant.target {
+                    duellist.target = foe;
+                    duellist.engage();
+                    combatant.in_combat = true;
+                }
+                info!(
+                    "{entity}: the flight is cornered in room {level_room}: combat at level \
+                     {level}, courage {:.3}",
+                    npc.morale.courage
+                );
+            }
         }
         match npc.flight {
             Some(goal) => {
@@ -3474,6 +3584,80 @@ mod tests {
         assert_eq!(app.world().get::<Npc>(npc).unwrap().pass.level, 0);
     }
 
+    /// A calm target pass while the duellist fights leaves combat through
+    /// the leave routine, which also puts back the idle state at its first
+    /// step.
+    #[test]
+    fn the_target_pass_leave_restores_the_idle_state() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .insert_resource(BodyTicks(1))
+            .add_message::<exa_combat::AttackAskedHook>()
+            .add_systems(Update, (ai_tick, crate::duellist).chain());
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.contacts.push(ContactRecord {
+            id: player.to_bits(),
+            sighting: 1.0,
+            seen: 1.0,
+            hostility: 5.0,
+            ..ContactRecord::default()
+        });
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+            .id();
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                Mind::new(0.0),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Animator::new("Default", "Idle"),
+                Fighter::default(),
+                Condition::NORMAL,
+                ChildOf(root),
+            ))
+            .id();
+        let tick = |app: &mut App| {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.update();
+        };
+        tick(&mut app);
+        tick(&mut app);
+        assert!(app.world().get::<crate::Duellist>(npc).unwrap().fighting());
+        {
+            let mut brain = app.world_mut().get_mut::<Npc>(npc).unwrap();
+            for c in &mut brain.contacts {
+                c.hostility = 0.0;
+                c.concern = 0.0;
+            }
+            brain.routine.phase = crate::idle::Phase::WalkHome;
+        }
+        let mut left = false;
+        for _ in 0..40 {
+            tick(&mut app);
+            let brain = app.world().get::<Npc>(npc).unwrap();
+            if brain.pass.leave {
+                left = true;
+                assert_eq!(brain.routine.phase, crate::idle::Phase::Wait);
+                break;
+            }
+        }
+        assert!(left, "a calm pass leaves combat");
+        assert!(!app.world().get::<crate::Duellist>(npc).unwrap().engaged);
+    }
+
     /// A role that makes the player hostile engages through the brain's
     /// target pass; a neutral one never engages the player.
     #[test]
@@ -4188,6 +4372,88 @@ mod tests {
         );
     }
 
+    /// A flight with no way out (the brain stands in no room) is cornered:
+    /// it goes back to combat at level 3 with its courage doubled, fighting
+    /// the body's target; a flight with neither a body target nor an object
+    /// focus ends at level 0.
+    #[test]
+    fn a_cornered_flight_fights_and_one_without_a_threat_ends() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        grid.edges[7] = CELL_OPEN | 7 | 7 << 4 | 7 << 8 | 7 << 12;
+        let rooms = Rooms::flood(&grid);
+        let mut app = App::new();
+        app.add_systems(Update, flee_walk);
+        app.insert_resource(LevelRooms::new(Arc::new(rooms)));
+        let far = Vec3::new(90.0, 0.0, 90.0);
+        assert_eq!(
+            crate::rooms::level_room(&app.world().resource::<LevelRooms>().rooms, far * 100.0),
+            -1
+        );
+        let player = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(far + Vec3::X))
+            .id();
+        let spawn = |app: &mut App, foe: Option<Entity>| {
+            let root = app
+                .world_mut()
+                .spawn((
+                    CharacterBody::default(),
+                    GlobalTransform::from_translation(far),
+                ))
+                .id();
+            let mut brain = Npc::new([0.0; 4]);
+            brain.pass.level = 4;
+            brain.integration.level = 4;
+            brain.morale.courage = 0.4;
+            let combatant = Combatant {
+                target: foe,
+                ..Combatant::default()
+            };
+            app.world_mut()
+                .spawn((
+                    brain,
+                    crate::Duellist::new(player),
+                    combatant,
+                    Condition::NORMAL,
+                    GlobalTransform::from_translation(far),
+                    Transform::default(),
+                    ChildOf(root),
+                ))
+                .id()
+        };
+        let cornered = spawn(&mut app, Some(player));
+        let calm = spawn(&mut app, None);
+        app.update();
+        let npc = app.world().get::<Npc>(cornered).unwrap();
+        assert_eq!((npc.pass.level, npc.integration.level), (3, 3));
+        assert!((npc.morale.courage - 0.8).abs() < 1e-6);
+        assert!(npc.flight.is_none());
+        assert!(
+            app.world()
+                .get::<crate::Duellist>(cornered)
+                .unwrap()
+                .engaged
+        );
+        assert!(app.world().get::<Combatant>(cornered).unwrap().in_combat);
+        let npc = app.world().get::<Npc>(calm).unwrap();
+        assert_eq!(npc.pass.level, 0, "no foe and no focus: the flight ends");
+        assert!(npc.flee_calm_until_ms >= 10_000);
+        assert!(!app.world().get::<crate::Duellist>(calm).unwrap().engaged);
+    }
+
     /// On a level with a navigation grid the flight routes its way out on
     /// its planning turn (the first try records the wait, the next frame
     /// plans), follows the route since its ends lie more than 150 cm apart,
@@ -4562,6 +4828,87 @@ mod tests {
         );
     }
 
+    /// On a level with a room table the gather walks the brain's room and
+    /// the rooms behind its exits, and keeps only the characters its sight
+    /// test (the light reach through an open door) passes.
+    #[test]
+    fn the_nearby_gather_walks_the_exits_rooms_through_the_sight_test() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let level = LevelRooms::new(Arc::new(Rooms::flood(&grid)));
+        let brain_at = Vec3::new(-4.0, 0.0, 3.0);
+        let door_side = Vec3::new(1.0, 0.0, 3.0);
+        let far_side = Vec3::new(9.0, 0.0, 3.0);
+        let cm = |v: Vec3| v * 100.0;
+        assert_eq!(crate::rooms::level_room(&level.rooms, cm(brain_at)), 0);
+        assert_eq!(crate::rooms::level_room(&level.rooms, cm(door_side)), 1);
+        assert_eq!(crate::rooms::level_room(&level.rooms, cm(far_side)), 1);
+        assert!(crate::rooms::in_sight(
+            Some(&level),
+            cm(brain_at),
+            cm(door_side)
+        ));
+        assert!(!crate::rooms::in_sight(
+            Some(&level),
+            cm(brain_at),
+            cm(far_side)
+        ));
+
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        app.insert_resource(level);
+        app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
+            width: 32,
+            height: 32,
+        }));
+        app.world_mut().spawn((
+            GlobalTransform::from_translation(Vec3::new(-90.0, 0.0, 3.0)),
+            Fighter::default(),
+            RatedPlayer,
+        ));
+        let person = |app: &mut App, at: Vec3| {
+            app.world_mut()
+                .spawn((GlobalTransform::from_translation(at), Fighter::default()))
+                .id()
+        };
+        let seen = person(&mut app, door_side);
+        let unseen = person(&mut app, far_side);
+        let npc = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                GlobalTransform::from_translation(brain_at),
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.update();
+        let nearby = &app.world().get::<Npc>(npc).unwrap().nearby;
+        assert!(nearby.contains(&seen.to_bits()), "{nearby:?}");
+        assert!(!nearby.contains(&unseen.to_bits()), "{nearby:?}");
+    }
+
     /// An idle brain turns its model toward its look yaw: the out-of-combat
     /// turn eases the yaw from the body's facing by 0.09 of the gap a tick
     /// (no encumbrance), while it is not fighting.
@@ -4805,32 +5152,117 @@ mod tests {
     }
 
     #[test]
-    fn the_grabbed_flag_holds_the_condition_and_times_out() {
+    fn the_casting_flag_holds_the_condition_and_times_out() {
+        let casting = Condition::CASTING;
+        let other = Condition::NORMAL;
         // A flag that is not set changes nothing.
         assert_eq!(
-            grab_timeout(false, 0, false, Some(-1), 0, 10_000),
-            Grab {
+            cast_timeout(false, other, false, Some(-1), 0, 10_000),
+            CastHold {
                 held: false,
-                released: false
+                stopped: false
             }
         );
-        // In the grabbed condition the hook's refusal releases the grip; a
+        // While the body casts the hook's refusal stops the cast; a
         // non-negative answer, no hook, or the combat state keeps it.
         assert_eq!(
-            grab_timeout(true, GRABBED_CONDITION, false, Some(-1), 0, 0),
-            Grab {
+            cast_timeout(true, casting, false, Some(-1), 0, 0),
+            CastHold {
                 held: false,
-                released: true
+                stopped: true
             }
         );
-        assert!(grab_timeout(true, GRABBED_CONDITION, false, Some(0), 0, 0).held);
-        assert!(grab_timeout(true, GRABBED_CONDITION, false, None, 0, 0).held);
-        assert!(grab_timeout(true, GRABBED_CONDITION, true, Some(-1), 0, 0).held);
-        // Outside it the flag clears strictly after 500 ms.
-        assert!(grab_timeout(true, 1, false, None, 1_000, 1_500).held);
-        assert!(!grab_timeout(true, 1, false, None, 1_000, 1_501).held);
-        // The sum is widened: a grab near the top does not wrap away.
-        assert!(grab_timeout(true, 1, false, None, u32::MAX, 100).held);
+        assert!(cast_timeout(true, casting, false, Some(0), 0, 0).held);
+        assert!(cast_timeout(true, casting, false, None, 0, 0).held);
+        assert!(cast_timeout(true, casting, true, Some(-1), 0, 0).held);
+        assert!(cast_timeout(true, casting, true, None, 0, 10_000).held);
+        // Otherwise the flag clears strictly after 500 ms.
+        assert!(cast_timeout(true, other, false, None, 1_000, 1_500).held);
+        assert!(!cast_timeout(true, other, false, None, 1_000, 1_501).held);
+        // The sum is widened: a cast near the top does not wrap away.
+        assert!(cast_timeout(true, other, false, None, u32::MAX, 100).held);
+    }
+
+    /// The AI tick lets an out-of-combat brain's cast go once 500 ms have
+    /// passed while its body does not read casting; a casting body keeps it.
+    #[test]
+    fn the_ai_tick_lets_a_stale_cast_go() {
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(50))
+            .add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((GlobalTransform::IDENTITY, Fighter::default(), RatedPlayer))
+            .id();
+        let spawn = |app: &mut App, condition: Condition| {
+            let mut duellist = crate::Duellist::new(player);
+            duellist.mind.casting = true;
+            duellist.mind.cast_start_ms = 0;
+            app.world_mut()
+                .spawn((
+                    Npc::new([0.0; 4]),
+                    Combatant::default(),
+                    duellist,
+                    Mind::new(0.0),
+                    GlobalTransform::IDENTITY,
+                    Fighter::default(),
+                    condition,
+                ))
+                .id()
+        };
+        let idle = spawn(&mut app, Condition::NORMAL);
+        let casting = spawn(&mut app, Condition::CASTING);
+        assert!(app.world().resource::<BodyTicks>().millis() > 500);
+        app.update();
+        let cast = |app: &App, e| app.world().get::<crate::Duellist>(e).unwrap().mind.casting;
+        assert!(!cast(&app, idle), "the cast is let go");
+        assert!(cast(&app, casting), "a casting body keeps it");
+    }
+
+    /// Out of combat, a marked body whose panic is still up looks at the
+    /// body's target when it has one (past 45 degrees the look takes the
+    /// foe's yaw) instead of panning.
+    #[test]
+    fn the_alert_look_turns_to_the_bodys_target() {
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(10))
+            .add_systems(Update, ai_tick);
+        let foe = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(5.0, 0.0, 0.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.alert.marked = true;
+        brain.morale.panic = 0.5;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant {
+                    target: Some(foe),
+                    ..Combatant::default()
+                },
+                crate::Duellist::new(foe),
+                Mind::new(0.0),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.update();
+        let brain = app.world().get::<Npc>(npc).unwrap();
+        let toward = motion::yaw_of(Vec3::new(500.0, 0.0, 0.0));
+        assert!(
+            (brain.turn.look - toward).abs() < 1e-6,
+            "{}",
+            brain.turn.look
+        );
+        assert!(brain.alert.marked);
     }
 
     #[test]

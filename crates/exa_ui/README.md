@@ -436,7 +436,18 @@ default instance's (alphas 224 and 125), which a form made without an owner
 keeps, and `record_form::RecordForm::client_top` its titled client top;
 and
 `line_control_inks` the skin's disabled, idle and on inks (alpha 80, 104
-and 128 times the fade).
+and 128 times the fade). The live line-skinned forms draw their controls
+through these ports: a separator as the four-ink line loop (`edge_frame`),
+a combo box's back as the rail (`draw_line_rail`, its thumb from one to
+three units short of the box's right edge, `LineRail::push`), a framed text
+field's underline as the capped span (`CappedSpan::push`), an image button
+as the centred line icon alone (the skin's frame and box slots are empty),
+and a label's front by the label class's choice of the skin's label draw
+(the block draw fitted to the record, the caller's-ink draw, or the plain
+draw whose hovered arm glows, `glow_text`). The domain wheel's label and the
+power tree's shaded boxes are the skin's rounded fills, handed to the tree's
+draw list by `tree_draw::submit_rounded`; a dim tree link takes one fade
+byte per spline row.
 Its controller-mode switch feeds the saved bindings' controller flag and the
 gamepad reader in `exa_game::gamepad`; Enable Rumble still has no visible
 effect because the original's vibration call is a stub. Steam's binding
@@ -756,6 +767,13 @@ GUI unit and `page_text_box` the page's read-only box, which
 `exa_game::help_live` drives live.
 
 ## Table, skin and blend details
+
+The arena's tables run through `table_view`: `match_board::Board::table_view`
+builds each board table's view (rows, greyed rows, selection, the fighter
+tables' drag kind and pad words), `Board::click` presses through
+`TableView::press`, and `TableView::paint_selection` and
+`TableView::paint_drag_label` draw the selected row's band and a dragged
+row's label through the skin's faded rectangle and selection band.
 
 `table_view` now keeps the column choice list that a press opens (its
 entries, width, anchor and picked entry) and routes every key that

@@ -260,6 +260,30 @@ impl TreeDraw {
     }
 }
 
+/// Hands a skin batch's rounded-program quads ([`crate::skin::rounded_fill`],
+/// [`crate::skin::rounded_fill_fixed`]) to the tree's draw list, moved by
+/// `(dx, dy)`: one rounded batch per primitive with its `Scale` uniform,
+/// its vertices' inks as fractions of 255.
+pub fn submit_rounded(out: &mut TreeDraw, skin: &crate::skin::SkinBatch, dx: f32, dy: f32) {
+    for primitive in &skin.primitives {
+        let Some(scale) = primitive.rounded_scale else {
+            continue;
+        };
+        let vertices = &skin.vertices[primitive.first..primitive.first + primitive.count];
+        let mut batch = Batch::new(Program::Rounded, Texture::None);
+        batch.uniforms.par0 = scale;
+        let (quads, _) = vertices.as_chunks::<4>();
+        for quad in quads {
+            let at = |v: &crate::skin::GuiVertex| {
+                TreeVertex::new(dx + v.x, dy + v.y, v.u, v.v)
+                    .with_colour(v.ink.map(|byte| f32::from(byte) / 255.0))
+            };
+            batch.quad([at(&quad[0]), at(&quad[1]), at(&quad[2]), at(&quad[3])]);
+        }
+        out.submit(batch);
+    }
+}
+
 /// The tree's quick-rising ease on a share `x`: `1 + 0.111·x − 1/(1 + 8x)`,
 /// the reciprocal in single precision and the rest in double.
 pub fn ease(x: f32) -> f32 {
@@ -609,8 +633,11 @@ pub fn ring(
 /// The texture coordinates are the row (0 upward) and the side (1 or 0);
 /// the second coordinate set carries the row's join, the cross-direction
 /// miter term: `(offset·(point − previous) − offset·(next − point)) ·
-/// −0.09 / width²`. A dim link's alpha byte runs from zero at its source to
-/// `alpha · 0.5 · index/steps`, as the spline renderer darkens it.
+/// −0.09 / width²` (the tree adds every point in the renderer's mode 0, so
+/// no join is zeroed). A dim link's alpha byte is `alpha · (index/steps) ·
+/// 0.5`, rounded half to even, with `index` the row's first vertex (two per
+/// row) and `steps` the segment count the strip began with; the renderer
+/// works it out once per row and writes it to both vertices.
 #[allow(clippy::too_many_arguments)]
 pub fn link_ribbon(
     batch: &mut Batch,
@@ -653,35 +680,29 @@ pub fn link_ribbon(
         let incoming = [point[0] - previous[0], point[1] - previous[1]];
         let outgoing = [next[0] - point[0], next[1] - point[1]];
         let join = ((dot(offset, incoming) - dot(offset, outgoing)) * -0.09 / width_sq) as f32;
-        let row_alpha = |vertex: usize| {
-            if dim {
-                let share = if steps == 0 {
-                    0.0
-                } else {
-                    vertex as f64 / steps as f64
-                };
-                cvt_i32_f64(f64::from(alpha) * share * 0.5) as u8
+        let row_alpha = if dim {
+            let share = if steps == 0 {
+                0.0
             } else {
-                alpha
-            }
+                (row * 2) as f64 / steps as f64
+            };
+            cvt_i32_f64(f64::from(alpha) * (share * 0.5)) as u8
+        } else {
+            alpha
         };
-        let vertex = |at: [f32; 2], side: f32, index: usize| {
+        let vertex = |at: [f32; 2], side: f32| {
             TreeVertex::new(at[0], at[1], row as f32, side)
                 .with_uv2(join, 0.0)
                 .with_colour([
                     colour[0],
                     colour[1],
                     colour[2],
-                    f32::from(row_alpha(index)) / 255.0,
+                    f32::from(row_alpha) / 255.0,
                 ])
         };
         rows.push([
-            vertex([point[0] - offset[0], point[1] - offset[1]], 1.0, row * 2),
-            vertex(
-                [point[0] + offset[0], point[1] + offset[1]],
-                0.0,
-                row * 2 + 1,
-            ),
+            vertex([point[0] - offset[0], point[1] - offset[1]], 1.0),
+            vertex([point[0] + offset[0], point[1] + offset[1]], 0.0),
         ]);
     }
     // The index buffer pairs every row: (2r, 2r+1, 2r+3) and
@@ -1760,21 +1781,19 @@ pub fn skin_box(
     style: i32,
     alpha: u8,
 ) {
-    let grow = (i64::from(unit) * i64::from(style) * 4) as f32;
     let x0 = x as f32;
     let y0 = y as f32;
     let x1 = (i64::from(x) + i64::from(width)) as f32;
     let y1 = (i64::from(y) + i64::from(height)) as f32;
-    let mut batch = Batch::new(Program::Rounded, Texture::None);
-    batch.uniforms.par0 = crate::skin::rounded_scale(crate::skin::GuiRect { x0, y0, x1, y1 }, grow);
-    let ink = [0.0, 0.0, 0.0, f32::from(alpha) / 255.0];
-    batch.quad([
-        TreeVertex::new(x0 - grow, y0 - grow, 0.0, 0.0).with_colour(ink),
-        TreeVertex::new(x0 - grow, y1 + grow, 0.0, 1.0).with_colour(ink),
-        TreeVertex::new(x1 + grow, y1 + grow, 1.0, 1.0).with_colour(ink),
-        TreeVertex::new(x1 + grow, y0 - grow, 1.0, 0.0).with_colour(ink),
-    ]);
-    out.submit(batch);
+    let mut batch = crate::skin::SkinBatch::new();
+    crate::skin::rounded_fill_fixed(
+        &mut batch,
+        crate::skin::GuiRect { x0, y0, x1, y1 },
+        unit,
+        style,
+        alpha,
+    );
+    submit_rounded(out, &batch, 0.0, 0.0);
 }
 
 /// The skin's text ink the tree draws its texts with: the seventh label
@@ -2527,6 +2546,30 @@ mod tests {
         assert_eq!(batch.vertices[1].v, 0.0);
         // The second row sits at x 100 in the cleared fan's fourth slot.
         assert_eq!(batch.vertices[4].x, 100.0);
+    }
+
+    #[test]
+    fn a_dim_link_fades_both_vertices_of_a_row_alike() {
+        let mut batch = Batch::new(Program::Link, Texture::None);
+        link_ribbon(
+            &mut batch,
+            &[[0.0, 0.0], [100.0, 0.0], [200.0, 0.0], [300.0, 0.0]],
+            [-10.0, 0.0],
+            [310.0, 0.0],
+            2.0,
+            3,
+            [1.0, 1.0, 1.0, 200.0 / 255.0],
+            true,
+        );
+        // Row r's alpha byte is 200 · (2r / 3) · 0.5, rounded to even, on
+        // both of its vertices: 0, 67 and 133 for the three quads' first
+        // rows (vertices 0, 1 and 4 of each quad's six).
+        let alpha = |i: usize| (batch.vertices[i].colour[3] * 255.0).round() as u8;
+        for (quad, want) in [0u8, 67, 133].into_iter().enumerate() {
+            let at = quad * 6;
+            assert_eq!(alpha(at), want);
+            assert_eq!(alpha(at + 1), want);
+        }
     }
 
     #[test]
