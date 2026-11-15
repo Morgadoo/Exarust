@@ -1465,3 +1465,34 @@ fn shipped_sections_read_their_entry_databases() {
     assert_eq!(sections, 13);
     assert!(entries > 480, "{entries}");
 }
+
+/// A save's placement carries the running powers after the motion state:
+/// a count, then each power's id, size and bytes (Sense Minds persistent
+/// with none, Loyalty with its target character id).
+#[test]
+fn a_placement_reads_its_running_powers() {
+    let mut powers = u32s(&[2, 0x2_0101, 0, 0x2_010A, 4, 0x4000_0003]);
+    let mut b = u32s(&[7]);
+    b.extend(f32s(&[100.0, 200.0, 300.0, 0.5]));
+    b.extend(u32s(&[0]));
+    b.extend(u32s(&[MOTION, 12, 3]));
+    b.extend(f32s(&[1.5]));
+    b.extend(u32s(&[0, RUNNING_POWERS, powers.len() as u32]));
+    b.extend(powers.clone());
+    let p = read_placement(&b).unwrap();
+    assert_eq!(
+        p.powers,
+        vec![
+            RunningPower::bare(0x2_0101),
+            RunningPower::with_target(0x2_010A, 0x4000_0003)
+        ]
+    );
+    assert_eq!(p.powers[1].target(), Some(0x4000_0003));
+    // The writer gives the chunk's body back.
+    assert_eq!(write_running_powers(&p.powers).unwrap(), powers);
+    // A count below one holds nothing; an entry past the chunk's end is an
+    // error, not a panic.
+    assert_eq!(read_running_powers(&u32s(&[0xFFFF_FFFF])).unwrap(), vec![]);
+    powers.truncate(powers.len() - 2);
+    assert!(read_running_powers(&powers).is_err());
+}

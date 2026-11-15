@@ -1611,8 +1611,10 @@ without keys stores −1 and no keys).
 The save game's own placement writer (`write_character_state`) differs:
 a dead body stores `CAC0E100`, every part's matrix then the two held
 items' (identity for an empty hand); a save adds the AI home, in mode 1 the
-flat pose and the motion state, and `CAC0EC00` with what the attached
-objects wrote and their count, taken out again when none wrote.
+flat pose and the motion state, and `CAC0EC00` with the body's running
+powers: a count, then each power's own record (taken out again when none
+wrote; see [SAVES.md](SAVES.md#running-powers)). The level export's
+character walk writes no running powers.
 
 **Converting a loaded level back.** `rfc_level` builds the exporter's
 scene from a section the reader decoded: `level_scene` writes every node,

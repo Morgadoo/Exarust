@@ -2147,6 +2147,7 @@ fn spawn_players(
             pose: exa_formats::characters::SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
             fall: true,
         })
         .collect();
@@ -2207,6 +2208,7 @@ fn spawn_players(
                     pose: exa_formats::characters::SavedPose::None,
                     motion: None,
                     ai_home: None,
+                    powers: Vec::new(),
                     fall: false,
                 }
             })
@@ -2382,6 +2384,7 @@ fn story_companion(
         pose: exa_formats::characters::SavedPose::None,
         motion: None,
         ai_home: None,
+        powers: Vec::new(),
         fall: false,
     })
 }
@@ -4311,6 +4314,12 @@ fn spawn_placed_characters(
                 ),
             ));
         }
+        if !c.dead && !c.powers.is_empty() {
+            // A save's running powers, rebuilt once the body has its mind.
+            commands
+                .entity(model)
+                .insert(exa_game::power_save::SavedPowers(c.powers.clone()));
+        }
         if !c.dead && (c.motion.is_some() || c.ai_home.is_some()) {
             // A save's motion state and AI home, put back once the body is
             // in.
@@ -4436,6 +4445,7 @@ fn spawn_spirit_bodies(
             pose: exa_formats::characters::SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
             fall: false,
         };
         let placing = Placing {
@@ -4558,6 +4568,7 @@ fn spawn_summoned_demons(
             pose: exa_formats::characters::SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
             fall: false,
         };
         let placing = Placing {

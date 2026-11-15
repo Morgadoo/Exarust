@@ -15,9 +15,10 @@
 //!
 //! The world, renderer, audio and GUI calls these rules drive are the
 //! host's; nothing here touches Bevy or the archive. Exarust's live level
-//! loader (`exa_world`) keeps its own scene model, so no running game calls
-//! these yet: they are the tested rules the save path will call, pinned to
-//! the original's numbers and branch order.
+//! loader (`exa_world`) keeps its own scene model, so the running game calls
+//! only the GUI reset (through `crate::load_reset`); the rest are the tested
+//! rules the save path will call, pinned to the original's numbers and
+//! branch order.
 //!
 //! Evidence: the load, import, scene-creation and spawn routines of the
 //! save unit, read from the instructions (`docs/formats/SAVES.md`, Loading a
@@ -531,33 +532,37 @@ pub fn menu_scene_load() -> MenuSceneLoad {
     }
 }
 
-/// The GUI state a load resets. The original calls four reset routines and
-/// clears a global word; the routines' internals belong to the GUI units.
-/// What each resets is inferred from the units they belong to [guess]; the
-/// order and the cleared word are exact.
+/// The GUI state a load resets, in the original's order: the death fade
+/// (a paused game gets its time back), the sweep that closes every game
+/// screen and the power tree, the crystal drain's source list, the item
+/// icon cache, then a game-main flag byte cleared. The live runner is
+/// [`crate::load_reset`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameGuiReset {
-    /// The game GUI's task list and the form it has open.
-    pub task_list: bool,
-    /// The tips/hover state; the original passes argument 1 (the selector
-    /// is not traced) [guess].
-    pub hints: bool,
-    /// The shared game functions' per-load state.
-    pub game_functions: bool,
-    /// The item GUI's panels, cursor and hover.
-    pub item_gui: bool,
-    /// The global word the original zeroes last.
+    /// The death fade's reset ([`crate::fall::reset_death_fade`]).
+    pub death_fade: bool,
+    /// The game screens' sweep, every screen
+    /// ([`crate::gui_screens::ScreenSweep::Every`]); the original passes
+    /// argument 1.
+    pub screens: bool,
+    /// The crystal drain's sources emptied
+    /// ([`crate::crystal_drain::CrystalDrain`]).
+    pub crystal_sources: bool,
+    /// The item icon cache and its atlas emptied
+    /// ([`crate::item_panel_draw::PanelIcons::clear`]).
+    pub icons: bool,
+    /// The game-main flag byte the original zeroes last.
     pub word: u32,
 }
 
-/// The GUI reset every level load, practice/arena preparation and the menu
-/// scene runs after the item GUI's own reset.
+/// The GUI reset every level load, door transition, arena or practice
+/// preparation and the menu scene runs.
 pub fn reset_game_gui() -> GameGuiReset {
     GameGuiReset {
-        task_list: true,
-        hints: true,
-        game_functions: true,
-        item_gui: true,
+        death_fade: true,
+        screens: true,
+        crystal_sources: true,
+        icons: true,
         word: 0,
     }
 }
@@ -998,7 +1003,7 @@ mod tests {
     #[test]
     fn the_gui_reset_clears_the_word_and_runs_four_resets() {
         let reset = reset_game_gui();
-        assert!(reset.task_list && reset.hints && reset.game_functions && reset.item_gui);
+        assert!(reset.death_fade && reset.screens && reset.crystal_sources && reset.icons);
         assert_eq!(reset.word, 0);
     }
 

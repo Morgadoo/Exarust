@@ -927,6 +927,8 @@ pub fn export_characters(level: &ReadScene) -> Result<Vec<SceneNode>> {
                 pose,
                 parts,
                 ai,
+                // No running powers: the level walk writes none
+                // (`rfc_write`'s character walk, as the original's).
                 ..Default::default()
             }),
             ..Default::default()
@@ -1927,6 +1929,16 @@ mod tests {
                     home: [650.0, 20.0, 120.0],
                     home_heading: 0.75,
                 }),
+                // A running Shell's record, which the level walk does not
+                // write (only the player's placement writes running powers).
+                attachments: vec![
+                    Some(
+                        crate::characters::RunningPower::bare(0x2_0208)
+                            .bytes()
+                            .unwrap(),
+                    ),
+                    None,
+                ],
                 ..Default::default()
             }),
             ..Default::default()
@@ -2007,6 +2019,12 @@ mod tests {
         assert_eq!(b.id, 0x4000_0004);
         assert_eq!(b.motion.unwrap().state, 6);
         assert_eq!(b.ai_home.unwrap().heading, 0.75);
+        // The level walk writes no running powers, the first export or the
+        // save (the original's character walk has no running-powers chunk;
+        // only the player's own placement writes one).
+        assert!(chars.placements[1].powers.is_empty());
+        assert!(a.powers.is_empty());
+        assert!(b.powers.is_empty());
     }
 
     #[test]

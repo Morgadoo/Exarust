@@ -185,6 +185,10 @@ pub enum SaveStep {
     NewSlot,
     /// The arena match quit's forfeit save: the player data alone.
     ForfeitSave,
+    /// A save whose save is then copied over the checkpoint whether or not
+    /// one exists (the adapter journey's save at its end): the save keeps
+    /// the writer's disable check, the copy does not.
+    SaveAndCheckpoint,
 }
 
 /// The engine clock (game milliseconds) the level-6 exit's checkpoint
@@ -384,6 +388,7 @@ impl Plugin for SaveLivePlugin {
         app.add_message::<SaveToNewSlot>()
             .add_message::<StorySlotLoad>()
             .add_message::<SaveStep>()
+            .add_message::<crate::destination::JourneySave>()
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::world_clock::RestoreWorldClock>()
             .init_resource::<ArenaStores>()
@@ -402,6 +407,7 @@ impl Plugin for SaveLivePlugin {
                     report_saves,
                     scripted_saves,
                     run_checkpoint_scripts,
+                    journey_saves,
                     // Every save first saves the open screens.
                     crate::gui_screens::save_open_screens_for_saves::<false>,
                     save_to_new_slot,
@@ -515,7 +521,7 @@ fn bench_the_manager(
         return;
     }
     sync_players(&mut live, &mut players);
-    let Some(manager) = live_story_player(&players, created.as_deref()) else {
+    let Some(manager) = live_story_player(&players, created.as_deref(), &|_| None) else {
         return;
     };
     let items = world_items(&live.db().world);
@@ -736,6 +742,9 @@ pub struct StoryPlayer {
     pub position_cm: [f32; 3],
     /// The body's heading, radians (Exarust's yaw).
     pub heading: f32,
+    /// The running powers the placement saves with the player
+    /// ([`crate::power_save::saved_powers`]).
+    pub powers: Vec<exa_formats::characters::RunningPower>,
 }
 
 /// A record with a body's live possessions written back: the four hands
@@ -943,6 +952,12 @@ pub fn story_player_world_with(
         heading: player.heading,
         condition: 0,
         ai: Some(exa_formats::rfc_write::ExportAi::default()),
+        // Each running power's own record, after the AI's chunks.
+        attachments: player
+            .powers
+            .iter()
+            .map(|power| power.bytes().map(Some))
+            .collect::<exa_formats::Result<_>>()?,
         ..Default::default()
     };
     let mut saved = None;
@@ -1264,6 +1279,7 @@ type PlayerHealthParts = (
     Option<&'static exa_combat::StateFlags>,
     Option<&'static exa_combat::Condition>,
     Option<&'static crate::thaum::cast::PowerCaster>,
+    Option<&'static crate::mind::casts::MindBody>,
 );
 
 /// The focus a record holds, for a body without a caster.
@@ -1271,12 +1287,22 @@ pub(crate) fn record_focus(record: &CharacterRecord) -> f32 {
     exa_formats::characters::Pools::restore_focus(record.pools.focus)
 }
 
+/// `record_of` names the character a body id carries, for the running
+/// Loyalty and Command Dead the save writes with the player.
 fn live_story_player(
     players: &PlayerSaveQuery,
     created: Option<&crate::creator_screen::CreatedCharacter>,
+    record_of: &dyn Fn(crate::mind::casts::BodyId) -> Option<u32>,
 ) -> Option<StoryPlayer> {
-    let (transform, data, possessions, (fighter, flags, condition, caster)) =
+    let (transform, data, possessions, (fighter, flags, condition, caster, mind)) =
         players.iter().next()?;
+    let powers = crate::power_save::saved_powers(mind, caster, record_of);
+    if !powers.is_empty() {
+        info!(
+            "save: the player's running powers {:x?} are saved with the placement",
+            powers.iter().map(|power| power.id).collect::<Vec<_>>()
+        );
+    }
     let mut record = data
         .map(|data| data.record.clone())
         .or_else(|| created.and_then(|c| c.0.clone()))
@@ -1316,6 +1342,7 @@ fn live_story_player(
         record,
         position_cm: at.to_array(),
         heading: yaw,
+        powers,
     })
 }
 
@@ -1496,7 +1523,7 @@ fn save_to_new_slot(
             // The manager's record goes into the world character database
             // with his six per-rank kits, as the arena's save writes every
             // fighter's record.
-            let player = live_story_player(&players, created.as_deref())
+            let player = live_story_player(&players, created.as_deref(), &|_| None)
                 .map(|player| arena_manager(player, career));
             let export = story_save_world(&mut session, player.as_ref(), live.db(), &[]);
             (Some(career.player.name.clone()), export)
@@ -1504,7 +1531,13 @@ fn save_to_new_slot(
         Mode::Story => {
             stamp_story(&mut session, flow.as_deref());
             stamp_discovery(&mut session, experience.as_deref());
-            let player = live_story_player(&players, created.as_deref());
+            let records = scene.record_ids();
+            let player = live_story_player(&players, created.as_deref(), &|id| {
+                records
+                    .iter()
+                    .find(|(body, _)| *body == id)
+                    .map(|(_, record)| *record)
+            });
             let (others, flushed) =
                 flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
             characters = Some(flushed);
@@ -1652,7 +1685,8 @@ fn arena_save_session(
     session.capture_arena(career, &stores.staff, &stores.arsenal, &stores.stash);
     session.clock = seconds;
     camera.stamp(&mut session);
-    let player = live_story_player(players, created).map(|player| arena_manager(player, career));
+    let player =
+        live_story_player(players, created, &|_| None).map(|player| arena_manager(player, career));
     let export = story_save_world(&mut session, player.as_ref(), live.db(), &[]);
     (session, export)
 }
@@ -1677,6 +1711,9 @@ type SaveClocks<'w> = (
 /// * A drop deletes the save file; without a checkpoint the slot leaves
 ///   the list.
 /// * A checkpoint (the story's) copies the save over it.
+/// * A save and checkpoint ([`SaveStep::SaveAndCheckpoint`], the adapter
+///   journey's end) saves, then copies the save over the story's
+///   checkpoint whether one exists or not.
 /// * The forfeit's save ([`SaveStep::ForfeitSave`], the arena match quit)
 ///   writes only the arena's player data, under the hub's locale.
 ///
@@ -1754,7 +1791,10 @@ fn run_save_steps<const AT_QUIT: bool>(
                 .as_deref()
                 .and_then(|created| created.0.as_ref())
                 .map(|record| record.name.clone())
-                .or_else(|| live_story_player(&players, created.as_deref()).map(|p| p.record.name));
+                .or_else(|| {
+                    live_story_player(&players, created.as_deref(), &|_| None)
+                        .map(|p| p.record.name)
+                });
             match list.create(name.as_deref()) {
                 Ok(number) => info!(
                     "save: new {mode:?} game: slot {number} created for {name:?} and made current"
@@ -1770,9 +1810,33 @@ fn run_save_steps<const AT_QUIT: bool>(
         let number = list.current() as u32;
         match step {
             SaveStep::NewSlot => {}
-            SaveStep::Save { drop_on_low_health } => {
+            SaveStep::Save { .. } | SaveStep::SaveAndCheckpoint => {
+                let drop_on_low_health = matches!(
+                    step,
+                    SaveStep::Save {
+                        drop_on_low_health: true
+                    }
+                );
+                // The journey's save copies the slot's save over the
+                // checkpoint after it, the disabled save included.
+                let copy = (step == SaveStep::SaveAndCheckpoint && story).then_some(number);
+                let copy_over = |list: &SlotList| {
+                    if let Some(number) = copy {
+                        match list.slots().copy_save_over_checkpoint(number) {
+                            Ok(()) => {
+                                info!("save: story slot {number}'s save copied over its checkpoint")
+                            }
+                            Err(error) => {
+                                warn!(
+                                    "save: cannot copy slot {number}'s save over its checkpoint: {error}"
+                                )
+                            }
+                        }
+                    }
+                };
                 if disabled {
                     warn!("save: saving is disabled after the last level change; nothing written");
+                    copy_over(list);
                     continue;
                 }
                 if drop_on_low_health && !exa_formats::save_chunk::save_allowed(health, false) {
@@ -1787,7 +1851,13 @@ fn run_save_steps<const AT_QUIT: bool>(
                 let (session, export, section) = if story {
                     let mut session = story_session();
                     sync_players(&mut live, &mut players);
-                    let player = live_story_player(&players, created.as_deref());
+                    let records = scene.record_ids();
+                    let player = live_story_player(&players, created.as_deref(), &|id| {
+                        records
+                            .iter()
+                            .find(|(body, _)| *body == id)
+                            .map(|(_, record)| *record)
+                    });
                     let (others, characters) =
                         flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
                     let export =
@@ -1823,6 +1893,7 @@ fn run_save_steps<const AT_QUIT: bool>(
                     }
                     Err(error) => warn!("save: cannot write {mode:?} slot {number}: {error}"),
                 }
+                copy_over(list);
             }
             SaveStep::Drop => match list.drop_after_death(0.0) {
                 Ok(dropped) => info!(
@@ -1842,7 +1913,13 @@ fn run_save_steps<const AT_QUIT: bool>(
                 if !disabled {
                     sync_players(&mut live, &mut players);
                 }
-                let player = live_story_player(&players, created.as_deref());
+                let records = scene.record_ids();
+                let player = live_story_player(&players, created.as_deref(), &|id| {
+                    records
+                        .iter()
+                        .find(|(body, _)| *body == id)
+                        .map(|(_, record)| *record)
+                });
                 let (others, characters) =
                     flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
                 let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
@@ -2199,6 +2276,9 @@ pub struct StoryRestore {
     /// ([`crate::world_characters::WorldCharacters::from_save`]); `None`
     /// when the package holds none.
     pub world_characters: Option<Vec<u8>>,
+    /// The running powers the player's placement saved, which the new
+    /// player body rebuilds ([`crate::power_save`]).
+    pub powers: Vec<exa_formats::characters::RunningPower>,
 }
 
 /// The story's full load of a slot, as the saves' character screen's
@@ -2236,11 +2316,18 @@ pub fn restore_story(
         record.reset_loaded_identity();
         loaded_player_request(crate::content_requests::WORLD_SCENE)
     });
-    let placement = loaded
-        .data
-        .placement()
-        .and_then(Result::ok)
-        .map(|placement| placement_of(&placement));
+    let saved_placement = loaded.data.placement().and_then(Result::ok);
+    let placement = saved_placement.as_ref().map(placement_of);
+    // The record build hands the placement's running powers to the body; a
+    // chunk that does not read rebuilds none.
+    let powers = match saved_placement.as_ref().map(|p| p.running_powers()) {
+        Some(Ok(powers)) => powers,
+        Some(Err(error)) => {
+            warn!("save: the player's running powers do not read ({error}); none are rebuilt");
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
     let world = crate::slots::world_object_tier(&loaded.package);
     let items = world
         .as_ref()
@@ -2266,6 +2353,7 @@ pub fn restore_story(
         request,
         level_section,
         world_characters,
+        powers,
     })
 }
 
@@ -2424,6 +2512,19 @@ fn load_story_slot(
                     crate::flow::Background::from_index(restored.session.start_background);
                 flow.story.memory = restored.session.memory_flags.unwrap_or(0);
             }
+            // The new player body rebuilds the powers that ran when it was
+            // saved.
+            if restored.powers.is_empty() {
+                commands.remove_resource::<crate::power_save::PendingPlayerPowers>();
+            } else {
+                info!(
+                    "save: the player's running powers {:x?} come back with the body",
+                    restored.powers.iter().map(|p| p.id).collect::<Vec<_>>()
+                );
+                commands.insert_resource(crate::power_save::PendingPlayerPowers(
+                    restored.powers.clone(),
+                ));
+            }
             commands.insert_resource(LoadedStory(restored.session.clone()));
             (Some(restored.level), restored.placement)
         }
@@ -2487,6 +2588,24 @@ fn load_story_slot(
         });
     }
     steps.steps.extend(flow.continue_session(resumed));
+}
+
+/// The adapter journey's save: a journey that ended with its traveller
+/// alive asks for a save copied over the checkpoint, as the selection
+/// screen's travel step calls the save unit's save-and-checkpoint. Only the
+/// player's journey saves [Exarust's: the original's journey is always the
+/// player's].
+fn journey_saves(
+    mut journeys: MessageReader<crate::destination::JourneySave>,
+    players: Query<(), With<crate::player::PlayerBody>>,
+    mut steps: MessageWriter<SaveStep>,
+) {
+    for journey in journeys.read() {
+        if players.contains(journey.user) {
+            info!("save: the journey ended; the game saves and refreshes its checkpoint");
+            steps.write(SaveStep::SaveAndCheckpoint);
+        }
+    }
 }
 
 /// Takes a pending respawn off a loaded session: when its transition word
@@ -2764,6 +2883,7 @@ mod tests {
                 record: CharacterRecord::reset(),
                 position_cm: [0.0; 3],
                 heading: 0.0,
+                powers: Vec::new(),
             },
             &career,
         );
@@ -2807,6 +2927,7 @@ mod tests {
             record: record_with_possessions(record, &possessions),
             position_cm: [120.0, 30.0, -450.0],
             heading: 1.25,
+            powers: Vec::new(),
         };
         let career = crate::hub_windows::ArenaCareer::default();
         let mut session = live_session(Some("exanima02"), 4321, &career, &ArenaStores::default());
@@ -3039,6 +3160,7 @@ mod tests {
             record: record_with_possessions(record, &possessions),
             position_cm: [0.0; 3],
             heading: 0.0,
+            powers: Vec::new(),
         };
         let career = crate::hub_windows::ArenaCareer::default();
         let mut session = live_session(Some("exanima01"), 1, &career, &ArenaStores::default());
@@ -3160,6 +3282,7 @@ mod tests {
             record,
             position_cm: [0.0, 0.0, 0.0],
             heading: 0.0,
+            powers: Vec::new(),
         };
         let career = crate::hub_windows::ArenaCareer::default();
         let mut session = live_session(Some("exanima01"), 60, &career, &ArenaStores::default());
@@ -3603,6 +3726,7 @@ mod tests {
             record: CharacterRecord::reset(),
             position_cm: [-901.0, 20.0, -9980.0],
             heading: 0.5,
+            powers: Vec::new(),
         };
         let career = crate::hub_windows::ArenaCareer::default();
         let mut session = live_session(Some("exanima01.rfc"), 60, &career, &ArenaStores::default());
@@ -3648,6 +3772,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The adapter journey's end saves the player's story slot and copies
+    /// the save over its checkpoint, an existing checkpoint included;
+    /// another body's journey saves nothing.
+    #[test]
+    fn a_journeys_end_saves_and_refreshes_the_checkpoint() {
+        let dir = folder("journey");
+        let mut app = new_game_app(&dir, crate::flow::Mode::Story, "Traveller");
+        app.world_mut().spawn(exa_world::LevelRoot {
+            name: "exanima02.rfc".to_string(),
+        });
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::default(),
+                crate::player::PlayerBody::new(0.0),
+            ))
+            .id();
+        let other = app.world_mut().spawn_empty().id();
+        let slots = Slots::story(&dir);
+        let number = app.world().resource::<SlotLists>().story.current() as u32;
+        // An old checkpoint the journey's copy replaces.
+        std::fs::write(slots.file(number, SlotKind::Checkpoint), b"old").unwrap();
+        app.world_mut()
+            .write_message(crate::destination::JourneySave { user: other });
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, None);
+        app.world_mut()
+            .write_message(crate::destination::JourneySave { user: player });
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, Some(number));
+        let save = std::fs::read(slots.file(number, SlotKind::Save)).unwrap();
+        let checkpoint = std::fs::read(slots.file(number, SlotKind::Checkpoint)).unwrap();
+        assert_eq!(save, checkpoint);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A save written while a respawn was pending (transition word 2):
     /// the load turns the word to 1 and the continue gives the placed
     /// player 16 ticks of settling after its placement, at the respawn
@@ -3665,6 +3827,7 @@ mod tests {
                 record: CharacterRecord::reset(),
                 position_cm: [100.0, 20.0, 300.0],
                 heading: 0.0,
+                powers: Vec::new(),
             };
             let career = crate::hub_windows::ArenaCareer::default();
             let mut session =

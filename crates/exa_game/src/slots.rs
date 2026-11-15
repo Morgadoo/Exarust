@@ -506,7 +506,11 @@ impl Slots {
             let mut package = Self::open(&path)?;
             match self.verdict(&mut package, &path) {
                 Verdict::Keep(info) => valid.push(Slot { number, kind, info }),
-                Verdict::Delete => self.delete(number)?,
+                Verdict::Delete => {
+                    // The scan deletes through the index delete, which logs.
+                    bevy::log::info!("Save delete index: {number}");
+                    self.delete(number)?
+                }
                 Verdict::Skip => {}
             }
         }
@@ -1242,6 +1246,8 @@ impl SlotList {
             return Ok(None);
         };
         self.current = number as i32;
+        // The original's log line names the slot's number.
+        bevy::log::info!("Save delete index: {number}");
         let deleted = self.slots.delete(number);
         self.numbers.remove(index);
         self.names.remove(index);

@@ -254,6 +254,7 @@ fn bridge_mind_runtime_types(app: &mut App) {
         .bridge_message::<exa_audio::PointSounded>()
         .bridge_message::<exa_combat::BlowNoticed>()
         .bridge_copy::<exa_ai::combatant::MindPowers>()
+        .bridge_copy::<exa_character::record::CharacterData>()
         .bridge_copy::<exa_ai::brain::CharacterId>()
         .bridge_copy::<exa_ai::roles::Relations>()
         .bridge_copy::<exa_ai::roles::Roles>()
@@ -711,6 +712,14 @@ enum MindAction {
     Rearm(Entity),
     /// A Command Dead caster's end lays its raised body down again.
     LayDown(BodyId),
+    /// A loaded Loyalty or Command Dead found its target: the marker `id`
+    /// goes back on body `on` with `caster` as its caster, and the body's
+    /// AI re-arms its behaviour.
+    Relink {
+        on: BodyId,
+        id: u32,
+        caster: BodyId,
+    },
 }
 
 /// The status bits the timed Mind classes own on a body.
@@ -771,6 +780,7 @@ pub fn tick_minds(
     ticks: Option<Res<BodyTicks>>,
     mut minds: Query<(Entity, &mut MindBody, Option<&mut PowerCaster>)>,
     conditions: Query<&Condition>,
+    records: Query<(Entity, &exa_character::record::CharacterData), With<MindBody>>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut frame: Option<ResMut<exa_physics::sim_app::FrameCommands>>,
     mut relations: crate::thaum::live::MindRelations,
@@ -778,6 +788,16 @@ pub fn tick_minds(
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, _)| (m.id, e)).collect();
     let entity_of = |id: BodyId| ids.iter().find(|(i, _)| *i == id).map(|(_, e)| *e);
+    // A loaded Loyalty or Command Dead looks its target up by the
+    // character id it saved: the body whose record has it, with that body's
+    // condition word.
+    let character_of = |character: u32| {
+        let (entity, _) = records
+            .iter()
+            .find(|(_, data)| data.record.id == character)?;
+        let condition = conditions.get(entity).map_or(0, |c| c.0);
+        Some((body_id(entity), condition))
+    };
     let mut actions = Vec::new();
     for (entity, mut mind, mut caster) in &mut minds {
         if mind.powers.is_empty() {
@@ -875,7 +895,20 @@ pub fn tick_minds(
                 }
                 MindClass::Trust(timed) | MindClass::Suspicion(timed) => timed.control(now),
                 MindClass::Loyalty(loyalty) => {
-                    let step = loyalty.control(0, None, body);
+                    let found = if loyalty.state == crate::thaum::power::READY {
+                        loyalty.target.and_then(character_of)
+                    } else {
+                        None
+                    };
+                    let step = loyalty.control(0, found, body);
+                    if let Some(target) = step.link {
+                        power.target = Some(target);
+                        actions.push(MindAction::Relink {
+                            on: target,
+                            id: casts::LOYALTY_MARK,
+                            caster: own_id,
+                        });
+                    }
                     if step.unlink
                         && let Some(target) = loyalty.target.or(target_id)
                     {
@@ -913,7 +946,20 @@ pub fn tick_minds(
                     result
                 }
                 MindClass::CommandDead(command) => {
-                    let step = command.control(0, None, body);
+                    let found = if command.state == crate::thaum::power::READY {
+                        command.target.and_then(character_of).map(|(id, _)| id)
+                    } else {
+                        None
+                    };
+                    let step = command.control(0, found, body);
+                    if let Some(target) = step.link {
+                        power.target = Some(target);
+                        actions.push(MindAction::Relink {
+                            on: target,
+                            id: casts::COMMAND_DEAD_MARK,
+                            caster: own_id,
+                        });
+                    }
                     if step.unlink
                         && let Some(target) = command.target.or(target_id)
                     {
@@ -1032,6 +1078,11 @@ pub fn tick_minds(
                     }
                 });
             }
+            MindAction::Relink { on, id, caster } => {
+                if let Some(on) = entity_of(on) {
+                    commands.queue(move |world: &mut World| relink_marker(world, on, id, caster));
+                }
+            }
             MindAction::LayDown(target) => {
                 if let Some(target) = entity_of(target) {
                     commands.queue(move |world: &mut World| {
@@ -1043,6 +1094,30 @@ pub fn tick_minds(
             }
         }
     }
+}
+
+/// A loaded Loyalty's or Command Dead's first tick puts its marker back
+/// on the target it found, as the cast placed it: a fresh loyalty or
+/// command-dead marker whose caster is `caster`, and the target's AI
+/// re-arms its behaviour.
+fn relink_marker(world: &mut World, on: Entity, id: u32, caster: BodyId) {
+    use crate::thaum::power::mind::{CommandDeadTarget, LoyaltyTarget};
+    let class = match id {
+        casts::LOYALTY_MARK => MindClass::LoyaltyMark(LoyaltyTarget::new(caster)),
+        casts::COMMAND_DEAD_MARK => MindClass::CommandDeadMark(CommandDeadTarget::new()),
+        _ => return,
+    };
+    let Some(mut mind) = world.get_mut::<MindBody>(on) else {
+        return;
+    };
+    let mut mark = MindPower::new(id, class);
+    mark.caster = Some(caster);
+    mind.powers.push(mark);
+    mind.ai.rearm = true;
+    if let Some(mut npc) = world.get_mut::<Npc>(on) {
+        npc.reapply = true;
+    }
+    info!("mind: a loaded power's marker {id:#x} goes back on {on:?} (caster {caster})");
 }
 
 /// A raise the bar's cast asked for, run on the world that steps the
