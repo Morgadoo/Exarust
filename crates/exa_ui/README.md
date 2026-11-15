@@ -768,6 +768,13 @@ GUI unit and `page_text_box` the page's read-only box, which
 
 ## Table, skin and blend details
 
+The arena's tables run through `table_view`: `match_board::Board::table_view`
+builds each board table's view (rows, greyed rows, selection, the fighter
+tables' drag kind and pad words), `Board::click` presses through
+`TableView::press`, and `TableView::paint_selection` and
+`TableView::paint_drag_label` draw the selected row's band and a dragged
+row's label through the skin's faded rectangle and selection band.
+
 `table_view` now keeps the column choice list that a press opens (its
 entries, width, anchor and picked entry) and routes every key that
 is not Enter, Escape or the empty-edit Delete through `text_edit` (typing,

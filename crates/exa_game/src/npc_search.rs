@@ -1178,6 +1178,12 @@ pub fn follow_and_search(
             let npc = &mut *npc;
             state.follower.place = feet_cm;
             state.follower.walking = !state.walk.route.is_empty();
+            // The closing walk's mode ends with its walk, as the route stop
+            // clears the follow mode word [inf: the original's stop runs
+            // when the route ends].
+            if state.follower.mode == exa_ai::idle::CLOSING && !state.follower.walking {
+                state.follower.mode = 0;
+            }
             state.follower.panic = npc.morale.panic;
             state.follower.has_activity = npc.search.is_some();
             let visible = leader
@@ -1232,8 +1238,45 @@ pub fn follow_and_search(
                         }
                     }
                 }
+                FollowAct::ClosePlanned => {
+                    // Inside the personal stop: the closing replan plans
+                    // with the follow state's closing-walk goal callback,
+                    // which backs the follower off to 400 cm from the
+                    // leader when it stands within 200 cm.
+                    state.follower.replan = false;
+                    state.walk.route.clear();
+                    if let Some(leader) = leader.as_ref() {
+                        let close = exa_ai::idle::closing_goal(&mut state.follower, leader);
+                        let goal = exa_ai::route::Goal {
+                            point: close.point,
+                            radius_cm: close.radius_cm.unwrap_or(state.follower.stop_cm as f32),
+                            motion: close.motion.unwrap_or(0),
+                        };
+                        let points = match router.as_mut() {
+                            Some(router) => exa_ai::route::plan(
+                                turn,
+                                entity.to_bits(),
+                                *frame,
+                                feet_cm,
+                                goal,
+                                true,
+                                router,
+                            )
+                            .map(|p| p.route.points)
+                            .filter(|p| p.len() >= 2),
+                            None => Some(vec![feet_cm, close.point]),
+                        };
+                        if let Some(points) = points {
+                            info!(
+                                "search: {who} backs off from the player to ({:.0}, {:.0}) cm",
+                                close.point.x, close.point.z
+                            );
+                            start_walk(&mut state.walk, points, now);
+                        }
+                    }
+                }
                 FollowAct::Keep => {}
-                FollowAct::Stand | FollowAct::CloseStood | FollowAct::ClosePlanned => {
+                FollowAct::Stand | FollowAct::CloseStood => {
                     state.follower.replan = false;
                     if state.follower.mode == exa_ai::idle::FOLLOWING {
                         state.follower.mode = 0;
