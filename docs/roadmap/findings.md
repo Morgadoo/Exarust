@@ -567,6 +567,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F538 | runtime-04 | runtime | Settings Touchscreen (sets root GUI = 7) and StereoMode are parsed but nothing reads them | B4 |
 | F539 | runtime-04 | runtime | The ViewportStack model (exa_render::view) has no non-test caller; GUI clipping uses flat per-layer clip rects with no nesting, overflow or underflow log | B4 |
 | F540 | runtime-04 | runtime | is a split artefact: the 'code pointer' at is the WGL attribute value 0x2010. Its bytes are the tails of the Touchscreen setter and the StereoMode setter, so the function table may also lack rows for and | B4 |
+| F542 | round 210 | game modes | the story respawn portal (`Flow::respawn_portal`) is set only by a test, so the story respawn places the player at the origin 15 cm up instead of at the level portal, and a pending-respawn load falls back to the saved position | B1 |
 
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers
