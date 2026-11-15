@@ -1146,6 +1146,12 @@ pub struct FormState {
     pub page_hover: i32,
     held: Option<(Part, usize)>,
     hovered: Option<(Part, usize)>,
+    /// The record the pad has focused (the GUI focus in pad mode).
+    pub pad_focus: Option<(Part, usize)>,
+    /// The focused record asks for the pad's whole words (the form's bit
+    /// 0x40, copied from the record's 0x20_0000 after each key message: a
+    /// held trackbar).
+    pub pad_keys: bool,
 }
 
 /// Whether a record takes the pointer: shown, enabled, without the
@@ -1174,6 +1180,8 @@ impl FormState {
             page_hover: 0,
             held: None,
             hovered: None,
+            pad_focus: None,
+            pad_keys: false,
         };
         form.switch(0);
         form
@@ -1351,6 +1359,73 @@ impl FormState {
                 (client.x, client.y - self.scroll_offset())
             }
         }
+    }
+
+    /// Whether the pad's pick can reach a record: one that takes the
+    /// pointer, of a focusable class (a button, check box, image button or
+    /// trackbar).
+    pub fn pad_reachable(&self, part: Part, i: usize) -> bool {
+        self.controls(part)
+            .get(i)
+            .is_some_and(|c| takes_hits(c) && matches!(c.class, 1..=4))
+    }
+
+    /// The record lists the pad's pick walks: the form's own and the
+    /// shown page's (its visible child form).
+    pub fn pad_parts(&self) -> [Part; 2] {
+        [Part::Main, self.page_part()]
+    }
+
+    /// A record's centre on the screen (`x + w/2`, `y + h/2`, integer
+    /// halves).
+    pub fn pad_centre(&self, part: Part, i: usize) -> Option<(i32, i32)> {
+        let (ox, oy) = self.part_origin(part);
+        self.controls(part)
+            .get(i)
+            .map(|c| (ox + c.x + c.w / 2, oy + c.y + c.h / 2))
+    }
+
+    /// Gives the pad's focus to a record: the hover bits move to it from
+    /// the record that had them, as the pointer's hover does.
+    pub fn pad_focus_set(&mut self, target: Option<(Part, usize)>) {
+        for (at, on) in [(self.hovered, false), (self.pad_focus, false), (target, true)] {
+            if let Some((part, i)) = at
+                && let Some(c) = self.controls_mut(part).get_mut(i)
+            {
+                c.state &= !HOVER_BITS;
+                if on {
+                    c.state |= HOVERED;
+                }
+            }
+        }
+        self.hovered = target;
+        self.pad_focus = target;
+        self.pad_keys = false;
+    }
+
+    /// The pad's word to the focused record as its key message (0xc0;
+    /// `axes` the two sticks' x for a trackbar), then the record's
+    /// 0x20_0000 bit (a held trackbar) becomes the form's
+    /// [`Self::pad_keys`]. Without a focused record nothing happens.
+    pub fn pad_control_key(&mut self, word: u32, axes: (f32, f32)) -> Vec<FormEvent> {
+        let Some((part, i)) = self.pad_focus else {
+            return Vec::new();
+        };
+        if self.controls(part).get(i).is_none() {
+            return Vec::new();
+        }
+        let out = self.send(
+            part,
+            i,
+            Message {
+                message: message::KEY,
+                param: word,
+                axes,
+                ..Message::default()
+            },
+        );
+        self.pad_keys = self.controls(part)[i].state & state::HELD != 0;
+        out
     }
 
     pub fn controls(&self, part: Part) -> &[Control] {

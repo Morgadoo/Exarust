@@ -37,6 +37,7 @@ use exa_ui::skin::{
 };
 
 use crate::bindings::Bindings;
+use crate::pad_menu::PadForm;
 use crate::gui_paint::{self, Painted};
 use crate::hw_config::{
     BindingEditor, BindingsApplied, HardwareConfig, ShaderWarmScreen, binding_rows,
@@ -291,6 +292,7 @@ fn form_input(
     mut bindings: Option<ResMut<Bindings>>,
     mut applied: MessageWriter<BindingsApplied>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
+    mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
 ) {
     let notches: f32 = wheel
         .read()
@@ -348,6 +350,23 @@ fn form_input(
                     now,
                     timers.as_deref_mut(),
                 );
+            }
+        }
+    }
+    // The pad: the show's first control, then the frame's word.
+    if !covered && keep
+        && let Some(pad) = pad.as_deref_mut()
+    {
+        if pad.take_focus_request(PadForm::Settings) {
+            form.pad_focus_set(Some((Part::Main, PadForm::Settings.control() as usize - 1)));
+        }
+        if let Some(key) = pad.take(PadForm::Settings) {
+            match pad_key(&mut form, key) {
+                PadSettings::Events(pad_events) => events.extend(pad_events),
+                PadSettings::Back => {
+                    info!("settings: the pad's MenuBak takes the back slot");
+                    events.push(FormEvent::Action(FormAction::Cancel));
+                }
             }
         }
     }
@@ -415,6 +434,71 @@ fn form_input(
     }
     if keep {
         settings.form = Some(form);
+    }
+}
+
+/// What the pad's word did to the form.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PadSettings {
+    /// The focused record's answers.
+    Events(Vec<FormEvent>),
+    /// `MenuBak`: the form's back slot (Cancel).
+    Back,
+}
+
+/// The menu dispatch for the Settings form, whose key slot is the base
+/// form's (every word unanswered, [`crate::pad_menu::UNANSWERED`]): a
+/// focused record that asks for the keys (a held trackbar) takes the whole
+/// word; else `MenuBak` goes to the back slot (the form's attribute word
+/// has bit 2), a navigation step picks the next record
+/// ([`pad_pick`]) and the rest reach the focused record's key message,
+/// whose `MenuSel` (0x100) presses a button or box and holds a trackbar.
+pub fn pad_key(form: &mut FormState, key: crate::pad_menu::MenuKey) -> PadSettings {
+    use crate::pad_menu::{Fallback, UNANSWERED, fallback};
+    let back_closes = settings::FORM_ATTRIBUTES & 2 != 0;
+    match fallback(UNANSWERED, key.key, form.pad_keys, back_closes) {
+        Fallback::Answered => PadSettings::Events(Vec::new()),
+        Fallback::Back => PadSettings::Back,
+        Fallback::Pick => {
+            pad_pick(form, key.cursor);
+            PadSettings::Events(Vec::new())
+        }
+        Fallback::Control(word) => PadSettings::Events(
+            form.pad_control_key(word, (key.cursor.x, key.scroll_cursor.x)),
+        ),
+    }
+}
+
+/// The directional pick over the form's records and its shown page's
+/// ([`crate::gamepad::pick_control`]): from the focused record's centre
+/// (the form's corner when none is focused) along the menu cursor, among
+/// the records the pad can reach; the picked record takes the focus.
+pub fn pad_pick(form: &mut FormState, cursor: Vec2) {
+    use crate::gamepad::{PickTarget, pick_control};
+    let mut found = Vec::new();
+    let mut targets = Vec::new();
+    for part in form.pad_parts() {
+        for i in 0..form.controls(part).len() {
+            let Some(centre) = form.pad_centre(part, i) else {
+                continue;
+            };
+            targets.push(PickTarget {
+                id: found.len() as i32,
+                centre: IVec2::new(centre.0, centre.1),
+                reachable: form.pad_reachable(part, i),
+                current: form.pad_focus == Some((part, i)),
+            });
+            found.push((part, i));
+        }
+    }
+    let origin = form
+        .pad_focus
+        .and_then(|(part, i)| form.pad_centre(part, i))
+        .unwrap_or_else(|| form.origin());
+    if let Some(id) = pick_control(cursor, IVec2::new(origin.0, origin.1), &targets, form.unit()) {
+        let picked = found[id as usize];
+        info!("settings: the pad picks {picked:?}");
+        form.pad_focus_set(Some(picked));
     }
 }
 
@@ -1174,4 +1258,48 @@ mod tests {
         // The menu stayed open under the form.
         assert!(app.world().resource::<MenuScreen>().open);
     }
+
+    /// The pad's MenuSel reaches the focused record's key message: on the
+    /// Controls tab it turns the tab on and switches the page; on a
+    /// trackbar it holds it, after which the whole words go to it and a
+    /// scroll step moves its value.
+    #[test]
+    fn the_pads_menu_sel_presses_the_focused_record() {
+        use crate::pad_menu::{MenuKey, PadForm};
+        let key = |word: u32| MenuKey {
+            form: PadForm::Settings,
+            key: word,
+            cursor: Vec2::ZERO,
+            scroll_cursor: Vec2::ZERO,
+        };
+        let mut form = FormState::open((1280, 720), 2);
+        form.pad_focus_set(Some((Part::Main, 1)));
+        let out = pad_key(&mut form, key(0x100));
+        assert_eq!(out, PadSettings::Events(vec![FormEvent::Page(1)]));
+        // Back to the Settings page and onto a stepped trackbar.
+        form.pad_focus_set(Some((Part::Main, 0)));
+        pad_key(&mut form, key(0x100));
+        assert_eq!(form.page, 0);
+        let slider = form
+            .geometry
+            .settings
+            .iter()
+            .position(|c| c.class == 4 && c.steps > 0 && c.state & state::DISABLED == 0)
+            .expect("a stepped trackbar");
+        form.pad_focus_set(Some((Part::Settings, slider)));
+        let before = form.geometry.settings[slider].value;
+        pad_key(&mut form, key(0x100));
+        assert!(form.pad_keys);
+        // A right step of the navigation stick, now the trackbar's.
+        let out = pad_key(&mut form, key(0x2001));
+        let after = form.geometry.settings[slider].value;
+        assert!(after > before || before == 1.0, "{before} -> {after}");
+        assert_eq!(form.pad_focus, Some((Part::Settings, slider)));
+        let _ = out;
+        // MenuBak lets it go; the next MenuBak is the back slot.
+        pad_key(&mut form, key(0x200));
+        assert!(!form.pad_keys);
+        assert_eq!(pad_key(&mut form, key(0x200)), PadSettings::Back);
+    }
+
 }

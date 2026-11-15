@@ -120,8 +120,8 @@ pub struct PadMenu {
     /// `MenuExit` was newly pressed this frame on a focused form while the
     /// main menu's exit hook is installed: the menu toggles, as F1 does.
     pub exit: bool,
-    /// The pad drives the GUI (set from the controller mode at each
-    /// dispatch).
+    /// The pad drives the GUI (the controller mode, copied at each
+    /// dispatch; a show while it is on focuses the form's first control).
     pub pad_mode: bool,
     /// The GUI root's gamepad flag: set by a push or a dispatch in pad
     /// mode, cleared by the last pop. The forms' window managers copy it
@@ -173,10 +173,10 @@ impl PadMenu {
     pub fn dispatch(&mut self, frame: MenuFrame, top: Option<u64>, controller: bool) {
         self.key = None;
         self.exit = frame.exit_hook;
+        self.pad_mode = controller;
         if frame.key == 0 {
             return;
         }
-        self.pad_mode = controller;
         if controller {
             self.gui_gamepad = true;
         }

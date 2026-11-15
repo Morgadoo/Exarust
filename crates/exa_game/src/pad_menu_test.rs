@@ -173,3 +173,78 @@ fn menu_exit_toggles_the_menu() {
     app.update();
     assert!(!app.world().resource::<MenuScreen>().open);
 }
+
+/// The menu app with the Settings form, a window and the configuration,
+/// the form opened from the menu's row.
+fn settings_app(script: &str) -> App {
+    use crate::hw_config::HardwareConfig;
+    use crate::menu_pages::MenuCommand;
+    use crate::menu_screen::MenuChoice;
+    use crate::settings_form::{SettingsForm, SettingsFormPlugin};
+    let mut app = menu_app(script);
+    app.insert_resource(HardwareConfig::new(
+        exa_formats::hw_config::Options::default(),
+    ))
+    .add_plugins(SettingsFormPlugin);
+    // A frame of the pad first: the controller mode is known at the show.
+    app.update();
+    app.world_mut().spawn((
+        Window {
+            resolution: bevy::window::WindowResolution::new(1280, 720),
+            ..default()
+        },
+        bevy::window::PrimaryWindow,
+    ));
+    app.world_mut().resource_mut::<MenuScreen>().open();
+    app.world_mut()
+        .write_message(MenuChoice(MenuCommand::OpenSettings));
+    app.update();
+    assert!(app.world().resource::<SettingsForm>().is_open());
+    app
+}
+
+/// The Settings form's show pushes it over the menu with its first
+/// control focused; a navigation step picks the next record below it and
+/// MenuBak takes the form's back slot, which closes it (Cancel) and pops
+/// it, leaving the menu on top.
+#[test]
+fn the_pad_picks_through_the_settings_form_and_backs_out() {
+    use crate::settings_form::SettingsForm;
+    let mut app = settings_app("menu-down@8,menu-back@14");
+    for _ in 0..3 {
+        app.update();
+    }
+    let stack = app.world().resource::<FocusStack>();
+    assert_eq!(stack.depth(), 2);
+    assert_eq!(
+        stack.entries().last().map(|e| e.form),
+        Some(PadForm::Settings.id())
+    );
+    let first = app
+        .world()
+        .resource::<SettingsForm>()
+        .form
+        .as_ref()
+        .unwrap()
+        .pad_focus;
+    assert_eq!(first, Some((exa_ui::settings::Part::Main, 0)));
+    for _ in 0..5 {
+        app.update();
+    }
+    let picked = app
+        .world()
+        .resource::<SettingsForm>()
+        .form
+        .as_ref()
+        .unwrap()
+        .pad_focus;
+    assert!(picked.is_some() && picked != first, "picked {picked:?}");
+    for _ in 0..6 {
+        app.update();
+    }
+    assert!(!app.world().resource::<SettingsForm>().is_open());
+    app.update();
+    let stack = app.world().resource::<FocusStack>();
+    assert_eq!(stack.depth(), 1);
+    assert!(app.world().resource::<MenuScreen>().open);
+}
