@@ -18,9 +18,10 @@
 //! light is relinked against every mesh, a moved mesh against every light.
 //!
 //! In tile-grid levels a light lights, and takes casters from, only the
-//! meshes of the sectors it has an alias in ([`crate::rooms::RoomLights`],
-//! kept as [`RoomLightLists`]): the room it stands in (the scene's own
-//! sector off the rooms) and the rooms of the cells its flood recorded it
+//! meshes of the sectors it has an alias in (the live scene's aliases,
+//! [`crate::scene_live::LiveScene::light_aliased`]; [`RoomLightLists`]
+//! answers for a light the scene does not hold): the room it stands in and
+//! the rooms of the cells its flood recorded it
 //! in, as the original's room manager adds an alias to a cell's room from
 //! the flood's cell hook and gives each mesh one light bucket per alias of
 //! its sector. A mesh's sector is the one the live scene registered it in

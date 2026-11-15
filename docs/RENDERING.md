@@ -2799,10 +2799,17 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   has an alias in the sector it stands in (the room of its cell, the
   scene's own sector off the rooms) and, through the room manager's cell
   hook, in the room of every cell its flood records it in (a cell already
-  holding twelve other lights records nothing and adds nothing). The lists
-  (`exa_world::rooms::RoomLights`) are rebuilt each time a light floods; a
-  mesh moved to another sector (a character crossing a doorway) is
-  relinked. The same links choose the light's cube casters. Nothing passes
+  holding twelve other lights records nothing and adds nothing). The
+  aliases are the live scene's (`exa_world::scene_live`): every light is a
+  light node of its room's sector, and its activation after each flood
+  stamps or makes the alias of every room whose cells recorded it and
+  drops the aliases no cell stamped, as the original's flood ends; so a
+  light standing in no room keeps no alias in the scene's own sector (one
+  light in `exanima06`). The older room lists
+  (`exa_world::rooms::RoomLights`) still answer for a light the scene does
+  not hold; over `exanima01`, `02` and `06` both give every light the same
+  rooms, and no cell fills its twelve slots. A mesh moved to another
+  sector (a character crossing a doorway) is relinked. The same links choose the light's cube casters. Nothing passes
   the lists through the doors at load: the binary's only alias makers are
   the activation, the cell hook, the non-grid spread and fill, and the
   room-mode-off hook. Because the wall windows already keep each light in

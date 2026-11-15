@@ -1089,9 +1089,10 @@ impl RoomTracker {
 /// records nothing and calls nothing), the room of that cell gets an alias
 /// of the light, or its existing alias is stamped current. A mesh's light
 /// buckets are its sector's aliases, one each, so a light lights a mesh only
-/// in a room where it has an alias. The live renderer keeps these lists
-/// ([`Self::place`], [`Self::add_cell`], [`Self::reaches`]) and the link
-/// pass ([`crate::shadow_links`]) reads them.
+/// in a room where it has an alias. The live scene keeps the aliases
+/// themselves ([`crate::scene_live`]); these lists ([`Self::place`],
+/// [`Self::add_cell`], [`Self::reaches`]) are kept beside them for the link
+/// pass's log and for a light the scene does not hold.
 ///
 /// [`Self::propagate`] passes each room's list through its doors once.
 /// REA finds no shipped routine that adds aliases that way (the only alias

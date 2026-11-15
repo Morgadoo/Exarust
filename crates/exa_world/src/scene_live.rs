@@ -354,6 +354,15 @@ type LightQuery<'w, 's> = Query<
     ),
 >;
 
+/// The light inputs of [`run_scene`]: the lights, the new ones, the gone
+/// ones and the level's walls (whose cell lists the flood left).
+type LightParams<'w, 's> = (
+    LightQuery<'w, 's>,
+    Query<'w, 's, Entity, Added<LightId>>,
+    RemovedComponents<'w, 's, LightId>,
+    Option<Res<'w, LevelWalls>>,
+);
+
 /// A light node's frame: its position, and half extents whose box radius
 /// is the light's radius (the scene's sphere tests read it).
 fn light_frame(
@@ -394,12 +403,7 @@ pub fn run_scene(
         SceneCamera,
     >,
     mut scissors: ResMut<SectorScissors>,
-    (lights, added_lights, mut lights_removed, walls): (
-        LightQuery,
-        Query<Entity, Added<LightId>>,
-        RemovedComponents<LightId>,
-        Option<Res<LevelWalls>>,
-    ),
+    (lights, added_lights, mut lights_removed, walls): LightParams,
 ) {
     let started = std::time::Instant::now();
     let Some(level) = level else {

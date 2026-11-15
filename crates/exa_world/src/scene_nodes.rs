@@ -5601,6 +5601,30 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_mesh_orders_its_buckets_after_the_link_tests() {
+        let (mut scene, sector, mesh) = node_scene();
+        scene.nodes[mesh].flags |= BOUNDS_SPLIT;
+        for _ in 0..2 {
+            let light = scene.add_node(NodeKind::Light, None);
+            scene.flood_hook(light, sector);
+        }
+        // The first frame links the waiting aliases and builds the buckets.
+        let mut weigh = |_: usize, alias: usize| AliasLink {
+            weight: [1.0, 3.0][alias],
+            faces: 1,
+            lit: true,
+        };
+        scene.update_visibility_with(16, &mut weigh);
+        assert_eq!(scene.nodes[mesh].buckets.len(), 2);
+        // The mesh moves: every alias is tested and the heavier leads.
+        scene.refresh(mesh);
+        scene.update_visibility_with(16, &mut weigh);
+        assert_eq!(chain_of(&scene.nodes[mesh]), vec![1, 0]);
+        assert_eq!(scene.nodes[mesh].buckets[1].weight, 3.0);
+        assert_eq!(scene.nodes[mesh].buckets[0].faces, 1);
+    }
+
+    #[test]
     fn the_flood_drop_walks_the_list_as_it_stood() {
         let mut scene = Scene::new((8, 8));
         for _ in 0..4 {
