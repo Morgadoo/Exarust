@@ -2393,28 +2393,34 @@ impl Board {
             let TableEvent::Selected(row) = event else {
                 continue;
             };
-            let row = (row - 1) as usize;
-            action = match slot {
-                TableSlot::Match => self.handle(BoardInput::SelectMatch(row)),
-                TableSlot::Rank => self.handle(BoardInput::SelectRank(row)),
-                TableSlot::Tier => self.handle(BoardInput::SelectTier(row)),
-                TableSlot::Events => self.handle(BoardInput::ClickEvent(row)),
-                TableSlot::Winners => self.handle(BoardInput::ClickWinner(row)),
-                TableSlot::Roster => {
-                    self.available_selection = Some(row);
-                    BoardAction::Changed
-                }
-                TableSlot::Lineup => {
-                    self.team_selection = Some(row);
-                    BoardAction::Changed
-                }
-                TableSlot::Season => {
-                    self.season_selection = Some(row);
-                    BoardAction::Changed
-                }
-            };
+            action = self.select_table_row(slot, (row - 1) as usize);
         }
         action
+    }
+
+    /// A table's row selected (0-based), as its view's selection callback
+    /// answers: the match, rank and tier lists and the two event lists
+    /// through their inputs, the fighter and season lists keep it.
+    pub fn select_table_row(&mut self, slot: TableSlot, row: usize) -> BoardAction {
+        match slot {
+            TableSlot::Match => self.handle(BoardInput::SelectMatch(row)),
+            TableSlot::Rank => self.handle(BoardInput::SelectRank(row)),
+            TableSlot::Tier => self.handle(BoardInput::SelectTier(row)),
+            TableSlot::Events => self.handle(BoardInput::ClickEvent(row)),
+            TableSlot::Winners => self.handle(BoardInput::ClickWinner(row)),
+            TableSlot::Roster => {
+                self.available_selection = Some(row);
+                BoardAction::Changed
+            }
+            TableSlot::Lineup => {
+                self.team_selection = Some(row);
+                BoardAction::Changed
+            }
+            TableSlot::Season => {
+                self.season_selection = Some(row);
+                BoardAction::Changed
+            }
+        }
     }
 
     /// The board's hit test: a tab, the primary button, or a visible table

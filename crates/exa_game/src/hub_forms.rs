@@ -376,6 +376,24 @@ impl HubForms {
         true
     }
 
+    /// The pad's menu word on the top message box, its key slot
+    /// ([`exa_ui::modal_screens::MessageBox::click`]): `MenuSel` (0x100)
+    /// closes it, `MenuBak` or `MenuExit` (0x600) closes it with −1; any
+    /// other word is answered and does nothing. Returns whether it closed.
+    pub fn message_pad(&mut self, word: u32) -> bool {
+        if !self.message_on_top() {
+            return false;
+        }
+        let Some(open) = self.message.as_mut() else {
+            return false;
+        };
+        if !open.state.click(word) {
+            return false;
+        }
+        self.remove(FormWindow::Message);
+        true
+    }
+
     /// A message box's button: Ok stores 1, Cancel 0, and the box closes
     /// ([`exa_ui::gui_core::message_box_button`]).
     fn message_button(&mut self, record: usize) {

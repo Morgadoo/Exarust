@@ -195,6 +195,7 @@ impl Plugin for ArenaHubPlugin {
                         crate::hub_forms::manage_table_script,
                         board_table_input,
                         board_table_script,
+                        hub_pad,
                     )
                         .chain(),
                     crate::loadout_kit::kit_input,
@@ -1593,6 +1594,62 @@ pub fn board_table_input(
     );
 }
 
+/// The pad's menu word for the hub's windows (the hub window on the focus
+/// stack): a message box on top takes it through its key slot
+/// ([`crate::hub_forms::HubForms::message_pad`]); otherwise the board
+/// takes it ([`HubWindows::board_pad_key`]), its table answers going back
+/// to the arena as the pointer's do, and `MenuBak` on any hub window is
+/// the form's back slot, which closes the top window as Escape does.
+pub fn hub_pad(
+    mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
+    mut windows: ResMut<HubWindows>,
+    mut hub: ResMut<ArenaHub>,
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    mut stores: Option<ResMut<crate::save_live::ArenaStores>>,
+) {
+    let Some(key) = pad
+        .as_deref_mut()
+        .and_then(|pad| pad.take(crate::pad_menu::PadForm::HubWindow))
+    else {
+        return;
+    };
+    if windows.forms.message_on_top() {
+        if windows.forms.message_pad(key.key) {
+            info!("hub: the pad closes the message box");
+        }
+        return;
+    }
+    let answer = if windows.kind == HubWindowKind::Board {
+        windows.board_pad_key(key)
+    } else if key.key & 0x200 != 0 && exa_ui::form::DEFAULT_ATTRIBUTES & 2 != 0 {
+        crate::hub_windows::BoardPad::Back
+    } else {
+        crate::hub_windows::BoardPad::Table(crate::hub_windows::BoardTableAction::None)
+    };
+    match answer {
+        crate::hub_windows::BoardPad::Back => {
+            info!("hub: the pad's MenuBak closes the top window");
+            if windows.close_top() {
+                hub.busy = false;
+            }
+        }
+        crate::hub_windows::BoardPad::Table(action) => {
+            if !matches!(
+                action,
+                crate::hub_windows::BoardTableAction::None
+                    | crate::hub_windows::BoardTableAction::Took
+            ) {
+                board_table_answer(
+                    action,
+                    &windows,
+                    &mut career,
+                    stores.as_deref_mut().map(|stores| &mut stores.staff),
+                );
+            }
+        }
+    }
+}
+
 /// `--board-table <steps>` (debug): once the board is open, its company and
 /// lineup tables take these pointer steps through
 /// [`HubWindows::board_table_input`], one every few frames, at the rows'
@@ -2637,6 +2694,65 @@ mod tests {
         let board = app.world().resource::<HubWindows>().board.clone().unwrap();
         assert_eq!(board.team, before.team);
         assert_eq!(board.available, before.available);
+    }
+
+    /// Hands the hub's windows the pad's `key` word with `cursor`, as the
+    /// dispatch does for the hub window on top of the focus stack.
+    fn pad_word(app: &mut App, key: u32, cursor: Vec2) {
+        use crate::pad_menu::{PadForm, PadMenu};
+        app.world_mut().resource_mut::<PadMenu>().dispatch(
+            crate::gamepad::MenuFrame {
+                key,
+                exit_hook: false,
+                cursor,
+                scroll_cursor: Vec2::ZERO,
+            },
+            Some(PadForm::HubWindow.id()),
+            true,
+        );
+        app.update();
+    }
+
+    /// The pad on the board: a navigation step picks a visible table (its
+    /// first row selected when it had none), a scroll step moves the
+    /// focused table's selection, the company table's activation word (the
+    /// scroll stick right) moves the selected fighter into the lineup, and
+    /// MenuBak closes the board.
+    #[test]
+    fn the_pad_picks_steps_and_activates_the_board_tables() {
+        use exa_ui::match_board::{BoardTab, ROSTER_ACTIVATE, TableSlot};
+        let mut app = board_app(BoardTab::Matches);
+        app.init_resource::<crate::pad_menu::PadMenu>()
+            .init_resource::<ArenaHub>()
+            .add_systems(Update, hub_pad);
+        // Down from the form's corner: a table takes the focus.
+        pad_word(&mut app, 0x8011, Vec2::new(0.0, 1.0));
+        let picked = app.world().resource::<HubWindows>().board_tables.pad_table;
+        assert!(picked.is_some());
+        app.world_mut()
+            .resource_mut::<HubWindows>()
+            .board_tables
+            .pad_table = Some(TableSlot::Roster);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team, vec![1]);
+        let row = board.available.iter().position(|&slot| slot == 2).unwrap();
+        // Scroll steps down to the fighter's row.
+        for _ in 0..=row {
+            pad_word(&mut app, 0x8002, Vec2::ZERO);
+        }
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.available_selection, Some(row));
+        pad_word(&mut app, ROSTER_ACTIVATE, Vec2::ZERO);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team, vec![2]);
+        let stores = app.world().resource::<crate::save_live::ArenaStores>();
+        assert_eq!(stores.staff.order, board.lineup);
+        // A sideways step picks another table.
+        pad_word(&mut app, 0x2011, Vec2::new(1.0, 0.0));
+        let picked = app.world().resource::<HubWindows>().board_tables.pad_table;
+        assert!(picked.is_some_and(|slot| slot != TableSlot::Roster), "{picked:?}");
+        pad_word(&mut app, 0x200, Vec2::ZERO);
+        assert!(!app.world().resource::<HubWindows>().is_open());
     }
 
     #[test]
