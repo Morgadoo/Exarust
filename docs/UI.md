@@ -2863,6 +2863,11 @@ pass a sixth level read the next skill's bytes, as the original's do.
   and out over 200 ms. The icon atlas cell of icon `n` is `n − 1` counted
   along rows of `width / cell` cells, its texture size divided in double
   precision.
+- **Keys.** With the player's controls off the screen's key method hears
+  every key. On the ring (not a page, not the compact tree) any key closes
+  the screen through the open routine's toggle, except in the reveal's first
+  100 ms (so the key that opened it does not shut it) and while it hides. A
+  request to open while it is up also closes it.
 - **Fades.** The screen reveals over 500 ms from its creation (the alpha
   `t(2 − t)` capped at 1, the ring's spread that eased again) and hides
   over 256 ms. The draw keeps the content alpha and the opening scale

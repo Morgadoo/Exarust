@@ -52,7 +52,8 @@ cut at the interface unit, `SkillShow_01` plays and the player's record is
 attached; each frame steps the fades, the point hit test, the hover filter
 and the pointer method (`exa_ui::skill::SkillScreen::pointer`: a click
 presses a node or answers the learning row or forget dialog, the right
-button closes), keeps the story's experience copy in step, and rasterises
+button closes) and any key past the reveal's first 100 ms closes it
+(`exa_ui::skill::leave_skill_ui`, the open routine's toggle), keeps the story's experience copy in step, and rasterises
 `exa_ui::skill_draw`'s list (the four programs, the skin's rounded boxes,
 the GUI font's glyphs) over the HUD; closing puts the record's technique
 word on the body. Opening it turns the player's controls off and closing it
