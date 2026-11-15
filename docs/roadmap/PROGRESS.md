@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r209, 11-15) | target |
+| measure | start (r186, 11-10) | now (r214, 11-15) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **48.54%** | **100%** |
+| **Ledger: bytes in a final state** | — | **50.7%** | **100%** |
 | Ledger: functions audited | — | 6,624 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 262 of 2,526 (10%) | 100% |
+| Live rows with scene or retail evidence | — | 280 of 2,606 (10%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,571 | all |
+| Tests passing | 8,489 | 8,607 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -62,10 +62,10 @@ State: `todo`, `doing`, `done`, `blocked`.
 | B0.4 | Torrent stream in lockstep | done | the original draws from the two process-wide generators, which the step streams stand for; the sweep scene needs retuning, not the code |
 | B0.5 | New game creates no save slot; arena saves dropped | done | round 205 (tests); the `--story-session` debug flag skips the real start, so a flag for a real New Game start is owed for a game check |
 | B0.6 | Spirit Form adopt/home and other frame-sent writes in free mode | done | round 208; three bridge-ownership hazards left (item cursor drain race, one-step-stale copy-in values, the frame-side combat heading write) |
-| B1 | Wire the uncalled | doing | logic families first (headless tests) while the GPU is down: mind powers, character data, physics dynamics |
+| B1 | Wire the uncalled | doing | rounds 209-214 closed character data, body dynamics, Mind powers, the journal and manual, shader templates and the arena board; uncalled 1,014 → 900 rows; lanes running: GUI skin, morphing and skinning, saves |
 | B2 | Reclassify the engine-replaced | todo | |
 | B3 | Close the unreachable | todo | |
-| B4 | Port what is missing | todo | |
+| B4 | Port what is missing | doing | lanes running: refraction and subsurface, held trees and the respawn portal |
 | B5 | Kept deviations | blocked | decision DEC-5 |
 | B6 | Character creator | blocked | decision DEC-3 |
 
@@ -98,34 +98,35 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 194 | 188,931 |
-| UI | 12 | 12 | 468 | 184,556 |
-| Rendering & GPU | 10 | 10 | 343 | 174,256 |
-| Thaumaturgy & effects | 9 | 9 | 206 | 129,720 |
+| Physics, bodies & cloth | 7 | 7 | 188 | 187,412 |
+| UI | 12 | 12 | 435 | 169,427 |
+| Rendering & GPU | 10 | 10 | 302 | 155,011 |
+| Thaumaturgy & effects | 9 | 9 | 186 | 120,376 |
 | AI & behaviour | 8 | 8 | 190 | 120,216 |
 | Characters, motion & animation | 8 | 8 | 248 | 114,150 |
-| Game modes, arena & session | 7 | 7 | 248 | 103,149 |
+| Game modes, arena & session | 7 | 7 | 231 | 94,189 |
 | World, levels & terrain | 5 | 5 | 172 | 88,138 |
 | Items, materials & crafting | 5 | 5 | 186 | 86,750 |
 | Data, assets & I/O | 6 | 6 | 161 | 45,896 |
 | Runtime & platform | 5 | 5 | 81 | 24,381 |
 | Core, math & threading | 3 | 3 | 98 | 18,405 |
-| Script, dialogue & story | 2 | 2 | 35 | 7,554 |
+| Script, dialogue & story | 2 | 2 | 32 | 7,315 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,642** | **1,291,598** |
+| **Total** | **90** | **90** | **2,522** | **1,237,162** |
 
 ## Open decisions
 
 See [`DECISIONS.md`](DECISIONS.md): DEC-1 definition of 100%, DEC-2 Steam, DEC-3
 character creator, DEC-4 start and budget of Phase A, DEC-5 kept deviations,
-DEC-6 composite terrain, DEC-7 approximate float instructions.
+DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's write past the contacts.
 
 ## Log
 
 | date | round | what |
 |---|---|---|
+| 2026-11-15 | 210–214 | Five B1 lanes: body settling, freeze and held-item park (wiredyn); the Sense Minds sight, the awakening glow and Loyalty's relation (wiremind); the journal's text box and the manual's item view, and a form defect that kept every record release from its callback (wireui); the shipped shader variants checked against the WESL, closing the template machinery as engine-replaced under DEC-8 and adding the translucent and fast-light programs (wireshader); the arena match board and session ends (wirearena). Ledger 48.5% → 50.7%. |
 | 2026-11-15 | 208–209 | Spirit Form adopts and returns on the simulation step, and frame-sent events wait for the last step packet (B0.6); character data wiring (B1). Game run: both mind powers return the player, no undone writes; ledger 48.5%. |
 | 2026-11-15 | 206 | GPU back after the PC fix (the network card had split the GPU's PCIe lanes; it fell off the bus 9 times since October; a stress test passed). Game smoke runs owed for rounds 204-206 done, no GPU errors. Phase B lanes restarted: spiritstep (B0.6), wiremind, wirechardata, wiredyn (B1). |
 | 2026-11-13 | — | Phase A audits complete: all 90 packages accepted; coverage now published from the ledger (48.3% closed beside the 82.3% estimate); Phase B work list generated; 540 findings. Rounds 204-206 (arrival, new-game slot and saves, Control Mind on the step) pass their checks and wait for the GPU. |

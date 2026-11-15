@@ -15,7 +15,7 @@
 //!   scene but the player and the body it controls. A living kind (1, 2) or
 //!   undead kind (4, 5) is given an entry whose three values follow the
 //!   body's mood ([`mood_values`]) by `2^(−dt/1000)` (0.5 past a second). A
-//!   collapsed body (or one whose out word is 2 or more) fades over 5 s
+//!   collapsed body (or one lost to a fall) fades over 5 s
 //!   (3 s) from when it was first seen that way and is then dropped.
 //! - **Colours** ([`entry_colours`]): a living mind's `MindCol0` is
 //!   (0.1, 0.4, 0.6), `MindCol1` (0.8, 0.6, 0) with alpha
@@ -269,15 +269,17 @@ pub fn overlay_frame(overlay: &mut Overlay, sight: &mut Sight, now_ms: u32) -> O
     }
 }
 
-/// The mood values a mind's colours follow [guess: names].
+/// The brain's values a mind's colours follow: the contact integration's
+/// worst hostility, concern sum and readiness, and the morale's stress,
+/// alarm and courage (a body without a brain keeps them 0).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Mood {
-    pub anger: f32,
-    pub dread: f32,
-    pub fear: f32,
-    pub courage: f32,
-    pub arousal: f32,
+    pub hostility: f32,
     pub stress: f32,
+    pub alarm: f32,
+    pub courage: f32,
+    pub concern: f32,
+    pub readiness: f32,
 }
 
 /// One tracked mind.
@@ -317,7 +319,8 @@ pub struct SightBody {
     /// The rules bit `0x10` hides it.
     pub rules: u32,
     pub ai_kind: i32,
-    /// Its out word: 2 or more is asleep or knocked out [guess: name].
+    /// Its fall-death stage ([`exa_combat::fall::FallStage::death_stage`]):
+    /// 2 or more once it is lost to a fall.
     pub out: u32,
     pub condition: u32,
     pub record_kind: u32,
@@ -334,16 +337,16 @@ pub fn sight_kind(record_kind: u32) -> i32 {
     }
 }
 
-/// The three values a mind's mood asks for: anger `a = 0.2·anger` and
-/// fear `f = 0.2·((dread + fear) − courage)` (each product in double
+/// The three values a mind's mood asks for: anger `a = 0.2·hostility` and
+/// fear `f = 0.2·((stress + alarm) − courage)` (each product in double
 /// precision). A collapsed body or `f > 1` gives (1, 1, 1); otherwise `f`
 /// is floored at 0, `a` clamped to 0..1, the larger is the second value
 /// and `f/(f + a)` (when the larger is above 0) the third; the first is the
-/// larger plus 0.2, raised to `0.6·arousal` and, when below `0.02·stress`,
-/// set to `0.015·stress`, then capped at 1.
+/// larger plus 0.2, raised to `0.6·concern` and, when below
+/// `0.02·readiness`, set to `0.015·readiness`, then capped at 1.
 pub fn mood_values(mood: &Mood, collapsed: bool) -> [f32; 3] {
-    let anger = (f64::from(mood.anger) * 0.2) as f32;
-    let fear = (f64::from(mood.dread + mood.fear - mood.courage) * 0.2) as f32;
+    let anger = (f64::from(mood.hostility) * 0.2) as f32;
+    let fear = (f64::from(mood.stress + mood.alarm - mood.courage) * 0.2) as f32;
     let (larger, share) = if collapsed || 1.0 < fear {
         (1.0, 1.0)
     } else {
@@ -358,12 +361,12 @@ pub fn mood_values(mood: &Mood, collapsed: bool) -> [f32; 3] {
         (larger, share)
     };
     let mut first = (f64::from(larger) + 0.2) as f32;
-    let arousal = f64::from(mood.arousal) * 0.6;
-    if f64::from(first) < arousal {
-        first = arousal as f32;
+    let concern = f64::from(mood.concern) * 0.6;
+    if f64::from(first) < concern {
+        first = concern as f32;
     }
-    if f64::from(first) < f64::from(mood.stress) * 0.02 {
-        first = (f64::from(mood.stress) * 0.015) as f32;
+    if f64::from(first) < f64::from(mood.readiness) * 0.02 {
+        first = (f64::from(mood.readiness) * 0.015) as f32;
     }
     if 1.0 < first {
         first = 1.0;
@@ -811,12 +814,12 @@ mod tests {
     #[test]
     fn the_mood_values_follow_the_instructions() {
         let mood = Mood {
-            anger: 2.0,
-            dread: 1.0,
-            fear: 1.0,
+            hostility: 2.0,
+            stress: 1.0,
+            alarm: 1.0,
             courage: 0.0,
-            arousal: 0.0,
-            stress: 0.0,
+            concern: 0.0,
+            readiness: 0.0,
         };
         // a = 0.4, f = 0.4: the larger 0.4, the share a half, the first 0.6.
         let [first, larger, share] = mood_values(&mood, false);
@@ -824,14 +827,14 @@ mod tests {
         assert!((share - 0.5).abs() < 1e-6);
         assert!((first - 0.6).abs() < 1e-6);
         assert_eq!(mood_values(&mood, true), [1.0, 1.0, 1.0]);
-        // Stress over the first's 50 times: the first is 0.015 of it.
+        // Readiness over the first's 50 times: the first is 0.015 of it.
         let stressed = Mood {
-            stress: 40.0,
+            readiness: 40.0,
             ..mood
         };
         assert!((mood_values(&stressed, false)[0] - 0.6).abs() < 1e-6);
         let very = Mood {
-            stress: 60.0,
+            readiness: 60.0,
             ..mood
         };
         assert!((mood_values(&very, false)[0] - 0.9).abs() < 1e-6);

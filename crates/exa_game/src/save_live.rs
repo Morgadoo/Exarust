@@ -2428,8 +2428,13 @@ fn load_story_slot(
         return;
     };
     let restored = restore_story(&mut lists.story, request.number, request.prefer_checkpoint);
+    let mut respawn_pending = false;
     let (level, placement) = match restored {
         Ok(mut restored) => {
+            // A save written while a respawn was pending: the original's
+            // load turns the state to 1 and, once the level is in, puts the
+            // player at the level's portal (15 cm up) to settle there.
+            respawn_pending = take_pending_respawn(&mut restored.session);
             import_world_tier(&mut live, game.as_deref(), restored.world.take());
             // The save's world character database becomes the live store.
             let characters = restored.world_characters.take().and_then(|bytes| {
@@ -2544,7 +2549,21 @@ fn load_story_slot(
         rotation: crate::flow::NO_ROTATION,
         position: Vec3::ZERO,
     });
-    let mut resumed = flow.continue_story(level, at, viewport);
+    let portal = respawn_pending.then(|| flow.portal_placement()).flatten();
+    if respawn_pending {
+        info!(
+            "save: the save holds a pending respawn: the player is placed at {} and settles {} ticks",
+            portal.map_or(
+                "the saved position (no portal known)".to_string(),
+                |p| format!("the portal ({:?} cm)", p.position)
+            ),
+            exa_physics::body::PLACED_SETTLE
+        );
+    }
+    let mut resumed = flow.continue_story(level, portal.unwrap_or(at), viewport);
+    if respawn_pending {
+        settle_after_placement(&mut resumed);
+    }
     if levels.is_empty() {
         // The saves' screen already took the world down: the load does not
         // tear it down a second time.
@@ -2554,7 +2573,7 @@ fn load_story_slot(
             }
         }
     }
-    if placement.is_none() {
+    if placement.is_none() && portal.is_none() {
         // A save without a placement (one Exarust wrote before it saved
         // the player) starts at the level's own start, which no exit
         // holds; the nudge goes with the placement it moves.
@@ -2562,6 +2581,7 @@ fn load_story_slot(
             !matches!(
                 step,
                 crate::flow::Step::PlacePlayer(_)
+                    | crate::flow::Step::SettlePlayer(_)
                     | crate::flow::Step::ExitNudge
                     | crate::flow::Step::Camera(_)
             )
@@ -2585,6 +2605,34 @@ fn journey_saves(
             info!("save: the journey ended; the game saves and refreshes its checkpoint");
             steps.write(SaveStep::SaveAndCheckpoint);
         }
+    }
+}
+
+/// Takes a pending respawn off a loaded session: when its transition word
+/// is [`crate::session::RESPAWN_PENDING`] it becomes 1, as the original's
+/// load writes it, and the load re-places the player at the portal.
+pub fn take_pending_respawn(session: &mut Session) -> bool {
+    if session.transition_word() != crate::session::RESPAWN_PENDING {
+        return false;
+    }
+    if let Some(state) = session.transition.as_mut() {
+        state[..4].copy_from_slice(&1u32.to_le_bytes());
+    }
+    true
+}
+
+/// Gives the placed player the settling state after the placement step
+/// (16 ticks, `exa_physics::body::PLACED_SETTLE`), as the original's load
+/// does after it puts a pending respawn's player at the portal.
+pub fn settle_after_placement(steps: &mut Vec<crate::flow::Step>) {
+    if let Some(at) = steps
+        .iter()
+        .position(|step| matches!(step, crate::flow::Step::PlacePlayer(_)))
+    {
+        steps.insert(
+            at + 1,
+            crate::flow::Step::SettlePlayer(exa_physics::body::PLACED_SETTLE),
+        );
     }
 }
 
@@ -3760,6 +3808,100 @@ mod tests {
         let checkpoint = std::fs::read(slots.file(number, SlotKind::Checkpoint)).unwrap();
         assert_eq!(save, checkpoint);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A save written while a respawn was pending (transition word 2):
+    /// the load turns the word to 1 and the continue gives the placed
+    /// player 16 ticks of settling after its placement, at the respawn
+    /// portal (15 cm up) when one is known; any other save settles nothing.
+    #[test]
+    fn a_pending_respawn_load_settles_the_player_at_the_portal() {
+        for pending in [false, true] {
+            let dir = folder(if pending {
+                "pending-respawn"
+            } else {
+                "no-respawn"
+            });
+            let mut lists = SlotLists::new(&dir);
+            let player = StoryPlayer {
+                record: CharacterRecord::reset(),
+                position_cm: [100.0, 20.0, 300.0],
+                heading: 0.0,
+                powers: Vec::new(),
+            };
+            let career = crate::hub_windows::ArenaCareer::default();
+            let mut session =
+                live_session(Some("exanima05.rfc"), 60, &career, &ArenaStores::default());
+            if pending {
+                let mut state = [0u8; 16];
+                state[..4].copy_from_slice(&crate::session::RESPAWN_PENDING.to_le_bytes());
+                session.transition = Some(state);
+            }
+            let export = story_player_world(
+                &player,
+                &mut session,
+                &exa_formats::objdb::ObjectDb::default(),
+            )
+            .unwrap();
+            let number = save_new_slot(
+                &mut lists.story,
+                &session,
+                Some("Ash"),
+                &export.save_world(None, false),
+            )
+            .unwrap()
+            .unwrap();
+            // The plugin's load system over the slot lists that hold it.
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .add_message::<StorySlotLoad>()
+                .add_message::<crate::world_clock::RestoreWorldClock>()
+                .init_resource::<SaveReport>()
+                .init_resource::<exa_assets::live_objects::LiveObjects>()
+                .insert_resource(lists)
+                .add_systems(Update, load_story_slot)
+                .insert_resource({
+                    let mut flow = crate::flow::Flow::default();
+                    flow.respawn_portal = Some(crate::flow::Placement {
+                        rotation: crate::flow::NO_ROTATION,
+                        position: Vec3::new(10.0, 0.0, 20.0),
+                    });
+                    flow
+                })
+                .init_resource::<crate::flow::FlowSteps>();
+            app.update();
+            app.world_mut().write_message(StorySlotLoad {
+                number,
+                prefer_checkpoint: false,
+            });
+            app.update();
+            let steps = &app.world().resource::<crate::flow::FlowSteps>().steps;
+            let place = steps
+                .iter()
+                .position(|step| matches!(step, crate::flow::Step::PlacePlayer(_)))
+                .expect("the continue places the player");
+            let crate::flow::Step::PlacePlayer(at) = steps[place] else {
+                unreachable!()
+            };
+            let loaded = app.world().resource::<LoadedStory>();
+            if pending {
+                assert_eq!(
+                    steps.get(place + 1),
+                    Some(&crate::flow::Step::SettlePlayer(16))
+                );
+                assert!((at.position - Vec3::new(10.0, 15.0, 20.0)).length() < 1e-4);
+                assert_eq!(loaded.0.transition_word(), 1);
+            } else {
+                assert!(
+                    !steps
+                        .iter()
+                        .any(|step| matches!(step, crate::flow::Step::SettlePlayer(_)))
+                );
+                assert!((at.position - Vec3::new(100.0, 20.0, 300.0)).length() < 1e-3);
+                assert_eq!(loaded.0.transition_word(), 0);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

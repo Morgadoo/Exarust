@@ -772,3 +772,10 @@ Every scene load SHALL first reset the game's GUI in the original's order: a pau
 #### Scenario: A level change after a death fade paused the game
 - **WHEN** a level change is asked while the death fade has paused the game and the drain holds a source
 - **THEN** the fade is over, the game time runs and the drain holds no source
+
+### Requirement: Pending respawn on load
+A story load of a save whose transition word is 2 (a respawn pending) SHALL set the word to 1, place the player at the respawn portal 15 cm up when a portal is known (at the saved placement otherwise) and give the placed player 16 ticks of settling. Any other save SHALL settle nothing.
+
+#### Scenario: A save written while a respawn was pending
+- **WHEN** such a save is continued
+- **THEN** the continue's placement is followed by 16 ticks of settling and the loaded session's transition word is 1

@@ -154,6 +154,7 @@ impl Plugin for ArenaHubPlugin {
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<ArenaLeave>()
             .add_message::<crate::arsenal_view::OpenArsenal>()
             .add_message::<OpenHubShop>()
             .add_message::<bevy::input::keyboard::KeyboardInput>()
@@ -183,7 +184,7 @@ impl Plugin for ArenaHubPlugin {
                 (
                     crate::hub_windows::sync_hub_screen,
                     crate::arsenal::load_shelf_kinds,
-                    enter_loaded_hub,
+                    (leave_arena, enter_loaded_hub).chain(),
                     auto_rematch.before(crate::save_live::SaveLiveSystems::Steps),
                     crate::hub_forms::open_hub_window_on_load,
                     crate::hub_forms::hub_employee_kit_on_load,
@@ -192,6 +193,8 @@ impl Plugin for ArenaHubPlugin {
                     (
                         crate::hub_forms::hub_form_input,
                         crate::hub_forms::manage_table_script,
+                        board_table_input,
+                        board_table_script,
                     )
                         .chain(),
                     crate::loadout_kit::kit_input,
@@ -1458,6 +1461,314 @@ fn hub_restock(mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>, mut 
     shop.restock(career);
 }
 
+/// The session leave's arena step ([`crate::flow::Flow::leave_session`]'s
+/// [`crate::flow::Step::ScriptMode`] under [`ARENA_MODE`]).
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArenaLeave;
+
+/// The arena's leave, run when a session in arena mode is left: the hub
+/// becomes busy and its click hook is cleared, so no hub click answers
+/// until the next hub entry installs it again. [The leave also clears a
+/// third global whose role is not traced; it is not modelled.]
+pub fn arena_leave(hub: &mut ArenaHub) {
+    hub.busy = true;
+    hub.click_hook = HubHook::None;
+}
+
+/// Runs [`arena_leave`] for each [`ArenaLeave`] the flow sent.
+pub fn leave_arena(mut leaves: MessageReader<ArenaLeave>, mut hub: ResMut<ArenaHub>) {
+    for _ in leaves.read() {
+        arena_leave(&mut hub);
+        info!("arena leave: the hub is busy and its click hook cleared");
+    }
+}
+
+/// The item kind the board's weapon check compares for an item id: a
+/// level's or the world's own record by the template it was made from,
+/// any other id as it is.
+pub fn board_item_kind(
+    live: Option<&exa_assets::live_objects::LiveObjects>,
+) -> impl Fn(u32) -> u32 + '_ {
+    move |item| {
+        live.filter(|_| item & exa_formats::objdb::TAG_MASK != 0)
+            .map_or(item, |live| live.db().template_of(item))
+    }
+}
+
+/// The staff's lineup order when it holds one entry per board pool slot
+/// (the manager and every employee), as the board reads it.
+pub fn staff_order(stores: Option<&crate::save_live::ArenaStores>) -> Option<&[i32]> {
+    stores
+        .map(|stores| &stores.staff)
+        .filter(|staff| staff.order.len() == staff.employees.len() + 1)
+        .map(|staff| staff.order.as_slice())
+}
+
+/// Writes what the board's fighter tables changed back into the arena: on
+/// the tournament tab the selected event's entrants (a join rewrites the
+/// row from the lineup, a leaving drops its entrant and moves the later
+/// ones down), on the other tabs the lineup order into the staff's order
+/// list when the staff matches the board's pool.
+pub fn board_table_answer(
+    action: crate::hub_windows::BoardTableAction,
+    windows: &HubWindows,
+    career: &mut crate::hub_windows::ArenaCareer,
+    staff: Option<&mut crate::staff::Staff>,
+) {
+    use crate::hub_windows::BoardTableAction;
+    let Some(board) = windows.board.as_ref() else {
+        return;
+    };
+    if !matches!(action, BoardTableAction::Joined | BoardTableAction::Left(_)) {
+        return;
+    }
+    if board.tab == exa_ui::match_board::BoardTab::Tournament {
+        let event = board.winner_selection;
+        let (Some(entry), Some(row)) = (board.entries.get(event), career.entries.get_mut(event))
+        else {
+            return;
+        };
+        match action {
+            BoardTableAction::Left(index) => crate::arena_board::remove_entrant(row, index),
+            _ => crate::arena_board::write_entry(entry, row),
+        }
+        info!(
+            "hub board: tournament event {event} entrants {:?}",
+            &row.entries[..(row.count as usize).min(row.entries.len())]
+        );
+    } else if let Some(staff) = staff
+        && staff.employees.len() + 1 == board.fighters.len()
+    {
+        staff.order = board.lineup.clone();
+        info!("hub board: lineup order {:?}", staff.order);
+    }
+}
+
+/// The board's company and lineup tables take the left press and release
+/// ([`HubWindows::board_table_input`]): a double press moves a fighter, a
+/// drag drops one onto the other table, and what changed goes back to the
+/// arena ([`board_table_answer`]). A press or release the tables take is
+/// not a world click for the hub.
+#[allow(clippy::too_many_arguments)]
+pub fn board_table_input(
+    mouse: Res<ButtonInput<MouseButton>>,
+    time: Res<Time<Real>>,
+    windows_q: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    scripted: Option<Res<exa_ui::ScriptedPointer>>,
+    mut windows: ResMut<HubWindows>,
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    mut stores: Option<ResMut<crate::save_live::ArenaStores>>,
+) {
+    if windows.kind != HubWindowKind::Board {
+        return;
+    }
+    let pressed = mouse.just_pressed(MouseButton::Left);
+    let released = mouse.just_released(MouseButton::Left);
+    if !pressed && !released {
+        return;
+    }
+    let Some(at) = windows_q.single().ok().and_then(|window| {
+        let at = match scripted.as_deref() {
+            Some(scripted) => scripted.position(window),
+            None => window.cursor_position(),
+        }?;
+        Some((
+            (at.x * window.scale_factor()) as i32,
+            (at.y * window.scale_factor()) as i32,
+        ))
+    }) else {
+        return;
+    };
+    let now = time.elapsed().as_millis() as i64;
+    let action = windows.board_table_input(at, pressed, released, now);
+    if action == crate::hub_windows::BoardTableAction::None {
+        return;
+    }
+    windows.took_pointer = true;
+    board_table_answer(
+        action,
+        &windows,
+        &mut career,
+        stores.as_deref_mut().map(|stores| &mut stores.staff),
+    );
+}
+
+/// `--board-table <steps>` (debug): once the board is open, its company and
+/// lineup tables take these pointer steps through
+/// [`HubWindows::board_table_input`], one every few frames, at the rows'
+/// centres: `roster:ROW` and `lineup:ROW` double press a row (1-based
+/// table rows), `drag:ROW:TO` drags company row ROW onto lineup row TO (0
+/// for no row) and `back:ROW` drags lineup row ROW onto the company table;
+/// `tab:N` presses board tab N (0-based) and `winner:ROW` selects a
+/// tournament event row first. Steps are comma separated.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct BoardTableScript {
+    pub steps: Vec<BoardTableStep>,
+    pub wait: u32,
+    /// The board was opened again from the career before the first step
+    /// (the debug joins may come after the board opened).
+    pub reopened: bool,
+}
+
+/// One `--board-table` step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardTableStep {
+    Double(exa_ui::match_board::TableSlot, usize),
+    Drag(usize, usize),
+    Back(usize),
+    Tab(usize),
+    Winner(usize),
+}
+
+impl BoardTableScript {
+    /// The steps of a `--board-table` value, or `None` when one does not
+    /// read.
+    pub fn parse(value: &str) -> Option<Self> {
+        use exa_ui::match_board::TableSlot;
+        let steps = value
+            .split(',')
+            .map(|step| {
+                let parts: Vec<&str> = step.trim().split(':').collect();
+                let row = |text: &str| text.parse::<usize>().ok();
+                match parts.as_slice() {
+                    ["roster", r] => Some(BoardTableStep::Double(TableSlot::Roster, row(r)?)),
+                    ["lineup", r] => Some(BoardTableStep::Double(TableSlot::Lineup, row(r)?)),
+                    ["drag", from, to] => Some(BoardTableStep::Drag(row(from)?, row(to)?)),
+                    ["back", r] => Some(BoardTableStep::Back(row(r)?)),
+                    ["tab", n] => Some(BoardTableStep::Tab(row(n)?)),
+                    ["winner", r] => Some(BoardTableStep::Winner(row(r)?)),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            steps,
+            wait: 30,
+            reopened: false,
+        })
+    }
+}
+
+/// The screen centre of a 1-based row of one of the open board's tables,
+/// or the table's centre for row 0.
+pub fn board_row_centre(
+    windows: &HubWindows,
+    slot: exa_ui::match_board::TableSlot,
+    row: usize,
+) -> Option<(i32, i32)> {
+    let board = windows.board.as_ref()?;
+    let bounds = windows.bounds()?;
+    let border = windows.board_form.as_ref().map_or(0, |f| f.geometry.border);
+    let table = board.table_layout(slot);
+    let client = table.client();
+    let pitch = exa_ui::table_view::ROW_UNITS * table.unit.max(1);
+    let x = bounds.left + border + table.rect.x + table.rect.w / 2;
+    let y = if row == 0 {
+        table.rect.y + table.rect.h - pitch / 2
+    } else {
+        client.y + pitch * row as i32 + pitch / 2
+    };
+    Some((x, bounds.top + border + y))
+}
+
+/// Runs `--board-table`'s steps through the board's own input.
+pub fn board_table_script(
+    script: Option<ResMut<BoardTableScript>>,
+    time: Res<Time<Real>>,
+    mut windows: ResMut<HubWindows>,
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    mut stores: Option<ResMut<crate::save_live::ArenaStores>>,
+    live: Option<Res<exa_assets::live_objects::LiveObjects>>,
+) {
+    use exa_ui::match_board::{BoardInput, TableSlot};
+    let Some(mut script) = script else {
+        return;
+    };
+    if script.steps.is_empty() || windows.kind != HubWindowKind::Board {
+        return;
+    }
+    if script.wait > 0 {
+        script.wait -= 1;
+        return;
+    }
+    if !script.reopened {
+        script.reopened = true;
+        windows.open_board_with(
+            &career,
+            staff_order(stores.as_deref()),
+            &board_item_kind(live.as_deref()),
+        );
+        info!(
+            "--board-table: the board opened again with {} fighters",
+            windows
+                .board
+                .as_ref()
+                .map_or(0, |board| board.fighters.len())
+        );
+    }
+    let step = script.steps.remove(0);
+    script.wait = 30;
+    let now = time.elapsed().as_millis() as i64;
+    let presses: Vec<((i32, i32), bool, bool, i64)> = match step {
+        BoardTableStep::Tab(index) => {
+            if let Some(board) = windows.board.as_mut() {
+                let action = board.handle(BoardInput::SelectTab(index));
+                info!("--board-table: {step:?}: {action:?}");
+            }
+            return;
+        }
+        BoardTableStep::Winner(row) => {
+            if let Some(board) = windows.board.as_mut() {
+                let action = board.handle(BoardInput::ClickWinner(row));
+                info!("--board-table: {step:?}: {action:?}");
+            }
+            return;
+        }
+        BoardTableStep::Double(slot, row) => {
+            let Some(at) = board_row_centre(&windows, slot, row) else {
+                return;
+            };
+            vec![
+                (at, true, false, now),
+                (at, false, true, now),
+                (at, true, false, now + 100),
+                (at, false, true, now + 100),
+            ]
+        }
+        BoardTableStep::Drag(from, to) => {
+            let (Some(a), Some(b)) = (
+                board_row_centre(&windows, TableSlot::Roster, from),
+                board_row_centre(&windows, TableSlot::Lineup, to),
+            ) else {
+                return;
+            };
+            vec![(a, true, false, now), (b, false, true, now)]
+        }
+        BoardTableStep::Back(row) => {
+            let (Some(a), Some(b)) = (
+                board_row_centre(&windows, TableSlot::Lineup, row),
+                board_row_centre(&windows, TableSlot::Roster, 0),
+            ) else {
+                return;
+            };
+            vec![(a, true, false, now), (b, false, true, now)]
+        }
+    };
+    for (at, pressed, released, when) in presses {
+        let action = windows.board_table_input(at, pressed, released, when);
+        board_table_answer(
+            action,
+            &windows,
+            &mut career,
+            stores.as_deref_mut().map(|stores| &mut stores.staff),
+        );
+        info!(
+            "--board-table: {step:?} at {at:?} (press {pressed}, release {released}): {action:?}; lineup {:?}",
+            windows.board.as_ref().map(|board| &board.team)
+        );
+    }
+}
+
 /// The click hook: the object or character under the click, the action it
 /// answers and the window it opens.
 #[allow(clippy::too_many_arguments)]
@@ -1481,6 +1792,12 @@ fn hub_clicks(
 ) {
     let hub_loaded = levels.iter().any(|root| is_hub_level(&root.name));
     if !hub.entered && !hub_loaded {
+        clicks.clear();
+        return;
+    }
+    // The arena's leave cleared the click hook: nothing answers until the
+    // next entry installs it.
+    if hub.entered && hub.click_hook == HubHook::None {
         clicks.clear();
         return;
     }
@@ -1648,7 +1965,11 @@ fn hub_clicks(
             HubAction::MatchBoard => {
                 // Opening the board makes the hub busy; the board's close
                 // clears it again.
-                windows.open_board(&career);
+                windows.open_board_with(
+                    &career,
+                    staff_order(shop.stores.as_deref()),
+                    &board_item_kind(Some(&*shop.objects)),
+                );
                 hub.busy = true;
             }
             HubAction::ManageCompany => {
@@ -2139,6 +2460,190 @@ mod tests {
     use crate::arena_hub::same_name;
     use crate::hand::Hit;
     use crate::hub_windows::HubWindowKind;
+
+    /// A career of three Master combatants (the second with a first-hand
+    /// item in its first event's loadout), its tournament rolled, and a
+    /// staff that matches it.
+    fn board_career() -> (
+        crate::hub_windows::ArenaCareer,
+        crate::save_live::ArenaStores,
+    ) {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.name = "Ours".into();
+        for name in ["Anna", "Brom", "Cato"] {
+            career
+                .company
+                .hire(name, crate::career::Profession::Combatant)
+                .unwrap();
+        }
+        for member in &mut career.company.roster {
+            member.skills = [10; 6];
+        }
+        career.player.skills = [10; 6];
+        career.company.roster[1].loadouts[0].hands[0] =
+            exa_formats::characters::ItemRef::new(0x42, 7);
+        career.regenerate_tournament_at(0x1234_5678);
+        // A day before the tournament: the lineups may be edited.
+        career.company.day = 1;
+        let mut stores = crate::save_live::ArenaStores::default();
+        stores.staff.employees = vec![
+            crate::staff::Employee {
+                class: crate::staff::COMBATANT,
+                ..Default::default()
+            };
+            3
+        ];
+        (career, stores)
+    }
+
+    /// A headless app running the board's table input over an open board.
+    fn board_app(tab: exa_ui::match_board::BoardTab) -> App {
+        let (career, stores) = board_career();
+        let mut windows = HubWindows::default();
+        windows.open_board(&career);
+        windows.board.as_mut().unwrap().switch_tab(tab);
+        let mut app = App::new();
+        app.insert_resource(windows)
+            .insert_resource(career)
+            .insert_resource(stores)
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Time<Real>>()
+            .insert_resource(exa_ui::ScriptedPointer(None))
+            .add_systems(Update, board_table_input);
+        app.world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow));
+        app
+    }
+
+    /// One left press or release at a screen point, through the app.
+    fn pointer(app: &mut App, at: (i32, i32), press: bool) {
+        app.insert_resource(exa_ui::ScriptedPointer(Some(Vec2::new(
+            at.0 as f32,
+            at.1 as f32,
+        ))));
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.clear();
+        if press {
+            mouse.press(MouseButton::Left);
+        } else {
+            mouse.release(MouseButton::Left);
+        }
+        app.update();
+    }
+
+    fn row_centre(app: &App, slot: exa_ui::match_board::TableSlot, row: usize) -> (i32, i32) {
+        board_row_centre(app.world().resource::<HubWindows>(), slot, row).unwrap()
+    }
+
+    /// A double press on a company fighter benches the Duel's one fighter
+    /// for it, and the lineup order goes into the staff's order list.
+    #[test]
+    fn a_double_press_on_the_company_table_moves_the_fighter_into_the_lineup() {
+        use exa_ui::match_board::{BoardTab, TableSlot};
+        let mut app = board_app(BoardTab::Matches);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team, vec![1]);
+        let row = board.available.iter().position(|&slot| slot == 2).unwrap() + 1;
+        let at = row_centre(&app, TableSlot::Roster, row);
+        pointer(&mut app, at, true);
+        assert!(app.world().resource::<HubWindows>().took_pointer);
+        pointer(&mut app, at, false);
+        pointer(&mut app, at, true);
+        pointer(&mut app, at, false);
+        let windows = app.world().resource::<HubWindows>();
+        let board = windows.board.as_ref().unwrap();
+        assert_eq!(board.team, vec![2]);
+        assert!(board.available.contains(&1));
+        assert_eq!(board.lineup[0], 2);
+        let stores = app.world().resource::<crate::save_live::ArenaStores>();
+        assert_eq!(stores.staff.order, board.lineup);
+        // The next board opens on that order.
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        let order = staff_order(Some(stores));
+        assert!(order.is_some());
+        let reopened = career.board_with(order, &|item| item);
+        assert_eq!(reopened.team, vec![2]);
+        // A double press on the lineup's row sends the fighter back.
+        let at = row_centre(&app, TableSlot::Lineup, 1);
+        pointer(&mut app, at, true);
+        pointer(&mut app, at, false);
+        pointer(&mut app, at, true);
+        pointer(&mut app, at, false);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert!(board.team.is_empty());
+        assert!(board.available.contains(&2));
+    }
+
+    /// On the tournament tab a company fighter dragged onto the lineup is
+    /// entered in the selected event (its id and its loadout's first hand
+    /// item), the reopened board reads the entry back, and a drag back to
+    /// the company table drops it.
+    #[test]
+    fn a_drag_onto_the_tournament_lineup_enters_the_event() {
+        use exa_ui::match_board::{BoardTab, TableSlot};
+        let mut app = board_app(BoardTab::Tournament);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert!(board.team.is_empty());
+        assert!(!board.assignment_locked());
+        let row = board.available.iter().position(|&slot| slot == 2).unwrap() + 1;
+        let from = row_centre(&app, TableSlot::Roster, row);
+        let to = row_centre(&app, TableSlot::Lineup, 1);
+        pointer(&mut app, from, true);
+        pointer(&mut app, to, false);
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        let entry = career.entries[0];
+        assert_eq!(entry.count, 1);
+        assert_eq!(entry.entries[0].actor_id, 2);
+        assert_eq!(entry.entries[0].weapon[0] as u32, 0x42);
+        let reopened = career.board();
+        assert!(reopened.has_entrants());
+        assert_eq!(reopened.entries[0].participants[0].slot, 2);
+        assert_eq!(reopened.entries[0].participants[0].value, 0x42);
+        // Back onto the company table.
+        let back = row_centre(&app, TableSlot::Lineup, 1);
+        let roster = row_centre(&app, TableSlot::Roster, 0);
+        pointer(&mut app, back, true);
+        pointer(&mut app, roster, false);
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(career.entries[0].count, 0);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert!(board.team.is_empty());
+    }
+
+    /// A drop on the table the row came from changes nothing.
+    #[test]
+    fn a_drop_on_its_own_table_does_nothing() {
+        use exa_ui::match_board::{BoardTab, TableSlot};
+        let mut app = board_app(BoardTab::Matches);
+        let before = app.world().resource::<HubWindows>().board.clone().unwrap();
+        let from = row_centre(&app, TableSlot::Roster, 1);
+        let to = row_centre(&app, TableSlot::Roster, 2);
+        pointer(&mut app, from, true);
+        pointer(&mut app, to, false);
+        let board = app.world().resource::<HubWindows>().board.clone().unwrap();
+        assert_eq!(board.team, before.team);
+        assert_eq!(board.available, before.available);
+    }
+
+    #[test]
+    fn the_board_table_steps_read() {
+        use exa_ui::match_board::TableSlot;
+        let script =
+            BoardTableScript::parse("tab:2, winner:0, drag:2:0, back:1, roster:3, lineup:1")
+                .unwrap();
+        assert_eq!(
+            script.steps,
+            vec![
+                BoardTableStep::Tab(2),
+                BoardTableStep::Winner(0),
+                BoardTableStep::Drag(2, 0),
+                BoardTableStep::Back(1),
+                BoardTableStep::Double(TableSlot::Roster, 3),
+                BoardTableStep::Double(TableSlot::Lineup, 1),
+            ]
+        );
+        assert!(BoardTableScript::parse("drag:x").is_none());
+    }
 
     /// The auto switch's rematch saves the career before its launch, as
     /// the board's Begin does.

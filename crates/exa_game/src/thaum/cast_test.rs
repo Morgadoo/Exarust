@@ -2071,3 +2071,69 @@ fn losing_the_focus_item_ends_the_powers_past_the_slots() {
     let states: Vec<i32> = caster.active.iter().map(|e| e.state).collect();
     assert_eq!(states, vec![READY, READY, READY, 2]);
 }
+
+/// Mind: the bar's Sense Minds answers the frame with its overlay, which
+/// starts for the cast's duration and registers its frame hook; a second
+/// cast extends it.
+#[test]
+fn a_sense_minds_cast_from_the_bar_starts_the_sight_overlay() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[crate::mind::casts::SENSE]);
+    app.world_mut()
+        .entity_mut(caster)
+        .insert(crate::mind::casts::MindBody::new(1));
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    app.world_mut().insert_resource(BodyTicks(100));
+    cast(&mut app, caster);
+    let mind = app
+        .world()
+        .get::<crate::mind::casts::MindBody>(caster)
+        .unwrap();
+    assert_eq!(mind.powers.len(), 1, "{:?}", mind.powers);
+    let sense = app.world().resource::<crate::mind::draw::MindSense>();
+    assert!(sense.hooked);
+    assert_eq!(sense.overlay.state, crate::mind::sight::FADING_IN);
+    let now = BodyTicks(100).millis() as u32;
+    let duration = crate::mind::casts::sense_duration(1.0, mind_cost(crate::mind::casts::SENSE));
+    assert_eq!(sense.overlay.end_ms, now + duration as u32);
+}
+
+/// The price the bar's Mind front end asks for `id` on a fresh caster.
+fn mind_cost(id: u32) -> f32 {
+    let body = PowerCaster::new(&[id]).body;
+    crate::mind::casts::mind_front_end(id, &body, false)
+        .map(|(_, cost, _)| cost)
+        .unwrap()
+}
+
+/// The bar's toggle on a body the player was handed does not toggle the
+/// bar: it ends the Control Mind of the body left behind.
+#[test]
+fn the_bar_toggle_in_a_possessed_body_ends_the_control() {
+    use crate::mind::casts::{CONTROL_MIND, MindBody, MindClass, MindPower};
+    let mut app = new_app();
+    let held = caster(&mut app, &[BARRICADE]);
+    let mut own = MindBody::new(1);
+    own.powers.push(MindPower::new(
+        CONTROL_MIND,
+        MindClass::ControlMind(crate::thaum::power::mind::ControlMindCaster::new(0.5, 0)),
+    ));
+    app.world_mut().entity_mut(held).insert(own);
+    let mut possessed = MindBody::new(2);
+    possessed.cast.status_bits = CONTROLLING;
+    let body = app.world_mut().spawn(possessed).id();
+    app.world_mut()
+        .resource_mut::<crate::mind::runtime::MindControl>()
+        .held = Some(held);
+    let open = app.world().get::<PowerCaster>(held).unwrap().bar_open;
+    command(&mut app, body, BarAction::Toggle);
+    app.update();
+    let mind = app.world().get::<MindBody>(held).unwrap();
+    assert_eq!(mind.powers[0].state(), ENDING);
+    // The held body's own bar is not toggled.
+    assert_eq!(app.world().get::<PowerCaster>(held).unwrap().bar_open, open);
+}

@@ -1714,8 +1714,7 @@ drawing:
   without closing them: an open container popup saves its panel into its
   record and the journal stores its text (the inventory and loot panels'
   items already live in the bodies' possessions in Exarust). The
-  journal text box's Tab callback turns combat mode on; Exarust's journal
-  text is drawn read-only, so nothing calls it yet.
+  journal text box's Tab callback turns combat mode on.
 - **Controls.** The power slot (0xac3, 40 × 40) answers its hint with 3
   (0x103 for a hovered slot with a count) and hides a visible tooltip;
   a press with 0x2000 on an enabled slot with an icon or a kind opens the
@@ -1798,8 +1797,8 @@ hotkeys send a screen request through the hotkey handler (its
 permissions apply), the inventory and journal are forms on a `GuiTask`
 (so their focus follows the window manager), the inventory is registered
 as an open container, the journal keeps its session entries, a right-button
-release over the inventory's or a loot window's form closes it (their own
-mouse handler), and Escape closes the focused screen (Exarust's). Both
+release over the inventory's, a loot window's or the journal's form (its
+text box included) closes it (their own mouse handler), and Escape closes the focused screen (Exarust's). Both
 screens draw through `exa_game::gui_paint`. The constructors' words: the
 form attribute word is 0x30022 (the journal adds 0x8000) and the frame
 style adds the centred-title bit 0x3000; the item pack adds 0x80 to its
@@ -1926,7 +1925,11 @@ its rating-dots record (class 0xac01, at client (100, 386), 12 × 28) and
 its two page buttons in radio group 1 (the constructor passes the table's
 last index, 3): Primary (108 × 24 at (4, 416), stored lit) and Secondary
 (following it on its row by four, at (116, 416)); and the journal's New
-(4, 20) and Erase (120, 20), 104 × 24 each. A button caption takes the
+(4, 20) and Erase (120, 20), 104 × 24 each, with the entry list, a combo
+box 220 wide on the row below them whose caption is the selected entry's
+title (its drop list does not open on the journal yet). New stores the
+text, adds "New Entry" and shows it; Erase removes the selected entry, or
+blanks the only one. A button caption takes the
 skin's placement from its style word (0x3000 centres horizontally, 0x300
 centres vertically). The journal's selected entry draws through the text
 box.
@@ -1978,9 +1981,8 @@ entries, a drop on the same panel repositions, and a drop on the body's
 equipment panel or outside every panel is refused. The world's press is
 held while the pointer is over an open screen.
 The character view, its rating dots and its drop are `exa_game::doll_view`
-(Character view, below). Not wired: the journal's entry
-list (its geometry is not in the traced units),
-the controls' callbacks and the technique selector. Taking a worn item off
+(Character view, below). Not wired: the journal entry list's drop list
+and title edit, the other controls' callbacks and the technique selector. Taking a worn item off
 a body does not re-dress its mesh, the GUI-to-world drop is not run, and a
 level-local item's record is not promoted into the world database, so its
 bulk counts 0. The skills key's screen and the power tree are outside this unit,
@@ -2050,8 +2052,19 @@ Text is Latin-1 bytes; line breaks are `\r\n`.
   while the pointer rests. Stick directions go to the parent form, which
   scrolls the box a step on up and down.
 
-Exarust's forms do not use text boxes yet; the box is ready for the
-manual pages and character creation.
+The journal's text box and the manual's page are live text boxes. The
+journal's opener builds an editable box (small font, no border, vertical
+scroll bar, its margin the GUI unit, which the show's rescale from unit 4
+scales by `unit / 4` in integers) with a Tab callback that turns combat
+mode on. It is a held form under the journal: the window manager's focus
+follows the pointer onto it, and while it has the focus the keys type into
+it and the player's hotkeys do not run. A press places the caret and
+restarts its blink (the caret-lit bit flips every fifth frame and the
+caret is drawn only while lit); a held press past the drag threshold
+selects; the scroll bar and the wheel set the scroll target, which the
+drawn scroll eases to. The manual's page is read only, with markup and a
+margin of 8, two units after the rescale (`exa_game::gui_screens`,
+`exa_game::help_live`).
 
 ### Text editing
 
@@ -2185,6 +2198,19 @@ the original sets every other flag bit too). Typed letters jump to the
 next entry whose name starts with them, case-blind, the letters adding up
 within 600 ms. Left and Right move by a line of entries outside the list
 layout, Up and Down by one; F2 renames.
+
+The manual's topic list is the live item view: a list (style 0x9100000)
+rescaled to the GUI unit, so its rows are five units (30 pixels at 1080
+lines, as retail shows). The pointer's entry is its hover and glows; a
+click (the window manager's release word) selects; while the list has the
+focus the arrows, Home, End and typed letters move the selection. The
+selected entry draws a four-ink frame, a fill fading from the highlight
+group's fifth to first shade at a quarter alpha and the selection band,
+and its name in the label group's ninth shade. Every selection change runs
+the list's callback, which shows the topic and focuses the page with the
+control −1; a click's focus bit then focuses the list again, so a second
+key press after a key-driven change reaches the read-only page and does
+nothing until the pointer moves.
 
 ## Dormant editor controls
 

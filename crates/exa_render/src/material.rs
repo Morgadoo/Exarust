@@ -264,6 +264,20 @@ pub mod flags2 {
     /// and the vertex alpha; nothing under the level's distance fog, where
     /// the shipped program does not build ([`crate::smoke::program_builds`]).
     pub const SMOKE: u32 = 256;
+    /// The original's fast light loop (`lightsfst`, `Shd.FastLgt`: material
+    /// extra flag `0x200` at the shipped shading quality) in its PBR
+    /// program: per light a plain N·L diffuse with no Fresnel share and the
+    /// fast highlight with Fresnel 0.04 + 0.96·2^(−8·V·H), as the grass
+    /// program lights ([`GRASS`]).
+    pub const FAST_LIGHT: u32 = 512;
+    /// The original's translucent program (`shadetrl_f`, program class 7:
+    /// a type-1 record in translucent mode, flags `0x300` = `0x100`, which
+    /// the shipped foliage is): the fast light loop with a signed N·L
+    /// (`Shd.NegNdL`), so the diffuse takes N·L² and a leaf lit from behind
+    /// glows; on a two-sided back face the whole normal-map normal is
+    /// negated (built on the vertex tangent as it comes); and after the
+    /// diffuse colour the red channel becomes 0.8·r + 1.5·r².
+    pub const TRANSLUCENT: u32 = 1024;
 }
 
 /// The original's dirt modes 1 and 2, which only its PBR program

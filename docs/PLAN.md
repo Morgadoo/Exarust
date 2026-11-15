@@ -1459,6 +1459,16 @@ the inventory now refuses items the character race cannot use (golem-only weapon
 
 the character record rules are wired on the live paths: the skill-ready alert reads the player record, the inventory bind charges the worn bulk, a hand item dropped outside the pack takes the last held copy and the surplus hand references, a unique sold arena item leaves the members' outfits, NPC pick-ups land at the given-back cell, and level-placed characters take their record's health pools. 14 ledger rows closed.
 
+the body settling state is wired at its four callers (a character the scene takes back settles 83 ticks; the story respawn, a pending-respawn load and Spirit Form's new body settle 16), the lock release freezes the item with the kinematic bit that keeps it out of the level detection, held items take their holder's park mark, and the Barricade dismissal tests the wall's box with the separating-axis test. Lockstep traces change where a character re-enters the scene. 6 ledger rows closed.
+
+the Sense Minds overlay is live on the frame: the bar's answer starts it, the persistent power's end fades it, a new level drops its minds and the story quit resets it; each tracked mind is drawn as a sphere on its head at the race's sight place, and the mind awakening puts a 3 s glow on the player. Loyalty's cast and its marker read the real relation, and the bar toggle in a handed body ends the control. 16 of the 27 open SG_Thaum_Mind rows are now live.
+
+the journal's text box is the original's TTextBox under the window manager (typing while focused, caret and blink, drag-select, scroll bar and wheel, Tab to combat), with its third record (the entry list), New and Erase wired and a right release closing it. The manual's topic list is the TGUIItemView rescaled to the GUI unit (rows 5u, as retail), driven through its select, press and key slots. A base-form defect is fixed: no form record's release ever reached its callback.
+
+DEC-8 checked: `exa-tool shader --variants` maps all 147 shipped surface-program groups (7,533 programs) to the WESL branches, and the template machinery (all of TShaderBuilder, most of FLX_GPUPrograms) is closed as engine-replaced. The check added the translucent program for shipped foliage and the fast light loop for plants, made the shadow and GI taps follow the shadow-sample count (the full 32-tap table), and stopped squaring the shared colour-slot alpha. Still open: refraction, subsurface outside the race skin, the fast loop's shadow offsets.
+
+the match board reads the career's tournament rows, event values, week winners and the staff's lineup order; its company and lineup tables take double presses and drag-and-drop, written back to the event row or the lineup order. The week verdict records its winner and the save keeps it; the end-session arena CONTINUE runs the arena's continue, the arena's leave runs on session leave, and the manage report gets the hire list and fighter names.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
