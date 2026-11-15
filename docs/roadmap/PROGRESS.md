@@ -17,7 +17,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | **Ledger: bytes in a final state** | — | **48.41%** | **100%** |
 | Ledger: functions audited | — | 6,624 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | not measured | 100% |
+| Live rows with scene or retail evidence | — | 257 of 2,514 (10%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
 | Tests passing | 8,489 | 8,536 | all |
@@ -32,7 +32,7 @@ function yet; see the [README](README.md).
 |---|---|---|
 | A — measure every function | done | — |
 | B — close every open function | doing | B0 leads; then B1 (1,018 uncalled) |
-| C — behaviour | doing | C1.4, then C2 (needs a scratch retail profile) |
+| C — behaviour | doing | C2 needs a scratch retail profile (owner); C4 scenes for test-only rows |
 | D — release | not started | D1 infrastructure |
 
 ## Tasks
@@ -73,7 +73,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 
 | id | task | state | note |
 |---|---|---|---|
-| C1 | Comparison tools (seed, capture, diff, evidence) | doing | round 207: --env-seed, --new-game story, exa-tool picdiff, retail_capture.sh; the evidence column (C1.4) remains |
+| C1 | Comparison tools (seed, capture, diff, evidence) | done | round 207 tools; the ledger's evidence column: live rows by retail 11, scene 246, test 1,938, code reading 319 |
 | C2 | Retail reference set | todo | 8 of about 50 |
 | C3 | Scenario matrix | todo | sweep has 80 scenes |
 | C4 | Unit-test-only ports | todo | first entries: ui-01 picker title band and hovered label (two_ink_band, glow_text), promoted by review from code reading |
