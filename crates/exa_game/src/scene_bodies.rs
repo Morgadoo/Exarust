@@ -158,6 +158,10 @@ pub struct SceneBodyPlan {
     pub clear_roles: bool,
     /// Its red health as a share of its maximum, 0…1.
     pub health: f32,
+    /// A company entrant's saved health word: the spawn sets red and
+    /// yellow from it as the original does
+    /// ([`crate::arena_match::health_from_word`]), not from [`Self::health`].
+    pub health_word: Option<u16>,
     /// Its first condition word (a generated opponent's damage word).
     pub damage: f32,
     /// Its second condition word (a generated opponent's health word).
@@ -181,6 +185,18 @@ pub struct SceneBodyPlan {
 }
 
 impl SceneBodyPlan {
+    /// The health a body of maximum `max` spawns at: a company entrant's
+    /// saved word as the original's health set computes it (the maximum
+    /// times the word times 1/65535 in double, stored as single), else
+    /// the plan's share of the maximum.
+    #[must_use]
+    pub fn start_health(&self, max: f32) -> f32 {
+        match self.health_word {
+            Some(word) => crate::arena_match::health_from_word(word, max),
+            None => max * self.health,
+        }
+    }
+
     /// A plan from a place (centimetres) with the arena's defaults.
     fn base(place: &Place) -> Self {
         Self {
@@ -193,6 +209,7 @@ impl SceneBodyPlan {
             roles: Vec::new(),
             clear_roles: true,
             health: 1.0,
+            health_word: None,
             damage: SPAWN_DAMAGE,
             condition_health: SPAWN_HEALTH,
             weapon: None,
@@ -388,6 +405,7 @@ pub fn company_plan(
     body.roles = vec![role];
     body.id = id;
     body.health = member.map_or(1.0, |(_, health)| f32::from(health) / f32::from(u16::MAX));
+    body.health_word = member.map(|(_, health)| health);
     body.damage = SPAWN_HEALTH;
     body.condition_health = SPAWN_HEALTH;
     body.brain = BodyBrain::Npc;
@@ -684,7 +702,7 @@ pub fn spawn_scene_body(
             .entity(model_entity)
             .insert(exa_ai::brain::MindWarded);
     }
-    fighter.health.yellow = fighter.health.max * plan.health;
+    fighter.health.yellow = plan.start_health(fighter.health.max);
     fighter.health.red = fighter.health.yellow;
     // A saved record's pools are the spawn's last write. A generated body
     // keeps the plan's share; its record was just rolled and is not a save.
@@ -1031,6 +1049,12 @@ pub enum SceneCommand {
     Despawn(Entity),
     /// Stand a body at a place.
     Place { body: Entity, at: Vec3, yaw: f32 },
+    /// Reset a body the match keeps for its next round
+    /// ([`crate::match_layout::KeptReset`]; [`reset_kept_bodies`]).
+    Reset {
+        body: Entity,
+        reset: crate::match_layout::KeptReset,
+    },
 }
 
 /// A body was built, with the plan that built it.
@@ -1064,7 +1088,46 @@ impl Plugin for SceneBodiesPlugin {
         app.add_message::<SceneCommand>()
             .add_message::<SceneBodyBuilt>()
             .init_resource::<SceneActors>()
-            .add_systems(Update, apply_scene_commands);
+            .add_systems(Update, (apply_scene_commands, reset_kept_bodies));
+    }
+}
+
+/// A body the next round keeps, reset as the original's kept-body reset
+/// does: yellow health takes red, the shield arm is full, the condition is
+/// 0, and its scene marker takes the standby behaviour and, for a
+/// non-player, the AI's held clocks. Re-placing the living body on its
+/// round place is not done here (it stays where it stands).
+pub fn reset_kept_bodies(
+    mut messages: MessageReader<SceneCommand>,
+    mut bodies: Query<(
+        &mut exa_combat::Fighter,
+        &mut exa_combat::Condition,
+        Option<&mut exa_combat::block::ShieldHold>,
+        Option<&mut SceneFighter>,
+    )>,
+) {
+    for command in messages.read() {
+        let SceneCommand::Reset { body, reset } = command else {
+            continue;
+        };
+        let Ok((mut fighter, mut condition, hold, marker)) = bodies.get_mut(*body) else {
+            continue;
+        };
+        fighter.health.yellow = fighter.health.red;
+        if let exa_combat::damage::Guard::Shield(guard) = &mut fighter.guard {
+            guard.stamina = 1.0;
+        }
+        if let Some(mut hold) = hold {
+            hold.guard.stamina = 1.0;
+        }
+        *condition = exa_combat::Condition::NORMAL;
+        if let Some(mut marker) = marker {
+            marker.behaviour = Some(reset.behaviour);
+            if let Some(act_at) = reset.jitter_at_ms {
+                marker.act_at_ms = act_at;
+            }
+        }
+        info!("scene body {body:?}: kept for the next round and reset");
     }
 }
 
@@ -1190,6 +1253,8 @@ fn apply_scene_commands(
                     commands.entity(root).despawn();
                 }
             }
+            // A kept body's reset runs in its own system.
+            SceneCommand::Reset { .. } => {}
             SceneCommand::Place { body, at, yaw } => {
                 if bodies.get(*body).is_ok() {
                     commands.entity(*body).insert(
@@ -1242,6 +1307,62 @@ mod tests {
     };
     use crate::match_layout::{Place, opponent_place};
     use exa_formats::characters::CharacterRecord;
+
+    /// A kept body's reset, through the scene system: yellow takes red,
+    /// the shield arm fills, the condition is 0 and the marker takes the
+    /// standby behaviour and the held clock.
+    #[test]
+    fn a_kept_body_is_reset_for_the_next_round() {
+        let mut app = App::new();
+        app.add_message::<SceneCommand>()
+            .add_systems(Update, reset_kept_bodies);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.yellow = 0.05;
+        fighter.health.red = 0.2;
+        fighter.guard = exa_combat::damage::Guard::Shield(exa_combat::damage::ShieldGuard {
+            stamina: 0.25,
+            ..Default::default()
+        });
+        let body = app
+            .world_mut()
+            .spawn((
+                fighter,
+                exa_combat::Condition(0x300),
+                SceneFighter {
+                    team: 2,
+                    company: false,
+                    id: 0,
+                    damage: 0.0,
+                    condition_health: 0.0,
+                    act_at_ms: 0,
+                    behaviour: None,
+                },
+            ))
+            .id();
+        let mut roll = 1;
+        let reset = crate::match_layout::reset_kept(false, 5_000, &mut roll);
+        app.world_mut()
+            .write_message(SceneCommand::Reset { body, reset });
+        app.update();
+        let fighter = app.world().get::<exa_combat::Fighter>(body).unwrap();
+        assert_eq!(fighter.health.yellow, 0.2);
+        let exa_combat::damage::Guard::Shield(guard) = fighter.guard else {
+            panic!("the guard stays a shield");
+        };
+        assert_eq!(guard.stamina, 1.0);
+        assert_eq!(
+            *app.world().get::<exa_combat::Condition>(body).unwrap(),
+            exa_combat::Condition::NORMAL
+        );
+        let marker = app.world().get::<SceneFighter>(body).unwrap();
+        assert_eq!(
+            marker.behaviour,
+            Some(crate::match_layout::STANDBY_BEHAVIOUR)
+        );
+        // The roll stepped once: 0x08088406, whose high share of 10000 is 313.
+        assert_eq!(roll, 0x0808_8406);
+        assert_eq!(marker.act_at_ms, 5_000 + 10_000 + 313);
+    }
 
     fn place() -> Place {
         opponent_place([900.0, 0.0, 100.0])
@@ -1322,8 +1443,16 @@ mod tests {
         assert!((plan.health - 0.5).abs() < 1e-4);
         assert!(matches!(plan.brain, BodyBrain::Npc));
         assert_eq!(plan.damage, 100.0);
+        // The word is kept for the spawn, which takes the double product:
+        // a maximum of 0.3 and the word 259 give 0x3a9b6702, where the
+        // single share times the maximum gives 0x3a9b6703.
+        assert_eq!(plan.health_word, Some(32_768));
+        let low = company_plan(Some(("Bo", 259)), None, &place(), 0x11, 3, 0, 3_000);
+        assert_eq!(low.start_health(0.3).to_bits(), 0x3a9b_6702);
+        assert_eq!((0.3 * low.health).to_bits(), 0x3a9b_6703);
         let empty = company_plan(None, None, &place(), 0x11, 1, 0, 3_000);
         assert_eq!(empty.health, 1.0);
+        assert_eq!(empty.start_health(0.25), 0.25);
         assert_eq!(empty.name, None);
     }
 
