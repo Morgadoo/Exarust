@@ -453,6 +453,7 @@ pub fn release_freed_grips(
         if let Some(holder) = owner
             && grip.kind == HeldKind::Weapon
         {
+            info!("grip: {entity} came loose from {holder}");
             loose.write(crate::grip::CameLoose {
                 item: entity,
                 holder,
