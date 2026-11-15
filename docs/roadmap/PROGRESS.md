@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r202, 11-11) | target |
+| measure | start (r186, 11-10) | now (r209, 11-15) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **48.41%** | **100%** |
+| **Ledger: bytes in a final state** | — | **48.54%** | **100%** |
 | Ledger: functions audited | — | 6,624 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 257 of 2,514 (10%) | 100% |
+| Live rows with scene or retail evidence | — | 262 of 2,526 (10%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,536 | all |
+| Tests passing | 8,489 | 8,571 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,11 +99,11 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 194 | 188,931 |
-| UI | 12 | 12 | 469 | 185,518 |
+| UI | 12 | 12 | 468 | 184,556 |
 | Rendering & GPU | 10 | 10 | 343 | 174,256 |
 | Thaumaturgy & effects | 9 | 9 | 206 | 129,720 |
 | AI & behaviour | 8 | 8 | 190 | 120,216 |
-| Characters, motion & animation | 8 | 8 | 262 | 116,341 |
+| Characters, motion & animation | 8 | 8 | 248 | 114,150 |
 | Game modes, arena & session | 7 | 7 | 248 | 103,149 |
 | World, levels & terrain | 5 | 5 | 172 | 88,138 |
 | Items, materials & crafting | 5 | 5 | 186 | 86,750 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,657** | **1,294,751** |
+| **Total** | **90** | **90** | **2,642** | **1,291,598** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions.
 
 | date | round | what |
 |---|---|---|
+| 2026-11-15 | 208–209 | Spirit Form adopts and returns on the simulation step, and frame-sent events wait for the last step packet (B0.6); character data wiring (B1). Game run: both mind powers return the player, no undone writes; ledger 48.5%. |
 | 2026-11-15 | 206 | GPU back after the PC fix (the network card had split the GPU's PCIe lanes; it fell off the bus 9 times since October; a stress test passed). Game smoke runs owed for rounds 204-206 done, no GPU errors. Phase B lanes restarted: spiritstep (B0.6), wiremind, wirechardata, wiredyn (B1). |
 | 2026-11-13 | — | Phase A audits complete: all 90 packages accepted; coverage now published from the ledger (48.3% closed beside the 82.3% estimate); Phase B work list generated; 540 findings. Rounds 204-206 (arrival, new-game slot and saves, Control Mind on the step) pass their checks and wait for the GPU. |
 | 2026-11-13 | — | UI, rendering, thaumaturgy and world audited. Two packages rejected and redone. The RTX 3090 dropped off the host after an out-of-memory error; `gpu_grid.sh` now queues GPU runs. Round 204 (arrival placement, B0.2) passes its checks and waits for the GPU. |

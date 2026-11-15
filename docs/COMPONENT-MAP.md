@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 48.4% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 48.5% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **48.4% closed**, of which 37.9% live (reimplemented), 8.8% engine and 1.7% closed without code (unreachable or deviation). Still open: 39.5% partial and 12.0% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **48.5% closed**, of which 38.0% live (reimplemented), 8.8% engine and 1.7% closed without code (unreachable or deviation). Still open: 39.5% partial and 11.9% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -25,7 +25,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 49% | 38% | 9% | 2% | 37% | 14% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 51% | 44% | 4% | 3% | 37% | 12% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 24% | 23% | 1% | 0% | 64% | 12% |  |
-| Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 43% | 38% | 4% | 0% | 45% | 13% |  |
+| Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 44% | 39% | 4% | 0% | 45% | 12% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 39% | 36% | 2% | 1% | 51% | 10% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 43% | 40% | 1% | 2% | 52% | 5% |  |
@@ -282,7 +282,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TMotilePart | Characters, motion & animation | 53 | 86% | 62% | 62% | 1% | 0% | 32% | 6% |
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | 20% | 18% | 2% | 0% | 68% | 12% |
 | RF_Skinning | Characters, motion & animation | 25 | 91% | 49% | 44% | 5% | 0% | 49% | 2% |
-| SG_Character_Data | Characters, motion & animation | 20 | 97% | 61% | 60% | 1% | 0% | 11% | 28% |
+| SG_Character_Data | Characters, motion & animation | 20 | 97% | 72% | 68% | 1% | 2% | 12% | 16% |
 | RF_Morphing | Characters, motion & animation | 16 | 80% | 14% | 14% | 0% | 0% | 47% | 39% |
 | FLX_Character_Textures | Characters, motion & animation | 8 | 83% | 17% | 14% | 3% | 0% | 81% | 2% |
 | TSkinController2 | Characters, motion & animation | 8 | 81% | 39% | 6% | 34% | 0% | 47% | 14% |
@@ -483,7 +483,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TManageForm | Game modes, arena & session | 0 | 60% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TGUIDrawSkin | UI | 35 | 93% | 42% | 42% | 0% | 0% | 11% | 47% |
 | TGSLines | UI | 24 | 89% | 13% | 13% | 0% | 0% | 60% | 26% |
-| SG_GameGUI | UI | 22 | 90% | 44% | 26% | 1% | 16% | 46% | 10% |
+| SG_GameGUI | UI | 22 | 90% | 48% | 31% | 1% | 16% | 42% | 10% |
 | TGUIForm | UI | 20 | 96% | 13% | 13% | 1% | 0% | 46% | 41% |
 | TSkillUI | UI | 18 | 88% | 63% | 63% | 0% | 0% | 20% | 17% |
 | RF_GUI_Controls_Ex | UI | 16 | 87% | 75% | 12% | 1% | 62% | 25% | 0% |
