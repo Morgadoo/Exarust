@@ -198,8 +198,10 @@ shadow-declaration callback, used by the voxel-GI manager's own builder:
 it declares one `Shadow<i>` per light slot and tests every slot's kind
 (`interface_shadow_samplers`), while the fragment interface above tests
 only the first slot and declares every later one as a cube. The `SdwSmp`
-table is eight three-float taps (`shader_bindings::SHADOW_TAPS`); the sun
-shadow map reads a tap's first two lanes.
+table is 32 three-float taps (`shader_bindings::SHADOW_TAPS`, the
+executable's table, of which a frame reads `SdwSmps` per sub-frame); the
+sun shadow map reads a tap's first two lanes, and the fast light loop
+(`lightsfst`) offsets its cube lookups by all three, unturned.
 
 **Uniforms.** `Global` is 252 bytes, `Material` 112 bytes and each light
 three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
@@ -421,6 +423,27 @@ pipeline, a uniform branch per material, so no extra draws or pipelines):
   and any character in exanima01, with `--screenshot`): the strands take
   a flat picked colour with a bright anisotropic band and a soft rim
   instead of the textured PBR look.
+- **Translucent** (class 7, `shadetrl_f`; `flags2::TRANSLUCENT`). A type-1
+  record in translucent mode (flags `0x300` = `0x100`): the shipped
+  foliage, 49 chunk-tree records of `Objlib` plants and leaves. It takes the
+  fast light loop with a signed N·L (`Shd.NegNdL`): each light adds a
+  diffuse `C·N·L²`, so a leaf lit from behind glows, and the fast highlight
+  `r²/(N·H²(r² − 0.9) + 0.9)²·¼/(N·V(1 − k) + k)·max(N·L, 0)·(0.04 + 0.96·2^(−8·V·H))`.
+  Its normal is its own: the map's xy along the vertex tangent as it comes
+  and `cross(N, T)·w`, `z = √(1 − min(x² + y², 1))`, the whole map normal
+  negated on a two-sided back face (the PBR program flips only `z`), the
+  vertex normal never flipped without a map. After the diffuse colour the
+  red channel becomes `0.8·r + 1.5·r²`; the ambient, the specular GI and
+  the fog are the PBR program's.
+- **Fast light loop** (`Shd.FastLgt`, `flags2::FAST_LIGHT`): a PBR record
+  with extra flag `0x200` (56 shipped plant records: ferns, juniper, ivy)
+  lights with `lightsfst`, as the grass does: plain N·L diffuse, the fast
+  highlight with Fresnel 0.04 (no shipped record has both it and a
+  specular map, whose Fresnel would be `F0 + (1 − F0)·2^(−8·V·H)`).
+- **Alpha with both colour layers.** The lit programs read the opacity map
+  (squared) only without a diffuse map; with both (one image, the shared
+  colour slot) the alpha is `MatDif.a` times the diffuse map's alpha.
+  Exarust had squared it, which thinned blended and cut-out foliage.
 - **No `MatSpc`** (`flags::NO_SPECULAR`): every program adds its specular
   sum (lights and reflection) only for a record whose material word has
   `0x4`. A lit record without it but with a reflection layer, or with a
@@ -428,12 +451,50 @@ pipeline, a uniform branch per material, so no extra draws or pipelines):
 
 Not reproduced from these programs: the legacy unlit program's vertex-colour
 branches (`vrCol × EmiTex × MatDif.a`, and `vrCol × OpcTex.a`), its
-`BlendMode = 4` multiply branch, the translucent program (`shadetrl_f`: no
-shipped library record selects it), and the
+`BlendMode = 4` multiply branch, the translucent program's dirt and
+emissive branches (no shipped translucent record has either; only
+chunk-tree records select `shadetrl_f`, no library record), and the
 `Shd.DispSdwF` pre-pass. The legacy lit program never samples an opacity
 map, so the original's alpha-tested cobweb cutout is unresolved; Exarust
 keeps the opacity map in the alpha for Bevy's alpha test (both shipped
 alpha-tested records have opacity 1).
+
+**Shipped variants.** `exa-tool shader --variants` walks every material
+record a draw reaches (the material libraries, then each chunk tree's own
+records, resolved as the model loader does), groups them by program set,
+material word and shader word, and prints each group's template flags,
+its distinct expanded programs (0–6 lights, fog modes 0–2, indoors and
+outdoors, dry and wet) and the `exa.wesl` branch the loader takes
+(`exa_assets::model::record_path`). At shading quality 5, shadow quality 4
+and super-sampling 3, 0.9.5's data gives 147 groups (100 `shadeopt_f`,
+32 `shading_f`, 8 `shadesss_f`, 6 `shadetrl_f`, 1 `shadehar_f`), 7533
+distinct programs, and 29 records that build nothing. Each template flag
+that occurs maps to a WESL branch: the map bits to the bound maps, `UseNrm`
+and `TngtNrm` to the normal map, `TexDsp`/`DispSdw` to the parallax and
+its shadows, `OpctFall` to the fall-off, `TexRef` to the cube reflection,
+`LocalRef` to the local reflection, `DirtMode` 1, 2 and 4 to grime, wear
+and blood, `AlphaTst` to the alpha mask, `Twosided` to the back-face rule,
+`NegNdL` and `FastLgt` to the translucent and fast loops, `VrtCol` to the
+colour stream, `QuadRender` to the supersampled taps; the `Env.` and light
+words to the scene's fog, GI, sky and lights. What still differs:
+
+- **Refraction** (`Mat.Refract`, 23 records, 178 draws: the coloured glass
+  bottles `gls*opq01`, the gems, a lamp's glass, the crystal ball). The
+  original mixes the frame copy behind the surface, shifted by the normal
+  and tinted, into the diffuse (`refraction`); Exarust blends the surface
+  over what is behind it with its alpha, unshifted and untinted.
+- **Subsurface records other than the race skin** (`shadesss_f`, 7 groups,
+  about 250 draws: wax candles, soap, ceramic bottles, plant growths, the
+  demon's skin). A record with a secondary colour is lifted to the skin
+  program; Exarust feeds its skin branch only for the race skin
+  (`exa_assets::human_skin`) and draws the rest with the PBR (or, for
+  type 0, the legacy) branch.
+- **The fast loop's shadows** (`lightsfst`: the translucent foliage and
+  the `FastLgt` plants): the original offsets the cube lookup by each tap's
+  three floats, unturned, with the bias `a²·0.008`; Exarust takes the main
+  loop's turned disc.
+- **The shadow-bias variant with render flag bit 19** (one mesh,
+  `Pave03Brk`), drawn at level 0 (Lights, Filter).
 
 ## Pass order
 
@@ -2770,9 +2831,12 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
 - **Filter** (point lights):
   - the surface is pushed toward the light by 0.008·(1 − |N·L|)·d along the
     normal;
-  - eight taps from a fixed disc lie around the light direction, turned per
-    pixel by π·fract(3.5557·x + 0.3093·y), each a hardware 2 × 2
-    comparison, averaged;
+  - `SdwSmps` taps a sub-frame (8 a frame at the shipped shadow quality 4,
+    `2^(quality − 1)` up to 32) from a fixed disc lie around the light
+    direction, turned per pixel by π·fract(3.5557·x + 0.3093·y), each a
+    hardware 2 × 2 comparison, averaged; at a single tap without
+    super-sampling (shadow quality 1) the lookup is one plain sample along
+    the light direction, with no disc and no normal push;
   - the disc radius is (softness + 1)·0.005: 0.0075 for level lights
     (softness 0.5), and (2j + 1)·0.005 for fires, where the jitter j walks
     by ±0.0625 a tick within [0.87, 1.15];
@@ -2794,11 +2858,15 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
     caster must be about 1 % in front. The variant with bit 19 (both sides
     × (1 + 0.005·v), one mesh, `Pave03Brk`) is not reproduced: it keeps
     level 0;
-  - in a supersampled frame each sub-frame takes two of the eight taps
-    (sub-frame i takes taps 2i and 2i + 1) and the turn is per window
-    pixel, so each output pixel still averages all eight. Exarust's
-    sub-frames are the four pixels of each 2 × 2 block of the scene image.
-    The GI lookup splits its taps the same way.
+  - in a supersampled frame each sub-frame takes its share of the taps
+    (at the shipped settings sub-frame i takes taps 2i and 2i + 1) and the
+    turn is per window pixel, so each output pixel still averages all
+    eight. Exarust's sub-frames are the four pixels of each 2 × 2 block of
+    the scene image. The GI lookup takes as many, but from tap i on (taps
+    i and i + 1): the original's ambient include indexes them `PassIdx + j`
+    where the light loops use `PassIdx·SdwSmps + j`. The count reaches the
+    shaders in the light buffer's first element
+    (`exa_render::lights::sub_frame_taps`).
 - The sun's colour per unit of intensity is 160 lux in Exarust's scene units
   (scaled back in the shader).
 - **exanima01's start room.** Two level lights hang over the spawn:

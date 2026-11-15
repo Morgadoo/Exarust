@@ -219,6 +219,39 @@ const ENVIRONMENT_FLAGS: &[FlagDef] = &[
     flag("Sharpen", 0x8),
 ];
 
+/// The names of the flags `flags` sets, as the templates spell them
+/// (`Mat.TexDif`, `Shd.DirtMode=4`, `Obj.QuadRender`, `Env.VxlGI`…), in the
+/// builder's table order. A field (`DirtMode`, `BlendMode`, `FogMode`) is
+/// listed with its value when it is not zero; the combined `Mat.Textures`
+/// and `Mat.MatAmbDif` words are left out. For listing a program variant's
+/// features (`exa-tool shader --variants`).
+pub fn flag_names(flags: &Flags) -> Vec<String> {
+    let groups: [(&str, &[FlagDef], u32); 4] = [
+        ("Mat", MATERIAL_FLAGS, flags.material),
+        ("Shd", SHADER_FLAGS, flags.shader),
+        ("Obj", OBJECT_FLAGS, flags.object),
+        ("Env", ENVIRONMENT_FLAGS, flags.environment),
+    ];
+    let mut names = Vec::new();
+    for (group, table, word) in groups {
+        for def in table {
+            if matches!(def.name, "Textures" | "MatAmbDif") {
+                continue;
+            }
+            let field = (word & def.mask) >> def.shift;
+            if field == 0 {
+                continue;
+            }
+            if def.shift != 0 || def.mask == 0x3 && group == "Env" {
+                names.push(format!("{group}.{}={field}", def.name));
+            } else {
+                names.push(format!("{group}.{}", def.name));
+            }
+        }
+    }
+    names
+}
+
 /// Why a program could not be produced.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TemplateError {
