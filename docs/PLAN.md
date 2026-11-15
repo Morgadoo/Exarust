@@ -1477,6 +1477,10 @@ running powers are saved with the player's placement in the original's chunk and
 
 the dynamics unit's held-tree trio is wired (hold, drop the kept pairs, release) at the revive pass, the golem return, the spawn snap, the teleport (Long Door and Vanish's come-back) and the cursor's lift, in the original's order; Spirit Form's new body is built disabled and the level gate is now the original's (a disabled body still meets the level). F542 closed: a respawn load takes the session-start arrival word, so the level's reconstruction device is the respawn portal; CloseSave is applied. exanima01 traces unchanged; Spirit Form scenes change from the spirit's build tick.
 
+the line skin's control draws are the live painters: separators, label fronts, the hovered button caption's glow, the combo rail and thumb, the text field's underline, the flip icon, and the power wheel's and tree's rounded boxes; the tree's dim links fade both vertices of a row alike (F25, F27, F72, F87, the rail half of F29). Five draw-skin rows are unreachable through unreachable callers. Open: which default- and HUD-skinned forms hold control records, the mark icons (F12).
+
+the content stream resets at quit, as the original's quit paths do, and the free loop yields on a zero wait; the engine maths call sites take the engine's own arctangent, angle wrap, floor and ceiling and sine-cosine, and the contact eviction sums its squared distance in pairs. The data-stream primitives are closed as engine (byte-for-byte write-back tests), and the older grid layout is unreachable (no shipped grid holds it). 27 of 320 runtime, data and core rows closed; most of the rest wait on DEC-7, the OS window and input port, and per-list order proofs for the hook lists and the deferred ring.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
