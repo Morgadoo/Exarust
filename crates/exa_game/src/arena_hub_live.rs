@@ -1869,7 +1869,7 @@ fn hub_clicks(
                                 {
                                     // Before a match the first unhealthy
                                     // specialist leaves the company.
-                                    if let Some(departure) = career.company.leave_before_match() {
+                                    if let Some(departure) = career.leave_before_match() {
                                         info!("arena begin: specialist left ({departure:?})");
                                     }
                                     // The Begin saves the career (without
@@ -2741,6 +2741,81 @@ mod tests {
         fighter.health.red = health;
         app.world_mut()
             .spawn((PlayerBody::new(0.0), Condition(condition), fighter));
+    }
+
+    /// The board's Begin, through the hub's click: the first unfit
+    /// specialist leaves before the match, his death logged and counted
+    /// under 700, and his staff place is queued for the kit's release.
+    #[test]
+    fn the_boards_begin_sends_an_unfit_specialist_away_with_a_log_record() {
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        spawn_hub_level(&mut app);
+        app.update();
+        let (mut career, mut stores) = board_career();
+        career
+            .company
+            .hire("Doc", crate::career::Profession::Physician)
+            .unwrap();
+        stores.staff.employees.push(crate::staff::Employee {
+            class: crate::staff::PHYSICIAN,
+            ..Default::default()
+        });
+        app.insert_resource(stores);
+        app.init_resource::<crate::arsenal::ShelfKinds>();
+        career.company.roster[3].health = 500;
+        career.warn_manager = false;
+        let deaths = career.company.deaths;
+        let mut windows = HubWindows::default();
+        windows.open_board(&career);
+        app.insert_resource(career);
+        app.insert_resource(windows);
+        let windows = app.world().resource::<HubWindows>();
+        let bounds = windows.bounds().unwrap();
+        let border = windows.board_form.as_ref().map_or(0, |f| f.geometry.border);
+        let enter = windows.board.as_ref().unwrap().layout().enter_button;
+        let pointer = IVec2::new(
+            bounds.left + border + enter.x + enter.w / 2,
+            bounds.top + border + enter.y + enter.h / 2,
+        );
+        app.world_mut().write_message(WorldClick {
+            hit: Hit::Level,
+            pointer,
+            double: false,
+        });
+        app.update();
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(career.company.roster.len(), 3);
+        assert!(
+            career
+                .company
+                .roster
+                .iter()
+                .all(|member| member.name != "Doc")
+        );
+        assert_eq!(career.company.deaths, deaths + 1);
+        let record = career.log.records.last().unwrap();
+        assert_eq!(record.id, crate::arena_match::LOG_DIED);
+        assert_eq!(
+            record.words,
+            crate::staff::name_words(&crate::hub_windows::name16("Doc"))
+        );
+        // The staff list's share waits for the forms' pass.
+        assert_eq!(career.staff_left, vec![3]);
+        app.update();
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert!(career.staff_left.is_empty());
+        let stores = app.world().resource::<crate::save_live::ArenaStores>();
+        assert_eq!(stores.staff.employees.len(), 3);
+        let launches = app
+            .world_mut()
+            .resource_mut::<Messages<ArenaMatchLaunch>>()
+            .drain()
+            .count();
+        assert_eq!(launches, 1);
     }
 
     #[test]

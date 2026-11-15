@@ -138,6 +138,11 @@ pub struct ArenaCareer {
     /// The week's tournament field: sixteen 1-based rival company ids, all
     /// zero until drawn.
     pub rivals: [i32; crate::career::RIVAL_FIELD],
+    /// Staff places whose employee left the company (a dismissal, a death in
+    /// a match, a departure before one), in order, for the staff list's
+    /// share of the leaving: the kit's release into the arsenal, which needs
+    /// the arena's stores ([`crate::hub_forms::apply_staff_changes`]).
+    pub staff_left: Vec<usize>,
 }
 
 impl Default for ArenaCareer {
@@ -178,6 +183,7 @@ impl Default for ArenaCareer {
             roll: 0,
             warn_manager: true,
             rivals: [0; crate::career::RIVAL_FIELD],
+            staff_left: Vec::new(),
         };
         // A default career is what the play-mode hub starts with: ten
         // candidates, drawn from a fixed seed until a session host replaces
@@ -189,6 +195,59 @@ impl Default for ArenaCareer {
 }
 
 impl ArenaCareer {
+    /// Before a match the first specialist who is not well enough leaves
+    /// the company: under 700 the log records his death (0x60000, his
+    /// name's sixteen bytes) and the death count rises, else, under 65000,
+    /// it records his leaving (0xA0000); then the removal runs
+    /// ([`Self::remove_employee`]). A later specialist waits for the next
+    /// match.
+    pub fn leave_before_match(&mut self) -> Option<crate::career::Departure> {
+        let index = self.company.unfit_specialist()?;
+        let member = &self.company.roster[index];
+        let words = crate::staff::name_words(&name16(&member.name));
+        let died = member.health < crate::career::DIED_BELOW;
+        if died {
+            self.log.append_words(crate::arena_match::LOG_DIED, words);
+            self.company.deaths = self.company.deaths.wrapping_add(1);
+        } else {
+            self.log.append_words(crate::report::LOG_LEFT, words);
+        }
+        let member = self.remove_employee(index)?;
+        Some(if died {
+            crate::career::Departure::Died(member.name)
+        } else {
+            crate::career::Departure::Left(member.name)
+        })
+    }
+
+    /// The career's share of an employee's removal (the original's one
+    /// removal routine, run for a dismissal, a death in a match and a
+    /// departure before one): the member at `index` leaves the roster, the
+    /// id `index + 1` is dropped from the tournament entries and the log's
+    /// "saved" records with the later ids moved down, and the staff place
+    /// is queued for the kit's release ([`Self::staff_left`]).
+    pub fn remove_employee(&mut self, index: usize) -> Option<Member> {
+        let member = self.drop_employee(index)?;
+        let id = u32::try_from(index).unwrap_or(u32::MAX).wrapping_add(1);
+        crate::staff::renumber_saved(&mut self.log, id);
+        Some(member)
+    }
+
+    /// [`Self::remove_employee`] without the log's renumbering, for a death
+    /// in a match: the match renumbered the log's "saved" records when the
+    /// fall was resolved ([`crate::arena_match::book_death`]) and the roster
+    /// place leaves when the match is settled.
+    pub fn drop_employee(&mut self, index: usize) -> Option<Member> {
+        if index >= self.company.roster.len() {
+            return None;
+        }
+        let member = self.company.roster.remove(index);
+        let id = u32::try_from(index).unwrap_or(u32::MAX).wrapping_add(1);
+        crate::staff::unlink_entries(&mut self.entries, id);
+        self.staff_left.push(index);
+        Some(member)
+    }
+
     /// Copy the player's loose items into the goods when the shop has not
     /// traded yet. A later open keeps the goods the trade left.
     pub fn seed_goods(&mut self, carried: impl IntoIterator<Item = u32>) {

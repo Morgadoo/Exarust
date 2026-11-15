@@ -670,15 +670,21 @@ impl Company {
         (day / (SEASON_WEEKS * 7)) % SEASON_WEEKS
     }
 
+    /// The roster place of the first specialist (not a combatant) whose
+    /// health is under 65000: the one who leaves before a match.
+    pub fn unfit_specialist(&self) -> Option<usize> {
+        self.roster.iter().position(|member| {
+            member.profession != Profession::Combatant && member.health < LEFT_BELOW
+        })
+    }
+
     /// Before a match, the first specialist who is not well enough leaves.
     /// A combatant stays, even at no health. Health under 700 counts a death.
     /// Health from 700 through 64999 leaves without that count. Health of
     /// 65000 or more stays. A later specialist stays until the next pass.
     /// Releasing a kit and unlinking a world character are not part of this step.
     pub fn leave_before_match(&mut self) -> Option<Departure> {
-        let index = self.roster.iter().position(|member| {
-            member.profession != Profession::Combatant && member.health < LEFT_BELOW
-        })?;
+        let index = self.unfit_specialist()?;
         let member = self.roster.remove(index);
         if member.health < DIED_BELOW {
             self.deaths = self.deaths.wrapping_add(1);

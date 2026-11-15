@@ -1031,6 +1031,12 @@ pub enum SceneCommand {
     Despawn(Entity),
     /// Stand a body at a place.
     Place { body: Entity, at: Vec3, yaw: f32 },
+    /// Reset a body the match keeps for its next round
+    /// ([`crate::match_layout::KeptReset`]; [`reset_kept_bodies`]).
+    Reset {
+        body: Entity,
+        reset: crate::match_layout::KeptReset,
+    },
 }
 
 /// A body was built, with the plan that built it.
@@ -1064,7 +1070,46 @@ impl Plugin for SceneBodiesPlugin {
         app.add_message::<SceneCommand>()
             .add_message::<SceneBodyBuilt>()
             .init_resource::<SceneActors>()
-            .add_systems(Update, apply_scene_commands);
+            .add_systems(Update, (apply_scene_commands, reset_kept_bodies));
+    }
+}
+
+/// A body the next round keeps, reset as the original's kept-body reset
+/// does: yellow health takes red, the shield arm is full, the condition is
+/// 0, and its scene marker takes the standby behaviour and, for a
+/// non-player, the AI's held clocks. Re-placing the living body on its
+/// round place is not done here (it stays where it stands).
+pub fn reset_kept_bodies(
+    mut messages: MessageReader<SceneCommand>,
+    mut bodies: Query<(
+        &mut exa_combat::Fighter,
+        &mut exa_combat::Condition,
+        Option<&mut exa_combat::block::ShieldHold>,
+        Option<&mut SceneFighter>,
+    )>,
+) {
+    for command in messages.read() {
+        let SceneCommand::Reset { body, reset } = command else {
+            continue;
+        };
+        let Ok((mut fighter, mut condition, hold, marker)) = bodies.get_mut(*body) else {
+            continue;
+        };
+        fighter.health.yellow = fighter.health.red;
+        if let exa_combat::damage::Guard::Shield(guard) = &mut fighter.guard {
+            guard.stamina = 1.0;
+        }
+        if let Some(mut hold) = hold {
+            hold.guard.stamina = 1.0;
+        }
+        *condition = exa_combat::Condition::NORMAL;
+        if let Some(mut marker) = marker {
+            marker.behaviour = Some(reset.behaviour);
+            if let Some(act_at) = reset.jitter_at_ms {
+                marker.act_at_ms = act_at;
+            }
+        }
+        info!("scene body {body:?}: kept for the next round and reset");
     }
 }
 
@@ -1190,6 +1235,8 @@ fn apply_scene_commands(
                     commands.entity(root).despawn();
                 }
             }
+            // A kept body's reset runs in its own system.
+            SceneCommand::Reset { .. } => {}
             SceneCommand::Place { body, at, yaw } => {
                 if bodies.get(*body).is_ok() {
                     commands.entity(*body).insert(
@@ -1242,6 +1289,62 @@ mod tests {
     };
     use crate::match_layout::{Place, opponent_place};
     use exa_formats::characters::CharacterRecord;
+
+    /// A kept body's reset, through the scene system: yellow takes red,
+    /// the shield arm fills, the condition is 0 and the marker takes the
+    /// standby behaviour and the held clock.
+    #[test]
+    fn a_kept_body_is_reset_for_the_next_round() {
+        let mut app = App::new();
+        app.add_message::<SceneCommand>()
+            .add_systems(Update, reset_kept_bodies);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.yellow = 0.05;
+        fighter.health.red = 0.2;
+        fighter.guard = exa_combat::damage::Guard::Shield(exa_combat::damage::ShieldGuard {
+            stamina: 0.25,
+            ..Default::default()
+        });
+        let body = app
+            .world_mut()
+            .spawn((
+                fighter,
+                exa_combat::Condition(0x300),
+                SceneFighter {
+                    team: 2,
+                    company: false,
+                    id: 0,
+                    damage: 0.0,
+                    condition_health: 0.0,
+                    act_at_ms: 0,
+                    behaviour: None,
+                },
+            ))
+            .id();
+        let mut roll = 1;
+        let reset = crate::match_layout::reset_kept(false, 5_000, &mut roll);
+        app.world_mut()
+            .write_message(SceneCommand::Reset { body, reset });
+        app.update();
+        let fighter = app.world().get::<exa_combat::Fighter>(body).unwrap();
+        assert_eq!(fighter.health.yellow, 0.2);
+        let exa_combat::damage::Guard::Shield(guard) = fighter.guard else {
+            panic!("the guard stays a shield");
+        };
+        assert_eq!(guard.stamina, 1.0);
+        assert_eq!(
+            *app.world().get::<exa_combat::Condition>(body).unwrap(),
+            exa_combat::Condition::NORMAL
+        );
+        let marker = app.world().get::<SceneFighter>(body).unwrap();
+        assert_eq!(
+            marker.behaviour,
+            Some(crate::match_layout::STANDBY_BEHAVIOUR)
+        );
+        // The roll stepped once: 0x08088406, whose high share of 10000 is 313.
+        assert_eq!(roll, 0x0808_8406);
+        assert_eq!(marker.act_at_ms, 5_000 + 10_000 + 313);
+    }
 
     fn place() -> Place {
         opponent_place([900.0, 0.0, 100.0])

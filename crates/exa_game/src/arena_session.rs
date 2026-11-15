@@ -235,7 +235,8 @@ pub fn regenerate_round(
 /// already resolved, before the end screen or the return to the hub.
 ///
 /// The manager's fatal fall is the permadeath branch; a hired fighter's is
-/// logged and counted, or logged as saved when the fall was not fatal. The
+/// logged and counted and `died` runs the employee's removal with his
+/// record id, or it is logged as saved when the fall was not fatal. The
 /// body is marked resolved either way. The returned indices are the bodies
 /// this pass resolved, in scene order.
 pub fn resolve_dead_bodies(
@@ -243,6 +244,7 @@ pub fn resolve_dead_bodies(
     physician: bool,
     log: &mut ArenaLog,
     deaths: &mut u32,
+    mut died: impl FnMut(u8, &mut ArenaLog),
 ) -> Vec<usize> {
     let mut resolved = Vec::new();
     for (index, fighter) in fighters.iter_mut().enumerate() {
@@ -257,7 +259,11 @@ pub fn resolve_dead_bodies(
         }
         let fall =
             crate::arena_match::resolve_fall(fighter.health, fighter.max, physician, fighter.id);
-        crate::arena_match::log_fall(log, fall, fighter.id, fighter.name, deaths);
+        if crate::arena_match::log_fall(log, fall, fighter.id, fighter.name, deaths)
+            && fall == crate::arena_match::Fall::Died
+        {
+            died(fighter.id, log);
+        }
         fighter.resolved = true;
         resolved.push(index);
     }
@@ -728,14 +734,19 @@ mod tests {
         ];
         let mut log = ArenaLog::default();
         let mut deaths = 0;
-        let resolved = resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths);
+        let mut died = Vec::new();
+        let resolved = resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths, |id, _| {
+            died.push(id)
+        });
         assert_eq!(resolved, vec![0, 2]);
         assert_eq!(deaths, 1);
+        // The death runs the removal with the dead fighter's id.
+        assert_eq!(died, vec![2]);
         assert_eq!(log.records.len(), 2);
         assert_eq!(log.records[1].id, LOG_SAVED);
         assert!(scene.iter().all(|fighter| fighter.resolved));
         // A second pass resolves nobody.
-        assert!(resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths).is_empty());
+        assert!(resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths, |_, _| {}).is_empty());
         // The single 0.01 widens below the double 0.01: the body is resolved
         // (saved, not dead, with a physician); NaN never is.
         let mut edge = [scene[2], scene[2]];
@@ -743,7 +754,7 @@ mod tests {
         edge[0].health = 0.01;
         edge[1].resolved = false;
         edge[1].health = f32::NAN;
-        let resolved = resolve_dead_bodies(&mut edge, true, &mut log, &mut deaths);
+        let resolved = resolve_dead_bodies(&mut edge, true, &mut log, &mut deaths, |_, _| {});
         assert_eq!(resolved, vec![0]);
         assert_eq!(log.records.last().unwrap().id, LOG_SAVED);
     }

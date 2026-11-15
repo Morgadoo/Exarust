@@ -743,6 +743,39 @@ pub struct Rematch {
     pub yield_ms: u32,
 }
 
+/// A body the next round keeps, as the original's kept-body reset leaves
+/// it: yellow health equal to red, a full shield arm, condition 0, the
+/// standby behaviour, and for anyone but the player the AI's clocks held
+/// [`REMATCH_GRACE_MS`] (the first of them a further share of 10000 ms
+/// drawn from the stepped roll).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeptReset {
+    /// The AI's two plain clocks, none for the player.
+    pub act_at_ms: Option<u32>,
+    /// The AI's jittered clock, none for the player.
+    pub jitter_at_ms: Option<u32>,
+    pub behaviour: BehaviourReset,
+}
+
+/// The reset of a body the next round keeps ([`KeptReset`]): the roll
+/// steps once, and only for a body that is not the player.
+#[must_use]
+pub fn reset_kept(is_player: bool, now_ms: u32, roll: &mut u32) -> KeptReset {
+    let mut reset = KeptReset {
+        act_at_ms: None,
+        jitter_at_ms: None,
+        behaviour: STANDBY_BEHAVIOUR,
+    };
+    if !is_player {
+        *roll = roll.wrapping_mul(ROLL_STEP).wrapping_add(1);
+        let jitter = ((u64::from(*roll) * u64::from(REMATCH_GRACE_MS)) >> 32) as u32;
+        let grace = now_ms.wrapping_add(REMATCH_GRACE_MS);
+        reset.act_at_ms = Some(grace);
+        reset.jitter_at_ms = Some(grace.wrapping_add(jitter));
+    }
+    reset
+}
+
 /// Drop dead bodies and stand whoever remains.
 ///
 /// A body whose condition is the dead mode is removed, and the next body

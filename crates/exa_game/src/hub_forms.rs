@@ -84,10 +84,6 @@ pub struct HubForms {
     pub forms: Vec<OpenForm>,
     pub arsenal: Option<ArsenalForm>,
     pub marked: [[bool; 5]; 5],
-    /// Staff places whose employee left the company through a form, for
-    /// the staff's share of the leaving (the kit's release), which needs
-    /// the arena's stores ([`hub_form_input`]).
-    pub left: Vec<usize>,
     /// Employees a form took on, for the staff list's matching entry.
     pub joined: Vec<crate::staff::Employee>,
     /// The extended-control forms' popup, focus and models
@@ -1125,20 +1121,17 @@ impl HubWindows {
         let leaving = usize::try_from(arsenal.selection - 1).ok();
         arsenal.confirm_dismiss();
         if let Some(index) = leaving
-            && index < career.company.roster.len()
+            && let Some(member) = career.company.roster.get(index)
         {
-            let id = u32::try_from(index).unwrap_or(0).wrapping_add(1);
-            let member = career.company.roster.remove(index);
+            let name = crate::hub_windows::name16(&member.name);
             career.company.fired = career.company.fired.wrapping_add(1);
-            career.log.append_words(
-                crate::staff::LOG_DISMISSED,
-                crate::staff::name_words(&crate::hub_windows::name16(&member.name)),
-            );
-            crate::staff::unlink_entries(&mut career.entries, id);
-            crate::staff::renumber_saved(&mut career.log, id);
+            career
+                .log
+                .append_words(crate::staff::LOG_DISMISSED, crate::staff::name_words(&name));
             // The kit's release runs on the arena's stores.
-            self.forms.left.push(index);
-            info!("hub loadout: {} is dismissed", member.name);
+            if let Some(member) = career.remove_employee(index) {
+                info!("hub loadout: {} is dismissed", member.name);
+            }
         }
         let commit = arsenal.commit(|form| {
             let _ = loadout_rows(form, career);
@@ -1221,13 +1214,14 @@ pub fn staff_class(role: Profession) -> u8 {
 /// nothing to release.
 pub fn apply_staff_changes(
     forms: &mut HubForms,
+    left: &mut Vec<usize>,
     stores: &mut crate::save_live::ArenaStores,
     kinds: &crate::arsenal::ShelfKinds,
 ) {
     for employee in forms.joined.drain(..) {
         stores.staff.admit(employee);
     }
-    for index in forms.left.drain(..) {
+    for index in left.drain(..) {
         let crate::save_live::ArenaStores { staff, arsenal, .. } = stores;
         match staff.leave(index, arsenal, |item| kinds.kind(item)) {
             Some(leaving) => info!(
@@ -1912,8 +1906,16 @@ pub fn hub_form_input(
             }
         }
     }
-    if let (Some(mut stores), Some(kinds)) = (stores, kinds) {
-        apply_staff_changes(&mut windows.forms, &mut stores, &kinds);
+    match (stores, kinds) {
+        (Some(mut stores), Some(kinds)) => apply_staff_changes(
+            &mut windows.forms,
+            &mut career.staff_left,
+            &mut stores,
+            &kinds,
+        ),
+        // A hub career with no staff list has no kit to release.
+        (None, _) => career.staff_left.clear(),
+        (Some(_), None) => {}
     }
 }
 
