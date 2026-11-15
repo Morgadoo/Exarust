@@ -569,6 +569,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F540 | runtime-04 | runtime | is a split artefact: the 'code pointer' at is the WGL attribute value 0x2010. Its bytes are the tails of the Touchscreen setter and the StereoMode setter, so the function table may also lack rows for and | B4 |
 | F541 | powers-02 | powers | (Found by wiremind.) The spirit screen's start saves the player light's switch and switches the light on (the dark-vision light the worn items give); its stop restores the saved switch. Exarust's spirit screen leaves the player light alone, and the ledger rows of the start and stop call this write a control lock. | B4 |
 | F542 | round 210 | game modes | the story respawn portal (`Flow::respawn_portal`) is set only by a test, so the story respawn places the player at the origin 15 cm up instead of at the level portal, and a pending-respawn load falls back to the saved position | B1 |
+| F543 | round 218 | game modes | Step::ClearStoryFlag is not applied: the original clears the dead player's owned mark on a story respawn or exit, so the level save writes the corpse and its gear where the player died; Exarust's level save leaves the player out (Without<PlayerBody>). Normal starts and plain loads also lack the session-start arrival word | B4 |
 
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers
