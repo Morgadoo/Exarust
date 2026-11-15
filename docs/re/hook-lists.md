@@ -79,7 +79,8 @@ other way: the original's poster spins (yielding) while a ring is full
 until the stream thread takes an entry; Exarust's ring grows by one
 instead. Both keep insertion order, so the builds and results come in the
 same order; the original's poster is only held. A spin is not adopted:
-Exarust keeps every ring of the stream behind one lock, which the stream
-pass holds, and with `--sync-content` the pass runs on the posting thread,
-so a poster waiting there for room would wait for ever. The push rows stay
+Exarust keeps every ring of the stream behind one lock
+(`exa_assets::stream_worker`), and the stream thread pushes a result while
+holding it, so a push waiting there for room would keep the main thread
+from taking the result that makes room: it would wait for ever. The push rows stay
 open on this difference (a timing one: no order or result changes).
