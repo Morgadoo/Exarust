@@ -1600,18 +1600,59 @@ pub fn ai_tick(
         // 600 cm cell, and the nearby list weighs the cell's characters.
         if let Some(rooms) = rooms.as_deref_mut() {
             rooms.move_to(_entity, observer_cm, &mut npc.room);
-            // The player carries no room cell, so the gather scans every
-            // character of the brain's cell rather than the cell's linked
-            // list (the original links every character with a behaviour).
-            let around: Vec<(u64, f32, bool)> = places
-                .iter()
-                .filter(|(e, _, cell)| *e != _entity && *cell == Some(npc.room.cell))
-                .map(|(e, at, _)| (e.to_bits(), (*at - observer_cm).length_squared(), true))
-                .collect();
-            npc.nearby = contacts::nearby(&around)
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect();
+            let candidate = |(e, at, _): &(Entity, Vec3, Option<i32>)| {
+                (
+                    e.to_bits(),
+                    (*at - observer_cm).length_squared(),
+                    crate::rooms::in_sight(level.as_deref(), observer_cm, *at),
+                )
+            };
+            if level.is_some() {
+                // The gather walks the characters of the brain's level room,
+                // then those of the room behind each of its exits in turn
+                // (an exit leading to the same room as the exit before it is
+                // skipped), each through the nearby insert and its sight
+                // test (the room-to-room light reach). A brain in no room
+                // keeps its list. Exarust keeps no per-room character list,
+                // so each room's characters are the fighters standing in it,
+                // in the fighters' order.
+                if room >= 0 {
+                    let mut order = vec![room];
+                    let mut before = -1;
+                    for exit in &exits {
+                        let behind = exit.room - 1;
+                        if behind != before {
+                            before = behind;
+                            order.push(behind);
+                        }
+                    }
+                    let mut around: Vec<(u64, f32, bool)> = Vec::new();
+                    for r in order {
+                        around.extend(
+                            places
+                                .iter()
+                                .filter(|p| p.0 != _entity && level_room(p.1) == r)
+                                .map(candidate),
+                        );
+                    }
+                    npc.nearby = contacts::nearby(&around)
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect();
+                }
+            } else {
+                // [Exarust: a level without a room table gathers the
+                // characters of the brain's 600 cm cell.]
+                let around: Vec<(u64, f32, bool)> = places
+                    .iter()
+                    .filter(|(e, _, cell)| *e != _entity && *cell == Some(npc.room.cell))
+                    .map(candidate)
+                    .collect();
+                npc.nearby = contacts::nearby(&around)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect();
+            }
         }
         // The target pass wakes a body whose flags are exactly the dormant
         // flag: a sleeper, not a body already knocked out (`0x30`).
@@ -4785,6 +4826,87 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    /// On a level with a room table the gather walks the brain's room and
+    /// the rooms behind its exits, and keeps only the characters its sight
+    /// test (the light reach through an open door) passes.
+    #[test]
+    fn the_nearby_gather_walks_the_exits_rooms_through_the_sight_test() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let level = LevelRooms::new(Arc::new(Rooms::flood(&grid)));
+        let brain_at = Vec3::new(-4.0, 0.0, 3.0);
+        let door_side = Vec3::new(1.0, 0.0, 3.0);
+        let far_side = Vec3::new(9.0, 0.0, 3.0);
+        let cm = |v: Vec3| v * 100.0;
+        assert_eq!(crate::rooms::level_room(&level.rooms, cm(brain_at)), 0);
+        assert_eq!(crate::rooms::level_room(&level.rooms, cm(door_side)), 1);
+        assert_eq!(crate::rooms::level_room(&level.rooms, cm(far_side)), 1);
+        assert!(crate::rooms::in_sight(
+            Some(&level),
+            cm(brain_at),
+            cm(door_side)
+        ));
+        assert!(!crate::rooms::in_sight(
+            Some(&level),
+            cm(brain_at),
+            cm(far_side)
+        ));
+
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        app.insert_resource(level);
+        app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
+            width: 32,
+            height: 32,
+        }));
+        app.world_mut().spawn((
+            GlobalTransform::from_translation(Vec3::new(-90.0, 0.0, 3.0)),
+            Fighter::default(),
+            RatedPlayer,
+        ));
+        let person = |app: &mut App, at: Vec3| {
+            app.world_mut()
+                .spawn((GlobalTransform::from_translation(at), Fighter::default()))
+                .id()
+        };
+        let seen = person(&mut app, door_side);
+        let unseen = person(&mut app, far_side);
+        let npc = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                GlobalTransform::from_translation(brain_at),
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.update();
+        let nearby = &app.world().get::<Npc>(npc).unwrap().nearby;
+        assert!(nearby.contains(&seen.to_bits()), "{nearby:?}");
+        assert!(!nearby.contains(&unseen.to_bits()), "{nearby:?}");
     }
 
     /// An idle brain turns its model toward its look yaw: the out-of-combat
