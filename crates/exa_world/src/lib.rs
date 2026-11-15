@@ -305,6 +305,10 @@ pub struct LevelInfo {
     /// transition marker matching both words), whose position becomes the
     /// focus the streamed characters are ordered by.
     pub player_focus: Option<Vec3>,
+    /// That object's frame: its position (metres) and rotation rows. The
+    /// story respawn stands the player there ([`LevelLoad::arrival`] set to
+    /// the session-start word: the level's reconstruction device).
+    pub player_frame: Option<(Vec3, [[f32; 3]; 3])>,
     /// The rigid bodies of its props, placed objects and own model:
     /// registered in the solver, and left static.
     pub bodies: bodies::BodyCounts,
@@ -1105,6 +1109,11 @@ impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_,
             operative_kind: item.operative.map(|o| u32::from(o.kind)),
             // The original's units: centimetres.
             position: [t[0] * 100.0, t[1] * 100.0, t[2] * 100.0],
+            rotation: [
+                object.transform[0],
+                object.transform[1],
+                object.transform[2],
+            ],
             marker: item.volume.and_then(|v| v.marker()),
         })
     }
@@ -1920,6 +1929,7 @@ pub struct LevelLoad {
     /// found, and the placed player's position (metres) once built.
     missing_database_objects: usize,
     player_focus: Option<Vec3>,
+    player_frame: Option<(Vec3, [[f32; 3]; 3])>,
     /// The clock seed this load draws its day from, taken once.
     engine_seed: u32,
     /// The outdoor preset's seed for this load, taken once.
@@ -2088,6 +2098,7 @@ impl LevelLoad {
             stream: None,
             missing_database_objects: 0,
             player_focus: None,
+            player_frame: None,
             engine_seed,
             preset_seed,
             daylight,
@@ -2370,6 +2381,9 @@ impl LevelLoad {
                     self.player_focus = stream
                         .player()
                         .map(|_| Vec3::from_array(stream.focus()) / 100.0);
+                    self.player_frame = stream
+                        .player_frame()
+                        .map(|(at, rotation)| (Vec3::from_array(at) / 100.0, rotation));
                     self.stream = None;
                     self.stage = Stage::Lighting;
                 }
@@ -2568,6 +2582,7 @@ impl LevelLoad {
                 missing_objects: self.missing_objects,
                 missing_database_objects: self.missing_database_objects,
                 player_focus: self.player_focus,
+                player_frame: self.player_frame,
                 bodies: self.bodies,
                 spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
                 player_markers: player_markers(&self.scene, &self.global_items),
@@ -3076,6 +3091,82 @@ mod tests {
         assert!((markers[0].position.x + 8.948565).abs() < 1e-3);
         assert!((markers[0].position.y - 0.49198326).abs() < 1e-3);
         assert!((markers[0].position.z + 94.14694).abs() < 1e-3);
+    }
+
+    /// The story respawn's portal: under the session-start arrival word
+    /// (no previous level) the object that names the player in
+    /// `exanima05` is its one reconstruction device (operative kind 18),
+    /// no transition marker naming those words; the content stream adopts
+    /// it with its frame (skipped without the game).
+    #[test]
+    fn shipped_exanima05_names_its_reconstruction_device_on_a_respawn() {
+        use exa_assets::content_stream::{
+            ContentStream, LevelNode, NO_PREVIOUS_LEVEL, OBJECT_OPERATIVE, OBJECT_VOLUME,
+            SESSION_START_PLAYER_KIND, SESSION_START_WORD,
+        };
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let scene = Scene::parse(resource.get("exanima05.rfc").unwrap()).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let items = exa_formats::objdb::items(&db);
+        let mut stream = ContentStream::new();
+        stream.begin_level(
+            1,
+            scene.placed_objects.len(),
+            SESSION_START_WORD,
+            NO_PREVIOUS_LEVEL,
+        );
+        let mut devices = Vec::new();
+        for (i, object) in scene.placed_objects.iter().enumerate() {
+            let pool: &[Item] = if object.is_local() {
+                &scene.local_items
+            } else {
+                &items
+            };
+            let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+            let Some(item) = pool.iter().find(|item| item.id == id) else {
+                continue;
+            };
+            let class = db_objects::node_kind(item);
+            let t = object.transform[3];
+            let node = LevelNode {
+                node: i as u64 + 10,
+                class,
+                operative_kind: item.operative.map(|o| u32::from(o.kind)),
+                position: [t[0] * 100.0, t[1] * 100.0, t[2] * 100.0],
+                rotation: [
+                    object.transform[0],
+                    object.transform[1],
+                    object.transform[2],
+                ],
+                marker: item.volume.and_then(|v| v.marker()),
+            };
+            if class == OBJECT_OPERATIVE && node.operative_kind == Some(SESSION_START_PLAYER_KIND) {
+                devices.push((i, node.position));
+            }
+            assert!(
+                !(class == OBJECT_VOLUME
+                    && node.marker == Some([SESSION_START_WORD, NO_PREVIOUS_LEVEL])),
+                "a marker names the respawn"
+            );
+            stream.adopt(&node);
+        }
+        assert_eq!(devices.len(), 1, "{devices:?}");
+        let (index, at) = devices[0];
+        assert_eq!(stream.player(), Some(index as u64 + 10));
+        let (frame_at, rotation) = stream.player_frame().unwrap();
+        assert_eq!(frame_at, at);
+        // A unit rotation: its rows are unit length.
+        for row in rotation {
+            assert!(
+                (Vec3::from_array(row).length() - 1.0).abs() < 1e-3,
+                "{rotation:?}"
+            );
+        }
+        eprintln!("exanima05 respawn portal: object {index} at {at:?} cm, rotation {rotation:?}");
     }
 
     /// `exanima02` has the arrival marker for the way in from `exanima01`

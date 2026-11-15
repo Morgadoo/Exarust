@@ -1536,3 +1536,66 @@ fn a_velocity_writes_the_two_ticks_ago_particles_too() {
     assert!((moved.x - 0.01).abs() < 1e-6, "{moved}");
     assert_eq!(a.parts[0].previous, a.parts[0].two_ticks_ago);
 }
+
+/// The held bodies' pair drop: the detection's pairs persist to the next
+/// tick's iterations; holding a body empties its world contacts and drops
+/// every kept pair it is in, the last pair moving into each dropped place,
+/// and the release lets the next detection find it again.
+#[test]
+fn holding_a_body_drops_its_kept_pairs() {
+    let mut a = ball(1, 11, Vec3::new(0.0, 2.0, 0.0), 0.1);
+    let mut b = ball(2, 11, Vec3::new(0.19, 2.0, 0.0), 0.1);
+    let mut c = ball(3, 11, Vec3::new(5.0, 2.0, 0.0), 0.1);
+    let mut d = ball(4, 11, Vec3::new(5.19, 2.0, 0.0), 0.1);
+    let mut stages = pairs();
+    stages[0].detect(&mut [&mut a, &mut b, &mut c, &mut d], &mut []);
+    let keys: Vec<(Entity, Entity)> = the_pairs(&stages).kept().collect();
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    let first = keys[0].0;
+    // A part's kept level contact goes with the hold.
+    let held_body = if first == entity(1) || first == entity(2) {
+        &mut a
+    } else {
+        &mut c
+    };
+    held_body.parts[0]
+        .contacts
+        .push(crate::contact::LevelContact {
+            weights: [0.25; 4],
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            plane: 0.0,
+        });
+    let mut held = HeldBodies::default();
+    held.hold(held_body);
+    assert!(held_body.parts[0].contacts.is_empty());
+    assert!(held.is_held(held_body));
+    let pairs = (&mut *stages[0] as &mut dyn std::any::Any)
+        .downcast_mut::<Pairs>()
+        .unwrap();
+    assert_eq!(pairs.remove_held(&held), 1);
+    // The other pair took the dropped one's place.
+    assert_eq!(pairs.kept().collect::<Vec<_>>(), vec![keys[1]]);
+    held.release(held_body);
+    assert!(held.is_empty());
+    // Nothing is held: nothing more is dropped.
+    assert_eq!(pairs.remove_held(&held), 0);
+    stages[0].iterated(&mut [&mut a, &mut b, &mut c, &mut d]);
+    stages[0].detect(&mut [&mut a, &mut b, &mut c, &mut d], &mut []);
+    assert_eq!(the_pairs(&stages).kept().count(), 2);
+}
+
+/// The one-call form over the solver stages (the callers' path): the
+/// bodies are held, their pairs dropped and they are released.
+#[test]
+fn hold_out_of_pairs_drops_through_the_stages() {
+    let mut a = ball(1, 11, Vec3::new(0.0, 2.0, 0.0), 0.1);
+    let mut b = ball(2, 11, Vec3::new(0.19, 2.0, 0.0), 0.1);
+    let mut stages = SolverStages::default();
+    stages.add(Pairs::default());
+    stages.all()[0].detect(&mut [&mut a, &mut b], &mut []);
+    assert_eq!(stages.get::<Pairs>().unwrap().kept().count(), 1);
+    assert_eq!(hold_out_of_pairs(Some(&mut stages), &mut [&mut b]), 1);
+    assert_eq!(stages.get::<Pairs>().unwrap().kept().count(), 0);
+    assert_eq!(hold_out_of_pairs(None, &mut [&mut a]), 0);
+}

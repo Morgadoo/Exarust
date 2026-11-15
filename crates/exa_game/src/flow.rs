@@ -382,6 +382,15 @@ pub struct Placement {
     pub position: Vec3,
 }
 
+/// Where a respawn stands the player at `portal`: its frame lifted by
+/// [`PORTAL_LIFT_CM`].
+pub fn portal_lifted(portal: Placement) -> Placement {
+    Placement {
+        rotation: portal.rotation,
+        position: portal.position + Vec3::Y * PORTAL_LIFT_CM,
+    }
+}
+
 /// The identity rotation.
 pub const NO_ROTATION: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
@@ -1304,6 +1313,13 @@ pub enum Step {
     PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
+    /// Place the player at the respawn portal the loaded level names: the
+    /// load takes the session-start arrival word, so its reconstruction
+    /// device (or a transition marker naming the same words) is the
+    /// player's object, and the player stands at its frame 15 cm up
+    /// ([`crate::level_change::PortalArrival`], applied once the level is
+    /// in).
+    PlaceAtPortal(crate::level_change::PortalArrival),
     /// Give the placed player's body the settling state for this many
     /// ticks once it stands where [`Step::PlacePlayer`] put it (gravity
     /// without inertia, `exa_physics::body::Ragdoll::settle_for`): the
@@ -2895,8 +2911,8 @@ impl Flow {
             start_ms: now.wrapping_add(WAKE_DELAY_MS),
         };
         // The world's revive pass runs before the save: the alarm return,
-        // then every character's behaviour reset (the bodies' wake and the
-        // removed bodies' contact drop are not reproduced).
+        // then every character's behaviour reset, the hold of every living
+        // body and the drop of their kept pairs (`revive_pass`).
         let mut steps = vec![Step::ClosePrelude, Step::AlarmReturn, Step::ReviveBrains];
         if self.mode.is_game() {
             steps.push(Step::Save {
@@ -2924,18 +2940,17 @@ impl Flow {
     /// load of a pending respawn place the player. `None` while no portal
     /// is known.
     pub fn portal_placement(&self) -> Option<Placement> {
-        self.respawn_portal.map(|portal| Placement {
-            rotation: portal.rotation,
-            position: portal.position + Vec3::Y * PORTAL_LIFT_CM,
-        })
+        self.respawn_portal.map(portal_lifted)
     }
 
     /// The story's death screen CONTINUE: the player node's story bit
     /// clears, the save is written (without the death rule), the world torn
     /// down and `exanima05` loaded (the loader's second word, 1, is not
-    /// traced and is read as the load's own flag); the player stands at the
-    /// level's respawn portal (its pose, or the identity at the origin when
-    /// the level has none) 15 cm higher, the controls are attached to it
+    /// traced and is read as the load's own flag) with the session-start
+    /// arrival word, which names the level's reconstruction device as the
+    /// player's object; the player stands at that respawn portal (its
+    /// pose, or the identity at the origin when the level has none) 15 cm
+    /// higher ([`Step::PlaceAtPortal`]), the controls are attached to it
     /// again (which gives them back after the death), and it lies down to
     /// wake at once and plays the get-up motion. The
     /// reconstruction state becomes rebuildable. The camera is not moved.
@@ -2946,9 +2961,9 @@ impl Flow {
         self.story.wake = Wake::default();
         self.story.reconstruction = REBUILDABLE;
         let _ = now;
-        let placement = self.portal_placement().unwrap_or(Placement {
+        let without = portal_lifted(Placement {
             rotation: NO_ROTATION,
-            position: Vec3::Y * PORTAL_LIFT_CM,
+            position: Vec3::ZERO,
         });
         vec![
             // The respawn's scene reset starts with the death fade's reset.
@@ -2973,8 +2988,12 @@ impl Flow {
             Step::Controls(true),
             Step::KnockOut { delay_ms: 0 },
             Step::RequestAction(RESPAWN_MOTION),
-            Step::PlacePlayer(placement),
-            // Then the player's node tree settles for 16 ticks.
+            Step::PlaceAtPortal(crate::level_change::PortalArrival {
+                without: Some(without),
+                settle: 0,
+            }),
+            // Then the player's node tree settles for 16 ticks, wherever
+            // it was placed.
             Step::SettlePlayer(exa_physics::body::PLACED_SETTLE),
             Step::Hook(Hook::Story),
         ]
@@ -4162,7 +4181,10 @@ fn apply_steps(
         let (now_steps, later): (Vec<Step>, Vec<Step>) = tail.into_iter().partition(|step| {
             matches!(
                 step,
-                Step::PlacePlayer(_) | Step::SettlePlayer(_) | Step::ExitNudge
+                Step::PlacePlayer(_)
+                    | Step::PlaceAtPortal(_)
+                    | Step::SettlePlayer(_)
+                    | Step::ExitNudge
             )
         });
         steps.extend(now_steps);
@@ -4261,6 +4283,9 @@ fn apply_steps(
             }
             Step::PlacePlayer(placement) => {
                 commands.insert_resource(crate::level_change::PlayerPlacement::of_flow(&placement));
+            }
+            Step::PlaceAtPortal(arrival) => {
+                commands.insert_resource(arrival);
             }
             Step::ExitNudge => {
                 commands.insert_resource(crate::level_change::NudgeOutOfExits);
@@ -4792,6 +4817,13 @@ fn apply_steps(
                 // that registers one (nor does Exanima 0.9.5), so this only
                 // names it.
                 info!("game flow: scripted mode {mode:#x} hook {hook:?}");
+            }
+            Step::CloseSave => {
+                // The original closes the save manager's open package file.
+                // Exarust's save slots open a file per read or write and
+                // drop it at the end of that operation, so no package is
+                // open between steps: nothing is left to close.
+                debug!("game flow: the save package is closed (no file stays open)");
             }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
@@ -6927,21 +6959,31 @@ mod tests {
             },
             ..Default::default()
         };
-        let steps = flow.story_respawn(0);
-        // No portal: the identity at the origin.
-        assert!(steps.contains(&Step::PlacePlayer(Placement {
-            rotation: NO_ROTATION,
-            position: Vec3::new(0.0, 15.0, 0.0)
-        })));
+        // A portal the last load found does not decide the placement: the
+        // new load names its own.
         flow.respawn_portal = Some(Placement {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(1.0, 2.0, 3.0),
         });
         let steps = flow.story_respawn(0);
-        assert!(steps.contains(&Step::PlacePlayer(Placement {
-            rotation: PRACTICE_ROTATION,
-            position: Vec3::new(1.0, 17.0, 3.0)
-        })));
+        // Without a portal in the level: the identity at the origin, 15 cm
+        // up.
+        assert!(
+            steps.contains(&Step::PlaceAtPortal(crate::level_change::PortalArrival {
+                without: Some(Placement {
+                    rotation: NO_ROTATION,
+                    position: Vec3::new(0.0, 15.0, 0.0)
+                }),
+                settle: 0,
+            }))
+        );
+        assert_eq!(
+            flow.portal_placement(),
+            Some(Placement {
+                rotation: PRACTICE_ROTATION,
+                position: Vec3::new(1.0, 17.0, 3.0)
+            })
+        );
         assert!(steps.contains(&Step::Save {
             drop_on_low_health: false
         }));
@@ -6966,7 +7008,7 @@ mod tests {
                 Step::RequestAction(RESPAWN_MOTION),
             ]
         );
-        assert!(matches!(steps[load + 4], Step::PlacePlayer(_)));
+        assert!(matches!(steps[load + 4], Step::PlaceAtPortal(_)));
         // The placed player settles for 16 ticks.
         assert_eq!(steps[load + 5], Step::SettlePlayer(16));
     }
@@ -8007,6 +8049,10 @@ mod tests {
                 teardown: true,
             },
             Step::PlacePlayer(placement),
+            Step::PlaceAtPortal(crate::level_change::PortalArrival {
+                without: None,
+                settle: 16,
+            }),
             Step::SettlePlayer(16),
         ]);
         app.update();
@@ -8035,6 +8081,17 @@ mod tests {
                 .get_resource::<crate::level_change::PlacedSettle>()
                 .copied(),
             Some(crate::level_change::PlacedSettle(16))
+        );
+        // So does the portal placement, which the host resolves once the
+        // level is in.
+        assert_eq!(
+            app.world()
+                .get_resource::<crate::level_change::PortalArrival>()
+                .copied(),
+            Some(crate::level_change::PortalArrival {
+                without: None,
+                settle: 16,
+            })
         );
 
         // The wake steps write the player's animator flags word: the

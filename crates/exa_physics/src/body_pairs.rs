@@ -786,6 +786,101 @@ pub struct Pairs {
     traced: u32,
 }
 
+/// The bodies held out of the pairs: the original's held state (bit
+/// 0x400, set down a body's children by its hold and cleared by its
+/// release), which only its pair drop ([`Pairs::remove_held`]) reads. The
+/// hold also empties the world contacts each part keeps for the next
+/// tick's iterations. Every caller holds, drops and releases in one go
+/// (the player's snap and a teleport around their placement, the revive
+/// pass over every character, the cursor's lift), so the set lives only
+/// for that call ([`hold_out_of_pairs`]).
+#[derive(Debug, Default, Clone)]
+pub struct HeldBodies(Vec<Entity>);
+
+impl HeldBodies {
+    /// Holds `body`: it joins the set and every part's world contacts go.
+    pub fn hold(&mut self, body: &mut Ragdoll) {
+        body.clear_world_contacts();
+        let key = body_key(body);
+        if !self.0.contains(&key) {
+            self.0.push(key);
+        }
+    }
+
+    /// Releases `body` (the original's release clears the bit down the
+    /// tree).
+    pub fn release(&mut self, body: &Ragdoll) {
+        let key = body_key(body);
+        self.0.retain(|k| *k != key);
+    }
+
+    /// Whether the body known by `key` (its first part's entity) is held.
+    pub fn holds(&self, key: Entity) -> bool {
+        self.0.contains(&key)
+    }
+
+    /// Whether `body` is held.
+    pub fn is_held(&self, body: &Ragdoll) -> bool {
+        self.holds(body_key(body))
+    }
+
+    /// How many bodies are held.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Holds `bodies`, drops their kept pairs from the solver's pair stage
+/// (when the stages have one) and releases them: the original's hold, pair
+/// drop and release. Returns how many pairs were dropped.
+pub fn hold_out_of_pairs(
+    stages: Option<&mut super::SolverStages>,
+    bodies: &mut [&mut Ragdoll],
+) -> usize {
+    let mut held = HeldBodies::default();
+    for body in bodies.iter_mut() {
+        held.hold(body);
+    }
+    let dropped = stages
+        .and_then(|s| s.get_mut::<Pairs>())
+        .map_or(0, |pairs| pairs.remove_held(&held));
+    for body in bodies.iter() {
+        held.release(body);
+    }
+    dropped
+}
+
+/// [`hold_out_of_pairs`] over the bodies on `entities` in `world` (the
+/// world that runs the fixed step), for a caller that posts the drop to
+/// the next step (the item cursor's lift). Returns how many pairs were
+/// dropped.
+pub fn hold_entities_out_of_pairs(world: &mut World, entities: &[Entity]) -> usize {
+    let mut held = HeldBodies::default();
+    for &entity in entities {
+        if let Some(mut body) = world.get_mut::<Ragdoll>(entity) {
+            held.hold(&mut body);
+        }
+    }
+    let dropped = world
+        .get_resource_mut::<super::SolverStages>()
+        .and_then(|mut stages| {
+            stages
+                .get_mut::<Pairs>()
+                .map(|pairs| pairs.remove_held(&held))
+        })
+        .unwrap_or(0);
+    for &entity in entities {
+        if let Some(body) = world.get::<Ragdoll>(entity) {
+            held.release(body);
+        }
+    }
+    dropped
+}
+
 /// The pair stage's working lists ([`Pairs::find`]).
 #[derive(Debug, Default)]
 struct Scratch {
@@ -842,6 +937,33 @@ impl Pairs {
     /// Points kept over every pair.
     pub fn points(&self) -> usize {
         self.pairs.iter().map(|p| p.count).sum()
+    }
+
+    /// The kept pairs, each as its two bodies' keys (their first parts'
+    /// entities), in solving order.
+    pub fn kept(&self) -> impl Iterator<Item = (Entity, Entity)> + '_ {
+        self.pairs.iter().map(|p| (p.a.key, p.b.key))
+    }
+
+    /// Drops every kept pair with a held body ([`HeldBodies`]), as the
+    /// original's pair drop walks its solver's list: the last pair is
+    /// copied into the dropped one's place and that place is tested again.
+    /// The list is the one the last detection left for the next tick's
+    /// iterations, so a held body's old pairs are not solved there. Returns
+    /// how many were dropped.
+    pub fn remove_held(&mut self, held: &HeldBodies) -> usize {
+        let mut dropped = 0;
+        let mut i = 0;
+        while i < self.pairs.len() {
+            let pair = &self.pairs[i];
+            if held.holds(pair.a.key) || held.holds(pair.b.key) {
+                self.pairs.swap_remove(i);
+                dropped += 1;
+            } else {
+                i += 1;
+            }
+        }
+        dropped
     }
 
     /// Maps each pair's bodies to their place in `bodies` (by key); a pair

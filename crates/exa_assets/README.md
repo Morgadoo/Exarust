@@ -469,8 +469,10 @@ is the operative one and whose operative kind is the one the session's
 arrival word names (15 after a journey, 18 after a start or a
 load), or a volume object whose record (type byte
 `0x40`) holds the session's arrival variable as its entrance word and the
-id of the level the session came from as its second, becomes the player and
-its position the point the stream orders by; an object that cannot
+id of the level the session came from as its second, becomes the player,
+its position the point the stream orders by and its frame
+(`ContentStream::player_frame`, the position and `LevelNode::rotation`)
+where a respawn stands the player; an object that cannot
 be built raises the missing count and leaves no hole in the built list. Its
 rings have the original's capacities (16 jobs, completions and attachments,
 32 object and character requests and results, 128 streamed results);

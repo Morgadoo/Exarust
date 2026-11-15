@@ -101,6 +101,14 @@ const FALLBACK_HALF: f32 = 0.05;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettleWhenBuilt(pub i32);
 
+/// Asks for the body a character's model builds to be disabled down its
+/// parts ([`Ragdoll::set_disabled`]): the original's Spirit Form disables
+/// its new body once the player is handed over, which takes it out of the
+/// body-to-body contacts (not out of the level). Taken off when the body
+/// is built.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisabledWhenBuilt;
+
 /// Builds the simulated bodies of physical and limp body models once they
 /// are posed.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -114,6 +122,7 @@ fn build_bodies(
             Option<&mut GoLimp>,
             Option<&mut PlacedCorpse>,
             Option<&SettleWhenBuilt>,
+            Has<DisabledWhenBuilt>,
         ),
         (
             Without<Ragdoll>,
@@ -144,7 +153,7 @@ fn build_bodies(
     // its characters in the order it creates them.
     let mut requests: Vec<_> = requests.iter_mut().collect();
     requests.sort_unstable_by_key(|(root, ..)| root.index());
-    for (root, mut physical, mut limp, mut placed, settle) in requests {
+    for (root, mut physical, mut limp, mut placed, settle, disabled) in requests {
         // Behind the loading screen a body is built once it is dressed, as
         // the original builds a character whole: dressing is spread over
         // frames by a time budget, so a body built before its clothes in one
@@ -353,8 +362,12 @@ fn build_bodies(
             body.settle_for(settle.0);
             info!("settle: {root:?} is built settling for {} ticks", settle.0);
         }
+        if disabled {
+            body.set_disabled(true);
+            info!("disabled: {root:?} is built disabled (out of the body-to-body contacts)");
+        }
         let mut entity = commands.entity(root);
-        entity.remove::<SettleWhenBuilt>();
+        entity.remove::<(SettleWhenBuilt, DisabledWhenBuilt)>();
         if !trees.is_empty() {
             entity.insert(PendingLimbTrees {
                 tasks: trees,
@@ -549,6 +562,11 @@ pub struct GroundPlacement {
     /// re-placed on entering the scene takes its body's yaw, or the yaw
     /// toward its route's goal while it follows one.
     pub yaw: Option<f32>,
+    /// The body is held around the placement (the player's spawn snap):
+    /// its world contacts go, and after the placement the solver's kept
+    /// pairs with it are dropped and it is released
+    /// ([`exa_physics::body::HeldBodies`]). The AI's re-entry does not.
+    pub held: bool,
 }
 
 /// The AI's re-placement of a body the scene takes back, as the original's
@@ -627,6 +645,7 @@ pub(crate) fn place_entering(
         commands.entity(*entity).insert(GroundPlacement {
             floor: to.y,
             yaw: Some(yaw),
+            held: false,
         });
     }
 }
@@ -664,12 +683,22 @@ fn place_on_ground(
         Option<&exa_combat::Fighter>,
         Option<&mut Locomotion>,
     )>,
+    mut stages: Option<ResMut<exa_physics::body::SolverStages>>,
 ) {
     for (root, placement, mut body, at) in &mut asked {
         commands.entity(root).remove::<GroundPlacement>();
         let (Some(motions), Some(physics)) = (motions.as_deref(), physics.as_deref()) else {
             continue;
         };
+        // The player's snap holds the body before its placement (its world
+        // contacts go) and, after it, drops the solver's kept pairs with
+        // it and releases it. The placement neither finds contacts nor
+        // pairs, so the three run here together.
+        if placement.held {
+            let dropped =
+                exa_physics::body::hold_out_of_pairs(stages.as_deref_mut(), &mut [&mut *body]);
+            info!("ground placement {root:?}: held, {dropped} kept pair(s) dropped, released");
+        }
         let entities: Vec<(Entity, usize)> =
             body.parts.iter().map(|p| (p.entity, p.bone)).collect();
         // A body re-placed in the middle of its life is routed by its
@@ -2447,6 +2476,41 @@ pub(crate) mod tests {
         root
     }
 
+    /// The player's spawn snap holds its body around the placement on the
+    /// ground: its world contacts go and the solver's kept pair with it is
+    /// dropped. The AI's re-entry placement holds nothing.
+    #[test]
+    fn the_spawn_snaps_placement_holds_the_body_out_of_its_pairs() {
+        for held in [true, false] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(motions())
+                .insert_resource(exa_physics::Physics::default())
+                .add_systems(Update, place_on_ground);
+            let (a, _) = crate::revive_pass::tests::touching_balls(app.world_mut());
+            app.world_mut().entity_mut(a).insert((
+                GlobalTransform::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+                GroundPlacement {
+                    floor: 0.0,
+                    yaw: None,
+                    held,
+                },
+            ));
+            app.update();
+            assert!(!app.world().entity(a).contains::<GroundPlacement>());
+            assert_eq!(
+                crate::revive_pass::tests::kept_pairs(app.world()),
+                usize::from(!held)
+            );
+            assert_eq!(
+                app.world().get::<Ragdoll>(a).unwrap().parts[0]
+                    .contacts
+                    .is_empty(),
+                held
+            );
+        }
+    }
+
     /// A body root registered where a level placed it is built limp at
     /// rest, without clips: its parts' saved world frames place the
     /// particles, its muscles stay off, and its countdown starts at zero.
@@ -2464,6 +2528,7 @@ pub(crate) mod tests {
             .spawn((
                 PlacedCorpse::default(),
                 SettleWhenBuilt(exa_physics::body::PLACED_SETTLE),
+                DisabledWhenBuilt,
             ))
             .id();
         let rest = |local_at: Vec3, world_at: Vec3, bone: usize| {
@@ -2494,11 +2559,15 @@ pub(crate) mod tests {
         for _ in 0..4 {
             app.update();
         }
-        // The asking root is built settling for 16 ticks; the ask is taken.
+        // The asking root is built settling for 16 ticks and disabled; the
+        // asks are taken. The other root is neither.
         assert_eq!(
             app.world().get::<Ragdoll>(settled).unwrap().settling(),
             exa_physics::body::PLACED_SETTLE
         );
+        assert!(app.world().get::<Ragdoll>(settled).unwrap().disabled());
+        assert!(!app.world().entity(settled).contains::<DisabledWhenBuilt>());
+        assert!(!app.world().get::<Ragdoll>(root).unwrap().disabled());
         assert!(!app.world().entity(settled).contains::<SettleWhenBuilt>());
         let world = app.world();
         assert!(!world.entity(root).contains::<PlacedCorpse>());

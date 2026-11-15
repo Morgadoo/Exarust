@@ -1798,6 +1798,14 @@ fn press_hand(
             }) else {
                 return;
             };
+            // The press lifts through the original's deferred hold-out,
+            // run on the simulation thread: the item is held, the solver's
+            // kept pairs with it are dropped and it is released (the GUI
+            // drop's lift holds it out at once, without the drop).
+            fixed.post(move |world| {
+                let dropped = exa_physics::body::hold_entities_out_of_pairs(world, &[body]);
+                debug!("hand: the lifted {body:?} leaves {dropped} kept pair(s)");
+            });
             pb.hold_object(true);
             items.begin(held);
             hand.holding = Holding::Lift;

@@ -123,6 +123,55 @@ impl PlayerPlacement {
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacedSettle(pub i32);
 
+/// A respawn's placement at the respawn portal, carried across the level
+/// load ([`crate::flow::Step::PlaceAtPortal`]). The original's story
+/// respawn and its load of a save written while a respawn was pending set
+/// the session's arrival word to the session-start word (the previous
+/// level to none) before the load, so the level's reconstruction device
+/// (operative kind 18), or a transition marker naming those words, becomes
+/// the player's object; then the player stands at that object's frame
+/// 15 cm up. The host loads the level with those words and turns this
+/// into the [`PlayerPlacement`] once the level is in, recording the portal
+/// in [`crate::flow::Flow::respawn_portal`].
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct PortalArrival {
+    /// Where the player stands when the level names no portal: the story
+    /// respawn's identity frame at the origin 15 cm up; `None` keeps the
+    /// placement the flow gave (a pending respawn's load keeps the saved
+    /// position, as the original's load places nothing then).
+    pub without: Option<crate::flow::Placement>,
+    /// The settling a portal placement gives the player (the pending
+    /// respawn's load: 16 ticks, only when it found a portal); 0 for none.
+    /// The story respawn settles wherever it places the player
+    /// ([`crate::flow::Step::SettlePlayer`]).
+    pub settle: i32,
+}
+
+impl PortalArrival {
+    /// The flow placement once the level is in, from the frame of the
+    /// object the load named as the player (`portal`: metres and rotation
+    /// rows): its frame 15 cm up, or the fallback. Also returns the portal
+    /// itself (centimetres) when there is one.
+    pub fn resolve(
+        &self,
+        portal: Option<(Vec3, [[f32; 3]; 3])>,
+    ) -> (
+        Option<crate::flow::Placement>,
+        Option<crate::flow::Placement>,
+    ) {
+        match portal {
+            Some((at, rotation)) => {
+                let raw = crate::flow::Placement {
+                    rotation,
+                    position: at * 100.0,
+                };
+                (Some(crate::flow::portal_lifted(raw)), Some(raw))
+            }
+            None => (self.without, None),
+        }
+    }
+}
+
 /// A level change's arrival: the entrance the change named (a level exit's
 /// spawn word; zero otherwise) and the `locales.rdb` id of the level it
 /// left. The original's level-change load keeps both in its session and
@@ -210,6 +259,34 @@ pub fn request(
 mod tests {
     use super::*;
     use crate::flow::{Placement, yaw};
+
+    /// A portal the load named places the player at its frame 15 cm up
+    /// and is recorded in centimetres; without one the fallback stands
+    /// (none for a pending respawn's load, which keeps its placement).
+    #[test]
+    fn a_portal_arrival_resolves_to_the_portal_or_its_fallback() {
+        let origin = crate::flow::portal_lifted(Placement {
+            rotation: crate::flow::NO_ROTATION,
+            position: Vec3::ZERO,
+        });
+        let respawn = PortalArrival {
+            without: Some(origin),
+            settle: 0,
+        };
+        let turned = yaw(135.0);
+        let (placed, portal) = respawn.resolve(Some((Vec3::new(-150.0, -0.2, -42.0), turned)));
+        let portal = portal.unwrap();
+        assert!((portal.position - Vec3::new(-15000.0, -20.0, -4200.0)).length() < 1e-2);
+        assert_eq!(portal.rotation, turned);
+        let placed = placed.unwrap();
+        assert!((placed.position - Vec3::new(-15000.0, -5.0, -4200.0)).length() < 1e-2);
+        assert_eq!(respawn.resolve(None), (Some(origin), None));
+        let load = PortalArrival {
+            without: None,
+            settle: 16,
+        };
+        assert_eq!(load.resolve(None), (None, None));
+    }
 
     #[test]
     fn the_flow_placement_becomes_metres_and_a_yaw() {

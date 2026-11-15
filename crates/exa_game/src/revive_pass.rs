@@ -22,14 +22,20 @@
 //! second round draws its exits from the room the first one ended in and
 //! avoids the room it came from.
 //!
+//! Then the pass holds every character's body that is not collapsing or
+//! dead (and the alarm return held the guardians it sent home and the
+//! player it put outside, [`RevivedHolds`]): each held body's world
+//! contacts go, the solver's kept pairs with a held body are dropped (the
+//! list the last detection left for the next tick's iterations), and
+//! every body is released ([`hold_revived`]). So nothing the reset moved
+//! is pushed back by a contact from where it stood.
+//!
 //! Exarust's differences: the plans start from the character root's ground
 //! point and are routed at its height, as the roam's own plans are; the
 //! nearest walkable point is asked from the root's point (the original
 //! asks from the standing point at the pelvis's height); a body with no
 //! footprint recorded is not stamped (the next fixed tick's footprint pass
-//! stamps it); the reset of the AI's walk-ahead flags, the bodies' wake
-//! and the removed bodies' contact drop the pass also runs are not
-//! reproduced.
+//! stamps it); the reset of the AI's walk-ahead flags is not reproduced.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -40,6 +46,12 @@ use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::body::Ragdoll;
 use exa_physics::sim_app::FixedCommands;
 use exa_world::room_view::LevelRooms;
+
+/// The bodies the story revive's alarm return held (the guardians it sent
+/// home, then the player it put outside), taken by the revive pass's
+/// hold ([`hold_revived`]) with the brain reset.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RevivedHolds(pub Vec<Entity>);
 
 /// The AI characters the pass resets.
 type Brains<'w, 's> = Query<
@@ -72,7 +84,11 @@ fn span2(points: &[Vec3]) -> f32 {
 /// world that runs the step, where the navigation grid and the footprints
 /// live (behind the simulation bridge the frame's world holds neither, so a
 /// reset run there could not plan). See the module.
-pub fn reset_brains(mut queued: ResMut<crate::flow::FlowSteps>, mut fixed: ResMut<FixedCommands>) {
+pub fn reset_brains(
+    mut queued: ResMut<crate::flow::FlowSteps>,
+    mut fixed: ResMut<FixedCommands>,
+    holds: Option<ResMut<RevivedHolds>>,
+) {
     let Some(at) = queued
         .steps
         .iter()
@@ -81,7 +97,46 @@ pub fn reset_brains(mut queued: ResMut<crate::flow::FlowSteps>, mut fixed: ResMu
         return;
     };
     queued.steps.remove(at);
+    let alarm = holds
+        .map(|mut h| std::mem::take(&mut h.0))
+        .unwrap_or_default();
     fixed.run(revive_brains, ());
+    fixed.run(hold_revived, alarm);
+}
+
+/// The revive pass's end, after every brain's reset: the bodies the alarm
+/// return held (`alarm`) and every character's body that is not
+/// collapsing or dead are held (their world contacts emptied), the
+/// solver's kept pairs with a held body are dropped, and every body is
+/// released. Run in the world that runs the fixed step.
+pub fn hold_revived(
+    In(alarm): In<Vec<Entity>>,
+    mut bodies: Query<(Entity, &mut Ragdoll, Option<&Condition>)>,
+    mut stages: Option<ResMut<exa_physics::body::SolverStages>>,
+) {
+    let mut held = exa_physics::body::HeldBodies::default();
+    for &entity in &alarm {
+        if let Ok((_, mut body, _)) = bodies.get_mut(entity) {
+            held.hold(&mut body);
+        }
+    }
+    for (_, mut body, condition) in &mut bodies {
+        if condition.is_some_and(|c| !c.dying()) {
+            held.hold(&mut body);
+        }
+    }
+    let count = held.len();
+    let dropped = stages
+        .as_deref_mut()
+        .and_then(|s| s.get_mut::<exa_physics::body::Pairs>())
+        .map_or(0, |pairs| pairs.remove_held(&held));
+    for (_, body, _) in &bodies {
+        held.release(body);
+    }
+    info!(
+        "revive pass: {count} body(ies) held ({} by the alarm return), {dropped} kept pair(s) dropped, all released",
+        alarm.len()
+    );
 }
 
 /// The reset over every AI character (see the module), run in the world
@@ -257,7 +312,7 @@ pub fn revive_brains(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The pass takes its step, heals and clears every awake brain, leaves
@@ -390,6 +445,101 @@ mod tests {
         assert_eq!(prints.of(waiter), Some(feet + Vec3::X));
         // Lifted and stamped again at the same point: the grid is as it was.
         assert_eq!([cost(&app, feet), cost(&app, feet + Vec3::X)], before);
+    }
+
+    /// Two one-part ball bodies 19 cm apart on new entities (their 10 cm
+    /// spheres overlap), each part keeping a level contact, and the solver
+    /// stages with the pair their detection kept, put in `world`.
+    pub(crate) fn touching_balls(world: &mut World) -> (Entity, Entity) {
+        use exa_physics::body::{Pairs, PartSetup, SolverStages};
+        let ball = |world: &mut World, at: Vec3| {
+            let entity = world.spawn_empty().id();
+            let part = world.spawn_empty().id();
+            let mut body = Ragdoll::new(&[PartSetup {
+                bone: 11,
+                entity: part,
+                parent: None,
+                world: Affine3A::from_translation(at),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            }]);
+            body.parts[0]
+                .contacts
+                .push(exa_physics::contact::LevelContact {
+                    weights: [0.25; 4],
+                    point: at,
+                    normal: Vec3::Y,
+                    plane: 0.0,
+                });
+            (entity, body)
+        };
+        let (a, mut body_a) = ball(world, Vec3::new(0.0, 2.0, 0.0));
+        let (b, mut body_b) = ball(world, Vec3::new(0.19, 2.0, 0.0));
+        let mut stages = SolverStages::default();
+        stages.add(Pairs::default());
+        stages.all()[0].detect(&mut [&mut body_a, &mut body_b], &mut []);
+        assert_eq!(stages.get::<Pairs>().unwrap().kept().count(), 1);
+        world.entity_mut(a).insert(body_a);
+        world.entity_mut(b).insert(body_b);
+        world.insert_resource(stages);
+        (a, b)
+    }
+
+    /// The pairs the solver's pair stage keeps in `world`.
+    pub(crate) fn kept_pairs(world: &World) -> usize {
+        world
+            .resource::<exa_physics::body::SolverStages>()
+            .get::<exa_physics::body::Pairs>()
+            .unwrap()
+            .kept()
+            .count()
+    }
+
+    /// The revive pass's hold: a character that is not collapsing or dead
+    /// is held (its world contacts go) and the kept pair it is in is
+    /// dropped; two dead characters keep theirs unless the alarm return
+    /// held one (a player it put outside, condition dead-like 0xA00).
+    #[test]
+    fn the_revive_pass_holds_the_living_and_the_alarm_returned() {
+        for (conditions, alarm_holds, dropped) in [
+            ([Condition::default(), Condition::DEAD], false, true),
+            ([Condition::DEAD, Condition::DEAD], false, false),
+            ([Condition::DEAD, Condition::DEAD], true, true),
+        ] {
+            let mut app = App::new();
+            exa_physics::sim_app::add_fixed_commands(&mut app);
+            app.init_resource::<crate::flow::FlowSteps>()
+                .init_resource::<RevivedHolds>()
+                .add_systems(Update, reset_brains);
+            let (a, b) = touching_balls(app.world_mut());
+            app.world_mut().entity_mut(a).insert(conditions[0]);
+            app.world_mut().entity_mut(b).insert(conditions[1]);
+            if alarm_holds {
+                app.world_mut().resource_mut::<RevivedHolds>().0.push(b);
+            }
+            app.world_mut()
+                .resource_mut::<crate::flow::FlowSteps>()
+                .steps = vec![crate::flow::Step::ReviveBrains];
+            app.update();
+            // The pass runs at the start of the next fixed step.
+            assert_eq!(kept_pairs(app.world()), 1);
+            exa_physics::sim_app::run_fixed_commands(app.world_mut());
+            assert_eq!(kept_pairs(app.world()), usize::from(!dropped));
+            let contacts = |e: Entity| {
+                app.world().get::<Ragdoll>(e).unwrap().parts[0]
+                    .contacts
+                    .len()
+            };
+            // The living one's contacts went; a dead one's stay unless held.
+            assert_eq!(contacts(a), usize::from(conditions[0].dying()));
+            assert_eq!(contacts(b), usize::from(!alarm_holds));
+            assert!(app.world().resource::<RevivedHolds>().0.is_empty());
+        }
     }
 
     #[test]
