@@ -1,9 +1,9 @@
 //! Running powers saved and restored with a character, as the original's
 //! save writer and record build carry them.
 //!
-//! - **Save** ([`saved_powers`]): the character's placement in a save
-//!   (the player's in `#playerdata`, every living scene character's in the
-//!   level section) ends with a running-powers chunk
+//! - **Save** ([`saved_powers`]): the player's placement in a save
+//!   (`#playerdata`; the level section's character walk writes none, as
+//!   the original's) ends with a running-powers chunk
 //!   ([`exa_formats::characters::RUNNING_POWERS`]): the count of the powers
 //!   that wrote themselves, then each power's own record. Only six classes
 //!   write one ([`crate::thaum::power::saves_running`]): the persistent
@@ -122,6 +122,9 @@ pub struct Restored {
     /// Saved powers that rebuilt nothing (no restore row, or a Force power
     /// on a body without a caster).
     pub skipped: usize,
+    /// A rebuilt persistent Sense Minds ran its activation: the sight
+    /// overlay starts with no end, as on a cast.
+    pub sense_overlay: bool,
 }
 
 /// Rebuilds a loaded body's saved powers onto its mind and caster
@@ -215,7 +218,7 @@ pub fn restore_running(
             restored.force += 1;
         }
     }
-    activate(mind, caster);
+    restored.sense_overlay = activate(mind, caster);
     restored
 }
 
@@ -223,9 +226,11 @@ pub fn restore_running(
 /// it after the record build: the persistent Sense Minds shows its
 /// overlay, Mask Mind sets the masked bit, Shell takes half a blow's
 /// energy and Strikes its combat factors and both weapon hooks. The other
-/// classes' handler does nothing.
-fn activate(mind: &mut MindBody, caster: Option<&mut PowerCaster>) {
+/// classes' handler does nothing. Answers whether a Sense Minds asked for
+/// its overlay.
+fn activate(mind: &mut MindBody, caster: Option<&mut PowerCaster>) -> bool {
     let mut powers = std::mem::take(&mut mind.powers);
+    let mut overlay = false;
     {
         let body: &mut CastBody = match caster {
             Some(caster) => {
@@ -252,9 +257,7 @@ fn activate(mind: &mut MindBody, caster: Option<&mut PowerCaster>) {
         };
         for power in &mut powers {
             match &mut power.class {
-                MindClass::Sense(sense) => {
-                    sense.show();
-                }
+                MindClass::Sense(sense) => overlay |= sense.show(),
                 MindClass::Mask(mask) => mask.apply(body),
                 _ => {}
             }
@@ -262,6 +265,7 @@ fn activate(mind: &mut MindBody, caster: Option<&mut PowerCaster>) {
     }
     powers.append(&mut mind.powers);
     mind.powers = powers;
+    overlay
 }
 
 /// Rebuilds the saved powers of each spawned body once its mind is in
@@ -284,6 +288,11 @@ pub fn restore_saved_powers(
             restored.force,
             restored.skipped
         );
+        if restored.sense_overlay {
+            // The activation's sight: the overlay starts with no end
+            // ([`crate::mind::draw::start_sense_overlay`]), as a cast's.
+            commands.queue(|world: &mut World| crate::mind::draw::start_sense_overlay(world, 0));
+        }
         commands.entity(entity).remove::<SavedPowers>();
     }
 }
@@ -471,7 +480,8 @@ mod tests {
             Restored {
                 mind: 3,
                 force: 2,
-                skipped: 1
+                skipped: 1,
+                sense_overlay: true,
             }
         );
         // Three quarters of each row's cost goes into the reserve, and each
@@ -607,6 +617,11 @@ mod tests {
         assert!(matches!(caster.active[0].class, ActiveClass::Shell(_)));
         assert!((caster.body.reserved - (0.27 + 0.35)).abs() < 1e-6);
         assert!(app.world().get::<SavedPowers>(player).is_none());
+        // The loaded Sense Minds' activation started the sight overlay with
+        // no end, as a cast does.
+        let sense = app.world().resource::<crate::mind::draw::MindSense>();
+        assert!(sense.hooked);
+        assert_eq!(sense.overlay.end_ms, u32::MAX);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

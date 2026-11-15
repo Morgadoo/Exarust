@@ -315,10 +315,12 @@ pose tree (`level_save::live_pose_tree`), a living character with a brain its
 pose tree and motion state (action number and progress), an awake guardian
 its AI home; the load puts the motion (an attack becomes the defence stance)
 and the home back (`level_save::restore_saved_state`). Running powers go
-with the placements (`power_save`): the player's and every living scene
-character's persistent Sense Minds, Mask Mind, Shell and Strikes, Loyalty and
-Command Dead are written by each power's save record, and the load rebuilds
-them on the new body, takes their reserve again and runs their activation; a
+with the player's placement (`power_save`): its persistent Sense Minds, Mask
+Mind, Shell and Strikes, Loyalty and Command Dead are written by each power's
+save record (the level section's character walk writes none, as the
+original's: a scene character's powers end with the save, though a placement
+that holds them is read and rebuilt), and the load rebuilds them on the new
+body, takes their reserve again and runs their activation; a
 loaded Loyalty or Command Dead finds its target by character id on its first
 tick (`mind::runtime::tick_minds`). Every level change first runs the save
 unit's GUI reset (`load_reset`: the death fade, every game screen, the

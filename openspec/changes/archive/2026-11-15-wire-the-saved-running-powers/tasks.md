@@ -7,7 +7,7 @@
 ## 2. Wire
 
 - [x] 2.1 Running powers in the placement format (read, write, level export)
-- [x] 2.2 The live save of the player's and the scene characters' running powers
+- [x] 2.2 The live save of the player's running powers (the level section writes none, as the original's)
 - [x] 2.3 The load: the player's and the placed characters' powers rebuilt, reserved and activated
 - [x] 2.4 The loaded Loyalty and Command Dead relink by character id
 - [x] 2.5 The GUI reset on every level change (death fade, screens, crystal sources, icon cache)
@@ -15,7 +15,7 @@
 
 ## 3. Tests and checks
 
-- [x] 3.1 Format tests: the placement's running powers, the player placement round trip, the level section round trip
+- [x] 3.1 Format tests: the placement's running powers, the player placement round trip, the level section writing none
 - [x] 3.2 Live-system tests: save then load with running powers, a retail-format record with Loyalty, the level change reset, the journey save
 - [x] 3.3 No corpus check applies: no shipped level or retail save at hand holds a running power (EXANIMA_DIR checks unchanged)
 - [x] 3.4 docs/formats/SAVES.md and RFC.md, the crate READMEs; `make check` (fmt, clippy -D warnings, tests)

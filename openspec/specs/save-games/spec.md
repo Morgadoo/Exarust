@@ -731,6 +731,13 @@ Only the persistent Sense Minds, Mask Mind, Shell and Strikes, and Loyalty and C
 - **WHEN** a character running instant Sense Minds and a Loyalty bound to a character is saved
 - **THEN** its placement holds one record, the Loyalty's id, 4 and the bound character's id
 
+### Requirement: Only the player's placement saves running powers
+Only the save's own placement writer (the player's placement in the player data) SHALL write running powers; the level section's character walk SHALL write none, so a scene character's running powers are not saved.
+
+#### Scenario: A scene thaumaturge running Shell
+- **WHEN** a story save is written while a scene character runs Shell
+- **THEN** that character's placement in the level section holds no running-powers sub-chunk
+
 ### Requirement: Saved running powers rebuilt on load
 A character loaded with saved running powers SHALL have each power with a restore row rebuilt: its domain table's cost goes into the body's reserve (three quarters with the reserve technique) and the power holds the same amount. Powers without a restore row SHALL be dropped.
 

@@ -20,6 +20,9 @@ matter:
   walks the body's power list when it holds a power: a running-powers
   sub-chunk with a count word, each power's save slot, the count patched
   with the powers that answered, the chunk dropped when none did.
+  Its only callers are the story and arena player-data writers; the level
+  export's character walk writes the flat pose, pose tree, AI home and
+  motion state but no running powers.
 - Six classes have a save slot: the persistent Sense Minds and Mask Mind,
   Shell and Strikes write their id and 0; Loyalty and Command Dead their
   id, 4 and the target's character id.
@@ -47,14 +50,17 @@ matter:
 
 - `exa_formats::characters`: `RunningPower`, `read_running_powers`,
   `write_running_powers`, `Placement::powers` (read from the placement's
-  running-powers sub-chunk); `rfc_level::export_characters` writes them
-  back; `save_package::CharacterPlacement::running_powers`.
+  running-powers sub-chunk); `save_package::CharacterPlacement::running_powers`.
 - `exa_game::thaum::power`: `saves_running`; `restore_persistent` takes
   the saved records, keeps the Loyalty and Command Dead target word and
   holds what the reserve took (the Force held focus was multiplied twice).
 - `exa_game::power_save` (new): the live save walk (`saved_powers`) for
-  the player's placement and every scene character's, and the load
+  the player's placement (the level section's character walk writes no
+  running powers, as the original's: its only writer is the save game's
+  placement writer), and the load
   (`restore_running`, `restore_saved_powers`, `give_player_powers`).
+- A loaded persistent Sense Minds' activation starts the sight overlay with
+  no end (`mind::draw::start_sense_overlay`), as its cast does.
 - `exa_game::mind::runtime::tick_minds`: a loaded Loyalty or Command Dead
   finds its target by character id and puts its marker back.
 - `exa_game::load_reset` (new): the GUI reset on every level change;
@@ -69,7 +75,6 @@ matter:
   the arena manager's placement gets no Loyalty target names.
 - The restored Shell's aura visual (the activation's effect node): the
   shell's damping, reserve and bar entry come back, its aura does not.
-- The Sense Minds overlay itself (never shown live; F150's overlay half).
 - The per-locale indoor fog presets, the grid environment set-up, the
   menu scene and the arena reload of the save unit (their callers'
   branches are not ported).

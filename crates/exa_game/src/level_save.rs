@@ -226,9 +226,6 @@ pub struct LiveCharacter {
     /// Its AI home, for an awake guardian (a race word whose `0xff00` pair
     /// is `0x1000`, statue byte clear) that holds one.
     pub ai_home: Option<AiHome>,
-    /// The running powers its save writes, for a living character
-    /// ([`crate::power_save::saved_powers`]).
-    pub powers: Vec<exa_formats::characters::RunningPower>,
 }
 
 /// The pose tree a save writes for a body: its root part's world frame,
@@ -420,9 +417,13 @@ pub fn characters_after(
 /// character has a body]); a living one an AI drives its AI home
 /// (`0xCACE0F77`, only for an awake guardian), its live pose tree and its
 /// motion state (`0xCAC0EA00`). A living character no AI drives keeps the
-/// stored pose and motion. Every living character writes its running powers
-/// (`0xCAC0EC00`, after the motion state); a dead one none.
+/// stored pose and motion. No character of the section writes its running
+/// powers: the exporter's character walk has no running-powers chunk (only
+/// the player's own placement in `#playerdata` writes one,
+/// [`crate::power_save`]), so a scene character's powers end with the save,
+/// and a stored chunk is dropped.
 pub fn live_state(placement: &mut Placement, character: &LiveCharacter) {
+    placement.powers.clear();
     if placement.is_dead() {
         if let Some(pose) = character.pose.clone().filter(|p| !p.is_empty()) {
             placement.pose = SavedPose::Tree(pose);
@@ -436,11 +437,8 @@ pub fn live_state(placement: &mut Placement, character: &LiveCharacter) {
         }
         placement.motion = None;
         placement.ai_home = None;
-        placement.powers.clear();
         return;
     }
-    // Every living character's running powers, whatever drives it.
-    placement.powers = character.powers.clone();
     let Some(motion) = character.motion else {
         return;
     };
@@ -710,7 +708,6 @@ impl LevelSaveScene<'_, '_> {
         let mut out = Vec::new();
         let (mut to_world, mut to_local) = (0, 0);
         let (mut posed, mut moving, mut homes, mut powered) = (0, 0, 0, 0);
-        let records = self.record_ids();
         for (
             transform,
             data,
@@ -777,19 +774,13 @@ impl LevelSaveScene<'_, '_> {
                     position: (at / 100.0).to_array(),
                     heading,
                 });
-            // A living character's running powers, by the save routine of
-            // each power that has one.
-            let powers = if dead {
-                Vec::new()
-            } else {
-                crate::power_save::saved_powers(mind, caster, |id| {
-                    records
-                        .iter()
-                        .find(|(body, _)| *body == id)
-                        .map(|(_, record)| *record)
-                })
-            };
-            powered += usize::from(!powers.is_empty());
+            // The level walk writes no running powers; the count is for
+            // the log.
+            powered += usize::from(
+                !dead
+                    && (mind.is_some_and(|m| !m.powers.is_empty())
+                        || caster.is_some_and(|c| !c.active.is_empty())),
+            );
             posed += usize::from(pose.as_ref().is_some_and(|p| !p.is_empty()));
             moving += usize::from(motion.is_some());
             homes += usize::from(ai_home.is_some());
@@ -801,11 +792,10 @@ impl LevelSaveScene<'_, '_> {
                 pose,
                 motion,
                 ai_home,
-                powers,
             });
         }
         info!(
-            "save: scene character state: {posed} live pose trees, {moving} motion states, {homes} AI homes, {powered} with running powers, {} dead",
+            "save: scene character state: {posed} live pose trees, {moving} motion states, {homes} AI homes, {powered} running powers the level walk does not write, {} dead",
             out.iter().filter(|c| c.dead).count()
         );
         // The scene's order is the entities'; keep it stable.
@@ -1098,7 +1088,6 @@ mod tests {
             pose: None,
             motion: None,
             ai_home: None,
-            powers: Vec::new(),
         }
     }
 
@@ -1260,7 +1249,6 @@ mod tests {
             pose: None,
             motion: None,
             ai_home: None,
-            powers: Vec::new(),
         }];
         let held: Vec<u32> = local.db.ids().collect();
         let records = scene
@@ -1325,7 +1313,6 @@ mod tests {
             pose: Some(two_parts(a.position[0])),
             motion: None,
             ai_home: None,
-            powers: Vec::new(),
         };
         died.position[0] += 0.5;
         let walker = LiveCharacter {
@@ -1339,7 +1326,6 @@ mod tests {
                 value: 0.5,
             }),
             ai_home: None,
-            powers: Vec::new(),
         };
         let mut local = crate::world_characters::LocalCharacters::of_section(source);
         let held: Vec<u32> = local.db.ids().collect();

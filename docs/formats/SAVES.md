@@ -363,7 +363,10 @@ matches it.
 ### Running powers
 
 A living character's placement in save mode ends, after the motion state,
-with `0xCAC0EC00` when the body runs any power: an `i32` count, then per
+with `0xCAC0EC00` when the body runs any power. Only the save game's own
+placement writer writes it (the player's placement in `#playerdata`, story
+and arena); the level section's character walk has no such chunk, so a
+scene character's running powers are not saved. The chunk: an `i32` count, then per
 power `u32 id`, `u32 size` and `size` bytes. The writer walks the body's
 power list and calls each power's save routine; the count is patched with
 the powers that wrote, and the chunk is taken back out when none did. Six
