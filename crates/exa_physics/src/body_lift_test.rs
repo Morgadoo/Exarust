@@ -765,6 +765,41 @@ fn the_carry_takes_the_locomotion_push() {
     assert_eq!(drive(&body).carry().x, 0.0);
 }
 
+/// The locomotion push does not wait on the lift servo: a moving body
+/// whose pelvis rides well over its target (the servo gives no lift then)
+/// still takes the whole push, as the original adds it to the carry
+/// before the servo runs.
+#[test]
+fn a_pelvis_over_its_target_keeps_the_push() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let floor = floor_quad(0.0, 5.0);
+    body.measure_balance(&floor[..]);
+    let bearing = Bearing {
+        moving: true,
+        walking: true,
+        push: Vec3::X * 2.0,
+        push_gain: 0.5,
+        facing: Vec3::Z,
+        ..Bearing::default()
+    };
+    body.set_bearing(bearing);
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let level = drive(&body).carry().x;
+    assert!(drive(&body).support() > 0.0);
+    for part in &mut body.parts {
+        for x in &mut part.positions {
+            *x += Vec3::Y * 0.2;
+        }
+    }
+    body.set_bearing(bearing);
+    body.aim(Affine3A::IDENTITY, pose);
+    let d = drive(&body);
+    assert_eq!(d.lift, 0.0, "the servo lifts no pelvis 20 cm high");
+    let expected = 2.0 * d.support() * d.support() * 0.5 * d.bearing.lag / CM;
+    assert!(expected > 0.0);
+    assert!(close(d.carry().x, expected, 1e-6), "{} {level}", d.carry().x);
+}
+
 /// Only a walking condition measures the feet's lag: any other condition
 /// (an attack, say) pushes with the factor 1 even with a foot far behind.
 #[test]

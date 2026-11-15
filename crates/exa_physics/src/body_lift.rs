@@ -299,8 +299,8 @@ pub(super) fn target_height(
 }
 
 impl Ragdoll {
-    /// The character tick's carry, once the body is aimed: gravity, less
-    /// the lift. Each leg's ground offset is set (its sole height standing;
+    /// The character tick's carry, once the body is aimed: gravity, plus
+    /// the locomotion drive while it moves, less the lift. Each leg's ground offset is set (its sole height standing;
     /// moving, its animated ankle's height over the gait pose's lowest,
     /// plus the sole), then the target pelvis height from the ground under the feet
     /// (each foot's own; the controller's floor does not raise it) and the
@@ -327,6 +327,17 @@ impl Ragdoll {
             return;
         };
         let bearing = drive.bearing;
+        // The locomotion drive, as the original adds it to the carry while
+        // the body moves, before the lift servo and whatever the servo
+        // finds (no support, a pelvis above its target): drive × S² × the
+        // gait's push gain × the feet's lag, in cm a tick². The feet
+        // routine measured the lag from last tick's animated contacts; a
+        // body that does not walk keeps 1. With no support S² is 0.
+        if bearing.moving {
+            let push =
+                bearing.push * (drive.support * drive.support * bearing.push_gain * bearing.lag);
+            drive.carry += push / CM;
+        }
         let posed = drive.targets.len() == parts.len();
         let pelvis_target = posed.then(|| Vec3::from(drive.targets[root].translation));
         let floor = drive.root.map(|r: Affine3A| r.translation.y);
@@ -434,15 +445,6 @@ impl Ragdoll {
             }
             drive.lift = f;
             drive.carry -= gravity * (f * drive.support);
-        }
-        // The locomotion drive, as the original adds it to the carry while
-        // the body moves: drive × S² × the gait's push gain × the feet's
-        // lag, in cm a tick². The feet routine measured the lag from last
-        // tick's animated contacts; a body that does not walk keeps 1.
-        if bearing.moving && drive.support > 0.0 {
-            let push =
-                bearing.push * (drive.support * drive.support * bearing.push_gain * bearing.lag);
-            drive.carry += push / CM;
         }
     }
 }
