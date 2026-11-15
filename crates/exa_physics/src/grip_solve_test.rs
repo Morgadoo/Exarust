@@ -141,13 +141,17 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
 }
 
 /// A dropped item keeps every state bit it had except the strike flags the
-/// attach set, takes the dropped weapon's friction and stays a free body.
+/// attach set, takes the dropped weapon's friction and stays a free body,
+/// the root of its own tree (link iterations 2 + its parts − 1); its holder,
+/// still in the world, hears that it came loose.
 #[test]
 fn a_dropped_item_clears_its_strike_flags() {
     use crate::grip::{GripRelease, GripSpec, HeldGrip, HeldKind};
     use crate::part::PartState;
     let item = Entity::from_raw_u32(20).unwrap();
+    let holder_part = Entity::from_raw_u32(21).unwrap();
     let mut body = rigid(item, Vec3::ZERO, 1.0);
+    body.set_link_iterations(15);
     body.parts[0].state = PartState(
         PartState::HELD | PartState::STRIKING | PartState::STRIKE_CHAIN | PartState::STRIKE_MARK,
     );
@@ -166,7 +170,7 @@ fn a_dropped_item_clears_its_strike_flags() {
         class: 0x10,
         soft_weld: false,
         kind: HeldKind::Weapon,
-        holder_key: item,
+        holder_key: holder_part,
         hands: [None, None],
         arms: [None, None],
         links: Some(links(pivot(
@@ -178,10 +182,29 @@ fn a_dropped_item_clears_its_strike_flags() {
         head_extra: 0.0,
     };
     let mut app = App::new();
-    app.add_systems(Update, crate::grip_solve::release_freed_grips);
+    app.add_message::<crate::grip::CameLoose>()
+        .add_systems(Update, crate::grip_solve::release_freed_grips);
+    let holder = app
+        .world_mut()
+        .spawn(rigid(holder_part, Vec3::ZERO, 1.0))
+        .id();
     let entity = app.world_mut().spawn((body, grip, GripRelease)).id();
     app.update();
+    let loose: Vec<crate::grip::CameLoose> = app
+        .world()
+        .resource::<Messages<crate::grip::CameLoose>>()
+        .iter_current_update_messages()
+        .copied()
+        .collect();
+    assert_eq!(
+        loose,
+        vec![crate::grip::CameLoose {
+            item: entity,
+            holder
+        }]
+    );
     let body = app.world().get::<Ragdoll>(entity).unwrap();
+    assert_eq!(body.link_iterations(), 2);
     let state = body.parts[0].state;
     assert!(state.has(PartState::HELD));
     assert!(!state.has(PartState::STRIKING));

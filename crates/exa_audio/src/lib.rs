@@ -66,6 +66,7 @@ impl Plugin for AudioPlugin {
             .init_resource::<playback::SourceEntities>()
             .init_resource::<MusicSetting>()
             .add_message::<sounds::HealSound>()
+            .add_message::<exa_combat::fighter::SecondWindFired>()
             .add_message::<sounds::PointSounded>()
             .add_message::<music::MusicOverlay>()
             .add_message::<exa_physics::mechanism::LockSounded>()
@@ -84,6 +85,7 @@ impl Plugin for AudioPlugin {
                     hits::impact_sounds,
                     hits::weapon_sounds,
                     hits::shield_sounds,
+                    sounds::second_wind_heals,
                     sounds::heal_sounds,
                     sounds::named_sounds,
                     mechanisms::mechanism_sounds,
@@ -123,6 +125,10 @@ fn bridge_audio_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<exa_physics::prop::BodySounds>();
 }
+
+#[cfg(test)]
+#[path = "live_test.rs"]
+mod live_test;
 
 #[cfg(test)]
 mod tests {

@@ -412,6 +412,10 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
     }
 }
 
+/// The root walk's base: a freed body's link-iteration count is this plus
+/// the nodes its subtree holds, less one (the original's global word 2).
+pub const LOOSE_ITERATION_BASE: i32 = 2;
+
 /// Releases the items whose holder has left the world, and those a
 /// collapse let go of ([`GripRelease`]): the link records stop acting, the
 /// item body loses its holder and held mask, takes the dropped weapon's
@@ -419,25 +423,40 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
 /// or died keeps its item, still tied by its grip links: the original's
 /// death drops nothing, and its collapse is the routine that lets the
 /// hands go.
+///
+/// As the original's unlink does, the freed body becomes the root of its
+/// own tree, its link-iteration count [`LOOSE_ITERATION_BASE`] plus its
+/// parts less one (the count its root walk takes); and a weapon a holder
+/// still in the world let go of tells it ([`CameLoose`], the came-loose
+/// hook).
 pub fn release_freed_grips(
     mut commands: Commands,
     mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll, Has<GripRelease>)>,
-    bodies: Query<&Ragdoll, Without<HeldGrip>>,
+    bodies: Query<(Entity, &Ragdoll), Without<HeldGrip>>,
+    mut loose: MessageWriter<crate::grip::CameLoose>,
 ) {
     let holding = |grip: &HeldGrip| !grip.released && grip.links.is_some();
     let holders = crate::body::first_by_key(
         held.iter()
             .filter(|(_, grip, ..)| holding(grip))
             .map(|(_, grip, ..)| grip.holder_key),
-        bodies.iter().map(|body| ((), body)),
+        bodies.iter(),
     );
     for (entity, mut grip, mut body, released) in &mut held {
         if !holding(&grip) {
             continue;
         }
-        let owner = holders.get(&grip.holder_key);
+        let owner = holders.get(&grip.holder_key).copied();
         if owner.is_some() && !released {
             continue;
+        }
+        if let Some(holder) = owner
+            && grip.kind == HeldKind::Weapon
+        {
+            loose.write(crate::grip::CameLoose {
+                item: entity,
+                holder,
+            });
         }
         debug!(
             "grip: {entity} lets go ({})",
@@ -461,6 +480,8 @@ pub fn release_freed_grips(
             );
             part.friction = 0.75;
         }
+        let nodes = body.parts.len() as i32;
+        body.set_link_iterations(LOOSE_ITERATION_BASE + nodes - 1);
         body.wake_to(crate::body::WAKE_COUNT);
         commands
             .entity(entity)
@@ -676,7 +697,10 @@ pub fn install_stage(mut stages: ResMut<SolverStages>) {
 /// Adds the grip stage and its per-tick sync. Called by
 /// [`crate::PhysicsPlugin`].
 pub fn plugin(app: &mut App) {
-    app.add_systems(Startup, install_stage)
+    use crate::sim_bridge::SimBridgeAppExt;
+    app.add_message::<crate::grip::CameLoose>()
+        .bridge_message::<crate::grip::CameLoose>()
+        .add_systems(Startup, install_stage)
         .configure_sets(
             FixedUpdate,
             GripSolveSet::Build

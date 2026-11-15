@@ -21,7 +21,7 @@
 //! the two grip callbacks, the relax pass and the flip animation.
 
 use bevy::math::{Affine3A, Vec3};
-use bevy::prelude::{Component, Entity};
+use bevy::prelude::{Component, Entity, Message};
 
 use crate::body::{Part, Ragdoll};
 
@@ -282,6 +282,18 @@ impl GripLinks {
 /// the item's links and its body.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GripRelease;
+
+/// A held weapon came loose from its holder's hand (the grip stage freed
+/// it): the original's drop calls the holder's came-loose hook here, which
+/// takes the item off the holder's record. Shields and torches leave their
+/// hands by drops that call no hook, so they send none.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CameLoose {
+    /// The item's body.
+    pub item: Entity,
+    /// The character that held it.
+    pub holder: Entity,
+}
 
 /// Asks for the held-item re-place on a character's body (put on the
 /// entity carrying its [`Ragdoll`]): the original runs it right after it
