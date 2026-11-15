@@ -490,7 +490,8 @@ fn families(id: u8, m: &Material) -> (&'static str, Option<&'static str>, Option
             ("cloth", alt, nrm)
         }
         Family::Velvet => ("velvet", None, None),
-        Family::Leather | Family::Suede => ("leather", None, None),
+        Family::Leather => ("leather", None, None),
+        Family::Suede => ("suede", None, None),
         Family::Wood => ("wood", None, None),
         Family::Steel => ("steel", None, None),
         Family::SteelBlade => ("steelbld", None, None),
@@ -614,6 +615,14 @@ pub fn material(id: u8) -> &'static Material {
     } else {
         &MATERIALS[id as usize]
     }
+}
+
+/// Whether a factory item whose areas use material `id` takes the
+/// sRGB-alpha run-time material (`_procmatr`): the factory's per-material
+/// table sets it for Gemstone (23) only. Resin, whose programs also have
+/// an alpha pass, keeps the plain one.
+pub fn alpha_target(id: u8) -> bool {
+    id == 23
 }
 
 /// A weighted material class's weight: common, uncommon, rare, very rare.
@@ -834,6 +843,19 @@ mod tests {
         assert_eq!(painted.uniforms, PAINTED_PATTERN_UNIFORMS);
         // Its plain specular and normal programs are the cloth ones.
         assert_eq!(programs(1)[0].name, "cloth_d");
+    }
+
+    #[test]
+    fn suede_compiles_its_own_family_and_only_gemstone_takes_the_alpha_target() {
+        let suede = programs(9);
+        let names: Vec<&str> = suede.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"suede_d") && names.contains(&"suede_n"), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("leather")), "{names:?}");
+        assert!(programs(7).iter().any(|p| p.name == "leather_d"));
+        assert!(alpha_target(23));
+        assert!((0..=26).filter(|&id| id != 23).all(|id| !alpha_target(id)));
+        // Resin has an alpha pass but keeps the plain run-time material.
+        assert!(material(24).passes.alpha && !alpha_target(24));
     }
 
     #[test]

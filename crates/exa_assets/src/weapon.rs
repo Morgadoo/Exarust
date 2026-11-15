@@ -493,12 +493,13 @@ impl ModelLoader<'_> {
                 top = (centre[1] + half[1]) * CM_PER_METRE;
             }
             // The run-time material the original points at the atlas:
-            // `_procmatr` when an area's material has an alpha program.
+            // `_procmatr` when an area's material is one the factory's
+            // material table marks (Gemstone only).
             let alpha = built
                 .generated
                 .materials
                 .iter()
-                .any(|m| procedural::material(m.material).passes.alpha);
+                .any(|m| procedural::alpha_target(m.material));
             root.part_materials = vec![if alpha { "_procmatr" } else { "_procmat1" }.to_string()];
             root.part_flags = rendered
                 .triangle_flags

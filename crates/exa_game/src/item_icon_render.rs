@@ -267,7 +267,10 @@ fn prepare_icon_scenes(
         }
         let id = icons.pending[index].id;
         let Some(model_info) = catalogue.model(id).cloned() else {
+            // A record without a model has no icon: the original's resolve
+            // answers 0 and reports the item.
             icons.pending.remove(index);
+            report_unresolved(id);
             continue;
         };
         let mut loader = ModelLoader {
@@ -325,7 +328,9 @@ fn prepare_icon_scenes(
             let pending = &mut icons.pending[index];
             pending.attempts += 1;
             if pending.attempts >= 3 {
+                // The model never loaded: the resolve's render failed.
                 icons.pending.remove(index);
+                report_unresolved(id);
                 continue;
             }
             index += 1;
@@ -393,6 +398,18 @@ fn prepare_icon_scenes(
         index += 1;
     }
 }
+
+/// The item resolve's error for an icon that could not be made, as the
+/// original reports it (level 5, the timed overlay): "Item Error: Unable
+/// to resolve item: <id in hex>". The panel's entry keeps its empty slot.
+fn report_unresolved(id: u32) {
+    if let Some(text) = exa_items::icon_cache::unresolved(id) {
+        crate::engine_log::log(5, ITEM_ERROR, &text);
+    }
+}
+
+/// The resolve error's title.
+pub const ITEM_ERROR: &str = "Item Error";
 
 /// Where a pending icon's streamed model stands.
 enum StreamedIcon {
@@ -959,6 +976,53 @@ mod tests {
     /// The installed object database's first ground-modelled weapon fills
     /// the pack's atlas through the pending pipeline (skipped without an
     /// installation).
+    #[test]
+    fn an_item_without_a_model_reports_the_resolve_error() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(bytes) = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+        else {
+            return;
+        };
+        let Ok(db) = exa_formats::rdb::Database::parse(bytes) else {
+            return;
+        };
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<ModelCache>()
+            .init_resource::<PanelIcons>()
+            .insert_resource(ItemCatalogue::of_database(&db))
+            .insert_resource(Game(std::sync::Arc::new(data)))
+            .add_systems(Update, prepare_icon_scenes);
+        // An id no record holds.
+        let id = 0x0F_FFF1;
+        let catalogue = app.world().resource::<ItemCatalogue>().clone();
+        assert!(catalogue.model(id).is_none());
+        let (handle, _) = app
+            .world_mut()
+            .resource_mut::<PanelIcons>()
+            .reserve(id, 0, Some(&catalogue));
+        assert_ne!(handle, 0);
+        app.update();
+        assert!(app.world().resource::<PanelIcons>().pending.is_empty());
+        assert!(
+            crate::engine_log::overlay_lines()
+                .iter()
+                .any(|line| line.contains("Item Error") && line.contains("Unable to resolve item: 000FFFF1")),
+            "{:?}",
+            crate::engine_log::overlay_lines()
+        );
+    }
+
     #[test]
     fn a_shipped_weapons_icon_reaches_the_panel_atlas() {
         let Some(dir) = exa_assets::locate_install(None) else {
