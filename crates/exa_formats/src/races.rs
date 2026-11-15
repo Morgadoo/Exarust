@@ -450,6 +450,41 @@ pub struct RaceStats {
     /// race for ([`Race::mind`]): 1 or 2 a living mind, 4 or 5 an undead
     /// one, anything else no mind the casts act on.
     pub mind: u32,
+    /// Where the Mind sight draws a character's sphere ([`MindSightPlace`],
+    /// `0xF8` to `0x10B`).
+    pub mind_sight: MindSightPlace,
+}
+
+/// Where the Mind sight (Sense Minds' overlay and the awakening glow) puts
+/// a character's sphere, read by the sight's draw off the race record: its
+/// lift above the head part (`0xF8`, cm, on top of the draw's own 15) and
+/// its offset forward along the head's third axis (`0xFC`, cm), and the
+/// three scales of its axes (`0x100`, `0x104`, `0x108`). Humans, skeletons,
+/// ancients and ogres keep 0, 0 and 1; Sir and the demon −8, 14 and 1.4;
+/// the ghouls −2, 8 and (0.7, 0.7, 0.6) (REA on the sight's draw and the
+/// shipped `races.rdb`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindSightPlace {
+    pub lift: f32,
+    pub forward: f32,
+    pub scale: [f32; 3],
+}
+
+impl MindSightPlace {
+    /// The built-in record's: no offsets, scales 1.
+    pub const FALLBACK: MindSightPlace = MindSightPlace {
+        lift: 0.0,
+        forward: 0.0,
+        scale: [1.0; 3],
+    };
+
+    fn read(b: &[u8]) -> MindSightPlace {
+        MindSightPlace {
+            lift: float(b, MIND_SIGHT),
+            forward: float(b, MIND_SIGHT + 4),
+            scale: std::array::from_fn(|i| float(b, MIND_SIGHT + 8 + 4 * i)),
+        }
+    }
 }
 
 /// First flag word: its characters bleed (wounds paint blood, and its body
@@ -516,6 +551,7 @@ impl RaceStats {
         voice_volume: 0.0,
         attack_voices: 0,
         mind: 0,
+        mind_sight: MindSightPlace::FALLBACK,
     };
 
     fn read(b: &[u8]) -> RaceStats {
@@ -534,6 +570,7 @@ impl RaceStats {
             voice_volume: float(b, VOICE_VOLUME),
             attack_voices: word(b, ATTACK_VOICES) as i32,
             mind: word(b, MIND),
+            mind_sight: MindSightPlace::read(b),
         }
     }
 }
@@ -576,6 +613,8 @@ const GAIT_ROW: usize = 20;
 const HEALTH: usize = 0xE4;
 /// The mind word ([`RaceStats::mind`]).
 const MIND: usize = 0xEC;
+/// The Mind sight's place ([`MindSightPlace`]): two offsets, three scales.
+const MIND_SIGHT: usize = 0xF8;
 const PERCEPTION: usize = 0x110;
 const PROTECTION: usize = 0x11C;
 const HELD_OFFSET: usize = 0x12C;
@@ -765,6 +804,18 @@ mod tests {
             assert_eq!(mind(byte), 0, "{byte}");
         }
         assert!(!db.of_character(200).wears_apparel());
+        // The Mind sight's place: the human frame keeps the plain one, Sir
+        // and the demon sit theirs lower, forward and larger.
+        let sight = |byte: u8| db.of_character(byte).stats.mind_sight;
+        assert_eq!(sight(0), MindSightPlace::FALLBACK);
+        assert_eq!(sight(200), MindSightPlace::FALLBACK);
+        for byte in [4, 11] {
+            assert_eq!(
+                (sight(byte).lift, sight(byte).forward, sight(byte).scale[0]),
+                (-8.0, 14.0, 1.4),
+                "{byte}"
+            );
+        }
     }
 
     #[test]
@@ -923,6 +974,15 @@ mod tests {
         b[0x144..0x154].copy_from_slice(b"Golem_Stp_Longer");
         put(&mut b, 0x1B4, 3.0);
         put_word(&mut b, 0x1C4, 2);
+        for (at, v) in [
+            (0xF8, -8.0),
+            (0xFC, 14.0),
+            (0x100, 1.4),
+            (0x104, 1.4),
+            (0x108, 1.2),
+        ] {
+            put(&mut b, at, v);
+        }
         let races = parse(&database(&[(12, b)])).unwrap();
         let demon = &races[0];
         assert_eq!(demon.look, 0x1BF);
@@ -942,6 +1002,14 @@ mod tests {
         }
         assert_eq!(s.footsteps, "Golem_Stp_Longe");
         assert_eq!((s.voice_volume, s.attack_voices), (3.0, 2));
+        assert_eq!(
+            s.mind_sight,
+            MindSightPlace {
+                lift: -8.0,
+                forward: 14.0,
+                scale: [1.4, 1.4, 1.2],
+            }
+        );
         assert_eq!(stats_of_character(&races, 11), *s);
     }
 

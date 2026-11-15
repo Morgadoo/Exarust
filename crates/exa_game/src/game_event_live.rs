@@ -30,8 +30,11 @@
 //!   its behaviour's list, mirrored into the cast
 //!   ([`crate::script_cast::sync_contacts`]).
 //!
+//! - the mind awakening adds the Mind sight's glow on the player
+//!   ([`crate::mind::sight::MindGlows`], drawn by `crate::mind::draw`).
+//!
 //! Not applied yet (logged): the post-process flash (no renderer for it),
-//! and the mind and force awakenings' visual effects on the body.
+//! and the force awakening's visual effect on the body.
 //!
 //! The random draws come from the process generator the sounds use (the
 //! sound bank's), as the original takes them from its one generator.
@@ -170,6 +173,7 @@ pub struct EventOutputs<'w> {
     scripts: Option<Res<'w, exa_script::Scripts>>,
     conversations: Option<ResMut<'w, exa_script::Conversations>>,
     time: Option<Res<'w, Time<Virtual>>>,
+    glows: Option<ResMut<'w, crate::mind::sight::MindGlows>>,
 }
 
 type EventPlayerQuery<'w, 's> = Query<
@@ -388,7 +392,18 @@ fn apply(
                 }
             }
         }
-        Effect::MindAwakening | Effect::ForceAwakening => {
+        // The mind awakening's glow on the player (the Mind sight draws it).
+        Effect::MindAwakening => match (player.as_ref(), out.glows.as_mut()) {
+            (Some(player), Some(glows)) => {
+                glows.add(crate::mind::runtime::body_id(player.0));
+                info!(
+                    "game event {code:#x}: the mind awakening's glow on {:?}",
+                    player.0
+                );
+            }
+            _ => info!("game event {code:#x}: the mind awakening has no player to glow on"),
+        },
+        Effect::ForceAwakening => {
             info!("game event {code:#x}: {effect:?} (its body effect is not ported)")
         }
         // The flow keeps these.

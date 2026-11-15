@@ -1439,6 +1439,9 @@ pub enum Step {
     StripPlayer,
     /// Clear the player node's story bit (the reconstruction mark).
     ClearStoryFlag,
+    /// The Mind sight's quit hook: the Sense Minds overlay goes off and
+    /// drops its tracked minds ([`crate::mind::draw::reset_sense_overlay`]).
+    ResetMindSight,
     /// Write the player's own record back into the save, with the record's
     /// flags word (the death screen's CONTINUE passes 0x100).
     PlayerData {
@@ -3017,6 +3020,8 @@ impl Flow {
             steps.push(Step::Save {
                 drop_on_low_health: true,
             });
+            // The quit hook the Mind sight registers while it shows.
+            steps.push(Step::ResetMindSight);
         }
         steps.extend(self.transition(Action::QuitToMenu, true));
         steps
@@ -4182,6 +4187,9 @@ fn apply_steps(
                 }
                 // The end menu's hide also hides the tips popup.
                 hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
+            }
+            Step::ResetMindSight => {
+                commands.queue(crate::mind::draw::reset_sense_overlay);
             }
             Step::ResetDeathFade => {
                 if let Some(fade) = story.fade.as_mut() {
@@ -6905,6 +6913,8 @@ mod tests {
             drop_on_low_health: true
         }));
         assert!(!steps.contains(&Step::ClearStoryFlag));
+        // and runs the Mind sight's quit hook after it.
+        assert!(steps.contains(&Step::ResetMindSight));
         assert!(steps.contains(&Step::Transition));
     }
 

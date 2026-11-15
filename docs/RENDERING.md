@@ -3422,7 +3422,7 @@ vec2 vTex; …` and `in vec3 vrTex; in vec4 vrCol; uniform vec3 env0; …`).
   (0.1, 0.4, 0.6), (0.8, 0.6, 0) with alpha `(1 − first)·0.6 + 0.1` and
   (0.4, 0, 0) toward (0.31, 0, 0.78) with the second's alpha; an undead mind
   has (0.3, 0.3, 0.3, 1), the same, and (0.5, 0.5, 0.6, 0.5). `MindCol0.w`
-  is the overlay alpha less the entry's fade.
+  is the overlay alpha less the entry's fade (a glow's: `1 − fade`).
 - **State**: the original turns the depth test off around the draw and
   applies a state block whose blend word is 0. Exarust draws the spheres in
   the transparent pass with the depth compare `Always`, no depth writes and
@@ -3440,18 +3440,24 @@ vec2 vTex; …` and `in vec3 vrTex; in vec4 vrCol; uniform vec3 env0; …`).
   amplitude 1, both plane-building weights 0.5, then a 0.25 s period and
   target 1: `sight::ScreenNoise::field`), uploaded as one-byte `R8Unorm`
   texels (`thaum::visuals::noise_bytes`), sampled repeating and linear. It
-  runs on the game clock with the effects' random generator, is made on the
-  first frame an anchor exists and is uploaded only when `NoiseField::tick`
-  reports a new picture.
+  runs on the game clock with the effects' random generator. The overlay
+  samples its own picture and the glows the global one the glow's setup
+  makes; each is made on its first drawn frame and uploaded only when
+  `NoiseField::tick` reports a new picture.
 - **Spirit screen setup**: its constructor builds a 512² one-byte luminance
   picture (262 144 bytes) and a noise object of four octaves at amplitude 1,
   both weights 0.5 and a 0.8 s period (`sight::spirit_screen_init`). The
   screen's own draw callback is not ported yet.
-- **Wiring**: `MindSightAnchor` carries a body's `SightAnchor` and
-  `SightEntry`; the `PostUpdate` system spawns one sphere entity and
-  material an anchor and updates them in place, and removes it while the
-  overlay alpha is spent. No Mind cast creates an anchor yet; without one
-  the system returns before making or ticking anything.
+- **Wiring**: each frame (`PostUpdate`) the Sense Minds overlay's frame
+  and tracker and every glow's tick fill `MindSightDraws`: an overlay entry
+  at the overlay alpha less its fade, a glow at `1 − fade`. Each draw sits
+  on its body's head part (bone 10) frame, lifted by the race record's
+  sight place (`RaceStats::mind_sight`: its lift plus the draw's 15 cm, its
+  forward offset along the head's third axis, its three scales; humans 0,
+  0 and 1, Sir and the demon −8, 14 and 1.4, the ghouls −2, 8 and
+  (0.7, 0.7, 0.6)). Sphere `i` shows draw `i`, updated in place; the
+  spheres past the last draw go. With nothing to draw nothing is made or
+  ticked.
 
 
 ## Rooms and black fill
