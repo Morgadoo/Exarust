@@ -2096,7 +2096,8 @@ the container nearest the player that many frames after the level load ends.
 `npc_search` hosts the original's follow state and the companion's search
 in the running game: a level brain whose roles choose the follow follows the
 player (past its 400 cm band a route through the navigation grid on its own
-planning turn; inside the personal stop it stands) and, inside the band,
+planning turn; inside the personal stop it backs off along the closing walk,
+to 400 cm from the player when it stands within 200 cm, `exa_ai::idle::closing_goal`) and, inside the band,
 runs its search once a body tick over the level's dead bodies and placed
 objects (their 600 cm cells; the objects as the sector's lists hold them, in
 each cell the body grid's parts then the static grid's meshes, each mapped
