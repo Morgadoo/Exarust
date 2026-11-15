@@ -268,7 +268,7 @@ pub fn run_greetings(
 
 /// The frame's half of the greetings: each greeter's brain mirrored into
 /// the cast, its mood, the greeting run and its effects sent.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn greet_on_frame(
     In((now, greets)): In<(u32, Vec<(Entity, u32, u32)>)>,
     scripts: Option<Res<exa_script::Scripts>>,
