@@ -152,7 +152,7 @@ Each frame the live scene environment SHALL keep the weather tick's requests (st
 - **THEN** the tick asks for one clap at gain 4·0.8775 + 0.1 at the strike's position, view offset included
 
 ### Requirement: One arena day per load
-A level load SHALL take its outdoor preset seed once and draw every pass of that load (the visibility rules while models spawn and the lighting) from it. The seed SHALL be the low 32 bits of a 100 ns counter with their four bytes reversed, unless `EXA_SCENE_SEED` fixes it. Nothing of the arena career (rank, day, matches fought) SHALL enter the draw; only the arena's night flag does.
+A level load SHALL take its outdoor preset seed once and draw every pass of that load (the visibility rules while models spawn and the lighting) from it. The seed SHALL be the low 32 bits of a 100 ns counter with their four bytes reversed, unless `--env-seed <n>` or `EXA_SCENE_SEED` fixes it. Nothing of the arena career (rank, day, matches fought) SHALL enter the draw; only the arena's night flag does.
 
 #### Scenario: Two passes of a load
 - **WHEN** an outdoor arena loads with seed 24
@@ -194,3 +194,10 @@ The outdoor preset's night value and the indoor arenas' amounts (0.3, 0.6) SHALL
 #### Scenario: Night draw
 - **WHEN** an outdoor arena draws a night
 - **THEN** the load logs the amount as stored and never read, and the post chain runs as on a day
+
+### Requirement: Fixed outdoor seed
+With `--env-seed <n>` (a nonzero word) every outdoor preset draw of the run SHALL use `n`: the load's preset seed, the engine stream's seed and the preset's fresh-seed fallback, so two runs of an outdoor level give the same day and weather. Zero SHALL be refused, as it is the original's word for a fresh seed.
+
+#### Scenario: Two loads with one seed
+- **WHEN** the seed is fixed and `arenao4`'s lighting is drawn twice
+- **THEN** both draws have the same time of day, daylight scale, rain target and cloudiness

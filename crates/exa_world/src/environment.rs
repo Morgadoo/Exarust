@@ -370,20 +370,38 @@ pub fn counter_seed() -> u32 {
     (ticks as u32).swap_bytes()
 }
 
+/// The seed `--env-seed` pinned ([`fix_seed`]); zero while none is.
+static FIXED_SEED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A debug aid (`--env-seed <n>`): every later [`clock_seed`] and the
+/// outdoor preset's fresh-seed fallback return `seed`, so two runs of an
+/// outdoor level draw the same day and weather. Zero, the original's "draw
+/// a fresh seed" word, leaves the clock in charge.
+pub fn fix_seed(seed: u32) {
+    FIXED_SEED.store(seed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The seed a debug aid fixed: `--env-seed` ([`fix_seed`]) first, then
+/// `EXA_SCENE_SEED=<n>`.
+pub fn fixed_seed() -> Option<u32> {
+    let pinned = FIXED_SEED.load(std::sync::atomic::Ordering::Relaxed);
+    if pinned != 0 {
+        return Some(pinned);
+    }
+    std::env::var("EXA_SCENE_SEED")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+}
+
 /// A seed for the presets' draws, taken once per level load (never inside
 /// the fixed step) and used for every draw of that load, so the day the
 /// load's visibility rules see is the day the lighting places. It is
-/// [`counter_seed`], the original's own fallback; `EXA_SCENE_SEED=<n>` (a
-/// debug aid) fixes it, so two runs of an outdoor level draw the same day
-/// and weather for side-by-side screenshots.
+/// [`counter_seed`], the original's own fallback, unless a debug aid fixed
+/// it ([`fixed_seed`]: `--env-seed`, or `EXA_SCENE_SEED`), so two runs of
+/// an outdoor level draw the same day and weather for side-by-side
+/// screenshots.
 pub fn clock_seed() -> u32 {
-    if let Some(seed) = std::env::var("EXA_SCENE_SEED")
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-    {
-        return seed;
-    }
-    counter_seed()
+    fixed_seed().unwrap_or_else(counter_seed)
 }
 
 /// A debug aid (`EXA_TIME_SPEED=<days a second>`): the scene environment's
@@ -483,7 +501,7 @@ pub fn level_lighting_scene(
                 night_allowed,
                 input.seed,
                 || {
-                    used = counter_seed();
+                    used = fixed_seed().unwrap_or_else(counter_seed);
                     used
                 },
                 input.now,
@@ -1047,6 +1065,34 @@ mod tests {
             assert_eq!(first.time_of_day, second.time_of_day, "seed {seed}");
             assert_eq!(first.daylight_scale, second.daylight_scale, "seed {seed}");
             assert_eq!(first.weather.target, second.weather.target, "seed {seed}");
+        }
+    }
+
+    /// `--env-seed` pins the load's seeds: two loads of an outdoor level
+    /// draw the same day and weather, and zero hands the clock back.
+    #[test]
+    fn a_fixed_env_seed_repeats_the_outdoor_draw() {
+        fix_seed(0x5eed_0004);
+        let (seed, engine_seed) = (clock_seed(), clock_seed());
+        assert_eq!(seed, 0x5eed_0004);
+        assert_eq!(engine_seed, seed);
+        let draw = || {
+            let input = PresetInput {
+                seed: clock_seed(),
+                engine_seed: clock_seed(),
+                now: 0,
+                log: false,
+            };
+            level_lighting_scene("arenao4", None, 0, None, Some(input)).env
+        };
+        let (first, second) = (draw(), draw());
+        fix_seed(0);
+        assert_eq!(first.time_of_day, second.time_of_day);
+        assert_eq!(first.daylight_scale, second.daylight_scale);
+        assert_eq!(first.weather.target, second.weather.target);
+        assert_eq!(first.cloudiness, second.cloudiness);
+        if std::env::var_os("EXA_SCENE_SEED").is_none() {
+            assert_eq!(fixed_seed(), None);
         }
     }
 

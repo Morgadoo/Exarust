@@ -25,6 +25,7 @@
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! exa-tool nav exanima01 [--png nav.png]  the level's navigation grid
 //! exa-tool shader common.rml mtliron04   the original GLSL for a material
+//! exa-tool picdiff a.png b.png --noise c.png d.png --out diff/a-b   two pictures of a pose compared
 //! ```
 
 mod bodies;
@@ -33,6 +34,7 @@ mod corpus;
 mod gltf;
 mod morphs;
 mod nav;
+mod picdiff;
 mod saves;
 
 use std::collections::BTreeMap;
@@ -133,6 +135,48 @@ enum Cmd {
     /// writing anything: its sections, player-data chunks, and whether the
     /// package and the player data rebuild unchanged. Needs no installation.
     Saves { path: PathBuf },
+    /// Compares two pictures of one pose (two Exarust runs, or Exarust and
+    /// a retail shot): the pixels changed above a threshold, their regions,
+    /// and a noise floor from a second pair (two runs of one build). Writes
+    /// a side-by-side and a diff picture with `--out`. Exits 1 when the
+    /// pair is above the noise floor. Needs no installation.
+    Picdiff {
+        a: PathBuf,
+        b: PathBuf,
+        /// Two runs of one build: their changed share is the noise floor.
+        #[arg(long, num_args = 2, value_names = ["C", "D"])]
+        noise: Vec<PathBuf>,
+        /// A pixel changed when a channel differs by more than this (0-255).
+        #[arg(long, default_value_t = 8)]
+        threshold: u8,
+        /// The region tiles' side in pixels.
+        #[arg(long, default_value_t = 16)]
+        tile: u32,
+        /// Changed pixels a tile needs to join a region.
+        #[arg(long, default_value_t = 4)]
+        min_tile: u32,
+        /// A rectangle `x,y,w,h` left out (a frame counter); repeatable.
+        #[arg(long, value_parser = parse_rect)]
+        ignore: Vec<picdiff::Rect>,
+        /// Resample the second picture of a pair to the first's size.
+        #[arg(long)]
+        fit: bool,
+        /// Write `<OUT>.side.png` and `<OUT>.diff.png`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Write the report as JSON.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Regions listed and boxed.
+        #[arg(long, default_value_t = 10)]
+        regions: usize,
+        /// The pair is at the floor up to this many times the noise share...
+        #[arg(long, default_value_t = 1.5)]
+        noise_factor: f64,
+        /// ...plus this share (0.0001 is 0.01 % of the pixels).
+        #[arg(long, default_value_t = 0.0001)]
+        noise_slack: f64,
+    },
     /// The rigid bodies (class, mobility, rest points, spheres, links,
     /// sound slots) and cloth markers of a chunk-tree entry's nodes.
     Bodies { pack: String, entry: String },
@@ -290,6 +334,44 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Cmd::Saves { path } = &cli.cmd {
         return saves::saves(path);
+    }
+    if let Cmd::Picdiff {
+        a,
+        b,
+        noise,
+        threshold,
+        tile,
+        min_tile,
+        ignore,
+        fit,
+        out,
+        json,
+        regions,
+        noise_factor,
+        noise_slack,
+    } = &cli.cmd
+    {
+        let at_floor = picdiff::run(&picdiff::Args {
+            a: a.clone(),
+            b: b.clone(),
+            noise: noise.clone(),
+            settings: picdiff::Settings {
+                threshold: *threshold,
+                tile: (*tile).max(1),
+                min_tile: *min_tile,
+                ignore: ignore.clone(),
+            },
+            fit: *fit,
+            out: out.clone(),
+            json: json.clone(),
+            regions: *regions,
+            noise_factor: *noise_factor,
+            noise_slack: *noise_slack,
+        })?;
+        if !at_floor {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
     let root = locate(cli.game.as_deref())?;
     let game = GameData::open(&root).with_context(|| format!("opening {}", root.display()))?;
@@ -472,7 +554,9 @@ fn main() -> Result<()> {
         Cmd::Races => races(&game),
         Cmd::Roles => roles(&game),
         Cmd::Characters { source } => characters::characters(&game, &source),
-        Cmd::Saves { .. } => unreachable!("handled before the installation is opened"),
+        Cmd::Saves { .. } | Cmd::Picdiff { .. } => {
+            unreachable!("handled before the installation is opened")
+        }
         Cmd::Bodies { pack, entry } => bodies::bodies(&game, &pack, &entry),
         Cmd::Mechanisms { level } => bodies::mechanisms(&game, level.as_deref()),
         Cmd::Morphs { records } => morphs::morphs(&game, records),
@@ -868,6 +952,10 @@ fn factory_atlas(game: &GameData, name: &str, seed: u32, quality: u8, out: &Path
         out.display()
     );
     Ok(())
+}
+
+fn parse_rect(word: &str) -> std::result::Result<picdiff::Rect, String> {
+    picdiff::Rect::parse(word).ok_or_else(|| format!("x,y,w,h, not {word:?}"))
 }
 
 pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
