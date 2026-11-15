@@ -85,7 +85,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 
 | id | task | state | note |
 |---|---|---|---|
-| D1 | Working infrastructure | doing | D1.2 done: `context/tools/gpu_grid.sh` runs one grid at a time with a free-memory check (after the GPU loss) |
+| D1 | Working infrastructure | doing | D1.2 done: `context/tools/gpu_grid.sh` runs one grid at a time with a free-memory check (after the GPU loss); gpu_grid.sh refuses the 615 driver after ten GPU drops |
 | D2 | Performance | todo | |
 | D3 | Platform | todo | Steam: decision DEC-2 |
 | D4 | Regression suite | todo | |
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-15 | — | The GPU fell off the bus again (Xid 79, the tenth since 2026-10-02) after the network card move. The drops began right after the 2026-10-01 update to kernel 7.2 and driver 615 and happen at idle as well as under load, so the driver is the leading suspect; the owner updated to kernel 7.3.3 and driver 620.70.06. `gpu_grid.sh` now refuses runs on a 615 driver. The five running lanes were restarted from their worktrees. |
 | 2026-11-15 | 210–214 | Five B1 lanes: body settling, freeze and held-item park (wiredyn); the Sense Minds sight, the awakening glow and Loyalty's relation (wiremind); the journal's text box and the manual's item view, and a form defect that kept every record release from its callback (wireui); the shipped shader variants checked against the WESL, closing the template machinery as engine-replaced under DEC-8 and adding the translucent and fast-light programs (wireshader); the arena match board and session ends (wirearena). Ledger 48.5% → 50.7%. |
 | 2026-11-15 | 208–209 | Spirit Form adopts and returns on the simulation step, and frame-sent events wait for the last step packet (B0.6); character data wiring (B1). Game run: both mind powers return the player, no undone writes; ledger 48.5%. |
 | 2026-11-15 | 206 | GPU back after the PC fix (the network card had split the GPU's PCIe lanes; it fell off the bus 9 times since October; a stress test passed). Game smoke runs owed for rounds 204-206 done, no GPU errors. Phase B lanes restarted: spiritstep (B0.6), wiremind, wirechardata, wiredyn (B1). |
