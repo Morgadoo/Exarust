@@ -48,11 +48,19 @@
 //! - **Spirit Form**: the cast asks the spirit body ([`SpiritBodyAsked`]):
 //!   a new record of race byte 14 placed 60 cm along the caster's facing on
 //!   its ground height. The game builds it and marks it [`SpiritOf`];
-//!   [`adopt_spirit`] then gives it a player behaviour whose spawn snap is
-//!   already counted (4), the caster's power caster and mind list (the
-//!   original shares the list and rebinds its entries to the spirit), its
-//!   status bits and the player root's markers, and holds the caster's
-//!   behaviour. [`spirit_home`] gives them back and removes the spirit.
+//!   [`adopt_spirit`] then (on the frame) keeps the held body, starts the
+//!   spirit screen and moves the rooms' anchor, and posts the switch
+//!   ([`enter_spirit`]) to the next step, which gives the spirit a player
+//!   behaviour whose spawn snap is already counted (4), the caster's power
+//!   caster and mind list (the original shares the list and rebinds its
+//!   entries to the spirit), its status bits and the player marker, and
+//!   holds the caster's behaviour. [`spirit_home`] at the transition's
+//!   black (on the frame) forgets the held body and the screen, moves the
+//!   anchor back and posts the way home ([`leave_spirit`]) to the next step,
+//!   which gives them back and sends the spirit's removal to the frame. The
+//!   original's switch and home write the shared bodies directly on its
+//!   main thread; behind a free-running simulation the bodies are the
+//!   simulation's, so the writes go there, as Control Mind's hand-back.
 //! - **The hit's break** ([`break_on_blows`]): a blow on a body that is not
 //!   down, whose AI is not set aside by a possession and whose status has
 //!   [`HANDED_OVER`] ends the Spirit Form it is the body of, or the Control
@@ -145,7 +153,7 @@ pub struct MindFadeOverlay(pub u8);
 
 /// The player behaviour a body holds while another body runs the player:
 /// the original keeps it on the body with its hold byte set.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct HeldPlayer(pub PlayerBody);
 
 /// The AI behaviour a possessed body sets aside: the original keeps it in
@@ -241,6 +249,8 @@ impl Plugin for MindRuntimePlugin {
 fn bridge_mind_runtime_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<HeldBehaviour>()
+        .bridge_copy::<HeldPlayer>()
+        .bridge_copy::<SpiritOf>()
         .bridge_message::<exa_audio::PointSounded>()
         .bridge_message::<exa_combat::BlowNoticed>()
         .bridge_copy::<exa_ai::combatant::MindPowers>()
@@ -1263,13 +1273,6 @@ fn root_of(world: &World, body: Entity) -> Option<Entity> {
     world.get::<ChildOf>(body).map(ChildOf::parent)
 }
 
-/// Moves the player root's markers (the player, the rooms' anchor) from
-/// one body's root to another's.
-fn move_player_root(world: &mut World, from: Entity, to: Entity) {
-    move_root_marker::<Player>(world, from, to);
-    move_root_marker::<exa_world::room_view::RoomAnchor>(world, from, to);
-}
-
 /// Moves a marker of the player root from one body's root to another's,
 /// when the first root carries it.
 fn move_root_marker<M: Component>(world: &mut World, from: Entity, to: Entity) {
@@ -1515,11 +1518,39 @@ fn adopt_spirit_bodies(
     }
 }
 
-/// The spirit body takes the player: the caster's behaviour is held, the
-/// spirit gets a player behaviour whose spawn snap is counted (4), the
-/// caster's powers and mind list, the spirit's status bits and the player
-/// root's markers; its AI is dropped.
+/// The spirit body takes the player, on the frame once the game has built
+/// it: the frame keeps the held body, starts the spirit screen (it runs on
+/// the real clock) and moves the rooms' anchor; the switch of the bodies
+/// ([`enter_spirit`]) is posted to the next step. The original's cast makes
+/// the spirit and switches the player at once, writing both bodies where
+/// its simulation reads them; behind a free-running simulation the frame's
+/// copies of the bodies lag its newer steps, so written there the switch
+/// was undone by the next step's copy out.
 pub fn adopt_spirit(world: &mut World, body: Entity, spirit: Entity) {
+    if world.get_entity(body).is_err() || world.get_entity(spirit).is_err() {
+        return;
+    }
+    move_root_marker::<exa_world::room_view::RoomAnchor>(world, body, spirit);
+    let now = world
+        .get_resource::<Time<Real>>()
+        .map_or(0, |t| i64::from(crate::splash::clock_ms(t)));
+    let mut control = world.resource_mut::<MindControl>();
+    control.held = Some(body);
+    control.spirit_screen = Some(SpiritForm {
+        state: 3,
+        value: 0.0,
+        stamp: now,
+    });
+    on_step(world, move |world: &mut World| {
+        enter_spirit(world, body, spirit)
+    });
+}
+
+/// The switch into the spirit, on the world that walks the powers: the
+/// caster's behaviour is held, the spirit gets a player behaviour whose
+/// spawn snap is counted (4), the caster's powers and mind list, the
+/// spirit's status bits and the player marker; its AI is dropped.
+pub fn enter_spirit(world: &mut World, body: Entity, spirit: Entity) {
     if world.get_entity(body).is_err() || world.get_entity(spirit).is_err() {
         return;
     }
@@ -1527,7 +1558,6 @@ pub fn adopt_spirit(world: &mut World, body: Entity, spirit: Entity) {
     let mut caster = world.entity_mut(body).take::<PowerCaster>();
     // Each body keeps its own status word: the one left behind keeps the
     // caster's (its handover bit among them), the spirit starts from its own.
-    // The list moves on the world that walks it (see `move_mind_list`).
     let left_status = caster.as_ref().map(|c| c.body.status_bits);
     let mut entity = world.entity_mut(spirit);
     if !entity.contains::<MindBody>() {
@@ -1550,42 +1580,22 @@ pub fn adopt_spirit(world: &mut World, body: Entity, spirit: Entity) {
         entity.insert(caster);
     }
     set_status(world, spirit, |s| s | SPIRIT_BODY_STATUS);
-    // The spirit's new mind reaches the simulation with this frame's
-    // changes; the list moves after them.
-    on_power_walk(world, false, move |world: &mut World| {
-        move_mind_list(world, body, spirit, left_status);
-    });
-    move_player_root(world, body, spirit);
-    let mut control = world.resource_mut::<MindControl>();
-    control.held = Some(body);
-    let now = world
-        .get_resource::<Time<Real>>()
-        .map_or(0, |t| i64::from(crate::splash::clock_ms(t)));
-    world.resource_mut::<MindControl>().spirit_screen = Some(SpiritForm {
-        state: 3,
-        value: 0.0,
-        stamp: now,
-    });
+    move_mind_list(world, body, spirit, left_status);
+    move_root_marker::<Player>(world, body, spirit);
     info!("spirit form: the player takes the spirit {spirit:?}; {body:?} is left behind");
 }
 
 /// Runs `change` to the power lists on the world that walks them. Behind
 /// the simulation bridge that is the simulation's: the change is posted to
-/// its next step, `first` before the frame's other changes of this frame
-/// are applied there, else after them. The frame's copy of a list can lag
-/// the simulation's by the steps in flight (a slow frame applies a hundred
-/// steps computed before its last write), so a list moved there, or any
-/// write of a mind there, could hand the simulation a stale list that
-/// wins. In one world the change runs now.
-fn on_power_walk(world: &mut World, first: bool, change: impl FnOnce(&mut World) + Send + 'static) {
+/// its next step, after the frame's other changes of this frame are
+/// applied there. The frame's copy of a list can lag the simulation's by
+/// the steps in flight (a slow frame applies a hundred steps computed
+/// before its last write), so a list moved there, or any write of a mind
+/// there, could hand the simulation a stale list that wins. In one world
+/// the change runs now.
+fn on_power_walk(world: &mut World, change: impl FnOnce(&mut World) + Send + 'static) {
     match world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
-        Some(mut fixed) if fixed.bridged() => {
-            if first {
-                fixed.post_first_bridged(change);
-            } else {
-                fixed.post(change);
-            }
-        }
+        Some(mut fixed) if fixed.bridged() => fixed.post(change),
         _ => change(world),
     }
 }
@@ -1619,7 +1629,7 @@ fn spirit_ends(world: &mut World, spirit: Entity, body: Option<Entity>) {
         return;
     };
     // The handover bit clears on the world that walks the powers.
-    on_power_walk(world, false, move |world: &mut World| {
+    on_power_walk(world, move |world: &mut World| {
         set_status(world, body, |s| s & !HANDED_OVER);
         info!("spirit form: {body:?}'s handover bit clears");
     });
@@ -1649,11 +1659,33 @@ fn spirit_ends(world: &mut World, spirit: Entity, body: Option<Entity>) {
     begin_fade(world, FadeAction::SpiritHome { spirit, body });
 }
 
-/// The way home, at the transition's black: the body takes the spirit's
-/// focus, reserve and capacity change and the power list back, its
-/// behaviour runs again, the player root's markers come back and the
-/// spirit leaves the scene.
+/// The way home, at the transition's black (the frame's): the frame
+/// forgets the held body and the spirit screen and moves the rooms' anchor
+/// back; the way home itself ([`leave_spirit`]) is posted to the next step.
+/// The original's transition callback writes the bodies directly on its
+/// main thread; behind a free-running simulation the frame's copies of them
+/// lag its newer steps, so written there it wrote the spirit's caster,
+/// behaviour and marker over newer values.
 pub fn spirit_home(world: &mut World, spirit: Entity, body: Entity) {
+    if world.get_entity(body).is_err() {
+        return;
+    }
+    if world.get_entity(spirit).is_ok() {
+        move_root_marker::<exa_world::room_view::RoomAnchor>(world, spirit, body);
+    }
+    let mut control = world.resource_mut::<MindControl>();
+    control.held = None;
+    control.spirit_screen = None;
+    on_step(world, move |world: &mut World| {
+        leave_spirit(world, spirit, body)
+    });
+}
+
+/// The way home, on the world that walks the powers: the body takes the
+/// spirit's focus, reserve and capacity change and the power list back,
+/// its status word, its behaviour runs again and the player marker comes
+/// back; the spirit's removal is sent to the frame, which holds its model.
+pub fn leave_spirit(world: &mut World, spirit: Entity, body: Entity) {
     if world.get_entity(body).is_err() {
         return;
     }
@@ -1662,35 +1694,27 @@ pub fn spirit_home(world: &mut World, spirit: Entity, body: Entity) {
         caster = entity.take::<PowerCaster>();
         entity.remove::<PlayerBody>();
     }
+    if world.get_entity(spirit).is_ok() {
+        move_mind_list(world, spirit, body, None);
+    }
+    // The body's status word (the end's cleared handover bit, posted
+    // before this) is the caster's.
     if let Some(mut caster) = caster {
         if let Some(mind) = world.get::<MindBody>(body) {
             caster.body.status_bits = mind.cast.status_bits;
         }
         world.entity_mut(body).insert(caster);
     }
-    // The list goes home before this frame's changes (the spirit's
-    // despawn among them) reach the simulation.
-    on_power_walk(world, true, move |world: &mut World| {
-        move_mind_list(world, spirit, body, None);
-    });
-    // The caster's body takes the body's status word there too, after this
-    // frame's changes (the caster's move home among them): the frame's
-    // copy of the word may not have the end's cleared handover bit yet.
-    on_power_walk(world, false, move |world: &mut World| {
-        let status = world.get::<MindBody>(body).map(|m| m.cast.status_bits);
-        if let (Some(status), Some(mut caster)) = (status, world.get_mut::<PowerCaster>(body)) {
-            caster.body.status_bits = status;
-        }
-    });
     resume_player(world, body);
     if world.get_entity(spirit).is_ok() {
-        move_player_root(world, spirit, body);
+        move_root_marker::<Player>(world, spirit, body);
         let root = root_of(world, spirit).unwrap_or(spirit);
-        world.entity_mut(root).despawn();
+        on_frame(world, move |world: &mut World| {
+            if let Ok(entity) = world.get_entity_mut(root) {
+                entity.despawn();
+            }
+        });
     }
-    let mut control = world.resource_mut::<MindControl>();
-    control.held = None;
-    control.spirit_screen = None;
     info!("spirit form: the player is home in {body:?}; the spirit {spirit:?} leaves");
 }
 
@@ -2360,6 +2384,129 @@ mod tests {
         assert_eq!(world.resource::<exa_physics::sim_app::FreeLink>().gaps, 0);
     }
 
+    /// Each step the power caster's focus counts up (its settles), with
+    /// the duellists' rolls and the players' aims.
+    fn behave_casting(mut casters: Query<&mut PowerCaster>) {
+        for mut caster in &mut casters {
+            caster.body.focus += 1.0;
+        }
+    }
+
+    /// A Spirit Form run against a free-running simulation (B0.6): the
+    /// frame adopts the spirit it built and later, at the transition's
+    /// black, brings the player home; both switches run on the step. The
+    /// frame never sees the caster's focus or the player's aim go back, and
+    /// both bodies end as one world leaves them.
+    #[test]
+    fn a_free_simulation_keeps_the_spirit_forms_switches() {
+        use exa_physics::sim_app::{SimMode, SimPause, SimShellPlugin};
+        use exa_physics::sim_bridge::{SimBridgeAppExt, SimBridgePlugin};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<MindControl>()
+            .add_systems(FixedUpdate, (behave, behave_casting));
+        exa_physics::sim_app::add_fixed_commands(&mut app);
+        exa_physics::sim_app::add_frame_commands(&mut app);
+        app.add_plugins((
+            SimShellPlugin {
+                mode: SimMode::Free,
+            },
+            SimBridgePlugin { extra: Vec::new() },
+        ))
+        .bridge_copy::<Duellist>()
+        .bridge_copy::<PlayerBody>()
+        .bridge_copy::<HeldPlayer>()
+        .bridge_copy::<PowerCaster>()
+        .bridge_copy::<SpiritOf>()
+        .bridge_copy::<Player>()
+        .bridge_copy::<MindBody>();
+        let body = character(app.world_mut(), true);
+        let spirit = character(app.world_mut(), false);
+        let entry = MindPower::new(
+            SPIRIT_FORM,
+            MindClass::Spirit(crate::thaum::power::mind::SpiritPower::new(0.001)),
+        );
+        app.world_mut()
+            .get_mut::<MindBody>(body)
+            .unwrap()
+            .powers
+            .push(entry);
+        app.world_mut()
+            .entity_mut(body)
+            .insert(PowerCaster::new(&[SPIRIT_FORM]));
+        app.world_mut().resource_mut::<SimPause>().hold(false);
+        // What the frame saw, frame after frame: the focus of whichever
+        // body holds the caster, and the aim of whichever runs the player
+        // with that body (each body's own behaviour keeps its aim: the
+        // body's is held while it is left behind and runs on from there).
+        let mut focus: Vec<f32> = Vec::new();
+        let mut aims: Vec<(Entity, f32)> = Vec::new();
+        let mut watch = |app: &mut App| {
+            let world = app.world();
+            let holder = [body, spirit]
+                .into_iter()
+                .filter_map(|e| world.get::<PowerCaster>(e))
+                .map(|c| c.body.focus)
+                .collect::<Vec<_>>();
+            assert!(holder.len() <= 1, "both bodies hold the caster");
+            focus.extend(holder);
+            let player = [body, spirit]
+                .into_iter()
+                .filter_map(|e| world.get::<PlayerBody>(e).map(|p| (e, p.aim)))
+                .collect::<Vec<_>>();
+            assert!(player.len() <= 1, "both bodies run the player");
+            aims.extend(player);
+        };
+        // Frames of 30 ms: two or three steps arrive in most frames.
+        run_free(&mut app, 200, 30, &mut watch);
+        // The game built the spirit; the frame adopts it.
+        app.world_mut().entity_mut(spirit).insert(SpiritOf { body });
+        adopt_spirit(app.world_mut(), body, spirit);
+        run_free(&mut app, 300, 30, &mut watch);
+        {
+            let world = app.world();
+            assert!(world.get::<PlayerBody>(spirit).is_some());
+            assert!(world.get::<PlayerBody>(body).is_none());
+            assert!(world.get::<HeldPlayer>(body).is_some());
+            assert!(world.get::<PowerCaster>(spirit).is_some());
+            assert!(world.get::<PowerCaster>(body).is_none());
+            assert!(world.get::<Duellist>(spirit).is_none());
+            assert_eq!(world.get::<MindBody>(spirit).unwrap().powers.len(), 1);
+            let root = root_of(world, spirit).unwrap();
+            assert!(world.get::<Player>(root).is_some());
+            assert_eq!(world.resource::<MindControl>().held, Some(body));
+        }
+        // The transition's black, on the frame.
+        spirit_home(app.world_mut(), spirit, body);
+        run_free(&mut app, 400, 30, &mut watch);
+        exa_physics::sim_app::hold_and_drain(app.world_mut());
+        let world = app.world();
+        assert!(world.get::<PlayerBody>(body).is_some());
+        assert!(world.get::<HeldPlayer>(body).is_none());
+        assert!(world.get::<PowerCaster>(body).is_some());
+        assert!(world.get_entity(spirit).is_err(), "the spirit stays");
+        assert_eq!(world.get::<MindBody>(body).unwrap().powers.len(), 1);
+        let root = root_of(world, body).unwrap();
+        assert!(world.get::<Player>(root).is_some());
+        assert!(
+            focus.windows(2).all(|w| w[1] >= w[0]),
+            "the caster's focus went back: {focus:?}"
+        );
+        for who in [body, spirit] {
+            let seen: Vec<f32> = aims
+                .iter()
+                .filter(|(e, _)| *e == who)
+                .map(|a| a.1)
+                .collect();
+            assert!(!seen.is_empty(), "{who:?} never ran the player");
+            assert!(
+                seen.windows(2).all(|w| w[1] >= w[0]),
+                "{who:?}'s aim went back: {seen:?}"
+            );
+        }
+        assert_eq!(world.resource::<exa_physics::sim_app::FreeLink>().gaps, 0);
+    }
+
     /// A Mind cast's changes run on the live brain: its values are read off
     /// the brain, changed as the cast changes them and written back.
     #[test]
@@ -2526,9 +2673,9 @@ mod tests {
         assert_eq!(state(&world), ENDING);
     }
 
-    /// Behind the bridge the spirit's list moves on the simulation's world:
-    /// the frame's adoption leaves both lists as they are and posts the move
-    /// after its changes; the way home posts the move back before them.
+    /// Behind the bridge the spirit's switch runs on the simulation's
+    /// world: the frame's adoption leaves both bodies as they are and posts
+    /// the switch; the way home posts the way back the same way.
     #[test]
     fn behind_the_bridge_the_spirit_list_moves_on_the_step() {
         let mut world = world();
@@ -2549,6 +2696,12 @@ mod tests {
         adopt_spirit(&mut world, body, spirit);
         let count = |world: &World, e: Entity| world.get::<MindBody>(e).unwrap().powers.len();
         assert_eq!((count(&world, body), count(&world, spirit)), (1, 0));
+        // The frame's part only: the bodies wait for the step.
+        assert!(world.get::<PlayerBody>(body).is_some());
+        assert!(world.get::<PlayerBody>(spirit).is_none());
+        assert!(world.get::<PowerCaster>(body).is_some());
+        assert_eq!(world.resource::<MindControl>().held, Some(body));
+        assert!(world.resource::<MindControl>().spirit_screen.is_some());
         let mut fixed = world.resource_mut::<exa_physics::sim_app::FixedCommands>();
         let (writes, posts) = (fixed.take_writes(), fixed.take_posts());
         assert_eq!((writes.len(), posts.len()), (0, 1));
@@ -2557,16 +2710,31 @@ mod tests {
         }
         assert_eq!((count(&world, body), count(&world, spirit)), (0, 1));
         assert_eq!(status_of(&world, body), HANDED_OVER);
+        assert!(world.get::<PlayerBody>(spirit).is_some());
+        assert!(world.get::<HeldPlayer>(body).is_some());
+        assert!(world.get::<PowerCaster>(spirit).is_some());
+        let spirit_root = root_of(&world, spirit).unwrap();
+        assert!(world.get::<Player>(spirit_root).is_some());
         spirit_home(&mut world, spirit, body);
+        assert_eq!(world.resource::<MindControl>().held, None);
+        assert!(world.resource::<MindControl>().spirit_screen.is_none());
         let mut fixed = world.resource_mut::<exa_physics::sim_app::FixedCommands>();
         let (writes, posts) = (fixed.take_writes(), fixed.take_posts());
-        // The list's move before the frame's changes, the caster's status
-        // word after them.
-        assert_eq!((writes.len(), posts.len()), (1, 1));
-        // The move runs before the spirit's despawn reaches the
-        // simulation; the frame's copies are left alone.
+        assert_eq!((writes.len(), posts.len()), (0, 1));
+        // The frame's copies are left alone until the step runs the way
+        // home.
         assert_eq!(count(&world, body), 0);
-        drop(writes);
+        assert!(world.get::<PlayerBody>(spirit).is_some());
+        for post in posts {
+            post(&mut world);
+        }
+        assert_eq!(count(&world, body), 1);
+        assert!(world.get::<PlayerBody>(body).is_some());
+        assert!(world.get::<PowerCaster>(body).is_some());
+        let body_root = root_of(&world, body).unwrap();
+        assert!(world.get::<Player>(body_root).is_some());
+        // A bare world has no frame queue: the spirit's removal ran at once.
+        assert!(world.get_entity(spirit).is_err());
     }
 
     #[test]
