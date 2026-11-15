@@ -3,8 +3,6 @@
 The tracking file for the [roadmap](README.md). Update it at the end of
 every round (see "How to update" at the bottom).
 
-**GPU: the RTX 3090 dropped off the host on 2026-11-13 after an out-of-memory error (`nvidia-smi` finds no device); it needs a reboot. Audits continue (CPU only); rounds needing a game smoke wait.**
-
 **Status: Phase A running (batches of 4 packages), with B0 in parallel.
 Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
@@ -59,10 +57,10 @@ State: `todo`, `doing`, `done`, `blocked`.
 | id | task | state | note |
 |---|---|---|---|
 | B0.1 | Save slot kinds | done | inverted: a fresh saves screen continued from the checkpoint, and the portal reset deleted the checkpoint while the save stayed unlisted; fixed (round 203). Creator-side names left to the other session |
-| B0.2 | Level-exit save position | doing | the save was right; the arrival was wrong (the simulation kept the old level's coordinates). Fixed on a lane; round 204 waits for the GPU smoke |
-| B0.3 | Control Mind end frame writes | doing | fixed on a lane: the swap runs on the step, the hand-back is posted (round 206, waits for the GPU) |
+| B0.2 | Level-exit save position | done | round 204; arrival marker shown in game 2026-11-15 |
+| B0.3 | Control Mind end frame writes | done | round 206; game run 2026-11-15: no undone write logged |
 | B0.4 | Torrent stream in lockstep | done | the original draws from the two process-wide generators, which the step streams stand for; the sweep scene needs retuning, not the code |
-| B0.5 | New game creates no save slot; arena saves dropped | doing | all four claims real and fixed on a lane (slot at session begin, arena saves, quit save, alarm and journal); round 205 stacks on 204 and waits for the GPU |
+| B0.5 | New game creates no save slot; arena saves dropped | done | round 205 (tests); the `--story-session` debug flag skips the real start, so a flag for a real New Game start is owed for a game check |
 | B0.6 | Spirit Form adopt/home and other frame-sent writes in free mode | todo | found by the mindend lane |
 | B1 | Wire the uncalled | doing | logic families first (headless tests) while the GPU is down: mind powers, character data, physics dynamics |
 | B2 | Reclassify the engine-replaced | todo | |
@@ -128,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions.
 
 | date | round | what |
 |---|---|---|
+| 2026-11-15 | 206 | GPU back after the PC fix (the network card had split the GPU's PCIe lanes; it fell off the bus 9 times since October; a stress test passed). Game smoke runs owed for rounds 204-206 done, no GPU errors. Phase B lanes restarted: spiritstep (B0.6), wiremind, wirechardata, wiredyn (B1). |
 | 2026-11-13 | — | Phase A audits complete: all 90 packages accepted; coverage now published from the ledger (48.3% closed beside the 82.3% estimate); Phase B work list generated; 540 findings. Rounds 204-206 (arrival, new-game slot and saves, Control Mind on the step) pass their checks and wait for the GPU. |
 | 2026-11-13 | — | UI, rendering, thaumaturgy and world audited. Two packages rejected and redone. The RTX 3090 dropped off the host after an out-of-memory error; `gpu_grid.sh` now queues GPU runs. Round 204 (arrival placement, B0.2) passes its checks and waits for the GPU. |
 | 2026-11-12 | 203 | Rendering and UI fully audited: 26 packages accepted, ledger 20.7%, 151 findings. Round 203: the save slot kinds fixed (B0.1). |
