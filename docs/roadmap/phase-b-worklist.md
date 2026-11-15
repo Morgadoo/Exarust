@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 785 | 199,179 | B1 wire (or prove unreachable) |
-| partial | 1,522 | 975,096 | B4 complete the port |
+| uncalled | 782 | 197,574 | B1 wire (or prove unreachable) |
+| partial | 1,522 | 973,840 | B4 complete the port |
 | missing | 67 | 14,941 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -18,7 +18,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | ui | 99,805 | 53,282 | 1,673 |
 | render | 123,703 | 23,925 | 3,232 |
 | powers | 112,105 | 3,852 | 3,049 |
-| ai | 108,492 | 9,587 | 75 |
+| ai | 107,236 | 7,982 | 75 |
 | characters | 90,034 | 15,398 | 2,097 |
 | modes | 78,846 | 14,043 | 942 |
 | world | 66,182 | 21,393 | 563 |
@@ -42,11 +42,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TSimSector | physics | 33 / 23,628 | 1 / 224 | 0 / 0 | 23,852 |
 | TVCCloth | physics | 20 / 19,103 | 8 / 2,551 | 1 / 1,638 | 23,292 |
 | TMotilePart | characters | 37 / 17,314 | 6 / 1,449 | 2 / 1,370 | 20,133 |
-| TPathFinder | ai | 7 / 16,983 | 4 / 2,334 | 0 / 0 | 19,317 |
 | TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
 | RF_SceneNodes (unit routines) | world | 12 / 15,946 | 13 / 2,520 | 0 / 0 | 18,466 |
 | TGUIForm | ui | 29 / 9,509 | 28 / 7,744 | 1 / 153 | 17,406 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
+| TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
 | TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
 | TMesh | render | 20 / 13,220 | 4 / 1,746 | 0 / 0 | 14,966 |
 | XA_SaveGames (unit routines) | modes | 24 / 12,546 | 6 / 1,074 | 0 / 0 | 13,620 |
@@ -96,7 +96,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceBlastEffect | powers | 3 / 5,947 | 0 / 0 | 0 / 0 | 5,947 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
 | FLX_System (unit routines) | core | 32 / 2,657 | 23 / 3,089 | 1 / 59 | 5,805 |
-| TCombatant | ai | 9 / 4,839 | 5 / 952 | 0 / 0 | 5,791 |
+| TCombatant | ai | 11 / 5,101 | 3 / 690 | 0 / 0 | 5,791 |
 | SG_Character_Data (unit routines) | characters | 10 / 2,511 | 22 / 3,260 | 0 / 0 | 5,771 |
 | TProcMaterial | items | 9 / 5,114 | 0 / 0 | 1 / 525 | 5,639 |
 | TIconManager | ui | 0 / 0 | 6 / 5,573 | 0 / 0 | 5,573 |
