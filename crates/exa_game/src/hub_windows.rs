@@ -940,6 +940,25 @@ impl TableDrag {
     }
 }
 
+/// The board's move callbacks take the moved fighter's row out of the
+/// table it left ([`table_view::TableView::remove_row`] on that table's
+/// view as it stood before the move): a selection past the new end moves
+/// to the new last row, and the board keeps it.
+fn remove_moved_row(
+    board: &mut Board,
+    slot: TableSlot,
+    row: usize,
+    mut view: table_view::TableView,
+) {
+    view.remove_row(row as i32);
+    let selected = (view.selected > 0).then(|| (view.selected - 1) as usize);
+    match slot {
+        TableSlot::Roster => board.available_selection = selected,
+        TableSlot::Lineup => board.team_selection = selected,
+        _ => {}
+    }
+}
+
 /// What the pointer did on the board's company (available) and lineup
 /// tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1111,9 +1130,13 @@ impl HubWindows {
                         } else {
                             BoardInput::DoubleClickTeam(at)
                         };
-                        return match (board.handle(input), slot) {
-                            (BoardAction::Changed, TableSlot::Roster) => BoardTableAction::Joined,
-                            (BoardAction::Changed, _) => BoardTableAction::Left(at),
+                        let moved = board.handle(input) == BoardAction::Changed;
+                        if moved {
+                            remove_moved_row(board, slot, at, view);
+                        }
+                        return match (moved, slot) {
+                            (true, TableSlot::Roster) => BoardTableAction::Joined,
+                            (true, _) => BoardTableAction::Left(at),
                             _ => BoardTableAction::Took,
                         };
                     }
@@ -1156,6 +1179,7 @@ impl HubWindows {
                     return Some(BoardTableAction::Took);
                 }
                 let to = (view.hover > 0).then(|| (view.hover - 1) as usize);
+                let source = board.table_view(drag.slot);
                 let mut answer = BoardTableAction::Took;
                 let mut drop = || {
                     if drag.slot == TableSlot::Roster
@@ -1166,13 +1190,16 @@ impl HubWindows {
                     }
                     0
                 };
-                view.owner_query(Some(&mut drop));
+                if view.owner_query(Some(&mut drop)) != 0 {
+                    remove_moved_row(board, drag.slot, from, source);
+                }
                 return Some(answer);
             }
             let (view, _) = roster.as_ref()?;
             if !view.accepts_drop(drag.kind, false, false) {
                 return Some(BoardTableAction::Took);
             }
+            let source = board.table_view(drag.slot);
             let mut answer = BoardTableAction::Took;
             let mut drop = || {
                 // The company table's drop refuses its own rows.
@@ -1184,7 +1211,9 @@ impl HubWindows {
                 }
                 0
             };
-            view.owner_query(Some(&mut drop));
+            if view.owner_query(Some(&mut drop)) != 0 {
+                remove_moved_row(board, drag.slot, from, source);
+            }
             Some(answer)
         });
         match action {

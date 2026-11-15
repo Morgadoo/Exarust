@@ -2565,6 +2565,10 @@ mod tests {
         assert_eq!(board.team, vec![2]);
         assert!(board.available.contains(&1));
         assert_eq!(board.lineup[0], 2);
+        // The move took the row out of the company table's view: the
+        // selection stays inside the rows.
+        let selected = board.available_selection.unwrap();
+        assert_eq!(selected, (row - 1).min(board.available.len() - 1));
         let stores = app.world().resource::<crate::save_live::ArenaStores>();
         assert_eq!(stores.staff.order, board.lineup);
         // The next board opens on that order.
