@@ -354,7 +354,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F333 | physics-07 | physics | shape::sort_spheres: when no sphere qualifies and the cursor has run off the end, Exarust keeps the last sphere. The original reads one past the array. This edge is documented only as a code comment, with no DEC entry. | B4 |
 | F334 | physics-07 | physics | assembled_item_body takes the weapon node box from the union of the merged triangles rather than from the node's stored box, and builds the body at equip/drop rather than at item creation. It is probably equivalent; I did not verify it. | B4 |
 | F335 | physics-07 | physics | Cloth import: exa_assets passes CLOTH_SCENE as a constant, so the original's non-cloth arm (clearing node flag bits 0x10000 and 0x10/0x8000) is never modelled. The node +0xc bit 0x10 and the routine pointer are not modelled either. | B4 |
-| F336 | ai-01 | ai | exa_ai::brain::grab_timeout (the AI tick's 500 ms grabbed-flag release) has no non-test caller | B4 |
+| F336 | ai-01 | ai | exa_ai::brain::grab_timeout (the AI tick's 500 ms grabbed-flag release) has no non-test caller (Corrected by round 222: the 500 ms step is the cast chooser's casting flag, not a grab; now run for every brain.) | B4 |
 | F337 | ai-01 | ai | PassReport::refresh is computed by contacts::refresh_slot, but nothing reads it and no dialogue refresh is called | B4 |
 | F338 | ai-01 | ai | brain::ai_tick passes seen=true for every candidate to contacts::nearby, so the nearby insert never runs a sight test | B4 |
 | F339 | ai-01 | ai | combat::tick's Exit::Down writes only mind.aim. The original's down exit also writes the body state word, requests motion 3, copies the place into the move goals and sets the heading words, and Exarust does none of these | B4 |
