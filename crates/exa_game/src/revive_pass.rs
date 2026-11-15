@@ -192,10 +192,16 @@ pub fn revive_brains(
             };
             (room, avoid, exits)
         };
+        // Each pick writes the brain's goal record (stop at two cells, the
+        // flat end test at 150 cm) before its search reads it.
         let route = |from: Vec3, goal: Vec3| -> Vec<Vec3> {
+            let mut b = brain.borrow_mut();
+            b.plan_goal.roam();
+            let (mut record, shift) = (b.plan_goal, b.alert_count);
+            drop(b);
             grid.map_or_else(Vec::new, |grid| {
                 use exa_ai::route::Router;
-                exa_ai::route::NavRouter { grid, size: 0 }
+                exa_ai::route::NavRouter::new(grid, &mut record, shift)
                     .route(from, Vec3::new(goal.x, from.y, goal.z))
             })
         };

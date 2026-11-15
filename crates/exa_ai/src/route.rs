@@ -33,11 +33,129 @@ pub struct Goal {
     pub motion: i32,
 }
 
+/// How a search that stopped short of its goal decides whether its end is
+/// near enough (the goal record's end test).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalTest {
+    /// None installed: the planner's own test, an end farther than 100 cm
+    /// from the goal in 3-D is too far.
+    Near,
+    /// Too far outside the record's radius across the ground (height
+    /// ignored): the wander, home-side and flight goals.
+    Flat,
+    /// Too far outside the record's radius with the height at half weight:
+    /// the chase and the follower's walk to its leader.
+    HalfHeight,
+    /// Never too far: the follower's closing walk and the AI's Long Door.
+    Always,
+}
+
+/// The goal record a character's planner reads besides the goal point:
+/// the walker's size class, the accept distance (heuristic units, ten a
+/// cell), the end test and its radius (cm). Each state that plans writes
+/// the fields it sets and keeps the others from the last state that did,
+/// as the original keeps one record on the character. The penalty shift
+/// is the character's group-alert count ([`crate::brain::Npc::alert_count`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanGoal {
+    pub size: u8,
+    pub accept: i32,
+    pub test: GoalTest,
+    pub radius_cm: f32,
+}
+
+/// The size class, accept distance and test the character's constructor
+/// writes (no radius: the record starts zeroed).
+impl Default for PlanGoal {
+    fn default() -> Self {
+        Self {
+            size: 3,
+            accept: 10,
+            test: GoalTest::Near,
+            radius_cm: 0.0,
+        }
+    }
+}
+
+/// The goal radius of the wander, home-side and flight goals, and of a
+/// chase or follow whose target stands (cm).
+pub const GOAL_RADIUS_CM: f32 = 150.0;
+/// The chase's and follow's goal radius when the target is down (cm).
+pub const DOWN_TARGET_RADIUS_CM: f32 = 300.0;
+
+/// The size class the roam and patrol states write before their wander or
+/// home-side pick.
+pub const ROAM_SIZE: u8 = 4;
+/// The flight's accept distance (three cells), written with its way out.
+pub const FLIGHT_ACCEPT: i32 = 30;
+
+/// The size class the chase and the flight write: the phase word applying
+/// roles wrote, plus 3 (a marked body's −1 gives 2, a follower's 1 gives 4).
+pub fn phase_size(phase_word: i32) -> u8 {
+    (phase_word + 3) as u8
+}
+
+impl PlanGoal {
+    /// The wander or home-side goal: stop at two cells, the flat test at
+    /// 150 cm. (The roam and patrol states write [`ROAM_SIZE`] themselves,
+    /// before the pick.)
+    pub fn roam(&mut self) {
+        self.accept = 20;
+        self.test = GoalTest::Flat;
+        self.radius_cm = GOAL_RADIUS_CM;
+    }
+
+    /// The flight's way out: stop at three cells, the flat test at the
+    /// way's radius.
+    pub fn flight(&mut self, radius_cm: f32) {
+        self.accept = FLIGHT_ACCEPT;
+        self.test = GoalTest::Flat;
+        self.radius_cm = radius_cm;
+    }
+
+    /// The chase and follow goal's test: the half-height test at 150 cm,
+    /// 300 cm when the target is down.
+    pub fn toward_target(&mut self, target_down: bool) {
+        self.test = GoalTest::HalfHeight;
+        self.radius_cm = if target_down {
+            DOWN_TARGET_RADIUS_CM
+        } else {
+            GOAL_RADIUS_CM
+        };
+    }
+
+    /// Whether a search's end `end_cm` is too far from `goal_cm`, or `None`
+    /// for the planner's own test.
+    pub fn too_far(&self, goal_cm: Vec3, end_cm: Vec3) -> Option<bool> {
+        let offset = end_cm - goal_cm;
+        match self.test {
+            GoalTest::Near => None,
+            GoalTest::Flat => Some(crate::combatant::outside_radius(
+                self.radius_cm,
+                offset,
+                false,
+            )),
+            GoalTest::HalfHeight => Some(crate::combatant::outside_radius(
+                self.radius_cm,
+                offset,
+                true,
+            )),
+            GoalTest::Always => Some(false),
+        }
+    }
+}
+
 /// The planner's route source: the navigation grid.
 pub trait Router {
     /// The path from `from` to `to` (cm): points at cell centres, empty
     /// when no path starts.
     fn route(&mut self, from: Vec3, to: Vec3) -> Vec<Vec3>;
+
+    /// The goal record the next search reads, for the state to write its
+    /// fields before it plans. None for a router without one.
+    fn goal(&mut self) -> Option<&mut PlanGoal> {
+        None
+    }
 }
 
 /// A search result kept for following.
@@ -183,20 +301,44 @@ pub fn plan(
 }
 
 /// The navigation grid as a [`Router`]: centimetre points in, centimetre
-/// points out, the search itself [`exa_world::nav::find_path`]'s.
+/// points out, the search itself [`exa_world::nav::find_path_to`]'s with
+/// the character's goal record and its alert count as the penalty shift.
 pub struct NavRouter<'a> {
     pub grid: &'a exa_world::nav::NavGrid,
-    /// The walker's size class.
-    pub size: u8,
+    /// The character's goal record.
+    pub goal: &'a mut PlanGoal,
+    /// The penalty byte's shift: the group-alert count.
+    pub shift: i32,
+}
+
+impl<'a> NavRouter<'a> {
+    pub fn new(grid: &'a exa_world::nav::NavGrid, goal: &'a mut PlanGoal, shift: i32) -> Self {
+        Self { grid, goal, shift }
+    }
 }
 
 impl Router for NavRouter<'_> {
     fn route(&mut self, from: Vec3, to: Vec3) -> Vec<Vec3> {
-        exa_world::nav::find_path(self.grid, from / 100.0, to / 100.0, self.size)
+        let record = *self.goal;
+        let ask = exa_world::nav::Search {
+            size: record.size,
+            shift: self.shift as u32,
+            accept: record.accept,
+        };
+        let test = |end_cm: Vec3| record.too_far(to, end_cm).unwrap_or(false);
+        let too_far: Option<&dyn Fn(Vec3) -> bool> = match record.test {
+            GoalTest::Near => None,
+            _ => Some(&test),
+        };
+        exa_world::nav::find_path_to(self.grid, from / 100.0, to / 100.0, ask, too_far)
             .points
             .into_iter()
             .map(|p| p * 100.0)
             .collect()
+    }
+
+    fn goal(&mut self) -> Option<&mut PlanGoal> {
+        Some(self.goal)
     }
 }
 
@@ -284,10 +426,8 @@ mod tests {
             current: Some(1),
             ..PlanTurn::default()
         };
-        let mut router = NavRouter {
-            grid: &grid,
-            size: 0,
-        };
+        let mut goal = PlanGoal::default();
+        let mut router = NavRouter::new(&grid, &mut goal, 1);
         let goal = Goal {
             point: to,
             radius_cm: 40.0,
@@ -343,6 +483,72 @@ mod tests {
         )
         .unwrap();
         assert!(planned.following);
+    }
+
+    /// The constructor's record leaves the planner's 100 cm test; the
+    /// flat test ignores height, the half-height test halves it, and the
+    /// closing walk's never finds an end too far.
+    #[test]
+    fn the_goal_records_end_tests() {
+        let goal = Vec3::new(0.0, 0.0, 0.0);
+        let mut record = PlanGoal::default();
+        assert_eq!((record.size, record.accept), (3, 10));
+        assert_eq!(record.too_far(goal, Vec3::new(500.0, 0.0, 0.0)), None);
+        record.roam();
+        assert_eq!(record.accept, 20);
+        assert_eq!(
+            record.too_far(goal, Vec3::new(140.0, 900.0, 0.0)),
+            Some(false)
+        );
+        assert_eq!(record.too_far(goal, Vec3::new(151.0, 0.0, 0.0)), Some(true));
+        record.toward_target(false);
+        assert_eq!(
+            record.too_far(goal, Vec3::new(0.0, 290.0, 0.0)),
+            Some(false)
+        );
+        assert_eq!(record.too_far(goal, Vec3::new(0.0, 310.0, 0.0)), Some(true));
+        record.toward_target(true);
+        assert_eq!(record.radius_cm, DOWN_TARGET_RADIUS_CM);
+        record.flight(150.0);
+        assert_eq!((record.accept, record.test), (30, GoalTest::Flat));
+        // The phase word plus 3: marked, plain, follower.
+        assert_eq!((phase_size(-1), phase_size(0), phase_size(1)), (2, 3, 4));
+        record.test = GoalTest::Always;
+        assert_eq!(record.too_far(goal, Vec3::splat(1e6)), Some(false));
+    }
+
+    /// The router reads the record: the constructor's size class 3 keeps
+    /// off a cell of clearance 50 that class 0 walks through.
+    #[test]
+    fn the_router_plans_with_the_record() {
+        let (mut grid, from, to) = route();
+        for z in 0..40 {
+            for x in 0..40 {
+                if z != 20 {
+                    grid.set_cell(x, z, Layer::Lower, NavCell::default());
+                }
+            }
+        }
+        grid.set_cell(
+            20,
+            20,
+            Layer::Lower,
+            NavCell {
+                floor: 100,
+                clearance: 50,
+                ..NavCell::default()
+            },
+        );
+        let mut record = PlanGoal {
+            size: 0,
+            ..PlanGoal::default()
+        };
+        let small = NavRouter::new(&grid, &mut record, 1).route(from, to);
+        assert_eq!(small.last().copied(), Some(to));
+        let mut record = PlanGoal::default();
+        let big = NavRouter::new(&grid, &mut record, 1).route(from, to);
+        let end = big.last().copied().unwrap();
+        assert!(end.x < to.x - 200.0, "{end:?}");
     }
 
     #[test]

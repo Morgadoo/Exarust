@@ -66,6 +66,7 @@ use exa_ai::activity::IdleState;
 use exa_ai::brain::{CharacterId, Npc, RoleDatabase};
 use exa_ai::idle::{FollowAct, Follower, Leader};
 use exa_ai::roles::Roles;
+use exa_ai::route::Router as _;
 use exa_ai::search::{self, Attention, Deed, Gaze, Goal, Loot, Pack, Phrases, Scene};
 use exa_ai::walker::IdleWalk;
 use exa_anim::Animator;
@@ -791,6 +792,14 @@ impl search::Searcher for LiveSearcher<'_> {
         };
         let points = match self.router.as_mut() {
             Some(router) => {
+                // The search activity plans with the largest size class;
+                // its goal callback stops at the goal's stop and radius and
+                // keeps the end test installed before.
+                if let Some(record) = router.goal() {
+                    record.size = 7;
+                    record.accept = goal.stop_cm;
+                    record.radius_cm = goal.radius_cm;
+                }
                 match exa_ai::route::plan(
                     self.turn, self.who, self.frame, self.feet, route_goal, true, router,
                 ) {
@@ -1002,7 +1011,10 @@ pub fn follow_and_search(
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform), Without<Possessions>>,
     leader_root: Query<&GlobalTransform, (With<Player>, Without<Possessions>)>,
-    others: Query<(&GlobalTransform, &Condition)>,
+    (others, combatants): (
+        Query<(&GlobalTransform, &Condition)>,
+        Query<&exa_ai::combatant::Combatant>,
+    ),
     leader_body: Query<(Entity, &GlobalTransform), With<PlayerBody>>,
     objects: LevelObjects,
     mut clock: Local<(Option<u64>, exa_ai::route::PlanTurn, u32)>,
@@ -1206,13 +1218,29 @@ pub fn follow_and_search(
                     "search: {who} follows: {act:?}, the player {away:.1} m off (in sight {visible})"
                 );
             }
+            // The goal callback of the walk to the leader reads the body's
+            // target: a target that is down widens the end test's radius.
+            let target_down = combatants
+                .get(entity)
+                .ok()
+                .and_then(|c| c.target)
+                .and_then(|t| others.get(t).ok())
+                .is_some_and(|(_, c)| c.off_feet());
+            let shift = npc.alert_count;
             let mut router = nav
                 .as_deref()
-                .map(|grid| exa_ai::route::NavRouter { grid, size: 0 });
+                .map(|grid| exa_ai::route::NavRouter::new(grid, &mut npc.plan_goal, shift));
             match act {
                 FollowAct::Pursue => {
                     if state.follower.replan {
                         state.follower.replan = false;
+                        // The walk to the leader: stop at five cells, the
+                        // smallest size class, the half-height end test.
+                        if let Some(record) = router.as_mut().and_then(|r| r.goal()) {
+                            record.accept = 50;
+                            record.size = 0;
+                            record.toward_target(target_down);
+                        }
                         let goal = exa_ai::route::Goal {
                             point: state.follower.goal,
                             radius_cm: state.follower.stop_cm as f32,
@@ -1247,10 +1275,23 @@ pub fn follow_and_search(
                     state.walk.route.clear();
                     if let Some(leader) = leader.as_ref() {
                         let close = exa_ai::idle::closing_goal(&mut state.follower, leader);
+                        // The closing replan writes the larger size class;
+                        // a goal moved off the leader stops at two cells and
+                        // is never too far (its radius as the goal set it).
+                        if let Some(record) = router.as_mut().and_then(|r| r.goal()) {
+                            record.size = 4;
+                            if let Some(accept) = close.accept {
+                                record.accept = accept;
+                                record.test = exa_ai::route::GoalTest::Always;
+                            }
+                            if let Some(radius) = close.radius_cm {
+                                record.radius_cm = radius;
+                            }
+                        }
                         let goal = exa_ai::route::Goal {
                             point: close.point,
                             radius_cm: close.radius_cm.unwrap_or(state.follower.stop_cm as f32),
-                            motion: close.motion.unwrap_or(0),
+                            motion: 0,
                         };
                         let points = match router.as_mut() {
                             Some(router) => exa_ai::route::plan(

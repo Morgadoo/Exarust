@@ -1707,10 +1707,9 @@ pub(crate) fn bearing(
         getting_up,
         rising: false,
         crouch,
-        turn: match locomotion {
-            Some((req, body)) if !condition.helpless() => req.turn_left(body),
-            _ => 0.0,
-        },
+        // The arms' turn floor reads the last turn's error (before its
+        // step; 0 after a held turn), as the posture block does.
+        turn: locomotion.map_or(0.0, |(_, body)| body.error),
         gait_floor: None,
         collapsing: condition.is_collapsing(),
         kicking: condition == Condition::KICKING,

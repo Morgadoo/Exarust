@@ -48,7 +48,10 @@ pub use mover::{
     plan_around, plan_footprint, queue_box, queue_moved, queued_moves, raise_from_movers,
     rect_around, rect_of_box, refresh_movers, ring_contents, ring_moved, start_full_refresh,
 };
-pub use path::{ACCEPT_GOAL_CELL, Look, Path, disturbance, find_path, find_path_with, look_ahead};
+pub use path::{
+    ACCEPT_GOAL_CELL, Look, Path, Search, disturbance, find_path, find_path_to, find_path_with,
+    look_ahead,
+};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
 pub use stamp::{NavPatch, stamp_line, unstamp_line};
@@ -767,7 +770,11 @@ pub struct PathfinderMetrics {
     pub base_calls: u32,
 }
 
-/// Stores the pathfinder's cell metrics and seed.
+/// Stores the pathfinder's cell metrics and seed. The shipped attach
+/// copies the seed from a byte nothing in the game writes, so it is always
+/// 0 and the build never allocates the two extra per-cell arrays the seed
+/// guards; the live build ([`view`]) uses the cell and voxel constants
+/// and a fresh merge list, and keeps no such record.
 pub fn pathfinder_metrics(seed: u8) -> PathfinderMetrics {
     PathfinderMetrics {
         cell: 30.0,

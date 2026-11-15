@@ -1,8 +1,9 @@
 //! The body tick's per-tick timers beside the ones its movement, balance
 //! and combat stages already keep: the two adapters the original derives
 //! from last tick's support at the top of the tick and moves with the
-//! balance and the energy, the eased rate of the look point's follow, and
-//! the two counters the tick steps (a countdown and the weapon switch).
+//! balance and the energy (and the turn lowers), the eased rate of the
+//! look point's follow, and the two counters the tick steps (the turn
+//! stall and the weapon switch).
 //!
 //! The adapters' original consumer is a part field nothing reads; they are
 //! kept as the original's tested rules, not as a behaviour Exarust shows.
@@ -48,12 +49,16 @@ pub struct BodyTimers {
     /// tenths.
     pub rest: f32,
     /// The support adapter: 0.9 + 0.09·S, lowered by 0.6·(1 − E) and then
-    /// by 0.1·(1 − B), each floored at 0.
+    /// by 0.1·(1 − B), each floored at 0; a turning body's turn then lowers
+    /// it by 10·|error| ([`BodyTimers::turned`]).
     pub support: f32,
     /// The look follow's rate.
     pub look_rate: f32,
-    /// A countdown the tick decrements every tick.
-    pub countdown: i32,
+    /// The turn stall: a stab's or overhead's hard weapon-body hit sets it
+    /// to `round(5√impact)` ([`BodyTimers::stall_turn`]); the tick takes
+    /// one off every tick (below 0 too), and the body's turn holds while it
+    /// is 1 or more ([`BodyTimers::turn_stalled`]).
+    pub turn_stall: i32,
     /// The weapon switch counter: the switch rules move it within its
     /// range, and the tick steps it one toward zero.
     pub weapon_switch: i32,
@@ -65,7 +70,7 @@ impl Default for BodyTimers {
             rest: 1.0,
             support: 0.9,
             look_rate: LOOK_RATE_STANDING,
-            countdown: 0,
+            turn_stall: 0,
             weapon_switch: 0,
         }
     }
@@ -133,8 +138,28 @@ impl BodyTimers {
         };
         self.rest = rest;
         self.support = support;
-        self.countdown = self.countdown.wrapping_sub(1);
+        self.turn_stall = self.turn_stall.wrapping_sub(1);
         self.weapon_switch -= self.weapon_switch.signum();
+    }
+
+    /// The turn's write: a body that turns this tick lowers the support
+    /// adapter by 10·|`error`| (single precision), floored at 0 by the
+    /// processor's maximum (a NaN gives 0). A held turn does not.
+    pub fn turned(&mut self, error: f32) {
+        let v = self.support - error.abs() * 10.0;
+        self.support = if v > 0.0 { v } else { 0.0 };
+    }
+
+    /// A stab's or overhead's hard weapon-body hit of strength `ticks`
+    /// (`round(5√impact)`, [`crate::part::hard_impact`]) stalls the turn.
+    pub fn stall_turn(&mut self, ticks: u32) {
+        self.turn_stall = ticks as i32;
+    }
+
+    /// The turn holds this tick: the stall is 1 or more (after this tick's
+    /// step), as the original's turn block compares it.
+    pub fn turn_stalled(&self) -> bool {
+        self.turn_stall >= 1
     }
 }
 
@@ -154,7 +179,7 @@ mod tests {
     }
 
     /// A supported, balanced, rested body: rest 1 − 0.01 = 0.99, support
-    /// 0.9 + 0.09 = 0.99, the look rate 0.0125, the countdown down one and
+    /// 0.9 + 0.09 = 0.99, the look rate 0.0125, the turn stall down one and
     /// the weapon switch at rest.
     #[test]
     fn a_steady_body_keeps_its_adapters() {
@@ -163,7 +188,7 @@ mod tests {
         assert!((t.rest - 0.99).abs() < 1e-6, "{}", t.rest);
         assert!((t.support - 0.99).abs() < 1e-6, "{}", t.support);
         assert_eq!(t.look_rate, LOOK_RATE_STANDING);
-        assert_eq!(t.countdown, -1);
+        assert_eq!(t.turn_stall, -1);
         assert_eq!(t.weapon_switch, 0);
         let mut t = BodyTimers::default();
         t.tick(&TimerInput {
@@ -248,6 +273,41 @@ mod tests {
         t.weapon_switch = -3;
         t.tick(&input());
         assert_eq!(t.weapon_switch, -2);
+    }
+
+    /// A hard hit of strength 3 stalls the turn for the two ticks after it
+    /// (3 − 1 and 3 − 2 are at least 1), not the third; the stall counts
+    /// on below 0.
+    #[test]
+    fn a_hard_hit_stalls_the_turn_for_its_strength_less_one() {
+        let mut t = BodyTimers::default();
+        t.stall_turn(3);
+        let held: Vec<bool> = (0..4)
+            .map(|_| {
+                t.tick(&input());
+                t.turn_stalled()
+            })
+            .collect();
+        assert_eq!(held, [true, true, false, false]);
+        assert_eq!(t.turn_stall, -1);
+    }
+
+    /// The turn lowers the support adapter by 10·|error|: 0.99 − 10·0.02 =
+    /// 0.79 (in single precision), and to 0, not below, past 0.099 rad; a
+    /// NaN error gives 0.
+    #[test]
+    fn the_turn_lowers_the_support_adapter() {
+        let mut t = BodyTimers::default();
+        t.tick(&input());
+        let before = t.support;
+        t.turned(-0.02);
+        assert_eq!(t.support, before - 0.02f32 * 10.0);
+        assert!((t.support - 0.79).abs() < 1e-6, "{}", t.support);
+        t.turned(0.1);
+        assert_eq!(t.support, 0.0);
+        let mut t = BodyTimers::default();
+        t.turned(f32::NAN);
+        assert_eq!(t.support, 0.0);
     }
 
     /// The link-iteration ramp: dormant holds 5; otherwise one up a tick

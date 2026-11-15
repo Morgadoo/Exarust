@@ -598,8 +598,9 @@ pub fn shakes_camera(hit: &HardImpact, scale: f32) -> bool {
 pub struct ImpactReaction {
     /// The attack state word after the write (bits 2, 4 and 6).
     pub flags: u32,
-    /// The swing was interrupted: the stall strength is 1 and its progress 0.
-    /// Both writes also happen on a stab, which leaves the strength alone.
+    /// The swing was interrupted: the stall rate is 1 and the swing
+    /// strength 0 (the stall drains it at once). A stab or overhead
+    /// (`strike_strength`) also zeroes the strength and leaves the rate.
     pub interrupted: bool,
     /// The game clock at which the stance returns.
     pub stall_end_ms: u32,

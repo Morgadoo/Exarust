@@ -903,7 +903,8 @@ player (`player` and `steering`: tank controls as the original's
 behaviour writes them into the locomotion request — the release finishing
 the stride, the quarter turn a second after any turn key, Shift's sprint
 latch spent with the keys and kept by a far cursor, the look-ahead on the
-navigation grid and the soft stop — whose steering starts only the gaits,
+navigation grid (its line walk, or for a body whose race hovers, the
+wraith, the grid's straight walk) and the soft stop — whose steering starts only the gaits,
 the chase camera on the drawn pelvis, combat facing, its combat stance and the
 original's attack request each behaviour tick (press, hold, release, the
 double click and Alt) through the attack executor, with the clips of the

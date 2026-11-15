@@ -529,31 +529,36 @@ impl Struck {
 const HANDS: u8 = 0x30;
 const PART_RADIUS: f32 = 0.16;
 const MIN_HIT_SPEED: f32 = 1.5;
-/// Horizontal knockback (m) when `impact` is over 0.5: 2·(20·strikes + 10)·impact
-/// centimetres along the swing, flattened, plus 20 ticks of the chest's fast
-/// velocity (m a tick), capped at `step_cm`. Strikes is 0 until that power exists.
+/// The knockback (m) when `impact` J is over 0.5, as the original's damage
+/// routine passes it to its step routine: the striker's slot vector `slot`
+/// (its smoothed velocity, cm a tick, not normalised) with its height
+/// zeroed, times 2·(20·strikes + 10)·J; plus 20 ticks of the chest's fast
+/// velocity (m a tick, its height kept); cut to `step_cm` when longer. In
+/// single precision in the original's order: ((20·strikes + 10)·J)·2 is
+/// the scale, the length squared (y² + x²) + z². A slot vector of more than
+/// a few centimetres a tick makes nearly every such blow a whole step.
+/// Strikes is 0 until that power exists.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn knockback_offset(
     impact: f32,
     strikes: f32,
-    swing: Vec3,
+    slot: Vec3,
     chest_fast: Vec3,
     step_cm: f32,
 ) -> Option<Vec3> {
-    if !impact.is_finite() || !step_cm.is_finite() || step_cm <= 0.0 || impact <= 0.5 {
+    if !(impact > 0.5) || !step_cm.is_finite() || step_cm <= 0.0 {
         return None;
     }
-    let along = swing.with_y(0.0);
-    let dir = along.normalize_or_zero();
-    let base = 2.0 * (20.0 * strikes.max(0.0) + 10.0) * impact;
-    let mut push = dir * base + chest_fast.with_y(0.0) * (100.0 * 20.0);
+    let amount = (strikes * 20.0 + 10.0) * impact;
+    let mut push = slot.with_y(0.0) * (amount * 2.0) + chest_fast * (CM_PER_M * 20.0);
     if !push.is_finite() {
         return None;
     }
-    let len = push.length();
-    if len > step_cm {
-        push *= step_cm / len;
+    let len2 = (push.y * push.y + push.x * push.x) + push.z * push.z;
+    if len2 > step_cm * step_cm {
+        push *= step_cm / len2.sqrt();
     }
-    Some(push / 100.0)
+    Some(push / CM_PER_M)
 }
 
 /// Share of the blade's velocity a struck part takes on contact.
@@ -1050,6 +1055,16 @@ fn react_to_hits(
         let striker_scale = fighters
             .get(hit.attacker)
             .map_or(1.0, |(_, a, ..)| a.stats.scale);
+        // The striker's slot vector (cm a tick): the swing's tracker of the
+        // slot whose striker struck; without one, the tip's velocity.
+        let slot_velocity = slots
+            .get(hit.striker)
+            .ok()
+            .and_then(|blade| {
+                let (.., state, _, _) = fighters.get(hit.attacker).ok()?;
+                state.map(|s| s.tracker[blade.slot.index()].velocity)
+            })
+            .unwrap_or(hit.velocity * (CM_PER_M / BODY_HZ));
         // The struck side first, then (the original's routine per contact)
         // the striker's swing.
         let reaction = 'struck: {
@@ -1525,7 +1540,7 @@ fn react_to_hits(
             let step = knockback_offset(
                 outcome.impact,
                 hit.strike.strikes,
-                hit.velocity,
+                slot_velocity,
                 fast,
                 step_cm,
             );
@@ -2094,12 +2109,16 @@ mod tests {
         messages.get_cursor().read(messages).copied().collect()
     }
 
-    /// Impact over one half steps 2·(20·strikes + 10)·J cm along the swing,
-    /// plus 20 ticks of chest velocity, capped at the step length. Half
-    /// does not. Strikes 0 is 20·J cm.
+    /// Impact over one half steps 2·(20·strikes + 10)·J times the slot
+    /// vector (cm a tick, not normalised, its height zeroed), plus 20
+    /// ticks of chest velocity (its height kept), capped at the step
+    /// length. Half does not, nor a NaN. A slot of 1 cm a tick at strikes
+    /// 0 is 20·J cm; a 15 cm a tick swing at J 0.6 (180 cm) is cut to the
+    /// whole step, 80 cm along it.
     #[test]
     fn a_heavy_blow_steps_back_by_its_impact() {
         assert!(knockback_offset(0.5, 0.0, Vec3::Z, Vec3::ZERO, 80.0).is_none());
+        assert!(knockback_offset(f32::NAN, 0.0, Vec3::Z, Vec3::ZERO, 80.0).is_none());
         let plain = knockback_offset(1.0, 0.0, Vec3::Z, Vec3::ZERO, 80.0).unwrap();
         assert!((plain - Vec3::Z * 0.2).length() < 1e-5, "{plain}");
         let struck = knockback_offset(1.0, 1.0, Vec3::Z, Vec3::ZERO, 80.0).unwrap();
@@ -2110,6 +2129,61 @@ mod tests {
         assert!((capped.length() - 0.8).abs() < 1e-5, "{capped}");
         let light = knockback_offset(0.4, 0.0, Vec3::Z, Vec3::ZERO, 80.0);
         assert!(light.is_none());
+        let swing = Vec3::new(9.0, 4.0, 12.0);
+        let fast = knockback_offset(0.6, 0.0, swing, Vec3::ZERO, 80.0).unwrap();
+        assert_eq!(fast.y, 0.0);
+        assert!((fast.length() - 0.8).abs() < 1e-5, "{fast}");
+        assert!((fast.normalize() - Vec3::new(0.6, 0.0, 0.8)).length() < 1e-5);
+        // A falling chest's height stays in the step.
+        let falling = knockback_offset(1.0, 0.0, Vec3::Z, Vec3::NEG_Y * 0.001, 80.0).unwrap();
+        assert!(
+            (falling - Vec3::new(0.0, -0.02, 0.2)).length() < 1e-5,
+            "{falling}"
+        );
+    }
+
+    /// The live damage path steps a struck body back along the striker's
+    /// tracked slot vector, not the tip's direction: a striker whose first
+    /// slot tracks (9, 4, 12) cm a tick knocks a cut chest (impact over
+    /// one half) a whole step (the step length at scale 1, legs straight) along
+    /// (0.6, 0, 0.8), though its tip moved along x.
+    #[test]
+    fn the_knockback_follows_the_strikers_slot() {
+        let mut app = reactions();
+        let mut state = SwingState::default();
+        state.tracker[0].velocity = Vec3::new(9.0, 4.0, 12.0);
+        let attacker = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle"), state))
+            .id();
+        let striker = app
+            .world_mut()
+            .spawn(Blade::new(attacker, 0.9, damage::sword_a()))
+            .id();
+        let fighter = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        let bone = 9;
+        assert!(outcome(bone).impact > 0.5);
+        let struck = struck_on(&mut app, fighter);
+        app.world_mut().write_message(Hit {
+            attacker,
+            striker,
+            struck,
+            target: fighter,
+            bone,
+            point: Vec3::ZERO,
+            velocity: Vec3::new(3.0, 0.0, 0.0),
+            weapon: damage::sword_a(),
+            strike: cut(),
+        });
+        app.update();
+        let s = shoves(&app);
+        let step = s.iter().find(|s| s.body == fighter).unwrap().step.unwrap();
+        let whole = exa_physics::body::step_length(1.0, 1.0) / CM_PER_M;
+        assert!((step.length() - whole).abs() < 1e-5, "{step} {whole}");
+        assert!((step.normalize() - Vec3::new(0.6, 0.0, 0.8)).length() < 1e-5);
     }
 
     /// A swordsman mid-swing and its blade, in the first held slot, its
@@ -3473,10 +3547,12 @@ mod tests {
             assert_eq!(s.len(), 1, "bone {bone}");
             assert_eq!((s[0].body, s[0].bone), (fighter, bone));
             assert_eq!(s[0].daze, o.daze, "bone {bone}");
+            // No tracker on the striker: the tip's 3 m/s along x, in cm a
+            // tick.
             let expect = knockback_offset(
                 o.impact,
                 0.0,
-                Vec3::new(3.0, 0.0, 0.0),
+                Vec3::new(3.0, 0.0, 0.0) * (CM_PER_M / BODY_HZ),
                 Vec3::ZERO,
                 exa_physics::body::step_length(1.0, 1.0),
             );

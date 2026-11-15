@@ -750,7 +750,8 @@ pub fn strike_limbs(
             let Some(&owner) = owner_of.get(&owner_key) else {
                 continue;
             };
-            let Ok((_, f, _, _, _, mut anim, mut attacking, body)) = fighters.get_mut(owner) else {
+            let Ok((_, f, _, _, _, mut anim, mut attacking, mut body)) = fighters.get_mut(owner)
+            else {
                 continue;
             };
             let Ok(mut swing) = weapon.swings.get_mut(owner) else {
@@ -834,16 +835,22 @@ pub fn strike_limbs(
             } else if let Some(reaction) = hard_impact(&hit) {
                 swing.flags = reaction.flags;
                 if reaction.interrupted {
-                    swing.strength = 1.0;
-                    swing.stall = 0.0;
+                    // The recoil: the stall drains the whole strength at
+                    // once (rate 1, strength 0), so the clip stands still
+                    // until the stance returns.
+                    swing.stall = 1.0;
+                    swing.strength = 0.0;
                     swing.end_ms = u64::from(reaction.stall_end_ms);
                 }
                 if let Some(strength) = reaction.strike_strength {
-                    // The stab or overhead's stall: none, ending at the
-                    // reaction's clock.
+                    // The stab's or overhead's stall: no strength left,
+                    // ending at the reaction's clock.
                     swing.strike_strength = strength;
-                    swing.stall = 0.0;
+                    swing.strength = 0.0;
                     swing.end_ms = u64::from(reaction.stall_end_ms);
+                    // The same strength is the body tick's turn stall:
+                    // the striker's turn holds while it counts down.
+                    body.stall_turn(strength);
                 }
                 if reaction.clears_strike_chain {
                     for part in &mut item.parts {

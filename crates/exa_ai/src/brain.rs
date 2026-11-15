@@ -198,8 +198,12 @@ pub struct Npc {
     /// or releases the body sets it; the applied state then reads the
     /// body's powers, a Loyalty or Command Dead marker making it follow).
     pub reapply: bool,
-    /// The group-alert count the AI tick decays every 10 s.
+    /// The group-alert count the AI tick decays every 10 s. The planner
+    /// shifts the grid's penalty bytes by it.
     pub alert_count: i32,
+    /// The goal record its plans read (size class, accept distance, end
+    /// test and radius), each planning state writing its own fields.
+    pub plan_goal: crate::route::PlanGoal,
     /// When the alert count is next checked (ms).
     pub alert_until_ms: u32,
     /// Its cell in the room grid and the cell before it.
@@ -403,6 +407,7 @@ impl Npc {
             roles_key: 0,
             reapply: false,
             alert_count: 1,
+            plan_goal: crate::route::PlanGoal::default(),
             alert_until_ms: u32::MAX,
             room: RoomCell::default(),
             nearby: Vec::new(),
@@ -2432,6 +2437,9 @@ pub fn flee_walk(
             let Some(level) = level.as_deref() else {
                 continue;
             };
+            // The flight writes its size class before the way out.
+            npc.plan_goal.size =
+                crate::route::phase_size(npc.applied.as_ref().map_or(0, |a| a.phase_word));
             let exits = crate::rooms::room_exits(&level.rooms, &level.tracker, level_room as u16);
             let threat_room = crate::rooms::level_room(&level.rooms, threat_cm);
             let way = crate::flee::way_out(
@@ -2452,7 +2460,11 @@ pub fn flee_walk(
                     radius_cm: way.radius_cm,
                     motion: way.mode,
                 };
-                let mut router = crate::route::NavRouter { grid, size: 0 };
+                // The way out stops at three cells and installs the flat end
+                // test at its radius.
+                npc.plan_goal.flight(way.radius_cm);
+                let shift = npc.alert_count;
+                let mut router = crate::route::NavRouter::new(grid, &mut npc.plan_goal, shift);
                 let planned = crate::route::plan(
                     turn,
                     entity.to_bits(),
@@ -2708,10 +2720,11 @@ pub fn idle_walk(
                 Some(level) if room >= 0 => crate::rooms::wander_exits(&level.rooms, room as u16),
                 _ => Vec::new(),
             };
+            let npc = &mut *npc;
+            let shift = npc.alert_count;
             let mut router = nav
                 .as_deref()
-                .map(|grid| crate::route::NavRouter { grid, size: 0 });
-            let npc = &mut *npc;
+                .map(|grid| crate::route::NavRouter::new(grid, &mut npc.plan_goal, shift));
             let mut roll = npc.roll;
             let step = crate::walker::roam_step(
                 &mut npc.routine,
@@ -4133,6 +4146,18 @@ mod tests {
             assert_eq!(brain.walk.goal, Some(Vec3::new(-150.0, 0.0, 300.0)));
             assert_eq!(brain.walk.toward, 1);
             assert!(brain.walk.route.len() >= 2, "{:?}", brain.walk.route);
+            // The roam state wrote size class 4 and the pick the rest of
+            // the goal record the search read: stop at two cells, the flat
+            // end test at 150 cm.
+            assert_eq!(
+                brain.plan_goal,
+                crate::route::PlanGoal {
+                    size: 4,
+                    accept: 20,
+                    test: crate::route::GoalTest::Flat,
+                    radius_cm: 150.0,
+                }
+            );
         }
         // The heading eases toward the carrot (+x), then it walks.
         for _ in 0..30 {
@@ -4545,6 +4570,18 @@ mod tests {
             assert!(
                 (end.x - 300.0).abs() <= 50.0 && (end.z - 300.0).abs() <= 50.0,
                 "{end:?}"
+            );
+            // The flight wrote the phase word's size class (0 + 3) and the
+            // way out stop at three cells and the flat end test at its
+            // radius.
+            assert_eq!(
+                brain.plan_goal,
+                crate::route::PlanGoal {
+                    size: 3,
+                    accept: 30,
+                    test: crate::route::GoalTest::Flat,
+                    radius_cm: 150.0,
+                }
             );
         }
         for _ in 0..25 {
