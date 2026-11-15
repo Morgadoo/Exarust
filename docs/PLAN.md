@@ -2827,3 +2827,5 @@ the main unit timer table now runs once a frame; the GUI work (tooltip, arrow re
 
 to verify next: the saves slot kind mapping (the assembly name builder maps kind 1 to the save file and kind 2 to the checkpoint, which Exarust may have inverted), and the level-exit save keeping the old level position.
 
+comparison tools for Phase C: --env-seed fixes the outdoor sun and weather seed (three arenao4 runs in one grid within 0.03 percent); --new-game story starts a session through the real session begin, so a new slot and its first save land in a scratch folder; exa-tool picdiff compares two pictures with a noise floor; a retail capture command turns a pose list into retail and Exarust shots and diffs (its retail half waits for a scratch retail profile).
+
