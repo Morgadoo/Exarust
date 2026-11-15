@@ -677,14 +677,100 @@ impl InventoryLayout {
     }
 }
 
-/// The journal constructor's two records, as stored: New, and Erase placed
-/// after it by an anchor. The text box is a child form, not a record.
-fn journal_records() -> Vec<Control> {
-    vec![
-        button_record(4, 6, 104, "New"),
-        button_record(-0x7ff9, -0x8000, 104, "Erase"),
-    ]
+/// The journal's text box (the original's text box child of the journal
+/// form, [`exa_ui::text_box::TextBox`]): its text, caret, selection and
+/// scroll, and the held form the window manager hits, focuses and scrolls
+/// (its scroll bar and the wheel). While the window manager's focus is on
+/// it, the keys type into it ([`journal_typing`]).
+#[derive(Debug, Clone)]
+pub struct JournalBox {
+    pub text: exa_ui::text_box::TextBox,
+    /// The held form in [`GameScreens::task`], a child of the journal.
+    pub form: FormId,
+    /// The held form's committed style word (its caret bit) and state word
+    /// (its caret-lit bit), and the GUI's shared caret blink counter.
+    pub style: u32,
+    pub state: u32,
+    pub blink: u32,
+    /// The box had the window manager's focus last frame.
+    pub focused: bool,
+    /// A left press on the text: where and when, until the drag threshold
+    /// or the release.
+    pub press: Option<((i32, i32), u32)>,
 }
+
+impl JournalBox {
+    /// A screen point in the box's scrolled client coordinates: the form's
+    /// local point taken into its content ([`exa_ui::form::FormFrame`]: less
+    /// the client's inset, plus the drawn scroll's offset).
+    fn content_point(&self, task: &GuiTask, at: (i32, i32)) -> Option<(i32, i32)> {
+        let form = task.form(self.form)?.base()?;
+        let frame = exa_ui::form::FormFrame {
+            x: form.bounds.left,
+            y: form.bounds.top,
+            client: form.client,
+            content: (form.client.width(), self.text.content_height),
+            scroll: (0.0, self.text.scroll),
+            attributes: form.attributes,
+        };
+        Some(frame.local_to_content((at.0 - form.bounds.left, at.1 - form.bounds.top)))
+    }
+
+    /// Whether a screen point is on the box's client (not its scroll bar).
+    fn over_text(&self, task: &GuiTask, at: (i32, i32)) -> bool {
+        task.form(self.form)
+            .and_then(|f| f.base())
+            .is_some_and(|form| {
+                let (lx, ly) = (at.0 - form.bounds.left, at.1 - form.bounds.top);
+                lx >= form.client.left
+                    && lx < form.client.right
+                    && ly >= form.client.top
+                    && ly < form.client.bottom
+            })
+    }
+
+    /// The caret's restart (the form's caret-lit bit set and the blink
+    /// counter zeroed), as a press or a key does it.
+    fn light_caret(&mut self) {
+        self.state |= exa_ui::form::state::CARET_LIT;
+        self.blink = 0;
+        self.text.focused = true;
+    }
+}
+
+/// The journal constructor's three records, as stored (the opener passes
+/// the table's last index, 2): New, Erase placed after it by an anchor,
+/// and the entry list, a combo box on the next row whose caption is the
+/// selected entry's title. All three have callbacks (add, erase, the
+/// list's change). The text box is a child form, not a record.
+fn journal_records() -> Vec<Control> {
+    let mut new = button_record(4, 6, 104, "New");
+    new.reports = true;
+    let mut erase = button_record(-0x7ff9, -0x8000, 104, "Erase");
+    erase.reports = true;
+    let height = exa_ui::controls::extended_class(exa_ui::controls::COMBO_BOX)
+        .map_or(0, |class| class.size.1);
+    let mut list = Control::new(
+        exa_ui::controls::COMBO_BOX,
+        4,
+        -0x7ff9,
+        exa_ui::game_gui::JOURNAL_LIST_WIDTH,
+        height,
+    );
+    list.style = exa_ui::game_gui::JOURNAL_LIST_STYLE;
+    list.text = exa_ui::game_gui::NEW_ENTRY.as_bytes().to_vec();
+    list.reports = true;
+    vec![new, erase, list]
+}
+
+/// The window manager's word for a left press (the left button's bit and
+/// the press bit 0x1000).
+const JOURNAL_PRESS: u32 = 0x1001;
+
+/// The journal's records: New (0), Erase (1) and the entry list (2).
+pub const JOURNAL_NEW: usize = 0;
+pub const JOURNAL_ERASE: usize = 1;
+pub const JOURNAL_LIST: usize = 2;
 
 /// The control records a screen's form carries, laid out by the control
 /// layout pass inside the form's client (inset by `spacing`) and moved to
@@ -733,8 +819,11 @@ pub struct GameScreens {
     pub open: Vec<OpenScreen>,
     pub journal: Journal,
     pub containers: OpenContainers,
-    /// The journal's text box, as it would hold the selected entry.
+    /// The journal text box's text, as the selected entry's store takes it
+    /// (the box's bytes through the ANSI code page).
     pub journal_text: String,
+    /// The open journal's text box.
+    pub journal_box: Option<JournalBox>,
     /// The player's inventory place, kept from its last close (the
     /// original keeps one; its writer is outside this unit).
     pub inventory_place: Option<(i32, i32)>,
@@ -786,6 +875,7 @@ impl Default for GameScreens {
             journal: Journal::default(),
             containers: OpenContainers::default(),
             journal_text: String::new(),
+            journal_box: None,
             inventory_place: None,
             inventory_unit: 4,
             journal_unit: 4,
@@ -814,11 +904,19 @@ impl GameScreens {
 
     /// The screen the window manager focuses.
     pub fn focused(&self) -> Option<GameScreen> {
-        let active = self.task.active?;
+        let active = self.task.root_of(self.task.active?);
         self.open
             .iter()
             .find(|screen| screen.form == active)
             .map(|screen| screen.kind)
+    }
+
+    /// The window manager's focus is on the journal's text box, which then
+    /// takes the keys.
+    pub fn journal_box_focused(&self) -> bool {
+        self.journal_box
+            .as_ref()
+            .is_some_and(|b| self.task.active == Some(b.form))
     }
 
     fn root_client(&self) -> ClientRect {
@@ -885,6 +983,244 @@ impl GameScreens {
     /// The open inventory's layout, at the unit it was opened at.
     pub fn inventory_layout(&self) -> InventoryLayout {
         InventoryLayout::at(self.inventory_unit)
+    }
+
+    /// The journal opener's text box: a held form at the layout's child
+    /// (no border, the vertical scroll bar) and the box laid out in its
+    /// client at the journal's unit ([`exa_ui::game_gui::journal_text_box`]).
+    fn open_journal_box(&mut self, journal: FormId) {
+        let layout = ScreenLayout::journal(self.journal_unit);
+        let Some(bounds) = self.task.form(journal).map(|f| f.bounds()) else {
+            return;
+        };
+        let rect = layout.child_at(0, bounds);
+        let words = gui_paint::JOURNAL_BOX_WORDS;
+        let committed = gui_paint::commit_words(words.style, words.attributes, false);
+        let client = gui_paint::scrolling_client(rect, 0, words.attributes);
+        let mut form = BaseForm::new(
+            rect,
+            self.journal_unit,
+            (committed.style, committed.attributes, committed.state),
+            client,
+        );
+        form.parent = Some(journal);
+        let owner = layout.client(bounds);
+        form.in_owner = (rect.left - owner.left, rect.top - owner.top);
+        form.owner_client = (owner.width(), owner.height());
+        form.scroll = Some(exa_ui::base_form::FormScroll {
+            fraction: 0.0,
+            step: 0.0,
+            content: 0,
+        });
+        let form = self.task.add(Box::new(form));
+        let fonts =
+            exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(self.journal_unit));
+        let text =
+            exa_ui::game_gui::journal_text_box(self.journal_unit, fonts.main, fonts.small, client);
+        self.journal_box = Some(JournalBox {
+            text,
+            form,
+            style: committed.style,
+            state: committed.state,
+            blink: 0,
+            focused: false,
+            press: None,
+        });
+    }
+
+    /// The journal's select (its open, the list's pick, New and Erase): the
+    /// list's caption is the selected entry's title and the text box shows
+    /// its text, laid out and scrolled to the top.
+    pub fn journal_selected(&mut self) {
+        let state = self.journal.list_state();
+        self.journal_text = state.text.clone();
+        if let Some(form) = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form_mut(screen.form))
+            .and_then(|f| f.base_mut())
+            && let Some(list) = form.records.get_mut(JOURNAL_LIST)
+        {
+            list.text = crate::os_clipboard::text_to_ansi(&state.title);
+        }
+        if let Some(text_box) = self.journal_box.as_mut() {
+            text_box
+                .text
+                .set_text(&crate::os_clipboard::text_to_ansi(&state.text), None);
+        }
+        self.sync_journal_box();
+    }
+
+    /// A journal record's callback: New stores the text, appends a "New
+    /// Entry" and selects it, then focuses the third control (the list);
+    /// Erase removes the selected entry (or blanks the only one) and
+    /// selects what is left. The list's own change is not wired (its drop
+    /// list does not open on the journal).
+    pub fn journal_record(&mut self, record: usize) {
+        match record {
+            JOURNAL_NEW => {
+                let text = self.journal_text.clone();
+                self.journal.add_entry(&text);
+                self.journal_selected();
+                if let Some(screen) = self.find(GameScreen::Journal) {
+                    self.task
+                        .focus_set(Some(screen.form), exa_ui::game_gui::JOURNAL_FOCUS);
+                }
+                info!("gui: journal entry {} added", self.journal.entries.len());
+            }
+            JOURNAL_ERASE => {
+                self.journal.delete_entry();
+                self.journal_selected();
+                info!(
+                    "gui: journal entry erased, {} left",
+                    self.journal.entries.len()
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps the journal's text box on its journal (a title drag moves the
+    /// journal; the box's place in it stays) and hands the box's lines to
+    /// its form's scroll bar: the content height and one line's step, and
+    /// the box's scroll target as the bar's fraction.
+    pub fn sync_journal_box(&mut self) {
+        let Some(journal) = self.find(GameScreen::Journal) else {
+            return;
+        };
+        let Some(bounds) = self.task.form(journal.form).map(|f| f.bounds()) else {
+            return;
+        };
+        let rect = ScreenLayout::journal(self.journal_unit).child_at(0, bounds);
+        let Some(text_box) = self.journal_box.as_ref() else {
+            return;
+        };
+        let (content, step, target) = (
+            text_box.text.content_height,
+            text_box.text.scroll_step,
+            text_box.text.scroll_target,
+        );
+        if let Some(form) = self.task.form_mut(text_box.form).and_then(|f| f.base_mut()) {
+            if form.bounds != rect {
+                let (dx, dy) = (rect.left - form.bounds.left, rect.top - form.bounds.top);
+                form.bounds = rect;
+                form.in_owner = (form.in_owner.0 + dx, form.in_owner.1 + dy);
+            }
+            if let Some(scroll) = form.scroll.as_mut() {
+                scroll.content = content;
+                scroll.step = step;
+                scroll.fraction = target;
+            }
+        }
+    }
+
+    /// The journal box's pointer after the window manager's frame: the
+    /// focus moving onto it or off it (the box's focus slot and the form's
+    /// focus change), a left press on its text placing the caret, a held
+    /// press past the drag threshold starting the box's drag, the release
+    /// ending it, the scroll bar's or the wheel's fraction becoming the
+    /// box's scroll target, and the frame's tick (the caret's blink and the
+    /// drag's follow).
+    pub fn journal_pointer(
+        &mut self,
+        frame: &crate::form_input::PointerFrame,
+        held: bool,
+        shift: bool,
+    ) {
+        let focused_now = self.journal_box_focused();
+        let task = &mut self.task;
+        let Some(text_box) = self.journal_box.as_mut() else {
+            return;
+        };
+        let events = task
+            .form_mut(text_box.form)
+            .and_then(|f| f.base_mut())
+            .map(|f| std::mem::take(&mut f.events))
+            .unwrap_or_default();
+        for event in events {
+            if let exa_ui::base_form::BaseEvent::Scrolled(f) = event {
+                let delta = f - text_box.text.scroll_target;
+                text_box.text.scroll_by(delta);
+            }
+        }
+        if focused_now != text_box.focused {
+            text_box.focused = focused_now;
+            let word = if focused_now { u32::MAX } else { 0 };
+            let current = if focused_now { 0 } else { u32::MAX };
+            text_box.text.set_focus(word);
+            exa_ui::form::focus_change(&mut [], &mut text_box.state, current, word);
+            text_box.blink = 0;
+        }
+        let mods = exa_ui::text_box::Modifiers { shift, ctrl: false };
+        if let Some(at) = frame.at {
+            if frame.pressed && focused_now && text_box.over_text(task, at) {
+                if let Some((x, y)) = text_box.content_point(task, at) {
+                    text_box.text.press(x, y, JOURNAL_PRESS, false, mods);
+                    text_box.light_caret();
+                    text_box.press = Some((at, frame.now));
+                }
+            } else if held
+                && let Some((from, stamp)) = text_box.press
+                && !text_box.text.dragging
+            {
+                let elapsed = frame.now.wrapping_sub(stamp) as i32;
+                let limit = exa_ui::gui_core::drag_threshold(elapsed, task.pointer.limit);
+                if (at.0 - from.0).abs() > limit || (at.1 - from.1).abs() > limit {
+                    let (x, y) = text_box.content_point(task, at).unwrap_or((0, 0));
+                    text_box.text.press(
+                        x,
+                        y,
+                        JOURNAL_PRESS | exa_ui::text_box::pointer::DRAG,
+                        false,
+                        mods,
+                    );
+                }
+            }
+            if text_box.text.dragging
+                && let Some((x, y)) = text_box.content_point(task, at)
+            {
+                text_box.text.tick(x, y, frame.now);
+            }
+        }
+        if (frame.released || !held) && (text_box.press.take().is_some() || text_box.text.dragging)
+        {
+            text_box.text.release();
+        }
+        if text_box.focused {
+            exa_ui::form::caret_blink(text_box.style, &mut text_box.blink, &mut text_box.state);
+            text_box.text.focused = text_box.state & exa_ui::form::state::CARET_LIT != 0;
+        }
+        text_box.text.ease_scroll();
+    }
+
+    /// A key for the focused journal box: `key` the original's key code
+    /// (or, `typed`, a typed byte). The text is stored as the selected
+    /// entry's when the box changed; Tab answers true (the box's callback
+    /// turns combat mode on).
+    pub fn journal_key(
+        &mut self,
+        key: u32,
+        typed: bool,
+        mods: exa_ui::text_box::Modifiers,
+        clipboard: &mut dyn exa_ui::text_box::Clipboard,
+    ) -> bool {
+        let Some(text_box) = self.journal_box.as_mut() else {
+            return false;
+        };
+        let events = text_box.text.key(key, typed, mods, clipboard);
+        let mut tab = false;
+        for event in events {
+            match event {
+                exa_ui::text_box::TextBoxEvent::Changed => {
+                    text_box.light_caret();
+                    self.journal_text =
+                        crate::os_clipboard::ansi_to_text(text_box.text.text.as_bytes());
+                }
+                exa_ui::text_box::TextBoxEvent::Tab => tab = true,
+                _ => {}
+            }
+        }
+        self.sync_journal_box();
+        tab
     }
 
     /// The player's inventory, as the inventory key asks: an active one
@@ -1026,11 +1362,13 @@ impl GameScreens {
                 self.journal.ensure_entry();
                 self.journal.select(0);
                 self.journal_text = self.journal.entries[0].text.clone();
-                self.push(
+                let form = self.push(
                     GameScreen::Journal,
                     GuiRect::new(x, y, width, height),
                     self.journal_unit,
                 );
+                self.open_journal_box(form);
+                self.journal_selected();
             }
             (ScreenAction::Focused, Some(screen)) => {
                 self.task.focus_set(Some(screen.form), NO_CONTROL);
@@ -1230,7 +1568,7 @@ impl GameScreens {
     /// kind is closed when there are several (the loot windows of two
     /// bodies).
     pub fn close(&mut self, kind: GameScreen) -> bool {
-        let focused = self.task.active;
+        let focused = self.task.active.map(|form| self.task.root_of(form));
         let index = self
             .open
             .iter()
@@ -1255,6 +1593,12 @@ impl GameScreens {
         self.task.delete_doomed();
         match screen.kind {
             GameScreen::Journal => {
+                if let Some(text_box) = self.journal_box.take()
+                    && let Some(form) = self.task.form_mut(text_box.form)
+                {
+                    form.close(0);
+                    self.task.delete_doomed();
+                }
                 self.journal.store_text(&self.journal_text);
                 self.journal.place = place;
             }
@@ -1526,6 +1870,13 @@ impl Plugin for GameScreensPlugin {
             .add_systems(
                 Update,
                 (close_on_right_release, close_changed_loot_windows).after(open_requested_screens),
+            )
+            .add_message::<bevy::input::keyboard::KeyboardInput>()
+            .add_systems(
+                Update,
+                journal_typing
+                    .before(crate::hotkeys::HotkeySet)
+                    .before(open_requested_screens),
             )
             .add_systems(
                 Update,
@@ -2145,6 +2496,7 @@ pub struct DebugRecordHint(pub Option<String>);
 #[allow(clippy::too_many_arguments)]
 fn screens_pointer(
     mouse: Option<Res<ButtonInput<MouseButton>>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     windows: Query<&Window, With<PrimaryWindow>>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
@@ -2175,6 +2527,7 @@ fn screens_pointer(
     let now = time.elapsed().as_millis() as u32;
     let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
     let screens = &mut *screens;
+    screens.sync_journal_box();
     let tick = crate::form_input::drive(&mut screens.task, &frame, timers.as_deref_mut());
     crate::form_input::ShownTooltip::follow(
         &mut screens.tooltip,
@@ -2202,9 +2555,184 @@ fn screens_pointer(
                         screens.close_at(index);
                     }
                 }
+                exa_ui::base_form::BaseEvent::Changed(record) if kind == GameScreen::Journal => {
+                    screens.journal_record(record);
+                }
                 _ => {}
             }
         }
+    }
+    let shift = keys
+        .as_deref()
+        .is_some_and(|k| k.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]));
+    screens.journal_pointer(&frame, mouse.pressed(MouseButton::Left), shift);
+}
+
+/// The text box's key code for a key-down (the virtual-key codes its key
+/// slot switches on).
+fn text_box_key(code: KeyCode) -> Option<u32> {
+    use exa_ui::text_box as tb;
+    Some(match code {
+        KeyCode::Backspace => tb::KEY_BACK,
+        KeyCode::Tab => tb::KEY_TAB,
+        KeyCode::Enter | KeyCode::NumpadEnter => tb::KEY_RETURN,
+        KeyCode::PageUp => tb::KEY_PRIOR,
+        KeyCode::PageDown => tb::KEY_NEXT,
+        KeyCode::End => tb::KEY_END,
+        KeyCode::Home => tb::KEY_HOME,
+        KeyCode::ArrowLeft => tb::KEY_LEFT,
+        KeyCode::ArrowUp => tb::KEY_UP,
+        KeyCode::ArrowRight => tb::KEY_RIGHT,
+        KeyCode::ArrowDown => tb::KEY_DOWN,
+        KeyCode::Delete => tb::KEY_DELETE,
+        KeyCode::KeyC => tb::KEY_C,
+        KeyCode::KeyV => tb::KEY_V,
+        KeyCode::KeyX => tb::KEY_X,
+        _ => return None,
+    })
+}
+
+/// The keys of the frame while the window manager's focus is on the
+/// journal's text box (the pointer over it: the focus follows the
+/// pointer): each key-down goes to the box's key slot, then the character
+/// it typed as a typed byte (not with Ctrl; through the ANSI code page, a
+/// character the page lacks dropped). Tab is the box's callback: combat
+/// mode on, whose entry closes the screens. Runs before the player's
+/// hotkeys, which the box's focus keeps from the keys
+/// ([`GameScreens::journal_box_focused`]).
+pub fn journal_typing(
+    mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    mut screens: ResMut<GameScreens>,
+    mut clipboard: Option<ResMut<crate::os_clipboard::SystemClipboard>>,
+    mut steps: Option<ResMut<crate::flow::FlowSteps>>,
+) {
+    use bevy::input::keyboard::Key;
+    let events: Vec<_> = typed.read().cloned().collect();
+    if !screens.journal_box_focused() {
+        return;
+    }
+    let held = |codes: [KeyCode; 2]| keys.as_deref().is_some_and(|k| k.any_pressed(codes));
+    let mods = exa_ui::text_box::Modifiers {
+        shift: held([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+        ctrl: held([KeyCode::ControlLeft, KeyCode::ControlRight]),
+    };
+    let mut presses: Vec<(u32, bool)> = Vec::new();
+    let mut sent = Vec::new();
+    for event in events.iter().filter(|e| e.state.is_pressed()) {
+        if let Some(code) =
+            text_box_key(event.key_code).filter(|&k| mods.ctrl || !matches!(k, 0x43 | 0x56 | 0x58))
+        {
+            sent.push(event.key_code);
+            presses.push((code, false));
+        }
+        if mods.ctrl {
+            continue;
+        }
+        let text = match &event.logical_key {
+            Key::Character(text) => text.to_string(),
+            Key::Space => " ".to_string(),
+            _ => continue,
+        };
+        for c in text.chars() {
+            if let Some(byte) = crate::os_clipboard::char_ansi(c).filter(|&b| b >= 0x20) {
+                presses.push((u32::from(byte), true));
+            }
+        }
+    }
+    // Scripted key-downs (`--press`) come without a keyboard message: a
+    // letter, digit or space also types its character (capital with
+    // Shift), as the system's character message would.
+    for code in keys.iter().flat_map(|k| k.get_just_pressed()) {
+        if sent.contains(code) {
+            continue;
+        }
+        if let Some(key) =
+            text_box_key(*code).filter(|&k| mods.ctrl || !matches!(k, 0x43 | 0x56 | 0x58))
+        {
+            presses.push((key, false));
+        } else if events.is_empty()
+            && !mods.ctrl
+            && let Some(byte) = scripted_char(*code, mods.shift)
+        {
+            presses.push((u32::from(byte), true));
+        }
+    }
+    let mut none = NoClipboard;
+    for (key, is_typed) in presses {
+        let board: &mut dyn exa_ui::text_box::Clipboard = match clipboard.as_deref_mut() {
+            Some(board) => board,
+            None => &mut none,
+        };
+        if screens.journal_key(key, is_typed, mods, board) {
+            info!("gui: Tab in the journal's text box turns combat mode on");
+            if let Some(steps) = steps.as_mut() {
+                steps.steps.push(crate::flow::Step::CombatMode(true));
+            }
+        }
+    }
+}
+
+/// The character a scripted key-down types: a letter (capital with
+/// Shift), a digit or a space.
+fn scripted_char(code: KeyCode, shift: bool) -> Option<u8> {
+    let letters = [
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyC,
+        KeyCode::KeyD,
+        KeyCode::KeyE,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyI,
+        KeyCode::KeyJ,
+        KeyCode::KeyK,
+        KeyCode::KeyL,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyQ,
+        KeyCode::KeyR,
+        KeyCode::KeyS,
+        KeyCode::KeyT,
+        KeyCode::KeyU,
+        KeyCode::KeyV,
+        KeyCode::KeyW,
+        KeyCode::KeyX,
+        KeyCode::KeyY,
+        KeyCode::KeyZ,
+    ];
+    let digits = [
+        KeyCode::Digit0,
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ];
+    if let Some(i) = letters.iter().position(|&k| k == code) {
+        return Some(if shift { b'A' } else { b'a' } + i as u8);
+    }
+    if let Some(i) = digits.iter().position(|&k| k == code) {
+        return Some(b'0' + i as u8);
+    }
+    (code == KeyCode::Space).then_some(b' ')
+}
+
+/// No system clipboard: copies are dropped and pastes find nothing.
+struct NoClipboard;
+
+impl exa_ui::text_box::Clipboard for NoClipboard {
+    fn set(&mut self, _text: &[u8]) {}
+
+    fn get(&mut self) -> Option<Vec<u8>> {
+        None
     }
 }
 
@@ -2216,6 +2744,7 @@ pub(crate) fn close_on_right_release(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut screens: ResMut<GameScreens>,
     card: Option<Res<crate::item_card::CardView>>,
+    scripted: Option<Res<exa_ui::ScriptedPointer>>,
 ) {
     let Some(buttons) = buttons else {
         return;
@@ -2226,7 +2755,12 @@ pub(crate) fn close_on_right_release(
     let Ok(window) = windows.single() else {
         return;
     };
-    let Some(pointer) = window.cursor_position() else {
+    // The scripted pointer when one is set (as the forms read it).
+    let pointer = match scripted.as_deref() {
+        Some(scripted) => scripted.position(window),
+        None => window.cursor_position(),
+    };
+    let Some(pointer) = pointer else {
         return;
     };
     let pointer = pointer * window.scale_factor();
@@ -2238,7 +2772,9 @@ pub(crate) fn close_on_right_release(
     {
         return;
     }
-    let active = screens.task.active;
+    // A child form (the journal's text box) hands the right-button word
+    // to its parent: the screen holding the focus closes.
+    let active = screens.task.active.map(|form| screens.task.root_of(form));
     let Some(screen) = screens
         .open
         .iter()
@@ -2318,12 +2854,38 @@ fn paint_controls(
     palette: &exa_ui::skin::SkinPalette,
     font: &exa_ui::gui_font::GuiFont,
     size: Option<(u16, u16)>,
+    glyphs: Option<&exa_ui::GuiLevelState>,
     painted: &mut gui_paint::Painted,
 ) {
     for control in controls {
         let rect = GuiRect::new(control.x, control.y, control.w, control.h);
         let text = String::from_utf8_lossy(&control.text);
         let layers = match control.class {
+            // The combo box: the skin's panel behind it, then its own front
+            // (the arrow and the caption).
+            exa_ui::controls::COMBO_BOX => {
+                let mut layers =
+                    gui_paint::paint_panel(rect, unit, palette, gui_paint::FORM_ATTRIBUTES, 0);
+                layers.layers.extend(
+                    gui_paint::paint_combo_front(
+                        rect,
+                        gui_paint::ComboWords {
+                            style: control.style,
+                            state: control.state,
+                            pad: control.margin,
+                            text: &control.text,
+                            view: None,
+                        },
+                        unit,
+                        palette,
+                        font,
+                        size,
+                        glyphs,
+                    )
+                    .layers,
+                );
+                layers
+            }
             1 => gui_paint::paint_line_button(
                 rect,
                 gui_paint::ButtonWords {
@@ -2473,7 +3035,7 @@ fn paint_inventory(
     painted.layers.extend(outer.over());
     // The form's own records, with the hover bits the pointer gave them.
     let controls = records.map_or_else(|| layout.controls_at(bounds), <[Control]>::to_vec);
-    paint_controls(&controls, unit, &palette, &font, size, &mut painted);
+    paint_controls(&controls, unit, &palette, &font, size, None, &mut painted);
     // The rating dots draw in the label group's seventh ink.
     if let Some(doll) = doll
         && let (Some(value), Some(sheet)) = (doll.dots, doll.sheet)
@@ -2530,12 +3092,27 @@ pub(crate) fn clear_layer(rect: GuiRect) -> exa_ui::gui_draw::GuiLayer {
     exa_ui::gui_draw::GuiLayer::new(batch, exa_ui::gui_draw::LayerTexture::None)
 }
 
-/// The journal's frame, its New and Erase button records and the selected
-/// entry's text through the text box's own draw.
+/// What the journal paints inside its frame: its records as its form
+/// holds them (else as laid out), its text box (else the selected entry's
+/// text in a box built for the paint), the box form's hover word and the
+/// GUI level's glyph atlas (the list's arrow).
+pub(crate) struct JournalPaint<'a> {
+    pub journal: &'a Journal,
+    pub layout: &'a ScreenLayout,
+    pub records: Option<&'a [Control]>,
+    pub text_box: Option<&'a JournalBox>,
+    pub box_hover: i32,
+    pub glyphs: Option<&'a exa_ui::GuiLevelState>,
+}
+
+/// The journal's frame, its records (New, Erase and the entry list), and
+/// its text box: the held form's panel frame and scroll bar, then the
+/// text through the box's own draw (selection, glyphs in the small font,
+/// moved up by the drawn scroll and kept inside the client) and the caret
+/// while it is lit.
 fn paint_journal(
     bounds: GuiRect,
-    journal: &Journal,
-    layout: &ScreenLayout,
+    paint: JournalPaint<'_>,
     unit: i32,
     textures: &GuiTextures,
     hover_mark: i32,
@@ -2544,13 +3121,14 @@ fn paint_journal(
     let level = exa_ui::gui_font::level_for_unit(unit);
     let fonts = exa_ui::gui_font::gui_level(level);
     let (font, size) = screen_font(fonts.main, textures);
+    let layout = paint.layout;
     // The game skin's form draw with the words the show commits: a
     // top-level form, so titled, shadowed and corner-framed.
     let mut painted = gui_paint::Painted {
         client: layout.client(bounds),
         ..Default::default()
     };
-    let (mut form, _) = gui_paint::paint_top_form_marked(
+    let (mut form, committed) = gui_paint::paint_top_form_marked(
         bounds,
         unit,
         &palette,
@@ -2560,52 +3138,90 @@ fn paint_journal(
         hover_mark,
     );
     painted.layers.extend(form.under());
-    let controls = layout.controls_at(bounds);
-    paint_controls(&controls, unit, &palette, &font, size, &mut painted);
-    let text = layout.child_at(0, bounds);
-    let box_client = exa_ui::form::ClientRect {
-        left: text.left,
-        top: text.top,
-        right: text.right,
-        bottom: text.bottom,
+    let controls = match paint.records {
+        Some(records) => records.to_vec(),
+        None => layout.controls_at(bounds),
     };
-    let mut text_box = exa_ui::text_box::TextBox::new(unit, fonts.main, fonts.small, box_client);
-    text_box.read_only = true;
-    let text = journal
-        .entries
-        .get(journal.current)
-        .map(|entry| entry.text.as_bytes())
-        .unwrap_or(b"");
-    text_box.set_text(text, None);
+    paint_controls(
+        &controls,
+        unit,
+        &palette,
+        &font,
+        size,
+        paint.glyphs,
+        &mut painted,
+    );
+    let rect = layout.child_at(0, bounds);
+    let fallback;
+    let (text_box, fraction) = match paint.text_box {
+        Some(journal_box) => (&journal_box.text, journal_box.text.scroll_target),
+        None => {
+            let client =
+                gui_paint::scrolling_client(rect, 0, gui_paint::JOURNAL_BOX_WORDS.attributes);
+            let mut text_box =
+                exa_ui::game_gui::journal_text_box(layout.unit, fonts.main, fonts.small, client);
+            let text = paint
+                .journal
+                .entries
+                .get(paint.journal.current)
+                .map(|entry| crate::os_clipboard::text_to_ansi(&entry.text))
+                .unwrap_or_default();
+            text_box.set_text(&text, None);
+            fallback = text_box;
+            (&fallback, 0.0)
+        }
+    };
+    let mut frame = gui_paint::paint_held_scrolling_in(
+        rect,
+        0,
+        layout.client(bounds),
+        committed.attributes,
+        unit,
+        &palette,
+        1.0,
+        gui_paint::JOURNAL_BOX_WORDS,
+        fraction,
+        paint.box_hover,
+    );
+    painted.layers.extend(frame.under());
+    let client = text_box.client;
+    let origin = (rect.left + client.left, rect.top + client.top);
+    let (text_font, text_size) = screen_font(text_box.font, textures);
     let inks = exa_ui::text_layout::TextInks {
         text: palette.text[6],
         tag_alpha: 255,
         selection: palette.highlight[2],
         slant: font.slant,
     };
+    // The drawn scroll's offset, as the form's content point takes it.
+    let shift = exa_ui::form::FormFrame {
+        x: rect.left,
+        y: rect.top,
+        client,
+        content: (client.width(), text_box.content_height),
+        scroll: (0.0, text_box.scroll),
+        attributes: gui_paint::JOURNAL_BOX_WORDS.attributes,
+    }
+    .scroll_offset()
+    .1;
+    let (top, bottom) = (origin.1, origin.1 + client.height());
     let draw = text_box.draw(&inks, &|_| None);
     if !draw.selections.is_empty() {
         let mut batch = SkinBatch::new();
         batch.select(1, 0, false);
-        for (rect, ink) in &draw.selections {
+        for (r, ink) in &draw.selections {
+            let y0 = (origin.1 + r[1] - shift).max(top);
+            let y1 = (origin.1 + r[1] + r[3] - shift).min(bottom);
+            if y1 <= y0 {
+                continue;
+            }
+            let (x0, x1) = ((origin.0 + r[0]) as f32, (origin.0 + r[0] + r[2]) as f32);
             batch.set_ink(*ink);
             batch.begin();
-            batch.vertex(
-                (box_client.left + rect[0]) as f32,
-                (box_client.top + rect[1]) as f32,
-            );
-            batch.vertex(
-                (box_client.left + rect[0]) as f32,
-                (box_client.top + rect[1] + rect[3]) as f32,
-            );
-            batch.vertex(
-                (box_client.left + rect[0] + rect[2]) as f32,
-                (box_client.top + rect[1] + rect[3]) as f32,
-            );
-            batch.vertex(
-                (box_client.left + rect[0] + rect[2]) as f32,
-                (box_client.top + rect[1]) as f32,
-            );
+            batch.vertex(x0, y0 as f32);
+            batch.vertex(x0, y1 as f32);
+            batch.vertex(x1, y1 as f32);
+            batch.vertex(x1, y0 as f32);
             batch.end_quads();
         }
         painted.push(exa_ui::gui_draw::GuiLayer::new(
@@ -2613,20 +3229,33 @@ fn paint_journal(
             exa_ui::gui_draw::LayerTexture::None,
         ));
     }
-    if let Some(texture) = size {
-        let mut glyphs = draw.glyphs.clone();
-        for glyph in &mut glyphs {
-            glyph.x += box_client.left;
-            glyph.y += box_client.top;
+    if let Some(texture) = text_size {
+        let inside = |glyph: &exa_ui::text_layout::GlyphQuad| {
+            let mut glyph = *glyph;
+            glyph.x += origin.0;
+            glyph.y += origin.1 - shift;
+            (glyph.y >= top && glyph.y + text_font.line_height <= bottom).then_some(glyph)
+        };
+        let mut glyphs: Vec<_> = draw.glyphs.iter().filter_map(inside).collect();
+        if let Some(caret) = text_box.caret_draw(&inks, &|_| None) {
+            let quad = exa_ui::text_layout::GlyphQuad {
+                byte: exa_ui::text_layout::CARET_GLYPH,
+                x: caret.x,
+                y: caret.y,
+                slant: caret.slant,
+                ink: inks.text,
+            };
+            glyphs.extend(inside(&quad));
         }
         if !glyphs.is_empty() {
-            let batch = exa_ui::gui_draw::glyph_batch(&font, &glyphs, texture, 1.0);
+            let batch = exa_ui::gui_draw::glyph_batch(&text_font, &glyphs, texture, 1.0);
             painted.push(exa_ui::gui_draw::GuiLayer::new(
                 batch,
-                exa_ui::gui_draw::LayerTexture::Named(font.texture),
+                exa_ui::gui_draw::LayerTexture::Named(text_font.texture),
             ));
         }
     }
+    painted.layers.extend(frame.over());
     painted.layers.extend(form.over());
     painted
 }
@@ -2791,6 +3420,7 @@ pub(crate) fn draw_screens(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
     mut doll: Option<ResMut<crate::doll_view::InventoryDoll>>,
+    level: Option<Res<exa_ui::GuiLevelState>>,
 ) {
     frames.clear();
     if menu.is_some_and(|menu| menu.open) {
@@ -2839,14 +3469,23 @@ pub(crate) fn draw_screens(
                 }
                 painted
             }
-            GameScreen::Journal => paint_journal(
-                bounds,
-                &screens.journal,
-                &ScreenLayout::journal(screens.journal_unit),
-                unit,
-                textures,
-                hover,
-            ),
+            GameScreen::Journal => {
+                let text_box = screens.journal_box.as_ref();
+                paint_journal(
+                    bounds,
+                    JournalPaint {
+                        journal: &screens.journal,
+                        layout: &ScreenLayout::journal(screens.journal_unit),
+                        records: records.as_deref(),
+                        text_box,
+                        box_hover: text_box.map_or(0, |b| screens.hover_mark(b.form)),
+                        glyphs: level.as_deref(),
+                    },
+                    unit,
+                    textures,
+                    hover,
+                )
+            }
             GameScreen::Loot => match screens.loot.iter().find(|w| w.form == screen.form) {
                 Some(window) => paint_loot(bounds, unit, textures, window, Some(&mut icons), hover),
                 None => continue,
@@ -3022,10 +3661,12 @@ mod tests {
         let bounds = GuiRect::new(4, 36, 244, 518);
         let (left, top) = client_of(bounds, gui_paint::FORM_SPACING);
         let controls = screen_controls(GameScreen::Journal, bounds);
-        assert_eq!(controls.len(), 2);
+        assert_eq!(controls.len(), 3);
         let place = |c: &Control| (c.x - left, c.y - top, c.w, c.h);
         assert_eq!(place(&controls[0]), (4, 20, 104, 24));
         assert_eq!(place(&controls[1]), (120, 20, 104, 24));
+        // The list on the row below the buttons (anchor 0x8007).
+        assert_eq!(place(&controls[2]), (4, 52, 220, 24));
     }
 
     #[test]
@@ -3983,10 +4624,14 @@ mod tests {
     fn the_journals_selected_text_reaches_the_font_layer() {
         use exa_ui::gui_draw::{GuiTexture, GuiTextures, LayerTexture};
         let mut textures = GuiTextures::default();
-        let font = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(4)).main;
-        textures
-            .textures
-            .insert(font.texture.into(), GuiTexture::solid([255; 4]));
+        let fonts = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(4));
+        // The text box writes in the level's small font.
+        let font = fonts.small;
+        for texture in [fonts.main.texture, fonts.small.texture] {
+            textures
+                .textures
+                .insert(texture.into(), GuiTexture::solid([255; 4]));
+        }
         textures.textures.insert(
             exa_ui::gui_draw::SKIN_TEXTURE.into(),
             GuiTexture::solid([10, 20, 30, 255]),
@@ -4007,8 +4652,14 @@ mod tests {
         };
         let painted = paint_journal(
             GuiRect::new(4, 36, 244, 518),
-            &journal,
-            &ScreenLayout::journal(4),
+            JournalPaint {
+                journal: &journal,
+                layout: &ScreenLayout::journal(4),
+                records: None,
+                text_box: None,
+                box_hover: 0,
+                glyphs: None,
+            },
             4,
             &textures,
             0,
@@ -4068,6 +4719,239 @@ mod tests {
             .map(|layer| layer.batch.primitives.len())
             .sum();
         assert!(primitives > 0);
+    }
+
+    /// An app with the screens' plugin, a 1600 × 900 window (GUI unit 5),
+    /// a scripted pointer, the flow's step list and an open journal.
+    fn journal_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<crate::flow::FlowSteps>()
+            .init_resource::<exa_ui::ScriptedPointer>()
+            .add_plugins(GameScreensPlugin);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1600, 900),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.update();
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Journal, true, true));
+        app.update();
+        (app, window)
+    }
+
+    /// The journal box's client centre and a point `dy` pixels below its
+    /// top-left corner (screen pixels).
+    fn journal_box_points(app: &App) -> ((f32, f32), (f32, f32)) {
+        let screens = app.world().resource::<GameScreens>();
+        let form = screens
+            .task
+            .form(screens.journal_box.as_ref().unwrap().form)
+            .unwrap()
+            .base()
+            .unwrap();
+        let (x0, y0) = (
+            form.bounds.left + form.client.left,
+            form.bounds.top + form.client.top,
+        );
+        (
+            (
+                (x0 + form.client.width() / 2) as f32,
+                (y0 + form.client.height() / 2) as f32,
+            ),
+            (x0 as f32 + 1.0, y0 as f32 + 2.0),
+        )
+    }
+
+    /// One frame with a mouse button pressed (or released); the frame's
+    /// press and release marks are then cleared, as the input plugin does.
+    fn button(app: &mut App, which: MouseButton, down: bool) {
+        {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            if down {
+                mouse.press(which);
+            } else {
+                mouse.release(which);
+            }
+        }
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear();
+    }
+
+    fn point(app: &mut App, at: (f32, f32)) {
+        app.world_mut().resource_mut::<exa_ui::ScriptedPointer>().0 = Some(Vec2::new(at.0, at.1));
+    }
+
+    fn type_text(app: &mut App, window: Entity, text: &str) {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+        for c in text.chars() {
+            app.world_mut().write_message(KeyboardInput {
+                key_code: KeyCode::KeyA,
+                logical_key: Key::Character(c.to_string().into()),
+                state: ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window,
+            });
+        }
+        app.update();
+    }
+
+    fn press_key(app: &mut App, window: Entity, code: KeyCode, key: bevy::input::keyboard::Key) {
+        use bevy::input::ButtonState;
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code: code,
+                logical_key: key,
+                state: ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window,
+            });
+        app.update();
+    }
+
+    /// The journal's text box takes the keys while the window manager's
+    /// focus is on it (the pointer over it): typed letters go in at the
+    /// caret, Backspace and Enter edit, and the player's hotkeys (J here)
+    /// are not reached. The close stores the typed text in the entry.
+    #[test]
+    fn the_journal_text_box_takes_typing_while_focused() {
+        use bevy::input::keyboard::Key;
+        let (mut app, window) = journal_app();
+        let (centre, _) = journal_box_points(&app);
+        // Away from the box the keys are not the box's.
+        point(&mut app, (1500.0, 800.0));
+        app.update();
+        assert!(!app.world().resource::<GameScreens>().journal_box_focused());
+        type_text(&mut app, window, "x");
+        assert_eq!(app.world().resource::<GameScreens>().journal_text, "");
+        point(&mut app, centre);
+        app.update();
+        assert!(app.world().resource::<GameScreens>().journal_box_focused());
+        type_text(&mut app, window, "Wellj");
+        press_key(&mut app, window, KeyCode::Backspace, Key::Backspace);
+        press_key(&mut app, window, KeyCode::Enter, Key::Enter);
+        type_text(&mut app, window, "dry");
+        let screens = app.world().resource::<GameScreens>();
+        assert_eq!(screens.journal_text, "Well\r\ndry");
+        assert!(
+            screens.is_open(GameScreen::Journal),
+            "J typed, not the hotkey"
+        );
+        let text_box = &screens.journal_box.as_ref().unwrap().text;
+        assert_eq!(text_box.caret, 9);
+        assert_eq!(text_box.lines, 2);
+        // The right release over the journal closes it, storing the text.
+        button(&mut app, MouseButton::Right, true);
+        button(&mut app, MouseButton::Right, false);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(!screens.is_open(GameScreen::Journal));
+        assert!(screens.journal_box.is_none());
+        assert_eq!(screens.journal.entries[0].text, "Well\r\ndry");
+    }
+
+    /// Tab in the journal's text box is its callback: combat mode on.
+    #[test]
+    fn tab_in_the_journal_box_turns_combat_mode_on() {
+        use bevy::input::keyboard::Key;
+        let (mut app, window) = journal_app();
+        let (centre, _) = journal_box_points(&app);
+        point(&mut app, centre);
+        app.update();
+        press_key(&mut app, window, KeyCode::Tab, Key::Tab);
+        let steps = &app.world().resource::<crate::flow::FlowSteps>().steps;
+        assert!(steps.contains(&crate::flow::Step::CombatMode(true)));
+    }
+
+    /// A left press on the text puts the caret under the pointer and
+    /// lights it; the caret then blinks every fifth frame and is drawn
+    /// while lit.
+    #[test]
+    fn a_press_on_the_journal_text_places_the_caret() {
+        let (mut app, window) = journal_app();
+        let (centre, corner) = journal_box_points(&app);
+        point(&mut app, centre);
+        app.update();
+        type_text(&mut app, window, "abc");
+        point(&mut app, corner);
+        app.update();
+        button(&mut app, MouseButton::Left, true);
+        {
+            let screens = app.world().resource::<GameScreens>();
+            let text_box = screens.journal_box.as_ref().unwrap();
+            assert_eq!(text_box.text.caret, 0, "the press before the first byte");
+            assert!(text_box.text.focused);
+        }
+        button(&mut app, MouseButton::Left, false);
+        let mut lit = Vec::new();
+        for _ in 0..10 {
+            app.update();
+            lit.push(
+                app.world()
+                    .resource::<GameScreens>()
+                    .journal_box
+                    .as_ref()
+                    .unwrap()
+                    .text
+                    .focused,
+            );
+        }
+        assert!(lit.contains(&true) && lit.contains(&false), "{lit:?}");
+    }
+
+    /// New stores the text, adds a "New Entry" and shows it empty; Erase
+    /// removes the selected entry and shows the one left.
+    #[test]
+    fn the_journal_new_and_erase_buttons() {
+        let (mut app, window) = journal_app();
+        let (centre, _) = journal_box_points(&app);
+        point(&mut app, centre);
+        app.update();
+        type_text(&mut app, window, "first");
+        let release_over = |app: &mut App, record: usize| {
+            let at = {
+                let screens = app.world().resource::<GameScreens>();
+                let form = screens.find(GameScreen::Journal).unwrap().form;
+                let r = &screens.task.form(form).unwrap().base().unwrap().records[record];
+                ((r.x + r.w / 2) as f32, (r.y + r.h / 2) as f32)
+            };
+            point(app, at);
+            app.update();
+            button(app, MouseButton::Left, true);
+            button(app, MouseButton::Left, false);
+        };
+        release_over(&mut app, JOURNAL_NEW);
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert_eq!(screens.journal.entries.len(), 2);
+            assert_eq!(screens.journal.entries[0].text, "first");
+            assert_eq!(screens.journal.current, 1);
+            assert_eq!(screens.journal_text, "");
+            let form = screens.find(GameScreen::Journal).unwrap().form;
+            let list = &screens.task.form(form).unwrap().base().unwrap().records[JOURNAL_LIST];
+            assert_eq!(list.text, b"New Entry");
+        }
+        release_over(&mut app, JOURNAL_ERASE);
+        let screens = app.world().resource::<GameScreens>();
+        assert_eq!(screens.journal.entries.len(), 1);
+        assert_eq!(screens.journal.current, 0);
+        assert_eq!(screens.journal_text, "first");
+        assert_eq!(
+            screens.journal_box.as_ref().unwrap().text.text.as_bytes(),
+            b"first"
+        );
     }
 
     #[test]

@@ -772,6 +772,9 @@ struct BarAnswer {
     mind_sounds: Vec<crate::mind::casts::MindSound>,
     music: Option<exa_audio::MusicOverlay>,
     spirit: Option<crate::mind::runtime::SpiritBodyAsked>,
+    /// A Sense Minds cast's overlay, for this long (0 while the persistent
+    /// power runs).
+    sense_overlay: Option<i32>,
 }
 
 impl BarAnswer {
@@ -797,6 +800,9 @@ impl BarAnswer {
         }
         if let Some(spirit) = self.spirit {
             world.write_message(spirit);
+        }
+        if let Some(duration_ms) = self.sense_overlay {
+            crate::mind::draw::start_sense_overlay(world, duration_ms);
         }
         if self.end_control {
             info!("power cast while controlling another body: the control ends");
@@ -848,6 +854,28 @@ pub(crate) fn run_bar_commands(
             commands.queue(|world: &mut World| {
                 crate::mind::runtime::end_control(world);
             });
+            continue;
+        }
+        // The bar's toggle on a body the player was handed (a possessed
+        // body, or the spirit) does not toggle the bar: with a body left
+        // behind it ends that body's Spirit Form or the Control Mind it
+        // runs.
+        let tree_open = screen.as_deref().is_some_and(|s| s.open);
+        let status = casters.get(command.caster).map_or_else(
+            |_| {
+                mind.minds
+                    .get(command.caster)
+                    .map_or(0, |m| m.cast.status_bits)
+            },
+            |c| c.body.status_bits,
+        );
+        if command.action == BarAction::Toggle && !tree_open && status & CONTROLLING != 0 {
+            if mind.control.held.is_some() {
+                info!("bar toggle while out of the own body: the spirit or the control ends");
+                commands.queue(|world: &mut World| {
+                    crate::mind::runtime::end_control(world);
+                });
+            }
             continue;
         }
         let entity = command.caster;
@@ -1083,6 +1111,7 @@ fn cast_bar_slot(
     live: Query<MindLiveData>,
     places: Query<&GlobalTransform>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    mut relations: super::live::MindRelations,
 ) -> Option<BarAnswer> {
     let Ok((mut caster, condition, swing, locomotion, locomotor, animator, held, ragdoll)) =
         casters.get_mut(entity)
@@ -1134,17 +1163,25 @@ fn cast_bar_slot(
     let mut result_code = 0;
     let mut mind_outcome = None;
     let mut mind_ai = Vec::new();
-    let mind_scene = crate::mind::casts::MindScene {
-        now_ms: now,
-        real_ms: now,
-        relation: 0.0,
-        spirit_screen: aim.spirit_screen,
-        loud_music: false,
-    };
     // The dead powers pick with the collapsed allowed.
     let mind_target = match asked & ID_MASK {
         crate::mind::casts::RAISE_DEAD | crate::mind::casts::COMMAND_DEAD => aim.dead_pick,
         _ => aim.mind_pick,
+    };
+    // Loyalty's strength reads the target's last attitude toward the
+    // caster; the original reads it as it binds, which makes a missing
+    // relation (done after the cast below), so it is only looked at here.
+    let loyalty = asked & ID_MASK == crate::mind::casts::LOYALTY;
+    let relation = match mind_target {
+        Some(target) if loyalty => relations.peek(target, entity),
+        _ => 0.0,
+    };
+    let mind_scene = crate::mind::casts::MindScene {
+        now_ms: now,
+        real_ms: now,
+        relation,
+        spirit_screen: aim.spirit_screen,
+        loud_music: false,
     };
     // The casts read the target's condition, rules, feral level and health
     // off its body.
@@ -1201,6 +1238,16 @@ fn cast_bar_slot(
             "mind cast {asked:#x} at {mind_target:?}: code {}, sound {:?}, request {:?}",
             outcome.code, outcome.sound, outcome.request
         );
+        if loyalty
+            && outcome.code == crate::mind::casts::STARTED
+            && let Some(target) = mind_target
+        {
+            let made = relations.last_attitude(target, entity, now);
+            info!("loyalty: {target:?}'s relation toward {entity:?} is {relation} ({made} kept)");
+        }
+        if let crate::mind::casts::MindRequest::SenseOverlay { duration_ms } = outcome.request {
+            answer.sense_overlay = Some(duration_ms);
+        }
         answer.mind_sounds.extend(outcome.sound);
         if let crate::mind::casts::MindRequest::SpiritForm { music_volume } = outcome.request {
             answer.music = Some(exa_audio::MusicOverlay::In {

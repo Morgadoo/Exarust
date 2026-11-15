@@ -802,7 +802,7 @@ fn the_hud_reset_takes_a_hold_only_from_a_fallen_curtain() {
 fn a_right_release_closes_the_inventory_and_loot() {
     assert!(right_release_closes(GameScreen::Inventory));
     assert!(right_release_closes(GameScreen::Loot));
-    assert!(!right_release_closes(GameScreen::Journal));
+    assert!(right_release_closes(GameScreen::Journal));
     assert!(!right_release_closes(GameScreen::TechniqueSelector));
     // The container popup closes on a right click (`popups::container_right_click`).
     assert!(right_release_closes(GameScreen::Container));
@@ -1111,4 +1111,24 @@ fn the_deferred_fill_retries_until_the_node_exists() {
             retry: true
         }
     );
+}
+
+#[test]
+fn the_journal_text_box_is_editable_in_the_small_font_with_a_scaled_margin() {
+    use crate::gui_font::{gui_level, level_for_unit};
+    let client = ClientRect {
+        left: 0,
+        top: 0,
+        right: 211,
+        bottom: 412,
+    };
+    for (unit, margin) in [(4, 4), (5, 5), (6, 6), (8, 16), (12, 36)] {
+        let fonts = gui_level(level_for_unit(unit));
+        let text_box = journal_text_box(unit, fonts.main, fonts.small, client);
+        assert!(!text_box.read_only);
+        assert!(text_box.on_tab);
+        assert_eq!(text_box.margin, margin, "unit {unit}");
+        assert!(std::ptr::eq(text_box.font, fonts.small));
+        assert_eq!(text_box.wrap_width, 211 - (unit + margin) * 2);
+    }
 }

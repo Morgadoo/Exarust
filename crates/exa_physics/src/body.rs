@@ -173,6 +173,18 @@ pub const STUCK_WEAPON_LAYER: u32 = 0xC0;
 /// The sleep countdown a woken body starts from, and a living body's every
 /// tick: at rest it falls asleep 128 ticks (1.54 s) later.
 pub const WAKE_COUNT: i32 = 256;
+/// The countdown the original's freeze sets on a body
+/// ([`Ragdoll::freeze_at`]).
+pub const FROZEN_COUNTDOWN: i32 = 2;
+/// Ticks a re-placed player settles for (gravity without inertia,
+/// [`Ragdoll::settle_for`]): the original's story respawn gives the
+/// player's node tree 16 after it places the body at the portal, as do its
+/// save load's portal re-placement and Spirit Form's new body.
+pub const PLACED_SETTLE: i32 = 16;
+/// Ticks an AI character the scene takes back settles for: the original's
+/// AI tick gives 83 (one second of steps) to a body that is not dormant,
+/// after it re-places it.
+pub const ENTERED_SETTLE: i32 = 83;
 /// While its fastest part moves between 20 and 40 cm/s, a body's countdown
 /// is lifted to this from below and falls by one a tick from above, so it
 /// is held at 30–32 and never runs out.
@@ -1822,6 +1834,10 @@ pub struct Ragdoll {
     /// at its previous particles instead of integrating it
     /// ([`Ragdoll::freeze`]).
     frozen: bool,
+    /// Kinematic (the original's state bit 0x100), set with the frozen bit
+    /// by the freeze ([`Ragdoll::freeze_at`]) and cleared with it by the
+    /// thaw: the level detection skips the body (it still meets bodies).
+    kinematic: bool,
     /// Disabled (the original's state bit 0x800): an item taken onto the
     /// cursor, which the pair stage and the level detection skip and whose
     /// grabs a struck body breaks ([`Ragdoll::set_disabled`]).
@@ -1967,6 +1983,7 @@ impl Ragdoll {
             simulated: self.simulated,
             fell_out: self.fell_out,
             frozen: self.frozen,
+            kinematic: self.kinematic,
             disabled: self.disabled,
             parked: self.parked,
             parked_deep: self.parked_deep,
@@ -3046,6 +3063,7 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             frozen: false,
+            kinematic: false,
             disabled: false,
             parked: false,
             parked_deep: false,
@@ -3999,9 +4017,13 @@ impl Ragdoll {
     }
 
     /// Lets the body settle for `ticks` ticks with gravity but no inertia:
-    /// the original's temporary state after a character is placed (a
-    /// respawn or a level change), where each particle takes a tick's
-    /// gravity and keeps none of its velocity for that long.
+    /// the original's temporary state after a character is placed, where
+    /// each particle takes a tick's gravity and keeps none of its velocity
+    /// for that long. The original's tree walk gives it to every living
+    /// body under the character's node, which is the character's own body
+    /// (its held items are not living): [`PLACED_SETTLE`] after a story
+    /// respawn, [`ENTERED_SETTLE`] when the scene takes an AI character
+    /// back, and the item cursor's release its own count.
     pub fn settle_for(&mut self, ticks: i32) {
         self.settle = ticks.max(0);
     }
@@ -4017,16 +4039,56 @@ impl Ragdoll {
     /// set into both newer ones; Exarust keeps two), so it holds still
     /// with no velocity, no gravity and no sleep band, and its countdown
     /// loses one tick, floored at 1, as the original's root takes one tick
-    /// off its tree. The original sets the bit on a body whose node carries
-    /// the walkable-platform flag (no shipped body does) and on an item the
-    /// cursor holds in place; neither path exists in Exarust yet.
+    /// off its tree. `true` sets the frozen bit alone (the original's
+    /// freeze routine is [`Ragdoll::freeze_at`]); `false` is the original's
+    /// thaw, which clears the frozen and kinematic bits.
     pub fn freeze(&mut self, frozen: bool) {
         self.frozen = frozen;
+        if !frozen {
+            self.kinematic = false;
+        }
+    }
+
+    /// The original's freeze of a body: the asleep and deep bits clear and
+    /// the frozen and kinematic bits are set (the level detection skips a
+    /// kinematic body); with `at` the parts are first placed at those
+    /// world transforms ([`Ragdoll::place_at`]), otherwise they stay where
+    /// their particles are; every particle set (now, previous, oldest, the
+    /// tick's start) becomes that one, so the body keeps no velocity, its
+    /// contact offset arrays are emptied, its drawn transforms stop there,
+    /// and its countdown is set to 2 (not
+    /// raised: a frozen body's step then holds it at 1). Both of the
+    /// original's callers (the item cursor's lock release) pass no matrix.
+    pub fn freeze_at(&mut self, at: Option<&[Affine3A]>) {
+        if let Some(worlds) = at {
+            self.place_at(worlds);
+        }
+        for p in &mut self.parts {
+            p.previous = p.positions;
+            p.two_ticks_ago = p.positions;
+            p.start = p.positions;
+            p.settled = p.transform();
+            p.shown = (p.settled, p.settled);
+            p.drawn_particles = (p.positions, p.positions);
+        }
+        // The two per-particle buffers the freeze empties are the ones the
+        // settling integration empties: the contact offset arrays.
+        self.clear_placed_offsets();
+        self.sleep = Sleep::Awake;
+        self.frozen = true;
+        self.kinematic = true;
+        self.countdown = FROZEN_COUNTDOWN;
     }
 
     /// Whether the body is frozen ([`Ragdoll::freeze`]).
     pub fn frozen(&self) -> bool {
         self.frozen
+    }
+
+    /// Whether the body is kinematic: frozen by [`Ragdoll::freeze_at`] and
+    /// out of the level detection until thawed.
+    pub fn kinematic(&self) -> bool {
+        self.kinematic
     }
 
     /// Disables or enables the body (the original's state bit 0x800). The
@@ -5548,8 +5610,10 @@ impl Ragdoll {
 
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
         // A disabled body (an item on the cursor) keeps out of the level
-        // as it keeps out of the other bodies.
-        if self.disabled {
+        // as it keeps out of the other bodies. A kinematic one (a frozen
+        // item) is left out as the original's level broad phase leaves out
+        // a body with its kinematic bit.
+        if self.disabled || self.kinematic {
             self.level_impacts.clear();
             return;
         }
@@ -6427,6 +6491,16 @@ mod tests {
         assert!(!body.parts[1].contacts.is_empty());
         body.set_disabled(false);
         assert!(!body.disabled());
+        // A frozen body is kinematic: the level broad phase leaves it out
+        // until it is thawed.
+        body.parts[1].contacts.clear();
+        body.freeze_at(None);
+        body.parts[1].positions = body.parts[1].positions.map(|x| Vec3::new(x.x, 0.05, x.z));
+        body.detect(&floor);
+        assert!(body.parts[1].contacts.is_empty());
+        body.freeze(false);
+        body.detect(&floor);
+        assert!(!body.parts[1].contacts.is_empty());
     }
 
     /// Taking ticks off the countdown floors it at one, so it never sleeps

@@ -15,7 +15,7 @@ import bevy_pbr::render::{
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
 };
 import exa_render::shading::{
-    Surface, Taps, taps, direct, schlick, gi_frame, gi_tap, gi_slot, gi_ambient,
+    Surface, Taps, taps, gi_mean, direct, schlick, gi_frame, gi_tap, gi_slot, gi_ambient,
     gi_ambient_outdoor, GI_NO_BLOCK,
     REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
 };
@@ -178,10 +178,10 @@ fn gi_block_sample(k: u32, p: vec3<f32>, n: vec3<f32>, t: Taps) -> vec4<f32> {
     let origin = splat.gi_origins[k].xyz;
     let f = gi_frame(n);
     var sum = vec4(0.0);
-    for (var j = t.first; j < t.first + t.count; j++) {
+    for (var j = t.gi_first; j < t.gi_first + t.count; j++) {
         sum += gi_texel(k, gi_tap(f, origin, extent, p, n, t, j));
     }
-    return sum / f32(t.count);
+    return gi_mean(sum, t);
 }
 
 // The centre of the 6 m terrain block a point lies on (world metres): the

@@ -25,6 +25,7 @@
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! exa-tool nav exanima01 [--png nav.png]  the level's navigation grid
 //! exa-tool shader common.rml mtliron04   the original GLSL for a material
+//! exa-tool shader --variants --lights 6  every shipped program variant and its WESL branch
 //! exa-tool picdiff a.png b.png --noise c.png d.png --out diff/a-b   two pictures of a pose compared
 //! ```
 
@@ -36,6 +37,7 @@ mod morphs;
 mod nav;
 mod picdiff;
 mod saves;
+mod variants;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -288,6 +290,12 @@ enum Cmd {
         /// words and reflection layer.
         #[arg(long)]
         all: bool,
+        /// List every surface-program variant the shipped records build
+        /// (grouped by set and key words, with the template flags, the
+        /// distinct expanded programs up to `--lights` lights and the
+        /// `exa.wesl` branch the loader picks for them).
+        #[arg(long)]
+        variants: bool,
         /// Write every decoded library entry, unexpanded, to this directory
         /// as `<name>.glsl` (from the installed game, for comparison).
         #[arg(long)]
@@ -378,6 +386,11 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Info => info(&game),
         Cmd::Shader {
+            variants: true,
+            lights,
+            ..
+        } => variants::variants(&game, lights),
+        Cmd::Shader {
             library,
             shader_library,
             material,
@@ -404,6 +417,7 @@ fn main() -> Result<()> {
             list,
             all,
             dump,
+            ..
         } => shader(
             &game,
             &ShaderRequest {

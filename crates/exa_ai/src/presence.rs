@@ -367,6 +367,16 @@ pub fn check_presence(
             }
             if let Some(mut ragdoll) = ragdoll {
                 ragdoll.reset_presence();
+                // The original's AI tick then gives the body's node tree the
+                // settling state for 83 ticks unless the body is dormant
+                // (gravity without inertia while it lands where it is put).
+                if !ragdoll.drive.as_ref().is_some_and(|d| d.dormant) {
+                    ragdoll.settle_for(exa_physics::body::ENTERED_SETTLE);
+                    info!(
+                        "presence: {entity} enters the scene and settles {} ticks",
+                        exa_physics::body::ENTERED_SETTLE
+                    );
+                }
             }
             entered.write(Entered(entity));
             show(&mut commands, entity, false);
@@ -565,6 +575,8 @@ mod tests {
             (drive.tone, drive.energy, drive.balance().value),
             (1.0, 1.0, 1.0)
         );
+        // It settles for 83 ticks (it is not dormant).
+        assert_eq!(body.settling(), exa_physics::body::ENTERED_SETTLE);
         let locomotion = app.world().get::<Locomotion>(foe).unwrap();
         assert!(!locomotion.moving);
         assert_eq!((locomotion.flags, locomotion.free_walk), (0, false));
@@ -578,6 +590,38 @@ mod tests {
             ),
             (0.0, 0.0, Vec3::ZERO, Vec3::ZERO)
         );
+    }
+
+    /// A dormant body the scene takes back is reset but does not settle:
+    /// the original's AI tick skips the settling state for it.
+    #[test]
+    fn a_dormant_body_entering_does_not_settle() {
+        let mut app = App::new();
+        app.init_resource::<ActivationArea>()
+            .add_message::<Entered>()
+            .add_systems(FixedUpdate, check_presence);
+        let root = app.world_mut().spawn(GlobalTransform::default()).id();
+        let mut body = Ragdoll::new(&[]).with_drive();
+        body.drive.as_mut().unwrap().dormant = true;
+        let foe = app
+            .world_mut()
+            .spawn((
+                Duellist::new(root),
+                Condition::NORMAL,
+                ChildOf(root),
+                body,
+                Presence {
+                    state: PresenceState::Dormant,
+                    hold: 0,
+                },
+            ))
+            .id();
+        app.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(
+            app.world().get::<Presence>(foe).unwrap().state,
+            PresenceState::Entering
+        );
+        assert_eq!(app.world().get::<Ragdoll>(foe).unwrap().settling(), 0);
     }
 
     /// The revive pass's reset heals the current pool from the lasting one,

@@ -164,19 +164,23 @@ struct LightTable {
     slot_of: EntityHashMap<u32>,
     /// The sun map's filter and caster offset, in element 0.
     sun: crate::sun_fit::SunShadowFilter,
+    /// The shadow taps one sub-frame takes (`SdwSmps`), in element 0's top
+    /// byte; 0 until the first upload (the shaders then take 8).
+    shadow_samples: u32,
     dirty: bool,
 }
 
 /// The buffer's layout, as `array<vec4<u32>>`: element 0 holds the index of
-/// the first list, then the sun's filter radius, polygon factor and polygon
-/// units as f32 bits; element 1 + id holds light `id`'s record (shaping y, z and
+/// the first list (bits 0–23) with the sub-frame's shadow taps `SdwSmps`
+/// above it ([`HEADER_TAPS_SHIFT`]), then the sun's filter radius, polygon
+/// factor and polygon units as f32 bits; element 1 + id holds light `id`'s record (shaping y, z and
 /// radius as f32 bits, cube slot + 1); each mesh slot takes two elements
 /// from the first list on.
 fn layout(table: &LightTable) -> Vec<[u32; 4]> {
     let first_list = 1 + table.records.len().max(1) as u32;
     let mut data = Vec::with_capacity(first_list as usize + table.lists.len() * 2 + 2);
     data.push([
-        first_list,
+        first_list | table.shadow_samples.min(0xFF) << HEADER_TAPS_SHIFT,
         table.sun.radius.to_bits(),
         table.sun.polygon_factor.to_bits(),
         table.sun.polygon_units.to_bits(),
@@ -199,6 +203,19 @@ fn layout(table: &LightTable) -> Vec<[u32; 4]> {
     // Never empty: a storage binding needs at least one element per read.
     data.push([0; 4]);
     data
+}
+
+/// Where element 0 keeps `SdwSmps`: its top byte (the first list's index
+/// stays below 2^24).
+pub const HEADER_TAPS_SHIFT: u32 = 24;
+
+/// The shadow taps one sub-frame takes for the settings screen's shadow
+/// quality and the scene's super-sampling: the original's `SdwSmps`
+/// ([`crate::shader_program::shadow_samples`]) at its 4× setting (3) when
+/// the scene is supersampled, else at setting 0. 2 at the shipped settings
+/// (shadow quality 4, supersampled), 8 without super-sampling.
+pub fn sub_frame_taps(shadow_quality: i32, split: bool) -> u32 {
+    crate::shader_program::shadow_samples(shadow_quality.max(0) as u32, if split { 3 } else { 0 })
 }
 
 fn create_buffer(mut buffers: ResMut<Assets<ShaderBuffer>>) {
@@ -340,10 +357,20 @@ fn free_mesh_slots(
 fn upload(
     mut table: ResMut<LightTable>,
     sun: Res<crate::sun_fit::SunShadowFilter>,
+    quality: Option<Res<crate::quality::ShadowQuality>>,
+    split: Option<Res<crate::supersample::SplitTaps>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
     if table.sun != *sun {
         table.sun = *sun;
+        table.dirty = true;
+    }
+    let taps = sub_frame_taps(
+        quality.map_or(crate::quality::ShadowQuality::default().0, |q| q.0),
+        split.is_some_and(|s| s.0),
+    );
+    if table.shadow_samples != taps {
+        table.shadow_samples = taps;
         table.dirty = true;
     }
     if !table.dirty {
@@ -442,5 +469,57 @@ mod tests {
         assert_eq!(f32::from_bits(data[0][1]), 0.000375);
         assert_eq!(f32::from_bits(data[0][2]), 2.0);
         assert_eq!(f32::from_bits(data[0][3]), 1.0 / 65536.0);
+    }
+
+    /// `SdwSmps` per sub-frame for the settings: the shipped shadow quality
+    /// 4 takes 2 taps a sub-frame supersampled (8 a frame), 8 without; the
+    /// low qualities still take one a sub-frame, the highest 4 (16 a
+    /// frame) and 16 without super-sampling.
+    #[test]
+    fn the_sub_frame_taps_follow_the_settings() {
+        assert_eq!(sub_frame_taps(4, true), 2);
+        assert_eq!(sub_frame_taps(4, false), 8);
+        assert_eq!(sub_frame_taps(1, true), 1);
+        assert_eq!(sub_frame_taps(1, false), 1);
+        assert_eq!(sub_frame_taps(3, false), 4);
+        assert_eq!(sub_frame_taps(5, true), 4);
+        assert_eq!(sub_frame_taps(5, false), 16);
+        // The top byte holds it above the first list's index.
+        let table = LightTable {
+            shadow_samples: 2,
+            ..default()
+        };
+        assert_eq!(layout(&table)[0][0], 2 | 2 << HEADER_TAPS_SHIFT);
+    }
+
+    /// The live upload: the plugin writes the settings' `SdwSmps` into the
+    /// buffer the surface shaders read, and rewrites it when the shadow
+    /// quality or the super-sampling changes.
+    #[test]
+    fn the_upload_carries_the_settings_taps() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<ShaderBuffer>()
+            .insert_resource(crate::quality::ShadowQuality(4))
+            .insert_resource(crate::supersample::SplitTaps(true))
+            .add_plugins(LightsPlugin);
+        let header = |app: &App| {
+            let buffers = app.world().resource::<Assets<ShaderBuffer>>();
+            let buffer = buffers.get(AssetId::default()).expect("the light buffer");
+            let bevy::render::storage::ShaderBufferData::Initialized { data, .. } = &buffer.data
+            else {
+                panic!("the light buffer holds its bytes");
+            };
+            u32::from_le_bytes(data[0..4].try_into().unwrap())
+        };
+        app.update();
+        assert_eq!(header(&app) >> HEADER_TAPS_SHIFT, 2);
+        app.insert_resource(crate::supersample::SplitTaps(false));
+        app.update();
+        assert_eq!(header(&app) >> HEADER_TAPS_SHIFT, 8);
+        app.insert_resource(crate::quality::ShadowQuality(5));
+        app.update();
+        assert_eq!(header(&app) >> HEADER_TAPS_SHIFT, 16);
+        assert_eq!(header(&app) & 0xFF_FFFF, 2);
     }
 }

@@ -14,7 +14,8 @@
 //! - **Nearest-mesh pick** ([`CastPicker::mesh_point`]): the barricade's
 //!   cast asks it before the front end; the segment from the eye to its
 //!   point (the ground plane's point when it meets nothing) meeting a
-//!   running barricade's node bounds (sphere, then box) ends that barricade
+//!   running barricade's node bounds (sphere, then box by separating
+//!   axes) ends that barricade
 //!   ([`segment_meets_wall`]).
 //!
 //! The nodes are Exarust's: the level is one node answered by the physics
@@ -39,7 +40,7 @@ use bevy::prelude::*;
 use exa_combat::Condition;
 use exa_physics::body::Ragdoll;
 use exa_physics::collision_share::FramePhysics;
-use exa_physics::intersect::{Obb, segment_obb_hit, segment_sphere};
+use exa_physics::intersect::{Obb, segment_obb_overlap, segment_sphere};
 use exa_physics::prop::{PropBody, StandIns};
 use exa_physics::{ColliderHandle, Physics, StaticColliders};
 
@@ -316,13 +317,16 @@ pub fn wall_bounds(wall: &Barricade) -> Obb {
 }
 
 /// Whether the segment from `eye` to `point` (m) meets a barricade's node
-/// bounds: its sphere first, then its box, as the barricade's cast tests
-/// the nearest-mesh pick's segment.
+/// bounds: its sphere first, then its box by the separating-axis test
+/// ([`segment_obb_overlap`]), as the barricade's cast tests the
+/// nearest-mesh pick's segment (the nearest pick itself takes the slab
+/// test, `segment_obb_hit`).
 pub fn segment_meets_wall(eye: Vec3, point: Vec3, wall: &Barricade) -> bool {
     let bounds = wall_bounds(wall);
     let segment = point - eye;
     let radius = bounds.half_extents.length();
-    segment_sphere(eye, segment, bounds.centre, radius) && segment_obb_hit(eye, segment, &bounds)
+    segment_sphere(eye, segment, bounds.centre, radius)
+        && segment_obb_overlap(eye, segment, &bounds)
 }
 
 #[cfg(test)]
@@ -372,5 +376,17 @@ mod tests {
         assert!(!segment_meets_wall(eye, Vec3::new(0.0, 0.0, 3.0), &wall));
         // Past its end.
         assert!(!segment_meets_wall(eye, Vec3::new(9.0, 0.0, 8.0), &wall));
+        // Aimed straight at it but stopping 2 m short: the original's
+        // separating-axis test finds no axis apart (the start moves toward
+        // the box's slab), so it meets the wall, where the slab test of the
+        // nearest pick would not.
+        let level = Vec3::new(0.0, 1.0, 0.0);
+        let short = Vec3::new(0.0, 1.0, 3.0);
+        assert!(segment_meets_wall(level, short, &wall));
+        assert!(!exa_physics::intersect::segment_obb_hit(
+            level,
+            short - level,
+            &wall_bounds(&wall)
+        ));
     }
 }

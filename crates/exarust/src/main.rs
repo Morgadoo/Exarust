@@ -105,6 +105,10 @@
 //!          --manage-table STEPS       with --open-hub-window manage: Manage Company's tables take these pointer
 //!                                     steps: drag:FROM:TO (roster rows, 1 the manager), roster:ROW or report:LINE
 //!                                     (a double press), comma separated (debug)
+//!          --board-table STEPS        with --open-hub-window board: the board's company and lineup tables take
+//!                                     these pointer steps: roster:ROW / lineup:ROW (a double press), drag:ROW:TO
+//!                                     (company row onto lineup row, 0 none), back:ROW (lineup row onto the
+//!                                     company table), tab:N, winner:ROW; comma separated (debug)
 //!          --shop-sell ID             with --open-hub-window shop: put item ID (hex with 0x) in the manager's pack,
 //!                                     click it into the sell basket and confirm the trade (debug)
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
@@ -707,6 +711,8 @@ pub struct Options {
     pub shop_sell: Option<u32>,
     /// `--manage-table STEPS`: Manage Company's scripted table steps.
     pub manage_table: Option<exa_game::hub_forms::ManageTableScript>,
+    /// `--board-table STEPS`: the board's scripted fighter-table steps.
+    pub board_table: Option<exa_game::arena_hub_live::BoardTableScript>,
     /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
     /// the company once the hub is entered (a debug tool).
     pub hub_employee_kit: Vec<(String, Vec<u32>)>,
@@ -1392,6 +1398,18 @@ fn main() -> AppExit {
                     Ok(row) => options.shop_buy = Some(row),
                     Err(_) => {
                         eprintln!("--shop-buy: cannot read {value:?} (a row number)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--board-table" => {
+                let value = args.next().unwrap_or_default();
+                match exa_game::arena_hub_live::BoardTableScript::parse(&value) {
+                    Some(script) => options.board_table = Some(script),
+                    None => {
+                        eprintln!(
+                            "--board-table: cannot read {value:?} (roster:ROW, lineup:ROW, drag:ROW:TO, back:ROW, tab:N or winner:ROW, comma separated)"
+                        );
                         return AppExit::from_code(2);
                     }
                 }

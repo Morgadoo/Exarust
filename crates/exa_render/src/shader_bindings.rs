@@ -244,12 +244,14 @@ pub fn attribute_bindings(state: u32) -> Vec<AttributeBinding> {
     out
 }
 
-/// The engine's fixed eight shadow-tap offsets, `SdwSmp`, three floats each.
+/// The engine's fixed shadow-tap offsets, `SdwSmp`, three floats each: the
+/// 32 taps the highest shadow quality reads (the shading surfaces take
+/// `SdwSmps` of them per sub-frame, `shading.wesl`'s copy of the pairs).
 /// The sun's two-dimensional shadow map reads a tap's first two components
 /// (`x`, `y`); the third component's use is not established, so it is kept
 /// only to preserve the table's exact numbers. A sub-frame's window starts
 /// at tap `first_tap` of this table ([`shadow_sample_upload`]).
-pub const SHADOW_TAPS: [[f32; 3]; 8] = [
+pub const SHADOW_TAPS: [[f32; 3]; 32] = [
     [0.272_541_49, -0.548_650_44, 0.354_879_77],
     [-0.287_996_9, 0.618_560_6, 0.653_929_1],
     [0.361_687_48, 0.180_595_17, -0.436_745_7],
@@ -258,6 +260,30 @@ pub const SHADOW_TAPS: [[f32; 3]; 8] = [
     [-0.858_782_4, 0.471_767_72, -0.918_739_14],
     [0.396_006_94, 0.794_749_14, -0.779_053_33],
     [0.773_125_3, -0.369_729_2, 0.274_344_33],
+    [0.713_221_7, 0.513_987_4, 0.028_150_635],
+    [0.684_673_9, 0.080_994_494, 0.052_082_9],
+    [-0.788_621_7, -0.603_483_7, 0.303_326_73],
+    [-0.617_982_9, 0.074_862_37, 0.346_291_66],
+    [0.080_944_44, -0.967_739, -0.536_898_1],
+    [-0.022_717_286, -0.163_512_11, -0.518_843_9],
+    [0.276_563_88, 0.491_931_77, 0.380_224_62],
+    [-0.188_763_28, 0.269_034_9, 0.768_364_4],
+    [0.085_578_08, -0.597_910_34, -0.561_459_06],
+    [0.475_909_9, 0.024_719_696, -0.192_284_63],
+    [0.322_130_3, -0.365_200_46, 0.524_050_3],
+    [-0.339_753_03, -0.396_468_7, -0.087_447_36],
+    [-0.088_115_46, 0.787_037_97, -0.936_335_2],
+    [-0.301_458_6, 0.897_252_44, 0.913_182_85],
+    [-0.086_691_51, -0.747_706, -0.691_841_2],
+    [0.416_592_54, -0.166_820_53, -0.494_867_56],
+    [0.181_342_62, -0.029_851_532, 0.802_500_84],
+    [0.712_711_16, -0.143_522_72, 0.084_330_75],
+    [-0.492_922_48, 0.305_220_2, -0.775_285_54],
+    [0.245_887_9, -0.741_523_9, 0.535_981_1],
+    [-0.014_365_082, 0.614_689_65, -0.612_346_4],
+    [-0.476_796_45, -0.569_641_35, -0.208_425_91],
+    [-0.673_731_15, -0.749_150_93, 0.030_716_019],
+    [-0.973_462_9, -0.026_627_35, 0.558_234_3],
 ];
 
 /// The tap at `index` of [`SHADOW_TAPS`], or `None` past the table.
@@ -461,7 +487,43 @@ mod tests {
         );
         assert_eq!(shadow_tap(0), Some(SHADOW_TAPS[0]));
         assert_eq!(shadow_tap(7), Some(SHADOW_TAPS[7]));
-        assert_eq!(shadow_tap(8), None);
+        // The table runs on past the eight taps of the shipped settings, to
+        // the 32 of the highest shadow quality.
+        assert_eq!(
+            SHADOW_TAPS[8].map(f32::to_bits),
+            [0x3F36_95B3, 0x3F03_94AE, 0x3CE6_9C29]
+        );
+        assert_eq!(
+            SHADOW_TAPS[31].map(f32::to_bits),
+            [0xBF79_34DD, 0xBCDA_219A, 0x3F0E_E871]
+        );
+        assert_eq!(shadow_tap(31), Some(SHADOW_TAPS[31]));
+        assert_eq!(shadow_tap(32), None);
+    }
+
+    /// `shading.wesl` holds the same pairs (each tap's first two floats),
+    /// at the same precision.
+    #[test]
+    fn the_surface_shaders_carry_every_tap() {
+        let source = include_str!("shading.wesl");
+        let start = source.find("const SHADOW_TAPS").expect("the WESL table");
+        let body = &source[start..source[start..].find(");").unwrap() + start];
+        let pairs: Vec<[f32; 2]> = body
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("vec2("))
+            .map(|l| {
+                let mut v = l
+                    .trim_end_matches("),")
+                    .split(", ")
+                    .map(|x| x.parse::<f32>().unwrap());
+                [v.next().unwrap(), v.next().unwrap()]
+            })
+            .collect();
+        assert_eq!(pairs.len(), SHADOW_TAPS.len());
+        for (pair, tap) in pairs.iter().zip(SHADOW_TAPS) {
+            assert_eq!(pair[0].to_bits(), tap[0].to_bits());
+            assert_eq!(pair[1].to_bits(), tap[1].to_bits());
+        }
     }
 
     #[test]

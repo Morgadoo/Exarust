@@ -135,6 +135,9 @@ fn setup(
     if let Some(script) = &options.manage_table {
         commands.insert_resource(script.clone());
     }
+    if let Some(script) = &options.board_table {
+        commands.insert_resource(script.clone());
+    }
     if options.shop_buy.is_some() || options.shop_sell.is_some() {
         commands.insert_resource(exa_game::arena_hub_live::ShopBuyScript::of_trade(
             options.shop_buy,
@@ -2446,7 +2449,10 @@ fn apply_player_placement(
     frame_physics: Res<exa_physics::collision_share::FramePhysics>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     (arrival, level_pending): (Option<Res<ArrivalPlacement>>, Option<Res<PendingLevel>>),
-    collision_pending: Option<Res<PendingCollision>>,
+    (collision_pending, settle): (
+        Option<Res<PendingCollision>>,
+        Option<Res<exa_game::level_change::PlacedSettle>>,
+    ),
     mut players: Query<(Entity, &mut Transform), With<exa_game::player::Player>>,
     mut bodies: Query<
         &mut Transform,
@@ -2509,9 +2515,12 @@ fn apply_player_placement(
     if let Ok(mut transform) = bodies.single_mut() {
         transform.rotation = Quat::from_rotation_y(placement.yaw);
     }
-    fixed.run(place_player_in_step, (at, by, placement.yaw));
+    // The story respawn's settling goes with its placement.
+    let settle = settle.map_or(0, |settle| settle.0);
+    fixed.run(place_player_in_step, (at, by, placement.yaw, settle));
     commands.insert_resource(PlacedTrace(1200));
     commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
+    commands.remove_resource::<exa_game::level_change::PlacedSettle>();
     commands.remove_resource::<ArrivalPlacement>();
 }
 
@@ -2553,9 +2562,11 @@ fn trace_placed_player(
 /// `at`, its body turns to `yaw`, and the body's parts move by `by` (the
 /// root's offset as the frame saw it), keeping their pose; the body wakes.
 /// In one world the root already stands at `at` and only the parts move.
+/// A `settle` over zero then gives the body the settling state for that
+/// many ticks (the story respawn's, after its placement).
 #[allow(clippy::type_complexity)]
 fn place_player_in_step(
-    In((at, by, yaw)): In<(Vec3, Vec3, f32)>,
+    In((at, by, yaw, settle)): In<(Vec3, Vec3, f32, i32)>,
     mut roots: Query<
         (&mut Transform, Option<&mut exa_physics::CharacterBody>),
         (
@@ -2598,7 +2609,7 @@ fn place_player_in_step(
             .map(|p| p.transform().translation.y)
             .fold(f32::INFINITY, f32::min)
     };
-    for (mut transform, ragdoll) in &mut bodies {
+    for (mut transform, mut ragdoll) in &mut bodies {
         // The parts turn with the body about the root (as the frame saw it)
         // and move with it.
         let turn = Quat::from_rotation_y(yaw) * transform.rotation.inverse();
@@ -2611,10 +2622,10 @@ fn place_player_in_step(
                 "level placement: the body is carried by its root; its lowest part at {:.2} m goes with it",
                 lowest(ragdoll)
             );
-        } else if let Some(mut ragdoll) = ragdoll
+        } else if let Some(ragdoll) = ragdoll.as_mut()
             && (by != Vec3::ZERO || turn.angle_between(Quat::IDENTITY) > 1e-4)
         {
-            let before = lowest(&ragdoll);
+            let before = lowest(ragdoll);
             // A pure displacement first: the particles' histories, contacts
             // and foot anchors travel too, so the move carries no velocity
             // (a placement that left the feet anchored in the old level
@@ -2634,8 +2645,19 @@ fn place_player_in_step(
             ragdoll.wake();
             info!(
                 "level placement: the body's lowest part was at {before:.2} m, now {:.2} m (root was {was:?} in the simulation)",
-                lowest(&ragdoll)
+                lowest(ragdoll)
             );
+        }
+        if settle > 0 {
+            match ragdoll.as_mut() {
+                Some(ragdoll) => {
+                    ragdoll.settle_for(settle);
+                    info!("level placement: the placed body settles for {settle} ticks");
+                }
+                None => warn!(
+                    "level placement: no simulated body yet; the {settle} ticks of settling are lost"
+                ),
+            }
         }
     }
     info!("level placement: the simulation's player root at {at}, its body's parts moved by {by}");
@@ -4435,9 +4457,12 @@ fn spawn_spirit_bodies(
                 "spirit form: the spirit body {model:?} (race byte {}) at {:?} for {:?}",
                 spirit.race, ask.at, ask.caster
             );
-            commands
-                .entity(model)
-                .insert(exa_game::mind::runtime::SpiritOf { body: ask.caster });
+            // The original settles the new body for 16 ticks once it is
+            // in the scene, before the player is handed over.
+            commands.entity(model).insert((
+                exa_game::mind::runtime::SpiritOf { body: ask.caster },
+                exa_game::limp::SettleWhenBuilt(exa_physics::body::PLACED_SETTLE),
+            ));
         }
     }
 }
@@ -4764,5 +4789,36 @@ mod kinesis_pick_tests {
 
     fn see(mut reader: MessageReader<KinesisPicked>, mut seen: ResMut<Seen>) {
         seen.0.extend(reader.read().copied());
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    use exa_physics::body::{PLACED_SETTLE, Ragdoll};
+
+    /// The step's placement gives the player's body the settling it was
+    /// asked for (the story respawn's 16) and leaves it alone when none
+    /// was asked (every other placement).
+    #[test]
+    fn a_respawn_placement_settles_the_players_body() {
+        let mut world = World::new();
+        world.spawn((exa_game::player::Player, Transform::default()));
+        let body = world
+            .spawn((
+                exa_game::player::PlayerBody::new(0.0),
+                Transform::default(),
+                Ragdoll::new(&[]),
+            ))
+            .id();
+        world
+            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::ZERO, 0.0, 0))
+            .unwrap();
+        assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 0);
+        world
+            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::X, 0.5, PLACED_SETTLE))
+            .unwrap();
+        assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 16);
     }
 }
