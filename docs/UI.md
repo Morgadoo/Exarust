@@ -2203,7 +2203,9 @@ choice list and the added row never run. A press goes through the view: a
 greyed tier or event, the selected row and a press off the rows change
 nothing; the company and lineup tables and the roster begin a drag of the
 pressed row (the fighters' drag kind) and draw its label once the pointer
-has moved past the drag distance. Manage Company's roster opens with its
+has moved past the drag distance; a fighter moved by a double press or a
+drop leaves its row in the table it came from (a selection past the new end
+moves to the new last row). Manage Company's roster opens with its
 first row selected. The pad's words (the activation word, the stick steps)
 have no reader in Exarust yet.
 
