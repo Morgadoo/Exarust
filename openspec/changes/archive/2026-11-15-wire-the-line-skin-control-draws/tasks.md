@@ -19,3 +19,9 @@
 
 - [x] 3.1 Live-system tests: the Settings form's rules and hovered key cell, the loadout list's rail
 - [x] 3.2 Unit tests: the button glow, the text field underline, the flip icon, the dim link fade
+- [x] 3.3 Live-system tests: the Settings form's hovered button, the emblem form's name field underline
+
+## 4. Unreachable rows
+
+- [x] 4.1 The skins the 0.9.5 form constructors take (the game skin getter, the skin hook, the parent's skin)
+- [x] 4.2 The draw skin's framed control, gradient frame, gradient button face and scroll arrows: only unreachable callers

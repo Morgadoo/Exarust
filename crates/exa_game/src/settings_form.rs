@@ -1038,11 +1038,11 @@ mod tests {
             let form = settings.form.as_mut().expect("open");
             let button = form
                 .geometry
-                .controls
+                .main
                 .iter_mut()
-                .find(|c| c.class == 1 && !c.text.is_empty() && c.state & 0x110 == 0)
-                .expect("a shown button");
-            button.state |= HOVERED;
+                .find(|c| c.class == 1 && c.text == b"Defaults")
+                .expect("the Defaults button");
+            button.state = (button.state & !0x110) | HOVERED;
         }
         app.world_mut().resource_mut::<GuiFrames>().clear();
         app.update();

@@ -3,10 +3,10 @@
 Roadmap task B1 (wiring lane `wireskin`): the GUI draw skin (TGUIDrawSkin)
 and the game's line skin (TGSLines) had many ported routines with no live
 caller, and the live painters drew some line-skinned controls with stand-ins
-(findings F27, F29, F72, F87 and the separator's routine). In 0.9.5 every
-form that holds control records is line-skinned, so the control classes'
-skin calls land in the line skin's slots; the draw skin's own control slots
-are reached only by the editor's colour picker.
+(findings F27, F29, F72, F87 and the separator's routine). In 0.9.5 the game's
+forms with control records (menus, inventory, hub windows, settings,
+manual) are line-skinned, so their control classes' skin calls land in the
+line skin's slots.
 
 ## Evidence
 
@@ -33,6 +33,23 @@ branches matter:
   vertex index over the begin's segment count, and the tree adds every
   point in mode 0.
 
+- The game's form constructors take the line skin (the game skin getter,
+  called by 25 form classes, and the message box through the skin hook
+  the game's start sets), and a child form takes its parent's skin. The
+  draw skin's own control slots are left to the forms that keep the
+  default skin or the HUD's textured skin (the HUD, the dialogue choices,
+  the reading form, the tip, the map parchment) and to the scene editor's
+  colour picker, whose window no game path opens; which of those hold
+  control records is not settled here.
+- The power slot and the counter of the HUD's skill row (whose records
+  are never built) and the spinner face (editor only) are the only callers
+  of the draw skin's framed control, its gradient frame, its gradient
+  button face and its two scroll arrows, so those are unreachable in
+  0.9.5.
+- The power tree's spline strips begin with the link's segment count and
+  add every point in mode 0, at both call sites and in the strip's end;
+  the join zeroing of modes 1 and 2 is never taken.
+
 ## What Changes
 
 - `settings_form::paint_control`: separators through `skin::edge_frame`;
@@ -49,3 +66,5 @@ branches matter:
 - The test-only label models `place_line_label` and `place_skin_label`
   (duplicates of the live label draws, with a wrong alignment switch) are
   removed.
+- Live-system tests: the Settings form's hovered button glows, the emblem
+  form's framed name field draws the capped span.
