@@ -580,10 +580,18 @@ restore of a saved Mind power (wired into `thaum::power::restore_persistent`)
 and the combatant's binding helpers. What it shows (`mind::sight`): the
 mind-target pick, the Sense Minds overlay and its tracker (mood weights,
 dwell windows, slot reuse), the entry colours, the billboard, the glow, the
-sphere's shaping and the spirit screen's start. `mind::draw` draws the entry
-spheres with the original's sight program (`exa_render::mind_sight`), its
-per-entry uniforms and the 256² animated noise picture; nothing creates an
-anchor yet, so the pass idles. The spirit screen's 512² picture and noise
+sphere's shaping and the spirit screen's start. `mind::draw` runs the
+sight on the frame: a Sense Minds cast's answer starts or extends the
+overlay (`MindSense`; the persistent power's end fades it, a level change
+drops the tracked minds, the story's quit resets it), the tracker reads
+every character but the player and the body it left (the brain's
+hostility, concern sum, readiness, stress, alarm and courage, the fall
+stage, the ward), the mind awakening game event adds a glow on the player
+(`MindGlows`), and each shown mind gets a sphere on its head part, placed
+by its race's sight place (`RaceStats::mind_sight`), with the original's
+sight program (`exa_render::mind_sight`), its per-entry uniforms and the
+overlay's and the glows' 256² animated noise pictures (logged as
+`mind sight:`). The spirit screen's 512² picture and noise
 setup are in (`sight::spirit_screen_init`); its own quad and the casting AI
 are not in. `mind::runtime` runs the domain in the game: every character
 carries a `MindBody` (its Mind list and status word: the handover bit
@@ -605,7 +613,11 @@ handover bit ends its Spirit Form or Control Mind; and the lists are fed to the 
 walk also ticks and expires the other classes (Sense Minds and Mask Mind,
 instant and persistent, Confusion and Enrage with their status bits,
 Trust and Suspicion, Loyalty and Command Dead with their markers' unlinks
-and re-arms), and the enraged bit is fed to the contact integration. Before a
+and re-arms), and the enraged bit is fed to the contact integration. Loyalty's strength
+(the cast's, and its marker's drift past 800 ticks) reads the bound body's
+last attitude toward its caster (`thaum::live::MindRelations`). The bar's
+toggle in a body the player was handed ends the Spirit Form or Control
+Mind of the body left behind. Before a
 cast the bar copies the target's condition, rules, feral level and health
 onto its mind (`MindLive`, with the record's profession word as the dead
 powers' character flags and the body's encumbrance and build), as the

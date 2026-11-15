@@ -561,8 +561,10 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   Suspicion end after 20 s (signed); Loyalty's and Command Dead's casters
   run from the cast (their ready state is a save's relink) and their end
   ends the target's marker (Command Dead also lays the raised body down);
-  Loyalty's marker counts its ticks (its strength follows the relation
-  after 800) and its end ends the caster's power, re-arms the AI and plays
+  Loyalty's marker counts its ticks (past 800 its strength follows the
+  bound body's last attitude toward its caster, read off its relations as
+  the cast's own strength is) and its end ends the caster's power, re-arms
+  the AI and plays
   `ThmMnd_E01` at 0.15; Command Dead's marker's end ends the caster's power
   and re-arms the AI. The enraged bit is the contact integration's marked
   body (hostility follows the soothe term); Confusion's id is the
@@ -570,7 +572,14 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   charm toward the caster, Suspicion's its lowered attitude.
 - **The hit's break**: a blow on a body not down, whose AI is not set
   aside and whose status has the handover bit ends the Spirit Form it is
-  the body of, else the Control Mind it runs.
+  the body of, else the Control Mind it runs. The bar's toggle in a body
+  the player was handed (status bit `0x20_0000`) does the same to the body
+  left behind, instead of toggling the bar.
+- **The sight**: a Sense Minds cast's answer starts the overlay on the
+  frame (for the instant cast's duration, or for as long as the persistent
+  power runs; its end fades it over 2 s), which tracks and draws every mind
+  round the player (`docs/RENDERING.md`, Mind sight); the mind awakening
+  game event gives the player a 3 s glow.
 - **The perception**: each body's list is the effects its perception
   applies (bindings, charms, suspicion, frenzy); a hold the perception
   breaks ends its power.

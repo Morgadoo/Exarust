@@ -96,7 +96,7 @@ use super::{SpiritForm, step_spirit_form};
 use crate::player::{Player, PlayerBody};
 use crate::thaum::cast::PowerCaster;
 use crate::thaum::casting::CastBody;
-use crate::thaum::power::mind::{CONFUSED, ENRAGED, MASKED, Possession};
+use crate::thaum::power::mind::{CONFUSED, ENRAGED, LOYALTY_SETTLE_TICKS, MASKED, Possession};
 use crate::thaum::power::{ENDING, HANDED_OVER, IN_CONTROL, SPIRIT_DISTANCE};
 
 /// The status bits the spirit body carries.
@@ -254,6 +254,9 @@ fn bridge_mind_runtime_types(app: &mut App) {
         .bridge_message::<exa_audio::PointSounded>()
         .bridge_message::<exa_combat::BlowNoticed>()
         .bridge_copy::<exa_ai::combatant::MindPowers>()
+        .bridge_copy::<exa_ai::brain::CharacterId>()
+        .bridge_copy::<exa_ai::roles::Relations>()
+        .bridge_copy::<exa_ai::roles::Roles>()
         .bridge_copy::<crate::mind::casts::MindBody>();
 }
 
@@ -669,6 +672,8 @@ fn pick_mind_target(
 /// What the power walk asks of the world after a body's tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MindAction {
+    /// The persistent Sense Minds ended: the frame's sight overlay fades.
+    SenseOverlayOff,
     Possess {
         caster: Entity,
         target: Entity,
@@ -768,6 +773,7 @@ pub fn tick_minds(
     conditions: Query<&Condition>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut frame: Option<ResMut<exa_physics::sim_app::FrameCommands>>,
+    mut relations: crate::thaum::live::MindRelations,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     let ids: Vec<(BodyId, Entity)> = minds.iter().map(|(e, m, _)| (m.id, e)).collect();
@@ -846,7 +852,14 @@ pub fn tick_minds(
                     }
                     result
                 }
-                MindClass::Sense(sense) => sense.control(0, body),
+                MindClass::Sense(sense) => {
+                    let result = sense.control(0, body);
+                    // Its end turns the sight overlay to its fade.
+                    if result & 2 != 0 {
+                        actions.push(MindAction::SenseOverlayOff);
+                    }
+                    result
+                }
                 MindClass::MaskInstant(mask) => {
                     let shown = mask.step(now, body);
                     if shown.code == 4 {
@@ -875,7 +888,17 @@ pub fn tick_minds(
                     step.result
                 }
                 MindClass::LoyaltyMark(mark) => {
-                    let result = mark.control(0, 0.0);
+                    // Past its 800th tick the strength follows the marked
+                    // body's last attitude toward its caster.
+                    let relation = if mark.ticks.wrapping_add(1) >= LOYALTY_SETTLE_TICKS {
+                        mark.caster
+                            .or(caster_id)
+                            .and_then(entity_of)
+                            .map_or(0.0, |caster| relations.last_attitude(entity, caster, now))
+                    } else {
+                        0.0
+                    };
+                    let result = mark.control(0, relation);
                     if result & 2 != 0 {
                         if let Some(caster) = mark.caster.or(caster_id) {
                             actions.push(MindAction::EndCasterPower {
@@ -946,6 +969,13 @@ pub fn tick_minds(
             // sends its frame part on.
             MindAction::Possess { caster, target } => {
                 commands.queue(move |world: &mut World| possess(world, caster, target));
+            }
+            MindAction::SenseOverlayOff => {
+                let run = super::draw::end_sense_overlay;
+                match frame.as_deref_mut() {
+                    Some(frame) => frame.send(run),
+                    None => commands.queue(run),
+                }
             }
             MindAction::BeginRelease { caster, target } => {
                 let run = move |world: &mut World| {
@@ -2115,6 +2145,86 @@ mod tests {
                 .powers
                 .is_empty()
         );
+    }
+
+    /// The persistent Sense Minds' end turns the frame's sight overlay to
+    /// its fade.
+    #[test]
+    fn the_persistent_sense_ends_its_overlay() {
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let other = character(app.world_mut(), false);
+        {
+            let mut mind = app.world_mut().get_mut::<MindBody>(caster).unwrap();
+            mind.cast.focus = 1.0;
+            mind.cast.slots = 3;
+        }
+        assert_eq!(
+            cast_at(app.world_mut(), casts::SENSE_PERSISTENT, caster, other, 0),
+            casts::STARTED
+        );
+        super::super::draw::start_sense_overlay(app.world_mut(), 0);
+        walk_at(&mut app, 1);
+        assert_eq!(
+            app.world()
+                .resource::<super::super::draw::MindSense>()
+                .overlay
+                .state,
+            super::super::sight::FADING_IN
+        );
+        app.world_mut().get_mut::<MindBody>(caster).unwrap().powers[0].end();
+        walk_at(&mut app, 2);
+        assert!(
+            app.world()
+                .get::<MindBody>(caster)
+                .unwrap()
+                .powers
+                .is_empty()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<super::super::draw::MindSense>()
+                .overlay
+                .state,
+            super::super::sight::FADING_OUT
+        );
+    }
+
+    /// Past its 800th tick the Loyalty marker's strength follows the marked
+    /// body's last attitude toward its caster, read off its relations.
+    #[test]
+    fn the_loyalty_marker_drifts_toward_the_real_relation() {
+        let mut app = walk_app();
+        let caster = character(app.world_mut(), true);
+        let target = character(app.world_mut(), false);
+        app.world_mut().entity_mut(caster).insert((
+            exa_ai::brain::CharacterId(7),
+            exa_ai::roles::Roles::default(),
+        ));
+        let mut relations = exa_ai::roles::Relations::default();
+        relations.create(7, 0.0, 0, 0);
+        relations.find_mut(7).unwrap().last = 50.0;
+        app.world_mut().entity_mut(target).insert(relations);
+        let mut marker = crate::thaum::power::mind::LoyaltyTarget::new(body_id(caster));
+        marker.ticks = LOYALTY_SETTLE_TICKS - 2;
+        let mut mark = MindPower::new(casts::LOYALTY_MARK, MindClass::LoyaltyMark(marker));
+        mark.caster = Some(body_id(caster));
+        app.world_mut()
+            .get_mut::<MindBody>(target)
+            .unwrap()
+            .powers
+            .push(mark);
+        let strength =
+            |app: &App| match app.world().get::<MindBody>(target).unwrap().powers[0].class {
+                MindClass::LoyaltyMark(mark) => mark.strength,
+                _ => panic!("the marker"),
+            };
+        // The 799th tick does not read it.
+        walk_at(&mut app, 1);
+        assert_eq!(strength(&app), 0.0);
+        // ((50 + 100)·0.005)²·100·0.05 = 2.8125 (relation 0 would give 1.25).
+        walk_at(&mut app, 2);
+        assert!((strength(&app) - 2.8125).abs() < 1e-5, "{}", strength(&app));
     }
 
     #[test]

@@ -884,6 +884,50 @@ fn caster_relation(
     }
 }
 
+/// What the Mind powers read of a relation: the last attitude a body keeps
+/// about another (the Loyalty cast's strength and its marker's drift).
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct MindRelations<'w, 's> {
+    relations: Query<'w, 's, &'static mut Relations>,
+    ids: Query<'w, 's, (Entity, &'static CharacterId)>,
+    roles: Query<'w, 's, &'static Roles>,
+    db: Option<Res<'w, RoleDatabase>>,
+}
+
+impl MindRelations<'_, '_> {
+    /// `observer`'s last attitude toward `toward`, as the original's
+    /// relation read answers it: a relation missing from the observer's
+    /// table is made (at `now`) and answers 0. A body without a table or
+    /// a character to keep one about answers 0.
+    pub(crate) fn last_attitude(&mut self, observer: Entity, toward: Entity, now: u32) -> f32 {
+        let locale = self.db.as_ref().map_or(0, |db| db.locale);
+        caster_relation(
+            toward,
+            self.relations.get_mut(observer).ok().map(Mut::into_inner),
+            &self.ids,
+            &self.roles,
+            locale,
+            now,
+        )
+    }
+
+    /// `observer`'s last attitude toward `toward` without making a
+    /// missing relation (0 then).
+    pub(crate) fn peek(&self, observer: Entity, toward: Entity) -> f32 {
+        let Ok((_, id)) = self.ids.get(toward) else {
+            return 0.0;
+        };
+        if self.roles.get(toward).is_err() {
+            return 0.0;
+        }
+        self.relations
+            .get(observer)
+            .ok()
+            .and_then(|relations| relations.find(id.0))
+            .map_or(0.0, |relation| relation.last)
+    }
+}
+
 /// Who raised a force effect, when the live effect is still in the scene.
 fn effect_caster(
     entity: Entity,

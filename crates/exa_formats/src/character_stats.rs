@@ -407,6 +407,9 @@ pub struct CharacterStats {
     /// Mind casts read it from the character's race record (1 or 2 a living
     /// mind, 4 or 5 an undead one, else none; the built-in record's 0).
     pub mind: u32,
+    /// Where the Mind sight draws the character's sphere, from its race
+    /// ([`crate::races::MindSightPlace`]).
+    pub mind_sight: crate::races::MindSightPlace,
 }
 
 impl Default for CharacterStats {
@@ -530,6 +533,7 @@ impl CharacterStats {
             },
             unarmed_reach: stats.unarmed_reach,
             mind: stats.mind,
+            mind_sight: stats.mind_sight,
         }
     }
 
