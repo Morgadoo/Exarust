@@ -2911,8 +2911,8 @@ impl Flow {
             start_ms: now.wrapping_add(WAKE_DELAY_MS),
         };
         // The world's revive pass runs before the save: the alarm return,
-        // then every character's behaviour reset (the bodies' wake and the
-        // removed bodies' contact drop are not reproduced).
+        // then every character's behaviour reset, the hold of every living
+        // body and the drop of their kept pairs (`revive_pass`).
         let mut steps = vec![Step::ClosePrelude, Step::AlarmReturn, Step::ReviveBrains];
         if self.mode.is_game() {
             steps.push(Step::Save {
