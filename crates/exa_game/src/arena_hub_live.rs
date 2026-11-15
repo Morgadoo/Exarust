@@ -2811,6 +2811,19 @@ mod tests {
         );
         // The staff list's share waits for the forms' pass.
         assert_eq!(career.staff_left, vec![3]);
+        // The Begin saves the career (without the death rule) after the
+        // departure and before the launch.
+        let saves: Vec<crate::save_live::SaveStep> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::save_live::SaveStep>>()
+            .drain()
+            .collect();
+        assert_eq!(
+            saves,
+            vec![crate::save_live::SaveStep::Save {
+                drop_on_low_health: false
+            }]
+        );
         app.update();
         let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
         assert!(career.staff_left.is_empty());

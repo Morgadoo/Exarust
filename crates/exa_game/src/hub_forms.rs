@@ -86,6 +86,9 @@ pub struct HubForms {
     pub marked: [[bool; 5]; 5],
     /// Employees a form took on, for the staff list's matching entry.
     pub joined: Vec<crate::staff::Employee>,
+    /// The rank the loadout form's slider is being dragged to: its points
+    /// line follows it until the drag ends ([`crate::loadout_kit::sync_kit`]).
+    pub dragged_rank: Option<i32>,
     /// The extended-control forms' popup, focus and models
     /// ([`crate::option_forms`]).
     pub options: crate::option_forms::OptionForms,
@@ -1044,11 +1047,14 @@ impl HubWindows {
                     .map_or(0.0, |f| f.controls()[loadout::RANK].value);
                 let rank = crate::manage::slider_rank(value);
                 if finished {
+                    self.forms.dragged_rank = None;
                     arsenal.switch_tab(rank);
                 } else if let Some(form) = self.forms.get_mut(FormWindow::Loadout)
                     && let Some(name) = crate::report::RANKS.get(rank.max(0) as usize)
                 {
                     form.set_text(loadout::RANK, name);
+                    // The points line follows the dragged rank.
+                    self.forms.dragged_rank = Some(rank);
                     self.forms.arsenal = Some(arsenal);
                     return;
                 }
@@ -2296,6 +2302,71 @@ mod tests {
                 .flatten()
                 .any(|entry| entry.item == prize && entry.flags == 0)
         );
+    }
+
+    /// The loadout form's rank slider, dragged through the live form input:
+    /// the points line follows the dragged rank (its loadout over its
+    /// limit) before the drag ends, and the release switches the tab.
+    #[test]
+    fn the_points_line_follows_the_dragged_rank() {
+        let (mut windows, career) = opened();
+        windows.open_loadout(PAGE_ROSTER, &career);
+        let mut arsenal = windows.forms.arsenal.expect("the loadout form");
+        arsenal.select(1);
+        windows.forms.arsenal = Some(arsenal);
+        let (left, right, y) = {
+            let form = windows.forms.get(FormWindow::Loadout).unwrap();
+            let (ox, oy) = form.origin();
+            let c = &form.controls()[loadout::RANK];
+            (ox + c.x + 2, ox + c.x + c.w * 3 / 5, oy + c.y + c.h / 2)
+        };
+        let mut app = form_app(windows, career);
+        app.insert_resource(crate::save_live::ArenaStores::default())
+            .init_resource::<crate::doll_view::DollItems>()
+            .init_resource::<crate::loadout_kit::KitPanels>()
+            .init_resource::<crate::loadout_kit::KitPreview>()
+            .add_systems(Update, crate::loadout_kit::sync_kit.after(hub_form_input));
+        let points = |app: &App| {
+            let windows = app.world().resource::<HubWindows>();
+            let form = windows.forms.get(FormWindow::Loadout).unwrap();
+            String::from_utf8_lossy(&form.controls()[loadout::POINTS].text).into_owned()
+        };
+        let step = |app: &mut App, at: (i32, i32), press: bool, release: bool| {
+            app.insert_resource(exa_ui::ScriptedPointer(Some(Vec2::new(
+                at.0 as f32,
+                at.1 as f32,
+            ))));
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            if press {
+                mouse.press(MouseButton::Left);
+            }
+            if release {
+                mouse.release(MouseButton::Left);
+            }
+            app.update();
+        };
+        step(&mut app, (left, y), true, false);
+        step(&mut app, (right, y), false, false);
+        assert_eq!(
+            app.world().resource::<HubWindows>().forms.dragged_rank,
+            Some(3)
+        );
+        assert_eq!(points(&app), "Points: 0 / 20");
+        assert_eq!(
+            app.world()
+                .resource::<HubWindows>()
+                .forms
+                .arsenal
+                .unwrap()
+                .tab,
+            0
+        );
+        step(&mut app, (right, y), false, true);
+        let windows = app.world().resource::<HubWindows>();
+        assert_eq!(windows.forms.dragged_rank, None);
+        assert_eq!(windows.forms.arsenal.unwrap().tab, 3);
+        assert_eq!(points(&app), "Points: 0 / 20");
     }
 
     #[test]
