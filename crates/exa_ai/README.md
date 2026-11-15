@@ -74,12 +74,17 @@ id from 1 (`first_free_id`), tagged with the world database's bit; a saved
 player keeps its world number (`world_character_id`). A character wearing a mind ward carries
 `brain::MindWarded`, the original's mind-masked bit: perception, the
 brains' and a duellist's, sees it hidden, its range shrinking with the
-observer's perception. The AI tick links each brain into its 600 cm room cell
-and the level's room table, gathers the characters of that cell as its
-nearby list, decays its group alert a step every ten seconds, and out of
-combat runs the idle states' head (`walker`: the alert look-around while
-the panic is at least 0.2 and the body keeps its in-combat mark, which
-fighting sets; then the attention to the attended contact, whose notice
+observer's perception. The AI tick decays its group alert a step every ten
+seconds, lets a cast go 500 ms after it began unless the body still casts
+(`brain::cast_timeout`, before the condition gate), links each brain into
+its 600 cm room cell and the level's room table, gathers its nearby list
+from the characters of its level room and of the room behind each exit
+(a repeat skipped), each through the nearby insert's sight test, the
+room-to-room light reach (a level without a room table gathers its 600 cm
+cell), and out of combat runs the idle states' head (`walker`: the alert
+look-around while the panic is at least 0.2 and the body keeps its
+in-combat mark, which fighting and fleeing set, turning to the body's
+target when it has one and panning otherwise; then the attention to the attended contact, whose notice
 score must reach 1, with a look window of `clamp(1 − 0.1·score, 0.25,
 0.7)·π`; only then is the mark cleared), the original's look chain
 (`motion::look_chain`) and turns its
@@ -304,9 +309,19 @@ state) or, for an object, the object focus (`Npc::flee_focus`, the flight's
 threat), and while at level 4 the pass keeps the threat as its foe. The
 flee state's head ends a flight whose threat is not fresh and stands in
 another room than the brain's and its previous one (or with neither a
-target nor a focus): level 0, a 10-20 s calm clock (`flee::tick`, logged
-`the flight ends`); a cornered fighter fights on with its courage doubled
-[the cornered branch is not wired].
+target nor a focus, read from the body's target and the object focus):
+level 0, a 10-20 s calm clock, the body's target and the focus cleared
+(`flee::tick`, logged `the flight ends`). A flight with no way out (no
+open exit away from the threat, or no room) is cornered: level 3, its
+courage doubled, and a character threat engages the duellist
+(`flee::cornered`, logged `the flight is cornered`). The target pass's
+leave also restores the idle state at its first step
+(`lifecycle::restart_idle`). The combat state's finally frame stamps the
+lifted foe's footprint back on every exit, and while the body is down it
+takes the down exit every tick (the aim, heading and look directions
+follow the body's facing). A follower inside its personal stop backs off
+to 400 cm from the leader along their line (`idle::closing_goal`, the
+closing walk: motion 0x14, radius 300).
 
 **Where the concern comes from.** The perception's threat estimate walks
 the observed character's own contacts. The player's are its behaviour's

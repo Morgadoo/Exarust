@@ -175,8 +175,10 @@ impl RoomCells {
 /// coordinate over 600 cm, `width·(z + height/2) + (x + width/2)`; a
 /// negative index or one not below `width·height` is off the grid.
 pub fn cell_index(position_cm: Vec3, size: RoomGridSize) -> Option<i32> {
-    let x = (position_cm.x * INVERSE_CELL).floor() as i64 as i32;
-    let z = (position_cm.z * INVERSE_CELL).floor() as i64 as i32;
+    // The engine's floor: rounding down, the integer's smallest value for
+    // NaN or a coordinate out of range.
+    let x = exa_physics::engine_math::floor_to_i32(position_cm.x * INVERSE_CELL);
+    let z = exa_physics::engine_math::floor_to_i32(position_cm.z * INVERSE_CELL);
     let index = i64::from(size.width) * i64::from(z + size.height / 2)
         + i64::from(x)
         + i64::from(size.width / 2);

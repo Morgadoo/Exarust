@@ -9,10 +9,14 @@
 //! `SkillShow_01` plays, a ring screen is built over the window and the
 //! player's record is attached, which refreshes its ready flag. The
 //! player's controls hear nothing while it is open (they are off), so the
-//! skills key does not toggle it shut; the right
-//! button closes it at once, as the screen's pointer method calls the open
-//! routine's toggle. Closing refreshes the body's technique word from the
-//! record (the close routine's technique refresh and character refit).
+//! skills key reaches the screen's own key method instead: on the ring,
+//! unlocked, past the reveal's first 100 ms and not hiding, any key calls
+//! the open routine's toggle and closes the screen ([`leave_skill_ui`]).
+//! The right button closes it at once, as the screen's pointer method
+//! calls the same toggle, and a request while the screen is up closes it
+//! (the open routine's own toggle branch). Closing refreshes the body's
+//! technique word from the record (the close routine's technique refresh
+//! and character refit).
 //! The open routine turns the player's controls off before it builds the
 //! screen and the close routine turns them back on
 //! ([`crate::controls_live`]).
@@ -50,8 +54,8 @@ use exa_ui::gui_font::{FONTBASE_24, GuiFont, font_with_fallback, gui_level, leve
 use exa_ui::icon_atlas::{IconAtlas, IconImage};
 use exa_ui::skill::{
     ExperienceRates, SkillBounds, SkillHit, SkillHoverInput, SkillPointInput, SkillPointer,
-    SkillScreen, clamp_tooltip, hit_skill_point, skill_hover, skill_node_hit, skill_popup_fade,
-    skill_ring_position, skill_satellite,
+    SkillScreen, clamp_tooltip, hit_skill_point, leave_skill_ui, skill_hover, skill_node_hit,
+    skill_popup_fade, skill_ring_position, skill_satellite,
 };
 use exa_ui::skill_draw::{
     SkillDraw, SkillDrawInput, SkillLabel, SkillProgram, SkillTexture, SkillTip, SkillVertex,
@@ -197,27 +201,39 @@ fn open_skills(
     time: Res<Time>,
     gui: Option<Res<exa_ui::GuiScale>>,
     game: Option<Res<Game>>,
-    mut players: Query<&mut CharacterData, With<PlayerBody>>,
+    mut players: Query<(Entity, &mut CharacterData), With<PlayerBody>>,
     mut ui: ResMut<SkillUi>,
     bank: Option<ResMut<exa_audio::SoundBank>>,
     mut sources: Option<ResMut<Assets<AudioSource>>>,
-    (mut commands, control): (Commands, Option<ResMut<PlayerControl>>),
+    (mut commands, mut control, mut story): (
+        Commands,
+        Option<ResMut<PlayerControl>>,
+        Option<ResMut<StoryExperience>>,
+    ),
 ) {
     if requests.read().count() == 0 {
         return;
     }
-    // The player's controls are off while the screen is up, so the key does
-    // not reach the open routine again; the routine's own toggle closes an
-    // open screen.
+    // The open routine's toggle: with the screen up it only closes it. (The
+    // player's controls are off while the screen is up, so the skills key
+    // reaches the screen's key method rather than this routine.)
     if ui.screen.is_some() {
+        let player = players.single().ok();
+        close(
+            &mut ui,
+            player,
+            story.as_deref_mut(),
+            &mut commands,
+            control.as_deref_mut(),
+        );
         return;
     }
-    let (Ok(window), Ok(mut data)) = (windows.single(), players.single_mut()) else {
+    let (Ok(window), Ok((_, mut data))) = (windows.single(), players.single_mut()) else {
         return;
     };
     // The open routine turns the controls off before it builds the screen.
-    if let Some(mut control) = control {
-        crate::controls_live::switch_controls(&mut control, true, "skill screen opens");
+    if let Some(control) = control.as_deref_mut() {
+        crate::controls_live::switch_controls(control, true, "skill screen opens");
     }
     let unit = unit_of(gui.as_deref());
     if let Some(game) = game.as_deref()
@@ -345,9 +361,25 @@ fn close(
     }
 }
 
+/// Whether the screen's key method closes it for a key pressed at `now`:
+/// the ring screen (not the compact tree, which runs the form's own keys,
+/// nor a page) calls the open routine's toggle unless it is in the
+/// reveal's first 100 ms or hiding ([`leave_skill_ui`]).
+pub fn key_closes(screen: &SkillScreen, now: i32) -> bool {
+    leave_skill_ui(
+        false,
+        screen.page,
+        u16::from(screen.state),
+        screen.reveal_deadline,
+        now,
+    )
+    .call_clear
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pointer(
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
@@ -358,6 +390,25 @@ fn pointer(
     mut control: Option<ResMut<PlayerControl>>,
 ) {
     let now = clock(&time);
+    // A key goes to the screen's key method, which with the player's
+    // controls off is the only one that hears it.
+    if keys.is_some_and(|keys| keys.get_just_pressed().next().is_some())
+        && ui
+            .screen
+            .as_ref()
+            .is_some_and(|screen| key_closes(screen, now))
+    {
+        info!("skills: a key closes the skill screen");
+        let player = players.single().ok();
+        close(
+            &mut ui,
+            player,
+            story.as_deref_mut(),
+            &mut commands,
+            control.as_deref_mut(),
+        );
+        return;
+    }
     let mut mask = 0u16;
     if buttons.just_released(MouseButton::Left) {
         mask |= 0x2000;
@@ -1047,6 +1098,89 @@ mod tests {
         // Group 2's first level reads index 2·8 + 1 + 1.
         assert_eq!(grid[18], 3);
         assert_eq!(&grid[..8], &[0; 8]);
+    }
+
+    /// A headless app with the screen's plugin, a player and the
+    /// controls, the screen open on the ring at clock 0.
+    fn open_screen_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Time>()
+            .init_resource::<Assets<Image>>()
+            .insert_resource(PlayerControl::new())
+            .add_plugins(SkillScreenPlugin);
+        let player = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), CharacterData::new()))
+            .id();
+        let bounds = SkillBounds {
+            left: 0,
+            right: 1280,
+            top: 0,
+            bottom: 720,
+        };
+        app.world_mut().resource_mut::<SkillUi>().screen =
+            Some(SkillScreen::open(bounds, 4, false, 0, 0));
+        app.world_mut().resource_mut::<PlayerControl>().off = true;
+        (app, player)
+    }
+
+    fn press_at(app: &mut App, ms: u64, key: KeyCode) {
+        let mut time = app.world_mut().resource_mut::<Time>();
+        let elapsed = time.elapsed();
+        time.advance_by(std::time::Duration::from_millis(ms) - elapsed);
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.release_all();
+        keys.clear();
+        keys.press(key);
+        app.update();
+    }
+
+    /// The live screen hears keys: the key that opened it (inside the
+    /// reveal's first 100 ms) leaves it up, a later key closes it through
+    /// the open routine's toggle, turning the controls back on and
+    /// refreshing the body's technique word.
+    #[test]
+    fn a_key_closes_the_ring_after_the_reveals_first_moments() {
+        let (mut app, player) = open_screen_app();
+        press_at(&mut app, 50, KeyCode::KeyK);
+        assert!(app.world().resource::<SkillUi>().screen.is_some());
+        assert!(app.world().resource::<PlayerControl>().off);
+        press_at(&mut app, 150, KeyCode::Escape);
+        assert!(app.world().resource::<SkillUi>().screen.is_none());
+        assert!(!app.world().resource::<PlayerControl>().off);
+        assert!(app.world().get::<TechniqueWord>(player).is_some());
+    }
+
+    /// A hiding screen or a page ignores keys; the reveal's bound is the
+    /// deadline less 400 ms.
+    #[test]
+    fn keys_wait_out_the_reveal_and_the_hide() {
+        let bounds = SkillBounds {
+            left: 0,
+            right: 1280,
+            top: 0,
+            bottom: 720,
+        };
+        let mut screen = SkillScreen::open(bounds, 4, false, 0, 1000);
+        assert!(!key_closes(&screen, 1099));
+        assert!(key_closes(&screen, 1100));
+        screen.begin_hide(1200);
+        assert!(!key_closes(&screen, 1300));
+        let page = SkillScreen::open(bounds, 4, false, 2, 0);
+        assert!(!key_closes(&page, 5000));
+    }
+
+    /// A skills request while the screen is up closes it (the open
+    /// routine's toggle).
+    #[test]
+    fn a_request_while_open_toggles_the_screen_shut() {
+        let (mut app, _) = open_screen_app();
+        app.world_mut().write_message(OpenSkills);
+        app.update();
+        assert!(app.world().resource::<SkillUi>().screen.is_none());
+        assert!(!app.world().resource::<PlayerControl>().off);
     }
 
     #[test]

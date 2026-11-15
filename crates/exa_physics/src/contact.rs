@@ -517,8 +517,15 @@ pub(crate) fn swept_hit(t: &[Vec3; 3], start: Vec3, end: Vec3, r: f32) -> Option
 /// pair manifolds do: of the two closest in weight space, the one whose own
 /// nearest other is closer (the second on a tie). The newcomer (4) may be
 /// the one.
+/// The engine's squared distance of two 4-float points: the squares summed
+/// in pairs, `(dx² + dz²) + (dy² + dw²)`, as its packed shuffle-and-add.
+pub(crate) fn squared_distance4(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
+    (d[0] * d[0] + d[2] * d[2]) + (d[1] * d[1] + d[3] * d[3])
+}
+
 pub(crate) fn evicted(all: &[[f32; 4]; 5]) -> usize {
-    let gap = |a: usize, b: usize| -> f32 { (0..4).map(|k| (all[a][k] - all[b][k]).powi(2)).sum() };
+    let gap = |a: usize, b: usize| -> f32 { squared_distance4(all[a], all[b]) };
     let mut pair = (0, 1, f32::MAX);
     for a in 0..all.len() {
         for b in a + 1..all.len() {
@@ -555,6 +562,20 @@ pub(crate) fn rub(slip: Vec3, n: Vec3, friction: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The squares are summed in the engine's pairs, which rounds apart
+    /// from a left-to-right sum.
+    #[test]
+    fn the_squared_distance_sums_in_pairs() {
+        let tiny = 2.0f32.powi(-12);
+        let a = [1.0, tiny, 0.0, tiny];
+        let b = [0.0; 4];
+        // x² + z² = 1 and y² + w² = 2^-23 add up to the next float above
+        // 1; left to right each 2^-24 rounds away.
+        assert_eq!(squared_distance4(a, b), 1.0 + 2.0f32.powi(-23));
+        let sequential: f32 = (0..4).map(|k| (a[k] - b[k]) * (a[k] - b[k])).sum();
+        assert_eq!(sequential, 1.0);
+    }
 
     /// A square floor at `y` over `[-1, 1]²`, two upward faces.
     fn square(y: f32) -> [[Vec3; 3]; 2] {

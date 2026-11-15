@@ -141,6 +141,25 @@ otherwise record it as a deviation.
 
 **Blocks:** one `partial` row (Calm).
 
+### DEC-10. Desktop platform differences
+**Question:** keep these Windows behaviours of the original as deviations,
+or reproduce them?
+
+| item | the original | Exarust |
+|---|---|---|
+| Single-instance guard | refuses a second copy of the game | several copies run (the check grid and the lockstep checks run four at once) |
+| Window icon | loaded from the executable | on GNOME Wayland the icon comes from the desktop entry; winit cannot set one |
+| Adaptive vsync | the setting asks the driver for adaptive vsync | wgpu offers no adaptive mode |
+
+**Facts:** found by the `engrt` lane (round 220). None changes the game's
+picture or rules.
+
+**Recommendation:** keep all three as deviations: the single-instance guard
+as an opt-in flag for release builds (task D5), the icon through the desktop
+entry at packaging, adaptive vsync as the nearest wgpu present mode.
+
+**Blocks:** six `missing` rows of RF_OS_Functions and RF_Main.
+
 ## Taken
 
 | date | decision |

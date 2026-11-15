@@ -1125,6 +1125,27 @@ mod tests {
     }
 
     #[test]
+    fn the_factory_copy_of_the_fast_sine_agrees_bit_for_bit() {
+        let mut inputs = vec![0.0f32, -0.0, 1.0e-30, 0.3, 0.392_699_1, 2.0, -7.5, 1.0e5];
+        inputs.extend([1.0e9, 1.69e9, 1.7e9, 3.0e9, -4.0e9, 1.0e30, f32::MAX]);
+        inputs.extend([f32::INFINITY, f32::NEG_INFINITY, f32::NAN]);
+        inputs.extend((-400..400).map(|i| i as f32 * 0.037));
+        for x in inputs {
+            let (s, c) = sin_cos(x);
+            let (fs, fc) = exa_formats::factory::sin_cos(x);
+            assert_eq!(
+                (s.to_bits(), c.to_bits()),
+                (fs.to_bits(), fc.to_bits()),
+                "{x}"
+            );
+        }
+        // Past the reduction's range the unpicked polynomial overflows and
+        // the cosine is NaN, in both copies.
+        assert!(sin_cos(3.0e9).1.is_nan());
+        assert!(exa_formats::factory::sin_cos(3.0e9).1.is_nan());
+    }
+
+    #[test]
     fn the_fast_trigonometry_and_its_wrapping() {
         assert_eq!(sin(0.0), 0.0);
         // Past the reduction's range the sine polynomial overflows and the

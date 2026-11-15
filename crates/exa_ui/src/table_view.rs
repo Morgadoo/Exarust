@@ -10,6 +10,7 @@
 
 use crate::form::ClientRect;
 use crate::gui_font::{GuiFont, round_i32};
+use crate::skin::{GuiRect, SkinBatch, SkinPalette, faded_rect, selection_band};
 use crate::text_edit::{self, EditAction, EditView};
 
 /// The style word the table's constructor gives its form (the meaning of
@@ -31,6 +32,9 @@ pub mod column {
 
 /// A row flag: the row is greyed and cannot be selected.
 pub const ROW_DISABLED: u32 = 0x2;
+
+/// The text-group shade a dragged row's label is written in.
+pub const DRAG_LABEL_INK: usize = 8;
 
 /// The header's height and the row pitch, in GUI units.
 pub const ROW_UNITS: i32 = 6;
@@ -385,6 +389,19 @@ impl TableView {
         } else {
             form_reply
         }
+    }
+
+    /// The pointer at client `y`, as the window manager hands it on: the
+    /// table's hover slot with the row there ([`Self::row_at`],
+    /// [`Self::hover_row`]); with no row the form's own hover change takes
+    /// it, which stores the none. Returns the hover slot's reply.
+    pub fn hover_at(&mut self, y: i32) -> u32 {
+        let row = self.row_at(y);
+        let reply = self.hover_row(row, 0);
+        if row < 1 {
+            self.hover = row;
+        }
+        reply
     }
 
     /// The column under `x` (client coordinates): the first whose right
@@ -928,10 +945,76 @@ impl TableView {
         out
     }
 
-    /// The owner's query callback, which the original asks when the table's
-    /// own virtual query runs: the owner's answer, or 0 when it has none.
-    pub fn owner_query(&self, owner: Option<&dyn Fn() -> u32>) -> u32 {
+    /// The selected row's band, as the table's draw puts it under the
+    /// cells (client coordinates, at the scroll): with the pointer on the
+    /// selected row and no edit open, a quarter-strength gradient from the
+    /// highlight group's fifth shade at the bottom to its first at the top,
+    /// then the skin's selected band; otherwise the unselected band alone.
+    /// Both span the client's width and the row less two pixels, the row
+    /// `selected` row pitches down (under the header). Nothing is drawn
+    /// while the selection is at or above the first drawn row.
+    pub fn paint_selection(&self, batch: &mut SkinBatch, palette: &SkinPalette) {
+        let draw = self.selection_band();
+        let Some(([x, y, w, h], filled)) = draw else {
+            return;
+        };
+        let rect = GuiRect {
+            x0: x as f32,
+            y0: y as f32,
+            x1: (x + w) as f32,
+            y1: (y + h) as f32,
+        };
+        batch.select(1, 0, false);
+        if filled {
+            faded_rect(
+                batch,
+                rect,
+                palette.highlight[4],
+                palette.highlight[0],
+                0.25,
+            );
+        }
+        selection_band(batch, rect, &palette.highlight, filled, self.unit);
+    }
+
+    /// The selection's band and whether it is filled ([`TableDraw::selection`]),
+    /// moved by the scroll offset.
+    pub fn selection_band(&self) -> Option<([i32; 4], bool)> {
+        if self.first_visible() >= self.selected {
+            return None;
+        }
+        let offset = -round_i32(f64::from(
+            (self.content_height - self.client.height()) as f32 * self.scroll,
+        ));
+        let y = self.row_height * self.selected + offset;
+        let filled = self.hover == self.selected && !self.editing;
+        Some(([0, y, self.client.width(), self.row_height - 2], filled))
+    }
+
+    /// The drop on the table: the owner's drop callback runs when the
+    /// owner gave one (the board's and Manage Company's fighter tables move
+    /// the dragged row with it), and its answer is the table's; with none
+    /// the answer is 0.
+    pub fn owner_query(&self, owner: Option<&mut dyn FnMut() -> u32>) -> u32 {
         owner.map_or(0, |query| query())
+    }
+
+    /// The dragged row's label box ([`Self::drag_label`]'s `x, y, w, h`)
+    /// as the drag draws it: a quarter-strength gradient from the form
+    /// group's fifth shade at the bottom to its first at the top, then the
+    /// skin's unselected band. The text goes over it in the text group's
+    /// ninth shade ([`DRAG_LABEL_INK`]).
+    pub fn paint_drag_label(&self, batch: &mut SkinBatch, palette: &SkinPalette, label: [i32; 4]) {
+        let [x, y, w, h] = label;
+        let rect = GuiRect {
+            x0: x as f32,
+            y0: y as f32,
+            x1: (x + w) as f32,
+            y1: (y + h) as f32,
+        };
+        batch.select(1, 0, false);
+        faded_rect(batch, rect, palette.form[4], palette.form[0], 0.25);
+        selection_band(batch, rect, &palette.highlight, false, self.unit);
     }
 
     /// The dragged row's label: its box (x, y, w, h) at the pointer less
@@ -1349,11 +1432,59 @@ mod tests {
         assert!(d.cells.contains(&(1, 0, (5, 55), false)));
     }
 
+    /// The selected row's band spans the client one row pitch per row
+    /// down, less two pixels; the pointer on it fills it (the gradient
+    /// under the band), elsewhere the band is drawn alone.
+    #[test]
+    fn the_selected_row_draws_its_band() {
+        let mut t = table(3);
+        assert_eq!(t.selection_band(), None);
+        t.selected = 2;
+        assert_eq!(t.selection_band(), Some(([0, 60, 300, 28], false)));
+        let palette = crate::skin::SkinPalette::filled([200, 180, 160, 255]);
+        let mut plain = SkinBatch::new();
+        t.paint_selection(&mut plain, &palette);
+        t.hover_at(65);
+        assert_eq!(t.hover, 2);
+        assert_eq!(t.selection_band(), Some(([0, 60, 300, 28], true)));
+        let mut filled = SkinBatch::new();
+        t.paint_selection(&mut filled, &palette);
+        assert!(!plain.vertices.is_empty());
+        assert!(filled.vertices.len() > plain.vertices.len());
+        // Off the rows the form's hover stores none.
+        t.hover_at(2);
+        assert_eq!(t.hover, -1);
+    }
+
+    /// A dragged row's label sits at the pointer less the grab, as wide as
+    /// its first cell's text, and paints its box.
+    #[test]
+    fn the_drag_label_follows_the_pointer() {
+        let t = table(3);
+        let (label, pen) = t.drag_label(1, (200, 100), (10, 15), &RAYFORM_10);
+        let width = RAYFORM_10.text_width(b"r1");
+        assert_eq!(label, [190, 85, width - 1, 28]);
+        assert_eq!(pen.0, 190);
+        let mut batch = SkinBatch::new();
+        t.paint_drag_label(
+            &mut batch,
+            &crate::skin::SkinPalette::filled([1, 2, 3, 255]),
+            label,
+        );
+        assert!(!batch.vertices.is_empty());
+    }
+
     #[test]
     fn the_owner_query_answers_or_is_zero() {
         let t = table(1);
         assert_eq!(t.owner_query(None), 0);
-        assert_eq!(t.owner_query(Some(&|| 7)), 7);
+        let mut drops = 0;
+        let mut drop = || {
+            drops += 1;
+            7
+        };
+        assert_eq!(t.owner_query(Some(&mut drop)), 7);
+        assert_eq!(drops, 1);
     }
 
     #[test]
