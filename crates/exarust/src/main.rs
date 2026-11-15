@@ -234,6 +234,8 @@
 //!                                     into the off hand)
 //!          --pad-press name@frame,... debug: a scripted gamepad in controller mode (talk, select, up, down, powers,
 //!                                     use-power, combat, pause, inventory, skills, swap, power-tree, attack (the emulated left button);
+//!                                     the menu set: menu-select, menu-back, menu-exit, menu-up/down/left/right,
+//!                                     scroll-up/down/left/right;
 //!                                     `name@from-to` holds it), frames after the load
 //!          --figure-drag FROM>TO@FRAME debug: press on the inventory figure at FROM at that frame after loading
 //!                                     and release at TO two frames later (a drag off the figure); a point is

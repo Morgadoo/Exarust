@@ -429,6 +429,7 @@ fn open_arsenal(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn arsenal_live(
     mut window: ResMut<ArsenalWindow>,
     mut keys: MessageReader<ArsenalKey>,
@@ -437,6 +438,7 @@ fn arsenal_live(
     mut frames: ResMut<GuiFrames>,
     textures: Option<Res<GuiTextures>>,
     mut control: Option<ResMut<crate::player_controls::PlayerControl>>,
+    mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
 ) {
     for key in keys.read() {
         if window.open {
@@ -454,6 +456,22 @@ fn arsenal_live(
         if window.open {
             window.scroll_press(scroll.0);
         }
+    }
+    // The pad's word goes to the view's key slot: the scroll stick's left
+    // and right steps scroll the columns as the buttons do; any other word
+    // falls to the base form, whose answer the dispatch leaves alone (the
+    // slot hands back the word, not the base form's 0x40).
+    if let Some(key) = pad
+        .as_deref_mut()
+        .and_then(|pad| pad.take(crate::pad_menu::PadForm::Arsenal))
+        && window.open
+        && key.key & 2 != 0
+    {
+        window.scroll_press(key.key);
+        info!(
+            "arsenal: the pad's word {:#x} scrolls to {}",
+            key.key, window.scroll
+        );
     }
     if !window.open {
         return;
@@ -580,6 +598,34 @@ mod tests {
         assert!(window.open);
         window.key(0x41, 0);
         assert!(window.open);
+    }
+
+    /// The pad's scroll stick reaches the live window's key slot: right
+    /// scrolls the columns on, left back; a navigation word does nothing.
+    #[test]
+    fn the_pads_scroll_words_scroll_the_live_window() {
+        use crate::pad_menu::{PadForm, PadMenu};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ArsenalViewPlugin)
+            .init_resource::<PadMenu>()
+            .insert_resource(window());
+        let word = |app: &mut App, key: u32| {
+            app.world_mut().resource_mut::<PadMenu>().dispatch(
+                crate::gamepad::MenuFrame {
+                    key,
+                    ..Default::default()
+                },
+                Some(PadForm::Arsenal.id()),
+                true,
+            );
+            app.update();
+            app.world().resource::<ArsenalWindow>().scroll
+        };
+        assert_eq!(word(&mut app, 0x2002), 1);
+        assert_eq!(word(&mut app, 0x2002), 2);
+        assert_eq!(word(&mut app, 0x1002), 1);
+        assert_eq!(word(&mut app, 0x2001), 1);
     }
 
     #[test]

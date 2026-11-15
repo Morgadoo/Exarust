@@ -905,45 +905,49 @@ fn link_satellite(node: (f32, f32), slot: i32, unit: i32, turn: f32) -> (f32, f3
     (sx * turn + node.0, node.1 - sy * turn)
 }
 
+/// The offset from `point` to `satellite` (its `y` times `stretch`),
+/// scaled in place by the reciprocal of its length: the squared length,
+/// the length, the scaled offset's dot product with `direction` and its
+/// scaled `y` (the original reads the `y` back after the scale).
 fn link_metric(
     point: (i32, i32),
     satellite: (f32, f32),
     direction: (f32, f32),
-    scale_y: bool,
-) -> (f32, f32) {
+    stretch: f32,
+) -> (f32, f32, f32, f32) {
     let dx = satellite.0 - point.0 as f32;
-    let mut dy = satellite.1 - point.1 as f32;
-    if scale_y {
-        dy *= 4.0;
-    }
-    let length = (dx * dx + dy * dy).sqrt();
-    let (nx, ny) = if length > 0.0 {
-        (dx / length, dy / length)
-    } else {
-        (f32::NAN, f32::NAN)
-    };
-    (length, nx * direction.0 + ny * direction.1)
+    let dy = (satellite.1 - point.1 as f32) * stretch;
+    let squared = dx * dx + dy * dy;
+    let length = squared.sqrt();
+    let inverse = 1.0 / length;
+    let (nx, ny) = (dx * inverse, dy * inverse);
+    (squared, length, nx * direction.0 + ny * direction.1, ny)
 }
 
-/// Searches the adjacent slots then every node's five slots for a link.
+/// The skill screen's link search (its pad pick, slot 31), from the
+/// current point along the menu cursor's normalised `direction`. First the
+/// two satellites beside the hit level on its node's pentagon: the one
+/// whose offset (unstretched) is best aligned past 0.1. Otherwise every
+/// node's five satellites: reachable, at least a unit away (squared length
+/// 1 or more, the offset's `y` four times longer when the stick is
+/// horizontal), aligned at least 0.3 (compared in double precision), the
+/// smallest length over the squared alignment. The returned point is the
+/// satellite, rounded half to even; with a horizontal stick its `y` is
+/// the current point's moved by the normalised offset's `y` times 0.1
+/// beside the hit level (in double precision) or times 0.25 in the scan,
+/// so a sideways step keeps the row.
 pub fn pick_skill_satellite(input: SkillLinkInput<'_>) -> SkillLink {
-    let scale_y = input.direction.1.abs() < input.direction.0.abs();
-    let point_of = |satellite: (f32, f32)| {
-        (
-            satellite.0.round_ties_even() as i32,
-            satellite.1.round_ties_even() as i32,
-        )
-    };
+    let horizontal = input.direction.1.abs() < input.direction.0.abs();
+    let round = |v: f32| v.round_ties_even() as i32;
     if input.hit > 0 {
         let slot = (input.hit & 7) - 1;
         let mut best_dot = 0.1f32;
-        let mut best: Option<(i32, (f32, f32))> = None;
+        let mut best: Option<(i32, (i32, i32))> = None;
         for step in 0..2 {
             let mut at = 2 * step - 1 + slot;
             if at < 0 {
                 at = 4;
-            }
-            if at > 4 {
+            } else if at > 4 {
                 at = 0;
             }
             let code = (input.hit & 0xff00) | (at + 1);
@@ -951,21 +955,24 @@ pub fn pick_skill_satellite(input: SkillLinkInput<'_>) -> SkillLink {
                 continue;
             }
             let satellite = link_satellite(input.node_point, at, input.unit, input.turn);
-            let (_, dot) = link_metric(input.point, satellite, input.direction, scale_y);
+            let (_, _, dot, ny) = link_metric(input.point, satellite, input.direction, 1.0);
             if dot > best_dot {
                 best_dot = dot;
-                best = Some((code, satellite));
+                let y = if horizontal {
+                    (f64::from(ny) * 0.1 + f64::from(input.point.1)) as f32
+                } else {
+                    satellite.1
+                };
+                best = Some((code, (round(satellite.0), round(y))));
             }
         }
-        if let Some((code, satellite)) = best {
-            return SkillLink {
-                code,
-                point: point_of(satellite),
-            };
+        if let Some((code, point)) = best {
+            return SkillLink { code, point };
         }
     }
+    let stretch = if horizontal { 4.0 } else { 1.0 };
     let mut best_metric = 1_000_000.0f32;
-    let mut best: Option<(i32, (f32, f32))> = None;
+    let mut best: Option<(i32, (i32, i32))> = None;
     for &(high, node) in input.nodes {
         for at in 0..5 {
             let code = high | (at + 1);
@@ -973,8 +980,9 @@ pub fn pick_skill_satellite(input: SkillLinkInput<'_>) -> SkillLink {
                 continue;
             }
             let satellite = link_satellite(node, at, input.unit, input.turn);
-            let (length, dot) = link_metric(input.point, satellite, input.direction, scale_y);
-            if length * length < 1.0 {
+            let (squared, length, dot, ny) =
+                link_metric(input.point, satellite, input.direction, stretch);
+            if squared < 1.0 {
                 continue;
             }
             if f64::from(dot) < 0.3 {
@@ -983,15 +991,17 @@ pub fn pick_skill_satellite(input: SkillLinkInput<'_>) -> SkillLink {
             let metric = length / (dot * dot);
             if metric < best_metric {
                 best_metric = metric;
-                best = Some((code, satellite));
+                let y = if horizontal {
+                    ny * 0.25 + input.point.1 as f32
+                } else {
+                    satellite.1
+                };
+                best = Some((code, (round(satellite.0), round(y))));
             }
         }
     }
     match best {
-        Some((code, satellite)) => SkillLink {
-            code,
-            point: point_of(satellite),
-        },
+        Some((code, point)) => SkillLink { code, point },
         None => SkillLink {
             code: 0,
             point: input.point,
@@ -3108,9 +3118,11 @@ mod tests {
             unit: 1,
             turn: 1.0,
         });
-        // Slot 1 is straight up (10, −8); slot 3 is at (21, 25).
+        // Slot 1 is straight up (10, −8); slot 3 is at (21, 25). The stick
+        // is horizontal, so the point's y moves by a tenth of the
+        // normalised offset's y (−0.0625): it stays on the row.
         assert_eq!(adjacent.code, 0x0201);
-        assert_eq!(adjacent.point, (10, -8));
+        assert_eq!(adjacent.point, (10, 0));
 
         let nodes = [(0x100, (0.0, 0.0))];
         let scanned = pick_skill_satellite(SkillLinkInput {

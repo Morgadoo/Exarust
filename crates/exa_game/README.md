@@ -1816,7 +1816,17 @@ analog word once its squared length is over 0.01), aim, the attack on
 the emulated left mouse button (Exarust's stand-in for Steam's mouse
 emulation, the original's only pad attack) and the alternate attack, crouch,
 sprint, weapon swap, the `Combat` action's combat-mode toggle and the chase camera's look and zoom; the
-controls page's `InputMode` drives its controller flag. There is no Steam
+controls page's `InputMode` drives its controller flag. The menu dispatch
+(`pad_menu`) puts the live forms on the focus stack as they show and hide
+(main menu, Settings, manual, skill screen, arsenal, hub windows), switches
+between the menu set and the gameplay layer, hands the menu reader's word
+to the top form and runs `MenuExit` as the menu toggle; an unanswered word
+goes to the form's back slot, the directional pick or the focused control
+(`pad_menu::fallback`). The forms' pad arms are live: the main menu's and
+the manual's key slots, the skill screen's key slot and link search, the
+arsenal's scroll words, the Settings form's pick and records, the arena
+board's tables and the hub's message box (`--pad-press` scripts the menu
+set's buttons and sticks). There is no Steam
 library, no binding panel and no floating
 gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 

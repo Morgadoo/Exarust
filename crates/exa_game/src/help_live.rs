@@ -36,6 +36,7 @@ use exa_ui::form::ClientRect;
 use exa_ui::game_tips::GameTips;
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrame, GuiFrames, GuiLayer, GuiTextures, LayerTexture};
+use exa_ui::help_screen::{TwoPane, two_pane_key};
 use exa_ui::help_system::{self, Manual, ManualSource, TopicRef};
 use exa_ui::item_view::{ItemView, ViewEvent, ViewReply};
 use exa_ui::text_box::TextBox;
@@ -516,11 +517,20 @@ fn manual_input(
     mut steps: Option<ResMut<FlowSteps>>,
     mut flow: Option<ResMut<crate::flow::Flow>>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
+    mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     let typed: Vec<_> = typed.read().cloned().collect();
     if !screen.is_open() {
         return;
+    }
+    // The pad's word for the manual, taken before anything can return.
+    let pad_key = pad
+        .as_deref_mut()
+        .and_then(|pad| pad.take(crate::pad_menu::PadForm::Manual));
+    let pad_exit = pad.as_deref().is_some_and(|pad| pad.exit);
+    if let (Some(pad), Some(forms)) = (pad.as_deref(), screen.forms.as_mut()) {
+        forms.task.gamepad = pad.gui_gamepad;
     }
     // The help screen's close notifies the game main unit, whose handler
     // clears the menu's help flag ([`crate::flow::Flow::help_closed`]).
@@ -534,9 +544,11 @@ fn manual_input(
             }
         }
     };
+    // The pad's exit hook is the menu toggle, which F1 is here.
     if keys.just_pressed(KeyCode::Escape)
         || keys.just_pressed(KeyCode::F1)
         || mouse.just_released(MouseButton::Right)
+        || pad_exit
     {
         close(&mut screen, &mut steps);
         return;
@@ -654,6 +666,29 @@ fn manual_input(
             }
         }
     }
+    // The pad's word goes to the manual's key slot (the two-pane help
+    // screen's): a navigation step moves the topic list's selection,
+    // clamped to its entries, and runs its pick callback; a scroll step
+    // scrolls the page's text box by its step; a plain MenuBak closes.
+    let mut pad_close = false;
+    if let Some(key) = pad_key {
+        let pane = TwoPane {
+            page: list.selected,
+            last_page: list.entries.len() as i32,
+            scroll_step: screen.page_box.as_ref().map_or(0.0, |b| b.scroll_step),
+        };
+        let out = two_pane_key(key.key, pane);
+        if out.changed {
+            list.selected = out.page;
+            events.push(ViewEvent::Selected(out.page));
+            info!("manual: the pad steps to topic {}", out.page);
+        }
+        if let (Some(delta), Some(page_box)) = (out.scroll, screen.page_box.as_mut()) {
+            page_box.scroll_by(delta);
+            info!("manual: the pad scrolls the page by {delta:.3}");
+        }
+        pad_close = out.close;
+    }
     let mut picked = None;
     for event in events {
         if let ViewEvent::Selected(n) = event {
@@ -683,6 +718,10 @@ fn manual_input(
         forms
             .task
             .focus_set(Some(list_form), exa_ui::gui_core::NO_CONTROL);
+    }
+    if pad_close {
+        // The form's back slot.
+        close(screen, &mut steps);
     }
 }
 
@@ -1178,6 +1217,35 @@ mod tests {
             "the page has the keys"
         );
         assert_eq!(screen.picked_topic(), Some(1));
+    }
+
+    /// The pad's words reach the manual's key slot (the two-pane help
+    /// screen's): a navigation step down picks the next topic and shows
+    /// it, a plain MenuBak closes the manual.
+    #[test]
+    fn the_pad_steps_the_manual_topics_and_closes_it() {
+        use crate::pad_menu::{PadForm, PadMenu};
+        let (mut app, _) = manual_app();
+        app.init_resource::<PadMenu>();
+        let word = |app: &mut App, key: u32| {
+            app.world_mut().resource_mut::<PadMenu>().dispatch(
+                crate::gamepad::MenuFrame {
+                    key,
+                    ..Default::default()
+                },
+                Some(PadForm::Manual.id()),
+                true,
+            );
+            app.update();
+        };
+        word(&mut app, 0x8001);
+        {
+            let screen = app.world().resource::<ManualScreen>();
+            assert_eq!(screen.list.as_ref().unwrap().selected, 2);
+            assert_eq!(screen.manual.as_ref().unwrap().text, b"Moving about.");
+        }
+        word(&mut app, 0x200);
+        assert!(!app.world().resource::<ManualScreen>().is_open());
     }
 
     /// The pages' tags: 9 combat mode (Tab's slot 12), 10 the inventory
