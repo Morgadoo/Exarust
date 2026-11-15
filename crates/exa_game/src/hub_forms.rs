@@ -760,7 +760,10 @@ impl HubWindows {
                     {
                         crate::career::teach(&mut career.player, &trainer);
                     }
-                    let night = career.company.end_day(events);
+                    // The week's verdict names a rival winner by the week's
+                    // field.
+                    let field = career.rivals;
+                    let night = career.company.end_day_in_field(events, &field);
                     career.matches_today = 0;
                     // A resolved week the company entered but did not take
                     // counts one more tournament lost.
@@ -1864,7 +1867,11 @@ pub fn manage_table_action(
             match report {
                 crate::manage::ReportAction::TournamentBoard => {
                     windows.close_window();
-                    windows.open_board(career);
+                    windows.open_board_with(
+                        career,
+                        crate::arena_hub_live::staff_order(stores.as_deref()),
+                        &|item| item,
+                    );
                     if let Some(board) = windows.board.as_mut() {
                         board.switch_tab(exa_ui::match_board::BoardTab::Tournament);
                     }

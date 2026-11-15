@@ -46,6 +46,8 @@ only), and leave the ports with the other session.
 
 **Note (2026-11-12):** the slot-kind fix (round 203) left three creator-side items for the other session: `create.rs` `SaveKind` names are swapped (numbers correct, not wired); the `continue_label` comment; the character-creation spec's continue-button wording.
 
+**Note (2026-11-15):** the arena New Career skips the company name and emblem dialog (F446). The menu's New Career is answered in the creator screen, so the fix (open the hub's company form first, and let its NEXT open the creator) is left to the other session.
+
 ### DEC-4. Start and budget of Phase A
 **Question:** start the audits, and at what scale?
 
@@ -123,6 +125,21 @@ translation layer for no visible gain.
 
 **Taken 2026-11-15** as recommended, under the owner's "complete the plan"
 goal; the lane `wireshader` checks the condition.
+
+### DEC-9. Calm's write past the contacts
+**Question:** the original's Calm cast loops over a character's contacts up
+to the count inclusive, so it writes one slot past the live contacts.
+Reproduce that write, or keep Exarust's loop over the live contacts only?
+
+**Facts:** found by the `wiremind` lane (round 211). The extra slot is
+inside the contact list's storage, so the original does not crash; what it
+changes depends on what the slot held (a stale contact, or nothing).
+
+**Recommendation:** reproduce it only if the slot can hold a stale contact
+that later code reads (a lane checks the list's growth and readers);
+otherwise record it as a deviation.
+
+**Blocks:** one `partial` row (Calm).
 
 ## Taken
 

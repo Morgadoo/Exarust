@@ -891,6 +891,7 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
             total_earned: 0,
             day,
             weeks,
+            week_winners: weeks.map(u32::from),
             seasons_won,
             season_rewards,
             reward_ids,

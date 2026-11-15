@@ -344,6 +344,7 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             frozen: false,
+            kinematic: false,
             disabled: false,
             parked: false,
             parked_deep: false,

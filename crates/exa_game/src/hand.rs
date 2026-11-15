@@ -2601,8 +2601,11 @@ fn end_lift(
         ragdoll.release_grab();
         match outcome {
             Release::Lock => {
+                // The original's lock: the node's locked flag, then the
+                // freeze with no matrix (held where it is, every particle
+                // set the current one, countdown 2).
                 ragdoll.set_disabled(false);
-                ragdoll.freeze(true);
+                ragdoll.freeze_at(None);
             }
             Release::Drop | Release::LastFit | Release::OnMarker | Release::PutBack => {
                 if outcome == Release::PutBack {

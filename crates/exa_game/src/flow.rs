@@ -103,6 +103,9 @@ pub const ALIVE_HEALTH: f64 = 0.01;
 
 /// The motion the story respawn asks the reloaded player for.
 pub const RESPAWN_MOTION: u32 = 0x2f;
+/// How far above the respawn portal's frame a respawned player is placed
+/// (cm): the story respawn's and the save load's pending respawn's.
+pub const PORTAL_LIFT_CM: f32 = 15.0;
 
 /// The practice ladder's first fight number. The first partner is
 /// `opponent01` (novice) or `opponent09` (expert).
@@ -1301,6 +1304,12 @@ pub enum Step {
     PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
+    /// Give the placed player's body the settling state for this many
+    /// ticks once it stands where [`Step::PlacePlayer`] put it (gravity
+    /// without inertia, `exa_physics::body::Ragdoll::settle_for`): the
+    /// story respawn's, applied with the placement once the level is in
+    /// ([`crate::level_change::PlacedSettle`]).
+    SettlePlayer(i32),
     /// Move the placed player out of the level exit that holds it (the
     /// story continue's nudge, [`exit_nudge`]): applied with the placement
     /// once the level is in, against the level's exit zones
@@ -1439,6 +1448,9 @@ pub enum Step {
     StripPlayer,
     /// Clear the player node's story bit (the reconstruction mark).
     ClearStoryFlag,
+    /// The Mind sight's quit hook: the Sense Minds overlay goes off and
+    /// drops its tracked minds ([`crate::mind::draw::reset_sense_overlay`]).
+    ResetMindSight,
     /// Write the player's own record back into the save, with the record's
     /// flags word (the death screen's CONTINUE passes 0x100).
     PlayerData {
@@ -2907,6 +2919,17 @@ impl Flow {
         steps
     }
 
+    /// Where a respawn puts the player: the respawn portal's frame lifted
+    /// by [`PORTAL_LIFT_CM`], as the original's story respawn and its save
+    /// load of a pending respawn place the player. `None` while no portal
+    /// is known.
+    pub fn portal_placement(&self) -> Option<Placement> {
+        self.respawn_portal.map(|portal| Placement {
+            rotation: portal.rotation,
+            position: portal.position + Vec3::Y * PORTAL_LIFT_CM,
+        })
+    }
+
     /// The story's death screen CONTINUE: the player node's story bit
     /// clears, the save is written (without the death rule), the world torn
     /// down and `exanima05` loaded (the loader's second word, 1, is not
@@ -2923,14 +2946,10 @@ impl Flow {
         self.story.wake = Wake::default();
         self.story.reconstruction = REBUILDABLE;
         let _ = now;
-        let portal = self.respawn_portal.unwrap_or(Placement {
+        let placement = self.portal_placement().unwrap_or(Placement {
             rotation: NO_ROTATION,
-            position: Vec3::ZERO,
+            position: Vec3::Y * PORTAL_LIFT_CM,
         });
-        let placement = Placement {
-            rotation: portal.rotation,
-            position: portal.position + Vec3::Y * 15.0,
-        };
         vec![
             // The respawn's scene reset starts with the death fade's reset.
             Step::ResetDeathFade,
@@ -2955,6 +2974,8 @@ impl Flow {
             Step::KnockOut { delay_ms: 0 },
             Step::RequestAction(RESPAWN_MOTION),
             Step::PlacePlayer(placement),
+            // Then the player's node tree settles for 16 ticks.
+            Step::SettlePlayer(exa_physics::body::PLACED_SETTLE),
             Step::Hook(Hook::Story),
         ]
     }
@@ -3017,6 +3038,8 @@ impl Flow {
             steps.push(Step::Save {
                 drop_on_low_health: true,
             });
+            // The quit hook the Mind sight registers while it shows.
+            steps.push(Step::ResetMindSight);
         }
         steps.extend(self.transition(Action::QuitToMenu, true));
         steps
@@ -3588,6 +3611,7 @@ impl Plugin for FlowPlugin {
             .add_message::<exa_audio::PointSounded>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .init_resource::<GameView>()
@@ -4135,9 +4159,12 @@ fn apply_steps(
         .position(|step| matches!(step, Step::LoadLevel { .. }))
     {
         let tail = steps.split_off(load + 1);
-        let (now_steps, later): (Vec<Step>, Vec<Step>) = tail
-            .into_iter()
-            .partition(|step| matches!(step, Step::PlacePlayer(_) | Step::ExitNudge));
+        let (now_steps, later): (Vec<Step>, Vec<Step>) = tail.into_iter().partition(|step| {
+            matches!(
+                step,
+                Step::PlacePlayer(_) | Step::SettlePlayer(_) | Step::ExitNudge
+            )
+        });
         steps.extend(now_steps);
         if !later.is_empty() {
             if let Some(after) = story.after_load.as_mut() {
@@ -4182,6 +4209,9 @@ fn apply_steps(
                 }
                 // The end menu's hide also hides the tips popup.
                 hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
+            }
+            Step::ResetMindSight => {
+                commands.queue(crate::mind::draw::reset_sense_overlay);
             }
             Step::ResetDeathFade => {
                 if let Some(fade) = story.fade.as_mut() {
@@ -4234,6 +4264,9 @@ fn apply_steps(
             }
             Step::ExitNudge => {
                 commands.insert_resource(crate::level_change::NudgeOutOfExits);
+            }
+            Step::SettlePlayer(ticks) => {
+                commands.insert_resource(crate::level_change::PlacedSettle(ticks));
             }
             Step::EndMenuUnselected(unselected) => {
                 if let Some(end) = end.as_mut() {
@@ -4746,6 +4779,14 @@ fn apply_steps(
                     });
                 }
             }
+            Step::ScriptMode {
+                mode: ARENA_MODE,
+                hook: ScriptHook::Leave,
+            } => {
+                // The arena's own leave ([`crate::arena_hub_live::arena_leave`]).
+                info!("game flow: the arena's leave");
+                out.arena_leave.write(crate::arena_hub_live::ArenaLeave);
+            }
             Step::ScriptMode { mode, hook } => {
                 // A registered scripted mode's hook. Exarust has no script
                 // that registers one (nor does Exanima 0.9.5), so this only
@@ -4773,6 +4814,7 @@ struct FlowOutputs<'w> {
     saves: MessageWriter<'w, crate::save_live::SaveStep>,
     discovery: MessageWriter<'w, crate::experience_live::DiscoveryTick>,
     bodies: MessageWriter<'w, crate::scene_bodies::SceneCommand>,
+    arena_leave: MessageWriter<'w, crate::arena_hub_live::ArenaLeave>,
     /// The steps' writes to the player's body, posted for the next step
     /// ([`exa_physics::sim_app::FixedCommands::write`]).
     fixed: ResMut<'w, exa_physics::sim_app::FixedCommands>,
@@ -5410,6 +5452,68 @@ mod tests {
         assert!(step.boss);
     }
 
+    /// Leaving an arena session runs the arena's leave: the hub is busy and
+    /// its click hook gone until the next entry.
+    #[test]
+    fn leaving_an_arena_session_runs_the_arenas_leave() {
+        use crate::arena_hub::HubHook;
+        use crate::arena_hub_live::ArenaHub;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .insert_resource(ArenaHub {
+                entered: true,
+                busy: false,
+                click_hook: HubHook::Click,
+                ..Default::default()
+            })
+            .add_systems(
+                Update,
+                (apply_steps, crate::arena_hub_live::leave_arena).chain(),
+            );
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            ..Default::default()
+        };
+        let steps = flow.leave_session();
+        app.insert_resource(flow);
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        let hub = app.world().resource::<ArenaHub>();
+        assert!(hub.busy);
+        assert_eq!(hub.click_hook, HubHook::None);
+        // Another mode's leave does not touch the hub.
+        let mut app2 = app;
+        app2.insert_resource(ArenaHub {
+            entered: true,
+            click_hook: HubHook::Click,
+            ..Default::default()
+        });
+        let mut flow = Flow {
+            mode: Mode::Practice,
+            ..Default::default()
+        };
+        let steps = flow.leave_session();
+        app2.insert_resource(flow);
+        app2.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app2.update();
+        let hub = app2.world().resource::<ArenaHub>();
+        assert!(!hub.busy);
+        assert_eq!(hub.click_hook, HubHook::Click);
+    }
+
     /// The next fight's behaviour reset drops the stored target and the
     /// contact list while combat mode stays on.
     #[test]
@@ -5427,6 +5531,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -5476,6 +5581,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .insert_resource(exa_anim::Motions::fallback())
@@ -5525,6 +5631,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -6860,6 +6967,8 @@ mod tests {
             ]
         );
         assert!(matches!(steps[load + 4], Step::PlacePlayer(_)));
+        // The placed player settles for 16 ticks.
+        assert_eq!(steps[load + 5], Step::SettlePlayer(16));
     }
 
     #[test]
@@ -6905,6 +7014,8 @@ mod tests {
             drop_on_low_health: true
         }));
         assert!(!steps.contains(&Step::ClearStoryFlag));
+        // and runs the Mind sight's quit hook after it.
+        assert!(steps.contains(&Step::ResetMindSight));
         assert!(steps.contains(&Step::Transition));
     }
 
@@ -7660,6 +7771,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, (release_after_load, apply_steps).chain());
@@ -7813,6 +7925,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -7878,6 +7991,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -7893,6 +8007,7 @@ mod tests {
                 teardown: true,
             },
             Step::PlacePlayer(placement),
+            Step::SettlePlayer(16),
         ]);
         app.update();
         let requests: Vec<exa_world::level_lifecycle::LevelChangeRequest> = app
@@ -7914,6 +8029,13 @@ mod tests {
             .resource::<crate::level_change::PlayerPlacement>();
         assert!((at.position - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
         assert!((at.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // The settling goes across the load with the placement.
+        assert_eq!(
+            app.world()
+                .get_resource::<crate::level_change::PlacedSettle>()
+                .copied(),
+            Some(crate::level_change::PlacedSettle(16))
+        );
 
         // The wake steps write the player's animator flags word: the
         // get-up replaces it, the revival sets bits on it.
@@ -8020,6 +8142,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -8078,6 +8201,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);

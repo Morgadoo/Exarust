@@ -683,7 +683,7 @@ pub const DEPTH16_STEP: f32 = 1.0 / 65536.0;
 pub struct SunShadowFilter {
     /// The disc radius in the map's [0, 1] texture space, the light slot's
     /// `softness · 0.5 · 0.005` (the halving single, the 0.005 double).
-    /// Eight taps of [`crate::shader_bindings::SHADOW_TAPS`], turned per
+    /// The sub-frame's `SdwSmps` taps of [`crate::shader_bindings::SHADOW_TAPS`], turned per
     /// pixel, each a hardware 2 × 2 comparison, sit this far times the tap's
     /// length from the receiver's map position.
     pub radius: f32,
