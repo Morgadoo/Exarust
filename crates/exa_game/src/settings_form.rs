@@ -1031,6 +1031,50 @@ mod tests {
     }
 
     #[test]
+    fn a_hovered_button_caption_glows_in_the_live_form() {
+        let mut app = opened_with_textures();
+        {
+            let mut settings = app.world_mut().resource_mut::<SettingsForm>();
+            let form = settings.form.as_mut().expect("open");
+            let button = form
+                .geometry
+                .controls
+                .iter_mut()
+                .find(|c| c.class == 1 && !c.text.is_empty() && c.state & 0x110 == 0)
+                .expect("a shown button");
+            button.state |= HOVERED;
+        }
+        app.world_mut().resource_mut::<GuiFrames>().clear();
+        app.update();
+        let palette = shown_palette(1.0);
+        // The line skin's label slot for a hovered button: the caption in
+        // the label group's eighth shade, then four copies in the highlight
+        // group's first shade under the additive blend.
+        let layers = submitted(&app);
+        let glows: Vec<_> = layers
+            .iter()
+            .filter(|layer| layer.texture != LayerTexture::Named(SKIN_TEXTURE))
+            .filter(|layer| layer.batch.blend == 0x201)
+            .filter(|layer| {
+                layer
+                    .batch
+                    .vertices
+                    .first()
+                    .is_some_and(|v| v.ink == palette.highlight[0])
+            })
+            .collect();
+        assert_eq!(glows.len(), 4, "the glow's four copies");
+        assert!(layers.iter().any(|layer| {
+            layer.texture != LayerTexture::Named(SKIN_TEXTURE)
+                && layer
+                    .batch
+                    .vertices
+                    .first()
+                    .is_some_and(|v| v.ink == palette.text[7])
+        }));
+    }
+
+    #[test]
     fn the_form_paints_its_frame_records_and_page() {
         let form = FormState::open((1280, 720), 4);
         let mut textures = GuiTextures::default();
