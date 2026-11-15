@@ -61,7 +61,7 @@ State: `todo`, `doing`, `done`, `blocked`.
 | B0.3 | Control Mind end frame writes | done | round 206; game run 2026-11-15: no undone write logged |
 | B0.4 | Torrent stream in lockstep | done | the original draws from the two process-wide generators, which the step streams stand for; the sweep scene needs retuning, not the code |
 | B0.5 | New game creates no save slot; arena saves dropped | done | round 205 (tests); the `--story-session` debug flag skips the real start, so a flag for a real New Game start is owed for a game check |
-| B0.6 | Spirit Form adopt/home and other frame-sent writes in free mode | todo | found by the mindend lane |
+| B0.6 | Spirit Form adopt/home and other frame-sent writes in free mode | done | round 208; three bridge-ownership hazards left (item cursor drain race, one-step-stale copy-in values, the frame-side combat heading write) |
 | B1 | Wire the uncalled | doing | logic families first (headless tests) while the GPU is down: mind powers, character data, physics dynamics |
 | B2 | Reclassify the engine-replaced | todo | |
 | B3 | Close the unreachable | todo | |

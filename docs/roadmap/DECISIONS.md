@@ -107,10 +107,28 @@ exact maths.
 
 **Blocks:** part of B4 (physics); about a dozen `partial` rows.
 
+### DEC-8. Shader templates versus embedded WESL
+**Question:** the original builds its GL programs from a shader template
+library (the `.flb` file, a template expander with conditions and loops, a
+program cache keyed by feature words, a 29-variant warm-up). Exarust draws
+with its own embedded WESL shaders; the template expander, the library
+reader and the cache are ported but only the tool and tests call them. Close
+these as engine-replaced, or drive the game's shaders from the templates?
+
+**Recommendation:** engine-replaced, on one condition: a lane shows that
+every program variant the original builds for 0.9.5's data (every feature
+word that occurs) has a WESL path that produces the same result, and lists
+any that do not as `partial`. Driving wgpu from GL templates would add a
+translation layer for no visible gain.
+
+**Taken 2026-11-15** as recommended, under the owner's "complete the plan"
+goal; the lane `wireshader` checks the condition.
+
 ## Taken
 
 | date | decision |
 |---|---|
+| 2026-11-15 | DEC-8 taken as recommended (shader templates engine-replaced where the WESL paths cover every variant). |
 | 2026-11-12 | DEC-1 to DEC-4 taken as recommended when the owner set the goal "complete the plan": the ledger definition of 100%; Steam kept as a deviation for now; the character creator audited read-only, ports left to the other session; Phase A starts with the three-package pilot, the rest sized from its numbers. |
 | 2026-11-11 | Lockstep traces may change when a change makes timing follow the simulation as the original does (round 201); each change is explained in the round's notes. |
 | 2026-11-11 | The bar's casts draw from the simulation's random streams (round 197), as the original shares them; one sweep scene's outcome changed. To be confirmed by B0.4. |
