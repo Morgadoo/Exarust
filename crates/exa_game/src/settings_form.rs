@@ -33,7 +33,7 @@ use exa_ui::settings::{
 };
 use exa_ui::skin::{
     GuiRect as SkinRect, SkinBatch, SkinInk, SkinPalette, SliderPlace, check_box_quads,
-    draw_flat_slider, draw_style_frames, four_stop_rect, line_skin_batch, push_line_quads,
+    draw_flat_slider, edge_frame, line_skin_batch, push_line_quads,
 };
 
 use crate::bindings::Bindings;
@@ -451,20 +451,11 @@ fn close_with_menu(
     settings.form = None;
 }
 
-fn skin_rect(r: GuiRect) -> SkinRect {
-    SkinRect::sized(
-        r.left as f32,
-        r.top as f32,
-        r.width() as f32,
-        r.height() as f32,
-    )
-}
-
-/// The ink a separator's line takes: the hot-form group's first, second,
-/// fifth and seventh shades, the slots 0x9c, 0xa0, 0xac and 0xb4 read
-/// against a palette starting its form group at 0x3c (a guess from the
-/// textured frame's 0x6c and 0x9c face slots, which match the control and
-/// hot-form groups' first shades).
+/// The inks of a separator's four-ink line frame
+/// ([`exa_ui::skin::edge_frame`]: top, left, right, bottom): the hot-form
+/// group's first, second, fifth and seventh shades, or with style 0x40 its
+/// eighth, sixth, second and first, as the separator's draw passes them
+/// (the hot-form group is the palette's fourth, from slot 0x9c).
 fn rule_inks(palette: &SkinPalette, style: u32) -> [SkinInk; 4] {
     let hot = &palette.form_hot;
     if style & 0x40 != 0 {
@@ -590,16 +581,11 @@ pub(crate) fn paint_control(
             }
         }
         5 => {
-            if c.style & 0xf0 != 0 {
-                let mut batch = SkinBatch::new();
-                draw_style_frames(&mut batch, skin_rect(rect), c.style, palette);
-                out.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
-            }
-            if !caption.is_empty() {
-                let caption_layers = gui_paint::paint_label(
-                    rect, c.style, unit, palette, text.font, text.size, &caption,
-                );
-                out.layers.extend(caption_layers.layers);
+            // The label's back calls the skin's frame slot for a frame
+            // style; the line skin's is empty, so a line-skinned label draws
+            // only its front.
+            if let (false, Some(texture)) = (c.text.is_empty(), text.size) {
+                gui_paint::paint_label_front(&mut out, c, rect, unit, palette, text.font, texture);
             }
         }
         SEPARATOR_CLASS => {
@@ -612,8 +598,10 @@ pub(crate) fn paint_control(
                 unit,
                 0,
             );
+            // The separator's draw frames each line rectangle with the
+            // skin's four-ink line loop.
             for (x, y, w, h) in lines {
-                four_stop_rect(
+                edge_frame(
                     &mut batch,
                     SkinRect::sized(x as f32, y as f32, w as f32, h as f32),
                     rule_inks(palette, c.style),
@@ -932,6 +920,158 @@ mod tests {
         app.update();
         assert!(!app.world().resource::<SettingsForm>().is_open());
         assert!(app.world().resource::<HardwareConfig>().screen.is_none());
+    }
+
+    /// The settings form opened by the menu's row in a 1280x720 window,
+    /// with the skin atlas and every GUI font's atlas installed.
+    fn opened_with_textures() -> App {
+        let mut app = app();
+        let mut textures = GuiTextures::default();
+        textures.textures.insert(
+            SKIN_TEXTURE.into(),
+            exa_ui::gui_draw::GuiTexture::solid([255, 255, 255, 255]),
+        );
+        for font in exa_ui::gui_font::FONTS {
+            textures.textures.insert(
+                font.texture.into(),
+                exa_ui::gui_draw::GuiTexture::solid([255, 255, 255, 255]),
+            );
+        }
+        app.insert_resource(textures);
+        app.world_mut().spawn((
+            Window {
+                resolution: bevy::window::WindowResolution::new(1280, 720),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        app.update();
+        app.world_mut().resource_mut::<MenuScreen>().open();
+        app.world_mut()
+            .write_message(MenuChoice(MenuCommand::OpenSettings));
+        app.update();
+        assert!(app.world().resource::<SettingsForm>().is_open());
+        app
+    }
+
+    /// Every layer the form's draw system submitted.
+    fn submitted(app: &App) -> Vec<GuiLayer> {
+        app.world()
+            .resource::<GuiFrames>()
+            .frames
+            .iter()
+            .flat_map(|frame| frame.layers.iter().cloned())
+            .collect()
+    }
+
+    #[test]
+    fn the_rules_draw_the_skins_four_ink_line_frame() {
+        let app = opened_with_textures();
+        let palette = shown_palette(1.0);
+        let inks = rule_inks(&palette, 0);
+        // The separator's draw frames each rule with the four-ink line
+        // loop: eight line vertices, top, left, bottom and right, in the
+        // hot-form group's first, second, seventh and fifth shades.
+        let rules: Vec<_> = submitted(&app)
+            .into_iter()
+            .filter(|layer| {
+                layer
+                    .batch
+                    .primitives
+                    .iter()
+                    .any(|p| p.draw == exa_ui::skin::GuiDraw::Lines)
+                    && layer.batch.vertices.len() == 8
+                    && layer.batch.vertices[0].ink == inks[0]
+            })
+            .collect();
+        assert!(rules.len() >= 2, "{} rule frames", rules.len());
+        let v = &rules[0].batch.vertices;
+        let seen: Vec<_> = v.iter().map(|v| v.ink).collect();
+        assert_eq!(
+            seen,
+            vec![
+                inks[0], inks[0], inks[1], inks[1], inks[3], inks[3], inks[2], inks[2]
+            ]
+        );
+        // The bottom line lies under the top one, both half a pixel in.
+        assert!(v[3].y > v[0].y);
+        assert_eq!(v[0].y.fract(), 0.5);
+    }
+
+    #[test]
+    fn a_hovered_key_cell_draws_in_the_highlight_ink() {
+        let mut app = opened_with_textures();
+        {
+            let mut settings = app.world_mut().resource_mut::<SettingsForm>();
+            let form = settings.form.as_mut().expect("open");
+            form.page = 1;
+            // A key cell: a reporting block label (style 0x20003380).
+            let cell = form
+                .geometry
+                .controls
+                .iter_mut()
+                .find(|c| c.class == 5 && c.style == exa_ui::settings::KEY_CELL_STYLE)
+                .expect("a key cell");
+            cell.state |= HOVERED;
+        }
+        app.world_mut().resource_mut::<GuiFrames>().clear();
+        app.update();
+        let palette = shown_palette(1.0);
+        let mut highlight = palette.highlight[7];
+        highlight[3] = 0xff;
+        // The block label's hovered arm: the highlight group's eighth shade
+        // at the GUI's alpha; the other cells keep the label ink.
+        let text_inks: Vec<_> = submitted(&app)
+            .iter()
+            .filter(|layer| layer.texture != LayerTexture::Named(SKIN_TEXTURE))
+            .filter_map(|layer| layer.batch.vertices.first().map(|v| v.ink))
+            .collect();
+        assert!(text_inks.contains(&highlight));
+        assert!(text_inks.contains(&palette.text[6]));
+    }
+
+    #[test]
+    fn a_hovered_button_caption_glows_in_the_live_form() {
+        let mut app = opened_with_textures();
+        {
+            let mut settings = app.world_mut().resource_mut::<SettingsForm>();
+            let form = settings.form.as_mut().expect("open");
+            let button = form
+                .geometry
+                .main
+                .iter_mut()
+                .find(|c| c.class == 1 && c.text == b"Defaults")
+                .expect("the Defaults button");
+            button.state = (button.state & !0x110) | HOVERED;
+        }
+        app.world_mut().resource_mut::<GuiFrames>().clear();
+        app.update();
+        let palette = shown_palette(1.0);
+        // The line skin's label slot for a hovered button: the caption in
+        // the label group's eighth shade, then four copies in the highlight
+        // group's first shade under the additive blend.
+        let layers = submitted(&app);
+        let glows: Vec<_> = layers
+            .iter()
+            .filter(|layer| layer.texture != LayerTexture::Named(SKIN_TEXTURE))
+            .filter(|layer| layer.batch.blend == 0x201)
+            .filter(|layer| {
+                layer
+                    .batch
+                    .vertices
+                    .first()
+                    .is_some_and(|v| v.ink == palette.highlight[0])
+            })
+            .collect();
+        assert_eq!(glows.len(), 4, "the glow's four copies");
+        assert!(layers.iter().any(|layer| {
+            layer.texture != LayerTexture::Named(SKIN_TEXTURE)
+                && layer
+                    .batch
+                    .vertices
+                    .first()
+                    .is_some_and(|v| v.ink == palette.text[7])
+        }));
     }
 
     #[test]

@@ -36,7 +36,7 @@ use exa_ui::gui_font::GuiFont;
 use exa_ui::record_form::RecordForm;
 use exa_ui::skin::{
     ControlLabelPlace, FormBackgroundPlace, GuiRect as SkinRect, LabelVariant, SkinBatch, SkinInk,
-    SkinPalette, draw_control_label, draw_form_background, glow_text,
+    SkinPalette, draw_control_label, draw_form_background,
 };
 
 use crate::gui_paint::{self, Painted, caption_layer};
@@ -48,6 +48,8 @@ const BUTTON: u16 = 1;
 const CHECK_BOX: u16 = 2;
 /// The trackbar record class.
 const TRACKBAR: u16 = 4;
+/// The label record class.
+const LABEL: u16 = 5;
 /// A record's hidden state bits.
 const HIDDEN: u32 = 0x110;
 
@@ -169,22 +171,7 @@ fn push_label(
         return;
     }
     if draw.coloured {
-        let glow = glow_text(draw.x, draw.y, palette);
-        painted.push(caption_layer(
-            font,
-            texture,
-            text,
-            (draw.x, draw.y),
-            glow.text_ink,
-        ));
-        for at in glow.glow_places {
-            let mut layer = caption_layer(font, texture, text, at, glow.glow_ink);
-            layer.batch.blend = glow.blend;
-            for primitive in &mut layer.batch.primitives {
-                primitive.blend = glow.blend;
-            }
-            painted.push(layer);
-        }
+        gui_paint::push_glow_text(painted, font, texture, text, (draw.x, draw.y), palette);
         return;
     }
     if let Some(ink) = draw.ink {
@@ -265,6 +252,23 @@ pub(crate) fn paint_base_form(
             continue;
         }
         let rect = GuiRect::new(origin.0 + c.x, origin.1 + c.y, c.w, c.h);
+        if c.class == LABEL && c.style & 0xf0 != 0 && c.state & HIDDEN != HIDDEN {
+            // The label's back: the draw skin's frame slot, which the line
+            // skin leaves empty.
+            let mut batch = SkinBatch::new();
+            exa_ui::skin::draw_style_frames(
+                &mut batch,
+                SkinRect::sized(
+                    rect.left as f32,
+                    rect.top as f32,
+                    rect.width() as f32,
+                    rect.height() as f32,
+                ),
+                c.style,
+                &base.palette,
+            );
+            painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+        }
         let drawn = crate::option_forms::paint_extended(
             painted,
             c,

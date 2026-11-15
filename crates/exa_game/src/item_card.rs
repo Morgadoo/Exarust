@@ -1225,77 +1225,58 @@ fn load_grip_sheet(game: &exa_assets::Game, side: i32) -> Option<GripSheet> {
     GripSheet::of_cells(&loaded.cells, sheet.cell as usize, side)
 }
 
-/// The skin's image-draw ink slots as the label group's shades: 0xe4 the
-/// seventh (the plain image), 0xf4 the eleventh (on), 0xd8 the fourth
-/// (pressed or disabled).
-fn image_ink(slot: u32, palette: &exa_ui::skin::SkinPalette) -> [u8; 4] {
-    match slot {
-        0xf4 => palette.text[10],
-        0xd8 => palette.text[3],
-        _ => palette.text[6],
-    }
-}
-
-/// The Flip weapon button at `rect` (window pixels): the line skin's button
-/// frame in its state's ink, then the grip icon centred in the button
-/// through the skin's image draw (its ink by the state: plain, on, or
-/// pressed), a pixel lower while on.
-#[allow(clippy::too_many_arguments)]
+/// The Flip weapon button at `rect` (window pixels), as the image-button
+/// class draws on the line skin: its back calls the skin's frame and box
+/// slots, which the line skin leaves empty, and its front the line skin's
+/// centred icon ([`exa_ui::line_skin::draw_line_icon`]): the grip icon
+/// centred in the button, a pixel lower while lit and hovered, in the label
+/// group's fourth shade while disabled, its seventh with its alpha raised
+/// while lit, else its sixth (the button's style carries 0x80000000); a
+/// hovered button draws it outlined instead.
 fn paint_flip_button(
     painted: &mut gui_paint::Painted,
     c: &Control,
     rect: GuiRect,
-    unit: i32,
     palette: &exa_ui::skin::SkinPalette,
     alpha: f32,
-    font: &exa_ui::gui_font::GuiFont,
-    size: Option<(u16, u16)>,
     grip: Option<&GripSheet>,
 ) {
-    let button = gui_paint::paint_line_button(
-        rect,
-        gui_paint::ButtonWords {
-            style: c.style,
-            state: c.state,
-            group: c.group,
-        },
-        unit,
-        palette,
-        alpha,
-        font,
-        size,
-        "",
-    );
-    painted.layers.extend(button.layers);
     let Some(grip) = grip else {
         return;
     };
-    let drawn = exa_ui::skin::draw_skin_image(
-        exa_ui::skin::SkinImagePlace {
+    let icon = exa_ui::line_skin::draw_line_icon(
+        grip.side,
+        exa_ui::skin::IconPlace {
             x: rect.left as i16,
             y: rect.top as i16,
             w: rect.width() as i16,
             h: rect.height() as i16,
-            image: grip.cells[0],
-            size: grip.side,
-            style: c.style,
-            flags: c.state,
-            default_image: false,
-        },
-        exa_ui::skin::SkinImageInks {
-            plain: [palette.text[6][0], palette.text[6][1], palette.text[6][2]],
-            raised: [
-                palette.text[10][0],
-                palette.text[10][1],
-                palette.text[10][2],
-            ],
-            alpha: 0xff,
+            mode: c.style,
+            state: c.state,
+            id: grip.cells[0] as u32,
+            own: true,
         },
     );
-    let ink = drawn
-        .colour
-        .unwrap_or_else(|| image_ink(drawn.ink.unwrap_or(0xe4), palette));
-    let quads = grip.atlas.draw(drawn.image, drawn.x as f32, drawn.y as f32);
+    let handle = grip.cells[0];
+    let (quads, ink) = match icon.ink {
+        None => {
+            let inks = exa_ui::hud_status::status_inks(palette);
+            (
+                grip.atlas.draw_outlined(handle, icon.x, icon.y, 1.0, &inks),
+                inks.face,
+            )
+        }
+        Some(ink) => {
+            let gui_alpha = exa_ui::line_skin::hover_alpha(alpha);
+            let quads = if icon.mirrored {
+                grip.atlas
+                    .draw_mirrored(handle, icon.x as f32, icon.y as f32)
+            } else {
+                grip.atlas.draw(handle, icon.x as f32, icon.y as f32)
+            };
+            (quads, ink.colour_at(&palette.text, gui_alpha))
+        }
+    };
     if !quads.is_empty() {
         painted.push(GuiLayer::new(
             icon_batch(&quads, ink),
@@ -1926,11 +1907,8 @@ pub fn draw_card(
                     &mut painted,
                     &flip,
                     place,
-                    unit,
                     &palette,
                     step.alpha,
-                    &font,
-                    Some(font_texture),
                     grip_sheet.as_ref(),
                 );
             }
@@ -2421,6 +2399,36 @@ mod tests {
             }),
             description: description.to_string(),
         }
+    }
+
+    #[test]
+    fn the_flip_button_draws_only_the_line_skins_centred_icon() {
+        let cell = vec![255u8; 8 * 8 * 4];
+        let grip =
+            GripSheet::of_cells(&[cell.clone(), cell.clone(), cell], 8, 16).expect("a grip sheet");
+        let palette = exa_ui::line_skin::shown_palette(1.0);
+        let rect = GuiRect::new(100, 50, 28, 28);
+        let paint = |state: u32| {
+            let mut c = flip_record();
+            c.state = state;
+            let mut painted = gui_paint::Painted::default();
+            paint_flip_button(&mut painted, &c, rect, &palette, 1.0, Some(&grip));
+            painted
+        };
+        // No frame: the line skin's frame and box slots are empty. The icon
+        // is centred, in the label group's sixth shade (style 0x80000000).
+        let idle = paint(0);
+        assert_eq!(idle.layers.len(), 1);
+        let v = &idle.layers[0].batch.vertices;
+        assert!(v.iter().any(|v| v.x == 106.0 && v.y == 56.0));
+        assert_eq!(v[0].ink, palette.text[5]);
+        // Lit: the seventh shade with its alpha raised by 0x40.
+        let lit = paint(0x40);
+        let mut raised = palette.text[6];
+        raised[3] = raised[3].wrapping_add(0x40);
+        assert_eq!(lit.layers[0].batch.vertices[0].ink, raised);
+        // Disabled: the fourth shade.
+        assert_eq!(paint(0x10).layers[0].batch.vertices[0].ink, palette.text[3]);
     }
 
     #[test]
