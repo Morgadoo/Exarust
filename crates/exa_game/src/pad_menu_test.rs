@@ -16,7 +16,10 @@ fn an_unanswered_word_goes_back_picks_or_reaches_the_control() {
     );
     // MenuBak closes only a form that asks for it.
     assert_eq!(fallback(UNANSWERED, 0x200, false, true), Fallback::Back);
-    assert_eq!(fallback(UNANSWERED, 0x200, false, false), Fallback::Answered);
+    assert_eq!(
+        fallback(UNANSWERED, 0x200, false, false),
+        Fallback::Answered
+    );
     // A navigation step picks; a scroll step or MenuSel reaches the
     // control with only its select, back, scroll-step, direction and
     // second analog bits (`& 0xf322`: the 0x10 bit goes).

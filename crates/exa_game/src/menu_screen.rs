@@ -33,11 +33,11 @@ use exa_ui::menu::{
 use exa_ui::skin::{SkinBatch, SkinInk};
 
 use crate::flow::Flow;
-use crate::pad_menu::PadForm;
 use crate::menu_pages::{
     MenuCommand, MenuGeometry, MenuHit, Page, PageState, Row, RowKind, game_mode, menu_command,
     menu_hit, page_origin, page_rows, paint, row_h, session_state,
 };
+use crate::pad_menu::PadForm;
 
 /// The overlay's darkness.
 const SHADE: u8 = 210;

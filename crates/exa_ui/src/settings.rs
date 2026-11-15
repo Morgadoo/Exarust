@@ -1388,7 +1388,11 @@ impl FormState {
     /// Gives the pad's focus to a record: the hover bits move to it from
     /// the record that had them, as the pointer's hover does.
     pub fn pad_focus_set(&mut self, target: Option<(Part, usize)>) {
-        for (at, on) in [(self.hovered, false), (self.pad_focus, false), (target, true)] {
+        for (at, on) in [
+            (self.hovered, false),
+            (self.pad_focus, false),
+            (target, true),
+        ] {
             if let Some((part, i)) = at
                 && let Some(c) = self.controls_mut(part).get_mut(i)
             {

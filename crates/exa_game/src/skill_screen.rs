@@ -55,9 +55,9 @@ use exa_ui::icon_atlas::{IconAtlas, IconImage};
 use exa_ui::skill::{
     ExperienceRates, NODE_LOCKED, NODE_OPEN, NODES_PER_GROUP, REQUIREMENT_MET, SkillBounds,
     SkillHit, SkillHoverInput, SkillKeyInput, SkillLinkInput, SkillPointInput, SkillPointer,
-    SkillScreen, clamp_tooltip, hit_skill_point, leave_skill_ui, pick_skill_satellite,
-    skill_hover, skill_node_hit, skill_node_state, skill_popup_fade, skill_position,
-    skill_requirements, skill_ring_position, skill_satellite, skill_screen_key,
+    SkillScreen, clamp_tooltip, hit_skill_point, leave_skill_ui, pick_skill_satellite, skill_hover,
+    skill_node_hit, skill_node_state, skill_popup_fade, skill_position, skill_requirements,
+    skill_ring_position, skill_satellite, skill_screen_key,
 };
 use exa_ui::skill_draw::{
     SkillDraw, SkillDrawInput, SkillLabel, SkillProgram, SkillTexture, SkillTip, SkillVertex,
@@ -658,10 +658,7 @@ pub fn pad_link(
     let nodes: Vec<(i32, (f32, f32))> = (1..=screen.count)
         .filter_map(|slot| {
             let group = screen.slot_group(slot)?;
-            Some((
-                (group as i32 + 1) << 8,
-                skill_ring_position(slot, &ring),
-            ))
+            Some(((group as i32 + 1) << 8, skill_ring_position(slot, &ring)))
         })
         .collect();
     let ready = screen.ready;
@@ -1434,7 +1431,13 @@ mod tests {
         }
         // Right along the stick (the analog bit set, y down).
         pad_at(&mut app, 200, 0x2011, Vec2::new(1.0, 0.0));
-        let hover = app.world().resource::<SkillUi>().screen.as_ref().unwrap().hover;
+        let hover = app
+            .world()
+            .resource::<SkillUi>()
+            .screen
+            .as_ref()
+            .unwrap()
+            .hover;
         assert!(hover > 0 && hover != 0x101, "picked {hover:#x}");
         app.world_mut()
             .resource_mut::<SkillUi>()

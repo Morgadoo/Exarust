@@ -37,13 +37,13 @@ use exa_ui::skin::{
 };
 
 use crate::bindings::Bindings;
-use crate::pad_menu::PadForm;
 use crate::gui_paint::{self, Painted};
 use crate::hw_config::{
     BindingEditor, BindingsApplied, HardwareConfig, ShaderWarmScreen, binding_rows,
 };
 use crate::menu_pages::MenuCommand;
 use crate::menu_screen::{MenuChoice, MenuScreen, MenuScreenSystems};
+use crate::pad_menu::PadForm;
 
 /// The open Settings form.
 #[derive(Resource, Debug, Default)]
@@ -354,7 +354,8 @@ fn form_input(
         }
     }
     // The pad: the show's first control, then the frame's word.
-    if !covered && keep
+    if !covered
+        && keep
         && let Some(pad) = pad.as_deref_mut()
     {
         if pad.take_focus_request(PadForm::Settings) {
@@ -463,9 +464,9 @@ pub fn pad_key(form: &mut FormState, key: crate::pad_menu::MenuKey) -> PadSettin
             pad_pick(form, key.cursor);
             PadSettings::Events(Vec::new())
         }
-        Fallback::Control(word) => PadSettings::Events(
-            form.pad_control_key(word, (key.cursor.x, key.scroll_cursor.x)),
-        ),
+        Fallback::Control(word) => {
+            PadSettings::Events(form.pad_control_key(word, (key.cursor.x, key.scroll_cursor.x)))
+        }
     }
 }
 
@@ -495,7 +496,12 @@ pub fn pad_pick(form: &mut FormState, cursor: Vec2) {
         .pad_focus
         .and_then(|(part, i)| form.pad_centre(part, i))
         .unwrap_or_else(|| form.origin());
-    if let Some(id) = pick_control(cursor, IVec2::new(origin.0, origin.1), &targets, form.unit()) {
+    if let Some(id) = pick_control(
+        cursor,
+        IVec2::new(origin.0, origin.1),
+        &targets,
+        form.unit(),
+    ) {
         let picked = found[id as usize];
         info!("settings: the pad picks {picked:?}");
         form.pad_focus_set(Some(picked));
@@ -1301,5 +1307,4 @@ mod tests {
         assert!(!form.pad_keys);
         assert_eq!(pad_key(&mut form, key(0x200)), PadSettings::Back);
     }
-
 }

@@ -2750,7 +2750,10 @@ mod tests {
         // A sideways step picks another table.
         pad_word(&mut app, 0x2011, Vec2::new(1.0, 0.0));
         let picked = app.world().resource::<HubWindows>().board_tables.pad_table;
-        assert!(picked.is_some_and(|slot| slot != TableSlot::Roster), "{picked:?}");
+        assert!(
+            picked.is_some_and(|slot| slot != TableSlot::Roster),
+            "{picked:?}"
+        );
         pad_word(&mut app, 0x200, Vec2::ZERO);
         assert!(!app.world().resource::<HubWindows>().is_open());
     }
