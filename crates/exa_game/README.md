@@ -1203,7 +1203,8 @@ cache) and refreshes an open card of the item in place
 (`item_card::CardRefresh`, `item_card::refresh_card`).
 A weapon card's Flip weapon button (`item_card::FlipButton`) is drawn
 with the grip icon (`item_card::GripSheet`, the grip sheet at eight units
-in the grip manager's format) through the skin's image draw; a left press
+in the grip manager's format) through the line skin's centred icon
+(`exa_ui::line_skin::draw_line_icon`), with no frame; a left press
 on it and the release over it toggle it and turn the striking rows to the
 weapon's other side (`exa_items::card::flip_rows`); the log names the
 button's place and each flip (`--item-card 0xc@300` with `--click-at` on
@@ -1372,8 +1373,10 @@ through `gui_paint`. Manage Company, Company Records, Company Status, the
 loadout form and the dismiss and yes/no dialogs are built from their
 constructors' record tables (`hub_forms`, on `exa_ui::record_form`): the
 records lay out at unit 4, rescale to the live unit and draw in the shown
-palette and line skin (a combo box through its own front draw,
-`gui_paint::paint_combo_front`); the pointer goes through the control messages and the
+palette and line skin (a combo box's back as the line skin's rail,
+`gui_paint::paint_combo_back`, and its front through its own draw,
+`gui_paint::paint_combo_front`; a line-skinned button's hovered caption
+glows, `gui_paint::push_glow_text`); the pointer goes through the control messages and the
 callbacks run the arena's rules (the manage refresh and End Day, the arsenal
 form's rows, steps, slider, shelves and dismissal, the tourney forfeit).
 `--open-hub-window <name>` opens one for a scripted screenshot. Escape or a

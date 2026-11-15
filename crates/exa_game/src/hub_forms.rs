@@ -1212,9 +1212,15 @@ pub(crate) fn paint_form_with(
                 }
             }
             0x12 => {
-                // The panel stands for the skin's frame behind the box; the
-                // front is the combo box's own draw.
-                crate::hub_windows::paint_panel(painted, rect, look);
+                // The back is the line skin's rail; the front is the combo
+                // box's own draw.
+                painted.push(gui_paint::paint_combo_back(
+                    rect,
+                    c.state,
+                    unit,
+                    &look.palette,
+                    look.fade,
+                ));
                 let focused = extras.key_focus == Some(i);
                 let front = gui_paint::paint_combo_front(
                     rect,

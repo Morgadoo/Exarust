@@ -2722,8 +2722,26 @@ pub struct CappedSpan {
     pub end_calls: u32,
 }
 
-/// Draws the capped span. The retail method's second positional float is
-/// dead, so it is not taken. `centre` is the vertical middle.
+impl CappedSpan {
+    /// Appends the span's three quads to an open line-skin batch
+    /// ([`line_skin_batch`]) in `ink`, each corner sampling its bound
+    /// record.
+    pub fn push(&self, batch: &mut SkinBatch, ink: SkinInk) {
+        batch.set_ink(ink);
+        for (quad, bind) in self.quads.iter().zip(self.binds) {
+            let uv = bind.map(f32::from_bits);
+            for (k, (x, y)) in quad.iter().enumerate() {
+                batch.set_uv(uv[k * 2], uv[k * 2 + 1]);
+                batch.vertex(*x, *y);
+            }
+        }
+    }
+}
+
+/// Draws the capped span (the line skin's inner frame slot, a text field's
+/// underline). The retail method's second positional float is dead, so it
+/// is not taken. `centre` is the bottom edge it is given: the caps run two
+/// units either side of it and the middle bar from it two units down.
 pub fn draw_capped_span(
     unit: i32,
     left: f32,
@@ -2778,144 +2796,6 @@ pub fn draw_capped_span(
     }
 }
 
-/// A label place. The style bits 0x7000 align horizontally and 0x700 vertically.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LabelPlace {
-    pub x: i16,
-    pub y: i16,
-    pub w: i16,
-    pub h: i16,
-    pub inset: i16,
-    pub style: u32,
-    pub state: u32,
-}
-
-/// The measured text and the font's line height and base.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LabelMetrics {
-    pub width: i32,
-    pub line_height: i32,
-    pub base: i32,
-}
-
-/// Where the label lands, its ink, and the renderer it calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LineLabel {
-    pub x: i32,
-    pub y: i32,
-    pub ink_index: Option<u32>,
-    pub colour: Option<[u8; 4]>,
-    pub coloured: bool,
-    pub text_calls: u32,
-}
-
-/// Places the label. The style word aligns it, and the state word chooses
-/// the ink and the one-pixel nudge.
-/// Aligns a measured label from the style word.
-fn align_label(place: LabelPlace, metrics: LabelMetrics, unit: i32) -> (i32, i32) {
-    let px = i32::from(place.x);
-    let py = i32::from(place.y);
-    let pw = i32::from(place.w);
-    let ph = i32::from(place.h);
-    let inset = i32::from(place.inset);
-    let x = match place.style & 0x7000 {
-        0x1000 => px - metrics.width - unit,
-        0x2000 => px + (pw - 1 - metrics.width) / 2,
-        0x3000 => px + pw - metrics.width - unit,
-        0x4000 => px + pw + unit,
-        _ => px + inset + (unit + 1) / 2,
-    };
-    let y = match place.style & 0x700 {
-        0x100 => py - unit / 2,
-        0x200 => py + (ph + metrics.line_height + 2) / 2,
-        0x300 => py + ph + metrics.base - 1,
-        0x400 => py + ph,
-        _ => py + (unit + 1) / 2,
-    };
-    (x, y)
-}
-
-pub fn place_line_label(
-    place: LabelPlace,
-    metrics: LabelMetrics,
-    unit: i32,
-    inks: [[u8; 4]; 3],
-) -> LineLabel {
-    let (x, mut y) = align_label(place, metrics, unit);
-    let (ink_index, coloured, nudge) = if (place.state & 0x10) > 0 {
-        (Some(0), false, 0)
-    } else if (place.state & 0xf_0000) == 0x1_0000 {
-        (None, true, i32::from((place.state & 0x40) > 0))
-    } else if (place.state & 0x60) > 0 {
-        (Some(2), false, 1)
-    } else {
-        (Some(1), false, 0)
-    };
-    y += nudge;
-    LineLabel {
-        x,
-        y,
-        ink_index,
-        colour: ink_index.map(|index| inks[index as usize]),
-        coloured,
-        text_calls: 1,
-    }
-}
-
-/// A parent-skin label: one call, or two for the shadow arm.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkinLabel {
-    pub x: i32,
-    pub y: i32,
-    pub calls: Vec<([u8; 4], (i32, i32))>,
-    pub coloured: bool,
-    pub text_calls: u32,
-}
-
-/// Places the parent skin's label. Bit 0x40 draws the two-call drop shadow.
-pub fn place_skin_label(
-    place: LabelPlace,
-    metrics: LabelMetrics,
-    unit: i32,
-    inks: [[u8; 4]; 4],
-) -> SkinLabel {
-    let (x, y) = align_label(place, metrics, unit);
-    if (place.state & 0x10) > 0 {
-        SkinLabel {
-            x,
-            y,
-            calls: vec![(inks[0], (x, y))],
-            coloured: false,
-            text_calls: 1,
-        }
-    } else if (place.state & 0xf_0000) == 0x1_0000 {
-        let nudge = i32::from((place.state & 0x40) > 0);
-        SkinLabel {
-            x,
-            y: y + nudge,
-            calls: Vec::new(),
-            coloured: true,
-            text_calls: 1,
-        }
-    } else if (place.state & 0x40) > 0 {
-        SkinLabel {
-            x,
-            y,
-            calls: vec![(inks[1], (x - 1, y)), (inks[2], (x, y + 1))],
-            coloured: false,
-            text_calls: 2,
-        }
-    } else {
-        SkinLabel {
-            x,
-            y,
-            calls: vec![(inks[3], (x, y))],
-            coloured: false,
-            text_calls: 1,
-        }
-    }
-}
-
 /// A rail place: a track at the bottom and a thumb at the right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailPlace {
@@ -2942,9 +2822,13 @@ pub struct LineRail {
     pub end_calls: u32,
 }
 
-/// Draws the rail. Bit 0x10 selects the first ink; mode 0x10000 gives the
-/// thumb the third ink with alpha 255. The caps sit two units outside the
-/// widget's ends and the thumb hangs just left of its left edge.
+/// Draws the rail (the line skin's combo box back). `inks` are the
+/// disabled and idle control inks and the hover ink (the highlight group's
+/// eighth shade with the GUI's alpha byte). State bit 0x10 picks the
+/// disabled ink, else the idle one; a hovered box (0x10000 in the 0xf0000
+/// field) gives the thumb the hover ink. The track runs along the box's
+/// bottom, its caps two units outside the box's ends; the thumb sits two
+/// units down, from three units to one unit short of the box's right edge.
 pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3]) -> LineRail {
     let x = i64::from(place.x);
     let y = i64::from(place.y);
@@ -2976,10 +2860,13 @@ pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3]) -> LineRa
             ((right - quadrupled) as f32, (bottom + doubled) as f32),
         ],
         [
-            ((triple - quadrupled) as f32, (y + doubled) as f32),
-            ((triple - quadrupled) as f32, (y + quadrupled) as f32),
-            ((triple - six) as f32, (y + quadrupled) as f32),
-            ((triple - six) as f32, (y + doubled) as f32),
+            ((right + triple - quadrupled) as f32, (y + doubled) as f32),
+            (
+                (right + triple - quadrupled) as f32,
+                (y + quadrupled) as f32,
+            ),
+            ((right + triple - six) as f32, (y + quadrupled) as f32),
+            ((right + triple - six) as f32, (y + doubled) as f32),
         ],
     ];
     let track_ink = if (place.state & 0x10) > 0 {
@@ -2988,9 +2875,7 @@ pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3]) -> LineRa
         inks[1]
     };
     let thumb_ink = if (place.state & 0xf_0000) == 0x1_0000 {
-        let mut ink = inks[2];
-        ink[3] = 0xff;
-        ink
+        inks[2]
     } else {
         track_ink
     };
@@ -3006,6 +2891,26 @@ pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3]) -> LineRa
         thumb_ink,
         colour_writes: 16,
         end_calls: 1,
+    }
+}
+
+impl LineRail {
+    /// Appends the rail's quads to an open line-skin batch
+    /// ([`line_skin_batch`]): the track in its ink, then the thumb in its
+    /// own, each corner sampling its bound record.
+    pub fn push(&self, batch: &mut SkinBatch) {
+        for (i, (quad, bind)) in self.quads.iter().zip(self.binds).enumerate() {
+            batch.set_ink(if i < 3 {
+                self.track_ink
+            } else {
+                self.thumb_ink
+            });
+            let uv = bind.map(f32::from_bits);
+            for (k, (x, y)) in quad.iter().enumerate() {
+                batch.set_uv(uv[k * 2], uv[k * 2 + 1]);
+                batch.vertex(*x, *y);
+            }
+        }
     }
 }
 
@@ -7300,6 +7205,10 @@ pub struct ControlLabelDraw {
     pub keep: usize,
     /// The block arm's right-aligned form (style 0x4000).
     pub right_aligned: bool,
+    /// The width the block arm's text is fitted to (the control less its
+    /// margin on both sides): its line is cut with an ellipsis at the end,
+    /// or right-aligned, its tail kept behind an ellipsis.
+    pub fit_width: Option<i32>,
     pub calls: u32,
 }
 
@@ -7313,6 +7222,7 @@ impl ControlLabelDraw {
             coloured: false,
             keep,
             right_aligned: false,
+            fit_width: None,
             calls: 1,
         }
     }
@@ -7410,6 +7320,7 @@ pub fn draw_control_label(
             ControlLabelDraw {
                 coloured,
                 right_aligned: (place.style & 0x7000) == 0x4000,
+                fit_width: Some((place.rect.x1 - place.rect.x0) as i32 - place.inset * 2),
                 ..ControlLabelDraw::single(x, offset_y, block_ink, keep)
             }
         }
@@ -10499,68 +10410,6 @@ mod tests {
     }
 
     #[test]
-    fn a_line_label_aligns_its_text() {
-        let metrics = LabelMetrics {
-            width: 40,
-            line_height: 24,
-            base: 18,
-        };
-        let inks = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]];
-        let place = |style: u32, state: u32, inset: i16| LabelPlace {
-            x: 10,
-            y: 20,
-            w: 100,
-            h: 80,
-            inset,
-            style,
-            state,
-        };
-
-        let left = place_line_label(place(0x1000, 0, 0), metrics, 5, inks);
-        assert_eq!((left.x, left.y), (-35, 23));
-        let centred = place_line_label(place(0x2000, 0, 0), metrics, 5, inks);
-        assert_eq!(centred.x, 39);
-        let inside = place_line_label(place(0x3000, 0, 0), metrics, 5, inks);
-        assert_eq!(inside.x, 65);
-        let outside = place_line_label(place(0x4000, 0, 0), metrics, 5, inks);
-        assert_eq!(outside.x, 115);
-        let plain = place_line_label(place(0, 0, 0), metrics, 5, inks);
-        assert_eq!((plain.x, plain.y), (13, 23));
-        let inset = place_line_label(place(0, 0, 7), metrics, 5, inks);
-        assert_eq!(inset.x, 20);
-
-        let up = place_line_label(place(0x100, 0, 0), metrics, 5, inks);
-        assert_eq!(up.y, 18);
-        let middle = place_line_label(place(0x200, 0, 0), metrics, 5, inks);
-        assert_eq!(middle.y, 73);
-        let base = place_line_label(place(0x300, 0, 0), metrics, 5, inks);
-        assert_eq!(base.y, 117);
-        let bottom = place_line_label(place(0x400, 0, 0), metrics, 5, inks);
-        assert_eq!(bottom.y, 100);
-
-        let first = place_line_label(place(0, 0x10, 0), metrics, 5, inks);
-        assert_eq!(first.ink_index, Some(0));
-        assert_eq!(first.colour, Some([1, 2, 3, 4]));
-        assert!(!first.coloured);
-        assert_eq!(first.text_calls, 1);
-
-        let coloured = place_line_label(place(0, 0x1_0040, 0), metrics, 5, inks);
-        assert!(coloured.coloured);
-        assert_eq!(coloured.ink_index, None);
-        assert_eq!(coloured.colour, None);
-        assert_eq!(coloured.y, 24);
-
-        let third = place_line_label(place(0, 0x60, 0), metrics, 5, inks);
-        assert_eq!(third.ink_index, Some(2));
-        assert_eq!(third.colour, Some([9, 10, 11, 12]));
-        assert_eq!(third.y, 24);
-
-        let second = place_line_label(place(0, 0, 0), metrics, 5, inks);
-        assert_eq!(second.ink_index, Some(1));
-        assert_eq!(second.colour, Some([5, 6, 7, 8]));
-    }
-
-    #[test]
     fn a_line_rail_draws_a_track_and_a_thumb() {
         let inks = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]];
         let rail = draw_line_rail(
@@ -10588,7 +10437,7 @@ mod tests {
             [(0.0, 85.0), (0.0, 105.0), (30.0, 105.0), (30.0, 85.0)],
             [(120.0, 85.0), (120.0, 105.0), (90.0, 105.0), (90.0, 85.0)],
             [(30.0, 95.0), (30.0, 105.0), (90.0, 105.0), (90.0, 95.0)],
-            [(-5.0, 30.0), (-5.0, 40.0), (-15.0, 40.0), (-15.0, 30.0)],
+            [(105.0, 30.0), (105.0, 40.0), (95.0, 40.0), (95.0, 30.0)],
         ];
         for (quad, want) in rail.quads.iter().zip(expect) {
             for ((gx, gy), (wx, wy)) in quad.iter().zip(want) {
@@ -10622,7 +10471,7 @@ mod tests {
             inks,
         );
         assert_eq!(mode.track_ink, [5, 6, 7, 8]);
-        assert_eq!(mode.thumb_ink, [9, 10, 11, 255]);
+        assert_eq!(mode.thumb_ink, [9, 10, 11, 12]);
     }
 
     #[test]
@@ -10938,53 +10787,6 @@ mod tests {
         let double = scale_skin_alpha(0, 200, 1.0, 2.0);
         assert_eq!(double.first, [0; 14]);
         assert_eq!(double.second, [144; 48]);
-    }
-
-    #[test]
-    fn a_skin_label_draws_its_shadow_arm() {
-        let metrics = LabelMetrics {
-            width: 40,
-            line_height: 24,
-            base: 18,
-        };
-        let inks = [
-            [1, 2, 3, 4],
-            [5, 6, 7, 8],
-            [9, 10, 11, 12],
-            [13, 14, 15, 16],
-        ];
-        let place = |state: u32| LabelPlace {
-            x: 10,
-            y: 20,
-            w: 100,
-            h: 80,
-            inset: 0,
-            style: 0,
-            state,
-        };
-
-        let shadow = place_skin_label(place(0x40), metrics, 5, inks);
-        assert_eq!((shadow.x, shadow.y), (13, 23));
-        assert_eq!(shadow.text_calls, 2);
-        assert_eq!(
-            shadow.calls,
-            vec![([5, 6, 7, 8], (12, 23)), ([9, 10, 11, 12], (13, 24))]
-        );
-        assert!(!shadow.coloured);
-
-        let first = place_skin_label(place(0x10), metrics, 5, inks);
-        assert_eq!(first.calls, vec![([1, 2, 3, 4], (13, 23))]);
-        assert_eq!(first.text_calls, 1);
-
-        let plain = place_skin_label(place(0), metrics, 5, inks);
-        assert_eq!(plain.calls, vec![([13, 14, 15, 16], (13, 23))]);
-        assert_eq!(plain.text_calls, 1);
-
-        let coloured = place_skin_label(place(0x1_0040), metrics, 5, inks);
-        assert!(coloured.coloured);
-        assert!(coloured.calls.is_empty());
-        assert_eq!(coloured.y, 24);
-        assert_eq!(coloured.text_calls, 1);
     }
 
     #[test]
@@ -13431,6 +13233,7 @@ mod tests {
         let block = draw_control_label(place, LabelVariant::Block, [0; 4], &palette, 5);
         // (100 − 2 × 2) / 7 = 13 bytes, drawn at the offset.
         assert_eq!(block.keep, 13);
+        assert_eq!(block.fit_width, Some(96));
         assert_eq!(block.y, 26);
         assert_eq!(block.ink, Some([40, 6, 0, 70]));
         assert!(!block.right_aligned);

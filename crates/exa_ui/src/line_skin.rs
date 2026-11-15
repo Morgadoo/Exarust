@@ -113,7 +113,8 @@ pub fn register_line_skin(registered: &mut bool) -> bool {
 pub enum LineIconAlpha {
     /// The shade as stored.
     Stored,
-    /// The shade's colour with alpha 255.
+    /// The shade's colour with the GUI's alpha byte (255 at a full
+    /// fade).
     Opaque,
     /// The shade's colour with its alpha raised by 0x40, wrapping in a byte.
     Raised,
@@ -130,10 +131,16 @@ pub struct LineIconInk {
 impl LineIconInk {
     /// The colour bound for this ink, given the label group's twelve shades.
     pub fn colour(self, shades: &[[u8; 4]; 12]) -> [u8; 4] {
+        self.colour_at(shades, 0xff)
+    }
+
+    /// The colour bound for this ink when the GUI's alpha byte is
+    /// `gui_alpha`: the opaque inks take that byte (255 at a full fade).
+    pub fn colour_at(self, shades: &[[u8; 4]; 12], gui_alpha: u8) -> [u8; 4] {
         let mut colour = shades[usize::from(self.shade - 1)];
         match self.alpha {
             LineIconAlpha::Stored => {}
-            LineIconAlpha::Opaque => colour[3] = 0xff,
+            LineIconAlpha::Opaque => colour[3] = gui_alpha,
             LineIconAlpha::Raised => colour[3] = colour[3].wrapping_add(0x40),
         }
         colour

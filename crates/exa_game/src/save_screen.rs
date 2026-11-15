@@ -1226,7 +1226,7 @@ fn fill_layer(rects: &[GuiRect], ink: [u8; 4]) -> GuiLayer {
     GuiLayer::new(batch, LayerTexture::None)
 }
 
-/// A combo box: its frame (the field's frame style) and its text, left in
+/// A combo box: its back (the line skin's rail) and its text, left in
 /// its span.
 fn paint_combo(
     c: &Control,
@@ -1241,21 +1241,9 @@ fn paint_combo(
         return;
     }
     let rect = rect_of(c, origin.0, origin.1);
-    let mut batch = SkinBatch::new();
-    exa_ui::skin::draw_style_frames(
-        &mut batch,
-        exa_ui::skin::GuiRect::sized(
-            rect.left as f32,
-            rect.top as f32,
-            rect.width() as f32,
-            rect.height() as f32,
-        ),
-        c.style | 0x20,
-        palette,
-    );
-    painted.push(GuiLayer::new(
-        batch,
-        LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+    // The combo class's back: the line skin's rail.
+    painted.push(crate::gui_paint::paint_combo_back(
+        rect, c.state, unit, palette, 1.0,
     ));
     if let Some((ax, ay)) = exa_ui::controls::combo_arrow(
         (rect.left, rect.top, rect.width(), rect.height()),

@@ -807,6 +807,94 @@ pub const EMBEDDED_INVENTORY_WORDS: FormWords = FormWords {
     attributes: (FORM_ATTRIBUTES & !2) | 1,
 };
 
+/// A control's caption through one of the skin's label draws
+/// ([`draw_control_label`]): placed by its style word in the rectangle less
+/// the form's border, its ink picked from its state word.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn control_label(
+    rect: GuiRect,
+    style: u32,
+    state: u32,
+    variant: LabelVariant,
+    ink: [u8; 4],
+    font: &GuiFont,
+    text: &[u8],
+    palette: &SkinPalette,
+    unit: i32,
+) -> exa_ui::skin::ControlLabelDraw {
+    draw_control_label(
+        ControlLabelPlace {
+            rect: SkinRect::sized(
+                rect.left as f32,
+                rect.top as f32,
+                rect.width() as f32,
+                rect.height() as f32,
+            ),
+            inset: BORDER,
+            style,
+            state,
+            offset: 0,
+            text_width: font.text_width(text),
+            line_height: font.line_height,
+            base: font.ascent,
+            text_len: text.len(),
+            step: font.gap,
+        },
+        variant,
+        ink,
+        palette,
+        unit,
+    )
+}
+
+/// A label record's front, as the label class's draw message picks the
+/// skin's label draw: style 0x20000000 the block draw (its line fitted to
+/// the record, cut with an ellipsis or, right-aligned, its tail kept), a
+/// record with its own colour the caller's-ink draw, else the plain draw
+/// whose hovered arm glows ([`push_glow_text`]). (A record whose held bit
+/// is set fades in through the same plain draw; no record a live form
+/// paints here holds it.)
+pub(crate) fn paint_label_front(
+    painted: &mut Painted,
+    c: &exa_ui::gui_controls::Control,
+    rect: GuiRect,
+    unit: i32,
+    palette: &SkinPalette,
+    font: &GuiFont,
+    font_texture: (u16, u16),
+) {
+    let text = c.text.as_slice();
+    let variant = if c.style & 0x2000_0000 != 0 {
+        LabelVariant::Block
+    } else if c.colour.is_some() {
+        LabelVariant::Ink
+    } else {
+        LabelVariant::WithText
+    };
+    let ink = c.colour.unwrap_or(palette.text[6]);
+    let draw = control_label(
+        rect, c.style, c.state, variant, ink, font, text, palette, unit,
+    );
+    if draw.coloured && variant == LabelVariant::WithText {
+        push_glow_text(painted, font, font_texture, text, (draw.x, draw.y), palette);
+        return;
+    }
+    let Some(ink) = draw.ink else {
+        return;
+    };
+    let quads = match draw.fit_width {
+        Some(width) if draw.right_aligned => {
+            exa_ui::gui_text::draw_tail(font, font, text, draw.x, draw.y, width)
+        }
+        Some(width) => exa_ui::gui_text::draw_truncated(font, text, draw.x, draw.y, width),
+        None => draw_line(font, text, draw.x, draw.y),
+    };
+    painted.push(GuiLayer::new(
+        text_batch(font, &quads, ink, font_texture),
+        LayerTexture::Named(font.texture),
+    ));
+}
+
 /// Where a control's caption starts: the skin's own placement from the
 /// control's style (its x from bits 0x7000, its baseline from bits 0x700).
 pub(crate) fn caption_origin(
@@ -817,30 +905,78 @@ pub(crate) fn caption_origin(
     palette: &SkinPalette,
     unit: i32,
 ) -> (i32, i32) {
-    let draw = draw_control_label(
-        ControlLabelPlace {
-            rect: SkinRect::sized(
-                rect.left as f32,
-                rect.top as f32,
-                rect.width() as f32,
-                rect.height() as f32,
-            ),
-            inset: BORDER,
-            style,
-            state: 0,
-            offset: 0,
-            text_width: font.text_width(text),
-            line_height: font.line_height,
-            base: font.ascent,
-            text_len: text.len(),
-            step: 1,
-        },
+    let draw = control_label(
+        rect,
+        style,
+        0,
         LabelVariant::Plain,
         palette.text[6],
+        font,
+        text,
         palette,
         unit,
     );
     (draw.x, draw.y)
+}
+
+/// A combo box's back on the line skin: the combo class's back draw calls
+/// the skin's rail ([`exa_ui::skin::draw_line_rail`]), a capped track along
+/// the box's bottom and a thumb at its top right, in the disabled or idle
+/// control ink, the thumb in the hover ink (the highlight group's eighth
+/// shade at the GUI's alpha) while the box is hovered.
+pub(crate) fn paint_combo_back(
+    rect: GuiRect,
+    state: u32,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+) -> GuiLayer {
+    let inks = line_control_inks(fade);
+    let mut hover = palette.highlight[7];
+    hover[3] = exa_ui::line_skin::hover_alpha(fade);
+    let rail = exa_ui::skin::draw_line_rail(
+        unit,
+        exa_ui::skin::RailPlace {
+            x: rect.left as i16,
+            y: rect.top as i16,
+            w: rect.width() as i16,
+            h: rect.height() as i16,
+            state,
+        },
+        [inks[0], inks[1], hover],
+    );
+    let mut batch = line_skin_batch();
+    rail.push(&mut batch);
+    batch.end_quads();
+    GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE))
+}
+
+/// A text field's back on the line skin: the field's back draw calls the
+/// skin's frame slot (empty on the line skin) and then, with a frame bit
+/// of its style (0xf0), the inner frame slot, the line skin's capped span
+/// ([`exa_ui::skin::draw_capped_span`]) from one pixel in on each side
+/// along the field's bottom less two pixels, in the idle control ink.
+pub(crate) fn paint_text_field_back(
+    rect: GuiRect,
+    style: u32,
+    unit: i32,
+    fade: f32,
+) -> Option<GuiLayer> {
+    if style & 0xf0 == 0 {
+        return None;
+    }
+    let span = exa_ui::skin::draw_capped_span(
+        unit,
+        (rect.left + 1) as f32,
+        (rect.right - 1) as f32,
+        (rect.bottom - 2) as f32,
+        0,
+        exa_ui::skin::SPAN_VIEW_UNSET,
+    );
+    let mut batch = line_skin_batch();
+    span.push(&mut batch, line_control_inks(fade)[1]);
+    batch.end_quads();
+    Some(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)))
 }
 
 /// A combo box's words its front draw reads.
@@ -1043,15 +1179,37 @@ pub struct ButtonWords {
     pub group: i32,
 }
 
+/// Pushes glowing text ([`exa_ui::skin::glow_text`]): the text in the
+/// label group's eighth shade, then its four copies a pixel off in the
+/// highlight group's first shade under the additive blend.
+pub(crate) fn push_glow_text(
+    painted: &mut Painted,
+    font: &GuiFont,
+    font_texture: (u16, u16),
+    text: &[u8],
+    at: (i32, i32),
+    palette: &SkinPalette,
+) {
+    let glow = exa_ui::skin::glow_text(at.0, at.1, palette);
+    painted.push(caption_layer(font, font_texture, text, at, glow.text_ink));
+    for place in glow.glow_places {
+        let mut layer = caption_layer(font, font_texture, text, place, glow.glow_ink);
+        layer.batch.blend = glow.blend;
+        for primitive in &mut layer.batch.primitives {
+            primitive.blend = glow.blend;
+        }
+        painted.push(layer);
+    }
+}
+
 /// The line skin's button at `fade`: four three-unit corners, the top and
 /// bottom edges and, when taller than four units, the sides
 /// ([`exa_ui::skin::draw_frame`]), in the disabled ink (also a grouped or
 /// toggle button that is off), the idle ink (a lone button) or the on ink
-/// ([`line_control_inks`]); then the caption in the label group's third
-/// shade when disabled, its sixth when off, its ninth a pixel lower when
-/// on. A hovered button's caption goes through another text routine that
-/// was not traced; it is drawn as the off one, a pixel lower while lit (a
-/// guess).
+/// ([`line_control_inks`]); then the caption through the line skin's label
+/// slot: the label group's third shade when disabled, the glowing text
+/// ([`push_glow_text`]) while hovered (a pixel lower while lit), its ninth
+/// a pixel lower when on or lit, else its sixth.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_line_button(
     rect: GuiRect,
@@ -1089,18 +1247,24 @@ pub fn paint_line_button(
     painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
     if let Some(texture) = font_texture {
         let hovered = words.state & HOVER_BITS == HOVERED;
-        let (ink, down) = if words.state & state::DISABLED != 0 {
-            (palette.text[2], 0)
-        } else if hovered {
-            (palette.text[5], i32::from(words.state & state::LIT != 0))
-        } else if words.state & (state::ON | state::LIT) == 0 {
-            (palette.text[5], 0)
-        } else {
-            (palette.text[8], 1)
-        };
         let text = label.as_bytes();
         let (x, y) = caption_origin(rect, words.style, font, text, palette, unit);
-        painted.push(caption_layer(font, texture, text, (x, y + down), ink));
+        if words.state & state::DISABLED != 0 {
+            painted.push(caption_layer(font, texture, text, (x, y), palette.text[2]));
+        } else if hovered {
+            let down = i32::from(words.state & state::LIT != 0);
+            push_glow_text(&mut painted, font, texture, text, (x, y + down), palette);
+        } else if words.state & (state::ON | state::LIT) == 0 {
+            painted.push(caption_layer(font, texture, text, (x, y), palette.text[5]));
+        } else {
+            painted.push(caption_layer(
+                font,
+                texture,
+                text,
+                (x, y + 1),
+                palette.text[8],
+            ));
+        }
     }
     painted
 }
@@ -1260,6 +1424,65 @@ mod tests {
     use super::*;
     use exa_ui::game_gui::inventory_height;
     use exa_ui::gui_draw::{GuiFrame, GuiTextures, rasterise};
+
+    #[test]
+    fn a_hovered_button_caption_glows() {
+        let font = exa_ui::gui_font::gui_level(1).main;
+        let palette = shown_palette(1.0);
+        let rect = GuiRect::new(10, 20, 100, 28);
+        let words = |state: u32| ButtonWords {
+            style: 0x3300,
+            state,
+            group: 0,
+        };
+        let paint = |state: u32| {
+            paint_line_button(
+                rect,
+                words(state),
+                4,
+                &palette,
+                1.0,
+                font,
+                Some((256, 256)),
+                "Apply",
+            )
+        };
+        // Idle: the frame and one caption in the label group's sixth shade.
+        let idle = paint(0);
+        assert_eq!(idle.layers.len(), 2);
+        assert_eq!(idle.layers[1].batch.vertices[0].ink, palette.text[5]);
+        // Hovered: the frame, the caption in the eighth shade, then its four
+        // copies in the highlight group's first shade under the additive
+        // blend.
+        let hovered = paint(HOVERED);
+        assert_eq!(hovered.layers.len(), 6);
+        assert_eq!(hovered.layers[1].batch.vertices[0].ink, palette.text[7]);
+        for glow in &hovered.layers[2..] {
+            assert_eq!(glow.batch.vertices[0].ink, palette.highlight[0]);
+            assert_eq!(glow.batch.blend, 0x201);
+        }
+        // Lit and hovered, the glow drops a pixel.
+        let lit = paint(HOVERED | exa_ui::gui_controls::state::LIT);
+        assert_eq!(
+            lit.layers[1].batch.vertices[0].y,
+            hovered.layers[1].batch.vertices[0].y + 1.0
+        );
+    }
+
+    #[test]
+    fn a_framed_text_field_draws_the_line_skins_underline() {
+        let rect = GuiRect::new(10, 20, 100, 24);
+        assert!(paint_text_field_back(rect, 0x3300, 4, 1.0).is_none());
+        let layer = paint_text_field_back(rect, 0x80, 4, 1.0).expect("framed");
+        let v = &layer.batch.vertices;
+        // Two caps and the middle bar in the idle control ink, centred on
+        // the field's bottom less two pixels, one pixel in on each side.
+        assert_eq!(v.len(), 12);
+        assert!(v.iter().all(|v| v.ink == line_control_inks(1.0)[1]));
+        assert_eq!((v[0].x, v[0].y), (11.0 - 8.0, 42.0 - 8.0));
+        assert_eq!((v[4].x, v[4].y), (109.0 + 8.0, 42.0 - 8.0));
+        assert_eq!((v[8].x, v[8].y), (11.0 + 16.0, 42.0));
+    }
 
     /// The words each form's show commits from its constructor's: a
     /// top-level form gains the corner frame (style 0x10), the title and

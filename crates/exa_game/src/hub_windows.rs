@@ -2741,6 +2741,52 @@ mod tests {
     }
 
     #[test]
+    fn the_loadout_fighter_list_draws_the_line_skins_rail() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GuiFrames>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .init_resource::<crate::item_panel_draw::PanelIcons>()
+            .init_resource::<crate::gui_screens::DebugGuiForm>()
+            .init_resource::<HubWindows>();
+        app.add_systems(Update, crate::gui_screens::draw_screens);
+        add_hub_draw(&mut app);
+        let mut windows = HubWindows::default();
+        windows.task.screen = (1280, 720);
+        windows.unit = 4;
+        windows.open_loadout(0, &career());
+        let list = windows
+            .forms
+            .get(crate::hub_forms::FormWindow::Loadout)
+            .map(|form| {
+                let c = &form.controls()[exa_ui::arena_forms::loadout::LIST];
+                let (ox, oy) = form.origin();
+                (ox + c.x, oy + c.y, c.w, c.h)
+            })
+            .expect("the loadout form");
+        app.world_mut().insert_resource(windows);
+        for _ in 0..3 {
+            app.update();
+        }
+        // The combo box's back is the rail: its thumb samples the rail's
+        // record (0.5, 0.8 first) one to three units short of the box's
+        // right edge, two units down.
+        let frames = app.world().resource::<GuiFrames>();
+        let thumb = frames
+            .frames
+            .iter()
+            .flat_map(|f| f.layers.iter())
+            .flat_map(|l| l.batch.vertices.as_chunks::<4>().0)
+            .find(|q| q[0].u == 0.5 && q[0].v == 0.8 && q[2].u == 0.55)
+            .expect("the rail's thumb");
+        let (x, y, w, _) = list;
+        let unit = 4.0;
+        assert_eq!(thumb[0].x, (x + w) as f32 - unit);
+        assert_eq!(thumb[2].x, (x + w) as f32 - 3.0 * unit);
+        assert_eq!(thumb[0].y, y as f32 + 2.0 * unit);
+    }
+
+    #[test]
     fn a_reset_clears_both_the_daily_and_the_lifetime_tallies() {
         let mut career = ArenaCareer::default();
         career.company.earned = 30;
