@@ -1243,47 +1243,25 @@ impl ModelLoader<'_> {
 
     /// A material shaded like the original's from its library record.
     fn exa_material(&mut self, m: &Material) -> ExaMaterial {
-        let packed = m.kind & 1 != 0;
         let key = exa_render::shader_program::feature_key(m);
-        let lit = key & material_flags::LIT != 0;
         let (state_word, shader_word) =
             exa_render::shader_program::state_words(m, SHADING_QUALITY).unwrap_or((0, 0));
-        let maps = factory_maps(m, key, state_word);
+        let path = record_path(m);
+        let maps = path.maps;
         let diffuse = shaded_diffuse(m, key);
         let specular = material_specular(m);
-        let mut shading = 0;
-        if lit {
-            shading |= flags::LIT;
-        }
-        if key & material_flags::TWO_SIDED != 0 {
-            shading |= flags::TWO_SIDED;
-        }
-        if packed {
-            shading |= flags::PACKED_SPECULAR;
-        }
-        shading |= program_flags(lit, state_word, shader_word);
         let mut mat = ExaMaterial {
             params: ExaParams {
                 diffuse: diffuse.extend(m.opacity),
                 specular: specular.extend(material_gloss(m)),
                 emissive: emissive(m, key),
-                flags: shading,
+                flags: path.flags,
+                flags2: path.flags2,
                 ..default()
             },
             ..default()
         };
         mat.params.texture_bias = self.cache.textures.settings().lod_bias();
-        // A type-2 record draws with the smoke and mist program, which the
-        // smoke unit's start-up hook puts in the type table's third slot.
-        if exa_render::material_state::draws_smoke(m) {
-            mat.params.flags2 |= exa_render::material::flags2::SMOKE;
-        }
-        // The factory's local reflection (`Shd.LocalRef`: a reflection
-        // layer and extra flag `0x800` above shading quality 4); the low
-        // field is bound by `exa_render::local_reflection`.
-        if shader_word & exa_render::shader_program::shader::LOCAL_REFLECTION != 0 {
-            mat.params.flags2 |= exa_render::material::flags2::LOCAL_REFLECTION;
-        }
         // The record's texture load flags, with the mode bits the original
         // adds per slot: normal, gloss and height maps (and the specular map
         // of a material whose kind has bit 0) are data, and a diffuse with a
@@ -1338,7 +1316,7 @@ impl ModelLoader<'_> {
         if maps.specular
             && let Some(t) = m.texture(TextureSlot::Specular)
         {
-            let space = if packed {
+            let space = if m.kind & 1 != 0 {
                 ColorSpace::Linear
             } else {
                 ColorSpace::Srgb
@@ -2870,6 +2848,76 @@ fn emissive(m: &Material, key: u32) -> Vec4 {
     rgb.extend(alpha)
 }
 
+/// The branch of `exa.wesl` a material record takes, decided from its
+/// words alone (before any texture loads): the shading flags and second
+/// flags the loader sets from the record, and the maps the factory binds
+/// when their textures load. [`ModelLoader`]'s material build starts from
+/// it, and `exa-tool shader --variants` prints it next to the original's
+/// program key for every shipped record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordPath {
+    /// [`flags`] from the record: lit, two-sided, packed specular, and the
+    /// program's hair and no-specular choices.
+    pub flags: u32,
+    /// [`exa_render::material::flags2`] from the record: the smoke program
+    /// and the local reflection.
+    pub flags2: u32,
+    /// The maps the factory binds ([`FactoryMaps`]).
+    pub maps: FactoryMaps,
+}
+
+/// The [`RecordPath`] of record `m`.
+pub fn record_path(m: &Material) -> RecordPath {
+    let key = exa_render::shader_program::feature_key(m);
+    let lit = key & material_flags::LIT != 0;
+    let (state_word, shader_word) =
+        exa_render::shader_program::state_words(m, SHADING_QUALITY).unwrap_or((0, 0));
+    let mut shading = 0;
+    if lit {
+        shading |= flags::LIT;
+    }
+    if key & material_flags::TWO_SIDED != 0 {
+        shading |= flags::TWO_SIDED;
+    }
+    if m.kind & 1 != 0 {
+        shading |= flags::PACKED_SPECULAR;
+    }
+    shading |= program_flags(lit, state_word, shader_word);
+    let mut second = 0;
+    // A type-2 record draws with the smoke and mist program, which the
+    // smoke unit's start-up hook puts in the type table's third slot.
+    if exa_render::material_state::draws_smoke(m) {
+        second |= exa_render::material::flags2::SMOKE;
+    }
+    // The factory's local reflection (`Shd.LocalRef`: a reflection layer
+    // and extra flag `0x800` above shading quality 4); the low field is
+    // bound by `exa_render::local_reflection`.
+    if shader_word & exa_render::shader_program::shader::LOCAL_REFLECTION != 0 {
+        second |= exa_render::material::flags2::LOCAL_REFLECTION;
+    }
+    // The lit programs' light loop: the translucent program always takes
+    // the fast loop with a signed N·L; the PBR program takes it under
+    // `Shd.FastLgt`. (The hair and skin programs have their own.)
+    if lit {
+        match exa_render::shader_program::program_for_shader_word(shader_word) {
+            exa_render::shader_program::SurfaceProgram::Translucent => {
+                second |= exa_render::material::flags2::TRANSLUCENT;
+            }
+            exa_render::shader_program::SurfaceProgram::Optimized
+                if shader_word & exa_render::shader_program::shader::FAST_LIGHT != 0 =>
+            {
+                second |= exa_render::material::flags2::FAST_LIGHT;
+            }
+            _ => {}
+        }
+    }
+    RecordPath {
+        flags: shading,
+        flags2: second,
+        maps: factory_maps(m, key, state_word),
+    }
+}
+
 /// The shading flags the factory's program choice adds to a lit record:
 /// the hair program for class 3 ([`flags::HAIR`]), and no specular sum when
 /// the material word lacks `MatSpc` (`0x4`, [`flags::NO_SPECULAR`]). An
@@ -2902,14 +2950,15 @@ fn program_flags(lit: bool, material_word: u32, shader_word: u32) -> u32 {
 /// the diffuse bit binds nothing there.
 /// A type-2 record keeps only `MatEmi`, two-sided and the colour/opacity
 /// slot, so nothing but `opacity` can be set for it.
-struct FactoryMaps {
-    diffuse: bool,
-    opacity: bool,
-    emissive: bool,
-    specular: bool,
-    normal: bool,
-    gloss: bool,
-    height: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FactoryMaps {
+    pub diffuse: bool,
+    pub opacity: bool,
+    pub emissive: bool,
+    pub specular: bool,
+    pub normal: bool,
+    pub gloss: bool,
+    pub height: bool,
 }
 
 /// The factory's map bindings for a record with feature word `key` and
@@ -4565,6 +4614,92 @@ mod tests {
         assert_eq!(program_flags(true, 0x3, 0x1), flags::NO_SPECULAR);
         assert_eq!(program_flags(true, 0x7, 0x1), 0);
         assert_eq!(program_flags(false, 0x0, 0x3), 0);
+    }
+
+    /// The light loop a record's program takes: a type-1 record in
+    /// translucent mode (flags `0x300` = `0x100`) draws the translucent
+    /// program (class 7); a PBR record with extra flag `0x200`
+    /// (`Shd.FastLgt`) the fast loop. A legacy record keeps its own loop
+    /// whatever its extra flags, and an unlit record has none.
+    #[test]
+    fn the_record_path_picks_the_translucent_and_fast_light_loops() {
+        use exa_render::material::flags2;
+        let leaf = Material {
+            kind: 1,
+            flags: 0x117,
+            opacity: 1.0,
+            ..default()
+        };
+        let (_, shd) = exa_render::shader_program::state_words(&leaf, SHADING_QUALITY).unwrap();
+        assert_eq!(shd & 0xF, 7);
+        let path = record_path(&leaf);
+        assert_eq!(path.flags2 & flags2::TRANSLUCENT, flags2::TRANSLUCENT);
+        assert_eq!(path.flags2 & flags2::FAST_LIGHT, 0);
+        assert_ne!(path.flags & flags::TWO_SIDED, 0);
+        let fern = Material {
+            kind: 1,
+            flags: 0x7,
+            extra: 0x200,
+            opacity: 1.0,
+            ..default()
+        };
+        let path = record_path(&fern);
+        assert_eq!(path.flags2 & flags2::FAST_LIGHT, flags2::FAST_LIGHT);
+        assert_eq!(path.flags2 & flags2::TRANSLUCENT, 0);
+        let legacy = Material {
+            kind: 0,
+            ..fern.clone()
+        };
+        assert_eq!(record_path(&legacy).flags2 & flags2::FAST_LIGHT, 0);
+        let unlit = Material {
+            flags: 0x8,
+            ..fern.clone()
+        };
+        assert_eq!(record_path(&unlit).flags2, 0);
+        // A plain PBR record takes the default loop.
+        let plain = Material { extra: 0, ..fern };
+        assert_eq!(record_path(&plain).flags2, 0);
+    }
+
+    /// The live material build (skipped without the game): the shipped
+    /// foliage's leaves draw with the translucent program and the juniper
+    /// with the fast light loop, as the original's factory picks them
+    /// (`exa-tool shader --variants`).
+    #[test]
+    fn shipped_foliage_takes_the_translucent_and_fast_programs() {
+        use exa_render::material::flags2;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let second = |loader: &mut ModelLoader, entry: &str, record: &str| {
+            let model = loader.model(PackKind::Objlib, entry).unwrap();
+            let handle = model
+                .nodes
+                .iter()
+                .flat_map(|n| n.parts.iter().map(|p| p.1.clone()).zip(&n.part_materials))
+                .find(|(_, name)| name.eq_ignore_ascii_case(record))
+                .map(|(h, _)| h)
+                .unwrap_or_else(|| panic!("{entry} draws {record}"));
+            loader.materials.get(&handle).unwrap().params.flags2
+        };
+        let leaf = second(&mut loader, "brlf_beechlrga01", "leafbeechblfa01");
+        assert_eq!(leaf & flags2::TRANSLUCENT, flags2::TRANSLUCENT);
+        let juniper = second(&mut loader, "jpra_bush a a01", "junipera01");
+        assert_eq!(juniper & flags2::FAST_LIGHT, flags2::FAST_LIGHT);
+        assert_eq!(juniper & flags2::TRANSLUCENT, 0);
     }
 
     #[test]
