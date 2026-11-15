@@ -375,16 +375,23 @@ fn press_hotkeys(
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
     mut skills: MessageWriter<crate::skill_screen::OpenSkills>,
-    (mut dialogue, control, mut confirms): (
+    (mut dialogue, control, mut confirms, gui): (
         DialogueSide,
         Option<Res<PlayerControl>>,
         MessageWriter<crate::end_menu_screen::EndMenuConfirm>,
+        Option<Res<crate::gui_screens::GameScreens>>,
     ),
 ) {
     // The controls off, the key-down handler and the pad routine (the
     // controls' frame task) dispatch nothing; the second block refuses the
     // keys too (the block alone does not).
     if PlayerControl::keys_refused(control.as_deref()) {
+        return;
+    }
+    // The window manager hands the keys to its focused form: with the
+    // journal's text box focused they type there and never reach the
+    // viewport's key handler.
+    if gui.as_deref().is_some_and(|gui| gui.journal_box_focused()) {
         return;
     }
     let pressed: Vec<u32> = keys

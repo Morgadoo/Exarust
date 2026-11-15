@@ -1155,7 +1155,11 @@ last frame (`body::InView`) is parked by its body tick
 (`body::Ragdoll::park_unseen`, the original's state bit 4): the solver
 leaves it out, each tick only rolls its particle sets and takes one off its
 countdown, and a wake does not unpark it; the AI manager's frame
-(`exa_game::park`) and the golem wake unpark it (`Ragdoll::unpark`). A body a level placed from its saved
+(`exa_game::park`) and the golem wake unpark it (`Ragdoll::unpark`). The original's mark and
+unmark walk the character's node tree, where its held items hang: before the solver each linked
+held item takes its holder's mark (`grip_solve::share_holder_park`), and the grip's mark
+(`grip_solve::mark_held`) wakes a held item to the full count every tick, as the tree wake
+leaves it. A body a level placed from its saved
 pose is built limp and registered at rest
 (`body::Ragdoll::register_placed`, the `body::PlacedCorpse` request): every
 velocity zero and the countdown at 0, so it runs one tick and that tick's
@@ -1414,15 +1418,18 @@ strain), `push_weighted` is the original's weighted push (each particle by
 the offset times its weight) that adds the offset's length to the strain
 and restores the edges past 0.1 cm, and `settle_for` runs the original's
 temporary state where gravity acts with no inertia (a re-placed
-character). The integration keeps the velocity by the motion band's
+character): 83 ticks when the scene takes a character back (not a dormant
+one, `exa_ai::presence`), 16 after the story respawn's placement, a
+pending-respawn load's and on Spirit Form's new body (`PLACED_SETTLE`). The integration keeps the velocity by the motion band's
 retention (0.426, 0.25, 0.05 a second; nothing else damps a body), and the
 sleep countdown is the original's: 256 on fast motion, held at 30–32 on
 slow motion, two off a tick at rest. A frozen body (`Ragdoll::freeze`, the
 original's state bit 0x40) skips all of that: its step puts each part back
 on its previous particles and takes one tick off the countdown (floored at
-1). Nothing in Exarust freezes a body yet (the original does it for a
-walkable-platform node, which no shipped body has, and for an item the
-cursor holds). Each root keeps the original's link-iteration count
+1). The original's freeze (`Ragdoll::freeze_at`, on the item cursor's lock
+release) also sets the kinematic bit, sets every particle set to the current
+one and the countdown to 2; a kinematic body is out of the level detection
+until the thaw (`freeze(false)`) clears both bits. Each root keeps the original's link-iteration count
 (`Ragdoll::link_iterations`: 2 for a plain body plus one per articulated
 child, 20 for a character, 10 once it dies in play; each living body tick
 sets it to 5 while dormant, else moves it one a tick up toward

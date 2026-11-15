@@ -1590,6 +1590,70 @@ mod tests {
         assert_eq!(plans[0].id, 4);
     }
 
+    /// The end-session menu's arena CONTINUE runs the arena's continue: the
+    /// next round starts as the arena's own end screen's Continue starts it.
+    #[test]
+    fn the_end_session_menus_continue_runs_the_arena_continue() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<SceneCommand>()
+            .add_message::<ArenaExit>()
+            .init_resource::<ArenaAutoContinue>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .init_resource::<crate::flow::FlowSteps>()
+            .insert_resource({
+                let mut flow = crate::flow::Flow::default();
+                flow.mode = crate::flow::Mode::Arena;
+                flow
+            })
+            .insert_resource(crate::effects::EffectClock { now_ms: 1_000 })
+            .add_plugins(crate::end_menu_screen::EndMenuScreenPlugin)
+            .add_systems(Update, continue_round);
+        let mut arena = ArenaMatch::begin(7);
+        arena.rounds.round = 2;
+        arena.rounds.losses = 1;
+        arena.state = MatchState::NextFight;
+        arena.screen = Some(Screen::NextRound);
+        app.insert_resource(arena);
+        let mut scene = scene();
+        scene.player_entry = None;
+        app.insert_resource(scene);
+        app.world_mut().spawn(body(2, false, Condition::NORMAL));
+        {
+            let mut menu = app
+                .world_mut()
+                .resource_mut::<crate::end_menu_screen::EndMenuScreen>();
+            menu.show(crate::flow::end_menu(
+                crate::flow::MENU_ARENA,
+                crate::flow::Mode::Arena,
+            ));
+            menu.selected = Some(0);
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+        app.update();
+        // The menu closed without leaving to the title.
+        assert!(
+            !app.world()
+                .resource::<crate::end_menu_screen::EndMenuScreen>()
+                .open
+        );
+        assert!(
+            app.world()
+                .resource::<crate::flow::FlowSteps>()
+                .steps
+                .is_empty()
+        );
+        let arena = app.world().resource::<ArenaMatch>();
+        assert_eq!(arena.state, MatchState::Fighting);
+        assert_eq!(arena.rounds.round, 3);
+        assert_eq!(arena.screen, None);
+    }
+
     #[test]
     fn the_continue_starts_the_next_round_with_the_winner_still_up() {
         let mut app = arena_app();

@@ -416,6 +416,39 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
 /// the nodes its subtree holds, less one (the original's global word 2).
 pub const LOOSE_ITERATION_BASE: i32 = 2;
 
+/// Gives every held item its holder's park mark: the original's mark and
+/// unmark walk the character's node tree, where its held items hang, so an
+/// item is parked with the dormant character holding it
+/// ([`Ragdoll::park`]) and unparked with it ([`Ragdoll::unpark`], the AI
+/// manager frame's wake and the golem's). Runs once the character ticks
+/// (which park) and the pre-step wakes (which unpark) are done, before the
+/// solver. An item whose holder is not found keeps its own mark.
+pub fn share_holder_park(
+    mut held: Query<(&HeldGrip, &mut Ragdoll)>,
+    holders: Query<&Ragdoll, Without<HeldGrip>>,
+) {
+    let linked = |grip: &HeldGrip| !grip.released && grip.links.is_some();
+    let parked = crate::body::first_by_key(
+        held.iter()
+            .filter(|(grip, _)| linked(grip))
+            .map(|(grip, _)| grip.holder_key),
+        holders.iter().map(|body| (body.parked(), body)),
+    );
+    for (grip, mut body) in &mut held {
+        if !linked(grip) {
+            continue;
+        }
+        let Some(&holder_parked) = parked.get(&grip.holder_key) else {
+            continue;
+        };
+        if holder_parked && !body.parked() {
+            body.park();
+        } else if !holder_parked && body.parked() {
+            body.unpark();
+        }
+    }
+}
+
 /// Releases the items whose holder has left the world, and those a
 /// collapse let go of ([`GripRelease`]): the link records stop acting, the
 /// item body loses its holder and held mask, takes the dropped weapon's
@@ -699,6 +732,7 @@ pub fn install_stage(mut stages: ResMut<SolverStages>) {
 /// [`crate::PhysicsPlugin`].
 pub fn plugin(app: &mut App) {
     use crate::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<HeldGrip>();
     app.add_message::<crate::grip::CameLoose>()
         .bridge_message::<crate::grip::CameLoose>()
         .add_systems(Startup, install_stage)
@@ -716,6 +750,15 @@ pub fn plugin(app: &mut App) {
                 .in_set(GripSolveSet::Build),
         )
         .add_systems(FixedUpdate, sync_grips.in_set(GripSolveSet::Sync))
+        // The holder's park reaches its items after the character ticks
+        // (the park) and before the solver.
+        .add_systems(
+            FixedUpdate,
+            share_holder_park
+                .after(GripSolveSet::Build)
+                .after(crate::body::CharacterTicks)
+                .before(BodySystems),
+        )
         .add_systems(FixedUpdate, store_grip_lengths.after(BodySystems));
 }
 

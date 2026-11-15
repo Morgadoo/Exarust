@@ -868,3 +868,110 @@ fn the_origin_pivot_holds_the_item_still_under_its_hand() {
     assert!(solve(false) > 5.0, "the two points alone hold the turn");
     assert!(solve(true) < 0.5, "the origin pivot brings it back");
 }
+
+/// A linked grip of `holder_part`'s body on its item.
+fn held_weapon(holder_part: Entity) -> crate::grip::HeldGrip {
+    use crate::grip::{HeldGrip, HeldKind};
+    HeldGrip {
+        spec: crate::grip::GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0,
+        soft_weld: true,
+        kind: HeldKind::Weapon,
+        holder_key: holder_part,
+        hands: [None, None],
+        arms: [None, None],
+        links: Some(links(pivot(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            (1.0, 0.0),
+        ))),
+        released: false,
+        head_extra: 0.0,
+    }
+}
+
+/// A held item takes its holder's park mark: parked with a parked holder,
+/// unparked once the holder is, and left alone while its holder is not
+/// found or the grip is released.
+#[test]
+fn a_held_item_is_parked_and_unparked_with_its_holder() {
+    use crate::grip::HeldGrip;
+    let holder_part = Entity::from_raw_u32(30).unwrap();
+    let item_part = Entity::from_raw_u32(31).unwrap();
+    let mut app = App::new();
+    app.add_systems(Update, crate::grip_solve::share_holder_park);
+    let holder = app
+        .world_mut()
+        .spawn(rigid(holder_part, Vec3::ZERO, 1.0))
+        .id();
+    let item = app
+        .world_mut()
+        .spawn((rigid(item_part, Vec3::X, 1.0), held_weapon(holder_part)))
+        .id();
+    let parked = |app: &App, e| app.world().get::<Ragdoll>(e).unwrap().parked();
+    app.update();
+    assert!(!parked(&app, item));
+    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().park();
+    app.update();
+    assert!(parked(&app, item), "parked with its holder");
+    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().unpark();
+    app.update();
+    assert!(!parked(&app, item), "unparked with its holder");
+    // A released grip keeps its own mark.
+    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().park();
+    app.world_mut().get_mut::<HeldGrip>(item).unwrap().released = true;
+    app.update();
+    assert!(!parked(&app, item));
+}
+
+/// The live step (the physics plugin's fixed step): a held item is parked
+/// with its parked holder and unparked with it, and a sleeping held item
+/// is awake after the step (the grip's mark wakes it to the full count
+/// before the solver), as the original's tree wake and unpark reach the
+/// bodies under the character's node.
+#[test]
+fn the_step_parks_wakes_and_unparks_a_held_item_with_its_holder() {
+    let holder_part = Entity::from_raw_u32(40).unwrap();
+    let item_part = Entity::from_raw_u32(41).unwrap();
+    let mut app = App::new();
+    app.add_plugins((
+        MinimalPlugins,
+        bevy::transform::TransformPlugin,
+        crate::PhysicsPlugin,
+    ))
+    .init_resource::<Assets<Mesh>>();
+    app.update();
+    let holder = app
+        .world_mut()
+        .spawn(rigid(holder_part, Vec3::new(0.0, 5.0, 0.0), 1.0))
+        .id();
+    // A rigid body is registered asleep (countdown 0).
+    let item_body = rigid(item_part, Vec3::new(0.3, 5.0, 0.0), 1.0);
+    assert!(item_body.asleep());
+    let item = app
+        .world_mut()
+        .spawn((item_body, held_weapon(holder_part)))
+        .id();
+    let step = |app: &mut App| app.world_mut().run_schedule(FixedUpdate);
+    let body = |app: &App, e| app.world().get::<Ragdoll>(e).unwrap().clone();
+    step(&mut app);
+    let woken = body(&app, item);
+    assert!(!woken.asleep(), "the held item is awake");
+    assert!(woken.countdown() > 1, "countdown {}", woken.countdown());
+    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().park();
+    step(&mut app);
+    assert!(body(&app, item).parked(), "parked with its holder");
+    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().unpark();
+    step(&mut app);
+    assert!(!body(&app, item).parked(), "unparked with its holder");
+}

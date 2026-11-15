@@ -77,7 +77,8 @@ fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
 }
 
 // One light in the original's fast light loop (`lightsfst`), which its
-// grass program (`shadegrs_f`) always uses: plain N·L diffuse with no
+// grass program (`shadegrs_f`) always uses and its PBR program under
+// `Shd.FastLgt`: plain N·L diffuse with no
 // Fresnel share, and a highlight r²/(N·H²(r² − 0.9) + 0.9)² × ¼/(N·V(1 − k)
 // + k) × N·L with no light-side geometry term, its Fresnel 0.04 + 0.96 ×
 // 2^(−8 V·H) (the loop's `dot(8·vwr, lhv)`, `vwr` pointing from the eye).
@@ -94,6 +95,25 @@ fn light_fast(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
     let lit = colour * ndl;
     out.specular = lit * b;
     out.diffuse = lit;
+    return out;
+}
+
+// One light in the original's translucent program (`shadetrl_f`), which
+// takes the fast loop (`lightsfst`) with a signed N·L (`Shd.NegNdL`): the
+// diffuse is N·L², so a leaf lit from behind still glows, and the fast
+// highlight is weighted by max(N·L, 0) with Fresnel 0.04 + 0.96·2^(−8 V·H).
+fn light_translucent(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
+    var out: Lit;
+    let ndl = dot(s.n, l);
+    let h = normalize(l + s.v);
+    let ndh = max(dot(s.n, h), 0.0);
+    let r2 = pow(s.rough, 4.0);
+    let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
+    let d = 0.25 / (s.ndv * (1.0 - k) + k);
+    let denom = ndh * ndh * (r2 - 0.9) + 0.9;
+    let b = r2 / max(denom * denom, 1e-30) * d * max(ndl, 0.0) * (0.04 + 0.96 * exp2(-8.0 * dot(s.v, h)));
+    out.specular = colour * b;
+    out.diffuse = colour * (ndl * ndl);
     return out;
 }
 
@@ -125,13 +145,15 @@ fn light_skin(s: Surface, sn: vec3<f32>, blur: f32, l: vec3<f32>, colour: vec3<f
     return out;
 }
 
-// The original's cube-shadow filter: taps of a fixed eight-point disc around
-// the light direction, turned per window pixel, over the light's filter
-// radius (`PointLight::radius`: (softness + 1)·0.005), each a hardware 2 × 2
+// The original's cube-shadow filter: taps of a fixed disc around the light
+// direction, turned per window pixel, over the light's filter radius
+// (`PointLight::radius`: (softness + 1)·0.005), each a hardware 2 × 2
 // comparison; a normal offset of 0.008·(1 − |N·L|)·d and a 0.5 % depth bias.
 // The GI lookup takes the same taps. The pairs are the first two lanes of
-// the engine's `SdwSmp` table (three floats a tap), at their exact values.
-const SHADOW_TAPS = array<vec2<f32>, 8>(
+// the engine's 32-entry `SdwSmp` table (three floats a tap), at their exact
+// values; a frame reads as many as the shadow quality gives (`SdwSmps`,
+// `exa_render::shader_program::shadow_samples`).
+const SHADOW_TAPS = array<vec2<f32>, 32>(
     vec2(0.27254149317741394, -0.5486504435539246),
     vec2(-0.28799688816070557, 0.6185606122016907),
     vec2(0.36168748140335083, 0.18059517443180084),
@@ -140,6 +162,30 @@ const SHADOW_TAPS = array<vec2<f32>, 8>(
     vec2(-0.8587824106216431, 0.47176772356033325),
     vec2(0.3960069417953491, 0.7947491407394409),
     vec2(0.7731252908706665, -0.3697291910648346),
+    vec2(0.7132217288017273, 0.5139874219894409),
+    vec2(0.6846739053726196, 0.08099449425935745),
+    vec2(-0.788621723651886, -0.6034836769104004),
+    vec2(-0.6179829239845276, 0.07486236840486526),
+    vec2(0.08094444125890732, -0.9677389860153198),
+    vec2(-0.02271728590130806, -0.16351211071014404),
+    vec2(0.2765638828277588, 0.4919317662715912),
+    vec2(-0.18876327574253082, 0.26903489232063293),
+    vec2(0.0855780765414238, -0.5979103446006775),
+    vec2(0.47590988874435425, 0.02471969649195671),
+    vec2(0.3221302926540375, -0.3652004599571228),
+    vec2(-0.33975303173065186, -0.3964686989784241),
+    vec2(-0.08811546117067337, 0.7870379686355591),
+    vec2(-0.30145859718322754, 0.8972524404525757),
+    vec2(-0.08669151365756989, -0.7477059960365295),
+    vec2(0.416592538356781, -0.16682052612304688),
+    vec2(0.18134261667728424, -0.029851531609892845),
+    vec2(0.7127111554145813, -0.1435227245092392),
+    vec2(-0.49292248487472534, 0.30522018671035767),
+    vec2(0.2458879053592682, -0.7415239214897156),
+    vec2(-0.014365081675350666, 0.6146896481513977),
+    vec2(-0.4767964482307434, -0.5696413516998291),
+    vec2(-0.6737311482429504, -0.7491509318351746),
+    vec2(-0.9734628796577454, -0.026627350598573685),
 );
 const SHADOW_DEPTH_SCALE: f32 = 0.995;
 // A node's shadow-bias level v (0–7, the mesh tag's low bits) scales a
@@ -152,26 +198,45 @@ const SHADOW_BIAS_MASK: u32 = 7u;
 const SHADOW_NORMAL_OFFSET: f32 = 0.008;
 const FLIP_Z = vec3(1.0, 1.0, -1.0);
 
-// The disc taps a fragment takes, and the disc's turn (sin, cos).
+// The disc taps a fragment takes, and the disc's turn (sin, cos). `disc`
+// is false when the original's `{?SdwSmps?}` is: one tap and no super-
+// sampling, so every lookup is a single one along the plain direction (no
+// normal offset, no disc, full GI openness). `gi_first` is where the GI's
+// window starts: the original's ambient include indexes its taps with
+// `PassIdx + j`, not `PassIdx·SdwSmps + j` as the light loops do.
 struct Taps {
     first: i32,
     count: i32,
+    gi_first: i32,
+    disc: bool,
     turn: vec2<f32>,
 }
 
-// All eight taps; or, in a supersampled frame (`split`), the two of the
-// fragment's sub-frame, as the original spreads the taps over its four
-// sub-frames: each 2 × 2 block of the scene image is one window pixel and
-// its four pixels are the sub-frames, so the resolve averages all eight.
+// The taps one sub-frame takes (`SdwSmps`), carried in the top byte of the
+// light records' first element (`exa_render::lights`); 8 when it holds none.
+fn shadow_samples() -> i32 {
+    let n = i32(exa_lights[0].x >> 24u);
+    return select(8, n, n > 0);
+}
+
+// The fragment's `SdwSmps` taps; in a supersampled frame (`split`) the
+// window of the fragment's sub-frame, as the original spreads the taps
+// over its four sub-frames: each 2 × 2 block of the scene image is one
+// window pixel and its four pixels are the sub-frames (`PassIdx`), so the
+// resolve averages all of them.
 fn taps(frag: vec2<f32>, split: bool) -> Taps {
     var t: Taps;
     var pixel = frag;
+    let n = shadow_samples();
     t.first = 0;
-    t.count = 8;
+    t.gi_first = 0;
+    t.count = n;
+    t.disc = n > 1 || split;
     if split {
         let cell = vec2<i32>(floor(frag));
-        t.first = 2 * ((cell.x & 1) + 2 * (cell.y & 1));
-        t.count = 2;
+        let sub = (cell.x & 1) + 2 * (cell.y & 1);
+        t.first = n * sub;
+        t.gi_first = sub;
         pixel = floor(frag * 0.5) + 0.5;
     }
     let turn = PI * fract(3.555713358 * pixel.x + 0.309269245 * pixel.y);
@@ -181,7 +246,10 @@ fn taps(frag: vec2<f32>, split: bool) -> Taps {
 
 // Disc tap `j` turned by `t`.
 fn tap(t: Taps, j: i32) -> vec2<f32> {
-    let k = SHADOW_TAPS[j];
+    if !t.disc {
+        return vec2(0.0);
+    }
+    let k = SHADOW_TAPS[j & 31];
     return vec2(k.x * t.turn.y - k.y * t.turn.x, k.x * t.turn.x + k.y * t.turn.y);
 }
 
@@ -213,7 +281,7 @@ fn point_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, t: Taps, depth_scale: f32
     let d = max(length(l), 1e-4);
     let ln = l / d;
     // Toward the light from the surface pushed out along the normal.
-    let push = (1.0 - abs(dot(nrm, ln))) * d * SHADOW_NORMAL_OFFSET;
+    let push = select(0.0, (1.0 - abs(dot(nrm, ln))) * d * SHADOW_NORMAL_OFFSET, t.disc);
     let s_vec = (l - nrm * push) / d;
     let axes = disc_frame(ln);
     let radius = (*lt).position_radius.w;
@@ -250,7 +318,7 @@ fn cached_shadow(slot: u32, reach: f32, id: u32, p: vec3<f32>, nrm: vec3<f32>, t
     let l = (*lt).position_radius.xyz - p;
     let d = max(length(l), 1e-4);
     let ln = l / d;
-    let push = (1.0 - abs(dot(nrm, ln))) * d * SHADOW_NORMAL_OFFSET;
+    let push = select(0.0, (1.0 - abs(dot(nrm, ln))) * d * SHADOW_NORMAL_OFFSET, t.disc);
     let s_vec = (l - nrm * push) / d;
     let axes = disc_frame(ln);
     let radius = (*lt).position_radius.w;
@@ -329,7 +397,8 @@ fn cube_compare(dir: vec3<f32>, id: u32, depth: f32) -> f32 {
 }
 
 // Light records and mesh light lists (`exa_render::lights`), bound to every
-// surface material: element 0 holds the first list's index, element 1 + id
+// surface material: element 0 holds the first list's index (bits 0–23, with
+// `SdwSmps` above), element 1 + id
 // light `id`'s shaping (y, z), each list two elements (count, then ids).
 @group(constants::MATERIAL_BIND_GROUP) @binding(130) var<storage, read> exa_lights: array<vec4<u32>>;
 
@@ -352,7 +421,7 @@ fn lit_by(tag: u32, index: u32) -> bool {
     if slot == 0u {
         return true;
     }
-    let base = exa_lights[0].x + 2u * (slot - 1u);
+    let base = (exa_lights[0].x & 0xFFFFFFu) + 2u * (slot - 1u);
     let a = exa_lights[base];
     let b = exa_lights[base + 1u];
     let id = light_id(index);
@@ -424,6 +493,13 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
     return out;
 }
 
+// The GI taps' mean: light and openness averaged, the openness full when
+// the original reads a single sample without its disc.
+fn gi_mean(sum: vec4<f32>, t: Taps) -> vec4<f32> {
+    let g = sum / f32(t.count);
+    return vec4(g.rgb, select(1.0, g.a, t.disc));
+}
+
 // The original's frame across the normal for the GI taps, with its 0.1
 // clamp that keeps the 1/(1 + n.z) term finite toward −Z.
 struct GiFrame {
@@ -463,10 +539,10 @@ fn gi_sample(
 ) -> vec4<f32> {
     let f = gi_frame(n);
     var sum = vec4(0.0);
-    for (var j = t.first; j < t.first + t.count; j++) {
+    for (var j = t.gi_first; j < t.gi_first + t.count; j++) {
         sum += textureSampleLevel(volume, volume_sampler, gi_tap(f, origin, extent, p, n, t, j), 0.0);
     }
-    return sum / f32(t.count);
+    return gi_mean(sum, t);
 }
 
 // The resident GI block an object samples, as the original's per-object

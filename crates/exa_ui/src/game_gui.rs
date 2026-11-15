@@ -26,6 +26,7 @@ use exa_formats::characters::Skill;
 
 use crate::form::{ClientRect, cvtss2si, ease};
 use crate::technique_selector::{FORM_HEIGHT, FORM_WIDTH, LEVEL_XP};
+use crate::text_box::TextBox;
 
 /// The menu cursor's image.
 pub const MENU_CURSOR: &str = "menucursor.rfi";
@@ -290,12 +291,14 @@ pub const LOOT_PACK_HEIGHT: i32 = 180;
 pub const LOOT_PANEL_GAP: i32 = 4;
 
 /// Whether a right-button release over a screen's own form closes it: the
-/// inventory and the loot window have a right-release close handler; the
-/// journal closes on its own key mask instead.
+/// inventory, the loot window, the container popup and the journal have a
+/// mouse slot that closes on a right release (the word's 0x2002 bits). The
+/// journal's text box hands a right-button word to its parent, so a
+/// release over the text closes the journal too.
 pub fn right_release_closes(kind: GameScreen) -> bool {
     matches!(
         kind,
-        GameScreen::Inventory | GameScreen::Loot | GameScreen::Container
+        GameScreen::Inventory | GameScreen::Loot | GameScreen::Container | GameScreen::Journal
     )
 }
 
@@ -580,6 +583,45 @@ pub const JOURNAL_TEXT: ClientRect = ClientRect {
     bottom: 500,
 };
 pub const JOURNAL_TITLE: &str = "Journal";
+/// The style bits the journal's opener adds to its text box: stretched
+/// downwards ([`crate::form::style::Y_MASK`]).
+pub const JOURNAL_BOX_STYLE_BITS: u32 = 0xc_0000;
+/// The attribute bit the opener adds to its text box: the vertical scroll
+/// bar ([`crate::form::attribute::VSCROLL`]).
+pub const JOURNAL_BOX_ATTRIBUTE_BITS: u32 = 0x200;
+/// The journal's entry list: a combo box record 220 wide at x 4 on the
+/// row after the buttons (anchor 0x8007), style `0x0900332d`, whose
+/// caption is the selected entry's title.
+pub const JOURNAL_LIST_STYLE: u32 = 0x0900_332d;
+/// The journal list's design width.
+pub const JOURNAL_LIST_WIDTH: i32 = 0xdc;
+
+/// The journal's text box as its opener builds it, laid out in `client`
+/// (the held form's client at `unit`): editable, in the GUI level's small
+/// font (flag word 0x2000000, so not read-only), its margin the GUI unit
+/// the opener stores, with the Tab callback set. The show then rescales
+/// the box from the design unit 4, which scales the margin by `unit / 4`
+/// in integers ([`TextBox::rescale`]): one unit up to unit 7, two units at
+/// 8, three at 12. Laid out ([`TextBox::realign`]) and empty.
+pub fn journal_text_box(
+    unit: i32,
+    main: &'static crate::gui_font::GuiFont,
+    small: &'static crate::gui_font::GuiFont,
+    client: ClientRect,
+) -> TextBox {
+    let mut text_box = TextBox::new(unit, main, small, client);
+    text_box.small_font = true;
+    text_box.read_only = false;
+    text_box.margin = unit;
+    text_box.on_tab = true;
+    text_box.rescale(DESIGN_UNIT, unit);
+    text_box.realign();
+    text_box
+}
+
+/// The unit the forms are designed at, which the show rescales from.
+pub const DESIGN_UNIT: i32 = 4;
+
 /// A new entry's title.
 pub const NEW_ENTRY: &str = "New Entry";
 /// The control the journal focuses after adding an entry (1-based).

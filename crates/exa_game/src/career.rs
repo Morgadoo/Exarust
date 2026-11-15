@@ -328,6 +328,10 @@ pub struct Company {
     pub day: u32,
     /// Whether the company took each week of the current season.
     pub weeks: [bool; 4],
+    /// Who took each week of the current season, as the season table reads
+    /// it: 0 for nobody, 1 for the company, a rival's field company id plus
+    /// one from 2. The fourth week's verdict clears all four.
+    pub week_winners: [u32; 4],
     pub seasons_won: u32,
     /// Season reward items granted. Four when a season is swept.
     pub season_rewards: u32,
@@ -399,6 +403,7 @@ impl Company {
             total_earned: 0,
             day: 0,
             weeks: [false; 4],
+            week_winners: [0; 4],
             seasons_won: 0,
             season_rewards: 0,
             reward_ids: Vec::new(),
@@ -688,6 +693,13 @@ impl Company {
     /// multiple of 7 drop an entry whose health is still under 3276.
     /// Winning all four weeks grants four rewards.
     pub fn end_day(&mut self, events: [u32; 6]) -> Night {
+        self.end_day_in_field(events, &[])
+    }
+
+    /// [`Company::end_day`] with the week's tournament field: a rival that
+    /// takes the week is recorded by its field entry (a 1-based company
+    /// id, read at the winner's team id less two) plus one.
+    pub fn end_day_in_field(&mut self, events: [u32; 6], field: &[i32]) -> Night {
         self.day = self.day.saturating_add(1);
         let physician = self
             .roster
@@ -727,7 +739,7 @@ impl Company {
             season: false,
         };
         if self.day % 7 == 1 {
-            let (won, season) = self.resolve_week(&events);
+            let (won, season) = self.resolve_week(&events, field);
             night.week_won = Some(won);
             night.season = season;
         } else if self.day.is_multiple_of(7) {
@@ -742,12 +754,23 @@ impl Company {
     }
 
     /// Who took the week, and whether the season was swept.
-    fn resolve_week(&mut self, events: &[u32; 6]) -> (bool, bool) {
+    fn resolve_week(&mut self, events: &[u32; 6], field: &[i32]) -> (bool, bool) {
         let (leader, count, tie) = tally(events);
         let week = Self::season_week(self.day) as usize;
         let ours = leader == OUR_COMPANY && count >= WEEK_WINS && !tie;
         if count >= WEEK_WINS && !tie {
             self.weeks[week] = ours;
+            // The week slot: 1 for the company, else the field's company
+            // at the winner's team id (from 2) plus two, the field holding
+            // a company id less one. A team id outside the field is 0.
+            self.week_winners[week] = if ours {
+                OUR_COMPANY
+            } else {
+                leader
+                    .checked_sub(2)
+                    .and_then(|slot| field.get(slot as usize))
+                    .map_or(0, |&company| (company + 1).max(0) as u32)
+            };
             if ours {
                 self.tournaments_won = self.tournaments_won.saturating_add(1);
             }
@@ -762,6 +785,7 @@ impl Company {
                 season = true;
             }
             self.weeks = [false; 4];
+            self.week_winners = [0; 4];
         }
         (ours, season)
     }
@@ -1633,6 +1657,34 @@ mod tests {
         assert!(company.trade_lines(&[10], &[100]));
         assert_eq!(company.copper, 318);
         assert_eq!(company.earned, 15);
+    }
+
+    #[test]
+    fn a_resolved_week_names_its_winner_for_the_season_table() {
+        // Day 0 -> 1 resolves the first week (week 0 of the season).
+        let field = [5, 9, 3];
+        let mut ours = Company::new("Ash");
+        ours.end_day_in_field([1, 1, 1, 0, 2, 3], &field);
+        assert_eq!(ours.week_winners, [1, 0, 0, 0]);
+        // A rival at team id 3 is the field's second company (9), stored
+        // as its id plus one.
+        let mut rival = Company::new("Ash");
+        rival.end_day_in_field([3, 3, 3, 1, 1, 0], &field);
+        assert_eq!(rival.week_winners, [10, 0, 0, 0]);
+        assert!(!rival.weeks[0]);
+        // A tie or fewer than three wins leaves the slot; a team id past
+        // the field is nobody.
+        let mut tied = Company::new("Ash");
+        tied.end_day_in_field([2, 2, 2, 3, 3, 3], &field);
+        assert_eq!(tied.week_winners, [0; 4]);
+        let mut outside = Company::new("Ash");
+        outside.end_day_in_field([9, 9, 9, 0, 0, 0], &field);
+        assert_eq!(outside.week_winners, [0; 4]);
+        // The fourth week's verdict clears the season's slots.
+        ours.day = 21;
+        ours.week_winners = [1, 4, 1, 0];
+        ours.end_day_in_field([2, 2, 2, 0, 0, 0], &field);
+        assert_eq!(ours.week_winners, [0; 4]);
     }
 
     #[test]

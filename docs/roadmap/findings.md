@@ -15,7 +15,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F6 | render-01 | GI | Voxel lights and shapes are injected in one pass and encoded once; the original blends each as its own pass. Spot lights get no matrix shadow; terrain levels lack the terrain block layout branch. | B4 rendering |
 | F7 | render-02 | physics queries | Live sphere and swept-sphere queries use parry's closest point instead of the ported face tests (which are test-only); the push-out clamp against the plane is missing. | B4 physics |
 | F8 | render-02 | meshes | The GPU mesh build has no morph-delta stream, no constant-colour fill and no modifier patch callback. | B4 rendering |
-| F9 | powers-01 | power tree | Reopening the tree keeps the last domain for any body; the original only does so for the same player body, otherwise it opens on Mind. The bar toggle does not end Control Mind as the original's does. | B4 powers |
+| F9 | powers-01 | power tree | Reopening the tree keeps the last domain for any body; the original only does so for the same player body, otherwise it opens on Mind. (Fixed by wiremind: the bar toggle in a body the player was handed ends the Spirit Form or Control Mind of the body left behind.) | B4 powers |
 | F10 | powers-01 | sounds | The cast-fail sound (0.05 volume, 0.8 pitch) is not played by the throw and kinesis casts, its real callers. | B4 powers |
 | F11 | physics-02 | bodies | Parking does not recurse down the node tree (held items are not parked); placement does not recurse into children; burn doses are never added live. | B4 physics |
 | F13 | powers-01 | power tree | The glow link rings scroll the wrong way: one shader arm serves both the link and the glow-link programs, but the glow program subtracts the phase offset where the link adds it (a one-sign fix). | B4 powers |
@@ -155,10 +155,10 @@ here; the rows in `context/re/ledger/` carry them.
 | F142 | ui-12 | ui | When the manual is destroyed while the arena is up, the arena form's mode is not set to -1 (help_destroy_mode is test-only). | B4 |
 | F143 | ui-12 | ui | No live GUI record carries tooltip hint text, so the default tooltip never shows in play (only --debug-hint sets one). | B4 |
 | F144 | ui-12 | ui | Controller actions (Steam Input slot 30) are not sent to forms: no message box confirm or cancel by action, and no manual page scroll or close by action. | B4 |
-| F145 | powers-02 | powers | The Sense Minds casts (mind_sense, mind_sense_persistent) return MindRequest::SenseOverlay, but nothing consumes it. Casting Sense Minds shows no sight overlay and no spheres; only the power entry and its ticking are live. | B4 |
+| F145 | powers-02 | powers | The Sense Minds casts (mind_sense, mind_sense_persistent) return MindRequest::SenseOverlay, but nothing consumes it. Casting Sense Minds shows no sight overlay and no spheres; only the power entry and its ticking are live. Fixed by wiremind: the bar's answer starts the overlay on the frame (mind::draw::MindSense), which tracks and draws the minds. | fixed (wiremind) |
 | F146 | powers-02 | powers | The particle body-contact pass (Emitter::contact and take_dose, class slot 31) is never driven from the physics step. Particles pass through bodies and the dose never reaches limbs. | B4 |
 | F147 | powers-02 | powers | The fire emissive only reaches the host's first-part material (fire::drive_hosts). The original also writes the parent node's scale and every geometry child's. particles::apply_emissive does this but has no caller. | B4 |
-| F148 | powers-02 | powers | (end Spirit Form or Control Mind) is not called from the bar toggle or from the character AI. Only the blow break and the cast end_control are wired. | B4 |
+| F148 | powers-02 | powers | (end Spirit Form or Control Mind) is not called from the character AI. The blow break, the cast's end_control and (since wiremind) the bar toggle in a handed body are wired. | B4 |
 | F149 | powers-02 | powers | Calm leaves out the original's write one past the end of the contact array. The code comment says it is not reproduced, but there is no DEC- entry for it. | B4 |
 | F150 | powers-02 | powers | Mind restore constructors and restore_mind_power are test-only. Persistent Mind powers saved with a character are not rebuilt on load, and their focus reserve is not re-taken. | B4 |
 | F151 | powers-02 | powers | Particle quad mode 0 (screen_quad), the UV_8 variants and flat colour are ported but no live template sets their flags, so those branches never run. | B4 |
@@ -201,7 +201,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F186 | powers-07 | powers | ripple_strikes picks the aura on the striker's primary-slot weapon. The original matches the hooked object's node, so a blow from another held item does not ripple that item's own aura. | B4 |
 | F187 | powers-07 | powers | Running persistent powers are neither saved (save_power, slot 17) nor restored (restore_persistent, by the live save and load path. | B4 |
 | F188 | powers-07 | powers | The wave's charge loop voice (force_wave::wave_loop) and ribbon mesh (mesh_plan) are unwired, so a force wave is silent while charging and is never drawn. | B4 |
-| F189 | powers-08 | powers | mind::runtime::tick_minds calls mark.control(0, 0.0) for the Loyalty marker. The strength drift after 800 ticks uses relation 0 instead of the real relation (original | B4 |
+| F189 | powers-08 | powers | mind::runtime::tick_minds called mark.control(0, 0.0) for the Loyalty marker, and the bar's cast scene gave the Loyalty cast relation 0: the strength and its drift after 800 ticks used relation 0 instead of the marked body's last attitude toward its caster. Fixed by wiremind: both read it (thaum::live::MindRelations). | fixed (wiremind) |
 | F190 | powers-08 | powers | Mind powers (Spirit Form, Control Mind, Loyalty, Command Dead) live in MindBody.powers and are never passed to PowerBar::mark_running/load_running, so their bar slots are never lit. SlotMark::Lit/FadeOnEnd exist but are unused for them | B4 |
 | F191 | powers-08 | powers | Shock's ShockStep.charge_sound/release_sound are never played by thaum::cast::tick_casters | B4 |
 | F192 | powers-08 | powers | The fire row's FireS02 loop: frame_rows walks FlamePitch, but no audio system plays the loop | B4 |
@@ -215,7 +215,7 @@ here; the rows in `context/re/ledger/` carry them.
 | F200 | powers-09 | powers | Force Barricade: ending the power by event (clicking the wall again via force.rs Barricade arm power.state=2, or status broadcast) drops the ActiveEntry in thaum::cast::tick_casters without calling Barricade::end / setting TOLD_TO_END; only tick_barricades' range check (power_ends(0,..)) ends walls, so a cancelled barricade keeps standing | B4 |
 | F201 | powers-09 | powers | Mind powers (MindPowers list) never feed PowerBar::mark_running/load_running: persistent Sense Minds, Mask Mind, Command Dead caster, Loyalty, Control Mind slots are never lit/faded on the bar (SlotMark::Sense/Mask/FadeOnEnd have only test callers) | B4 |
 | F202 | powers-09 | powers | Command Dead marker end: no counterpart for (swap-remove of the body from the global list | B4 |
-| F203 | powers-09 | powers | Sense Minds persistent: MindRequest::SenseOverlay is never consumed and MindSense.overlay is unread, so no overlay shows or fades | B4 |
+| F203 | powers-09 | powers | Sense Minds persistent: MindRequest::SenseOverlay is never consumed and MindSense.overlay is unread, so no overlay shows or fades. Fixed by wiremind: the cast's answer starts the overlay and the power's end (tick_minds) fades it. | fixed (wiremind) |
 | F204 | powers-09 | powers | Power save/load (save_power, restore_persistent, load_power) has no non-test caller: running powers are not saved or restored | B4 |
 | F205 | world-02 | world | cross-room light lists: Rust RoomLights::propagate feeds only the terrain block ranking (terrain::live::room_light_lists). The renderer's room light lists (shadow_links) never run it. The original runs it at the end of a save-game level load. Round 159 says REA shows it has no load-time effect, but this needs re-checking. | B4 |
 | F206 | world-02 | world | : the original writes the character's cell bytes at/. Rooms::cell_bytes has no live caller, and the room_view node hook takes the room from the position, not from those bytes (round 159 gap). | B4 |
@@ -567,6 +567,8 @@ here; the rows in `context/re/ledger/` carry them.
 | F538 | runtime-04 | runtime | Settings Touchscreen (sets root GUI = 7) and StereoMode are parsed but nothing reads them | B4 |
 | F539 | runtime-04 | runtime | The ViewportStack model (exa_render::view) has no non-test caller; GUI clipping uses flat per-layer clip rects with no nesting, overflow or underflow log | B4 |
 | F540 | runtime-04 | runtime | is a split artefact: the 'code pointer' at is the WGL attribute value 0x2010. Its bytes are the tails of the Touchscreen setter and the StereoMode setter, so the function table may also lack rows for and | B4 |
+| F541 | powers-02 | powers | (Found by wiremind.) The spirit screen's start saves the player light's switch and switches the light on (the dark-vision light the worn items give); its stop restores the saved switch. Exarust's spirit screen leaves the player light alone, and the ledger rows of the start and stop call this write a control lock. | B4 |
+| F542 | round 210 | game modes | the story respawn portal (`Flow::respawn_portal`) is set only by a test, so the story respawn places the player at the origin 15 cm up instead of at the level portal, and a pending-respawn load falls back to the saved position | B1 |
 
 Stale documentation found (fix with the next change to each file):
 the terrain module's activation names; `tree.rs` module doc ("nothing offers

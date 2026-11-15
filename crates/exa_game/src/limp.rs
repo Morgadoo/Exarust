@@ -93,6 +93,14 @@ fn bridge_limp_types(app: &mut App) {
 /// Half extent of a part without a mesh, metres.
 const FALLBACK_HALF: f32 = 0.05;
 
+/// Asks for the body a character's model builds to start settling for this
+/// many ticks (gravity without inertia, [`Ragdoll::settle_for`]): the
+/// original's Spirit Form gives its new body 16
+/// (`exa_physics::body::PLACED_SETTLE`) once it is in the scene. Taken off
+/// when the body is built.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettleWhenBuilt(pub i32);
+
 /// Builds the simulated bodies of physical and limp body models once they
 /// are posed.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -105,6 +113,7 @@ fn build_bodies(
             Option<&mut Physical>,
             Option<&mut GoLimp>,
             Option<&mut PlacedCorpse>,
+            Option<&SettleWhenBuilt>,
         ),
         (
             Without<Ragdoll>,
@@ -135,7 +144,7 @@ fn build_bodies(
     // its characters in the order it creates them.
     let mut requests: Vec<_> = requests.iter_mut().collect();
     requests.sort_unstable_by_key(|(root, ..)| root.index());
-    for (root, mut physical, mut limp, mut placed) in requests {
+    for (root, mut physical, mut limp, mut placed, settle) in requests {
         // Behind the loading screen a body is built once it is dressed, as
         // the original builds a character whole: dressing is spread over
         // frames by a time budget, so a body built before its clothes in one
@@ -338,7 +347,14 @@ fn build_bodies(
             limb_volume * 1e6,
             trees.len()
         );
+        // A body its maker asked to settle (Spirit Form's new body) takes
+        // the settling state as it joins the world.
+        if let Some(settle) = settle {
+            body.settle_for(settle.0);
+            info!("settle: {root:?} is built settling for {} ticks", settle.0);
+        }
         let mut entity = commands.entity(root);
+        entity.remove::<SettleWhenBuilt>();
         if !trees.is_empty() {
             entity.insert(PendingLimbTrees {
                 tasks: trees,
@@ -2442,6 +2458,14 @@ pub(crate) mod tests {
             .insert_resource(motions())
             .add_systems(Update, build_bodies);
         let root = app.world_mut().spawn(PlacedCorpse::default()).id();
+        // A second root asks to settle as it is built (Spirit Form's body).
+        let settled = app
+            .world_mut()
+            .spawn((
+                PlacedCorpse::default(),
+                SettleWhenBuilt(exa_physics::body::PLACED_SETTLE),
+            ))
+            .id();
         let rest = |local_at: Vec3, world_at: Vec3, bone: usize| {
             let t = Transform::from_translation(local_at);
             (
@@ -2463,12 +2487,24 @@ pub(crate) mod tests {
             rest(thigh_at, pelvis_world.transform_point3(thigh_at), 2),
             ChildOf(pelvis),
         ));
+        app.world_mut().spawn((
+            rest(Vec3::ZERO, pelvis_world.translation.into(), 1),
+            ChildOf(settled),
+        ));
         for _ in 0..4 {
             app.update();
         }
+        // The asking root is built settling for 16 ticks; the ask is taken.
+        assert_eq!(
+            app.world().get::<Ragdoll>(settled).unwrap().settling(),
+            exa_physics::body::PLACED_SETTLE
+        );
+        assert!(!app.world().entity(settled).contains::<SettleWhenBuilt>());
         let world = app.world();
         assert!(!world.entity(root).contains::<PlacedCorpse>());
         let body = world.get::<Ragdoll>(root).unwrap();
+        // Nothing asked it to settle.
+        assert_eq!(body.settling(), 0);
         assert!(body.drive.is_none());
         assert_eq!(body.countdown(), 0);
         assert_eq!(body.sleep, exa_physics::body::Sleep::Awake);

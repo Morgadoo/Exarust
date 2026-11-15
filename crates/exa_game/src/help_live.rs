@@ -37,7 +37,8 @@ use exa_ui::game_tips::GameTips;
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrame, GuiFrames, GuiLayer, GuiTextures, LayerTexture};
 use exa_ui::help_system::{self, Manual, ManualSource, TopicRef};
-use exa_ui::skin::SkinBatch;
+use exa_ui::item_view::{ItemView, ViewEvent, ViewReply};
+use exa_ui::text_box::TextBox;
 
 use crate::flow::{FlowSteps, Step};
 use crate::gui_paint;
@@ -96,6 +97,15 @@ pub struct ManualScreen {
     /// The page's laid-out text: its content height over the form's client
     /// and one line's share of the scroll, from the last paint.
     pub page_metrics: Option<(i32, f32)>,
+    /// The topic list's held form in [`ManualScreen::forms`].
+    pub list_form: Option<exa_ui::gui_core::FormId>,
+    /// The topic list: the faithful item view the manual builds
+    /// ([`Manual::shown_list`]), which the pointer and keys drive.
+    pub list: Option<ItemView>,
+    /// The page's text box ([`help_system::page_text_box`]) and the record
+    /// and unit its text was set for.
+    pub page_box: Option<TextBox>,
+    page_set: Option<(u32, i32)>,
 }
 
 impl ManualScreen {
@@ -114,6 +124,10 @@ impl ManualScreen {
         self.built = None;
         self.place = None;
         self.page_metrics = None;
+        self.list_form = None;
+        self.list = None;
+        self.page_box = None;
+        self.page_set = None;
     }
 
     /// The manual's rectangle: its centred place, or where a title drag
@@ -181,7 +195,25 @@ impl ManualScreen {
             ),
             None,
         );
-        let (_, page_rect) = manual_parts(rect, unit);
+        let (list_rect, page_rect) = manual_parts(rect, unit);
+        let owner = manual_client(rect);
+        // The topic list: a held item view, which the window manager hits
+        // and focuses (the focus follows the pointer).
+        let list_words = gui_paint::commit_words(
+            gui_paint::MANUAL_LIST_WORDS.style,
+            gui_paint::MANUAL_LIST_WORDS.attributes,
+            false,
+        );
+        let list_client = list_client(list_rect);
+        let mut list_form = exa_ui::base_form::BaseForm::new(
+            list_rect,
+            unit,
+            (list_words.style, list_words.attributes, list_words.state),
+            list_client,
+        );
+        list_form.in_owner = (list_rect.left - owner.left, list_rect.top - owner.top);
+        list_form.owner_client = (owner.width(), owner.height());
+        let list_form = forms.add(list_form, Some(outer));
         let held = gui_paint::commit_words(
             gui_paint::MANUAL_PAGE_WORDS.style,
             gui_paint::MANUAL_PAGE_WORDS.attributes,
@@ -194,7 +226,6 @@ impl ManualScreen {
             (held.style, held.attributes, held.state),
             inner,
         );
-        let owner = manual_client(rect);
         page.in_owner = (page_rect.left - owner.left, page_rect.top - owner.top);
         page.owner_client = (owner.width(), owner.height());
         page.scroll = Some(exa_ui::base_form::FormScroll {
@@ -203,8 +234,26 @@ impl ManualScreen {
             content: 0,
         });
         let page = forms.add(page, Some(outer));
+        // The list and the page box at the unit (the show's rescale), the
+        // list's selection and the page's scroll kept over a rebuild.
+        if self.built.is_none_or(|(_, built)| built != unit) || self.list.is_none() {
+            let fonts = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(unit));
+            if let Some(manual) = self.manual.as_ref() {
+                self.list = Some(manual.shown_list(unit, list_client, fonts.main));
+            }
+            self.page_box = Some(help_system::page_text_box(
+                unit,
+                fonts.main,
+                fonts.small,
+                inner,
+            ));
+            self.page_set = None;
+        } else if let Some(list) = self.list.as_mut() {
+            list.client = list_client;
+        }
         self.forms = Some(forms);
         self.outer = Some(outer);
+        self.list_form = Some(list_form);
         self.page = Some(page);
         self.built = Some((rect, unit));
     }
@@ -216,6 +265,9 @@ impl ManualScreen {
         };
         let picked = manual.select(topic, &self.pages);
         self.scroll = 0.0;
+        if picked && let Some(list) = self.list.as_mut() {
+            list.selected = topic;
+        }
         if let (Some(forms), Some(page)) = (self.forms.as_mut(), self.page)
             && let Some(page) = forms.base_mut(page)
             && let Some(scroll) = page.scroll.as_mut()
@@ -305,13 +357,61 @@ pub fn manual_key_slot(index: usize) -> Option<usize> {
         .and_then(|row| row.slot)
 }
 
-/// The list row (0-based) a point is over.
-pub fn list_row(list: GuiRect, line_height: i32, unit: i32, x: i32, y: i32) -> Option<usize> {
-    if !list.contains(x, y) || line_height <= 0 {
-        return None;
-    }
-    let row = (y - list.top - unit) / line_height;
-    (row >= 0).then_some(row as usize)
+/// The topic list form's client (form-local): the base form's inside its
+/// border (the list has no scroll bar).
+pub fn list_client(list: GuiRect) -> ClientRect {
+    exa_ui::form::client_rect(
+        list.width(),
+        list.height(),
+        gui_paint::BORDER,
+        0,
+        gui_paint::MANUAL_LIST_WORDS.attributes,
+        0,
+        exa_ui::settings::SCROLL_INSET,
+        0,
+        15,
+        gui_paint::BORDER,
+    )
+}
+
+/// A screen point in a held form's content coordinates (its client's
+/// corner the origin, plus its scroll offset), with whether it is on the
+/// client.
+fn content_point(
+    form: &exa_ui::base_form::BaseForm,
+    content: i32,
+    scroll: f32,
+    at: (i32, i32),
+) -> ((i32, i32), bool) {
+    let frame = exa_ui::form::FormFrame {
+        x: form.bounds.left,
+        y: form.bounds.top,
+        client: form.client,
+        content: (form.client.width(), content),
+        scroll: (0.0, scroll),
+        attributes: form.attributes,
+    };
+    let local = (at.0 - form.bounds.left, at.1 - form.bounds.top);
+    let on = local.0 >= form.client.left
+        && local.0 < form.client.right
+        && local.1 >= form.client.top
+        && local.1 < form.client.bottom;
+    (frame.local_to_content(local), on)
+}
+
+/// The item view's key code for a key-down (its key slot's virtual keys).
+fn list_key(code: KeyCode) -> Option<u32> {
+    Some(match code {
+        KeyCode::Enter | KeyCode::NumpadEnter => 0x0d,
+        KeyCode::End => 0x23,
+        KeyCode::Home => 0x24,
+        KeyCode::ArrowLeft => 0x25,
+        KeyCode::ArrowUp => 0x26,
+        KeyCode::ArrowRight => 0x27,
+        KeyCode::ArrowDown => 0x28,
+        KeyCode::F2 => 0x71,
+        _ => return None,
+    })
 }
 
 pub struct HelpLivePlugin;
@@ -323,6 +423,7 @@ impl Plugin for HelpLivePlugin {
             .init_resource::<GuiFrames>()
             .add_message::<MenuChoice>()
             .add_message::<MouseWheel>()
+            .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_systems(
                 Update,
                 (open_manual, manual_input, paint_manual)
@@ -390,20 +491,26 @@ fn open_manual(
     }
 }
 
-/// The open manual's keys and pointer: a click on the list picks a topic,
-/// the arrows step through them, Escape, F1 or a right click closes it.
-/// The pointer drives the manual's base forms ([`crate::form_input`]): the
-/// title drags the manual, the close mark closes it, and the page's scroll
-/// bar (arrows with their repeat, thumb, rail) and the wheel over the page
-/// move its fraction, toward which the drawn scroll eases.
+/// The open manual's keys and pointer. Escape, F1 or a right click closes
+/// it. The pointer drives the manual's base forms ([`crate::form_input`]):
+/// the title drags the manual, the close mark closes it, and the page's
+/// scroll bar (arrows with their repeat, thumb, rail) and the wheel over
+/// the page move its fraction, which the page's text box eases toward.
+/// The window manager's focus follows the pointer: over the topic list the
+/// list's item view takes the hover (its select slot), a left press (its
+/// press slot) and the keys (its key slot: the arrows, Home, End and typed
+/// letters); a selection change runs the list's callback, which shows the
+/// topic and focuses the page with the control −1, and a press the view
+/// answers with the focus bit then focuses the list again. Keys on the
+/// read-only page do nothing.
 #[allow(clippy::too_many_arguments)]
 fn manual_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut wheel: MessageReader<MouseWheel>,
+    mut typed: MessageReader<bevy::input::keyboard::KeyboardInput>,
     windows: Query<&Window, With<PrimaryWindow>>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
-    textures: Option<Res<GuiTextures>>,
     time: Res<Time<Real>>,
     mut screen: ResMut<ManualScreen>,
     mut steps: Option<ResMut<FlowSteps>>,
@@ -411,6 +518,7 @@ fn manual_input(
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
+    let typed: Vec<_> = typed.read().cloned().collect();
     if !screen.is_open() {
         return;
     }
@@ -433,14 +541,6 @@ fn manual_input(
         close(&mut screen, &mut steps);
         return;
     }
-    let count = screen.manual.as_ref().map_or(0, |m| m.topics.len()) as i32;
-    let current = screen.picked_topic().unwrap_or(1);
-    if keys.just_pressed(KeyCode::ArrowDown) && current < count {
-        screen.pick(current + 1);
-    }
-    if keys.just_pressed(KeyCode::ArrowUp) && current > 1 {
-        screen.pick(current - 1);
-    }
     let Ok(window) = windows.single() else {
         return;
     };
@@ -449,7 +549,8 @@ fn manual_input(
     screen.build_forms(rect, unit);
     let now = time.elapsed().as_millis() as u32;
     let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
-    let (Some(outer), Some(page)) = (screen.outer, screen.page) else {
+    let (Some(outer), Some(page), Some(list_form)) = (screen.outer, screen.page, screen.list_form)
+    else {
         return;
     };
     let metrics = screen.page_metrics;
@@ -462,6 +563,9 @@ fn manual_input(
     {
         scroll.content = content;
         scroll.step = step;
+        if let Some(page_box) = screen.page_box.as_ref() {
+            scroll.fraction = page_box.scroll_target;
+        }
     }
     forms.drive(&frame, timers.as_deref_mut());
     let mut closed = false;
@@ -478,39 +582,114 @@ fn manual_input(
     for event in forms.take_events(page) {
         if let exa_ui::base_form::BaseEvent::Scrolled(f) = event {
             info!("manual: page scrolled to {f:.3}");
+            // The bar's and the wheel's fraction is the box's scroll
+            // target; the drawn scroll eases after it.
+            if let Some(page_box) = screen.page_box.as_mut() {
+                let delta = f - page_box.scroll_target;
+                page_box.scroll_by(delta);
+            }
         }
     }
-    let target = forms
-        .base(page)
-        .and_then(|p| p.scroll)
-        .map_or(0.0, |s| s.fraction);
-    // The text box's ease: a fifth of the way per frame, snapping when
-    // within a thousandth.
-    screen.scroll = if (target - screen.scroll).abs() <= exa_ui::text_box::SCROLL_SNAP {
-        target
-    } else {
-        target * exa_ui::text_box::SCROLL_EASE
-            + screen.scroll * (1.0 - exa_ui::text_box::SCROLL_EASE)
-    };
+    if let Some(page_box) = screen.page_box.as_mut() {
+        page_box.ease_scroll();
+        screen.scroll = page_box.scroll;
+    }
     if closed {
         close(screen, &mut steps);
         return;
     }
-    if !frame.released {
-        return;
-    }
-    let Some(at) = frame.at else {
+    // The topic list: its select slot follows the pointer's entry, a left
+    // press goes to its press slot, and the keys to its key slot while the
+    // window manager's focus is on it.
+    let list_focused = forms.task.active == Some(list_form);
+    let Some(list) = screen.list.as_mut() else {
         return;
     };
     let empty = GuiTextures::default();
-    let (font, _) = list_font(unit, textures.as_deref().unwrap_or(&empty));
-    let (list, _) = manual_parts(screen.rect(size, unit), unit);
-    if let Some(row) = list_row(list, font.line_height, unit, at.0, at.1)
-        && (row as i32) < count
+    let (font, _) = list_font(unit, &empty);
+    let mut events = Vec::new();
+    let mut reply = None;
+    if let (Some(at), Some(form)) = (frame.at, forms.base(list_form)) {
+        let ((x, y), on) = content_point(form, list.content.1, list.scroll.1, at);
+        let entry = if on { list.entry_at(x, y, &font) } else { -1 };
+        if entry != list.hover {
+            list.hover_entry(entry);
+        }
+        // The window manager sends the press, then (the press not held)
+        // the click on the release, which is the word the view selects on.
+        if frame.pressed && on && list_focused {
+            reply = Some(list.press(LIST_PRESS, x, &mut events));
+        }
+        if frame.released && on && list_focused {
+            reply = Some(list.press(LIST_CLICK, x, &mut events));
+        }
+    }
+    if list_focused {
+        for event in typed.iter().filter(|e| e.state.is_pressed()) {
+            let key =
+                list_key(event.key_code)
+                    .map(|k| (k, false))
+                    .or_else(|| match &event.logical_key {
+                        bevy::input::keyboard::Key::Character(text) => text
+                            .chars()
+                            .next()
+                            .and_then(crate::os_clipboard::char_ansi)
+                            .map(|b| (u32::from(b), true)),
+                        _ => None,
+                    });
+            if let Some((key, is_typed)) = key
+                && let Some(answer) = list.key(key, is_typed, now)
+            {
+                events.extend(answer);
+            }
+        }
+        // Scripted key-downs (`--press`) come without a keyboard message.
+        if typed.is_empty() {
+            for code in keys.get_just_pressed() {
+                if let Some(key) = list_key(*code)
+                    && let Some(answer) = list.key(key, false, now)
+                {
+                    events.extend(answer);
+                }
+            }
+        }
+    }
+    let mut picked = None;
+    for event in events {
+        if let ViewEvent::Selected(n) = event {
+            picked = Some(n);
+        }
+    }
+    if let Some(n) = picked {
+        // The list's callback: the selected entry is shown, then the page
+        // takes the focus with the control -1.
+        let pages = &screen.pages;
+        if let Some(manual) = screen.manual.as_mut() {
+            let control = manual.list_picked(n, pages);
+            forms.task.focus_set(Some(page), control);
+            info!("manual: topic {n} picked");
+        }
+        if let Some(page_box) = screen.page_box.as_mut() {
+            page_box.set_scroll(0.0);
+        }
+        screen.scroll = 0.0;
+    }
+    // A press the view answers with the focus bit (0x10) brings the list
+    // to the front with the focus after its callback ran.
+    if let Some(ViewReply::Code(code)) = reply
+        && code & 0x10 != 0
+        && code & 0x40 == 0
     {
-        screen.pick(row as i32 + 1);
+        forms
+            .task
+            .focus_set(Some(list_form), exa_ui::gui_core::NO_CONTROL);
     }
 }
+
+/// The window manager's words for a left press (the left button's bit and
+/// the press bit 0x1000) and for its click on the release (0x2000).
+const LIST_PRESS: u32 = 0x1001;
+const LIST_CLICK: u32 = 0x2001;
 
 /// The page form's stored fraction (the thumb's place), or the drawn
 /// scroll before the forms exist.
@@ -549,8 +728,6 @@ fn paint_manual(
     let empty = GuiTextures::default();
     let textures = textures.as_deref().unwrap_or(&empty);
     let palette = gui_paint::palette();
-    let level = exa_ui::gui_font::level_for_unit(unit);
-    let fonts = exa_ui::gui_font::gui_level(level);
     let (font, atlas) = list_font(unit, textures);
     let rect = screen.rect(size, unit);
     // The game skin's form draw with the words the show commits: a
@@ -601,45 +778,16 @@ fn paint_manual(
         painted.submit(&mut frames);
         return;
     };
-    // The topic list: one full row per topic, the shown one banded.
-    let picked = screen.picked_topic();
-    for (i, topic) in manual.topics.iter().enumerate() {
-        let top = list.top + unit + i as i32 * font.line_height;
-        if top + font.line_height > list.bottom {
-            break;
-        }
-        if picked == Some(i as i32 + 1) {
-            let mut band = SkinBatch::new();
-            band.select(1, 0, false);
-            band.set_ink(palette.highlight[2]);
-            band.begin();
-            let (x0, x1) = ((list.left + unit) as f32, (list.right - unit) as f32);
-            let (y0, y1) = (top as f32, (top + font.line_height) as f32);
-            band.vertex(x0, y0);
-            band.vertex(x0, y1);
-            band.vertex(x1, y1);
-            band.vertex(x1, y0);
-            band.end_quads();
-            painted.push(GuiLayer::new(band, LayerTexture::None));
-        }
-        painted.push(gui_paint::caption_layer(
-            &font,
-            atlas,
-            &topic.title,
-            (list.left + unit * 2, top + font.ascent),
-            palette.text[6],
-        ));
+    // The topic list: the item view's list draw (its selection's frame,
+    // fill and band, then the names in view: the pointer's lit, the
+    // selected in its ink).
+    let inset = list_client(list);
+    let list_origin = (list.left + inset.left, list.top + inset.top);
+    if let Some(view) = screen.list.as_ref() {
+        paint_list(&mut painted, view, list_origin, &font, atlas, &palette);
     }
-    // The page: a read-only text box with markup over the record's text.
-    let client = ClientRect {
-        left: page.left + unit,
-        top: page.top + unit,
-        right: page.right - unit,
-        bottom: page.bottom - unit,
-    };
-    let mut text_box = exa_ui::text_box::TextBox::new(unit, fonts.main, fonts.small, client);
-    text_box.read_only = true;
-    text_box.markup = true;
+    // The page: the manual's read-only text box over the record's text,
+    // set again when the record or the unit changes.
     // `[inptN]` names the key of the saved key table's entry N: the
     // Controls row whose action code is N + 1, through its binding slot.
     let key_name = |index: usize| -> Vec<u8> {
@@ -652,7 +800,24 @@ fn paint_manual(
             .map(String::into_bytes)
             .unwrap_or_default()
     };
-    text_box.set_text(&manual.text, Some(&key_name));
+    let record = manual.record;
+    let text = manual.text.clone();
+    let screen = &mut *screen;
+    let Some(text_box) = screen.page_box.as_mut() else {
+        painted.layers.extend(list_frame.over());
+        painted.layers.extend(page_frame.over());
+        painted.layers.extend(outer.over());
+        painted.submit(&mut frames);
+        return;
+    };
+    if screen.page_set != Some((record, unit)) {
+        let scroll = text_box.scroll_target;
+        text_box.set_text(&text, Some(&key_name));
+        if screen.page_set.is_some_and(|(r, _)| r == record) {
+            text_box.set_scroll(scroll);
+        }
+        screen.page_set = Some((record, unit));
+    }
     let inks = exa_ui::text_layout::TextInks {
         text: palette.text[6],
         tag_alpha: 255,
@@ -660,21 +825,30 @@ fn paint_manual(
         slant: font.slant,
     };
     let draw = text_box.draw(&inks, &|_| None);
-    // The page form's scroll runs over the text's lines: its content is
-    // the text's height over the form's client, one step a line's share.
-    let inner = page_client(page);
-    let content = text_box.content_height + (inner.height() - client.height());
-    screen.page_metrics = Some((content, text_box.scroll_step));
-    let overflow = (text_box.content_height - client.height()).max(0);
-    let shift = (screen.scroll * overflow as f32) as i32;
+    // The page form's scroll runs over the box's lines: its content is the
+    // box's content height, one step a line's share.
+    let client = text_box.client;
+    screen.page_metrics = Some((text_box.content_height, text_box.scroll_step));
+    let shift = exa_ui::form::FormFrame {
+        x: page.left,
+        y: page.top,
+        client,
+        content: (client.width(), text_box.content_height),
+        scroll: (0.0, text_box.scroll),
+        attributes: gui_paint::MANUAL_PAGE_WORDS.attributes,
+    }
+    .scroll_offset()
+    .1;
+    let origin = (page.left + client.left, page.top + client.top);
+    let (top, bottom) = (origin.1, origin.1 + client.height());
     let glyphs: Vec<_> = draw
         .glyphs
         .iter()
         .filter_map(|glyph| {
             let mut glyph = *glyph;
-            glyph.x += client.left;
-            glyph.y += client.top - shift;
-            (glyph.y >= client.top && glyph.y + font.line_height <= client.bottom).then_some(glyph)
+            glyph.x += origin.0;
+            glyph.y += origin.1 - shift;
+            (glyph.y >= top && glyph.y + font.line_height <= bottom).then_some(glyph)
         })
         .collect();
     if !glyphs.is_empty() {
@@ -685,6 +859,104 @@ fn paint_manual(
     painted.layers.extend(page_frame.over());
     painted.layers.extend(outer.over());
     painted.submit(&mut frames);
+}
+
+/// The topic list's draw ([`ItemView::draw_list`] and its selection), at
+/// `origin` (the list form's client corner on the screen): the selected
+/// entry's frame in the form group's four inks (its first, second, fifth
+/// and sixth), its fill fading from the highlight group's fifth to its
+/// first at a quarter of their alpha (the form group's fifth to first at
+/// half while renaming), and the selection band over the same box; then
+/// each name in view at its pen, the pointer's entry glowing (the label
+/// group's eighth with the highlight's first around it), the selected in
+/// the label group's ninth, a greyed one in its fourth and the others in
+/// its seventh.
+fn paint_list(
+    painted: &mut gui_paint::Painted,
+    view: &ItemView,
+    origin: (i32, i32),
+    font: &exa_ui::gui_font::GuiFont,
+    atlas: (u16, u16),
+    palette: &exa_ui::skin::SkinPalette,
+) {
+    use exa_ui::skin::{GuiRect as SkinRect, SkinBatch};
+    let rect = |r: [i32; 4]| SkinRect {
+        x0: r[0] as f32,
+        y0: r[1] as f32,
+        x1: r[2] as f32,
+        y1: r[3] as f32,
+    };
+    if let (Some(frame), Some((fill, renaming))) =
+        (view.list_selection(font), view.selection_fill(font))
+    {
+        let mut batch = SkinBatch::new();
+        exa_ui::skin::four_ink_frame(
+            &mut batch,
+            rect(frame),
+            [
+                palette.form[0],
+                palette.form[1],
+                palette.form[4],
+                palette.form[5],
+            ],
+        );
+        if renaming {
+            exa_ui::skin::faded_rect(
+                &mut batch,
+                rect(fill),
+                palette.form[4],
+                palette.form[0],
+                0.5,
+            );
+        } else {
+            exa_ui::skin::faded_rect(
+                &mut batch,
+                rect(fill),
+                palette.highlight[4],
+                palette.highlight[0],
+                0.25,
+            );
+        }
+        exa_ui::skin::selection_band(&mut batch, rect(fill), &palette.highlight, false, view.unit);
+        gui_paint::offset_batch(&mut batch, origin.0, origin.1);
+        painted.push(GuiLayer::new(
+            batch,
+            LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+        ));
+    }
+    for entry in view.draw_list(font) {
+        let Some((name, (x, y))) = entry.name else {
+            continue;
+        };
+        let at = (origin.0 + x, origin.1 + y);
+        if entry.lit {
+            let glow = exa_ui::skin::glow_text(at.0, at.1, palette);
+            painted.push(gui_paint::caption_layer(
+                font,
+                atlas,
+                &name,
+                at,
+                glow.text_ink,
+            ));
+            for place in glow.glow_places {
+                let mut layer = gui_paint::caption_layer(font, atlas, &name, place, glow.glow_ink);
+                layer.batch.blend = glow.blend;
+                for primitive in &mut layer.batch.primitives {
+                    primitive.blend = glow.blend;
+                }
+                painted.push(layer);
+            }
+            continue;
+        }
+        let ink = if entry.selected {
+            palette.text[8]
+        } else if entry.greyed {
+            palette.text[3]
+        } else {
+            palette.text[6]
+        };
+        painted.push(gui_paint::caption_layer(font, atlas, &name, at, ink));
+    }
 }
 
 /// Draws the tip banner while the popup shows a line and no main menu
@@ -780,6 +1052,134 @@ mod tests {
         assert!(!screen.close());
     }
 
+    /// An app with the manual's plugin, a 1600 × 900 window (GUI unit 5),
+    /// a scripted pointer and the synthetic manual open.
+    fn manual_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::ScriptedPointer>()
+            .add_plugins(HelpLivePlugin);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1600, 900),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        let (topics, pages) = read_manual(&pack()).unwrap();
+        app.world_mut()
+            .resource_mut::<ManualScreen>()
+            .open(topics, pages, MANUAL_FROM_MENU);
+        app.update();
+        (app, window)
+    }
+
+    /// The screen point of list row `row` (1-based)'s middle.
+    fn row_point(app: &App, row: i32) -> Vec2 {
+        let screen = app.world().resource::<ManualScreen>();
+        let form = screen
+            .forms
+            .as_ref()
+            .unwrap()
+            .base(screen.list_form.unwrap())
+            .unwrap();
+        let view = screen.list.as_ref().unwrap();
+        Vec2::new(
+            (form.bounds.left + form.client.left + 3 * view.unit) as f32,
+            (form.bounds.top + form.client.top + view.unit + (row - 1) * view.row + view.row / 2)
+                as f32,
+        )
+    }
+
+    fn click(app: &mut App) {
+        for down in [true, false] {
+            {
+                let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+                if down {
+                    mouse.press(MouseButton::Left);
+                } else {
+                    mouse.release(MouseButton::Left);
+                }
+            }
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear();
+        }
+    }
+
+    fn key(app: &mut App, window: Entity, code: KeyCode, key: bevy::input::keyboard::Key) {
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code: code,
+                logical_key: key,
+                state: bevy::input::ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window,
+            });
+        app.update();
+    }
+
+    /// The topic list is the item view: its rows are five units at the
+    /// shown unit, the pointer's row is its hover, a click picks the topic
+    /// (the list's callback shows it and focuses the page, the click's
+    /// focus bit focuses the list again), the arrows move the selection
+    /// while the list has the focus, and the callback then leaves the
+    /// focus on the read-only page, which takes no keys.
+    #[test]
+    fn the_manual_topic_list_is_the_item_view() {
+        use bevy::input::keyboard::Key;
+        let (mut app, window) = manual_app();
+        {
+            let screen = app.world().resource::<ManualScreen>();
+            let view = screen.list.as_ref().unwrap();
+            assert_eq!((view.unit, view.icon, view.row), (5, 20, 25));
+            assert_eq!(view.selected, 1);
+            assert_eq!(screen.manual.as_ref().unwrap().text, b"Fighting.");
+        }
+        let at = row_point(&app, 2);
+        app.world_mut().resource_mut::<exa_ui::ScriptedPointer>().0 = Some(at);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<ManualScreen>()
+                .list
+                .as_ref()
+                .unwrap()
+                .hover,
+            2
+        );
+        click(&mut app);
+        {
+            let screen = app.world().resource::<ManualScreen>();
+            assert_eq!(screen.list.as_ref().unwrap().selected, 2);
+            assert_eq!(screen.manual.as_ref().unwrap().text, b"Moving about.");
+            let forms = screen.forms.as_ref().unwrap();
+            assert_eq!(forms.task.active, screen.list_form);
+        }
+        key(&mut app, window, KeyCode::ArrowUp, Key::ArrowUp);
+        {
+            let screen = app.world().resource::<ManualScreen>();
+            assert_eq!(screen.list.as_ref().unwrap().selected, 1);
+            assert_eq!(screen.manual.as_ref().unwrap().text, b"Fighting.");
+            assert_eq!(screen.forms.as_ref().unwrap().task.active, screen.page);
+        }
+        key(&mut app, window, KeyCode::ArrowDown, Key::ArrowDown);
+        let screen = app.world().resource::<ManualScreen>();
+        assert_eq!(
+            screen.list.as_ref().unwrap().selected,
+            1,
+            "the page has the keys"
+        );
+        assert_eq!(screen.picked_topic(), Some(1));
+    }
+
     /// The pages' tags: 9 combat mode (Tab's slot 12), 10 the inventory
     /// (I, slot 11), 13 the alternate attack (slot 7), 14 the set switch
     /// (R, slot 14), 17 the power tree (slot 19).
@@ -815,10 +1215,8 @@ mod tests {
         assert_eq!(list.height(), 0x1e6 - 0x24);
         assert_eq!(page.top, rect.top + 0x14);
         assert!(page.left > list.right);
-        assert_eq!(
-            list_row(list, 10, 4, list.left + 2, list.top + 4 + 25),
-            Some(2)
-        );
-        assert_eq!(list_row(list, 10, 4, list.left - 1, list.top + 10), None);
+        let client = list_client(list);
+        assert_eq!((client.left, client.top), (2, 2));
+        assert_eq!(client.width(), 0x90 - 4);
     }
 }

@@ -11,7 +11,7 @@ import bevy_pbr::render::{
     clustered_forward as clustering,
 };
 import exa_render::shading::{
-    Surface, Lit, Taps, taps, lit_by, light_shadow, sun_shadow, light, light_fast, light_skin, schlick, view_depth, vertical_shaping,
+    Surface, Lit, Taps, taps, gi_mean, lit_by, light_shadow, sun_shadow, light, light_fast, light_translucent, light_skin, schlick, view_depth, vertical_shaping,
     gi_frame, gi_tap, gi_slot_tagged, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
     REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -171,6 +171,10 @@ const GRASS: u32 = 128u;
 // `flags2`: the original's smoke and mist program (`shadesmk_f`), which
 // every type-2 record draws with (`exa_render::material::flags2::SMOKE`).
 const SMOKE: u32 = 256u;
+// `flags2`: the PBR program's fast light loop (`Shd.FastLgt`) and the
+// translucent program (`shadetrl_f`), `exa_render::material::flags2`.
+const FAST_LIGHT: u32 = 512u;
+const TRANSLUCENT: u32 = 1024u;
 
 // The material's opacity (`MatDif.a`): the cut-away fade's own while the
 // mesh fades, as the original's faded pass writes it for the draw.
@@ -229,10 +233,10 @@ fn gi_block_sample(k: u32, p: vec3<f32>, n: vec3<f32>, t: Taps) -> vec4<f32> {
     let origin = material.gi_origins[k].xyz;
     let f = gi_frame(n);
     var sum = vec4(0.0);
-    for (var j = t.first; j < t.first + t.count; j++) {
+    for (var j = t.gi_first; j < t.gi_first + t.count; j++) {
         sum += gi_texel(k, gi_tap(f, origin, extent, p, n, t, j));
     }
-    return sum / f32(t.count);
+    return gi_mean(sum, t);
 }
 
 fn height(uv: vec2<f32>) -> f32 {
@@ -402,7 +406,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var opacity = 1.0;
     if has(OPACITY_MAP) {
         opacity = textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a;
-        alpha = material_alpha() * opacity * opacity;
+        // The lit programs read the opacity map, squared, only without a
+        // diffuse map (`Mat.TexOpc` in the `Mat.TexDif` else branch): with
+        // both (one image, the shared colour slot) the alpha is the diffuse
+        // map's, MatDif.a·a.
+        if !has(DIFFUSE_MAP) {
+            alpha = material_alpha() * opacity * opacity;
+        }
     }
 
     // Unlit: emissive only. An emissive map's glow uses its alpha unless the
@@ -442,7 +452,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The grass program builds its normal itself and never flips it on a
     // back face, two-sided or not.
     let grass = (material.flags2 & GRASS) != 0u;
-    let back_face = has(TWO_SIDED) && !is_front && !grass;
+    // The translucent program builds its normal itself too (below).
+    let translucent = (material.flags2 & TRANSLUCENT) != 0u;
+    let fast = grass || (material.flags2 & FAST_LIGHT) != 0u;
+    let back_face = has(TWO_SIDED) && !is_front && !grass && !translucent;
     var n = geom;
     var sn = geom;
 @if(VERTEX_TANGENTS) {
@@ -523,6 +536,27 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         sn = n;
     }
 }
+    // The translucent program's normal: with its normal map, the map's xy
+    // along the vertex tangent as it comes and cross(normal, tangent)·w,
+    // z = √(1 − min(x² + y², 1)) along the vertex normal, the whole map
+    // normal negated on a two-sided back face, normalised; without, the
+    // vertex normal, never flipped.
+    if translucent {
+        n = geom;
+@if(VERTEX_TANGENTS) {
+        if has(NORMAL_MAP) {
+            let wt = in.world_tangent;
+            let ty = cross(in.world_normal, wt.xyz) * wt.w;
+            let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
+            var m = vec3(xy, sqrt(1.0 - min(dot(xy, xy), 1.0)));
+            if has(TWO_SIDED) && !is_front {
+                m = -m;
+            }
+            n = normalize(wt.xyz * m.x + ty * m.y + in.world_normal * m.z);
+        }
+}
+        sn = n;
+    }
     let shadow_normal = select(geom, -geom, back_face);
     var s: Surface;
     s.n = n;
@@ -726,7 +760,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             specular += lit.specular;
             continue;
         }
-        if grass {
+        if translucent {
+            let lit = light_translucent(s, l, colour);
+            diffuse += lit.diffuse;
+            specular += lit.specular;
+            continue;
+        }
+        if fast {
             let lit = light_fast(s, l, colour);
             diffuse += lit.diffuse;
             specular += lit.specular;
@@ -760,7 +800,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             specular += lit.specular;
             continue;
         }
-        if grass {
+        if translucent {
+            let lit = light_translucent(s, (*sun).direction_to_light, colour);
+            diffuse += lit.diffuse;
+            specular += lit.specular;
+            continue;
+        }
+        if fast {
             let lit = light_fast(s, (*sun).direction_to_light, colour);
             diffuse += lit.diffuse;
             specular += lit.specular;
@@ -902,6 +948,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // shares, so it weighs 1 in all.
         let sss = material.subsurface.rgb;
         colour = (diffuse + ambient) * (vec3(1.0) - sss) * dif_col + (scatter + ambient) * sss * scatter_col;
+    }
+    // The translucent program lifts the red of its lit colour (before the
+    // specular): 0.8·r + 1.5·r².
+    if translucent {
+        colour.r = colour.r * 0.8 + colour.r * colour.r * 1.5;
     }
     if s.legacy {
         // Older program: (lights + reflection) × specular colour × a soft

@@ -36,8 +36,8 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::line_skin::shown_palette;
 use exa_ui::match_board::{
-    Board, BoardAction, BoardPaint, CellValue, CloseState, CoinDraw, Rect, TableLayout, TableSlot,
-    Widget,
+    Board, BoardAction, BoardInput, BoardPaint, CellValue, CloseState, CoinDraw, Rect, TableLayout,
+    TableSlot, Widget,
 };
 use exa_ui::skin::SkinPalette;
 use exa_ui::table_view;
@@ -426,12 +426,33 @@ impl ArenaCareer {
 
     /// The board from this career's company, player, day and daily rows.
     pub fn board(&self) -> Board {
+        self.board_with(None, &|item| item)
+    }
+
+    /// The board with the arena's lineup order (the staff's order list,
+    /// when it holds one entry per pool slot) and the item kind the weapon
+    /// check compares. The tournament entries and winners are the career's
+    /// six rows, the season's winners the company's week slots, and each
+    /// fighter's event values its loadouts' first hand items.
+    pub fn board_with(&self, order: Option<&[i32]>, kind_of: &dyn Fn(u32) -> u32) -> Board {
         let mut board = arena_board::open(
             &self.company,
             &self.player,
             self.company.day,
             &self.daily_rows,
         );
+        let members = std::iter::once(&self.player).chain(&self.company.roster);
+        for (fighter, member) in board.fighters.iter_mut().zip(members) {
+            let (values, kinds) = arena_board::event_values(member, kind_of);
+            fighter.event_values = values;
+            fighter.event_weapons = kinds;
+        }
+        board.entries = arena_board::roster_entries(&self.entries, kind_of);
+        board.week_winners = self.company.week_winners;
+        if let Some(order) = order.filter(|order| order.len() == board.fighters.len()) {
+            board.lineup = order.to_vec();
+            board.rebuild_lineups();
+        }
         board.matches_played = self.matches_today as i32;
         if let Some(tournament) = &self.tournament {
             board.tournament_events = arena_board::daily_events(&tournament.rows);
@@ -491,7 +512,24 @@ impl ArenaCareer {
             ),
             alpha: 255,
         };
-        manage_refresh(day, &manager, &employees, &self.log.records, &[], |_| None)
+        // The report's hire lines count the hire list's professions; a log
+        // line names its fighter by id: 0 is the manager, an employee its
+        // place in the roster plus one.
+        let listed: Vec<Profession> = self.hire_pool.iter().map(|m| m.profession).collect();
+        manage_refresh(
+            day,
+            &manager,
+            &employees,
+            &self.log.records,
+            &listed,
+            |id| {
+                let member = match id {
+                    0 => Some(&self.player),
+                    id => self.company.roster.get(usize::from(id) - 1),
+                };
+                member.map(|member| name16(&member.name))
+            },
+        )
     }
 }
 
@@ -868,6 +906,31 @@ impl FormHost for HubWindowForm {
     }
 }
 
+/// The board's fighter tables between presses: the last press (table, row
+/// and clock) for the double press, the row a press picked up for a drag,
+/// and whether the press was the tables' (its release is theirs too).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BoardTables {
+    pub last_press: Option<(TableSlot, usize, i64)>,
+    pub drag: Option<(TableSlot, usize)>,
+    pub took: bool,
+}
+
+/// What the pointer did on the board's company (available) and lineup
+/// tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardTableAction {
+    /// Not the tables'.
+    None,
+    /// The tables took the press or release (a row selected, a drag begun
+    /// or a move refused); the world click it makes is not the hub's.
+    Took,
+    /// A company fighter joined the lineup (a double press or a drop).
+    Joined,
+    /// The lineup fighter at this row went back to the company table.
+    Left(usize),
+}
+
 /// The hub's windows: the window manager, the one open, and the models the
 /// pages draw.
 #[derive(Resource, Default)]
@@ -897,6 +960,9 @@ pub struct HubWindows {
     /// Icon handles a closed window's item panels held, for the icon
     /// manager to release.
     pub released_icons: Vec<usize>,
+    /// The board's two fighter tables' pointer state
+    /// ([`HubWindows::board_table_input`]).
+    pub board_tables: BoardTables,
 }
 
 /// The flags the trade window's stock panel loads its items with: the
@@ -921,6 +987,125 @@ impl HubWindows {
         self.board.as_mut().map_or(BoardAction::None, |board| {
             board.click((point.0 - border, point.1 - border))
         })
+    }
+
+    /// The pointer on the open board's company and lineup tables, at a
+    /// screen point. A press on a fighter row selects it and picks it up; a
+    /// second press on the same row within the GUI's double-press time is
+    /// the table's double click: a company fighter joins the lineup through
+    /// the rank check ([`Board::double_click_available`]), a lineup fighter
+    /// goes back ([`Board::double_click_team`]). A release over the other
+    /// table drops the picked-up row there: onto the lineup at the row
+    /// under the pointer (no row appends), through the drag-over rank check
+    /// ([`exa_ui::match_board::BoardInput::DropOnTeam`]), or back onto the
+    /// company table. A drop on the table it came from does nothing, as the
+    /// company table's drop refuses its own rows.
+    pub fn board_table_input(
+        &mut self,
+        at: (i32, i32),
+        pressed: bool,
+        released: bool,
+        now: i64,
+    ) -> BoardTableAction {
+        if self.kind != HubWindowKind::Board || !self.forms.is_empty() {
+            self.board_tables = BoardTables::default();
+            return BoardTableAction::None;
+        }
+        let (Some(bounds), Some(board)) = (self.bounds(), self.board.as_ref()) else {
+            return BoardTableAction::None;
+        };
+        let border = self.board_form.as_ref().map_or(0, |f| f.geometry.border);
+        let local = (at.0 - bounds.left - border, at.1 - bounds.top - border);
+        let visible = board.visible_tables();
+        // The table under the point and the row there, if any.
+        let over = |slot: TableSlot| -> Option<Option<usize>> {
+            if !visible.contains(&slot) {
+                return None;
+            }
+            let table = board.table_layout(slot);
+            if !table.rect.contains(local.0, local.1) {
+                return None;
+            }
+            let count = match slot {
+                TableSlot::Roster => board.available.len(),
+                _ => board.team.len(),
+            };
+            Some(table.row_at(local.1).filter(|&row| row < count))
+        };
+        let roster = over(TableSlot::Roster);
+        let lineup = over(TableSlot::Lineup);
+        let state = &mut self.board_tables;
+        if pressed {
+            state.drag = None;
+            state.took = false;
+            let hit = match (roster, lineup) {
+                (Some(Some(row)), _) => Some((TableSlot::Roster, row)),
+                (_, Some(Some(row))) => Some((TableSlot::Lineup, row)),
+                _ => None,
+            };
+            let Some((slot, row)) = hit else {
+                state.last_press = None;
+                return BoardTableAction::None;
+            };
+            state.took = true;
+            let double = state.last_press.is_some_and(|(t, r, when)| {
+                t == slot && r == row && now - when <= i64::from(exa_ui::gui_core::DOUBLE_CLICK)
+            });
+            let Some(board) = self.board.as_mut() else {
+                return BoardTableAction::None;
+            };
+            if double {
+                state.last_press = None;
+                let input = if slot == TableSlot::Roster {
+                    BoardInput::DoubleClickAvailable(row)
+                } else {
+                    BoardInput::DoubleClickTeam(row)
+                };
+                return match (board.handle(input), slot) {
+                    (BoardAction::Changed, TableSlot::Roster) => BoardTableAction::Joined,
+                    (BoardAction::Changed, _) => BoardTableAction::Left(row),
+                    _ => BoardTableAction::Took,
+                };
+            }
+            state.last_press = Some((slot, row, now));
+            state.drag = Some((slot, row));
+            if slot == TableSlot::Roster {
+                board.available_selection = Some(row);
+            } else {
+                board.team_selection = Some(row);
+            }
+            return BoardTableAction::Took;
+        }
+        if !released {
+            return BoardTableAction::None;
+        }
+        let took = std::mem::take(&mut state.took);
+        let drag = state.drag.take();
+        let Some(board) = self.board.as_mut() else {
+            return BoardTableAction::None;
+        };
+        let action = match drag {
+            Some((TableSlot::Roster, from)) => {
+                lineup.map(
+                    |to| match board.handle(BoardInput::DropOnTeam { from, to }) {
+                        BoardAction::Changed => BoardTableAction::Joined,
+                        _ => BoardTableAction::Took,
+                    },
+                )
+            }
+            Some((_, from)) => {
+                roster.map(|_| match board.handle(BoardInput::DropOnAvailable(from)) {
+                    BoardAction::Changed => BoardTableAction::Left(from),
+                    _ => BoardTableAction::Took,
+                })
+            }
+            None => None,
+        };
+        match action {
+            Some(action) => action,
+            None if took => BoardTableAction::Took,
+            None => BoardTableAction::None,
+        }
     }
 
     /// A form-local point of the trade window in its client, where the
@@ -1046,8 +1231,20 @@ impl HubWindows {
 
     /// Opens the board on a career.
     pub fn open_board(&mut self, career: &ArenaCareer) {
+        self.open_board_with(career, None, &|item| item);
+    }
+
+    /// Opens the board with the arena's lineup order and item kinds
+    /// ([`ArenaCareer::board_with`]).
+    pub fn open_board_with(
+        &mut self,
+        career: &ArenaCareer,
+        order: Option<&[i32]>,
+        kind_of: &dyn Fn(u32) -> u32,
+    ) {
         self.close();
-        let mut board = career.board();
+        self.board_tables = BoardTables::default();
+        let mut board = career.board_with(order, kind_of);
         if let Some(state) = &self.board_state {
             board.restore(state);
         }
@@ -2173,6 +2370,57 @@ mod tests {
         let mut career = ArenaCareer::default();
         career.company.name = "Ours".into();
         career
+    }
+
+    /// The report names a saved fighter by id (0 the manager) and counts
+    /// the hire list's professions; the board takes the career's
+    /// tournament entries and the season's week winners.
+    #[test]
+    fn the_report_and_the_board_read_the_career() {
+        let mut career = career();
+        career.player.name = "Boss".into();
+        career
+            .company
+            .hire("Anna", crate::career::Profession::Combatant)
+            .unwrap();
+        career.log.append_value(crate::arena_match::LOG_SAVED, 1);
+        career.log.append_value(crate::arena_match::LOG_SAVED, 0);
+        career.hire_pool = vec![career.company.roster[0].clone(); 2];
+        career.hire_pool[0].profession = crate::career::Profession::Merchant;
+        career.hire_pool[1].profession = crate::career::Profession::Merchant;
+        let report = career.manage().report;
+        let texts: Vec<&str> = report.iter().map(|line| line.text.as_str()).collect();
+        assert!(texts.contains(&"Anna was saved from lethal injury."));
+        assert!(texts.contains(&"Boss was saved from lethal injury."));
+        assert!(texts.contains(&"2 merchants are available for hire."));
+        assert!(
+            report
+                .iter()
+                .any(|line| line.code == crate::report::LINE_MERCHANTS)
+        );
+
+        career.company.week_winners = [1, 5, 0, 0];
+        career.entries[2].count = 1;
+        career.entries[2].team_id = 1;
+        career.entries[2].entries[0].actor_id = 1;
+        career.entries[2].entries[0].weapon = [0x0000_0003_0000_0042, 0];
+        let board = career.board_with(None, &|item| item + 1);
+        assert_eq!(board.week_winners, [1, 5, 0, 0]);
+        assert_eq!(board.entries[2].winner, 1);
+        assert_eq!(
+            board.entries[2].participants,
+            vec![exa_ui::match_board::Participant {
+                slot: 1,
+                value: 0x42,
+                weapon: 0x43,
+            }]
+        );
+        assert!(board.has_entrants());
+        // On the tournament's day the board opens on the tournament tab.
+        career.company.day = 7;
+        assert_eq!(career.board().tab, BoardTab::Tournament);
+        career.entries = Default::default();
+        assert_ne!(career.board().tab, BoardTab::Tournament);
     }
 
     #[test]

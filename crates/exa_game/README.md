@@ -323,7 +323,11 @@ flushed and saved, the object world tier and its string library, each
 only when it holds a record) and the player's placement
 (`session::export_player_placement`: the body under the first saved
 record in save mode, the record flush skipped while a respawn is pending;
-`Session::placement` writes it first after the header). The arena's load
+`Session::placement` writes it first after the header). A story load of a
+save written while a respawn was pending turns its transition word to 1,
+places the player at the respawn portal 15 cm up (when a portal is known)
+and settles it 16 ticks (`save_live::take_pending_respawn`,
+`settle_after_placement`). The arena's load
 regenerates its lists (`arena_ids::regenerate_lists`: each employee's own
 list, emptied for class 4, and the manager's take their loadout items by
 the unique append, lose their special duplicates and are shelved with the
@@ -576,10 +580,18 @@ restore of a saved Mind power (wired into `thaum::power::restore_persistent`)
 and the combatant's binding helpers. What it shows (`mind::sight`): the
 mind-target pick, the Sense Minds overlay and its tracker (mood weights,
 dwell windows, slot reuse), the entry colours, the billboard, the glow, the
-sphere's shaping and the spirit screen's start. `mind::draw` draws the entry
-spheres with the original's sight program (`exa_render::mind_sight`), its
-per-entry uniforms and the 256² animated noise picture; nothing creates an
-anchor yet, so the pass idles. The spirit screen's 512² picture and noise
+sphere's shaping and the spirit screen's start. `mind::draw` runs the
+sight on the frame: a Sense Minds cast's answer starts or extends the
+overlay (`MindSense`; the persistent power's end fades it, a level change
+drops the tracked minds, the story's quit resets it), the tracker reads
+every character but the player and the body it left (the brain's
+hostility, concern sum, readiness, stress, alarm and courage, the fall
+stage, the ward), the mind awakening game event adds a glow on the player
+(`MindGlows`), and each shown mind gets a sphere on its head part, placed
+by its race's sight place (`RaceStats::mind_sight`), with the original's
+sight program (`exa_render::mind_sight`), its per-entry uniforms and the
+overlay's and the glows' 256² animated noise pictures (logged as
+`mind sight:`). The spirit screen's 512² picture and noise
 setup are in (`sight::spirit_screen_init`); its own quad and the casting AI
 are not in. `mind::runtime` runs the domain in the game: every character
 carries a `MindBody` (its Mind list and status word: the handover bit
@@ -601,7 +613,11 @@ handover bit ends its Spirit Form or Control Mind; and the lists are fed to the 
 walk also ticks and expires the other classes (Sense Minds and Mask Mind,
 instant and persistent, Confusion and Enrage with their status bits,
 Trust and Suspicion, Loyalty and Command Dead with their markers' unlinks
-and re-arms), and the enraged bit is fed to the contact integration. Before a
+and re-arms), and the enraged bit is fed to the contact integration. Loyalty's strength
+(the cast's, and its marker's drift past 800 ticks) reads the bound body's
+last attitude toward its caster (`thaum::live::MindRelations`). The bar's
+toggle in a body the player was handed ends the Spirit Form or Control
+Mind of the body left behind. Before a
 cast the bar copies the target's condition, rules, feral level and health
 onto its mind (`MindLive`, with the record's profession word as the dead
 powers' character flags and the body's encumbrance and build), as the
@@ -904,7 +920,8 @@ one on the floor for retail comparisons (optionally in a given frame,
 torch lays the start's torch, item 0x1f, at its pose: `StoryTorch`), the
 tip banner and the manual in play (`help_live`: `Step::Tip` shows the
 prelude's line, the menu's MANUAL rows open `manualkm.fds` over the
-covered menu), the debug light listing around
+covered menu; the topic list is the item view and the page the text box,
+driven through their own slots), the debug light listing around
 the player, or the camera in a level view (`light_probe`, `--debug-lights`), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
 request finds the device's crystal slot and the placed object on it; a
 teleporter asks for the destination screen with its rows and level ids, a
@@ -1483,6 +1500,23 @@ prize. It also carries the rival company names, the four seasons' reward ids
 and the tournament weapon tiers. The hub keeps the board's close state and
 restores its tab and list selections on the next opening.
 
+`ArenaCareer::board_with` also gives the board the career's six tournament
+rows (each entrant's id as its pool slot, its first word's item as the event
+value, the row's winner), each fighter's event values (the first hand item of
+its loadout at the event's place, the weapon check comparing that item's
+template), the season's week winners (`Company::week_winners`, written by the
+week verdict, `Company::end_day_in_field`, and kept in the tournament chunk's
+weeks) and the lineup order from the staff's order list. The board's company
+and lineup tables take the pointer (`HubWindows::board_table_input`, the
+`arena_hub_live::board_table_input` system before the hub's clicks): a double
+press moves a fighter across through the rank check, a row dragged onto the
+other table drops there (a drop on its own table does nothing), and
+`board_table_answer` keeps the change: on the tournament page in the event's
+row (a join rewrites the entrants, a leaving moves the later ones down), on
+the others in the staff's order list. `--board-table STEPS` scripts these
+presses (debug). A drag inside the lineup, which the original reorders, is
+not in.
+
 The hardware configuration (`hw_config`) runs the settings screen: it holds
 the live options, the saved set and the open page's draft; opens the page
 (reading the settings file again), applies, cancels and runs Defaults per
@@ -1543,7 +1577,7 @@ bounding sphere and box, the nearest mesh within the best distance, the
 ground pick with its 5 cm/1 mm grown sphere and top-of-sphere ask, and the
 kinesis pick; both record the sphere-top crossing plus the distance the
 mesh callback writes back, shortening the segment so a nearer surface met
-later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the casts ask the ground and nearest-mesh picks from the cursor (`thaum::cast_pick`: the throw, the barricade's placement and dismissal, the long door and the summoning, each with the original's accept test and the 15 cm back-off off a floor mesh), and the
+later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the casts ask the ground and nearest-mesh picks from the cursor (`thaum::cast_pick`: the throw, the barricade's placement and dismissal (the dismissal's box by the separating-axis test, `segment_obb_overlap`), the long door and the summoning, each with the original's accept test and the 15 cm back-off off a floor mesh), and the
 physics world answers as the mesh callback because Exarust keeps no CPU
 triangles for a picked node; where a mesh does carry the engine's kd-tree,
 `KdMesh` answers with its own front-face walk. Its free-camera drag and zoom handlers are `nav_drag`: the
@@ -1829,7 +1863,9 @@ rescaled by `exa_ui::gui_rescale::rescale_form`, so at unit 8 the form is
 488 × 1288 at (16, 16) and its pack and records follow (the pack's hit
 rectangle in `panel_live` too). The loot window (`ScreenLayout::loot`: 484 ×
 876 at x 800 at unit 8, its panels 452 wide) and the journal
-(`ScreenLayout::journal`: 484 × 1028, its text box 456 × 824) are rescaled
+(`ScreenLayout::journal`: 484 × 1028, its text box 456 × 824; the box is
+live, `gui_screens::JournalBox`, typed into while the focus is on it, and
+New and Erase add and remove entries) are rescaled
 the same way, their 2-pixel borders kept. The character view's panel frame
 is drawn and `doll_view` draws the player's dressed figure inside it while
 the inventory is open: a copy of the player's body on a render layer of
@@ -2187,7 +2223,12 @@ wake, and `exa_combat::condition::track_wake` runs the wake tick live on a
 body with a knock-out while its flags hold 0x20, which clears that bit once
 the body is ready (so the story's first wake-up animation ends when the
 body is up). The story respawn and the story start attach the controls
-again (`Controls(true)`), which gives them back after a story death. A
+again (`Controls(true)`), which gives them back after a story death. The
+story respawn's placement settles the player's body 16 ticks
+(`Step::SettlePlayer`, carried across the load by
+`level_change::PlacedSettle`), and Spirit Form's new body is built settling
+16 ticks (`limp::SettleWhenBuilt`). The item cursor's lock release freezes
+the item where it is (`Ragdoll::freeze_at`). A
 camera shot turns the chase camera to the shot's bearing
 (`ChaseCamera::face_shot`). The rules return named steps;
 `FlowPlugin` runs them on the 12 ms game clock, follows a play level's
@@ -2302,8 +2343,11 @@ confirms the row; a window height that moves the GUI scale lays the menus
 out again through `flow::notify_gui_scale`);
 its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
 mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
-the story respawn or exit, and the returns to the title behind the
-transition. A scripted mode registered in the flow's `ScriptModes` table hands
+the story respawn or exit, the arena's CONTINUE (the arena's continue,
+`arena_live::ArenaContinue`: the next round, or the settlement and the way back
+to the hub), and the returns to the title behind the transition. Leaving a
+session in arena mode runs the arena's leave (`arena_hub_live::ArenaLeave`):
+the hub becomes busy and its click hook is cleared until the next entry. A scripted mode registered in the flow's `ScriptModes` table hands
 the clicked row to its handler (`ScriptedEnd`) and leaves the menu to the
 script, as the original's table does.
 

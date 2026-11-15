@@ -197,6 +197,16 @@ impl BaseForm {
         )
     }
 
+    /// Whether a hit code is the held one: a held record (its 1-based
+    /// index) by the code's low word, a held mark by the code itself.
+    fn holds(&self, code: i32) -> bool {
+        if self.held > 0 {
+            code > 0 && code & 0xffff == self.held
+        } else {
+            code == self.held
+        }
+    }
+
     /// The record a code names (its low word less one), if any.
     pub fn record_index(&self, code: i32) -> Option<usize> {
         form::control_index(code & 0xffff, self.records.len() as i32 - 1).filter(|_| code > 0)
@@ -365,7 +375,7 @@ impl BaseForm {
                 }
             }
             held if held != 0 => {
-                self.over = self.hit_local(lx, ly) == held;
+                self.over = self.holds(self.hit_local(lx, ly));
             }
             _ => {}
         }
@@ -473,8 +483,11 @@ impl FormHost for BaseForm {
                     ..Message::default()
                 },
             );
-            if result != 0 {
-                self.held = self.hover;
+            // The record holds the press when it answers 5: the held word is
+            // its 1-based index (the hit code's low word, without the
+            // answer's bits), which the release compares with the count.
+            if result & 5 == 5 {
+                self.held = i as i32 + 1;
                 self.over = true;
             }
             return result;
@@ -522,7 +535,7 @@ impl FormHost for BaseForm {
     fn release(&mut self, _word: u32) -> u32 {
         let (lx, ly) = self.local(self.pointer);
         if self.held != 0 {
-            self.over = self.hit_local(lx, ly) == self.held;
+            self.over = self.holds(self.hit_local(lx, ly));
         }
         let actions = form::release_actions(
             self.held,
