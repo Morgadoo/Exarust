@@ -2132,7 +2132,7 @@ fn paint_slider(
     }
     painted.push(GuiLayer::new(batch, LayerTexture::None));
     if let Some(sheet) = dots {
-        let half = exa_items::item_gui::DOT >> 1;
+        let half = sheet.side >> 1;
         let quads = sheet
             .atlas
             .draw(sheet.whole, drawn.knob as f32, (mid - half) as f32);
@@ -2912,5 +2912,26 @@ mod tests {
             None,
             IVec2::new(client.right - 2, client.bottom - 2)
         ));
+    }
+
+    #[test]
+    fn the_slider_knob_centres_on_the_level_dot() {
+        // A 28-pixel dot (GUI level 5): the knob's top sits half a dot above
+        // the row's middle, not half of the pre-level 22.
+        let cell = vec![255u8; 64 * 64 * 4];
+        let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64, 28)
+            .expect("a dot sheet");
+        let palette = exa_ui::line_skin::shown_palette(1.0);
+        let mut painted = gui_paint::Painted::default();
+        paint_slider(&mut painted, (0, 100, 200, 30), 0.5, &palette, Some(&sheet));
+        let knob = painted.layers.last().expect("the knob layer");
+        let top = knob
+            .batch
+            .vertices
+            .iter()
+            .map(|v| v.y)
+            .fold(f32::INFINITY, f32::min);
+        // The row's middle is 100 + 15 = 115; the knob starts 14 above it.
+        assert_eq!(top, 101.0);
     }
 }

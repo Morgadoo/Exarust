@@ -68,7 +68,8 @@ matter:
 - `exa_game::item_card`: `CardContext`, `sync_card_context`, the socket
   crystal's card, the use before the card.
 - `exa_game::item_icon_render`: the resolve error report.
-- `exa_items::item_gui::slider` takes the dot size.
+- `exa_items::item_gui::slider` takes the dot size; `item_card::paint_slider`
+  centres the knob half that dot above the row's middle.
 - `exa_formats::procedural`: suede's family, `alpha_target`;
   `exa_assets::weapon` uses it.
 
