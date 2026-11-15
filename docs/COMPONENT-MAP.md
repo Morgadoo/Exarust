@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 51.2% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 51.6% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **51.2% closed**, of which 39.7% live (reimplemented), 9.6% engine and 1.9% closed without code (unreachable or deviation). Still open: 39.3% partial and 9.5% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **51.6% closed**, of which 39.9% live (reimplemented), 9.6% engine and 2.1% closed without code (unreachable or deviation). Still open: 39.2% partial and 9.1% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -20,8 +20,8 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | section | functions | KB | components | reimplemented | by engine | ledger closed | live | engine | no code | partial | open | largest missing |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 85% | 2% | 82% | 1% | 10% | 5% |  |
-| Core, math & threading | 282 | 37 | 11 | 86% | 1% | 52% | 34% | 16% | 2% | 36% | 12% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 51% | 43% | 6% | 2% | 34% | 15% |  |
+| Core, math & threading | 282 | 37 | 11 | 86% | 1% | 55% | 38% | 16% | 2% | 32% | 12% |  |
+| Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 52% | 44% | 7% | 2% | 34% | 13% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 56% | 39% | 15% | 2% | 36% | 8% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 51% | 44% | 4% | 3% | 37% | 12% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 24% | 23% | 1% | 0% | 64% | 11% |  |
@@ -33,7 +33,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 12% | 4% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 52% | 50% | 2% | 0% | 40% | 8% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 47% | 39% | 1% | 7% | 32% | 21% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 49% | 40% | 1% | 8% | 32% | 19% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -136,10 +136,10 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Program main (Exanima.lpr) | Runtime & platform | 1 | 37% | 35% | 0% | 35% | 0% | 57% | 8% |
 | FPC Math helpers (FPC SysUtils by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | Windows-unit global memory helpers (FPC RTL: exeinfo (module info for backtraces) by address) | Runtime & platform | 0 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| FLX_System | Core, math & threading | 12 | 79% | 43% | 14% | 29% | 0% | 22% | 35% |
+| FLX_System | Core, math & threading | 12 | 79% | 44% | 15% | 29% | 0% | 21% | 35% |
 | RFT_BoundSphere | Core, math & threading | 8 | 95% | 54% | 54% | 0% | 0% | 46% | 0% |
-| Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 97% | 26% | 20% | 6% | 0% | 71% | 3% |
-| Core string/number formatting utilities | Core, math & threading | 4 | 94% | 86% | 76% | 4% | 6% | 12% | 2% |
+| Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 97% | 38% | 32% | 6% | 0% | 59% | 3% |
+| Core string/number formatting utilities | Core, math & threading | 4 | 94% | 89% | 78% | 4% | 6% | 9% | 2% |
 | Colour helpers and parallel-for dispatch (RF_kdTrees by address) | Core, math & threading | 2 | 75% | 77% | 61% | 2% | 14% | 23% | 0% |
 | RF_WorkerThreads | Core, math & threading | 1 | 46% | 100% | 11% | 89% | 0% | 0% | 0% |
 | RF_MultiLoop | Core, math & threading | 0 | 70% engine | 100% | 0% | 100% | 0% | 0% | 0% |
@@ -148,13 +148,13 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TThread@FLX_System | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | TThread@RF_OS_Functions | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | SG_ObjectDB2 | Data, assets & I/O | 19 | 96% | 59% | 53% | 2% | 4% | 25% | 16% |
-| RF_Import_RFC2 | Data, assets & I/O | 17 | 83% | 88% | 84% | 1% | 2% | 9% | 4% |
-| FLX_Content_Stream | Data, assets & I/O | 12 | 84% | 27% | 23% | 4% | 0% | 62% | 10% |
+| RF_Import_RFC2 | Data, assets & I/O | 17 | 83% | 89% | 84% | 1% | 4% | 9% | 2% |
+| FLX_Content_Stream | Data, assets & I/O | 12 | 84% | 32% | 27% | 4% | 0% | 62% | 6% |
 | RFE_Export_RFC2 | Data, assets & I/O | 11 | 90% | 23% | 18% | 0% | 5% | 75% | 2% |
-| RF_DataIO | Data, assets & I/O | 7 | 93% | 29% | 9% | 20% | 0% | 12% | 58% |
+| RF_DataIO | Data, assets & I/O | 7 | 93% | 42% | 9% | 33% | 0% | 12% | 46% |
 | Graphics & key settings (ini) | Data, assets & I/O | 4 | 88% | 92% | 84% | 8% | 0% | 3% | 5% |
 | RF_DBObjects | Data, assets & I/O | 4 | 52% | 8% | 5% | 3% | 0% | 77% | 15% |
-| TProjectManager | Data, assets & I/O | 3 | 66% | 26% | 0% | 26% | 0% | 74% | 0% |
+| TProjectManager | Data, assets & I/O | 3 | 66% | 29% | 3% | 26% | 0% | 71% | 0% |
 | SG_Character_DBs | Data, assets & I/O | 3 | 85% | 90% | 89% | 1% | 0% | 1% | 9% |
 | RF_ObjectLibs | Data, assets & I/O | 2 | 70% | 33% | 30% | 3% | 0% | 55% | 13% |
 | RF_StoreSettings | Data, assets & I/O | 2 | 97% | 95% | 93% | 1% | 0% | 5% | 0% |
@@ -211,7 +211,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TPostProcessor | Rendering & GPU | 2 | 87% | 22% | 0% | 22% | 0% | 78% | 0% |
 | RF_Renderer | Rendering & GPU | 1 | 54% | 13% | 0% | 13% | 0% | 0% | 87% |
 | Screen-quad GLSL snippets | Rendering & GPU | 1 | 20% | 3% | 0% | 3% | 0% | 97% | 0% |
-| RF_Splines | Rendering & GPU | 1 | 86% | 58% | 53% | 6% | 0% | 42% | 0% |
+| RF_Splines | Rendering & GPU | 1 | 86% | 100% | 94% | 6% | 0% | 0% | 0% |
 | RF_ShadowMap | Rendering & GPU | 1 | 62% | 19% | 0% | 19% | 0% | 70% | 11% |
 | Texture pixel-format names | Rendering & GPU | 1 | 85% | 100% | 88% | 12% | 0% | 0% | 0% |
 | T3DView | Rendering & GPU | 1 | 80% | 0% | 0% | 0% | 0% | 93% | 7% |
@@ -481,8 +481,8 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Save-package section delete (SG_EmblemGen by address) | Game modes, arena & session | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TSaveGameManager | Game modes, arena & session | 0 | 70% | 100% | 90% | 10% | 0% | 0% | 0% |
 | TManageForm | Game modes, arena & session | 0 | 60% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TGUIDrawSkin | UI | 35 | 93% | 43% | 43% | 0% | 0% | 11% | 46% |
-| TGSLines | UI | 24 | 89% | 13% | 13% | 0% | 0% | 60% | 26% |
+| TGUIDrawSkin | UI | 35 | 93% | 55% | 45% | 0% | 10% | 13% | 31% |
+| TGSLines | UI | 24 | 89% | 23% | 23% | 0% | 0% | 59% | 18% |
 | SG_GameGUI | UI | 22 | 90% | 51% | 33% | 1% | 16% | 42% | 8% |
 | TGUIForm | UI | 20 | 96% | 16% | 15% | 1% | 0% | 46% | 38% |
 | TSkillUI | UI | 18 | 88% | 63% | 63% | 0% | 0% | 20% | 17% |
