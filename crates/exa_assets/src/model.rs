@@ -1419,7 +1419,10 @@ impl ModelLoader<'_> {
         // The refraction strength rides in the fall-off's fourth lane, as
         // the writer packs `OpcFll.w`.
         if mat.params.flags2 & exa_render::material::flags2::REFRACTION != 0 {
-            mat.params.opacity_falloff.w = exa_render::refraction::stored_strength(m.refraction);
+            // The writer stores it in hundredths (a 16-bit word) and the
+            // uniform fill reads it back.
+            mat.params.opacity_falloff.w =
+                crate::texture::hundredths_to_f32(crate::texture::f32_to_hundredths(m.refraction));
         }
         // The subsurface program: of the diffuse colour (never premultiplied
         // here) the secondary colour's share, as stored, scatters, lit

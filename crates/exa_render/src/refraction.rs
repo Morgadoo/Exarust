@@ -25,7 +25,8 @@
 //! ```
 //!
 //! `strength` is the record's `0x58` word (one when it is nearly zero),
-//! which the writer packs into `OpcFll.w`; `alpha` is the diffuse alpha
+//! which the writer packs into `OpcFll.w` through its hundredths
+//! (`exa_assets::texture::f32_to_hundredths`, then `hundredths_to_f32`); `alpha` is the diffuse alpha
 //! after the opacity fall-off. The specular, emissive and fog follow as on
 //! any PBR surface. Rules: `docs/RENDERING.md` (Refraction).
 
@@ -68,21 +69,6 @@ pub fn field_of(material_word: u32, shader_word: u32, gloss: f32) -> Option<Refr
         true,
         Some(SceneRefraction { low: 0, high: 1 }),
     )
-}
-
-/// The refraction strength as the drawing state keeps it: the writer stores
-/// `x·100` (single precision, rounded to nearest, ties to even) as a signed
-/// 16-bit word and the uniform fill reads it back × 0.01 in double, narrowed
-/// to single. A NaN or an out-of-range product stores the conversion's
-/// indefinite value, whose low 16 bits are zero.
-pub fn stored_strength(x: f32) -> f32 {
-    let scaled = x * 100.0;
-    let word = if scaled.is_finite() && scaled.abs() < 9.2e18 {
-        scaled.round_ties_even() as i64 as i16
-    } else {
-        0
-    };
-    (f64::from(word) * 0.01) as f32
 }
 
 /// The screen offset (GL texture units, y up) the read takes for a
@@ -244,21 +230,6 @@ mod tests {
         assert_eq!(field_of(0x207, 0, f32::NAN), Some(RefractionMap::SceneLow));
         // The subsurface mode (0x300) does not refract.
         assert_eq!(field_of(0x307, 0, 0.9), None);
-    }
-
-    #[test]
-    fn the_strength_is_kept_in_hundredths() {
-        assert_eq!(stored_strength(1.0), 1.0);
-        assert_eq!(stored_strength(0.5), 0.5);
-        // 0.355·100 rounds to 36 (35.5 → even 36), read back in double.
-        assert_eq!(stored_strength(0.355), (36.0f64 * 0.01) as f32);
-        assert_eq!(stored_strength(0.004), 0.0);
-        assert_eq!(stored_strength(f32::NAN), 0.0);
-        // A word past 16 bits keeps its low half.
-        assert_eq!(
-            stored_strength(400.0),
-            (f64::from(40000i64 as i16) * 0.01) as f32
-        );
     }
 
     #[test]
