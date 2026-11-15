@@ -191,8 +191,8 @@ impl GiPick {
     pub fn cell_of(cells_origin_cm: Vec2, at: Vec3) -> IVec2 {
         let offset = at.xz() * CM_PER_M - cells_origin_cm;
         IVec2::new(
-            (offset.x * Self::INV_BLOCK_CM).floor() as i32,
-            (offset.y * Self::INV_BLOCK_CM).floor() as i32,
+            exa_physics::engine_math::floor_to_i32(offset.x * Self::INV_BLOCK_CM),
+            exa_physics::engine_math::floor_to_i32(offset.y * Self::INV_BLOCK_CM),
         )
     }
 }
@@ -1261,7 +1261,7 @@ pub fn shape_draw(volume: ShapeVolume, origin: Vec3, dims: UVec3, voxel: f32) ->
     let centre_y = (width * (below / width + volume.position.y * inv)).round_ties_even() as i32;
     // The half extent is scaled first, then widened: `width · (h · scale)`,
     // rounded up (the engine's ceiling helper).
-    let half = |h: f32| (width * (h * inv)).ceil() as i32;
+    let half = |h: f32| exa_physics::engine_math::ceil_to_i32(width * (h * inv));
     let half_x = half(volume.half.x);
     let half_z = half(volume.half.z);
     let half_y = half(volume.half.y);

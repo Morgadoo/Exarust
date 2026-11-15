@@ -96,12 +96,13 @@ impl Project {
     }
 
     /// Resolves a path from the project the way the original's path resolver
-    /// does: a path with a drive letter in it (`C:\…`, or any `:`) is taken
-    /// as it is; any other path is joined to the project's folder. Windows
+    /// does: a path whose first `:` is past its first byte (a drive letter,
+    /// `C:\…`) is taken as it is; any other path, one starting with `:`
+    /// included, is joined to the project's folder. Windows
     /// separators become the platform's, so a project's `Resource\Common.rml`
     /// names the same entry on every host.
     pub fn resolve_path(folder: &std::path::Path, path: &str) -> std::path::PathBuf {
-        if path.contains(':') {
+        if path.find(':').is_some_and(|at| at >= 1) {
             return std::path::PathBuf::from(path);
         }
         let separator = std::path::MAIN_SEPARATOR;
@@ -173,6 +174,12 @@ mod tests {
             Project::resolve_path(root, "Resource.rpk"),
             root.join("Resource.rpk")
         );
+        // The first colon decides: at the first byte it is no drive.
+        assert_eq!(
+            Project::resolve_path(root, ":Resource.rpk"),
+            root.join(":Resource.rpk")
+        );
+        assert_eq!(Project::resolve_path(root, ":a:b"), root.join(":a:b"));
     }
 
     #[test]

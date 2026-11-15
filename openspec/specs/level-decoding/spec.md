@@ -135,3 +135,10 @@ The system SHALL write a prop's placement flags `0xB80000` over its object node'
 #### Scenario: Arena lanterns
 - **WHEN** every shipped level is read
 - **THEN** exactly seven props carry a rule: arenao1's two `lantern a01 mb` with `0x100000` and one with `0x200000`, arenao3's three `brazier xaa02 01` with `0x200000` and exanima03's `beddouble` with `0x180000`, each a root, and each lantern's and brazier's one light or fire is hidden by day
+
+### Requirement: Older grid layout word
+The grid's older-layout word (the header's third word) SHALL be 0 in every shipped grid and in every grid the export writes, so the older plane conversion does not run on 0.9.5's data.
+
+#### Scenario: The installed game's grids
+- **WHEN** every grid chunk of the installed packs is read
+- **THEN** each has 0 and 600 in its third and fourth header words

@@ -349,7 +349,8 @@ pub fn unarmed_parry(threat: &Threat) -> Option<Parry> {
 
 fn clip_for(threat: &Threat) -> u8 {
     let theta = wrap_pi(threat.yaw);
-    let s = theta / PI + 0.5;
+    // The share runs in double precision: θ × 1/π + 0.5, then to single.
+    let s = (f64::from(theta) * std::f64::consts::FRAC_1_PI + 0.5) as f32;
     if let Some((_, low, high)) = HEIGHTS
         .iter()
         .find(|(motion, _, _)| *motion == threat.motion)
@@ -380,9 +381,17 @@ fn clip_for(threat: &Threat) -> u8 {
     LEFT
 }
 
+/// The gap between the two headings wrapped once into ±π, as the engine's
+/// angle helper: compared in double precision against the double π and
+/// stepped by the f32 full turn.
 fn wrap_pi(yaw: f32) -> f32 {
-    let turn = yaw.rem_euclid(PI * 2.0);
-    if turn > PI { turn - PI * 2.0 } else { turn }
+    if f64::from(yaw) < -std::f64::consts::PI {
+        yaw + PI * 2.0
+    } else if f64::from(yaw) > std::f64::consts::PI {
+        yaw - PI * 2.0
+    } else {
+        yaw
+    }
 }
 
 /// A parry in progress on the defender: the original's parrying flag, the

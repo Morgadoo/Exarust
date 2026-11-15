@@ -215,8 +215,10 @@ impl WallGrid {
 
 /// The direction of point `p` from the light at `l`, top view, cell space:
 /// 0 towards −Z, π/2 towards +X.
+///
+/// The original takes the engine's fast arctangent here, not the library's.
 fn angle(l: (f32, f32), p: (f32, f32)) -> f32 {
-    (p.0 - l.0).atan2(l.1 - p.1)
+    exa_physics::engine_math::atan2(p.0 - l.0, l.1 - p.1)
 }
 
 /// The angles of a side's opening ends, seen from the light.
@@ -407,8 +409,10 @@ impl CellLights {
         if dist < node.radius {
             return true;
         }
-        let centre = d.x.atan2(-d.z);
-        let half = (node.radius / dist).atan();
+        // The centre through the engine's fast arctangent, the half angle
+        // through the library's in double precision, as the original.
+        let centre = exa_physics::engine_math::atan2(d.x, -d.z);
+        let half = f64::from(node.radius / dist).atan() as f32;
         let mut n0 = centre - half;
         if n0 < -PI {
             n0 += TAU;
@@ -544,6 +548,13 @@ mod tests {
 
     fn cell(g: &WallGrid, i: usize, j: usize) -> usize {
         j * g.w + i
+    }
+
+    #[test]
+    fn the_angles_take_the_engines_fast_arctangent() {
+        let fast = exa_physics::engine_math::atan2(1.0, 2.0);
+        assert_eq!(angle((0.0, 0.0), (1.0, -2.0)).to_bits(), fast.to_bits());
+        assert_ne!(fast, 1.0f32.atan2(2.0));
     }
 
     #[test]
