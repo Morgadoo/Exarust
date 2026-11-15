@@ -467,6 +467,68 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, [f32; 3]) {
     (add(add(a, scale(ab, v)), scale(ac, w)), [1.0 - v - w, v, w])
 }
 
+/// A triangle's unit normal as the original's face records keep it: the
+/// cross product of the edges from the first corner (first edge by second),
+/// scaled by the processor's reciprocal square root estimate of its squared
+/// length; zero for a degenerate triangle.
+pub fn face_normal(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    let u = sub(b, a);
+    let w = sub(c, a);
+    let n = [
+        w[2] * u[1] - u[2] * w[1],
+        w[0] * u[2] - u[0] * w[2],
+        w[1] * u[0] - u[1] * w[0],
+    ];
+    let length_squared = dot(n, n);
+    if length_squared == 0.0 {
+        return [0.0; 3];
+    }
+    scale(n, crate::rfc::reciprocal_sqrt(length_squared))
+}
+
+/// The barycentric weights of `query` over the triangle `points` as the
+/// original's morph transfer solves them: the query is projected onto the
+/// triangle's plane through its first point along `normal`, then two weights
+/// come from a 2x2 solve over the coordinate sums (the x-plus-z and y rows
+/// when the edges' summed y extent is the larger, the x and y-plus-z rows
+/// otherwise; NaN takes the second), and the third is one less the other two.
+/// Unlike a region test it does not clamp: a point off the triangle gets a
+/// negative weight.
+pub fn plane_barycentric(normal: Vec3, points: [Vec3; 3], query: Vec3) -> [f32; 3] {
+    let [p0, p1, p2] = points;
+    let n = normal;
+    // Move to the first point, remove the normal component, move back.
+    let mut s = sub(query, p0);
+    let along = (s[0] * n[0] + s[2] * n[2]) + s[1] * n[1];
+    s = [
+        s[0] - n[0] * along,
+        s[1] - n[1] * along,
+        s[2] - n[2] * along,
+    ];
+    s = add(s, p0);
+
+    let x0 = p0[0] - p2[0];
+    let x1 = p1[0] - p2[0];
+    let x2 = p2[0] - s[0];
+    let y0 = p0[1] - p2[1];
+    let y1 = p1[1] - p2[1];
+    let y2 = p2[1] - s[1];
+    let z0 = p0[2] - p2[2];
+    let z1 = p1[2] - p2[2];
+    let z2 = p2[2] - s[2];
+
+    let (u, v) = if (x0 + x1).abs() < (y0 + y1).abs() {
+        let u = ((x2 + z2) * y1 - y2 * (x1 + z1)) / ((x1 + z1) * y0 - (x0 + z0) * y1);
+        let v = ((x2 + z2) * y0 - y2 * (x0 + z0)) / ((x0 + z0) * y1 - (x1 + z1) * y0);
+        (u, v)
+    } else {
+        let u = ((y2 + z2) * x1 - x2 * (y1 + z1)) / (x0 * (y1 + z1) - (y0 + z0) * x1);
+        let v = ((y2 + z2) * x0 - x2 * (y0 + z0)) / (x1 * (y0 + z0) - (y1 + z1) * x0);
+        (u, v)
+    };
+    [u, v, 1.0 - u - v]
+}
+
 /// Body triangles by the cells of a uniform grid their boxes touch, for
 /// the nearest-surface queries.
 struct Grid {
@@ -639,21 +701,28 @@ impl MorphBody {
     }
 
     /// The nearest point of the body's surface to `p` (body space) within
-    /// [`REACH`]: its triangle and barycentric coordinates.
+    /// [`REACH`]: its triangle and barycentric coordinates. The search keeps
+    /// the closest point of each triangle; the weights of the one kept are
+    /// then solved as the original's transfer solves them
+    /// ([`plane_barycentric`] over the triangle's [`face_normal`]).
     fn nearest_surface(&self, p: Vec3) -> Option<(usize, [f32; 3])> {
-        let mut best: Option<(usize, [f32; 3])> = None;
+        let mut best: Option<(usize, Vec3)> = None;
         let mut best_d = f32::from_bits(0x7f7f_c99e);
         let limit = REACH * REACH;
         for t in self.grid.near(p) {
             let [a, b, c] = self.triangles[t as usize].map(|v| self.set.base[v as usize]);
-            let (q, bary) = closest_on_triangle(p, a, b, c);
+            let (q, _) = closest_on_triangle(p, a, b, c);
             let d = dist_sq(q, p);
             if d < limit && d < best_d {
                 best_d = d;
-                best = Some((t as usize, bary));
+                best = Some((t as usize, q));
             }
         }
-        best
+        best.map(|(t, q)| {
+            let corners = self.triangles[t].map(|v| self.set.base[v as usize]);
+            let [a, b, c] = corners;
+            (t, plane_barycentric(face_normal(a, b, c), corners, q))
+        })
     }
 
     /// The share of the morphs of `mesh`, a part or garment whose frame in
@@ -709,11 +778,13 @@ impl MorphBody {
                     let (mut sum, mut total) = ([0.0f32; 3], 0.0f32);
                     for &nb in &neighbours[e] {
                         let nb = nb as usize;
-                        let d2 = dist_sq(elements[e], elements[nb]);
-                        if !done[nb] || d2 <= 0.0 {
+                        if !done[nb] {
                             continue;
                         }
-                        let w = 1.0 / d2.sqrt();
+                        // A neighbour at the same place weighs 1/0 = inf,
+                        // as in the original (all its exceptions masked):
+                        // the mean then comes out NaN.
+                        let w = 1.0 / dist_sq(elements[e], elements[nb]).sqrt();
                         sum = add(sum, scale(deltas[nb], w));
                         total += w;
                     }

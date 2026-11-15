@@ -1745,7 +1745,10 @@ burdens, the held shield and its record's techniques (both the physical
 and the fighter copy; a new body keeps its spawn value), and the armour
 pass's worn rules run again (`equip::refresh_worn_specials`): the second
 wind, the item-effect list (an item still worn keeps its bytes), the golem
-suit, the mind ward, the focus charm and the golem core's red regeneration. A double click
+suit, the mind ward, the focus charm and the golem core's red regeneration. A held
+weapon that came loose (`exa_physics::grip::CameLoose`, from the grip stage,
+a collapse's drop among them) runs the holder's came-loose hook on its
+record (`equip::forget_loose_hands`, `Possessions::forget_loose`). A double click
 classifies a container's open, a card close and a use; a popup's inner
 panel and top are `open_container`'s, but no live container popup is drawn
 yet. The inventory screen still has no bound item list.
