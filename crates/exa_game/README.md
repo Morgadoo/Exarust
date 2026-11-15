@@ -949,6 +949,10 @@ the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`, with the feet's
 anchors and states), the joint trace
 (`joint_trace`), the trace of contacts between body parts (`pair_trace`),
+the debug new game (`new_game`, `--new-game story[:N]`: once the first load
+has ended, a story starts through the flow's story start and session begin,
+as the creator's BEGIN starts one, so its new slot and saves run; the play
+level's player stands in for the created character),
 the planner probe (`path_probe`, `--debug-path`: a plan from the player's
 feet to a point, drawn and logged) and the simulation controls (`sim_control`, with the scripted pauses at a
 tick, a stretched link, the first blood jet, the player's first landed

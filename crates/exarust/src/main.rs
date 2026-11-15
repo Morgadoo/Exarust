@@ -291,6 +291,14 @@
 //!                                     player body are built on the main thread where they are needed (timings)
 //!          --story-session            play mode: the level runs as a story-mode session (the story hook's knock-out,
 //!                                     revive with its alarm return, and death), not a practice session without one
+//!          --new-game story[:N]       play mode: once loaded, a new story (background N, default 0) starts through the
+//!                                     flow's session begin, as the creator's BEGIN starts one: its new slot (with
+//!                                     --save-dir, in that folder), exanima01's load and the story's saves; the play
+//!                                     level's player stands in for the created character. The arena career's start
+//!                                     is the creator's commit, so only the story is offered
+//!          --env-seed <n>             the outdoor levels' sun and weather draw from seed n (nonzero) instead of the
+//!                                     clock, so two runs of an outdoor level give the same picture (EXA_SCENE_SEED
+//!                                     does the same)
 //!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
 //!                                     side's attack, renew a released swing)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
@@ -663,6 +671,10 @@ pub struct Options {
     pub give: Vec<u32>,
     /// The play level runs as a story-mode session.
     pub story_session: bool,
+    /// `--new-game`: the new game started once loaded.
+    pub new_game: Option<exa_game::new_game::NewGame>,
+    /// `--env-seed`: the outdoor presets' fixed seed.
+    pub env_seed: Option<u32>,
     /// `--sync-content`: no content stream thread.
     pub sync_content: bool,
     /// The player's perks.
@@ -1011,6 +1023,15 @@ fn register_debug_commands(
     });
 }
 
+/// A seed word: decimal, or hex with `0x`.
+fn parse_seed(word: &str) -> Option<u32> {
+    let word = word.trim();
+    match word.strip_prefix("0x").or_else(|| word.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => word.parse().ok(),
+    }
+}
+
 /// The performance counter a `--fixed-frames` run's arena draws read
 /// (`exa_game::arena_match::fix_counter`).
 const FIXED_COUNTER_READING: u64 = 0x0123_4567_89AB_CDEF;
@@ -1319,6 +1340,34 @@ fn main() -> AppExit {
                 }
             }
             "--story-session" => options.story_session = true,
+            "--new-game" => {
+                let word = args.next().unwrap_or_default();
+                match exa_game::new_game::NewGame::parse(&word) {
+                    Some(game) => options.new_game = Some(game),
+                    None if word == "arena" => {
+                        eprintln!(
+                            "--new-game arena: the arena career starts at the character creator's commit, which the flow has no starter for; use --open-creator arena"
+                        );
+                        return AppExit::from_code(2);
+                    }
+                    None => {
+                        eprintln!("--new-game: story or story:N (N 0 to 3), not {word:?}");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--env-seed" => {
+                let word = args.next().unwrap_or_default();
+                match parse_seed(&word) {
+                    Some(seed) if seed != 0 => options.env_seed = Some(seed),
+                    _ => {
+                        eprintln!(
+                            "--env-seed: a nonzero u32 (decimal or 0x hex), not {word:?} (zero is the original's word for a fresh clock seed)"
+                        );
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--sync-content" => options.sync_content = true,
             "--heartbeat" => options.heartbeat = true,
             "--undying" => options.undying = true,
@@ -1932,6 +1981,11 @@ fn main() -> AppExit {
         None => None,
     };
 
+    if let Some(seed) = options.env_seed {
+        // The outdoor presets' draws read this seed instead of the clock.
+        exa_world::environment::fix_seed(seed);
+        eprintln!("env seed: the outdoor sun and weather draw from {seed:#010x}");
+    }
     let fixed_frames = options.fixed_frames;
     if fixed_frames {
         // The arena's draws reseed from a performance counter: a repeatable
@@ -2213,6 +2267,12 @@ fn main() -> AppExit {
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
         app.insert_resource(exa_game::flow::StorySession);
+    }
+    if options.new_game.is_some() {
+        app.insert_resource(exa_game::new_game::NewGameOnLoad {
+            game: options.new_game,
+            done: false,
+        });
     }
     if options.sync_content {
         app.insert_resource(exa_game::content_requests::ContentStreamOff);
