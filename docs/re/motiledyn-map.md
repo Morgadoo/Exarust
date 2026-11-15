@@ -422,9 +422,9 @@ Byte counts are estimated from block landmarks in the research notes.
 | Behaviour call, waking, collapse branch | 520 | 80 % |  |
 | Posture block: falls, get-ups, weak, stance switch, clinch trigger | 4,370 | 80 % | not every state flag written |
 | Attack and engage, muscles-off snap, focus tick, item effects, health bookkeeping | 1,860 | 85 % | block stamina: `exa_combat regen.rs ShieldStamina::tick`, live. Audited item by item (kernel carry lane): the posture wait's countdown, the held voices' fade, the stance's clip-rate reset and the parry counter's drift while not parrying, the parry routine every parrying tick, the focus tick, the once-a-second item effects (both use counters cleared with no effect), the heal pool, second wind, yellow regeneration and clamps are live; the full tone reset's call (#21) on a muscles-off tick is not called |
-| Move and stop branches | 735 | 90 % |  |
-| Movement decision | 490 | 80 % |  |
-| Turn | 1,150 | 90 % |  |
+| Move and stop branches | 735 | 90 % | stance factor rise and the move/stop compare checked (motiledyn2); the move branch's standing-anchor copy and second clock stamp are not written, the held items' static-only bit is set by the attack condition, not by armed-and-moving (no reader) |
+| Movement decision | 490 | 85 % | the gates' order, constants and NaN sides match (motiledyn2); Exarust's own steady balance stays |
+| Turn | 1,150 | 100 % | compared instruction by instruction (motiledyn2): the hard hit's turn stall, the support adapter's write and the arms' floor reading last tick's error added |
 | Alignment and stop | 600 | 95 % | drive cleared before the locomotion call (`stand`); the muscles-off clock counter has no writer (dead); the down body's ground probe runs in `measure_balance` before the feet (live) |
 | Locomotion call and clock | 930 | 75 % |  |
 | Torso twist and head look | 670 | 90 % |  |
@@ -457,6 +457,38 @@ Damage routine (#8): the branch is chosen by the striker's pending contact kind 
 limb, 2 a held weapon, 3 a shield); the struck body's parry byte is read only inside the
 weapon branch. Exarust met a limb with the fighter's guard, so a parrying fighter struck on a
 limb was parried. Fixed this round (`react_to_hits`: `Struck::Limb` meets the open guard).
+
+## Assembly comparison, second pass (motiledyn2 lane, round 226)
+
+Checked against the assembly, GPU on hold, tests are the evidence (traces owed, see the
+lane's artifacts README).
+
+Body tick (#49):
+
+| block | result |
+|---|---|
+| Turn | the error (heading plus the negated yaw, one wrap against the double π), the quarter-turn stance facing, the rate table (free walk (1 − 0.1·speed)·B in double; the slow turn 0.5·B; condition 2: ((1 − 0.25·p)·(B·handling))·P in single, then (1 − 0.6·enc)·that / scale in double; else (1 − 0.6·enc)·(1.25·B) / √scale in double), crouch over 0.5 × 0.6, the ease under 0.6 rad (|err|·rate in single, × 1.6667 in double), the keys' 0.9, the 1e-4 snap, the step compare and the second wrap match `turn`/`turn_rate`. Three differences fixed: the turn runs only while the turn stall is under 1 (signed) and the condition has none of 0xac0 (the stall had no writer, the gate was missing); a turning body lowers the support adapter by 10·|err| (MAXSS against 0); the arms' turn floor reads the error stored before the step, last tick's, 0 after a held turn (Exarust read what was left after this tick's step). Left: the stance facing is kept as a vector in the original, a wrapped yaw in Exarust |
+| Turn stall writer | the impact routine (TMotilePart) writes it for a stab or overhead (motion 11 or 12, bit 4 clear) as round(5√impact) (CVTSS2SI); the same routine's interrupt writes stall rate 1 and strength 0, the stab's write strength 0: Exarust had the two swing fields swapped. Fixed |
+| Movement gates | the cooldown, the energy (NaN passes), the stepping byte (refuses, the tests go on), moving: balance < 0.9 in double sets the 40-tick cooldown and the landing weight; standing: over 80 airborne ticks, balance < 0.99; the posture wait over 20: order and NaN sides match `gates` |
+| Move/stop compare | move while 625 < amount or 0.5 < speed (each false on NaN): matches (the pseudo-code prints it inverted) |
+| Stance factor | standing the race's (1 dormant or in exactly the shock stagger); moving +0.01 in double up to 0.7 + 0.3·run (double, narrowed): matches `stance_factor` |
+
+Damage routine (#8):
+
+| path | result |
+|---|---|
+| Block (kind 3) | parrying: stamina − cost·(0.4·I) in double, the lock unless Counter, sag (0.7 − f64(0.5·S))·I before the stamina's clamp, at most 1; Synchrony countering under a clock of 0.3: x = clock·3.3333 in double (0 at or under 0), cost·((0.3x + 0.3)·I); else cost·(0.8·I); the clamp (NaN kept), the stamp and rate, the leak (1 − S)·(0.4·I + 0.4·x)·leak, yellow −0.05 or −0.025 (potion) in double, the low check under 0.05, the daze (0.3 − 0.2·S)·Q in double and its stall factor (Persist, Synchrony, 1): all match `damage::block` |
+| Weapon (kind 2) | the turned-blow branch, the counter branch (motion against the counter motion, not the primary), the parry branch's lock unless Riposte, flags cleared, sag min(I/2, 1), recoil only for a striker under scale 1.4: match `react_to_hits` and `parry::clash_branch` |
+| Knockback | the step routine gets the striker's slot vector as copied at the routine's start (the tracker's smoothed velocity, cm a tick), not a unit direction: height zeroed, × 2·((20·strikes + 10)·J), + 20 × the chest's fast velocity (height kept), cut to the step length; started over J 0.5. Exarust normalised the tip's direction. Fixed (`knockback_offset`). Open: at J 0.5 or less the routine sets the step's start stamp 1000 ms back, which Exarust does not write (its readers, the step episode's windows, not traced here) |
+| Flesh (kind 1) | spot-checked the armour channels' constants (1.58, √2, the 2.5 and 0.8 terms, the 1.75 coverage, the 1.25 shake) against `damage::resolve`; not re-checked instruction by instruction |
+
+Approximations (DEC-7, left as they are): none in the turn, the gates or the block
+path; the knockback's cut uses SQRTSS (exact). The ones listed for #49 and #8 above stand.
+
+Not done here (need other components): the queued-motion start (the AI's and the
+inventory's starters) and the two-hand group call (held-item group masks); the sampler's
+tail (part matrices and foot contacts on the frame) is structurally different and was not
+compared; the posture block was not re-compared arm by arm.
 
 ## Corrections made by the audit
 

@@ -476,14 +476,14 @@ The system SHALL place every held item by the original's grip table: the second 
 - **THEN** it sits at (−12, −1.5, 6) cm turned (70°, −15°, 20°), or at (11, −0.5, 6) cm turned (110°, 15°, 160°), as before
 
 ### Requirement: Knockback step
-A blow whose impact is over 0.5 SHALL start a knockback step of 2·(20·strikes + 10)·impact centimetres along the horizontal swing, plus 20 ticks of the chest's fast velocity, capped at the step length. Strikes SHALL be 0 until that power exists. Impact of 0.5 or less SHALL NOT start that step.
+A blow whose impact J is over 0.5 SHALL start a knockback step of the striker's slot vector (its tracked velocity in cm a tick, not normalised, its height zeroed) times 2·(20·strikes + 10)·J, plus 20 ticks of the chest's fast velocity, capped at the step length. Strikes SHALL be 0 until that power exists. Impact of 0.5 or less SHALL NOT start that step.
 
 #### Scenario: A full impact
-- **WHEN** impact is 1, strikes are 0, the swing is horizontal and the chest is still
+- **WHEN** impact is 1, strikes are 0, the slot vector is 1 cm a tick along the swing and the chest is still
 - **THEN** the step is 20 cm along the swing
 
 #### Scenario: Force strikes
-- **WHEN** impact is 1 and strikes are 1, with a still chest
+- **WHEN** impact is 1 and strikes are 1, with a slot vector of 1 cm a tick and a still chest
 - **THEN** the step is 60 cm along the swing
 
 #### Scenario: At the line
@@ -491,8 +491,12 @@ A blow whose impact is over 0.5 SHALL start a knockback step of 2·(20·strikes 
 - **THEN** no knockback step is started
 
 #### Scenario: A moving chest
-- **WHEN** impact is 1, strikes are 0 and the chest moves 1 cm a tick along the swing
+- **WHEN** impact is 1, strikes are 0, the slot vector is 1 cm a tick and the chest moves 1 cm a tick along the swing
 - **THEN** the step is 40 cm along the swing
+
+#### Scenario: A fast swing
+- **WHEN** impact is 0.6 and the striker's slot moves (9, 4, 12) cm a tick
+- **THEN** the step is the whole step length along (0.6, 0, 0.8)
 
 ### Requirement: Guarded blow
 A guarded blow SHALL meet no armour layer and draw no coverage roll. A weapon's parry SHALL deal nothing: the parrying fighter's attack state clears, it is kept from attacking 600 ms unless it has Riposte, and its stance sags by half the impact at the hit, at most 1. A blow on a shield SHALL deal no lasting wound (Shield stamina). Either guard SHALL make a striker smaller than 1.4 recoil. An open guard SHALL keep the flesh wound.
@@ -1314,3 +1318,10 @@ The hit reaction SHALL choose the parry, the clash and the block by what the bla
 #### Scenario: A limb struck through a parry
 - **WHEN** a parrying fighter and an open one are cut on the same limb by the same blade
 - **THEN** both lose the same red and yellow health, the striker's swing flags are the same, and the parrying fighter's parry stays up
+
+### Requirement: An interrupted swing stands still
+A hard weapon-body hit that interrupts a swing SHALL set its stall rate to 1 and its strength to 0, so its clip stands still until the stance returns 600 ms on; a stab's or overhead's hard hit SHALL set the strength to 0 and leave the rate.
+
+#### Scenario: An overhead's hard hit
+- **WHEN** an overhead's weapon body strikes a thrown body hard with its window open
+- **THEN** the swing's strength is 0 and the striker's turn stall is the recorded strength

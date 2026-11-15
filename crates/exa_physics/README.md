@@ -783,7 +783,10 @@ original's flag word, moving, free walk, goal) and the movement decision
 its tick makes from it (`body::locomotion::decide`: the move vector, leg
 mode and brake by the stop distances, the gates, the stop within 25 cm;
 `turn_rate`/`turn`: the body turn by the original's table and the stance
-facing; `align`: the alignment of the pelvis with the heading;
+facing, held while a stab's or overhead's hard hit stalls it
+(`BodyTimers::turn_stall`, one off a tick) and lowering the support
+adapter by 10·|error|; the arms' turn floor reads last tick's error
+(`Bearing::turn`), as the posture block reads it ahead of the turn; `align`: the alignment of the pelvis with the heading;
 `body::locomotion::Locomotor` keeps the body's side), then the original's
 locomotion routine while it moves (`body::locomotion::locomote`: the run
 blend and its bleeds, the gait columns from the race's per-tick table
