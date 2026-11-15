@@ -3611,6 +3611,7 @@ impl Plugin for FlowPlugin {
             .add_message::<exa_audio::PointSounded>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .init_resource::<GameView>()
@@ -4778,6 +4779,14 @@ fn apply_steps(
                     });
                 }
             }
+            Step::ScriptMode {
+                mode: ARENA_MODE,
+                hook: ScriptHook::Leave,
+            } => {
+                // The arena's own leave ([`crate::arena_hub_live::arena_leave`]).
+                info!("game flow: the arena's leave");
+                out.arena_leave.write(crate::arena_hub_live::ArenaLeave);
+            }
             Step::ScriptMode { mode, hook } => {
                 // A registered scripted mode's hook. Exarust has no script
                 // that registers one (nor does Exanima 0.9.5), so this only
@@ -4805,6 +4814,7 @@ struct FlowOutputs<'w> {
     saves: MessageWriter<'w, crate::save_live::SaveStep>,
     discovery: MessageWriter<'w, crate::experience_live::DiscoveryTick>,
     bodies: MessageWriter<'w, crate::scene_bodies::SceneCommand>,
+    arena_leave: MessageWriter<'w, crate::arena_hub_live::ArenaLeave>,
     /// The steps' writes to the player's body, posted for the next step
     /// ([`exa_physics::sim_app::FixedCommands::write`]).
     fixed: ResMut<'w, exa_physics::sim_app::FixedCommands>,
@@ -5442,6 +5452,68 @@ mod tests {
         assert!(step.boss);
     }
 
+    /// Leaving an arena session runs the arena's leave: the hub is busy and
+    /// its click hook gone until the next entry.
+    #[test]
+    fn leaving_an_arena_session_runs_the_arenas_leave() {
+        use crate::arena_hub::HubHook;
+        use crate::arena_hub_live::ArenaHub;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
+            .init_resource::<exa_physics::sim_app::FixedCommands>()
+            .insert_resource(ArenaHub {
+                entered: true,
+                busy: false,
+                click_hook: HubHook::Click,
+                ..Default::default()
+            })
+            .add_systems(
+                Update,
+                (apply_steps, crate::arena_hub_live::leave_arena).chain(),
+            );
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            ..Default::default()
+        };
+        let steps = flow.leave_session();
+        app.insert_resource(flow);
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        let hub = app.world().resource::<ArenaHub>();
+        assert!(hub.busy);
+        assert_eq!(hub.click_hook, HubHook::None);
+        // Another mode's leave does not touch the hub.
+        let mut app2 = app;
+        app2.insert_resource(ArenaHub {
+            entered: true,
+            click_hook: HubHook::Click,
+            ..Default::default()
+        });
+        let mut flow = Flow {
+            mode: Mode::Practice,
+            ..Default::default()
+        };
+        let steps = flow.leave_session();
+        app2.insert_resource(flow);
+        app2.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app2.update();
+        let hub = app2.world().resource::<ArenaHub>();
+        assert!(!hub.busy);
+        assert_eq!(hub.click_hook, HubHook::Click);
+    }
+
     /// The next fight's behaviour reset drops the stored target and the
     /// contact list while combat mode stays on.
     #[test]
@@ -5459,6 +5531,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -5508,6 +5581,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .insert_resource(exa_anim::Motions::fallback())
@@ -5557,6 +5631,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -7696,6 +7771,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, (release_after_load, apply_steps).chain());
@@ -7849,6 +7925,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -7914,6 +7991,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -8064,6 +8142,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);
@@ -8122,6 +8201,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .add_systems(Update, apply_steps);

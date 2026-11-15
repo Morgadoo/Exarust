@@ -135,6 +135,9 @@ fn setup(
     if let Some(script) = &options.manage_table {
         commands.insert_resource(script.clone());
     }
+    if let Some(script) = &options.board_table {
+        commands.insert_resource(script.clone());
+    }
     if options.shop_buy.is_some() || options.shop_sell.is_some() {
         commands.insert_resource(exa_game::arena_hub_live::ShopBuyScript::of_trade(
             options.shop_buy,

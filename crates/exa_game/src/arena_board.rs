@@ -11,9 +11,9 @@
 //! the staff professions above the combatant threshold, a guess from the
 //! filter's "class below three" rule.
 
-use exa_ui::match_board::{self, Board, Fighter, MatchRecord, WeaponRow};
+use exa_ui::match_board::{self, Board, EventEntry, Fighter, MatchRecord, Participant, WeaponRow};
 
-use crate::arena::{self, MatchInstance, MatchTemplate, WeaponEntry};
+use crate::arena::{self, MatchInstance, MatchTemplate, RosterRow, WeaponEntry};
 use crate::career::{Company, Member, Profession};
 
 /// The company record's class byte for a profession. Combatants are zero;
@@ -37,6 +37,71 @@ pub fn fighter(member: &Member) -> Fighter {
     );
     fighter.health = member.health;
     fighter
+}
+
+/// A member's six per-event values, the board's fighter record accessor:
+/// each tournament event reads the first hand's item id of the member's
+/// loadout at that event's place. `kind_of` gives the item kind the weapon
+/// check compares (the item's template).
+pub fn event_values(member: &Member, kind_of: &dyn Fn(u32) -> u32) -> ([i32; 6], [u32; 6]) {
+    let values: [i32; 6] = std::array::from_fn(|event| {
+        member
+            .loadouts
+            .get(event)
+            .map_or(0, |loadout| loadout.hands[0].id as i32)
+    });
+    let kinds = values.map(|value| kind_of(value as u32));
+    (values, kinds)
+}
+
+/// The six tournament rows as the board's entries: each entrant's id
+/// (its low byte, the board's pool slot), the first word's low half as the
+/// fighter's event value, and the row's winner team id.
+pub fn roster_entries(rows: &[RosterRow; 6], kind_of: &dyn Fn(u32) -> u32) -> [EventEntry; 6] {
+    std::array::from_fn(|event| {
+        let row = &rows[event];
+        let count = (row.count as usize).min(row.entries.len());
+        EventEntry {
+            participants: row.entries[..count]
+                .iter()
+                .map(|entrant| {
+                    let value = entrant.weapon[0] as u32;
+                    Participant {
+                        slot: (entrant.actor_id & 0xff) as usize,
+                        value: value as i32,
+                        weapon: kind_of(value),
+                    }
+                })
+                .collect(),
+            winner: row.team_id as i32,
+        }
+    })
+}
+
+/// Writes a board event's entrants back into its tournament row, as the
+/// lineup drop does: the count, each entrant's id, the event value into
+/// the first word's low half and the second word's low half cleared. The
+/// words' high halves stay as the row held them. A row holds two entrants.
+pub fn write_entry(entry: &EventEntry, row: &mut RosterRow) {
+    let count = entry.participants.len().min(row.entries.len());
+    row.count = count as u32;
+    for (entrant, participant) in row.entries.iter_mut().zip(&entry.participants) {
+        entrant.actor_id = participant.slot as u32;
+        entrant.weapon[0] =
+            (entrant.weapon[0] & !0xffff_ffff) | u64::from(participant.value as u32);
+        entrant.weapon[1] &= !0xffff_ffff;
+    }
+}
+
+/// Removes the entrant at `index` from a tournament row, as the drop back
+/// onto the company table does: the later entrants move down whole.
+pub fn remove_entrant(row: &mut RosterRow, index: usize) {
+    let count = (row.count as usize).min(row.entries.len());
+    if index >= count {
+        return;
+    }
+    row.entries.copy_within(index + 1..count, index);
+    row.count -= 1;
 }
 
 /// A daily match instance as the board's event record.
@@ -203,6 +268,74 @@ mod tests {
             &arena::WEAPON_TIERS[0][0].variants[..count]
         );
         assert!(row.variants[count..].iter().all(|&variant| variant == 0));
+    }
+
+    #[test]
+    fn a_board_entry_writes_back_into_its_tournament_row() {
+        use crate::arena::Entrant;
+        let mut row = RosterRow {
+            count: 1,
+            entries: [
+                Entrant {
+                    actor_id: 3,
+                    weapon: [0x0000_0005_0000_0010, 0x0000_0006_0000_0011],
+                },
+                Entrant::default(),
+            ],
+            team_id: 0,
+        };
+        let entry = EventEntry {
+            participants: vec![
+                Participant {
+                    slot: 1,
+                    value: 0x42,
+                    weapon: 0,
+                },
+                Participant {
+                    slot: 3,
+                    value: 0x43,
+                    weapon: 0,
+                },
+                Participant::default(),
+            ],
+            winner: 0,
+        };
+        write_entry(&entry, &mut row);
+        // Two entrants fit; the high halves stay, the second word's id goes.
+        assert_eq!(row.count, 2);
+        assert_eq!(row.entries[0].actor_id, 1);
+        assert_eq!(
+            row.entries[0].weapon,
+            [0x0000_0005_0000_0042, 0x0000_0006_0000_0000]
+        );
+        assert_eq!(row.entries[1].weapon, [0x43, 0]);
+        let back = roster_entries(
+            &[
+                row,
+                RosterRow::default(),
+                RosterRow::default(),
+                RosterRow::default(),
+                RosterRow::default(),
+                RosterRow::default(),
+            ],
+            &|item| item,
+        );
+        assert_eq!(back[0].participants.len(), 2);
+        assert_eq!(back[0].participants[1].slot, 3);
+        remove_entrant(&mut row, 0);
+        assert_eq!(row.count, 1);
+        assert_eq!(row.entries[0].actor_id, 3);
+        remove_entrant(&mut row, 5);
+        assert_eq!(row.count, 1);
+    }
+
+    #[test]
+    fn the_event_values_are_the_loadouts_first_hand_items() {
+        let mut anna = member("Anna", Profession::Combatant, [0; 6]);
+        anna.loadouts[2].hands[0] = exa_formats::characters::ItemRef::new(0x77, 1);
+        let (values, kinds) = event_values(&anna, &|item| item * 2);
+        assert_eq!(values, [0, 0, 0x77, 0, 0, 0]);
+        assert_eq!(kinds[2], 0xee);
     }
 
     #[test]
