@@ -841,7 +841,10 @@ fn request_card(
             &mut devices,
             || false,
         );
-        debug!("item card: {:#x}'s use runs before its card: {used}", entry.id);
+        debug!(
+            "item card: {:#x}'s use runs before its card: {used}",
+            entry.id
+        );
     }
     if delayed {
         // The card is built by the timer system a hundred milliseconds per
@@ -2174,7 +2177,9 @@ pub fn entry_under(screens: &GameScreens, icons: Option<&PanelIcons>, at: IVec2)
                 .contains(at.x, at.y)
                 .then(|| (*panel, Cell::new(at.x - client.left, at.y - client.top)))
         })
-        .and_then(|(panel, local)| container(screens, panel).and_then(|c| entry_at(c, icons, local)))
+        .and_then(|(panel, local)| {
+            container(screens, panel).and_then(|c| entry_at(c, icons, local))
+        })
         .is_some()
 }
 
@@ -2346,7 +2351,12 @@ mod tests {
             .resource_mut::<ButtonInput<MouseButton>>()
             .press(MouseButton::Right);
         app.update();
-        let shown = app.world().resource::<CardView>().shown.as_ref().map(|c| (c.item, c.flags));
+        let shown = app
+            .world()
+            .resource::<CardView>()
+            .shown
+            .as_ref()
+            .map(|c| (c.item, c.flags));
         assert_eq!(shown, Some((crystal::B, 0x30 << 16)));
     }
 
@@ -2381,7 +2391,10 @@ mod tests {
             .insert_resource(catalogue)
             .add_systems(Update, request_card);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
-        let (slot, _) = app.world_mut().resource_mut::<PanelIcons>().reserve(seal, 0, None);
+        let (slot, _) = app
+            .world_mut()
+            .resource_mut::<PanelIcons>()
+            .reserve(seal, 0, None);
         let point = {
             let mut screens = app.world_mut().resource_mut::<GameScreens>();
             screens.task.screen = (1280, 720);
@@ -2393,16 +2406,30 @@ mod tests {
                 .find(|(panel, _)| *panel == crate::panel_live::Panel::PlayerPack)
                 .unwrap()
                 .1;
-            Vec2::new((client.left + cell.x + 20) as f32, (client.top + cell.y + 20) as f32)
+            Vec2::new(
+                (client.left + cell.x + 20) as f32,
+                (client.top + cell.y + 20) as f32,
+            )
         };
         app.insert_resource(ScriptedPointer(Some(point)));
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
             .press(MouseButton::Right);
         app.update();
-        assert!(app.world().resource::<crate::player_controls::DeviceClock>().once_used);
+        assert!(
+            app.world()
+                .resource::<crate::player_controls::DeviceClock>()
+                .once_used
+        );
         // The card itself waits on the delay timer.
-        assert!(app.world().resource::<GameScreens>().card.timer.due.is_some());
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .card
+                .timer
+                .due
+                .is_some()
+        );
     }
 
     #[test]
@@ -2639,8 +2666,28 @@ mod tests {
         let catalogue = ItemCatalogue::default();
         let phrases = PhraseBook::default();
         let mut roll = 1;
-        assert!(build_for(&catalogue, &phrases, &mut roll, 7, 0, CardContext::default()).is_none());
-        assert!(build_for(&catalogue, &phrases, &mut roll, 0, 0, CardContext::default()).is_none());
+        assert!(
+            build_for(
+                &catalogue,
+                &phrases,
+                &mut roll,
+                7,
+                0,
+                CardContext::default()
+            )
+            .is_none()
+        );
+        assert!(
+            build_for(
+                &catalogue,
+                &phrases,
+                &mut roll,
+                0,
+                0,
+                CardContext::default()
+            )
+            .is_none()
+        );
         assert_eq!(roll, 1);
     }
 

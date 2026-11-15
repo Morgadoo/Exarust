@@ -849,7 +849,10 @@ mod tests {
     fn suede_compiles_its_own_family_and_only_gemstone_takes_the_alpha_target() {
         let suede = programs(9);
         let names: Vec<&str> = suede.iter().map(|p| p.name.as_str()).collect();
-        assert!(names.contains(&"suede_d") && names.contains(&"suede_n"), "{names:?}");
+        assert!(
+            names.contains(&"suede_d") && names.contains(&"suede_n"),
+            "{names:?}"
+        );
         assert!(!names.iter().any(|n| n.starts_with("leather")), "{names:?}");
         assert!(programs(7).iter().any(|p| p.name == "leather_d"));
         assert!(alpha_target(23));

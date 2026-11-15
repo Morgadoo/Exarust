@@ -739,11 +739,16 @@ pub(crate) fn release(
     };
     // A move inside a pack: the dragged entry's place before the drop, for
     // the record's write-back below.
-    let moved_from = (destination == source && matches!(source, Panel::PlayerPack | Panel::BodyPack(_)))
-        .then(|| container(&screens, source))
-        .flatten()
-        .and_then(|c| c.entries.iter().find(|e| e.drag & 1 != 0 && e.icon == drag.icon))
-        .map(|e| e.cell);
+    let moved_from = (destination == source
+        && matches!(source, Panel::PlayerPack | Panel::BodyPack(_)))
+    .then(|| container(&screens, source))
+    .flatten()
+    .and_then(|c| {
+        c.entries
+            .iter()
+            .find(|e| e.drag & 1 != 0 && e.icon == drag.icon)
+    })
+    .map(|e| e.cell);
     let dropped = drop_on_panel(
         &mut screens,
         &icons,
@@ -771,7 +776,10 @@ pub(crate) fn release(
             && let Ok((_, mut p)) = bodies.get_mut(owner)
             && body_inventory::reposition(&mut p, drag.id, drag.flags, from, to, unit, vscale)
         {
-            debug!("item panel: {:#x} moves inside {source:?} to ({}, {})", drag.id, to.x, to.y);
+            debug!(
+                "item panel: {:#x} moves inside {source:?} to ({}, {})",
+                drag.id, to.x, to.y
+            );
         }
     }
     if let Some((destination, id, flags, cell)) = dropped {
@@ -1400,8 +1408,18 @@ mod tests {
     fn a_move_inside_the_pack_is_written_to_the_carried_list() {
         use exa_items::possession::Carried;
         let carried = vec![
-            Carried { id: 10, flags: 0, x: 0, y: 0 },
-            Carried { id: 11, flags: 0, x: 400, y: 400 },
+            Carried {
+                id: 10,
+                flags: 0,
+                x: 0,
+                y: 0,
+            },
+            Carried {
+                id: 11,
+                flags: 0,
+                x: 400,
+                y: 400,
+            },
         ];
         let (mut app, player) = live_app(carried);
         let client = pack_client(&app);
@@ -1427,19 +1445,19 @@ mod tests {
         // Binding the pack again keeps the place.
         let mut again = Container::form(unit);
         again.client = app.world().resource::<GameScreens>().pack.client;
-        body_inventory::bind_pack(
-            &mut again,
-            possessions,
-            &mut PanelIcons::default(),
-            None,
-        );
+        body_inventory::bind_pack(&mut again, possessions, &mut PanelIcons::default(), None);
         assert_eq!(again.entries.last().unwrap().cell, moved.cell);
     }
 
     #[test]
     fn a_press_on_a_transparent_corner_of_a_rendered_icon_starts_no_drag() {
         use exa_items::possession::Carried;
-        let (mut app, _) = live_app(vec![Carried { id: 10, flags: 0, x: 0, y: 0 }]);
+        let (mut app, _) = live_app(vec![Carried {
+            id: 10,
+            flags: 0,
+            x: 0,
+            y: 0,
+        }]);
         // Render the entry's icon: opaque only in a block at its middle.
         {
             let mut icons = app.world_mut().resource_mut::<PanelIcons>();
@@ -1544,7 +1562,12 @@ mod tests {
         let drain = app.world().resource::<crate::crystal_drain::CrystalDrain>();
         assert_eq!(drain.drain.sources, vec![Source::Container(id)]);
         assert_eq!(drain.containers, vec![(id, object)]);
-        let panel = &app.world().resource::<GameScreens>().popup(id).unwrap().panel;
+        let panel = &app
+            .world()
+            .resource::<GameScreens>()
+            .popup(id)
+            .unwrap()
+            .panel;
         assert!(panel.entries.iter().any(|e| e.id == CRYSTAL));
         // The record the container keeps loses two charge a game second.
         app.world_mut()
@@ -1563,7 +1586,10 @@ mod tests {
             .resource_mut::<Time<Virtual>>()
             .advance_by(std::time::Duration::from_millis(1500));
         app.update();
-        let sections = app.world().get::<exa_world::ObjectSections>(object).unwrap();
+        let sections = app
+            .world()
+            .get::<exa_world::ObjectSections>(object)
+            .unwrap();
         let left = sections.container.as_ref().unwrap().children[0].flags;
         assert_eq!(left, 0x2e << 16);
         assert_eq!(
@@ -1605,39 +1631,51 @@ mod tests {
             return;
         };
         let (mut app, player) = live_app(vec![
-            Carried { id: crystal::B, flags: 0x20 << 16, x: 0, y: 0 },
-            Carried { id: crystal::AR, flags: 0x40 << 16, x: 400, y: 0 },
+            Carried {
+                id: crystal::B,
+                flags: 0x20 << 16,
+                x: 0,
+                y: 0,
+            },
+            Carried {
+                id: crystal::AR,
+                flags: 0x40 << 16,
+                x: 400,
+                y: 0,
+            },
         ]);
         app.insert_resource(objects);
         let sockets = crate::socket_drag::live_sockets(
-            app.world().resource::<exa_assets::live_objects::LiveObjects>(),
+            app.world()
+                .resource::<exa_assets::live_objects::LiveObjects>(),
             weapon,
         );
         let row = GuiRect::new(1000, 600, 80, 22);
-        app.world_mut().resource_mut::<crate::item_card::CardView>().shown =
-            Some(crate::item_card::ShownCard {
-                item: weapon,
-                flags: 0,
-                name: String::new(),
-                built: exa_items::card::BuiltCard {
-                    page: exa_items::card::CardPage::Plain,
-                    value: 0,
-                    title_colour: None,
-                    content: None,
-                    description: String::new(),
-                },
-                icon: 0,
-                at: (900, 300),
-                size: (300, 400),
-                pointer: (900, 300),
-                fade: Default::default(),
-                form_flags: 0,
-                world: false,
-                sockets,
-                socket_row: Some((row, 4)),
-                sides: [[0; 3]; 2],
-                flip: Default::default(),
-            });
+        app.world_mut()
+            .resource_mut::<crate::item_card::CardView>()
+            .shown = Some(crate::item_card::ShownCard {
+            item: weapon,
+            flags: 0,
+            name: String::new(),
+            built: exa_items::card::BuiltCard {
+                page: exa_items::card::CardPage::Plain,
+                value: 0,
+                title_colour: None,
+                content: None,
+                description: String::new(),
+            },
+            icon: 0,
+            at: (900, 300),
+            size: (300, 400),
+            pointer: (900, 300),
+            fade: Default::default(),
+            form_flags: 0,
+            world: false,
+            sockets,
+            socket_row: Some((row, 4)),
+            sides: [[0; 3]; 2],
+            flip: Default::default(),
+        });
         let client = pack_client(&app);
         let at = |app: &App, id: u32| {
             let cell = app
@@ -1664,7 +1702,12 @@ mod tests {
         // Crystal B came back: into the open pack, placed off the centre,
         // and onto the carried list at the same cell.
         let screens = app.world().resource::<GameScreens>();
-        let back = *screens.pack.entries.iter().find(|e| e.id == crystal::B).unwrap();
+        let back = *screens
+            .pack
+            .entries
+            .iter()
+            .find(|e| e.id == crystal::B)
+            .unwrap();
         let centre = crate::item_container::centre_cell(
             screens.pack.client.0 as u32,
             screens.pack.client.1 as u32,

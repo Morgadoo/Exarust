@@ -436,7 +436,13 @@ impl ShopPanels {
         let bought = std::mem::take(&mut self.buy.entries);
         for entry in bought {
             let flags = entry.flags & !SHOP_ITEM_FLAGS;
-            add_to(&mut self.pack, icons.as_deref_mut(), entry.id, entry.icon, flags);
+            add_to(
+                &mut self.pack,
+                icons.as_deref_mut(),
+                entry.id,
+                entry.icon,
+                flags,
+            );
         }
         self.settle_sold(icons);
     }
@@ -461,7 +467,13 @@ impl ShopPanels {
         let sold = std::mem::take(&mut self.sell.entries);
         for entry in sold {
             let flags = entry.flags | SHOP_ITEM_FLAGS;
-            add_to(&mut self.stock, icons.as_deref_mut(), entry.id, entry.icon, flags);
+            add_to(
+                &mut self.stock,
+                icons.as_deref_mut(),
+                entry.id,
+                entry.icon,
+                flags,
+            );
         }
     }
 

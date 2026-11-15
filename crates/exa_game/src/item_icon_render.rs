@@ -1007,17 +1007,18 @@ mod tests {
         let id = 0x0F_FFF1;
         let catalogue = app.world().resource::<ItemCatalogue>().clone();
         assert!(catalogue.model(id).is_none());
-        let (handle, _) = app
-            .world_mut()
-            .resource_mut::<PanelIcons>()
-            .reserve(id, 0, Some(&catalogue));
+        let (handle, _) =
+            app.world_mut()
+                .resource_mut::<PanelIcons>()
+                .reserve(id, 0, Some(&catalogue));
         assert_ne!(handle, 0);
         app.update();
         assert!(app.world().resource::<PanelIcons>().pending.is_empty());
         assert!(
             crate::engine_log::overlay_lines()
                 .iter()
-                .any(|line| line.contains("Item Error") && line.contains("Unable to resolve item: 000FFFF1")),
+                .any(|line| line.contains("Item Error")
+                    && line.contains("Unable to resolve item: 000FFFF1")),
             "{:?}",
             crate::engine_log::overlay_lines()
         );

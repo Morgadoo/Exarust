@@ -1354,8 +1354,7 @@ fn equip_dropped(
             if let Some(at) = crate::item_container::hold_dragged(&mut screens.pack.entries) {
                 debug!("doll drop: pack entry {at} ({:#x}) is held", drop.id);
             }
-        } else if let Some(container) =
-            crate::panel_live::container_mut(&mut screens, drop.source)
+        } else if let Some(container) = crate::panel_live::container_mut(&mut screens, drop.source)
         {
             container.finish_drag(DOLL_PANEL, false, true, 0, drop.bulk);
         }
@@ -1472,7 +1471,13 @@ fn equip_dropped(
                     // centre add and place pass, the record at that cell.
                     let cell = if plan.give_to_panel {
                         icons
-                            .add_placed(&mut screens.pack, drop.id, drop.icon, flags | HELD, drop.bulk)
+                            .add_placed(
+                                &mut screens.pack,
+                                drop.id,
+                                drop.icon,
+                                flags | HELD,
+                                drop.bulk,
+                            )
                             .unwrap_or_else(|| centre(&screens))
                     } else {
                         centre(&screens)
@@ -2163,7 +2168,11 @@ mod tests {
         let mut shields = exa_formats::objdb::items(&db)
             .into_iter()
             .map(|item| item.id)
-            .filter(|&id| catalogue.kind(id).is_some_and(|k| k.shield && k.weapon.is_none()));
+            .filter(|&id| {
+                catalogue
+                    .kind(id)
+                    .is_some_and(|k| k.shield && k.weapon.is_none())
+            });
         let (Some(old), Some(new)) = (shields.next(), shields.next()) else {
             return;
         };
@@ -2207,11 +2216,21 @@ mod tests {
             screens.task.screen = (1280, 720);
             screens.open_inventory(true, true, 4);
             screens.inventory_body = Some(player);
-            body_inventory::bind_pack(&mut screens.pack, &possessions, &mut icons, Some(&catalogue));
+            body_inventory::bind_pack(
+                &mut screens.pack,
+                &possessions,
+                &mut icons,
+                Some(&catalogue),
+            );
         });
         let (cell, icon) = {
             let mut screens = app.world_mut().resource_mut::<GameScreens>();
-            let entry = screens.pack.entries.iter_mut().find(|e| e.id == new).unwrap();
+            let entry = screens
+                .pack
+                .entries
+                .iter_mut()
+                .find(|e| e.id == new)
+                .unwrap();
             entry.drag = 1;
             (entry.cell, entry.icon)
         };

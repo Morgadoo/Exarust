@@ -1887,7 +1887,9 @@ fn hub_clicks(
                             }
                         }
                         HubWindowKind::Shop => {
-                            if let Some(trade) = windows.shop_click(local, &mut career, shop.icons.as_deref_mut()) {
+                            if let Some(trade) =
+                                windows.shop_click(local, &mut career, shop.icons.as_deref_mut())
+                            {
                                 let _ = shop.arena_trade(&trade, &mut career);
                             }
                         }
