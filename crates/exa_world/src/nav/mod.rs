@@ -770,7 +770,11 @@ pub struct PathfinderMetrics {
     pub base_calls: u32,
 }
 
-/// Stores the pathfinder's cell metrics and seed.
+/// Stores the pathfinder's cell metrics and seed. The shipped attach
+/// copies the seed from a byte nothing in the game writes, so it is always
+/// 0 and the build never allocates the two extra per-cell arrays the seed
+/// guards; the live build ([`view`]) uses the cell and voxel constants
+/// and a fresh merge list, and keeps no such record.
 pub fn pathfinder_metrics(seed: u8) -> PathfinderMetrics {
     PathfinderMetrics {
         cell: 30.0,
