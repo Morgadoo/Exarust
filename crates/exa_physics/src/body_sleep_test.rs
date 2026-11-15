@@ -396,6 +396,53 @@ fn a_frozen_body_holds_still_and_counts_down_by_one() {
     assert!(body.parts[0].positions[0].y < held[0].y);
 }
 
+/// The original's freeze with no matrix: a moving, sleeping body keeps its
+/// place but loses its motion (every particle set the current one), wakes,
+/// is frozen, and its countdown is set to 2 (lowered, not raised): its
+/// first frozen step takes it to 1 and the post-step lets it sleep there.
+/// With a matrix it is first placed there.
+#[test]
+fn freezing_a_body_holds_it_where_it_is_with_countdown_two() {
+    let mut body = ball(Vec3::new(0.0, 5.0, 0.0));
+    body.set_velocity(Vec3::X);
+    body.wake_to(WAKE_COUNT);
+    body.sleep = Sleep::Deep;
+    let here = body.parts[0].positions;
+    body.parts[0].placed_offset = [Vec3::X; 4];
+    body.freeze_at(None);
+    assert_eq!(body.parts[0].placed_offset, [Vec3::ZERO; 4]);
+    assert!(body.frozen());
+    assert!(body.kinematic());
+    assert!(!body.asleep());
+    assert_eq!(body.countdown(), FROZEN_COUNTDOWN);
+    let p = &body.parts[0];
+    assert_eq!(p.positions, here);
+    assert_eq!(p.previous, here);
+    assert_eq!(p.two_ticks_ago, here);
+    assert_eq!(p.start, here);
+    assert_eq!(p.shown.0, p.shown.1);
+    body.tick(NONE);
+    assert!(body.countdown() <= 1, "countdown {}", body.countdown());
+    for (now, was) in body.parts[0].positions.iter().zip(here) {
+        assert!(now.distance(was) < 1e-6);
+    }
+    // At a matrix: placed there first.
+    let mut body = ball(Vec3::new(0.0, 5.0, 0.0));
+    let at = Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0));
+    body.freeze_at(Some(&[at]));
+    assert!(
+        body.parts[0]
+            .transform()
+            .translation
+            .distance(at.translation)
+            < 1e-5
+    );
+    assert_eq!(body.parts[0].previous, body.parts[0].positions);
+    // The thaw clears both bits.
+    body.freeze(false);
+    assert!(!body.frozen() && !body.kinematic());
+}
+
 /// A body takes its place in the sector's list when it is first inserted,
 /// keeps it when inserted again, and the solver walks the list from its
 /// end: the last body to join first.
