@@ -1457,6 +1457,8 @@ Round 182 combat2: the weapon stat record is fetched up the body chain, the hold
 
 the inventory now refuses items the character race cannot use (golem-only weapons, apparel on races without the look bit), as the original drag-over test does; the trade preview race lookup was wrong for non-humans.
 
+the character record rules are wired on the live paths: the skill-ready alert reads the player record, the inventory bind charges the worn bulk, a hand item dropped outside the pack takes the last held copy and the surplus hand references, a unique sold arena item leaves the members' outfits, NPC pick-ups land at the given-back cell, and level-placed characters take their record's health pools. 14 ledger rows closed.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1969,6 +1971,8 @@ decals and blended surfaces now draw with the original scene pass depth bias (a 
 the last three frame writers found by the round 187 sweep are gone: bodies without a body tick now tick their clips once per simulation step and the frame only places their parts (menu figures keep a frame clock); the player practice lesson from a struck character is taken in the step, as the original damage routine raises it on the simulation thread; the arena-fell debug drop is posted to the step. The bridge write log ignores equal values and names what an applied value undid. Lockstep traces now differ from main from tick 1 because standing bodies clips tick per step before they turn physical (deterministic, 4 runs identical). Left: the Control Mind end frame writes (Duellist, PlayerBody).
 
 Control Mind's swap now runs on the simulation step and its hand-back is posted from the frame's black to the next step, as the original splits them across its threads; in free mode the frame no longer undoes the duellist and player body (a free-bridge test fails on the old code). The torrent's draws were checked against the original: the two process-wide generators, which the step streams stand for. Roadmap tasks B0.3 and B0.4.
+
+Spirit Form's switch to the spirit and its way home now run on the simulation step, as Control Mind's do; a free frame now runs its step events after its last packet, so no event's bridged writes, spawns or despawns are settled away; script contact writes reach the brain through the step. Tests fail on the old code. Roadmap task B0.6.
 
 ### Phase 7 — Game modes and content
 
