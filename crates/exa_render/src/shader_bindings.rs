@@ -501,28 +501,29 @@ mod tests {
         assert_eq!(shadow_tap(32), None);
     }
 
-    /// `shading.wesl` holds the same pairs (each tap's first two floats),
-    /// at the same precision.
+    /// `shading.wesl` holds the same taps (all three floats of each), at
+    /// the same precision.
     #[test]
     fn the_surface_shaders_carry_every_tap() {
         let source = include_str!("shading.wesl");
         let start = source.find("const SHADOW_TAPS").expect("the WESL table");
         let body = &source[start..source[start..].find(");").unwrap() + start];
-        let pairs: Vec<[f32; 2]> = body
+        let taps: Vec<Vec<f32>> = body
             .lines()
-            .filter_map(|l| l.trim().strip_prefix("vec2("))
+            .filter_map(|l| l.trim().strip_prefix("vec3("))
             .map(|l| {
-                let mut v = l
-                    .trim_end_matches("),")
+                l.trim_end_matches("),")
                     .split(", ")
-                    .map(|x| x.parse::<f32>().unwrap());
-                [v.next().unwrap(), v.next().unwrap()]
+                    .map(|x| x.parse::<f32>().unwrap())
+                    .collect()
             })
             .collect();
-        assert_eq!(pairs.len(), SHADOW_TAPS.len());
-        for (pair, tap) in pairs.iter().zip(SHADOW_TAPS) {
-            assert_eq!(pair[0].to_bits(), tap[0].to_bits());
-            assert_eq!(pair[1].to_bits(), tap[1].to_bits());
+        assert_eq!(taps.len(), SHADOW_TAPS.len());
+        for (wesl, tap) in taps.iter().zip(SHADOW_TAPS) {
+            assert_eq!(wesl.len(), 3);
+            for (a, b) in wesl.iter().zip(tap) {
+                assert_eq!(a.to_bits(), b.to_bits());
+            }
         }
     }
 

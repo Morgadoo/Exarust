@@ -671,18 +671,20 @@ impl MaterialUniforms {
 /// The texture a record's refraction draws the screen copy from (unit 7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefractionMap {
-    /// The built-in background refraction, for a nearly opaque record.
+    /// The built-in background refraction, for a glossiness up to 0.85.
     BkgRfr01,
-    /// The built-in background refraction, for an opacity above 0.85.
+    /// The built-in background refraction, for a glossiness above 0.85.
     BkgRfr02,
-    /// The scene's own refraction texture, low field.
+    /// The scene's low field: the post chain's quarter-size blurred bright
+    /// pass of the previous frame.
     SceneLow,
-    /// The scene's own refraction texture, high field.
+    /// The scene's high field: the post chain's half-size bright pass of the
+    /// previous frame.
     SceneHigh,
 }
 
-/// The scene's refraction pair: the texture the engine binds for a nearly
-/// opaque surface (`low`) and for a clearer one (`high`).
+/// The scene's refraction pair: the post chain's blurred texture (`low`)
+/// and its bright-pass texture (`high`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SceneRefraction {
     pub low: u32,
@@ -694,22 +696,24 @@ pub struct SceneRefraction {
 ///
 /// A record in the liquid mode (the material word's `0x300` bits equal
 /// `0x200`) binds a refraction background. When the scene asks for its own
-/// refraction (`scene_refraction`), it binds the scene texture's high field
-/// for an opacity above 0.85 and the low field otherwise, or nothing when the
-/// scene has no such texture; when the scene does not ask, it loads the
-/// built-in `BkgRfr02` above 0.85 and `BkgRfr01` otherwise. The opacity is
-/// widened to double before the compare, so a stored `0.85` (0.8500000238)
+/// refraction (`scene_refraction`, which the view's constructor sets for
+/// every view), it binds the scene texture's high field for a glossiness
+/// above 0.85 and the low field otherwise, or nothing when the scene has no
+/// such texture; when the scene does not ask, it loads the built-in
+/// `BkgRfr02` above 0.85 and `BkgRfr01` otherwise. The value compared is
+/// the drawing state's `MatSpc.w`, the record's glossiness (`0x3C`), not its
+/// opacity. It is widened to double before the compare, so a stored `0.85` (0.8500000238)
 /// is above the bound, and a NaN takes the low branch. Any other program with
 /// local reflections (the shader word's `0x400000`, scene bits included)
 /// binds the scene texture's low field when there is one.
 pub fn refraction_map(
     material_word: u32,
     shader_word: u32,
-    opacity: f32,
+    gloss: f32,
     scene_refraction: bool,
     scene: Option<SceneRefraction>,
 ) -> Option<RefractionMap> {
-    let clear = f64::from(opacity) > 0.85;
+    let clear = f64::from(gloss) > 0.85;
     if material_word & 0x300 == 0x200 {
         if scene_refraction {
             scene?;

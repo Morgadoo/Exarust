@@ -152,40 +152,41 @@ fn light_skin(s: Surface, sn: vec3<f32>, blur: f32, l: vec3<f32>, colour: vec3<f
 // The GI lookup takes the same taps. The pairs are the first two lanes of
 // the engine's 32-entry `SdwSmp` table (three floats a tap), at their exact
 // values; a frame reads as many as the shadow quality gives (`SdwSmps`,
-// `exa_render::shader_program::shadow_samples`).
-const SHADOW_TAPS = array<vec2<f32>, 32>(
-    vec2(0.27254149317741394, -0.5486504435539246),
-    vec2(-0.28799688816070557, 0.6185606122016907),
-    vec2(0.36168748140335083, 0.18059517443180084),
-    vec2(-0.5052395462989807, -0.23951339721679688),
-    vec2(-0.3027792274951935, -0.6664453148841858),
-    vec2(-0.8587824106216431, 0.47176772356033325),
-    vec2(0.3960069417953491, 0.7947491407394409),
-    vec2(0.7731252908706665, -0.3697291910648346),
-    vec2(0.7132217288017273, 0.5139874219894409),
-    vec2(0.6846739053726196, 0.08099449425935745),
-    vec2(-0.788621723651886, -0.6034836769104004),
-    vec2(-0.6179829239845276, 0.07486236840486526),
-    vec2(0.08094444125890732, -0.9677389860153198),
-    vec2(-0.02271728590130806, -0.16351211071014404),
-    vec2(0.2765638828277588, 0.4919317662715912),
-    vec2(-0.18876327574253082, 0.26903489232063293),
-    vec2(0.0855780765414238, -0.5979103446006775),
-    vec2(0.47590988874435425, 0.02471969649195671),
-    vec2(0.3221302926540375, -0.3652004599571228),
-    vec2(-0.33975303173065186, -0.3964686989784241),
-    vec2(-0.08811546117067337, 0.7870379686355591),
-    vec2(-0.30145859718322754, 0.8972524404525757),
-    vec2(-0.08669151365756989, -0.7477059960365295),
-    vec2(0.416592538356781, -0.16682052612304688),
-    vec2(0.18134261667728424, -0.029851531609892845),
-    vec2(0.7127111554145813, -0.1435227245092392),
-    vec2(-0.49292248487472534, 0.30522018671035767),
-    vec2(0.2458879053592682, -0.7415239214897156),
-    vec2(-0.014365081675350666, 0.6146896481513977),
-    vec2(-0.4767964482307434, -0.5696413516998291),
-    vec2(-0.6737311482429504, -0.7491509318351746),
-    vec2(-0.9734628796577454, -0.026627350598573685),
+// `exa_render::shader_program::shadow_samples`). The fast light loop
+// (`lightsfst`) offsets its cube lookups by all three lanes, unturned.
+const SHADOW_TAPS = array<vec3<f32>, 32>(
+    vec3(0.27254149317741394, -0.5486504435539246, 0.354879766702652),
+    vec3(-0.28799688816070557, 0.6185606122016907, 0.6539291143417358),
+    vec3(0.36168748140335083, 0.18059517443180084, -0.43674570322036743),
+    vec3(-0.5052395462989807, -0.23951339721679688, 0.7441217303276062),
+    vec3(-0.3027792274951935, -0.6664453148841858, 0.8759880065917969),
+    vec3(-0.8587824106216431, 0.47176772356033325, -0.9187391400337219),
+    vec3(0.3960069417953491, 0.7947491407394409, -0.7790533304214478),
+    vec3(0.7731252908706665, -0.3697291910648346, 0.2743443250656128),
+    vec3(0.7132217288017273, 0.5139874219894409, 0.028150634840130806),
+    vec3(0.6846739053726196, 0.08099449425935745, 0.05208289995789528),
+    vec3(-0.788621723651886, -0.6034836769104004, 0.30332672595977783),
+    vec3(-0.6179829239845276, 0.07486236840486526, 0.3462916612625122),
+    vec3(0.08094444125890732, -0.9677389860153198, -0.5368980765342712),
+    vec3(-0.02271728590130806, -0.16351211071014404, -0.5188438892364502),
+    vec3(0.2765638828277588, 0.4919317662715912, 0.3802246153354645),
+    vec3(-0.18876327574253082, 0.26903489232063293, 0.768364429473877),
+    vec3(0.0855780765414238, -0.5979103446006775, -0.5614590644836426),
+    vec3(0.47590988874435425, 0.02471969649195671, -0.19228462874889374),
+    vec3(0.3221302926540375, -0.3652004599571228, 0.5240502953529358),
+    vec3(-0.33975303173065186, -0.3964686989784241, -0.08744736015796661),
+    vec3(-0.08811546117067337, 0.7870379686355591, -0.9363352060317993),
+    vec3(-0.30145859718322754, 0.8972524404525757, 0.9131828546524048),
+    vec3(-0.08669151365756989, -0.7477059960365295, -0.691841185092926),
+    vec3(0.416592538356781, -0.16682052612304688, -0.49486756324768066),
+    vec3(0.18134261667728424, -0.029851531609892845, 0.80250084400177),
+    vec3(0.7127111554145813, -0.1435227245092392, 0.08433075249195099),
+    vec3(-0.49292248487472534, 0.30522018671035767, -0.775285542011261),
+    vec3(0.2458879053592682, -0.7415239214897156, 0.5359811186790466),
+    vec3(-0.014365081675350666, 0.6146896481513977, -0.6123464107513428),
+    vec3(-0.4767964482307434, -0.5696413516998291, -0.20842590928077698),
+    vec3(-0.6737311482429504, -0.7491509318351746, 0.03071601875126362),
+    vec3(-0.9734628796577454, -0.026627350598573685, 0.5582342743873596),
 );
 const SHADOW_DEPTH_SCALE: f32 = 0.995;
 // A node's shadow-bias level v (0–7, the mesh tag's low bits) scales a
@@ -249,7 +250,7 @@ fn tap(t: Taps, j: i32) -> vec2<f32> {
     if !t.disc {
         return vec2(0.0);
     }
-    let k = SHADOW_TAPS[j & 31];
+    let k = SHADOW_TAPS[j & 31].xy;
     return vec2(k.x * t.turn.y - k.y * t.turn.x, k.x * t.turn.x + k.y * t.turn.y);
 }
 
@@ -348,6 +349,72 @@ fn light_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, t: Taps, tag: u32, receiv
         shadow *= point_shadow(id, p, nrm, t, shadow_depth_scale(shadow_bias_level(tag)));
     }
     return shadow;
+}
+
+// The fast light loop's bias on a cube lookup (`lightsfst`): the depth
+// compared is lowered by a²·0.008, a = 1 − max(N·L, 0) (the vertex normal's
+// with a normal map).
+const FAST_SHADOW_BIAS: f32 = 0.008;
+
+// The fast loop's tap `j`: the table's three floats as they stand, unturned
+// and with no disc frame around the light direction; none without a disc.
+fn fast_tap(t: Taps, j: i32) -> vec3<f32> {
+    if !t.disc {
+        return vec3(0.0);
+    }
+    return SHADOW_TAPS[j & 31];
+}
+
+// The shadow of clustered light `id` in the original's fast light loop
+// (`lightsfst`: the grass and translucent programs, `Shd.FastLgt`): each
+// lookup is the tap's three floats × the filter radius minus the direction
+// to the light (no normal offset), against the distance lowered by
+// a²·0.008 (`a` from the caller); the cached cube of static casters times
+// Bevy's cube of skinned ones, as `light_shadow`.
+fn light_shadow_fast(id: u32, p: vec3<f32>, a: f32, t: Taps, tag: u32, receiver: bool) -> f32 {
+    if !receiver {
+        return 1.0;
+    }
+    let lt = &view_bindings::clustered_lights.data[id];
+    let l = (*lt).position_radius.xyz - p;
+    let d = max(length(l), 1e-4);
+    let ln = l / d;
+    let radius = (*lt).position_radius.w;
+    let level = shadow_bias_level(tag);
+    let bias = a * a * FAST_SHADOW_BIAS;
+    let rec = exa_lights[1u + light_id(id)];
+    let reach = bitcast<f32>(rec.w);
+    var shadow = 1.0;
+    if rec.z > 0u {
+        let reference = SHADOW_DEPTH_SCALE * d / (reach * receiver_scale(level)) - bias;
+        var lit = 0.0;
+        for (var j = t.first; j < t.first + t.count; j++) {
+            let dir = fast_tap(t, j) * radius - ln;
+            lit += textureSampleCompareLevel(exa_cubes, exa_cube_sampler, dir * FLIP_Z, i32(rec.z - 1u), reference);
+        }
+        shadow = lit / f32(t.count);
+    }
+    if ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
+        // Bevy's cube stores its own depth: the bias as a distance.
+        let dist = max(d * shadow_depth_scale(level) - bias * reach * receiver_scale(level), 0.0);
+        var lit = 0.0;
+        for (var j = t.first; j < t.first + t.count; j++) {
+            let dir = fast_tap(t, j) * radius - ln;
+            let q = normalize(dir) * dist;
+            let major = max(abs(q.x), max(abs(q.y), abs(q.z)));
+            let zw = -major * (*lt).light_custom_data.xy + (*lt).light_custom_data.zw;
+            lit += cube_compare(dir * FLIP_Z, id, zw.x / zw.y);
+        }
+        shadow *= lit / f32(t.count);
+    }
+    return shadow;
+}
+
+// The fast loop's taps for the sun: the same window, unturned.
+fn fast_taps(t: Taps) -> Taps {
+    var out = t;
+    out.turn = vec2(0.0, 1.0);
+    return out;
 }
 
 // The sun's shadow through the original's single map

@@ -278,6 +278,19 @@ pub mod flags2 {
     /// negated (built on the vertex tangent as it comes); and after the
     /// diffuse colour the red channel becomes 0.8·r + 1.5·r².
     pub const TRANSLUCENT: u32 = 1024;
+    /// The original's refraction (`Mat.Refract`, `{$refraction}`): a lit
+    /// record in the liquid mode (material word bits `0x300` = `0x200`),
+    /// drawn opaque, mixes a field of the previous frame read behind it,
+    /// shifted along the view-space normal by its strength
+    /// ([`super::ExaParams::opacity_falloff`]`.w`) and tinted by its
+    /// diffuse colour, into its diffuse by one less its opacity
+    /// ([`crate::refraction`]).
+    pub const REFRACTION: u32 = 2048;
+    /// The refraction reads the scene's high field (the previous frame's
+    /// half-size bright pass, for a glossiness above 0.85) in place of the
+    /// low field ([`crate::refraction::field_of`]). Only the binding reads
+    /// it; the shader does not.
+    pub const FRAME_HIGH: u32 = 4096;
 }
 
 /// The original's dirt modes 1 and 2, which only its PBR program
@@ -523,7 +536,9 @@ pub struct ExaParams {
     /// The opacity fall-off: alpha += 2^((x − N·V)·y)·z, with x = 1 and
     /// y < 0 when it fades toward the silhouette, x = 0 and y > 0 when
     /// toward the centre; a lit surface's emissive map is weighted by
-    /// N·V²·z + 1 − z (zero for none).
+    /// N·V²·z + 1 − z (zero for none). With [`flags2::REFRACTION`], w is
+    /// the refraction strength (the record's `0x58`, as the original packs
+    /// it into `OpcFll.w`).
     pub opacity_falloff: Vec4,
     /// The per-object GI pick ([`crate::gi::GiSlots`]): the block grid's
     /// low edge in world centimetres (xy) and the mode (z: 1 picks by the
@@ -650,12 +665,16 @@ pub struct ExaMaterial {
     #[texture(131, dimension = "cube_array", sample_type = "depth")]
     #[sampler(132, sampler_type = "comparison")]
     pub shadow_cubes: Handle<Image>,
-    /// The scene's low field (the previous frame's quarter-size blurred
-    /// bright pass) that a [`flags2::LOCAL_REFLECTION`] surface reads; the
-    /// original's `FrmBuf` on unit 7.
+    /// The original's `FrmBuf` on unit 7: the scene field of the previous
+    /// frame a surface reads. A [`flags2::LOCAL_REFLECTION`] surface and a
+    /// [`flags2::REFRACTION`] one with a glossiness up to 0.85 read the low
+    /// field (the quarter-size blurred bright pass,
+    /// [`crate::local_reflection::SceneLowField`]); a refraction above it
+    /// the high field (the half-size bright pass,
+    /// [`crate::refraction::SceneHighField`]).
     #[texture(133)]
     #[sampler(134)]
-    pub scene_low: Option<Handle<Image>>,
+    pub scene_field: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     /// The surface casts no shadows (opacity ≤ 0.8, or the record says so).
     pub no_shadows: bool,
@@ -700,7 +719,7 @@ impl Default for ExaMaterial {
             height_map: None,
             lights: Handle::default(),
             shadow_cubes: crate::cube_shadows::CUBE_POOL,
-            scene_low: None,
+            scene_field: None,
             alpha_mode: AlphaMode::default(),
             no_shadows: false,
             cut_shadow: false,
