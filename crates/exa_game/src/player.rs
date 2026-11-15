@@ -1286,6 +1286,7 @@ pub(crate) fn steer_player(
                 commands.entity(child).insert(crate::limp::GroundPlacement {
                     floor: to.y,
                     yaw: None,
+                    held: true,
                 });
                 if by != Vec3::ZERO {
                     standing += by;

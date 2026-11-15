@@ -1740,8 +1740,9 @@ stage and the lift servo read, is the two-step point of the root's own
 origin, as the original's character tick reads it; and its tree-wide take of sleep ticks (`Ragdoll::take_ticks`,
 holding the count at one) that the frozen step and a dormant living
 body use. `Ragdoll::set_disabled` sets the original's state bit 0x800 (an
-item on the cursor): the pair stage and the level detection skip the body
-and a grab on it breaks.
+item on the cursor, Spirit Form's spirit): the pair stage skips the body and
+a grab on it breaks; the level detection still meets it (its gate is the
+original's asleep, parked and kinematic mask, 0x105).
 
 The body kernel also keeps the original's class and state words
 (`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the

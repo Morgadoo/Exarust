@@ -180,6 +180,9 @@ pub struct LevelNode {
     /// The node's position (centimetres, the original's world units), which
     /// becomes the focus point when the object is the player.
     pub position: [f32; 3],
+    /// The node's rotation rows: with the position, the frame a story
+    /// respawn stands the player in when the object is the player.
+    pub rotation: [[f32; 3]; 3],
     /// For a placed volume object whose marker record exists with type byte
     /// `0x40`: the two words the record stores, in file order,
     /// `[entrance, previous level]` (`exa_formats::objdb::Volume::marker`).
@@ -209,6 +212,7 @@ impl LevelNode {
             class: 0,
             operative_kind: None,
             position: [0.0; 3],
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             marker: None,
         }
     }
@@ -465,6 +469,8 @@ struct LevelObjects {
     player_kind: Option<u32>,
     /// The player's node, once built.
     player: Option<u64>,
+    /// The player node's frame (position in centimetres, rotation rows).
+    player_frame: Option<([f32; 3], [[f32; 3]; 3])>,
 }
 
 /// The finished level object list.
@@ -677,6 +683,13 @@ impl ContentStream {
     /// The placed player's scene node, once the level's list built it.
     pub fn player(&self) -> Option<u64> {
         self.level.player
+    }
+
+    /// The placed player node's frame: its position (centimetres) and
+    /// rotation rows, as the original's player global holds the node whose
+    /// frame a story respawn copies.
+    pub fn player_frame(&self) -> Option<([f32; 3], [[f32; 3]; 3])> {
+        self.level.player_frame
     }
 
     pub fn is_terminated(&self) -> bool {
@@ -918,9 +931,11 @@ impl ContentStream {
     /// object whose kind is the arrival word's, or a volume object whose
     /// marker record matches the arrival word and the previous level: its
     /// position becomes the focus point the streamed characters are ordered
-    /// by. A later match replaces an earlier one, as the original's globals
-    /// are overwritten.
-    fn adopt(&mut self, object: &LevelNode) {
+    /// by, and its frame is kept ([`ContentStream::player_frame`]). A later
+    /// match replaces an earlier one, as the original's globals are
+    /// overwritten. The level pass runs it on each object it built; a check
+    /// over a level's objects may run it without building them.
+    pub fn adopt(&mut self, object: &LevelNode) {
         let by_kind = object.class == OBJECT_OPERATIVE
             && object.operative_kind.is_some()
             && self.level.player_kind == object.operative_kind;
@@ -931,6 +946,7 @@ impl ContentStream {
         let player = by_kind || by_marker;
         if player {
             self.level.player = Some(object.node);
+            self.level.player_frame = Some((object.position, object.rotation));
             self.focus = object.position;
         }
     }

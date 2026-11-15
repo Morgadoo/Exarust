@@ -2448,20 +2448,16 @@ fn load_story_slot(
         rotation: crate::flow::NO_ROTATION,
         position: Vec3::ZERO,
     });
-    let portal = respawn_pending.then(|| flow.portal_placement()).flatten();
     if respawn_pending {
         info!(
-            "save: the save holds a pending respawn: the player is placed at {} and settles {} ticks",
-            portal.map_or(
-                "the saved position (no portal known)".to_string(),
-                |p| format!("the portal ({:?} cm)", p.position)
-            ),
+            "save: the save holds a pending respawn: the level loads with the session-start word; \
+             a portal it names places the player 15 cm up and settles it {} ticks, else the saved position stays",
             exa_physics::body::PLACED_SETTLE
         );
     }
-    let mut resumed = flow.continue_story(level, portal.unwrap_or(at), viewport);
+    let mut resumed = flow.continue_story(level, at, viewport);
     if respawn_pending {
-        settle_after_placement(&mut resumed);
+        portal_after_placement(&mut resumed);
     }
     if levels.is_empty() {
         // The saves' screen already took the world down: the load does not
@@ -2472,7 +2468,7 @@ fn load_story_slot(
             }
         }
     }
-    if placement.is_none() && portal.is_none() {
+    if placement.is_none() {
         // A save without a placement (one Exarust wrote before it saved
         // the player) starts at the level's own start, which no exit
         // holds; the nudge goes with the placement it moves.
@@ -2502,19 +2498,29 @@ pub fn take_pending_respawn(session: &mut Session) -> bool {
     true
 }
 
-/// Gives the placed player the settling state after the placement step
-/// (16 ticks, `exa_physics::body::PLACED_SETTLE`), as the original's load
-/// does after it puts a pending respawn's player at the portal.
-pub fn settle_after_placement(steps: &mut Vec<crate::flow::Step>) {
-    if let Some(at) = steps
+/// Puts a pending respawn's portal placement after the load's placement
+/// step (or after its level load when it has none): once the level is in,
+/// a respawn portal the load names replaces the saved placement and gives
+/// the player 16 ticks of settling (`exa_physics::body::PLACED_SETTLE`),
+/// as the original's load does; without a portal the saved placement
+/// stays and nothing settles.
+pub fn portal_after_placement(steps: &mut Vec<crate::flow::Step>) {
+    let after = steps
         .iter()
         .position(|step| matches!(step, crate::flow::Step::PlacePlayer(_)))
-    {
-        steps.insert(
-            at + 1,
-            crate::flow::Step::SettlePlayer(exa_physics::body::PLACED_SETTLE),
-        );
-    }
+        .or_else(|| {
+            steps
+                .iter()
+                .position(|step| matches!(step, crate::flow::Step::LoadLevel { .. }))
+        });
+    let at = after.map_or(steps.len(), |at| at + 1);
+    steps.insert(
+        at,
+        crate::flow::Step::PlaceAtPortal(crate::level_change::PortalArrival {
+            without: None,
+            settle: exa_physics::body::PLACED_SETTLE,
+        }),
+    );
 }
 
 /// The session the last story load restored (its story position, journal,
@@ -3649,11 +3655,13 @@ mod tests {
     }
 
     /// A save written while a respawn was pending (transition word 2):
-    /// the load turns the word to 1 and the continue gives the placed
-    /// player 16 ticks of settling after its placement, at the respawn
-    /// portal (15 cm up) when one is known; any other save settles nothing.
+    /// the load turns the word to 1 and the continue places the player at
+    /// the saved position, then asks for the portal placement the loaded
+    /// level names (16 ticks of settling with it, none without); a portal
+    /// an earlier load found does not decide it. Any other save asks for
+    /// no portal and settles nothing.
     #[test]
-    fn a_pending_respawn_load_settles_the_player_at_the_portal() {
+    fn a_pending_respawn_load_asks_for_the_loaded_levels_portal() {
         for pending in [false, true] {
             let dir = folder(if pending {
                 "pending-respawn"
@@ -3721,20 +3729,29 @@ mod tests {
                 unreachable!()
             };
             let loaded = app.world().resource::<LoadedStory>();
+            assert!((at.position - Vec3::new(100.0, 20.0, 300.0)).length() < 1e-3);
+            assert!(
+                !steps
+                    .iter()
+                    .any(|step| matches!(step, crate::flow::Step::SettlePlayer(_)))
+            );
             if pending {
                 assert_eq!(
                     steps.get(place + 1),
-                    Some(&crate::flow::Step::SettlePlayer(16))
+                    Some(&crate::flow::Step::PlaceAtPortal(
+                        crate::level_change::PortalArrival {
+                            without: None,
+                            settle: 16,
+                        }
+                    ))
                 );
-                assert!((at.position - Vec3::new(10.0, 15.0, 20.0)).length() < 1e-4);
                 assert_eq!(loaded.0.transition_word(), 1);
             } else {
                 assert!(
                     !steps
                         .iter()
-                        .any(|step| matches!(step, crate::flow::Step::SettlePlayer(_)))
+                        .any(|step| matches!(step, crate::flow::Step::PlaceAtPortal(_)))
                 );
-                assert!((at.position - Vec3::new(100.0, 20.0, 300.0)).length() < 1e-3);
                 assert_eq!(loaded.0.transition_word(), 0);
             }
             let _ = std::fs::remove_dir_all(&dir);

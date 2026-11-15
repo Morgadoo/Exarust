@@ -115,7 +115,7 @@ pub mod locomotion;
 #[path = "body_pairs.rs"]
 pub mod pairs;
 use pairs::CellEntry;
-pub use pairs::{Pairing, Pairs, Touch};
+pub use pairs::{HeldBodies, Pairing, Pairs, Touch, hold_entities_out_of_pairs, hold_out_of_pairs};
 #[path = "body_drag.rs"]
 mod drag;
 #[path = "body_sphere_grid.rs"]
@@ -1839,8 +1839,9 @@ pub struct Ragdoll {
     /// thaw: the level detection skips the body (it still meets bodies).
     kinematic: bool,
     /// Disabled (the original's state bit 0x800): an item taken onto the
-    /// cursor, which the pair stage and the level detection skip and whose
-    /// grabs a struck body breaks ([`Ragdoll::set_disabled`]).
+    /// cursor or Spirit Form's spirit, which the pair stage skips (the
+    /// level detection does not) and whose grabs a struck body breaks
+    /// ([`Ragdoll::set_disabled`]).
     disabled: bool,
     /// Parked (the original's state bit 4, the body tick's mark on a
     /// dormant character nothing draws): out of the solver until the AI
@@ -4094,9 +4095,10 @@ impl Ragdoll {
     /// Disables or enables the body (the original's state bit 0x800). The
     /// original sets it, with the asleep bit and the state-4 bit, on an
     /// item taken onto the cursor (`state |= 0x805`), where the item hangs
-    /// in the zero-gravity environment: such a body is skipped by the
-    /// body-to-body and level stages, and a grab on it breaks (a struck
-    /// body that is disabled disables the link,
+    /// in the zero-gravity environment, and alone down Spirit Form's new
+    /// body: such a body is skipped by the body-to-body stage (the level
+    /// stage tests only the asleep, parked and kinematic bits), and a grab
+    /// on it breaks (a struck body that is disabled disables the link,
     /// [`Ragdoll::pull_grab`]). The item cursor's lift sets it
     /// ([`Ragdoll::hold_out`]) and its release clears it.
     pub fn set_disabled(&mut self, disabled: bool) {
@@ -5609,11 +5611,13 @@ impl Ragdoll {
     }
 
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
-        // A disabled body (an item on the cursor) keeps out of the level
-        // as it keeps out of the other bodies. A kinematic one (a frozen
-        // item) is left out as the original's level broad phase leaves out
-        // a body with its kinematic bit.
-        if self.disabled || self.kinematic {
+        // A kinematic body (a frozen item) is left out, as the original's
+        // level broad phase leaves out a body with its asleep, parked or
+        // kinematic bit (the step's mask 0x105; the solver steps no
+        // sleeping or parked body). A disabled body (Spirit Form's spirit,
+        // an item on the cursor) still meets the level: only the
+        // body-to-body broad phase tests the disabled bit.
+        if self.kinematic {
             self.level_impacts.clear();
             return;
         }
@@ -6455,9 +6459,9 @@ mod tests {
     }
 
     /// A disabled body is the original's state bit 0x800: set and cleared,
-    /// and its level detection leaves no impact and no contact behind.
+    /// and it still meets the level (only the body-to-body stage skips it).
     #[test]
-    fn a_disabled_body_is_flagged_and_skips_the_level() {
+    fn a_disabled_body_is_flagged_and_still_meets_the_level() {
         let mut body = two_parts(0.0);
         assert!(!body.disabled());
         body.set_disabled(true);
@@ -6484,9 +6488,6 @@ mod tests {
         }
         let floor = Floor(floor_quad(0.0, 4.0));
         body.parts[1].positions = body.parts[1].positions.map(|x| Vec3::new(x.x, 0.05, x.z));
-        body.detect(&floor);
-        assert!(body.parts[1].contacts.is_empty());
-        body.set_disabled(false);
         body.detect(&floor);
         assert!(!body.parts[1].contacts.is_empty());
         body.set_disabled(false);

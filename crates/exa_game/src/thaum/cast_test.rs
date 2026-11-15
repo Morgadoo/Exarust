@@ -2137,3 +2137,62 @@ fn the_bar_toggle_in_a_possessed_body_ends_the_control() {
     // The held body's own bar is not toggled.
     assert_eq!(app.world().get::<PowerCaster>(held).unwrap().bar_open, open);
 }
+
+/// The Long Door's teleport holds the body around its placement: the body
+/// moves, its world contacts go and the solver's kept pair with it is
+/// dropped.
+#[test]
+fn a_long_door_teleport_holds_the_body_out_of_its_pairs() {
+    let mut app = App::new();
+    app.add_message::<Otherwhere>()
+        .add_systems(Update, apply_otherwhere);
+    let (a, _) = crate::revive_pass::tests::touching_balls(app.world_mut());
+    app.world_mut().write_message(Otherwhere {
+        entity: a,
+        to: Vec3::new(500.0, 0.0, 0.0),
+    });
+    app.update();
+    let body = app.world().get::<Ragdoll>(a).unwrap();
+    assert!(body.parts[0].transform().translation.x > 4.0);
+    assert!(body.parts[0].contacts.is_empty());
+    assert_eq!(crate::revive_pass::tests::kept_pairs(app.world()), 0);
+}
+
+/// Vanish's come-back is the original's teleport to the body's own
+/// standing point: the body stays where it stands, is held out of its
+/// pairs (its world contacts go) and its held items are put back.
+#[test]
+fn a_vanish_comes_back_through_a_teleport_where_it_stands() {
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let caster = caster(&mut app, &[VANISH]);
+    app.world_mut().get_mut::<Ragdoll>(caster).unwrap().parts[0]
+        .contacts
+        .push(exa_physics::contact::LevelContact {
+            weights: [0.25; 4],
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            plane: 0.0,
+        });
+    cast(&mut app, caster);
+    // Pressed again: the hold ends as soon as the fades allow.
+    cast(&mut app, caster);
+    let mut came_back = None;
+    for tick in 1..200 {
+        app.insert_resource(BodyTicks(tick));
+        app.world_mut().run_schedule(FixedUpdate);
+        app.update();
+        if app
+            .world()
+            .entity(caster)
+            .contains::<exa_physics::grip::ReplaceHeld>()
+        {
+            came_back = Some(tick);
+            break;
+        }
+    }
+    assert!(came_back.is_some(), "the vanish never came back");
+    let body = app.world().get::<Ragdoll>(caster).unwrap();
+    assert!(body.parts[0].transform().translation.length() < 1e-5);
+    assert!(body.parts[0].contacts.is_empty());
+}
