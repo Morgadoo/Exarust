@@ -703,7 +703,10 @@ fn transfer_weights_are_solved_on_the_plane() {
     let (a, b, c) = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
     // The estimate is good to about 12 bits.
     let n = face_normal(a, b, c);
-    assert!((0..3).all(|k| (n[k] - [0.0, 0.0, 1.0][k]).abs() < 1e-3), "{n:?}");
+    assert!(
+        (0..3).all(|k| (n[k] - [0.0, 0.0, 1.0][k]).abs() < 1e-3),
+        "{n:?}"
+    );
     let w = plane_barycentric(n, [a, b, c], [0.75, 0.5, 0.0]);
     assert!(w.iter().any(|&v| v < 0.0), "{w:?}");
     assert!(close(w[0] + w[1] + w[2], 1.0));
