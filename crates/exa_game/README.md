@@ -314,7 +314,19 @@ so a recruit's follow survives a load. Each placement carries the live body
 pose tree (`level_save::live_pose_tree`), a living character with a brain its
 pose tree and motion state (action number and progress), an awake guardian
 its AI home; the load puts the motion (an attack becomes the defence stance)
-and the home back (`level_save::restore_saved_state`). Each load also fills
+and the home back (`level_save::restore_saved_state`). Running powers go
+with the player's placement (`power_save`): its persistent Sense Minds, Mask
+Mind, Shell and Strikes, Loyalty and Command Dead are written by each power's
+save record (the level section's character walk writes none, as the
+original's: a scene character's powers end with the save, though a placement
+that holds them is read and rebuilt), and the load rebuilds them on the new
+body, takes their reserve again and runs their activation; a
+loaded Loyalty or Command Dead finds its target by character id on its first
+tick (`mind::runtime::tick_minds`). Every level change first runs the save
+unit's GUI reset (`load_reset`: the death fade, every game screen, the
+crystal drain's sources and the item icon cache), and an adapter journey's
+end saves and refreshes the checkpoint (`SaveStep::SaveAndCheckpoint`).
+Each load also fills
 the save unit's node-hook lists (`save_level::track_scene_content`: door-side
 volumes, zones and markers, scripted devices).
 The save's writers have the pieces the original exports: the world
@@ -325,9 +337,20 @@ only when it holds a record) and the player's placement
 record in save mode, the record flush skipped while a respawn is pending;
 `Session::placement` writes it first after the header). A story load of a
 save written while a respawn was pending turns its transition word to 1,
-places the player at the respawn portal 15 cm up (when a portal is known)
-and settles it 16 ticks (`save_live::take_pending_respawn`,
-`settle_after_placement`). The arena's load
+loads the level with the session-start arrival word, so the level's
+reconstruction device names the player's object, and places the player at
+that respawn portal 15 cm up and settles it 16 ticks when the level has one
+(the saved placement stands otherwise; `save_live::take_pending_respawn`,
+`portal_after_placement`, `level_change::PortalArrival`). The story respawn
+loads `exanima05` the same way and stands the player over its device
+(`flow::Step::PlaceAtPortal`); the viewer records the device as
+`Flow::respawn_portal`. The story revive's pass (`revive_pass::hold_revived`)
+holds every living character's body and the bodies the alarm return held,
+drops the solver's kept pairs with them and releases them, as do the
+player's spawn snap (`limp::GroundPlacement::held`), a teleport (the Long
+Door's move and Vanish's come-back to where the body stands,
+`thaum::cast::apply_otherwhere`) and the cursor's lift (posted to the
+step); Spirit Form's body is built disabled (`limp::DisabledWhenBuilt`). The arena's load
 regenerates its lists (`arena_ids::regenerate_lists`: each employee's own
 list, emptied for class 4, and the manager's take their loadout items by
 the unique append, lose their special duplicates and are shelved with the
@@ -1745,7 +1768,10 @@ burdens, the held shield and its record's techniques (both the physical
 and the fighter copy; a new body keeps its spawn value), and the armour
 pass's worn rules run again (`equip::refresh_worn_specials`): the second
 wind, the item-effect list (an item still worn keeps its bytes), the golem
-suit, the mind ward, the focus charm and the golem core's red regeneration. A double click
+suit, the mind ward, the focus charm and the golem core's red regeneration. A held
+weapon that came loose (`exa_physics::grip::CameLoose`, from the grip stage,
+a collapse's drop among them) runs the holder's came-loose hook on its
+record (`equip::forget_loose_hands`, `Possessions::forget_loose`). A double click
 classifies a container's open, a card close and a use; a popup's inner
 panel and top are `open_container`'s, but no live container popup is drawn
 yet. The inventory screen still has no bound item list.

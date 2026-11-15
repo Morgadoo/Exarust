@@ -233,6 +233,7 @@ impl Plugin for GolemAlarmPlugin {
         exa_physics::sim_app::add_fixed_commands(app);
         app.init_resource::<AlarmVolumes>()
             .init_resource::<GolemAlarm>()
+            .init_resource::<crate::revive_pass::RevivedHolds>()
             .init_resource::<AlarmRoll>()
             // The zone check is the original's AI manager frame's, after its
             // rise (the simulation loop's pre-step hook): it runs before
@@ -699,6 +700,7 @@ pub fn return_from_alarm(
     mut guardians: ReturnGuardians,
     mut roots: ReturnRoots,
     mut fixed: ResMut<FixedCommands>,
+    mut holds: Option<ResMut<crate::revive_pass::RevivedHolds>>,
 ) {
     let Some(at) = queued
         .steps
@@ -707,6 +709,9 @@ pub fn return_from_alarm(
     else {
         return;
     };
+    // The bodies the return holds (each guardian sent home, then the
+    // player it puts outside), for the revive pass's pair drop and release.
+    let mut held: Vec<Entity> = Vec::new();
     queued.steps.remove(at);
     let Some((_, player_gt, ..)) = players.iter().next() else {
         return;
@@ -736,24 +741,36 @@ pub fn return_from_alarm(
         .and_then(|m| m.action_name(golem::WAKE_POSE as u32))
         .map(str::to_string);
     let send_home = |body: QueryBody| {
-        send_guardian_home(
+        let entity = Entity::from_bits(body.character);
+        let went = send_guardian_home(
             &mut guardians,
             &mut roots,
             &mut fixed,
-            Entity::from_bits(body.character),
+            entity,
             stand.as_deref(),
-        )
+        );
+        if went {
+            held.push(entity);
+        }
+        went
     };
     let roll = || {
         bank.as_deref_mut()
             .map_or(0.5, |bank| bank.rng().unit_f64())
     };
-    let Some(done) = golem::alarm_return(&alarm.armed, player_at, offered, send_home, nodes, roll)
-    else {
+    let done = golem::alarm_return(&alarm.armed, player_at, offered, send_home, nodes, roll);
+    let held_now =
+        |held: Vec<Entity>, holds: &mut Option<ResMut<crate::revive_pass::RevivedHolds>>| {
+            if let Some(holds) = holds.as_deref_mut() {
+                holds.0.extend(held);
+            }
+        };
+    let Some(done) = done else {
         info!("alarm return: no alarm armed");
         return;
     };
     let Some(returned) = done.player else {
+        held_now(held, &mut holds);
         info!(
             "alarm return around ({:.0}, {:.0}, {:.0}) cm: {} guardian(s) sent home, the player stays",
             player_at.x, player_at.y, player_at.z, done.sent_home
@@ -793,6 +810,8 @@ pub fn return_from_alarm(
         if let Some(mut player_body) = player_body {
             player_body.aim = post.angle;
         }
+        // The player is held after its reset, as the guardians are.
+        held.push(entity);
         info!(
             "alarm return: {} guardian(s) sent home; the player {entity:?} is put at ({:.0}, {:.0}, {:.0}) cm (post ({:.0}, {:.0}, {:.0})) facing {:.3} rad, condition {:#x}, motion {:#x}",
             done.sent_home,
@@ -807,6 +826,7 @@ pub fn return_from_alarm(
             returned.request
         );
     }
+    held_now(held, &mut holds);
     queued.steps.insert(
         at,
         crate::flow::Step::RequestAction(returned.request as u32),

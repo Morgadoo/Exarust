@@ -66,3 +66,24 @@ Characters a level places SHALL take their records' physique, body and apparel. 
 #### Scenario: Debug physiques
 - **WHEN** the character view is shot in a light run without `--physique`, with `--physique 0,1,-1` and with `--physique 1,1,1` (also dressed in a jacket, trousers and boots)
 - **THEN** the first matches the unmorphed body within run-to-run noise, the second stands taller and slighter, the third shorter and broader, and its garments follow its shape
+
+### Requirement: Transfer weights on the triangle's plane
+The barycentric weights of an element's nearest body point SHALL be solved as the original solves them: the point projected along the triangle's face normal (the edges' cross product scaled by the processor's reciprocal square root estimate) onto the plane through its first corner, two weights from the 2x2 solve the larger summed x or y extent picks (NaN picks the y-plus-z rows), and the third weight one less the other two, unclamped.
+
+#### Scenario: A point off the triangle
+- **WHEN** the weights of a point beyond a triangle's edge are solved
+- **THEN** one weight is negative and the three sum to one
+
+### Requirement: Diffusion weight at the same place
+In the transfer's diffusion, a set neighbour at the same place as the element SHALL weigh 1/0, as in the original with its floating-point exceptions masked, so the element's mean comes out NaN; every garment piece of the installed `Characters.rpk` SHALL still take finite morphs from both races' morph bodies.
+
+#### Scenario: Shipped garments
+- **WHEN** every garment piece is transferred from `humanmorph.rfc` and `ancientmorph.rfc` on its bone's base body part
+- **THEN** no position element of any piece has a non-finite offset
+
+### Requirement: Morph set on the first root
+The race's morph body SHALL be the set on the morph file's first root, as the original's race loader takes it; each shipped morph file SHALL carry its one set there, so the loader's fallbacks (a child carrying the set, the numbered target meshes) never run on shipped data.
+
+#### Scenario: Shipped morph files
+- **WHEN** `humanmorph.rfc` and `ancientmorph.rfc` are read
+- **THEN** the first node of each is a root carrying the file's only morph set

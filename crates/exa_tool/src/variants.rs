@@ -47,6 +47,7 @@ fn path_names(m: &Material) -> String {
         (flags::TWO_SIDED, "two-sided"),
         (flags::PACKED_SPECULAR, "packed"),
         (flags::HAIR, "hair"),
+        (flags::SUBSURFACE, "subsurface"),
         (flags::NO_SPECULAR, "no-specular"),
     ];
     for (bit, name) in named {
@@ -68,6 +69,13 @@ fn path_names(m: &Material) -> String {
     }
     if path.flags2 & flags2::TRANSLUCENT != 0 {
         out.push("translucent");
+    }
+    if path.flags2 & flags2::REFRACTION != 0 {
+        out.push(if path.flags2 & flags2::FRAME_HIGH != 0 {
+            "refraction-high"
+        } else {
+            "refraction-low"
+        });
     }
     let maps = path.maps;
     for (on, name) in [

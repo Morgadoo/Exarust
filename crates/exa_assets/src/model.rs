@@ -1416,6 +1416,26 @@ impl ModelLoader<'_> {
             mat.params.diffuse.w -= floor;
             mat.params.flags |= flags::OPACITY_FALLOFF;
         }
+        // The refraction strength rides in the fall-off's fourth lane, as
+        // the writer packs `OpcFll.w`.
+        if mat.params.flags2 & exa_render::material::flags2::REFRACTION != 0 {
+            // The writer stores it in hundredths (a 16-bit word) and the
+            // uniform fill reads it back.
+            mat.params.opacity_falloff.w =
+                crate::texture::hundredths_to_f32(crate::texture::f32_to_hundredths(m.refraction));
+        }
+        // The subsurface program: of the diffuse colour (never premultiplied
+        // here) the secondary colour's share, as stored, scatters, lit
+        // through the normal map's mip `0x78 + 1`; the rest is plain
+        // diffuse (the shader splits the two). It adds no emissive colour of
+        // its own.
+        if mat.params.flags & flags::SUBSURFACE != 0 {
+            let [r, g, b, w] = m.subsurface;
+            let diffuse = material_diffuse(m);
+            mat.params.diffuse = diffuse.extend(mat.params.diffuse.w);
+            mat.params.subsurface = Vec4::new(r, g, b, w + 1.0);
+            mat.params.emissive = Vec4::new(0.0, 0.0, 0.0, mat.params.emissive.w);
+        }
         mat.environment = self.environment_map();
         // A record's reflection layer is its own environment cube, bound in
         // place of the scene's (`Mat.TexRef`, the env-override slot).
@@ -1425,9 +1445,15 @@ impl ModelLoader<'_> {
             mat.environment = Some(cube);
         }
         // Dirt mode 4 (blood) needs a diffuse map and a program with dirt.
+        // The subsurface program's blood is the skin's, whatever the type.
+        let blood_program = if mat.params.flags & flags::SUBSURFACE != 0 {
+            Some(BloodProgram::Skin)
+        } else {
+            BloodProgram::of_type(m.kind)
+        };
         if m.extra & DIRT_MODE == DIRT_MODE_BLOOD
             && mat.diffuse_map.is_some()
-            && let Some(program) = BloodProgram::of_type(m.kind)
+            && let Some(program) = blood_program
         {
             let spatter = self.spatter();
             mat = mat.with_blood(program, spatter);
@@ -2897,7 +2923,9 @@ pub fn record_path(m: &Material) -> RecordPath {
     }
     // The lit programs' light loop: the translucent program always takes
     // the fast loop with a signed N·L; the PBR program takes it under
-    // `Shd.FastLgt`. (The hair and skin programs have their own.)
+    // `Shd.FastLgt`. (The hair and skin programs have their own.) A record
+    // with a secondary colour draws with the subsurface program, which
+    // reads any specular map as packed and has no older variant.
     if lit {
         match exa_render::shader_program::program_for_shader_word(shader_word) {
             exa_render::shader_program::SurfaceProgram::Translucent => {
@@ -2908,7 +2936,23 @@ pub fn record_path(m: &Material) -> RecordPath {
             {
                 second |= exa_render::material::flags2::FAST_LIGHT;
             }
+            exa_render::shader_program::SurfaceProgram::Subsurface => {
+                shading |= flags::SUBSURFACE | flags::PACKED_SPECULAR;
+            }
             _ => {}
+        }
+        // Refraction: a record in the liquid mode reads the scene field the
+        // material writer binds, the high one above a glossiness of 0.85
+        // (the record's own, as the writer compares it, whatever the
+        // specular bit; it is also what `MatSpc.w` carries).
+        let gloss = exa_render::material_state::builder_gloss(m);
+        if state_word & 0x300 == 0x200 {
+            second |= exa_render::material::flags2::REFRACTION;
+            if exa_render::refraction::field_of(state_word, shader_word, gloss)
+                == Some(exa_render::shader_uniforms::RefractionMap::SceneHigh)
+            {
+                second |= exa_render::material::flags2::FRAME_HIGH;
+            }
         }
     }
     RecordPath {
@@ -4702,6 +4746,108 @@ mod tests {
         assert_eq!(juniper & flags2::TRANSLUCENT, 0);
     }
 
+    /// A lit type-1 record in the liquid mode (`0x200`) refracts, reading
+    /// the high field above a glossiness of 0.85; a record with a secondary
+    /// colour draws the subsurface program, which is never the older one;
+    /// the subsurface mode (`0x300`) does not refract.
+    #[test]
+    fn the_record_path_picks_refraction_and_subsurface() {
+        use exa_render::material::flags2;
+        let glass = Material {
+            kind: 1,
+            flags: 0x207,
+            opacity: 0.2,
+            glossiness: 0.9,
+            ..default()
+        };
+        let path = record_path(&glass);
+        assert_eq!(path.flags2 & flags2::REFRACTION, flags2::REFRACTION);
+        assert_eq!(path.flags2 & flags2::FRAME_HIGH, flags2::FRAME_HIGH);
+        let dull = Material {
+            glossiness: 0.5,
+            ..glass.clone()
+        };
+        let path = record_path(&dull);
+        assert_eq!(path.flags2 & flags2::REFRACTION, flags2::REFRACTION);
+        assert_eq!(path.flags2 & flags2::FRAME_HIGH, 0);
+        // The writer compares the record's glossiness itself, with or
+        // without the specular bit.
+        let plain = Material {
+            flags: 0x203,
+            ..glass.clone()
+        };
+        assert_eq!(
+            record_path(&plain).flags2 & flags2::FRAME_HIGH,
+            flags2::FRAME_HIGH
+        );
+        let wax = Material {
+            kind: 0,
+            flags: 0x307,
+            opacity: 1.0,
+            subsurface: [1.0, 0.6, 0.3, 1.0],
+            ..default()
+        };
+        let path = record_path(&wax);
+        assert_eq!(path.flags2 & flags2::REFRACTION, 0);
+        assert_eq!(path.flags & flags::SUBSURFACE, flags::SUBSURFACE);
+        assert_eq!(path.flags & flags::PACKED_SPECULAR, flags::PACKED_SPECULAR);
+        // An unlit liquid record has no light to refract.
+        let unlit = Material {
+            flags: 0x208,
+            ..glass
+        };
+        assert_eq!(record_path(&unlit).flags2 & flags2::REFRACTION, 0);
+    }
+
+    /// The live material build (skipped without the game): the shipped gems
+    /// and coloured glass refract, with their strength in the fall-off's
+    /// fourth lane; the soap and the wax candles draw the subsurface program
+    /// with their secondary colour (`exa-tool shader --variants`).
+    #[test]
+    fn shipped_glass_refracts_and_wax_scatters() {
+        use exa_render::material::flags2;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let params = |loader: &mut ModelLoader, entry: &str, record: &str| {
+            let model = loader.model(PackKind::Objects, entry).unwrap();
+            let handle = model
+                .nodes
+                .iter()
+                .flat_map(|n| n.parts.iter().map(|p| p.1.clone()).zip(&n.part_materials))
+                .find(|(_, name)| name.eq_ignore_ascii_case(record))
+                .map(|(h, _)| h)
+                .unwrap_or_else(|| panic!("{entry} draws {record}"));
+            let m = loader.materials.get(&handle).unwrap();
+            (m.params, m.alpha_mode)
+        };
+        let (gem, mode) = params(&mut loader, "gem_ruby a1", "gemcutruby1");
+        assert_eq!(gem.flags2 & flags2::REFRACTION, flags2::REFRACTION);
+        assert!(gem.opacity_falloff.w > 0.0, "{gem:?}");
+        assert_eq!(mode, AlphaMode::Opaque);
+        let (soap, _) = params(&mut loader, "soap01", "soap01");
+        assert_eq!(soap.flags & flags::SUBSURFACE, flags::SUBSURFACE);
+        assert_eq!(soap.flags2 & flags2::REFRACTION, 0);
+        assert!(soap.subsurface.w >= 1.0, "{soap:?}");
+        assert!(soap.subsurface.truncate().length() > 0.0, "{soap:?}");
+        assert_eq!(soap.emissive.truncate(), Vec3::ZERO);
+        let (wax, _) = params(&mut loader, "candle02", "waxblue01");
+        assert_eq!(wax.flags & flags::SUBSURFACE, flags::SUBSURFACE);
+    }
+
     #[test]
     fn the_diffuse_colour_is_premultiplied_only_for_a_lit_one_source() {
         let mut m = Material {
@@ -5025,8 +5171,10 @@ mod tests {
 
     /// Which shipped materials show blood, and how (skipped without the
     /// game): the human skin as skin, the braies as cloth, a bleeding
-    /// race's skin as cloth and not its eyes, nothing on the ancient's
-    /// skin or a skeleton (which does not bleed).
+    /// race's skin (a record with a secondary colour, drawn with the
+    /// subsurface program, whose dirt mode 4 is the skin's) as skin and not
+    /// its eyes, nothing on the ancient's skin or a skeleton (which does not
+    /// bleed).
     #[test]
     fn shipped_blood_materials() {
         let Some(dir) = crate::locate_install(None) else {
@@ -5074,12 +5222,12 @@ mod tests {
             blood(&mut loader, "ogrebase.rfc"),
             [
                 ("ogreeyemouth".into(), None),
-                ("skinogre".into(), Some(BloodProgram::Cloth))
+                ("skinogre".into(), Some(BloodProgram::Skin))
             ]
         );
         assert_eq!(
             blood(&mut loader, "demona01base.rfc"),
-            [("sdemona01".into(), Some(BloodProgram::Cloth))]
+            [("sdemona01".into(), Some(BloodProgram::Skin))]
         );
         assert!(
             blood(&mut loader, "ancientbase.rfc")

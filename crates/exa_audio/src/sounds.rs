@@ -23,11 +23,14 @@ use bevy::prelude::*;
 use bevy::platform::collections::HashMap;
 use exa_assets::Game;
 use exa_combat::Fighter;
+use exa_combat::condition::Condition;
+use exa_combat::fighter::SecondWindFired;
 use exa_combat::sounds::{FoleyKind, HitSound, foley};
 use exa_combat::swing_voice::{SwingVoiceCue, fade_voice, swing_rustle};
 
 use crate::environment::voice_flags;
-use crate::{AudioEnvironment, SoundBank, SoundSet, VoiceHandle};
+use crate::loops::LoopSources;
+use crate::{AudioEnvironment, SoundBank, SoundSet};
 
 /// The swing voice's set (`SwingHA`), six variants.
 pub const SWING: SoundSet<'static> = SoundSet::new("swingha", 6);
@@ -95,6 +98,24 @@ pub fn foley_set(kind: FoleyKind) -> Option<SoundSet<'static>> {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct HealSound {
     pub position: Vec3,
+}
+
+/// A second wind that fired ([`SecondWindFired`]) asks for its heal sound
+/// at the fighter's place, as the original's second wind calls the heal
+/// sound at the character's position. A fighter already gone sounds
+/// nothing.
+pub(crate) fn second_wind_heals(
+    mut fired: MessageReader<SecondWindFired>,
+    places: Query<&GlobalTransform>,
+    mut heals: MessageWriter<HealSound>,
+) {
+    for wind in fired.read() {
+        if let Ok(at) = places.get(wind.fighter) {
+            heals.write(HealSound {
+                position: at.translation(),
+            });
+        }
+    }
 }
 
 /// Plays a heal request at the original's volume 0.1 and pitch 1.
@@ -188,12 +209,13 @@ pub(crate) fn named_sounds(
 }
 
 /// A fighter's swing voice as the mixer keeps it: the voice of its first
-/// held item (allocated at its first swing), the clothing rustle's handle
-/// and the foley clock (ms) the rustle waits on.
+/// held item (allocated at its first swing), its looping sources (the
+/// clothing rustle plays on their foley source) and the foley clock (ms)
+/// the rustle waits on.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HeldVoice {
     voice: Option<u32>,
-    rustle: VoiceHandle,
+    sources: LoopSources,
     foley_next_ms: u32,
 }
 
@@ -202,12 +224,15 @@ pub(crate) struct HeldVoice {
 /// clothing foley once the foley clock allows (a fighter without a foley
 /// set never rustles); an attack tick sets the voice's volume and pitch;
 /// a tick that is not an attack fades a playing voice and asks it to stop
-/// under 0.005. The voices of fighters that are gone are freed.
+/// under 0.005. A fighter's looping sources ([`LoopSources`]) are reserved
+/// at its first swing (again after a revive) and freed with its voice when
+/// it dies, as the original's part frees them in its death; the voices of
+/// fighters that are gone are freed too.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn swing_voices(
     game: Option<Res<Game>>,
     mut cues: MessageReader<SwingVoiceCue>,
-    fighters: Query<&Fighter>,
+    fighters: Query<(&Fighter, Option<&Condition>)>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
@@ -224,16 +249,21 @@ pub(crate) fn swing_voices(
                 pitch,
                 now_ms,
             } => {
-                let Ok(f) = fighters.get(fighter) else {
+                let Ok((f, condition)) = fighters.get(fighter) else {
                     continue;
                 };
+                if condition.is_some_and(|c| c.is_dead()) {
+                    continue;
+                }
                 let foley = foley(&f.armour, false, false, false);
                 let foley_set = foley_set(foley.kind);
                 let entry = held.entry(fighter).or_insert_with(|| HeldVoice {
                     voice: None,
-                    rustle: env.new_handle(),
+                    sources: LoopSources::default(),
                     foley_next_ms: if foley_set.is_some() { 0 } else { u32::MAX },
                 });
+                // The body's pair; the held items' loops play nowhere yet.
+                entry.sources.reserve(&mut env, 0);
                 if entry.voice.is_none() {
                     entry.voice = env.allocate();
                 }
@@ -268,7 +298,7 @@ pub(crate) fn swing_voices(
                     env.play_set_attached(
                         &mut bank,
                         id,
-                        entry.rustle,
+                        entry.sources.foley,
                         at,
                         rustle.gain,
                         rustle.pitch,
@@ -308,14 +338,17 @@ pub(crate) fn swing_voices(
         }
     }
     held.retain(|fighter, voice| {
-        let alive = fighters.contains(*fighter);
-        if !alive {
-            if let Some(id) = voice.voice {
+        let (present, dead) = match fighters.get(*fighter) {
+            Ok((_, condition)) => (true, condition.is_some_and(|c| c.is_dead())),
+            Err(_) => (false, false),
+        };
+        if !present || dead {
+            if let Some(id) = voice.voice.take() {
                 env.free_voice(&mut bank, id);
             }
-            env.free_handle(&mut bank, voice.rustle);
+            voice.sources.free(&mut env, &mut bank);
         }
-        alive
+        present
     });
 }
 

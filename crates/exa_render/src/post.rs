@@ -490,7 +490,9 @@ fn prepare_textures(
             )
         };
         let none = TextureUsages::empty();
-        let bright = target("exa_post_bright", 2, BRIGHT_FORMAT, none);
+        // The bright pass is also the scene's high field the next frame's
+        // sharp refractions read (copied out after the pass).
+        let bright = target("exa_post_bright", 2, BRIGHT_FORMAT, TextureUsages::COPY_SRC);
         let blurred_x = target("exa_post_blur_x", 4, BRIGHT_FORMAT, none);
         // The window's blurred texture is also the scene's low field the
         // next frame's local reflections read (copied out after the pass).
@@ -513,6 +515,7 @@ fn post_process(
         &DynamicUniformIndex<ExaPost>,
     )>,
     low_field: Option<Res<crate::local_reflection::SceneLowField>>,
+    high_field: Option<Res<crate::refraction::SceneHighField>>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     mut mismatch_logged: Local<bool>,
     pipelines: Option<Res<PostPipelines>>,
@@ -611,24 +614,37 @@ fn post_process(
     );
     // The post chain's last camera (the window's, or the off-screen
     // frame's) hands its blurred bright pass to the next frame's local
-    // reflections; an image target of the post chain is that frame.
-    if camera.target.is_some()
-        && let Some(field) = low_field
-        && let Some(image) = gpu_images.get(&field.image)
-    {
-        if image.texture.size() != textures.blurred.texture.size() {
+    // reflections and refractions (the low field), and its bright pass to
+    // the next frame's sharp refractions (the high field); an image target
+    // of the post chain is that frame.
+    if camera.target.is_none() {
+        return;
+    }
+    let fields = [
+        (low_field.map(|f| f.image.clone()), &textures.blurred, "low"),
+        (
+            high_field.map(|f| f.image.clone()),
+            &textures.bright,
+            "high",
+        ),
+    ];
+    for (field, source, name) in fields {
+        let Some(image) = field.as_ref().and_then(|f| gpu_images.get(f)) else {
+            continue;
+        };
+        if image.texture.size() != source.texture.size() {
             if !*mismatch_logged {
                 *mismatch_logged = true;
                 debug!(
-                    "local reflection: low field {:?} and the blurred pass {:?} differ; not copied",
+                    "scene field: the {name} field {:?} and its post pass {:?} differ; not copied",
                     image.texture.size(),
-                    textures.blurred.texture.size()
+                    source.texture.size()
                 );
             }
-            return;
+            continue;
         }
         ctx.command_encoder().copy_texture_to_texture(
-            textures.blurred.texture.as_image_copy(),
+            source.texture.as_image_copy(),
             image.texture.as_image_copy(),
             image.texture.size(),
         );

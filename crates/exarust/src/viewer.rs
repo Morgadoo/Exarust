@@ -203,6 +203,7 @@ fn setup(
                 mechanism_bodies(&options),
                 None,
                 Vec::new(),
+                None,
             ) {
                 // The camera is there from the start, behind the loading
                 // screen; it moves to the level's view when the load ends.
@@ -374,6 +375,7 @@ fn setup(
                 mechanism_bodies(&options),
                 None,
                 Vec::new(),
+                None,
             ) {
                 let start = PlayStart {
                     position: Vec3::ZERO,
@@ -493,7 +495,10 @@ fn apply_level_change(
     mut time: ResMut<Time<Virtual>>,
     hold: Option<Res<LevelChangeHold>>,
     options: Res<Options>,
-    saved: Option<Res<exa_world::SavedLevelSection>>,
+    (saved, portal): (
+        Option<Res<exa_world::SavedLevelSection>>,
+        Option<Res<exa_game::level_change::PortalArrival>>,
+    ),
     travelling: Option<Res<exa_game::follower_travel::TravellingFollowers>>,
     mut world: Option<ResMut<exa_game::world_characters::WorldCharacters>>,
     last: Option<Res<LastLevel>>,
@@ -535,8 +540,20 @@ fn apply_level_change(
                 .and_then(|b| exa_formats::roles::locale_id(b, &last.0))
         })
         .unwrap_or(exa_assets::content_stream::NO_PREVIOUS_LEVEL);
+    // A respawn's load (the story respawn, a pending respawn's save) takes
+    // the session-start word, as the original sets the session's arrival
+    // word before the load (its story save reader does it on every load):
+    // the level's reconstruction device (operative kind 18) names the
+    // player. The original leaves the previous level as it was; Exarust
+    // passes none, which only a marker whose entrance word is the
+    // session-start word could tell apart (none in exanima05, checked).
+    let arrival_words = portal.is_some().then_some((
+        exa_assets::content_stream::SESSION_START_WORD,
+        exa_assets::content_stream::NO_PREVIOUS_LEVEL,
+    ));
+    let (entrance, previous_level) = arrival_words.unwrap_or((spawn, previous_level));
     commands.insert_resource(exa_game::level_change::LevelArrival {
-        entrance: spawn,
+        entrance,
         previous_level,
     });
     // The old level's parsed models, decoded texels and painted variants are
@@ -585,6 +602,7 @@ fn apply_level_change(
         mechanism_bodies(&options),
         section,
         world_characters,
+        arrival_words,
     );
     // The save unit's transition flow around the change: which copy the
     // destination comes from, the spawn matrix and the abort when the
@@ -635,11 +653,19 @@ fn begin_level(
     mechanism_bodies: exa_world::bodies::MechanismBodies,
     saved: Option<std::sync::Arc<[u8]>>,
     world_characters: Vec<exa_formats::characters::CharacterRecord>,
+    arrival_words: Option<(u32, u32)>,
 ) -> bool {
     let Some(mut load) = exa_world::LevelLoad::begin_from(commands, loader, name, saved) else {
         return false;
     };
     load.mechanism_bodies = mechanism_bodies;
+    // The session's arrival word and previous level the load names the
+    // placed player by (a respawn's session-start word: the level's
+    // reconstruction device).
+    if let Some((arrival, previous_level)) = arrival_words {
+        load.arrival = arrival;
+        load.previous_level = previous_level;
+    }
     // The level's world references are looked up in the live world
     // character database.
     load.world_characters = world_characters;
@@ -681,11 +707,14 @@ fn continue_level(
     let landing = pending_arena.landing.as_deref();
     let career = pending_arena.career.as_deref();
     let launch = pending_arena.launch.as_deref().map(|launch| &launch.0);
+    // A respawn's portal placement is a flow placement too: no arrival
+    // marker moves the player then.
+    let placed = pending_arena.placement.is_some() || pending_arena.portal.is_some();
     let arrival = pending_arena
         .arrival
         .as_deref()
         .copied()
-        .map(|arrival| (arrival, pending_arena.placement.is_some()));
+        .map(|arrival| (arrival, placed));
     let mut loader = ModelLoader {
         game: &game.0,
         cache: &mut cache,
@@ -709,6 +738,9 @@ fn continue_level(
     };
     commands.remove_resource::<PendingLevel>();
     let name = pending.name.clone();
+    if let Some(portal) = pending_arena.portal.as_deref().copied() {
+        place_at_portal(&mut commands, &name, portal, info.player_frame);
+    }
     info!(
         "level {name}: {} props ({} missing), {} placed objects ({} missing), {} lights, {} bodies asleep in the solver ({} parts, {} of them hung from the world by links; static: {} mechanisms, {} of static props), grid {:?}, terrain {:?}, loaded in {:.1?}",
         info.props,
@@ -1192,6 +1224,49 @@ pub(crate) struct PendingArena<'w> {
     launch: Option<Res<'w, PendingArenaLaunch>>,
     arrival: Option<Res<'w, exa_game::level_change::LevelArrival>>,
     placement: Option<Res<'w, exa_game::level_change::PlayerPlacement>>,
+    portal: Option<Res<'w, exa_game::level_change::PortalArrival>>,
+}
+
+/// A respawn's placement once its level is in: the object the load named
+/// as the player (the reconstruction device) is the respawn portal, which
+/// the flow records; the player is placed at its frame 15 cm up (settling
+/// as asked), or at the arrival's fallback when the level names none (the
+/// story respawn's origin; a pending respawn's load keeps the saved
+/// placement).
+fn place_at_portal(
+    commands: &mut Commands,
+    name: &str,
+    portal: exa_game::level_change::PortalArrival,
+    frame: Option<(Vec3, [[f32; 3]; 3])>,
+) {
+    commands.remove_resource::<exa_game::level_change::PortalArrival>();
+    let (placement, found) = portal.resolve(frame);
+    match found {
+        Some(raw) => {
+            info!(
+                "level {name}: the respawn portal is at {:?} cm; the player stands 15 cm over it",
+                raw.position
+            );
+            commands.queue(move |world: &mut World| {
+                if let Some(mut flow) = world.get_resource_mut::<exa_game::flow::Flow>() {
+                    flow.respawn_portal = Some(raw);
+                }
+            });
+            if portal.settle > 0 {
+                commands.insert_resource(exa_game::level_change::PlacedSettle(portal.settle));
+            }
+        }
+        None => info!(
+            "level {name}: no respawn portal; the player stands at {}",
+            placement.map_or("the placement it had".to_string(), |p| format!(
+                "{:?} cm",
+                p.position
+            ))
+        ),
+    }
+    if let Some(placement) = placement {
+        commands.insert_resource(exa_game::level_change::PlayerPlacement::of_flow(&placement));
+    }
 }
 
 /// Play mode waiting for the level's collision, behind the loading screen.
@@ -2147,6 +2222,7 @@ fn spawn_players(
             pose: exa_formats::characters::SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
             fall: true,
         })
         .collect();
@@ -2207,6 +2283,7 @@ fn spawn_players(
                     pose: exa_formats::characters::SavedPose::None,
                     motion: None,
                     ai_home: None,
+                    powers: Vec::new(),
                     fall: false,
                 }
             })
@@ -2382,6 +2459,7 @@ fn story_companion(
         pose: exa_formats::characters::SavedPose::None,
         motion: None,
         ai_home: None,
+        powers: Vec::new(),
         fall: false,
     })
 }
@@ -4311,6 +4389,12 @@ fn spawn_placed_characters(
                 ),
             ));
         }
+        if !c.dead && !c.powers.is_empty() {
+            // A save's running powers, rebuilt once the body has its mind.
+            commands
+                .entity(model)
+                .insert(exa_game::power_save::SavedPowers(c.powers.clone()));
+        }
         if !c.dead && (c.motion.is_some() || c.ai_home.is_some()) {
             // A save's motion state and AI home, put back once the body is
             // in.
@@ -4436,6 +4520,7 @@ fn spawn_spirit_bodies(
             pose: exa_formats::characters::SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
             fall: false,
         };
         let placing = Placing {
@@ -4458,10 +4543,13 @@ fn spawn_spirit_bodies(
                 spirit.race, ask.at, ask.caster
             );
             // The original settles the new body for 16 ticks once it is
-            // in the scene, before the player is handed over.
+            // in the scene, before the player is handed over, and disables
+            // it down its body tree after: the spirit meets no other body,
+            // but still the level.
             commands.entity(model).insert((
                 exa_game::mind::runtime::SpiritOf { body: ask.caster },
                 exa_game::limp::SettleWhenBuilt(exa_physics::body::PLACED_SETTLE),
+                exa_game::limp::DisabledWhenBuilt,
             ));
         }
     }
@@ -4558,6 +4646,7 @@ fn spawn_summoned_demons(
             pose: exa_formats::characters::SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
             fall: false,
         };
         let placing = Placing {

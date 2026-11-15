@@ -43,3 +43,10 @@ The engine's scene fit SHALL put the node it moves at the box's centre plus the 
 #### Scenario: A node at the view node
 - **WHEN** the moved node sits where the view node is
 - **THEN** it lands on the box's centre
+
+### Requirement: Icon cache cleared on a load
+Every scene load SHALL empty the item icon cache and its atlas after the game screens are closed; an icon reserved afterwards SHALL take the first slot.
+
+#### Scenario: A level change with icons cached
+- **WHEN** a level change is asked while one item icon is cached
+- **THEN** the cache holds no entry and the next icon reserved takes slot 1

@@ -11,7 +11,7 @@ import bevy_pbr::render::{
     clustered_forward as clustering,
 };
 import exa_render::shading::{
-    Surface, Lit, Taps, taps, gi_mean, lit_by, light_shadow, sun_shadow, light, light_fast, light_translucent, light_skin, schlick, view_depth, vertical_shaping,
+    Surface, Lit, Taps, taps, gi_mean, lit_by, light_shadow, light_shadow_fast, fast_taps, sun_shadow, light, light_fast, light_translucent, light_skin, schlick, view_depth, vertical_shaping,
     gi_frame, gi_tap, gi_slot_tagged, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
     REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -145,10 +145,12 @@ const SHADOW_STEPS: i32 = 16;
 @group(constants::MATERIAL_BIND_GROUP) @binding(128) var gi_volume_8: texture_3d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(119) var height_map: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(120) var height_sampler: sampler;
-// The scene's low field: the previous frame's quarter-size blurred bright
-// pass (`exa_render::local_reflection`).
-@group(constants::MATERIAL_BIND_GROUP) @binding(133) var scene_low: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(134) var scene_low_sampler: sampler;
+// The original's `FrmBuf`: a field of the previous frame the post chain
+// left, the quarter-size blurred bright pass (the low field,
+// `exa_render::local_reflection`) or, for a sharp refraction, the half-size
+// bright pass (the high field, `exa_render::refraction`).
+@group(constants::MATERIAL_BIND_GROUP) @binding(133) var scene_field: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(134) var scene_field_sampler: sampler;
 
 // `flags2`: the original's local reflection (`Shd.LocalRef`).
 const LOCAL_REFLECTION: u32 = 1u;
@@ -175,6 +177,9 @@ const SMOKE: u32 = 256u;
 // translucent program (`shadetrl_f`), `exa_render::material::flags2`.
 const FAST_LIGHT: u32 = 512u;
 const TRANSLUCENT: u32 = 1024u;
+// `flags2`: the original's refraction (`Mat.Refract` in its PBR program,
+// `exa_render::refraction`).
+const REFRACTION: u32 = 2048u;
 
 // The material's opacity (`MatDif.a`): the cut-away fade's own while the
 // mesh fades, as the original's faded pass writes it for the draw.
@@ -203,7 +208,44 @@ fn local_reflection(n: vec3<f32>, p: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
     // GL's texture y runs up the screen; the target's runs down.
     o.y = -o.y;
     let uv = frag / view.viewport.zw + o;
-    return textureSampleLevel(scene_low, scene_low_sampler, uv, 0.0).rgb * LOCAL_READ_GAIN;
+    return textureSampleLevel(scene_field, scene_field_sampler, uv, 0.0).rgb * LOCAL_READ_GAIN;
+}
+
+const REFRACT_PUSH_SCALE: f32 = 0.01;
+const REFRACT_GI_PUSH_BASE: f32 = 1.5;
+const REFRACT_TINT_GREY: f32 = 0.2;
+const REFRACT_GAIN_GI: f32 = 8.0;
+const REFRACT_GAIN: f32 = 12.0;
+
+// The original's `{$refraction}`: the scene field read behind the surface,
+// pushed along the view-space normal r by its strength s (`OpcFll.w`):
+// inside the GI volume r·(1.5 − r.z) with xy × 0.01·s, else r·r.z·0.01·s;
+// then × ViewPrj/w (w the clip depth in cm). The read is weighted by
+// min(max(1 − |a + 0.9|·1.5, 0) + (1 + a)³·0.7, 1), a = (eye → surface)·n,
+// tinted mix(dif, 0.2, −0.1 − 0.2a) and scaled 8 (GI) or 12.
+fn refraction(n: vec3<f32>, v: vec3<f32>, p: vec3<f32>, frag: vec2<f32>, dif: vec3<f32>) -> vec3<f32> {
+    let view = view_bindings::view;
+    var r = (view.view_from_world * vec4(n, 0.0)).xyz;
+    let strength = material.opacity_falloff.w;
+    let gi = has(GI);
+    if gi {
+        r *= REFRACT_GI_PUSH_BASE - r.z;
+        r = vec3(r.xy * (REFRACT_PUSH_SCALE * strength), r.z);
+    } else {
+        r *= r.z * REFRACT_PUSH_SCALE * strength;
+    }
+    let w_cm = -(view.view_from_world * vec4(p, 1.0)).z * 100.0;
+    let prj = vec2(view.clip_from_view[0].x, view.clip_from_view[1].y) * LOCAL_VIEW_PRJ_CM;
+    var o = r.xy * prj / w_cm;
+    // GL's texture y runs up the screen; the target's runs down.
+    o.y = -o.y;
+    let uv = frag / view.viewport.zw + o;
+    let read = textureSampleLevel(scene_field, scene_field_sampler, uv, 0.0).rgb;
+    let a = dot(-v, n);
+    let c = 1.0 + a;
+    let w = min(max(1.0 - abs(a + 0.9) * 1.5, 0.0) + c * c * c * 0.7, 1.0);
+    let tint = mix(dif, vec3(REFRACT_TINT_GREY), -0.1 - a * 0.2);
+    return read * w * tint * select(REFRACT_GAIN, REFRACT_GAIN_GI, gi);
 }
 
 // Resident block `k`'s light at texture position `w`; with no block, the
@@ -723,6 +765,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let receiver = (mesh[in.instance_index].flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
 
     let disc = taps(in.position.xy, has(SPLIT_TAPS));
+    // The programs on the fast light loop (`lightsfst`) and the vertex
+    // normal its shadow bias reads: as it comes in the grass and translucent
+    // programs, normalised in the PBR one.
+    let fast_loop = fast || translucent;
+    let fast_normal = select(geom, in.world_normal, grass || translucent);
+    // The fast loop's sun taps stand unturned.
+    var sun_taps = disc;
+    if fast_loop {
+        sun_taps = fast_taps(disc);
+    }
     let tag = mesh[in.instance_index].tag;
     // Point lights in this fragment's cluster.
     let view_z = view_depth(in.world_position);
@@ -741,8 +793,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if atn <= 0.0 {
             continue;
         }
-        var shadow = light_shadow(id, p, n, disc, tag, receiver);
         let l = to / max(d, 1e-4);
+        var shadow: f32;
+        if fast_loop {
+            // The fast loop's bias term: 1 − N·L, on the vertex normal with
+            // a normal map, signed in the translucent program without one.
+            var ndl = dot(n, l);
+            if has(NORMAL_MAP) {
+                ndl = max(dot(fast_normal, l), 0.0);
+            } else if !translucent {
+                ndl = max(ndl, 0.0);
+            }
+            shadow = light_shadow_fast(id, p, 1.0 - ndl, disc, tag, receiver);
+        } else {
+            shadow = light_shadow(id, p, n, disc, tag, receiver);
+        }
         if self_shadowed {
             shadow *= displacement_shadow(uv, l, ax, ay, shadow_normal, h0);
         }
@@ -781,7 +846,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let sun = &view_bindings::lights.directional_lights[i];
         var shadow = 1.0;
         if receiver && ((*sun).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = sun_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy, disc);
+            shadow = sun_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy, sun_taps);
         }
         if self_shadowed {
             shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, shadow_normal, h0);
@@ -939,7 +1004,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Parallax darkens the PBR program's ambient in hollows, with or without
     // the displacement shadows (`Mat.TexDsp`, independent of `Shd.DispSdw`;
     // the older program adds its ambient as it is).
-    if displaced && !s.legacy {
+    if displaced && !s.legacy && !skin {
         ambient *= min(dsp_val + 1.2, 1.0);
     }
     var colour = (diffuse + ambient) * dif_col;
@@ -947,12 +1012,31 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // The scattered share takes its own light; ambient reaches both
         // shares, so it weighs 1 in all.
         let sss = material.subsurface.rgb;
-        colour = (diffuse + ambient) * (vec3(1.0) - sss) * dif_col + (scatter + ambient) * sss * scatter_col;
+        var plain = (vec3(1.0) - sss) * dif_col;
+        if !has(DIFFUSE_MAP) && !has(SPECULAR_MAP) {
+            // Without a diffuse or specular map the subsurface program's
+            // colour is MatDif itself, and it multiplies the lit sum by
+            // MatDif once more: the plain share takes its square.
+            plain *= (vec3(1.0) - sss) * material.diffuse.rgb;
+        }
+        colour = (diffuse + ambient) * plain + (scatter + ambient) * sss * scatter_col;
     }
     // The translucent program lifts the red of its lit colour (before the
     // specular): 0.8·r + 1.5·r².
     if translucent {
         colour.r = colour.r * 0.8 + colour.r * colour.r * 1.5;
+    }
+    // Refraction (in place of the dirt and blood colour): the lit colour
+    // weighted by the alpha after the fall-off, the field behind it by one
+    // less that (unclamped, as the original's), then opaque.
+    let refract = (material.flags2 & REFRACTION) != 0u;
+    if refract {
+        if has(OPACITY_FALLOFF) {
+            let f = material.opacity_falloff;
+            alpha += exp2((f.x - s.ndv) * f.y) * f.z;
+        }
+        colour = colour * alpha + refraction(n, v, p, in.position.xy, dif_col) * (1.0 - alpha);
+        alpha = 1.0;
     }
     if s.legacy {
         // Older program: (lights + reflection) × specular colour × a soft
@@ -977,7 +1061,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if s.legacy {
         fall = vec4(0.0);
     }
-    if has(OPACITY_FALLOFF) && !s.legacy {
+    if has(OPACITY_FALLOFF) && !s.legacy && !refract && !skin {
         alpha += exp2((fall.x - s.ndv) * fall.y) * fall.z;
     }
     var e = material.emissive.rgb;

@@ -491,6 +491,13 @@ fn shipped_morph_sets() {
     for (name, scene) in &sets {
         let carriers: Vec<&Node> = scene.nodes.iter().filter(|n| n.morph.is_some()).collect();
         assert_eq!(carriers.len(), 1, "{name}");
+        // The carrier is the file's first root: the original's race loader
+        // takes it directly and never reaches its fallbacks (a child
+        // carrying the set, or the numbered target meshes).
+        assert!(
+            scene.nodes[0].morph.is_some() && scene.nodes[0].parent.is_none(),
+            "{name}"
+        );
         let node = carriers[0];
         let set = node.morph.as_ref().unwrap().as_ref().expect("decodes");
         let NodeBody::Mesh(mesh) = &node.body else {
@@ -614,4 +621,96 @@ fn far_flung_sets_never_panic() {
     let part = mesh(&[[0.0; 3], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]], &[[0, 1, 2]]);
     let m = body.transfer(&part, &IDENTITY);
     assert_eq!(m.positions[0], vec![[0.0; 3]; 3]);
+}
+
+/// Every garment of `Characters.rpk` taken through the transfer from each
+/// race's morph body, in the frame of the base body part its node names (as
+/// the character build does): how many position elements end non-finite.
+/// The transfer keeps the original's 1/0 weight for a neighbour at the same
+/// place, so a garment with such an edge among its elements off the body
+/// would come out NaN there; the shipped garments have none.
+#[test]
+fn shipped_garments_take_finite_morphs() {
+    let Some(game) = game() else {
+        return;
+    };
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let characters = game.pack(exa_rpk::PackKind::Characters).unwrap();
+    let mut checked = 0;
+    let mut off_body = 0;
+    for stem in ["human", "ancient"] {
+        let Some(morph) = resource
+            .get(&format!("{stem}morph.rfc"))
+            .and_then(|b| Scene::parse(b).ok())
+        else {
+            continue;
+        };
+        let body = MorphBody::of_scene(&morph).expect("a morph body");
+        let base = Scene::parse(resource.get(&format!("{stem}base.rfc")).unwrap()).unwrap();
+        let base_frames = model_frames(&base);
+        let bone_frame = |bone: usize| {
+            base.nodes
+                .iter()
+                .zip(&base_frames)
+                .find(|(n, _)| crate::rsq::bone_index(&n.name) == Some(bone))
+                .map(|(_, f)| *f)
+        };
+        for entry in characters.entries() {
+            let Ok(scene) = Scene::parse(characters.bytes(entry)) else {
+                continue;
+            };
+            for node in &scene.nodes {
+                let NodeBody::Mesh(mesh) = &node.body else {
+                    continue;
+                };
+                let Some(frame) = crate::rsq::bone_index(&node.name)
+                    .filter(|b| (1..=18).contains(b))
+                    .and_then(bone_frame)
+                else {
+                    continue;
+                };
+                let m = body.transfer(mesh, &frame);
+                checked += 1;
+                let elements = element_positions(mesh);
+                off_body += elements
+                    .iter()
+                    .filter(|&&p| {
+                        body.nearest_surface(unplace(&body.frame, place(&frame, p)))
+                            .is_none()
+                    })
+                    .count();
+                let bad = (0..elements.len())
+                    .filter(|&e| {
+                        m.positions
+                            .iter()
+                            .any(|t| t[e].iter().any(|v| !v.is_finite()))
+                    })
+                    .count();
+                assert_eq!(bad, 0, "{stem}: {} {}", entry.name, node.name);
+            }
+        }
+    }
+    eprintln!("garment pieces transferred: {checked}, elements off the body: {off_body}");
+    assert!(checked > 100, "{checked}");
+}
+
+/// The transfer's weights are the original's plane solve: a point beyond an
+/// edge keeps a negative weight (no clamp), the three sum to one, a point
+/// above the plane is projected onto it first, and a degenerate triangle's
+/// normal is zero.
+#[test]
+fn transfer_weights_are_solved_on_the_plane() {
+    let (a, b, c) = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    // The estimate is good to about 12 bits.
+    let n = face_normal(a, b, c);
+    assert!(
+        (0..3).all(|k| (n[k] - [0.0, 0.0, 1.0][k]).abs() < 1e-3),
+        "{n:?}"
+    );
+    let w = plane_barycentric(n, [a, b, c], [0.75, 0.5, 0.0]);
+    assert!(w.iter().any(|&v| v < 0.0), "{w:?}");
+    assert!(close(w[0] + w[1] + w[2], 1.0));
+    let above = plane_barycentric([0.0, 0.0, 1.0], [a, b, c], [0.25, 0.25, 3.0]);
+    assert!(close3(above, [0.5, 0.25, 0.25]), "{above:?}");
+    assert_eq!(face_normal(a, b, [2.0, 0.0, 0.0]), [0.0; 3]);
 }

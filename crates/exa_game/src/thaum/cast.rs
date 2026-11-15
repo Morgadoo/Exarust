@@ -480,8 +480,9 @@ impl PowerCaster {
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct LiveShellAura(pub crate::thaum::ForceShell);
 
-/// A vanish effect asking the body it hides to be placed somewhere else,
-/// after the caster tick that asked for it.
+/// A displacement asking for the body's teleport, after the caster tick
+/// that asked for it: the Long Door's move to its destination, Vanish's
+/// come-back to where the body stands.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct Otherwhere {
     pub entity: Entity,
@@ -2496,13 +2497,20 @@ fn apply_otherwhere(
     mut commands: Commands,
     mut moves: MessageReader<Otherwhere>,
     mut bodies: Query<&mut Ragdoll>,
+    mut stages: Option<ResMut<exa_physics::body::SolverStages>>,
 ) {
     for Otherwhere { entity, to } in moves.read().copied() {
         if let Ok(mut doll) = bodies.get_mut(entity) {
             let target = otherwhere_root(&doll, to);
-            info!("long door: {entity:?} is placed at {to:?} cm (root {target:?} m)");
+            info!("teleport: {entity:?} is placed at {to:?} cm (root {target:?} m)");
             super::visuals::teleport(&mut doll, target, None);
-            // The original's Long Door then puts the body's held items
+            // The original's teleport holds the body around its placement:
+            // its world contacts go, the solver's kept pairs with it are
+            // dropped and it is released.
+            let dropped =
+                exa_physics::body::hold_out_of_pairs(stages.as_deref_mut(), &mut [&mut *doll]);
+            info!("teleport: {entity:?} held, {dropped} kept pair(s) dropped, released");
+            // The original's teleport then puts the body's held items
             // back in its hands.
             commands
                 .entity(entity)
@@ -2516,18 +2524,38 @@ fn apply_otherwhere(
 /// lowest part. The original asks the ground for the point with the body's
 /// own height offset; the lowest part stands in for that offset (a guess).
 fn otherwhere_root(doll: &Ragdoll, to: Vec3) -> Vec3 {
-    let heights = doll.parts.iter().map(|part| part.transform().translation.y);
-    let lowest = heights.clone().fold(f32::INFINITY, f32::min);
-    let root = doll
-        .parts
-        .first()
-        .map_or(lowest, |part| part.transform().translation.y);
+    let (root, lowest) = root_and_lowest(doll);
     let lift = if lowest.is_finite() {
-        root - lowest
+        root.y - lowest
     } else {
         0.0
     };
     to / CM + Vec3::Y * lift
+}
+
+/// The body root's place (m) and its lowest part's height (m; infinite
+/// for a body without parts).
+fn root_and_lowest(doll: &Ragdoll) -> (Vec3, f32) {
+    let lowest = doll
+        .parts
+        .iter()
+        .map(|part| part.transform().translation.y)
+        .fold(f32::INFINITY, f32::min);
+    let root = doll
+        .parts
+        .first()
+        .map_or(Vec3::new(0.0, lowest, 0.0), |part| {
+            Vec3::from(part.transform().translation)
+        });
+    (root, lowest)
+}
+
+/// Where a body stands (cm): under its root, at its lowest part's height,
+/// the point a teleport there keeps the root at ([`otherwhere_root`]).
+fn standing_point(doll: &Ragdoll) -> Vec3 {
+    let (root, lowest) = root_and_lowest(doll);
+    let ground = if lowest.is_finite() { lowest } else { root.y };
+    Vec3::new(root.x, ground, root.z) * CM
 }
 
 fn push_active(
@@ -3227,6 +3255,18 @@ pub(crate) fn tick_casters(
                     ActiveClass::Vanish(power) => {
                         power.answer_hook(body);
                         let step = power.control(event, now);
+                        // The come-back teleports the body to its own
+                        // standing point (the original passes the ground
+                        // point it keeps under the body), which holds it
+                        // out of the pairs around the placement.
+                        if step.moved
+                            && let Some(doll) = ragdoll
+                        {
+                            moves.write(Otherwhere {
+                                entity: caster_entity,
+                                to: standing_point(doll),
+                            });
+                        }
                         if 0.0 < step.spend {
                             drain(body, step.spend);
                         }

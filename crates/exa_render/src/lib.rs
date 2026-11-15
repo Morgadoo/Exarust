@@ -35,6 +35,7 @@ pub mod quads;
 pub mod quality;
 pub mod queue;
 pub mod rain;
+pub mod refraction;
 pub mod sector_walk;
 pub mod shader_bindings;
 pub mod shader_cache;
@@ -90,7 +91,11 @@ impl Plugin for RenderPlugin {
             (spray::SprayPlugin, rain::RainPlugin),
             stain::StainPlugin,
             (benchmark::BenchmarkPlugin, supersample::SupersamplePlugin),
-            (lights::LightsPlugin, local_reflection::LocalReflectionPlugin),
+            (
+                lights::LightsPlugin,
+                local_reflection::LocalReflectionPlugin,
+                refraction::RefractionPlugin,
+            ),
             cube_shadows::CubeShadowsPlugin,
             shell::ShellPlugin,
             (glow::GlowPlugin, mind_sight::MindSightPlugin),

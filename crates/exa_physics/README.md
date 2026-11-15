@@ -1264,7 +1264,12 @@ its holder (a `grip::ReplaceHeld` on the holder's body: the player's
 ground placement, a Long Door) `grip_solve::replace_held` puts every item
 back there at rest, turned half a turn if it was flipped since, wakes it,
 and gives an armed weapon's enabled second-hand link its new span as slack
-and held length (logged at info, "held re-place: …").
+and held length (logged at info, "held re-place: …"). A freed item
+(`grip_solve::release_freed_grips`) becomes the root of its own tree, its
+link-iteration count 2 plus its parts less one, as the original's unlink
+writes it; a weapon whose holder is still in the world sends
+`grip::CameLoose`, the holder's came-loose hook (shields and torches send
+none).
 
 A link without the runtime pivot flag is a **limit link**
 (`body::MODEL_LINK_PIVOT`, marked through `Ragdoll::set_link_flags`): the
@@ -1740,8 +1745,15 @@ stage and the lift servo read, is the two-step point of the root's own
 origin, as the original's character tick reads it; and its tree-wide take of sleep ticks (`Ragdoll::take_ticks`,
 holding the count at one) that the frozen step and a dormant living
 body use. `Ragdoll::set_disabled` sets the original's state bit 0x800 (an
-item on the cursor): the pair stage and the level detection skip the body
-and a grab on it breaks.
+item on the cursor, Spirit Form's spirit): the pair stage skips the body and
+a grab on it breaks; the level detection still meets it (its gate is the
+original's asleep, parked and kinematic mask, 0x105). The original's held state
+(bit 0x400) is `body::HeldBodies`: holding a body empties its world
+contacts, `Pairs::remove_held` drops every kept pair with a held body from
+the list the last detection left for the next tick's iterations (the last
+pair copied into the dropped one's place, which is tested again), and the
+release follows; `hold_out_of_pairs` and `hold_entities_out_of_pairs` run
+the three in one call for the game's callers.
 
 The body kernel also keeps the original's class and state words
 (`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the

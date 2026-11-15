@@ -19,8 +19,9 @@
 //!   refresh), and an AI brain applies its roles again. The hands count as
 //!   empty when both out-set hands of the record are
 //!   ([`weapon_slots_empty`]): the collapse's drop cleared every hand but a
-//!   shield's ([`exa_character::body_words::drop_collapsed_hands`],
-//!   [`crate::equip::forget_collapsed_hands`]). The collapse record goes
+//!   shield's ([`exa_character::body_words::drop_collapsed_hands`], and
+//!   [`crate::equip::forget_loose_hands`] for each weapon it let go of).
+//!   The collapse record goes
 //!   with the death clock, so a second collapse drops again.
 //! - **Undo go-limp.** A body whose muscles are back while it still keeps
 //!   what go-limp took ([`LimpKept`]) gets its clip player and its

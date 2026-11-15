@@ -335,16 +335,20 @@ pub fn apply_pending_hands(
     }
 }
 
-/// The record's side of a collapse's drop: on the tick a collapse starts,
-/// the holder's came-loose hook runs on its possessions
-/// ([`Possessions::forget_loose`]): every out hand that does not hold a
-/// shield loses its item and that item's held entry leaves the carried
-/// list, and a stowed hand whose item is gone is cleared. Only a body that
-/// held something in a non-shield hand drops anything (the hook runs once
-/// per dropped item). An item the catalogue does not know is not a shield.
-pub fn forget_collapsed_hands(
+/// The record's side of a held weapon coming loose ([`CameLoose`], sent by
+/// the grip stage as it frees the item): the holder's came-loose hook runs
+/// on its possessions ([`Possessions::forget_loose`]): every out hand that
+/// does not hold a shield loses its item and that item's held entry leaves
+/// the carried list, and a stowed hand whose item is gone is cleared. The
+/// hook runs once per dropped weapon, as the original's drop calls it;
+/// a collapse drops its weapons this way. An item the catalogue does not
+/// know is not a shield.
+///
+/// [`CameLoose`]: exa_physics::grip::CameLoose
+pub fn forget_loose_hands(
     catalogue: Option<Res<ItemCatalogue>>,
-    mut bodies: Query<&mut Possessions, Added<exa_combat::collapse::Collapse>>,
+    mut loose: MessageReader<exa_physics::grip::CameLoose>,
+    mut bodies: Query<&mut Possessions>,
 ) {
     let is_shield = |id: u32| {
         catalogue
@@ -352,7 +356,10 @@ pub fn forget_collapsed_hands(
             .and_then(|c| c.kind(id & ID_MASK))
             .is_some_and(|k| k.shield && k.weapon.is_none())
     };
-    for mut possessions in &mut bodies {
+    for came in loose.read() {
+        let Ok(mut possessions) = bodies.get_mut(came.holder) else {
+            continue;
+        };
         if !possessions
             .out
             .iter()
@@ -362,7 +369,7 @@ pub fn forget_collapsed_hands(
         }
         possessions.forget_loose(is_shield);
         info!(
-            "a collapse drops the held items from the record: out set {:?}",
+            "a held weapon came loose: the record's out set is {:?}",
             possessions.out.map(|h| h.id)
         );
     }
@@ -382,7 +389,8 @@ impl Plugin for EquipPlugin {
         )
         .add_systems(Update, refresh_encumbrance)
         .add_systems(Update, refresh_worn_specials.after(refresh_encumbrance))
-        .add_systems(Update, forget_collapsed_hands.before(refresh_encumbrance))
+        .add_message::<exa_physics::grip::CameLoose>()
+        .add_systems(Update, forget_loose_hands.before(refresh_encumbrance))
         .add_systems(
             FixedUpdate,
             apply_head_height.before(exa_physics::grip_solve::GripSolveSet::Build),
@@ -678,13 +686,16 @@ mod tests {
         assert!(app.world().get::<PendingHands>(body).is_none());
     }
 
-    /// A collapse drops the out set's items from the record and their held
-    /// entries from the carried list; empty hands write nothing.
+    /// A held weapon coming loose drops the out set's items from its
+    /// holder's record and their held entries from the carried list; a
+    /// holder with empty hands writes nothing.
     #[test]
-    fn a_collapse_forgets_the_dropped_items() {
+    fn a_loose_weapon_leaves_the_record() {
         use exa_items::possession::Carried;
+        use exa_physics::grip::CameLoose;
         let mut app = App::new();
-        app.add_systems(Update, forget_collapsed_hands);
+        app.init_resource::<ItemCatalogue>()
+            .add_plugins(EquipPlugin);
         let held = Carried {
             id: 5,
             flags: 0x100,
@@ -700,10 +711,9 @@ mod tests {
             .id();
         let empty = app.world_mut().spawn(Possessions::default()).id();
         app.update();
-        for e in [armed, empty] {
-            app.world_mut()
-                .entity_mut(e)
-                .insert(exa_combat::collapse::Collapse::default());
+        for holder in [armed, empty] {
+            let item = app.world_mut().spawn_empty().id();
+            app.world_mut().write_message(CameLoose { item, holder });
         }
         app.update();
         let p = app.world().get::<Possessions>(armed).unwrap();

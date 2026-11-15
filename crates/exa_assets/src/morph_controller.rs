@@ -643,42 +643,7 @@ pub struct MorphControl {
 /// absolute x sum against the absolute y sum, and the third weight is one
 /// minus the other two.
 pub fn morph_barycentric(control: &MorphControl, query: [f32; 3]) -> [f32; 3] {
-    let [p0, p1, p2] = control.points;
-    let n = control.normal;
-
-    // Move to the first point, remove the normal component, move back.
-    let mut s = [query[0] - p0[0], query[1] - p0[1], query[2] - p0[2]];
-    let dot = (s[0] * n[0] + s[2] * n[2]) + s[1] * n[1];
-    s = [s[0] - n[0] * dot, s[1] - n[1] * dot, s[2] - n[2] * dot];
-    s = [s[0] + p0[0], s[1] + p0[1], s[2] + p0[2]];
-
-    let x0 = p0[0] - p2[0];
-    let x1 = p1[0] - p2[0];
-    let x2 = p2[0] - s[0];
-    let y0 = p0[1] - p2[1];
-    let y1 = p1[1] - p2[1];
-    let y2 = p2[1] - s[1];
-    let z0 = p0[2] - p2[2];
-    let z1 = p1[2] - p2[2];
-    let z2 = p2[2] - s[2];
-
-    let (u, v) = if (x0 + x1).abs() < (y0 + y1).abs() {
-        let den = (x1 + z1) * y0 - (x0 + z0) * y1;
-        let num = (x2 + z2) * y1 - y2 * (x1 + z1);
-        let u = num / den;
-        let den2 = (x0 + z0) * y1 - (x1 + z1) * y0;
-        let num2 = (x2 + z2) * y0 - y2 * (x0 + z0);
-        (u, num2 / den2)
-    } else {
-        let den = x0 * (y1 + z1) - (y0 + z0) * x1;
-        let num = (y2 + z2) * x1 - x2 * (y1 + z1);
-        let u = num / den;
-        let den2 = x1 * (y0 + z0) - (y1 + z1) * x0;
-        let num2 = (y2 + z2) * x0 - x2 * (y0 + z0);
-        (u, num2 / den2)
-    };
-
-    [u, v, 1.0 - u - v]
+    exa_formats::morph::plane_barycentric(control.normal, control.points, query)
 }
 
 #[cfg(test)]

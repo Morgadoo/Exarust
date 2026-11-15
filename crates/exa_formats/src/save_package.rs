@@ -769,6 +769,21 @@ impl CharacterPlacement {
         })
     }
 
+    /// The running powers the placement carries (the last running-powers
+    /// sub-chunk, as the original's reader keeps the last chunk of a tag);
+    /// none without one. A chunk that does not read is an error.
+    pub fn running_powers(&self) -> crate::Result<Vec<crate::characters::RunningPower>> {
+        match self
+            .chunks
+            .iter()
+            .rev()
+            .find(|chunk| chunk.id == crate::characters::RUNNING_POWERS)
+        {
+            Some(chunk) => crate::characters::read_running_powers(&chunk.data),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// The payload's bytes.
     pub fn write(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -2315,6 +2330,53 @@ mod tests {
             placement.chunks.iter().map(|c| c.id).collect::<Vec<_>>(),
             [0xCAC0_E100]
         );
+    }
+
+    /// A living player's placement in save mode ends with the running
+    /// powers chunk: the count of the powers that wrote, then each record
+    /// as its save routine wrote it, read back as the record build reads it.
+    #[test]
+    fn the_players_running_powers_read_back_from_the_placement() {
+        use crate::characters::{RUNNING_POWERS, RunningPower};
+        use crate::rfc_write::{ChunkWriter, ExportAi, ExportCharacter, write_character_state};
+        let powers = [
+            RunningPower::bare(0x2_0101),
+            RunningPower::with_target(0x2_010D, 0x4000_0002),
+        ];
+        let character = ExportCharacter {
+            record: CHARACTER_IN_WORLD_DB | 1,
+            ai: Some(ExportAi::default()),
+            attachments: powers.iter().map(|p| Some(p.bytes().unwrap())).collect(),
+            ..ExportCharacter::default()
+        };
+        let mut writer = ChunkWriter::new();
+        write_character_state(&mut writer, &character, true).unwrap();
+        let chunk = writer.into_bytes();
+        let placement = CharacterPlacement::parse(&chunk[8..]).unwrap();
+        let tail = placement
+            .chunks
+            .iter()
+            .find(|c| c.id == RUNNING_POWERS)
+            .unwrap();
+        let words: Vec<u32> = tail
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| u32::from_le_bytes(*w))
+            .collect();
+        assert_eq!(words, [2, 0x2_0101, 0, 0x2_010D, 4, 0x4000_0002]);
+        assert_eq!(placement.running_powers().unwrap(), powers);
+        // No power wrote: the chunk is taken back out.
+        let quiet = ExportCharacter {
+            attachments: vec![None],
+            ..character
+        };
+        let mut writer = ChunkWriter::new();
+        write_character_state(&mut writer, &quiet, true).unwrap();
+        let placement = CharacterPlacement::parse(&writer.into_bytes()[8..]).unwrap();
+        assert!(placement.chunks.iter().all(|c| c.id != RUNNING_POWERS));
+        assert_eq!(placement.running_powers().unwrap(), vec![]);
     }
 
     #[test]

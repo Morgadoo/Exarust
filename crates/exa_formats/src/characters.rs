@@ -25,6 +25,8 @@ const POSE: u32 = 0xCAC0_EB00;
 const LEGACY_POSE: u32 = 0xCAC0_E100;
 const MOTION: u32 = 0xCAC0_EA00;
 const AI_HOME: u32 = 0xCACE_0F77;
+/// Sub-chunk of a placement with the character's running powers.
+pub const RUNNING_POWERS: u32 = 0xCAC0_EC00;
 /// Condition of a dead body, placed from its pose.
 pub const DEAD: i32 = 0xA00;
 const CENTIMETRES_PER_METRE: f32 = 100.0;
@@ -255,6 +257,86 @@ pub struct Placement {
     pub motion: Option<MotionState>,
     /// The AI's home (`CACE0F77`), when a save stored it.
     pub ai_home: Option<AiHome>,
+    /// The running powers a save stored with the character
+    /// ([`RUNNING_POWERS`]), in the body's list order.
+    pub powers: Vec<RunningPower>,
+}
+
+/// One running power as a save stores it with its character: the power's
+/// id and what its own save routine wrote after the id and the size word
+/// (nothing for the self powers, the target character's id for Loyalty and
+/// Command Dead). The original's record build hands each to the power's
+/// domain, which rebuilds the persistent ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningPower {
+    pub id: u32,
+    pub data: Vec<u8>,
+}
+
+impl RunningPower {
+    /// A power that saved only its id (a size of zero).
+    pub fn bare(id: u32) -> Self {
+        Self {
+            id,
+            data: Vec::new(),
+        }
+    }
+
+    /// A power that saved a target character's id after its own.
+    pub fn with_target(id: u32, target: u32) -> Self {
+        Self {
+            id,
+            data: target.to_le_bytes().to_vec(),
+        }
+    }
+
+    /// The target word a Loyalty or Command Dead saved (its first four
+    /// bytes), if it saved one.
+    pub fn target(&self) -> Option<u32> {
+        let word = self.data.get(..4)?;
+        Some(u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+    }
+
+    /// The entry's bytes as the power's save routine writes them: the id,
+    /// the size of what follows, then that.
+    pub fn bytes(&self) -> Result<Vec<u8>> {
+        let size = u32::try_from(self.data.len())
+            .map_err(|_| Error::Malformed("running power too large".into()))?;
+        let mut out = Vec::with_capacity(8 + self.data.len());
+        out.extend_from_slice(&self.id.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&self.data);
+        Ok(out)
+    }
+}
+
+/// Reads a placement's running-powers chunk as the original's record build
+/// walks it: a count, then per power its id, a size and that many bytes. A
+/// count below one holds no power; an entry that runs past the chunk is an
+/// error.
+pub fn read_running_powers(b: &[u8]) -> Result<Vec<RunningPower>> {
+    let mut r = Reader { b, pos: 0 };
+    let count = r.i32()?;
+    let mut out = Vec::new();
+    for _ in 0..count.max(0) {
+        let id = r.u32()?;
+        let size = r.u32()? as usize;
+        let data = r.bytes(size)?.to_vec();
+        out.push(RunningPower { id, data });
+    }
+    Ok(out)
+}
+
+/// The running-powers chunk's body for `powers`: their count, then each
+/// power's bytes ([`RunningPower::bytes`]).
+pub fn write_running_powers(powers: &[RunningPower]) -> Result<Vec<u8>> {
+    let count = u32::try_from(powers.len())
+        .map_err(|_| Error::Malformed("too many running powers".into()))?;
+    let mut out = count.to_le_bytes().to_vec();
+    for power in powers {
+        out.extend(power.bytes()?);
+    }
+    Ok(out)
 }
 
 /// A saved motion state: the state word and its value.
@@ -1219,6 +1301,7 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
     let mut pose = SavedPose::None;
     let mut motion = None;
     let mut ai_home = None;
+    let mut powers = Vec::new();
     let mut saw_tree = false;
     while r.remaining() >= 8 {
         let tag = r.u32()?;
@@ -1264,6 +1347,8 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
                     });
                 }
             }
+            // The record build reads this one: a count and the powers.
+            RUNNING_POWERS => powers = read_running_powers(body)?,
             _ => {}
         }
     }
@@ -1275,6 +1360,7 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
         pose,
         motion,
         ai_home,
+        powers,
     })
 }
 

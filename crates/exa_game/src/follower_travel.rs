@@ -203,6 +203,7 @@ pub fn collect_followers(
                 pose: exa_formats::characters::SavedPose::None,
                 motion: None,
                 ai_home: None,
+                powers: Vec::new(),
                 fall: false,
             },
             roles,

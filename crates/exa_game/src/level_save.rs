@@ -402,6 +402,7 @@ pub fn characters_after(
             pose: SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
         };
         live_state(&mut placement, character);
         out.push(placement);
@@ -416,8 +417,13 @@ pub fn characters_after(
 /// character has a body]); a living one an AI drives its AI home
 /// (`0xCACE0F77`, only for an awake guardian), its live pose tree and its
 /// motion state (`0xCAC0EA00`). A living character no AI drives keeps the
-/// stored chunks.
+/// stored pose and motion. No character of the section writes its running
+/// powers: the exporter's character walk has no running-powers chunk (only
+/// the player's own placement in `#playerdata` writes one,
+/// [`crate::power_save`]), so a scene character's powers end with the save,
+/// and a stored chunk is dropped.
 pub fn live_state(placement: &mut Placement, character: &LiveCharacter) {
+    placement.powers.clear();
     if placement.is_dead() {
         if let Some(pose) = character.pose.clone().filter(|p| !p.is_empty()) {
             placement.pose = SavedPose::Tree(pose);
@@ -583,12 +589,23 @@ pub struct LevelSaveScene<'w, 's> {
     >,
     parents: Query<'w, 's, &'static ChildOf>,
     characters: Query<'w, 's, SceneCharacter, Without<crate::player::PlayerBody>>,
+    /// The scene characters' record ids by body, for the running Loyalty
+    /// and Command Dead a save writes (their targets go by character id).
+    records: Query<'w, 's, SceneRecord, SceneRecordFilter>,
     local: Option<ResMut<'w, crate::world_characters::LocalCharacters>>,
     motions: Option<Res<'w, exa_anim::Motions>>,
     /// The golem alarm the story's section carries in its settings chunk
     /// (the frame's copy).
     alarm: Option<Res<'w, crate::golem_alarm::GolemAlarm>>,
 }
+
+/// A scene character's body and record, for the save's target names.
+type SceneRecord = (Entity, &'static exa_character::record::CharacterData);
+/// The scene characters with a mind, the player left out.
+type SceneRecordFilter = (
+    With<crate::mind::casts::MindBody>,
+    Without<crate::player::PlayerBody>,
+);
 
 /// A scene character as the save's flush reads it.
 type SceneCharacter = (
@@ -604,9 +621,16 @@ type SceneCharacter = (
     Option<&'static exa_anim::Animator>,
     Option<&'static exa_ai::brain::Npc>,
     Option<&'static exa_ai::roles::Roles>,
+    Option<&'static crate::mind::casts::MindBody>,
 );
 
 impl LevelSaveScene<'_, '_> {
+    /// Each scene character's body id and record id
+    /// ([`crate::power_save::record_ids`]).
+    pub fn record_ids(&self) -> Vec<(crate::mind::casts::BodyId, u32)> {
+        crate::power_save::record_ids(self.records.iter())
+    }
+
     /// The arena save's entity rewrite: every scene object whose id is a
     /// local one the id remap table holds takes its world id
     /// ([`exa_formats::objdb::ObjectDb::remap_entity_id`]). Returns how many
@@ -683,7 +707,7 @@ impl LevelSaveScene<'_, '_> {
     ) -> Vec<LiveCharacter> {
         let mut out = Vec::new();
         let (mut to_world, mut to_local) = (0, 0);
-        let (mut posed, mut moving, mut homes) = (0, 0, 0);
+        let (mut posed, mut moving, mut homes, mut powered) = (0, 0, 0, 0);
         for (
             transform,
             data,
@@ -697,6 +721,7 @@ impl LevelSaveScene<'_, '_> {
             animator,
             npc,
             roles,
+            mind,
         ) in &self.characters
         {
             let record = crate::save_live::scene_character_record(
@@ -749,6 +774,13 @@ impl LevelSaveScene<'_, '_> {
                     position: (at / 100.0).to_array(),
                     heading,
                 });
+            // The level walk writes no running powers; the count is for
+            // the log.
+            powered += usize::from(
+                !dead
+                    && (mind.is_some_and(|m| !m.powers.is_empty())
+                        || caster.is_some_and(|c| !c.active.is_empty())),
+            );
             posed += usize::from(pose.as_ref().is_some_and(|p| !p.is_empty()));
             moving += usize::from(motion.is_some());
             homes += usize::from(ai_home.is_some());
@@ -763,7 +795,7 @@ impl LevelSaveScene<'_, '_> {
             });
         }
         info!(
-            "save: scene character state: {posed} live pose trees, {moving} motion states, {homes} AI homes, {} dead",
+            "save: scene character state: {posed} live pose trees, {moving} motion states, {homes} AI homes, {powered} running powers the level walk does not write, {} dead",
             out.iter().filter(|c| c.dead).count()
         );
         // The scene's order is the entities'; keep it stable.
@@ -1043,6 +1075,7 @@ mod tests {
             pose: exa_formats::characters::SavedPose::None,
             motion: None,
             ai_home: None,
+            powers: Vec::new(),
         }
     }
 
