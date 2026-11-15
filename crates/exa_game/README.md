@@ -621,7 +621,7 @@ link-iteration count (pace) on its body; Command Dead's end lays the
 body down again (`runtime::lay_down`, the collapse start). A cast while in
 another body posts the control's end to the step's world
 (`runtime::end_control`), so a free-running simulation's newer copy of the
-list cannot overtake it; Spirit Form's adoption and way home likewise
+list cannot overtake it; Spirit Form's switch and way home likewise
 move the power list on the step's world (`runtime::move_mind_list`), as
 the frame's copy can lag the simulation's after a slow frame. The
 pick skips a body wearing a mind ward and, without Sense Minds, asks the
@@ -1777,6 +1777,18 @@ runs on the frame; at its black `release` does the frame's part and posts
 thread's ring. Run on the frame, both had written held copies over a free
 simulation's newer duellist and player behaviour.
 
+Spirit Form's two switches are the original's main-thread writes to the
+shared bodies (the cast table callback's spirit body routine, and the
+way-home callback at the transition's black). Behind the bridge the bodies
+are the simulation's, so both are posted to the next step. `adopt_spirit`
+keeps the held body, the spirit screen and the rooms' anchor on the frame
+and posts `enter_spirit` (the held behaviour, the spirit's player
+behaviour, the caster, the list, the status bits, the `Player` marker);
+`spirit_home` forgets the held body and the screen, moves the anchor back
+and posts `leave_spirit`, which moves them home and sends the spirit's
+removal to the frame. Run on the frame, a free simulation's next step
+packet undid them (the list lost on the way home).
+
 ## Debug commands
 
 `commands` is the original's named debug-command registry: units register
@@ -2089,7 +2101,10 @@ scripts a pad for checks. `script_cast` mirrors every brain's character
 contacts into the cast before and after the fixed step (concern, trust from
 the relation's last attitude, classification level, hostility, noticed
 level and attention as the hearing), writing back first what a script or a
-line changed (`sync_contacts`); the player's contacts are its behaviour's
+line changed (`sync_contacts`; the greeting's frame half does the same);
+behind the bridge that write goes through `FixedCommands::write`, so the
+frame's brain is never sent over the simulation's newer one and the brain
+is otherwise only read. The player's contacts are its behaviour's
 list. The cast's arousal is the brain's readiness word, which starts at the
 personality's 10. A script `Report` is logged as the engine's level-4
 message. `script_cast` makes the player body's character
