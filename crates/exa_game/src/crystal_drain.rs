@@ -20,10 +20,20 @@
 //!   16–23 of its flags) above 2 and answers whether any went down; a stack
 //!   at or under 2 is set to 0 without answering yes.
 //!
-//! The container sources (kinds 1 and 2) are filed by callers outside the
-//! game unit and are not wired. The original drains the open inventory
-//! panel's list instead of the record while the inventory is shown;
-//! Exarust drains the record (`Possessions`), which the panel loads from.
+//! The item panels file sources too ([`GameScreens::drain_sources`]): the
+//! AR crystal (item 499) dropped into a container's panel files kind 2 with
+//! the container's id, into a character's pack kind 3, and a socket row
+//! that holds it files kind 4 with the item's id when it is committed.
+//! [`take_filed_sources`] adds them to the list. A kind-2 source drains the
+//! crystal stacks of that container's record (its section `0x20000`): each
+//! stack of item 499 loses 2 charge, one at or under 2 is cleared, and the
+//! source stays while any went down. Exarust keeps a placed container's
+//! record on its object ([`exa_world::ObjectSections`]) and a bag's in the
+//! live database, so the source remembers the object the panel was opened
+//! on. Kind 1 (every container of the level) is filed by no caller in
+//! 0.9.5 and answers false. The original drains the open inventory panel's
+//! list instead of the record while the inventory is shown; Exarust drains
+//! the record (`Possessions`), which the panel loads from.
 //!
 //! Evidence: the drain, the collect pass, the socket drain, the inventory
 //! drain and the game tick's once-a-second call (REA on `Exanima.exe`,
@@ -54,6 +64,58 @@ pub struct CrystalDrain {
     pub second: u64,
     /// A level was loaded and the collect pass is still to run.
     pub collect_pending: bool,
+    /// Where each kind-2 source's record lives: the placed object its
+    /// panel was opened on ([`Entity::PLACEHOLDER`] for a bag inside an
+    /// item, whose record is the live database's).
+    pub containers: Vec<(u32, Entity)>,
+}
+
+/// One drain of a container record's children: every crystal stack loses
+/// 2 charge (one at or under 2 is cleared). Answers whether any charge
+/// went down.
+pub fn drain_children(children: &mut [exa_formats::containers::Child]) -> bool {
+    let mut changed = false;
+    for child in children.iter_mut().filter(|c| c.id == CRYSTAL) {
+        let mut stack = Stack {
+            item: child.id,
+            word: child.flags,
+        };
+        changed |= stack.drain();
+        child.flags = stack.word;
+    }
+    changed
+}
+
+/// Moves the drain sources the item panels filed into the drain's list
+/// (once each, as the original's filing dedups by kind and id).
+fn take_filed_sources(
+    screens: Option<ResMut<crate::gui_screens::GameScreens>>,
+    mut state: ResMut<CrystalDrain>,
+) {
+    let Some(mut screens) = screens else {
+        return;
+    };
+    if screens.drain_sources.is_empty() {
+        return;
+    }
+    let filed = std::mem::take(&mut screens.drain_sources);
+    for (kind, id) in filed {
+        let source = match kind {
+            1 => Source::Containers,
+            2 => {
+                let object = screens.popup(id).map_or(Entity::PLACEHOLDER, |p| p.object);
+                if !state.containers.iter().any(|(c, _)| *c == id) {
+                    state.containers.push((id, object));
+                }
+                Source::Container(id)
+            }
+            3 => Source::Inventory,
+            4 => Source::Socketed(id),
+            _ => continue,
+        };
+        state.drain.add(source);
+        info!("crystal drain: the item panel files {source:?}");
+    }
 }
 
 /// One drain of a socket word's bytes `(kind, charge)`: `None` without the
@@ -166,6 +228,8 @@ fn drain_sources(
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut players: Query<&mut Possessions, With<PlayerBody>>,
     mut objects: Option<ResMut<LiveObjects>>,
+    mut placed: Query<&mut exa_world::ObjectSections>,
+    mut items: Option<ResMut<crate::doll_view::DollItems>>,
 ) {
     if loading.is_some() {
         return;
@@ -183,13 +247,27 @@ fn drain_sources(
     }
     let mut player = players.iter_mut().next();
     let before = state.drain.sources.len();
+    let containers = state.containers.clone();
     state.drain.tick(|source| match source {
         Source::Socketed(id) => objects
             .as_deref_mut()
             .is_some_and(|objects| drain_item(objects, id)),
         Source::Inventory => player.as_deref_mut().is_some_and(drain_carried),
-        // Filed by callers outside the game unit (not wired).
-        Source::Containers | Source::Container(_) => false,
+        Source::Container(id) => {
+            let object = containers
+                .iter()
+                .find(|(c, _)| *c == id)
+                .map_or(Entity::PLACEHOLDER, |(_, o)| *o);
+            drain_container(
+                id,
+                object,
+                &mut placed,
+                objects.as_deref_mut(),
+                items.as_deref_mut(),
+            )
+        }
+        // Filed by no caller in 0.9.5.
+        Source::Containers => false,
     });
     if state.drain.sources.len() != before {
         info!(
@@ -200,6 +278,46 @@ fn drain_sources(
     }
 }
 
+/// A kind-2 source's drain: the crystal stacks of container `id`'s record,
+/// on the placed `object`'s section, or (a bag inside an item) in the live
+/// database's record. Answers whether any charge went down; a record that
+/// is gone answers false and the source leaves the list.
+fn drain_container(
+    id: u32,
+    object: Entity,
+    placed: &mut Query<&mut exa_world::ObjectSections>,
+    objects: Option<&mut LiveObjects>,
+    items: Option<&mut crate::doll_view::DollItems>,
+) -> bool {
+    if object != Entity::PLACEHOLDER {
+        return placed
+            .get_mut(object)
+            .ok()
+            .and_then(|mut sections| {
+                sections
+                    .container
+                    .as_mut()
+                    .map(|c| drain_children(&mut c.children))
+            })
+            .unwrap_or(false);
+    }
+    let (Some(objects), Some(items)) = (objects, items) else {
+        return false;
+    };
+    let Some(mut children) = items
+        .get(id)
+        .and_then(|item| item.container.as_ref())
+        .map(|c| c.children.clone())
+    else {
+        return false;
+    };
+    let changed = drain_children(&mut children);
+    if changed && objects.set_container_children(id, &children) {
+        items.sync(objects);
+    }
+    changed
+}
+
 /// The crystal drain: the level load's collect and the per-second drain.
 pub struct CrystalDrainPlugin;
 
@@ -207,7 +325,14 @@ impl Plugin for CrystalDrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CrystalDrain>().add_systems(
             Update,
-            (mark_collect, collect_sources, drain_sources).chain(),
+            (
+                mark_collect,
+                collect_sources,
+                take_filed_sources,
+                drain_sources,
+            )
+                .chain()
+                .after(crate::panel_live::PanelInput),
         );
     }
 }

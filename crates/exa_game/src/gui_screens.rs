@@ -856,6 +856,11 @@ pub struct GameScreens {
     /// Icon handles freed by a closed panel, waiting for the icon manager
     /// to drop their references (the destroy's sweep).
     pub released_icons: Vec<usize>,
+    /// The crystal-drain sources the panels' drops filed (the AR crystal
+    /// dropped into a container files kind 2 with its id, into a
+    /// character's pack kind 3), as `(kind, id)`, waiting for the game's
+    /// drain to take them ([`crate::crystal_drain`]).
+    pub drain_sources: Vec<(u32, u32)>,
     /// The default tooltip the task's tick showed, while it is up.
     pub tooltip: Option<crate::form_input::ShownTooltip>,
 }
@@ -888,6 +893,7 @@ impl Default for GameScreens {
             popups: Vec::new(),
             saved_containers: Vec::new(),
             released_icons: Vec::new(),
+            drain_sources: Vec::new(),
             tooltip: None,
         }
     }
@@ -1961,6 +1967,14 @@ fn open_requested_containers(
         if action != ScreenAction::Opened && icon != 0 {
             icons.release(icon);
         }
+        // The open's last step keeps every loaded child inside the panel,
+        // each by its icon's half extents, as the original clamps after
+        // the record load.
+        if action == ScreenAction::Opened
+            && let Some(popup) = screens.popups.iter_mut().find(|p| p.id == request.id)
+        {
+            popup.panel.clamp_all(|slot| icons.half(slot));
+        }
         debug!("GUI: container {:#x} {action:?}", request.id);
         // Each child's id, model and pixel rect, for the smoke runs.
         if action == ScreenAction::Opened
@@ -2745,6 +2759,7 @@ pub(crate) fn close_on_right_release(
     mut screens: ResMut<GameScreens>,
     card: Option<Res<crate::item_card::CardView>>,
     scripted: Option<Res<exa_ui::ScriptedPointer>>,
+    icons: Option<Res<PanelIcons>>,
 ) {
     let Some(buttons) = buttons else {
         return;
@@ -2768,7 +2783,7 @@ pub(crate) fn close_on_right_release(
     // also close the screen. The next right release outside the card is
     // the card's own close.
     if card.as_deref().is_some_and(|card| card.active(&screens))
-        || crate::item_card::entry_under(&screens, pointer.as_ivec2())
+        || crate::item_card::entry_under(&screens, icons.as_deref(), pointer.as_ivec2())
     {
         return;
     }
@@ -3855,6 +3870,58 @@ mod tests {
     }
 
     #[test]
+    fn a_container_opened_by_the_live_request_keeps_its_children_inside() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::doll_view::DollItems>()
+            .add_message::<ContainerRequest>()
+            .add_systems(Update, open_requested_containers);
+        app.world_mut().resource_mut::<GameScreens>().task.screen = (1280, 720);
+        // A child stored far outside its 50 by 30 unit container.
+        let object = app
+            .world_mut()
+            .spawn(exa_world::ObjectSections {
+                placement: 0,
+                usable: None,
+                use_script: None,
+                container: Some(exa_formats::containers::Container {
+                    width: 50,
+                    height: 30,
+                    capacity: 400,
+                    max_item: 60,
+                    children: vec![exa_formats::containers::Child {
+                        id: 9,
+                        flags: 0,
+                        x: 8000,
+                        y: -4000,
+                    }],
+                }),
+            })
+            .id();
+        let id = exa_formats::objdb::LOCAL | 4;
+        app.world_mut().write_message(ContainerRequest {
+            object,
+            id,
+            pointer: IVec2::new(640, 400),
+        });
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        let popup = screens.popup(id).expect("the popup opened");
+        let icons = app.world().resource::<PanelIcons>();
+        let entry = popup.panel.entries[0];
+        let half = icons.half(entry.icon).unwrap();
+        let centre = (
+            entry.cell.x + popup.panel.icon_size / 2,
+            entry.cell.y + popup.panel.icon_size / 2,
+        );
+        // The open's clamp keeps the icon's centre at least its half
+        // extents inside the client on each side.
+        assert_eq!(centre.0, popup.panel.client.0 - half.0);
+        assert_eq!(centre.1, half.1);
+    }
+
+    #[test]
     fn the_container_popup_opens_on_the_pointer_and_saves_on_close() {
         use crate::item_container::Cell;
         let mut screens = GameScreens::default();
@@ -4523,7 +4590,7 @@ mod tests {
         let layout = InventoryLayout::at(4);
         let textures = GuiTextures::default();
         let cell = vec![255u8; 64 * 64 * 4];
-        let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64).unwrap();
+        let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64, 22).unwrap();
         let paint = crate::doll_view::DollPaint {
             punch: true,
             dots: Some(2.5),

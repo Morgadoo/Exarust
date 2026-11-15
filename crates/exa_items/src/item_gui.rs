@@ -38,7 +38,10 @@ pub const SOCKET: u8 = 0x80;
 pub const KIND: u16 = 0x7F;
 /// The game function an AR crystal in a socket fires.
 pub const AR_FUNCTION: u32 = 4;
-/// The size of a rating dot and of the slider's knob, in pixels.
+/// The size of a rating dot and of the slider's knob, in pixels, before a
+/// GUI level is chosen: the interface's large-icon cell, which every GUI
+/// level then sets to its own (`exa_ui::gui_font::LARGE_ICONS`); the live
+/// draws pass the level's.
 pub const DOT: i32 = 22;
 /// The crystals a socket takes, by database id.
 pub const SOCKET_CRYSTALS: [u32; 4] = [crystal::A, crystal::B, crystal::C, crystal::AR];
@@ -506,7 +509,8 @@ pub fn rating_dots(value: f32, x: i32, unit: i32) -> (Vec<i32>, Option<i32>) {
 
 /// The slider's line and knob: the knob centred at `share` of the width
 /// from the line's start (half a knob in); the line stops 0.195 knob short
-/// of it on each side.
+/// of it on each side. `dot` is the knob's side, the GUI level's
+/// large-icon cell ([`DOT`] before a level is chosen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slider {
     pub left: Option<(i32, i32)>,
@@ -514,15 +518,15 @@ pub struct Slider {
     pub knob: i32,
 }
 
-pub fn slider(x: i32, width: i32, share: f32) -> Slider {
-    let start = (DOT >> 1) + x;
+pub fn slider(x: i32, width: i32, share: f32, dot: i32) -> Slider {
+    let start = (dot >> 1) + x;
     let centre = start + (width as f32 * share).round_ties_even() as i32;
-    let gap = (f64::from(DOT) * 0.195).round_ties_even() as i32;
+    let gap = (f64::from(dot) * 0.195).round_ties_even() as i32;
     let (a, b) = (centre - gap, centre + gap);
     Slider {
         left: (start < a).then_some((start, a)),
         right: (b < start + width).then_some((b, start + width)),
-        knob: centre - (DOT >> 1),
+        knob: centre - (dot >> 1),
     }
 }
 
@@ -1030,10 +1034,10 @@ mod tests {
         assert_eq!(dots[1], 11);
         assert_eq!(half, None);
         assert_eq!(rating_dots(-1.0, 0, 4), (vec![], None));
-        let s = slider(0, 200, 0.5);
+        let s = slider(0, 200, 0.5, DOT);
         assert_eq!(s.knob, 100);
         assert_eq!((s.left, s.right), (Some((11, 107)), Some((115, 211))));
-        assert_eq!(slider(0, 200, 0.0).left, None);
+        assert_eq!(slider(0, 200, 0.0, DOT).left, None);
     }
 
     #[test]

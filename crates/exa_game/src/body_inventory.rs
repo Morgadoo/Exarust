@@ -253,6 +253,37 @@ pub fn give(
     possessions.carried.push(Carried { id, flags, x, y });
 }
 
+/// A move inside a pack panel, written into the carried list: the carried
+/// entry of `id` saved at the old cell `from` (else the last one with the
+/// same flags, else the last of the item) takes the cell `to` and goes to
+/// the end of the list, as the panel raises the moved entry and the
+/// original's pack save writes the list in the panel's order. False when
+/// the list does not carry the item.
+pub fn reposition(
+    possessions: &mut Possessions,
+    id: u32,
+    flags: u32,
+    from: Cell,
+    to: Cell,
+    unit: i32,
+    vscale: f32,
+) -> bool {
+    let old = to_list_pos(from, unit, vscale);
+    let carried = &possessions.carried;
+    let Some(at) = carried
+        .iter()
+        .rposition(|c| c.id == id && (c.x, c.y) == old)
+        .or_else(|| carried.iter().rposition(|c| c.id == id && c.flags == flags))
+        .or_else(|| carried.iter().rposition(|c| c.id == id))
+    else {
+        return false;
+    };
+    let mut entry = possessions.carried.remove(at);
+    (entry.x, entry.y) = to_list_pos(to, unit, vscale);
+    possessions.carried.push(entry);
+    true
+}
+
 /// Moves an item from one character's side to another character's pack, as
 /// a drop on the destination's pack panel does. Returns the flags the item
 /// left with, or `None` when the source does not hold it.

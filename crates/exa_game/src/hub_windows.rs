@@ -1304,7 +1304,12 @@ impl HubWindows {
     /// the pack and returns both baskets: the arena's trade hooks send the
     /// bought items to the arsenal, not to the pack
     /// ([`crate::arsenal::Arsenal::trade`]).
-    pub fn shop_click(&mut self, point: (i32, i32), career: &mut ArenaCareer) -> Option<ShopTrade> {
+    pub fn shop_click(
+        &mut self,
+        point: (i32, i32),
+        career: &mut ArenaCareer,
+        icons: Option<&mut crate::item_panel_draw::PanelIcons>,
+    ) -> Option<ShopTrade> {
         let shop = self.shop.as_mut()?;
         // The bottom row's own record places are not traced; the guessed
         // rect is where the page's bottom-left "Trade" button draws.
@@ -1333,7 +1338,7 @@ impl HubWindows {
         shop.window.money = career.company.copper;
         // The arena's bought hook shelves the bought items in the arsenal,
         // so they do not join the pack.
-        let icons = shop.panels.settle_bought_away();
+        let icons = shop.panels.settle_bought_away(icons);
         self.released_icons.extend(icons);
         for id in &sold {
             if let Some(at) = career.goods.iter().position(|held| held == id) {
@@ -3032,7 +3037,7 @@ mod tests {
         drag(&mut windows, ShopPanel::Pack, 0, ShopPanel::Sell);
         assert_eq!(windows.shop.as_ref().unwrap().window.sell_items, [9]);
         let point = (10, SHOP_SIZE.1 - 20);
-        assert!(windows.shop_click(point, &mut career).is_some());
+        assert!(windows.shop_click(point, &mut career, None).is_some());
         assert_eq!(career.goods, Vec::<u32>::new());
         assert!(career.company.stock.contains(&9));
         // The sold item is on the shop's side now.
@@ -3041,7 +3046,7 @@ mod tests {
         open(&mut windows, false, &career);
         windows.price_shop_items(|id| if id == 7 { 5 } else { 0 });
         drag(&mut windows, ShopPanel::Stock, 0, ShopPanel::Buy);
-        let trade = windows.shop_click(point, &mut career).unwrap();
+        let trade = windows.shop_click(point, &mut career, None).unwrap();
         assert_eq!(
             trade,
             ShopTrade {
@@ -3120,7 +3125,7 @@ mod tests {
         open(&mut windows, false, &career);
         windows.shop.as_mut().unwrap().window.add_buy(3);
         let point = (10, SHOP_SIZE.1 - 20);
-        assert!(windows.shop_click(point, &mut career).is_some());
+        assert!(windows.shop_click(point, &mut career, None).is_some());
         assert_eq!(career.company.copper, 340);
     }
 

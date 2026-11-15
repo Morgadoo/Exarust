@@ -10,7 +10,8 @@
 //!   row's x over five units; a socket that does not exist answers
 //!   nothing). Only the four power crystals are taken. The socket words are
 //!   read again from the item first. A crystal already there goes back to
-//!   the player: into the open pack at its centre, else onto the carried
+//!   the player: into the open pack (added at its centre, then placed at a
+//!   random spot and pushed out of the others), else onto the carried
 //!   list. The dropped crystal takes the socket's kind and its charge (the
 //!   drag's flags, bits 16–23), the row is committed into the item, and
 //!   the source's drag ends as accepted, so the crystal leaves the pack.
@@ -21,9 +22,11 @@
 //!   A release anywhere else cancels and the socket keeps its crystal.
 //! - **The commit** writes the four socket words into the item's weapon
 //!   section (byte 0x48) when it has one, else into its apparel body (byte
-//!   0x218). An AR crystal in any socket fires the game's fourth function
-//!   [not ported: logged]. The ability checks ([`crate::item_ability`])
-//!   read the words on their next run.
+//!   0x218). The first socket holding the AR crystal files the item as a
+//!   crystal-drain source (the game's source list, kind 4 with the item's
+//!   id: [`crate::crystal_drain`]). An apparel commit also re-runs the
+//!   player's equipment light switch ([`crate::player_light`]). The ability
+//!   checks ([`crate::item_ability`]) read the words on their next run.
 //!
 //! The card shows the live words: an open card's socket row is read from
 //! the live object database each frame.
@@ -69,8 +72,15 @@ pub fn live_sockets(objects: &LiveObjects, item: u32) -> Option<Sockets> {
 }
 
 /// Commits a socket row into its item: the weapon section's words when it
-/// has one, else the apparel body's. `None` when the item has neither.
-pub fn commit(objects: &mut LiveObjects, item: u32, sockets: &Sockets) -> Option<SocketCommit> {
+/// has one, else the apparel body's. `None` when the item has neither. A
+/// row holding the AR crystal files `(4, item)` into `sources`, the
+/// crystal drain's queue ([`GameScreens::drain_sources`]).
+pub fn commit(
+    objects: &mut LiveObjects,
+    item: u32,
+    sockets: &Sockets,
+    sources: &mut Vec<(u32, u32)>,
+) -> Option<SocketCommit> {
     let weapon = objects.db().section(item, WEAPON_SECTION).is_some();
     let apparel = objects.db().section(item, APPAREL_SECTION).is_some();
     let committed = sockets.commit(weapon, apparel)?;
@@ -85,7 +95,8 @@ pub fn commit(objects: &mut LiveObjects, item: u32, sockets: &Sockets) -> Option
         objects.write_section_byte(item, tag, at + i * 2 + 1, high);
     }
     if committed.ar {
-        info!("socket row: {item:#x} holds an AR crystal: the game's fourth function [not ported]");
+        info!("socket row: {item:#x} holds an AR crystal: filed as a drain source");
+        sources.push((exa_items::item_gui::AR_FUNCTION, item));
     }
     Some(committed)
 }
@@ -97,11 +108,15 @@ pub struct SocketLanding {
     pub code: u32,
     /// The crystal handed back from the socket, as `(id, flags)`.
     pub back: Option<(u32, u32)>,
+    /// What the row's commit wrote, when the crystal went in.
+    pub committed: Option<SocketCommit>,
 }
 
 /// Drops crystal `id` (its drag flags carry the charge) into socket `i` of
 /// the shown card's item. `from` is the socket the drag left, for a drag
-/// out of the same row. The words are read from the item first.
+/// out of the same row. The words are read from the item first; the
+/// commit's drain source goes into `sources`.
+#[allow(clippy::too_many_arguments)]
 pub fn drop_on_socket(
     card: &mut ShownCard,
     objects: &mut LiveObjects,
@@ -109,23 +124,27 @@ pub fn drop_on_socket(
     id: u32,
     flags: u32,
     from: Option<usize>,
+    sources: &mut Vec<(u32, u32)>,
 ) -> SocketLanding {
     let mut sockets = live_sockets(objects, card.item)
         .or(card.sockets)
         .unwrap_or_default();
     let dropped = sockets.drop_from(i, id, flags, from == Some(i));
+    let mut committed = None;
     if dropped.code == DROP_HANDLED {
-        commit(objects, card.item, &sockets);
+        committed = commit(objects, card.item, &sockets, sources);
         card.sockets = Some(sockets);
     }
     SocketLanding {
         code: dropped.code,
         back: dropped.back,
+        committed,
     }
 }
 
 /// Hands a crystal back to the player, as the socket control does: into the
-/// open pack at its centre, else onto the carried list.
+/// open pack (its centre add and place pass, [`PanelIcons::add_placed`]),
+/// else onto the carried list.
 pub fn give_back(
     screens: &mut GameScreens,
     icons: &mut PanelIcons,
@@ -139,12 +158,15 @@ pub fn give_back(
     if pack_open {
         let (icon, _) = icons.reserve(id, flags, catalogue);
         let half = screens.pack.icon_size >> 1;
-        let cell = Cell::new(
+        let centre = Cell::new(
             (screens.pack.client.0 >> 1) - half,
             (screens.pack.client.1 >> 1) - half,
         );
         let bulk = catalogue.and_then(|c| c.bulk(id)).map_or(0, i32::from);
-        screens.pack.add_at_centre(id, icon, flags, bulk);
+        // The centre add and its place pass.
+        let cell = icons
+            .add_placed(&mut screens.pack, id, icon, flags, bulk)
+            .unwrap_or(centre);
         let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
         crate::body_inventory::give(possessions, id, flags, cell, unit, vscale);
     } else {
