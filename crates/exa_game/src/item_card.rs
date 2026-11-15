@@ -749,6 +749,34 @@ fn request_card(
     // The card is the topmost form: once it takes the pointer, a right press
     // is its own (it fades out) and reaches no panel under it.
     let card_unit = card_unit(window, &screens);
+    // A right press on a socket of the shown card's row that holds a
+    // crystal is the socket control's: it opens the crystal's card (its
+    // charge in the flags), in place of the card's own fade.
+    if let Some(card) = view.shown.as_ref()
+        && let Some(i) = crate::socket_drag::socket_at(card, IVec2::new(pointer.0, pointer.1))
+        && let Some((crystal, flags)) = card.sockets.and_then(|s| s.card_at(i))
+        && let Some(catalogue) = catalogue.as_deref()
+    {
+        let (world, unit) = (card.world, card_unit);
+        debug!(
+            "item card: socket {i} of {:#x} shows crystal {crystal}'s card",
+            card.item
+        );
+        show(
+            &mut view,
+            &mut screens,
+            &mut icons,
+            catalogue,
+            phrases.as_deref().unwrap_or(&PhraseBook::default()),
+            crystal,
+            flags,
+            pointer,
+            unit,
+            now,
+            world,
+        );
+        return;
+    }
     if let Some(card) = view.shown.as_mut()
         && card.hit(pointer, card_unit)
     {
@@ -2234,6 +2262,74 @@ mod tests {
         app.world_mut().resource_mut::<crate::flow::Flow>().mode = crate::flow::Mode::Story;
         app.update();
         assert!(!app.world().resource::<CardView>().context.gates.rank);
+    }
+
+    /// A right press on a socket that holds crystal B opens the crystal's
+    /// card with its charge (shipped records, skipped without the game).
+    #[test]
+    fn a_right_press_on_a_socketed_crystal_opens_its_card() {
+        use exa_items::possession::crystal;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(resource) = data.pack(exa_assets::PackKind::Resource) else {
+            return;
+        };
+        let Some(db) = resource
+            .get("objdb.rdb")
+            .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let strings = resource
+            .get("objstrings.rdb")
+            .and_then(|bytes| exa_formats::objstrings::Library::parse(bytes).ok());
+        let catalogue = ItemCatalogue::of_database_with_strings(&db, strings.as_ref());
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<CardView>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::parchment::ParchmentView>()
+            .init_resource::<Time>()
+            .insert_resource(catalogue)
+            .insert_resource(ScriptedPointer(Some(Vec2::new(1005.0, 605.0))))
+            .add_systems(Update, request_card);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.world_mut().resource_mut::<GameScreens>().task.screen = (1280, 720);
+        let row = GuiRect::new(1000, 600, 80, 22);
+        app.world_mut().resource_mut::<CardView>().shown = Some(ShownCard {
+            item: 0x1234,
+            flags: 0,
+            name: String::new(),
+            built: BuiltCard {
+                page: exa_items::card::CardPage::Plain,
+                value: 0,
+                title_colour: None,
+                content: None,
+                description: String::new(),
+            },
+            icon: 0,
+            at: (900, 300),
+            size: (300, 400),
+            pointer: (900, 300),
+            fade: PopupFade::default(),
+            form_flags: 0,
+            world: false,
+            sockets: Some(Sockets([0x3082, 0x80, 0, 0])),
+            socket_row: Some((row, 4)),
+            sides: [[0; 3]; 2],
+            flip: FlipButton::default(),
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        let shown = app.world().resource::<CardView>().shown.as_ref().map(|c| (c.item, c.flags));
+        assert_eq!(shown, Some((crystal::B, 0x30 << 16)));
     }
 
     #[test]
