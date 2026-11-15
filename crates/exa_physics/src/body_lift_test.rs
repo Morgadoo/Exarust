@@ -797,7 +797,11 @@ fn a_pelvis_over_its_target_keeps_the_push() {
     assert_eq!(d.lift, 0.0, "the servo lifts no pelvis 20 cm high");
     let expected = 2.0 * d.support() * d.support() * 0.5 * d.bearing.lag / CM;
     assert!(expected > 0.0);
-    assert!(close(d.carry().x, expected, 1e-6), "{} {level}", d.carry().x);
+    assert!(
+        close(d.carry().x, expected, 1e-6),
+        "{} {level}",
+        d.carry().x
+    );
 }
 
 /// Only a walking condition measures the feet's lag: any other condition

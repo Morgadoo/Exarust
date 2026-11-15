@@ -430,6 +430,34 @@ Byte counts are estimated from block landmarks in the research notes.
 | Torso twist and head look | 670 | 90 % |  |
 | Sampler call, carry reset, jump phase, character frame, drive into the carry, part matrices, chest pins, balance and feet calls, carry propagation | 4,500 | 75 % | the pin records' goals are set once a tick (`Ragdoll::set_pin_goals`, kernel carry lane): posed on the frame, the thorax shifted forward without support, led (both branches, the exertion, the rate factor), clamped about the feet centre, their mean kept; the parts' matrices and foot contacts on the frame are Exarust's carry and aim (structurally different, not ported);  jump phase is dead code (its flag and timer have no writer; kept as `Locomotor::jump`); the character's place is the frame (no capsule since the charmove lane), kept at the feet's ground as Exarust's model root is at the feet |
 
+## Assembly comparison of #49 and #8 (motiledyn lane, round 223)
+
+Checked instruction by instruction (float order, constants, branch order), GPU on hold, so
+tests are the only evidence; traces owed (see the lane's artifacts README).
+
+Body tick (#49):
+
+| block | result |
+|---|---|
+| Fatigue factors (rest, support adapters) | constants, order (balance then energy for rest, energy then balance for support), double sums and the min/max NaN sides match `body_timers.rs`. One gate differs: the rest adapter is forced to 1 while the parry byte is set and the clip progress is under 0.9; Exarust tests the get-up motions. Vestigial (no reader in either program), left as is |
+| Impact accumulator, dead copy, look smoothing | rate 0.0125 standing or when the 0x800 condition bit is set, +0.0025 a tick moving, 0.15 cap; the look's vertical step is scaled by 0.1 in double; the follow by 0.6. Exarust ignores the 0x800 bit (standing rate either way except while moving) |
+| Red regeneration | 0.25 × 5e-5 in double, clamped to the maximum with the NaN kept: matches `Health::regenerate_red` |
+| Burn call | gated on either burn value above 0: matches (no writer of the strength in Exarust) |
+| Two-hand group | called every tick with a mode by the muscles byte, the off-feet bit and condition 2; `two_hand_group` is not called (Exarust's held items carry no shared group mask) |
+| Readiness | rises 0.004 (double) to 1 while the stance is the combat idle or parrying and the clip is the idle, a parry or a released attack: matches `readiness_step` |
+| Queued motion | a living, muscled body starts its queued motion (the weapon switch from the AI and the inventory) when no busy bit (0x10203) is set, ending a parry first, then clears it unless moving with the second movement byte. Not ported: Exarust's starters play the clip at once (the AI's draw is in the AI lane) |
+| Locomotion push into the carry | while moving, carry += drive × (((S × S) × push gain) × lag) before the balance and feet calls, with no support gate. Fixed this round (it came after the lift and only with support) |
+| Footwork end after the balance call | the use counter's 0.005 (knockback step) or 0.0025 (double) matches `body_balance.rs`; the episode end (the 100- and 200-tick windows, the 20 × scale reach, the 0.05 projection, the 32-tick counter) has the same structure as `steps::episode_over`, not re-checked constant by constant |
+
+Approximations (DEC-7, left as they are): #49 calls the approximate normaliser once (the
+sampler's tail); #8 calls the approximate normalisers twice and the fast barycentric and
+sector-sum helpers three times each (the blood and knockback directions).
+
+Damage routine (#8): the branch is chosen by the striker's pending contact kind (1 a living
+limb, 2 a held weapon, 3 a shield); the struck body's parry byte is read only inside the
+weapon branch. Exarust met a limb with the fighter's guard, so a parrying fighter struck on a
+limb was parried. Fixed this round (`react_to_hits`: `Struck::Limb` meets the open guard).
+
 ## Corrections made by the audit
 
 - The step routine an earlier rating credited as the step end is the step **start** (routine #17);

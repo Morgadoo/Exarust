@@ -791,8 +791,10 @@ blend and its bleeds, the gait columns from the race's per-tick table
 the speed along the heading and the locomotion clock's step) or the fall
 of its run blend while it stands (`stand`; `src/body_gait.rs`); its
 capsule carries the decision out until the body walks by its carry
-(`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`), and the
-drive is kept, not yet added to the carry. The pose is put on the original's character
+(`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`). While the
+body locomotes the carry takes the drive (drive × S² × the gait's push
+gain × the feet's lag, `body_lift.rs`) before the lift servo runs, whatever
+the servo then finds (no support, a pelvis over its target). The pose is put on the original's character
 frame, whose origin follows the pelvis by its rules: on the pelvis while
 moving, frozen while standing steady, behind dead-bands of 5 and 10 cm
 otherwise (`src/body_frame.rs`, `body::Drive::anchor`). The controller

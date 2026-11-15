@@ -300,9 +300,10 @@ pub(super) fn target_height(
 
 impl Ragdoll {
     /// The character tick's carry, once the body is aimed: gravity, plus
-    /// the locomotion drive while it moves, less the lift. Each leg's ground offset is set (its sole height standing;
-    /// moving, its animated ankle's height over the gait pose's lowest,
-    /// plus the sole), then the target pelvis height from the ground under the feet
+    /// the locomotion drive while it moves, less the lift. Each leg's
+    /// ground offset is set (its sole height standing; moving, its
+    /// animated ankle's height over the gait pose's lowest, plus the sole),
+    /// then the target pelvis height from the ground under the feet
     /// (each foot's own; the controller's floor does not raise it) and the
     /// clip root's height over each ankle, then the lift servo, with
     /// support only. The pre-clamp term is kept for the leg bend.
