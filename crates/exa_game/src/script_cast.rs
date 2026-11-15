@@ -217,6 +217,34 @@ fn changed(a: f32, b: f32) -> bool {
     a.to_bits() != b.to_bits()
 }
 
+/// A cast write that goes back to one of a brain's contacts: the
+/// contact's brain key and the values a script or a line changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ContactWrite {
+    key: u64,
+    concern: Option<f32>,
+    noticed: Option<f32>,
+    attention: Option<f32>,
+}
+
+/// Writes the cast's changes into the brain's contacts.
+fn write_contacts(npc: &mut Npc, writes: &[ContactWrite]) {
+    for write in writes {
+        let Some(record) = npc.contacts.iter_mut().find(|c| c.id == write.key) else {
+            continue;
+        };
+        if let Some(concern) = write.concern {
+            record.concern = concern;
+        }
+        if let Some(noticed) = write.noticed {
+            record.noticed = noticed;
+        }
+        if let Some(attention) = write.attention {
+            record.attention = attention;
+        }
+    }
+}
+
 /// Syncs one brain with its cast character: what a script or a line wrote
 /// since the last mirror goes to the brain's contact (the concern, the
 /// noticed level and the attention offset), then every character contact
@@ -226,40 +254,68 @@ fn changed(a: f32, b: f32) -> bool {
 /// relation's last attitude toward the other (0 without a relation, the
 /// value the original's relation query answers for a new one), with the
 /// mind powers' overrides (the brains run none).
+///
+/// The brain is the simulation's: behind the bridge the writes go through
+/// `fixed` ([`exa_physics::sim_app::FixedCommands::write`]), landing on
+/// the frame's copy at once and on the simulation's at the start of its
+/// next step. Written on the frame's copy alone, a free-running
+/// simulation's next step packet put the old values back, or the frame's
+/// whole brain, based on an older step, went over the simulation's newer
+/// one. The brain is only read otherwise.
+#[allow(clippy::too_many_arguments)]
 pub fn sync_brain(
     cast: &mut exa_script::cast::Cast,
     mirror: &mut ContactMirror,
     me: u32,
-    npc: &mut Npc,
+    entity: Entity,
+    npc: &mut Mut<Npc>,
     relations: Option<&Relations>,
     character_of: impl Fn(u64) -> Option<u32>,
+    fixed: Option<&mut exa_physics::sim_app::FixedCommands>,
 ) {
     let Some(character) = cast.get_mut(me) else {
         return;
     };
+    let mut writes = Vec::new();
     if let Some(written) = mirror.written.get(&me) {
         for now in &character.contacts {
             let Some((key, was)) = written.iter().find(|(_, w)| w.other == now.other) else {
                 continue;
             };
-            let Some(record) = npc.contacts.iter_mut().find(|c| c.id == *key) else {
+            if !npc.contacts.iter().any(|c| c.id == *key) {
                 continue;
+            }
+            let mut write = ContactWrite {
+                key: *key,
+                concern: None,
+                noticed: None,
+                attention: None,
             };
             if changed(now.concern, was.concern) {
                 debug!(
                     "character {me}: a script set its concern for {} to {:.2}",
                     now.other, now.concern
                 );
-                record.concern = now.concern;
+                write.concern = Some(now.concern);
             }
             if changed(now.hearing.level, was.hearing.level) {
-                record.noticed = now.hearing.level;
+                write.noticed = Some(now.hearing.level);
             }
             if changed(now.hearing.decay, was.hearing.decay) {
-                record.attention = now.hearing.decay;
+                write.attention = Some(now.hearing.decay);
+            }
+            if write.concern.is_some() || write.noticed.is_some() || write.attention.is_some() {
+                writes.push(write);
             }
         }
     }
+    if !writes.is_empty() {
+        match fixed {
+            Some(fixed) => fixed.write(entity, npc, move |npc| write_contacts(npc, &writes)),
+            None => write_contacts(npc, &writes),
+        }
+    }
+    let npc: &Npc = npc;
     let mut written = Vec::with_capacity(npc.contacts.len());
     for record in &npc.contacts {
         if record.object {
@@ -298,9 +354,10 @@ pub fn sync_brain(
 pub fn sync_contacts(
     conversations: Option<ResMut<Conversations>>,
     mut mirror: ResMut<ContactMirror>,
-    mut brains: Query<(&CharacterId, &mut Npc, Option<&Relations>)>,
+    mut brains: Query<(Entity, &CharacterId, &mut Npc, Option<&Relations>)>,
     players: Query<(&CharacterId, &crate::player_practice::PlayerPractice)>,
     ids: Query<&CharacterId>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let Some(mut conversations) = conversations else {
         return;
@@ -310,7 +367,7 @@ pub fn sync_contacts(
             .and_then(|e| ids.get(e).ok())
             .map(|id| id.0)
     };
-    for (id, mut npc, relations) in &mut brains {
+    for (entity, id, mut npc, relations) in &mut brains {
         if npc.contacts.is_empty() && !mirror.written.contains_key(&id.0) {
             continue;
         }
@@ -318,9 +375,11 @@ pub fn sync_contacts(
             &mut conversations.cast,
             &mut mirror,
             id.0,
+            entity,
             &mut npc,
             relations,
             character_of,
+            fixed.as_deref_mut(),
         );
         if mirror.written.get(&id.0).is_some_and(Vec::is_empty) {
             mirror.written.remove(&id.0);
@@ -807,6 +866,78 @@ mod tests {
         assert_eq!(
             app.world().get::<Npc>(brain).unwrap().contacts[0].concern,
             11.0
+        );
+    }
+
+    /// Behind the bridge a script's write to a brain's contact is posted to
+    /// the simulation's brain (B0.6): the frame's copy takes it at once
+    /// without a change mark, so neither the next step packet nor the
+    /// frame's whole brain, based on an older step, undoes it there. A
+    /// mirror that writes nothing leaves the brain untouched.
+    #[test]
+    fn behind_the_bridge_a_script_write_is_posted_to_the_brain() {
+        use exa_ai::contacts::ContactRecord;
+        use exa_physics::sim_app::FixedCommands;
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin);
+        app.insert_resource(Conversations::default());
+        let mut fixed = FixedCommands::default();
+        fixed.set_bridged(true);
+        app.insert_resource(fixed);
+        let other = app
+            .world_mut()
+            .spawn((CharacterId(7), Roles(Vec::new())))
+            .id();
+        let mut npc = Npc::new([0.0; 4]);
+        npc.contacts = vec![ContactRecord {
+            id: other.to_bits(),
+            concern: 2.5,
+            ..Default::default()
+        }];
+        let brain = app
+            .world_mut()
+            .spawn((CharacterId(3), Roles(Vec::new()), npc))
+            .id();
+        app.update();
+        let changed_since = |app: &mut App, before| {
+            let now = app.world_mut().change_tick();
+            let npc = app.world().entity(brain).get_ref::<Npc>().unwrap();
+            npc.last_changed().is_newer_than(before, now)
+        };
+        let before = app.world_mut().change_tick();
+        app.update();
+        assert!(
+            !changed_since(&mut app, before),
+            "the mirror touched the brain"
+        );
+        {
+            let mut conversations = app.world_mut().resource_mut::<Conversations>();
+            conversations.cast.get_mut(3).unwrap().contacts[0].concern = 12.0;
+        }
+        let before = app.world_mut().change_tick();
+        app.update();
+        assert_eq!(
+            app.world().get::<Npc>(brain).unwrap().contacts[0].concern,
+            12.0
+        );
+        assert!(
+            !changed_since(&mut app, before),
+            "the frame's brain was sent"
+        );
+        let writes = app
+            .world_mut()
+            .resource_mut::<FixedCommands>()
+            .take_writes();
+        assert_eq!(writes.len(), 1);
+        // The simulation's copy still has the brain's own value; the
+        // posted write lands there.
+        app.world_mut().get_mut::<Npc>(brain).unwrap().contacts[0].concern = 2.5;
+        for write in writes {
+            write(app.world_mut());
+        }
+        assert_eq!(
+            app.world().get::<Npc>(brain).unwrap().contacts[0].concern,
+            12.0
         );
     }
 

@@ -1637,6 +1637,14 @@ pub fn exchange_free(world: &mut World) {
         let mut link = world.resource_mut::<FreeLink>();
         link.awaiting = link.awaiting.saturating_sub(count as u32);
     }
+    // The steps' frame events run after the last packet of the frame is
+    // applied, in send order. Each apply settles the frame's changes made
+    // before it (they count as the apply's own and are not sent back), so
+    // an event run between two applies lost its writes, inserts, removals
+    // and despawns of bridged data: the simulation never saw them, and a
+    // later step's value put a removed component, or a despawned entity,
+    // back on the frame.
+    let mut events = Vec::new();
     for FreeStepped { stepped, stamp } in arrived {
         if let Some(out) = stepped.bridge {
             frame_apply(world, out);
@@ -1645,9 +1653,7 @@ pub fn exchange_free(world: &mut World) {
         if let Some(mut bridge) = world.get_resource_mut::<FrameBridge>() {
             bridge.applied_step = stamp.tick;
         }
-        for event in stepped.events {
-            event(world);
-        }
+        events.extend(stepped.events);
         let mut link = world.resource_mut::<FreeLink>();
         if link.stamp.is_some_and(|s| s.tick + 1 != stamp.tick) {
             link.gaps += 1;
@@ -1676,6 +1682,9 @@ pub fn exchange_free(world: &mut World) {
                 );
             }
         }
+    }
+    for event in events {
+        event(world);
     }
     if let Some(snapshot) = world.resource::<SimShell>().snapshots.take() {
         world

@@ -268,7 +268,7 @@ pub fn run_greetings(
 
 /// The frame's half of the greetings: each greeter's brain mirrored into
 /// the cast, its mood, the greeting run and its effects sent.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn greet_on_frame(
     In((now, greets)): In<(u32, Vec<(Entity, u32, u32)>)>,
     scripts: Option<Res<exa_script::Scripts>>,
@@ -277,6 +277,7 @@ fn greet_on_frame(
     mut brains: Query<(&mut Npc, Option<&Relations>)>,
     ids: Query<&CharacterId>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
+    mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
     let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
         return;
@@ -297,9 +298,11 @@ fn greet_on_frame(
             &mut conversations.cast,
             mirror,
             me,
+            entity,
             &mut npc,
             relations,
             character_of,
+            fixed.as_deref_mut(),
         );
         let mood = exa_script::dialogue::mood(&conversations.cast, me, partner);
         let arousal = conversations.cast.get(me).map_or(0.0, |c| c.arousal);
