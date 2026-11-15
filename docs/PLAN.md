@@ -1493,6 +1493,10 @@ the damage routine branches by the striker's contact kind, so a blow on a limb t
 
 the gamepad's menu dispatch is ported on gilrs: a focus stack follows the live forms, the action sets switch on push and pop, and the menu reader's word reaches the top form's key slot, an unanswered word going to the back slot, the directional pick or the focused control as the original does. The main menu, manual, skill screen (with its link search, a y bug fixed), arsenal, Settings (pick, record keys, trackbar hold), the arena board's tables and the hub message box take the pad. Left: the inventory's pad arm, a general send-to-control, the exact pick reach check. Grid scenes owed while the GPU is on hold.
 
+the planner plans with the caller's goal record (size class, the alert count as the penalty shift, the accept distance and the end test), and every AI state writes its fields as the original does (roam, patrol, chase, flight, follow, search, Long Door); the walks set up their raster in single-precision centimetres and project a blocked end with the original's estimate. The attach's seed is never written in the original, so its extra-array branch is dead. DEC-5's shared stamp table is kept and documented. NPC routes change; determinism runs owed while the GPU is on hold.
+
+a hard hit's turn stall now holds the body's turn (written by the impact, one off a tick), the arms read the turn error a tick late as the original does, a turning body lowers its support adapter, an interrupted swing stands still (the strength and stall rate were swapped), and a struck body is knocked back along the striker's unnormalised slot vector, so heavy blows take a whole step. A hovering player looks ahead by the straight walk. Fight traces change; determinism runs and duel scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
