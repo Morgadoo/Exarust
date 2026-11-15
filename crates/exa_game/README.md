@@ -2540,7 +2540,9 @@ reads it. Rules: `docs/RENDERING.md` (Cut-away fade).
 ## Content stream requests
 
 `content_requests` runs the game's content stream
-(`exa_assets::stream_worker`): the stream thread builds a requested model
+(`exa_assets::stream_worker`); when the run is asked to end (`AppExit`)
+it empties every ring and stops the thread, as the original's quit paths
+call the stream's reset: the stream thread builds a requested model
 on the CPU (`ModelJob::build`) and the main thread adds its assets when the
 caller fetches it. The item icons post an object request (the item's id,
 its variant with the streamed bit `0x10000000`, `ICON_SCENE`) for a model

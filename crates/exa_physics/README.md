@@ -34,6 +34,9 @@ the simulation's events, run on the frame's world after the step in send
 order; a latest-wins `SnapshotBuffer` hands the frame each step's
 `SimSnapshot`, of which `Snapshots` keeps the last two; `SimId`s, issued by
 `SimIds`, name an object in both worlds through each world's `SimLinks`.
+In the free mode a zero wait (`free_wait`) looks at the inbox and yields
+the time slice, as the original's sleep of zero does; other waits are the
+driver's milliseconds in clock time, at most 100 ms.
 For now it runs in lockstep: the `SimLockstep` schedule, before `FixedFirst`
 in every pass of `FixedMain`, runs exactly one simulation step and waits
 for it, and `LockstepCheck` counts the steps against the snapshots' ticks

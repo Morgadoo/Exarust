@@ -267,8 +267,10 @@ impl Rooms {
     /// the nearest, as the original rounds down.
     pub fn cell_of(&self, p: Vec2) -> (i64, i64) {
         (
-            (p.x * 100.0 * INV_CELL_CM).floor() as i64 + (self.width / 2) as i64,
-            (p.y * 100.0 * INV_CELL_CM).floor() as i64 + (self.height / 2) as i64,
+            i64::from(exa_physics::engine_math::floor_to_i32(p.x * 100.0 * INV_CELL_CM))
+                + (self.width / 2) as i64,
+            i64::from(exa_physics::engine_math::floor_to_i32(p.y * 100.0 * INV_CELL_CM))
+                + (self.height / 2) as i64,
         )
     }
 

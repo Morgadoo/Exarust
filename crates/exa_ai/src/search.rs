@@ -774,10 +774,13 @@ const HALF_PI: f32 = 1.570_796_4;
 const TURN: f32 = 2.827_433_3;
 const TAU: f32 = 6.283_185_5;
 
+/// A gap wrapped once into ±π, as the engine's angle helper: compared in
+/// double precision against the double π, stepped by the f32 full turn
+/// (so ±π in single precision, just past the double π, is wrapped).
 fn wrap(a: f32) -> f32 {
-    if a < -std::f32::consts::PI {
+    if f64::from(a) < -std::f64::consts::PI {
         a + TAU
-    } else if std::f32::consts::PI < a {
+    } else if f64::from(a) > std::f64::consts::PI {
         a - TAU
     } else {
         a
@@ -961,8 +964,10 @@ impl Search {
         self.candidates.clear();
         self.picked = 0;
         let g = &scene.grid;
-        let cx = (self.origin.x * PER_ROOM_CM).floor() as i32 + g.origin.0;
-        let cy = (self.origin.z * PER_ROOM_CM).floor() as i32 + g.origin.1;
+        let cx = exa_physics::engine_math::floor_to_i32(self.origin.x * PER_ROOM_CM)
+            .wrapping_add(g.origin.0);
+        let cy = exa_physics::engine_math::floor_to_i32(self.origin.z * PER_ROOM_CM)
+            .wrapping_add(g.origin.1);
         let mut seen = [[false; 7]; 7];
         seen[3][3] = true;
         let mut stack = vec![(cx, cy)];
