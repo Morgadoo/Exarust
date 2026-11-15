@@ -216,34 +216,10 @@ fn normalised(v: [f32; 3]) -> [f32; 3] {
 /// the cosine polynomial runs on a remainder below −π/4; the original's
 /// error there is kept.
 pub fn fast_sin_cos(x: f32) -> (f32, f32) {
-    const FOUR_OVER_PI: f32 = 1.273_239_5;
-    const QUARTER_PI: f32 = 0.785_398_2;
-    let bits = x.to_bits();
-    let magnitude = f32::from_bits(bits & 0x7FFF_FFFF);
-    let t = (magnitude * FOUR_OVER_PI).round_ties_even();
-    // CVTPS2DQ's out-of-range result is the integer's smallest value.
-    let rounded = if t.is_nan() || t >= 2_147_483_648.0 || t < -2_147_483_648.0 {
-        i32::MIN
-    } else {
-        t as i32
-    };
-    let quadrant = rounded.wrapping_add(1) as u32 & !1;
-    let f = magnitude - (quadrant as i32 as f32) * QUARTER_PI;
-    let f2 = f * f;
-    let sine = (((-0.000_195_152_96 * f2 + 0.008_332_161) * f2 - 0.166_666_55) * f2 * f) + f;
-    let cosine =
-        (((2.443_315_7e-5 * f2 - 0.001_388_731_6) * f2 + 0.041_666_646) * f2 * f2 - 0.5 * f2) + 1.0;
-    let (sin_poly, cos_poly) = if quadrant & 2 == 0 {
-        (sine, cosine)
-    } else {
-        (cosine, sine)
-    };
-    let sin_sign = (bits & 0x8000_0000) ^ ((quadrant & 4) << 29);
-    let cos_sign = (!quadrant.wrapping_sub(2) & 4) << 29;
-    (
-        f32::from_bits(sin_poly.to_bits() ^ sin_sign),
-        f32::from_bits(cos_poly.to_bits() ^ cos_sign),
-    )
+    // The engine's own routine: the same reduction and polynomials, and its
+    // mask arithmetic, which makes the cosine NaN where the unpicked
+    // polynomial is not finite (|x| from about 1.69e9).
+    exa_physics::engine_math::sin_cos(x)
 }
 
 /// The engine's fast sine: the first half of [`fast_sin_cos`], bit for bit.

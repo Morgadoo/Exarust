@@ -1381,23 +1381,13 @@ pub(crate) fn paint_extended(
     use exa_ui::controls::{IMAGE, SPINNER};
     match c.class {
         TEXT_FIELD => {
-            // The field's inner frame (the label skin's style 0xf0 frames),
-            // then its front draw.
-            let mut field = c.clone();
-            field.class = 5;
-            field.style = 0xf0 | (c.style & 0x7700);
-            field.text.clear();
-            let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
-            let text = crate::settings_form::Text { font: &font, size };
-            crate::settings_form::paint_control(
-                &field,
-                (rect.left - c.x, rect.top - c.y),
-                look.unit,
-                &look.palette,
-                &text,
-                None,
-                painted,
-            );
+            // The field's back (the line skin's underline for a framed
+            // style), then its front draw.
+            if let Some(layer) =
+                crate::gui_paint::paint_text_field_back(rect, c.style, look.unit, look.fade)
+            {
+                painted.push(layer);
+            }
             paint_text_field_front(painted, c, rect, look, draw);
             true
         }
@@ -1430,12 +1420,29 @@ pub(crate) fn paint_extended(
             for (x, y, w, h) in [buttons.up, buttons.down] {
                 crate::hub_windows::paint_panel(painted, GuiRect::new(x, y, w, h), look);
             }
-            // The field to the button column, framed, with the value in the
-            // spinner's own alignment.
+            // The field to the button column, framed with the draw skin's
+            // style frames (the spinner is only on the base-skinned colour
+            // picker), with the value in the spinner's own alignment.
+            let mut frames = exa_ui::skin::SkinBatch::new();
+            exa_ui::skin::draw_style_frames(
+                &mut frames,
+                exa_ui::skin::GuiRect::sized(
+                    field.left as f32,
+                    field.top as f32,
+                    field.width() as f32,
+                    field.height() as f32,
+                ),
+                0xf0 | (c.style & 0x7700),
+                &look.palette,
+            );
+            painted.push(exa_ui::gui_draw::GuiLayer::new(
+                frames,
+                exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+            ));
             let mut value = c.clone();
             value.class = 5;
             value.w = field.width();
-            value.style = 0xf0 | (c.style & 0x7700);
+            value.style = c.style & 0x7700;
             value.text = format!("{}", exa_ui::controls::round_to_i64(c.value)).into_bytes();
             let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
             let text = crate::settings_form::Text { font: &font, size };

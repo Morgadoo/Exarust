@@ -1081,12 +1081,15 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
     let z = y * y;
     let cos_poly = ((((COS[0] * z + COS[1]) * z + COS[2]) * z) * z - 0.5 * z) + 1.0;
     let sin_poly = (((SIN[0] * z + SIN[1]) * z + SIN[2]) * z) * y + y;
-    let use_sin = j & 2 == 0;
-    let (s, c) = if use_sin {
-        (sin_poly, cos_poly)
-    } else {
-        (cos_poly, sin_poly)
-    };
+    // The pick is the original's mask arithmetic: the sine is the picked
+    // polynomial plus the other masked to +0, the cosine each polynomial
+    // less its masked part, summed, so the cosine is NaN where the unpicked
+    // polynomial is not finite (|x| from about 1.69e9).
+    let mask = if j & 2 == 0 { u32::MAX } else { 0 };
+    let sin_part = f32::from_bits(sin_poly.to_bits() & mask);
+    let cos_part = f32::from_bits(cos_poly.to_bits() & !mask);
+    let s = cos_part + sin_part;
+    let c = (sin_poly - sin_part) + (cos_poly - cos_part);
     let sin_sign = sign ^ (((j & 4) as u32) << 29);
     let cos_sign = ((!(j.wrapping_sub(2)) & 4) as u32) << 29;
     (

@@ -506,6 +506,39 @@ mod tests {
         assert!(g.cell(2, 0).is_none());
     }
 
+    /// The installed game's grids (skipped without it): the word that
+    /// selects the older plane layout is 0 in every shipped grid, as the
+    /// game's only grid writer (the scene export) writes it, so the
+    /// conversion never runs on 0.9.5's data.
+    #[test]
+    fn no_shipped_grid_has_the_older_plane_layout() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let mut grids = 0;
+        for (kind, pack) in game.packs() {
+            for e in pack.entries() {
+                let Ok(chunks) = crate::chunk::rfc_chunks(pack.bytes(e)) else {
+                    continue;
+                };
+                for chunk in chunks.flatten().filter(|c| c.tag == GRID) {
+                    let mut c = Reader {
+                        b: chunk.data,
+                        pos: 0,
+                    };
+                    c.names().unwrap();
+                    c.names().unwrap();
+                    let words = [c.u32().unwrap(), c.u32().unwrap(), c.u32().unwrap()];
+                    let skip = c.u32().unwrap();
+                    assert_eq!((words[2], skip), (0, 600), "{kind:?} {}: {words:?}", e.name);
+                    grids += 1;
+                }
+            }
+        }
+        assert!(grids >= 13, "{grids} grids");
+    }
+
     #[test]
     fn the_loader_fills_the_grid_border() {
         let (w, h) = (4usize, 3usize);
