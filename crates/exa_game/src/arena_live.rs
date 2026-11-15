@@ -1212,7 +1212,7 @@ fn forfeit_match<const AT_QUIT: bool>(
 fn sweep_fallen(
     arena: &mut ArenaMatch,
     fighters: &Query<MatchBody<'_>>,
-    mut career: Option<&mut crate::hub_windows::ArenaCareer>,
+    career: Option<&mut crate::hub_windows::ArenaCareer>,
 ) {
     let mut entities = Vec::new();
     let mut scene = Vec::new();
@@ -1244,7 +1244,7 @@ fn sweep_fallen(
         });
     }
     let died = &mut arena.died;
-    let mut career_log = career.as_deref_mut().map(|career| &mut career.log);
+    let mut career_log = career.map(|career| &mut career.log);
     let resolved = crate::arena_session::resolve_dead_bodies(
         &mut scene,
         arena.physician,
