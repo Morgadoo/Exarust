@@ -1212,8 +1212,27 @@ fn duellist(
         };
         body.desired_velocity = Vec3::ZERO;
         // Down, getting up, collapsing or dead (or Exarust's fall), it does
-        // nothing.
+        // nothing more. The combat state's down exit (its condition's down
+        // bit) still runs while it is the current state: the AI's look,
+        // heading and head look take the yaw of the body's facing and the
+        // body's look and smoothing directions the facing itself. [Not
+        // reproduced: the exit's AI state word (0 or 4), the body's stance
+        // word 3 written without the set-stance call, and its pose word 0.]
         if condition.fallen_or_dying() || fallen {
+            if ai.in_combat && condition.0 & combat::DOWN != 0 {
+                let facing = t.rotation * Vec3::Z;
+                ai.mind.aim = combat::yaw(facing);
+                ai.mind.heading = ai.mind.aim;
+                if let Ok(mut brain) = brains.get_mut(entity) {
+                    let brain = &mut *brain;
+                    brain.turn.look = ai.mind.aim;
+                    brain.turn.heading = ai.mind.aim;
+                    brain.gaze.look = ai.mind.aim;
+                    brain.gaze.body_look = facing;
+                    brain.gaze.body_smooth = facing;
+                    brain.gaze.body_heading = facing;
+                }
+            }
             continue;
         }
         if let Some(at) = ai.engage_at_ms {
@@ -3418,6 +3437,35 @@ mod tests {
         let npc = app.world().get::<brain::Npc>(fighter).unwrap();
         assert_eq!(npc.alert.wide_at_ms, 3 * 12 + 3000);
         assert_eq!(npc.alert.narrow_at_ms, 3 * 12 + 500);
+    }
+
+    /// While the body is down the combat state takes its down exit every
+    /// tick: the AI's look and heading and the brain's look directions
+    /// follow the body's facing.
+    #[test]
+    fn a_downed_fighter_looks_where_its_body_faces() {
+        let (mut app, fighter, _) = duel(8.0, false);
+        engage(&mut app, fighter);
+        step(&mut app);
+        assert!(app.world().get::<Duellist>(fighter).unwrap().fighting());
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert((brain::Npc::new([0.0; 4]), Condition(combat::DOWN)));
+        let yaw = 1.25f32;
+        app.world_mut()
+            .get_mut::<Transform>(fighter)
+            .unwrap()
+            .rotation = Quat::from_rotation_y(yaw);
+        step(&mut app);
+        let facing = Quat::from_rotation_y(yaw) * Vec3::Z;
+        let ai = app.world().get::<Duellist>(fighter).unwrap();
+        assert_eq!(ai.mind.aim, combat::yaw(facing));
+        assert_eq!(ai.mind.heading, ai.mind.aim);
+        let npc = app.world().get::<brain::Npc>(fighter).unwrap();
+        assert_eq!(npc.turn.look, ai.mind.aim);
+        assert_eq!(npc.turn.heading, ai.mind.aim);
+        assert_eq!(npc.gaze.look, ai.mind.aim);
+        assert!((npc.gaze.body_look - facing).length() < 1e-6);
     }
 
     #[test]
