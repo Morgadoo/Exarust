@@ -872,7 +872,20 @@ impl HubWindows {
                     // The week's verdict names a rival winner by the week's
                     // field.
                     let field = career.rivals;
+                    let prize = career.tournament.as_ref().map(|board| board.prize_id);
                     let night = career.company.end_day_in_field(events, &field);
+                    // A week the company took puts its prize in the arsenal,
+                    // and a swept season its four rewards after it.
+                    if night.week_won == Some(true)
+                        && let Some(prize) = prize.filter(|&prize| prize != 0)
+                    {
+                        career.won_items.push(prize);
+                    }
+                    if night.season {
+                        let rewards = &career.company.reward_ids;
+                        let start = rewards.len().saturating_sub(4);
+                        career.won_items.extend_from_slice(&rewards[start..]);
+                    }
                     career.matches_today = 0;
                     // The day's log is cleared with the day's counts.
                     career.log.records.clear();
@@ -1215,19 +1228,26 @@ pub fn staff_class(role: Profession) -> u8 {
     }
 }
 
-/// Runs the staff's share of the forms' joinings and leavings on the
-/// arena's stores: a hired employee joins the staff list (his record wearing
-/// the candidate's outfit, his list empty, as the original's hire appends
-/// him), and a dismissed one leaves it, his kit
-/// going back to the arsenal ([`crate::staff::Staff::leave`]). A place the
-/// staff list does not hold (a hub career whose staff was never loaded) has
-/// nothing to release.
+/// Runs the arena stores' share of what the forms and the matches changed:
+/// the items the company won are stowed in the arsenal free of any holder,
+/// a hired employee joins the staff list (his record wearing the
+/// candidate's outfit, a combatant's kit stowed,
+/// [`crate::staff::Staff::admit_stowing`]), and an employee who left (a
+/// dismissal, a death, a departure) leaves it, his kit going back to the
+/// arsenal ([`crate::staff::Staff::leave`]). A place the staff list does
+/// not hold (a hub career whose staff was never loaded) has nothing to
+/// release.
 pub fn apply_staff_changes(
     forms: &mut HubForms,
-    left: &mut Vec<usize>,
+    career: &mut ArenaCareer,
     stores: &mut crate::save_live::ArenaStores,
     kinds: &crate::arsenal::ShelfKinds,
 ) {
+    for item in career.won_items.drain(..) {
+        let stowed = stores.arsenal.stow(item, kinds.kind(item), 0);
+        info!("hub arsenal: the won item {item} is stowed ({stowed})");
+    }
+    let left = &mut career.staff_left;
     for employee in forms.joined.drain(..) {
         let crate::save_live::ArenaStores { staff, arsenal, .. } = &mut *stores;
         let stowed = staff.admit_stowing(employee, arsenal, |item| kinds.kind(item));
@@ -1919,14 +1939,15 @@ pub fn hub_form_input(
         }
     }
     match (stores, kinds) {
-        (Some(mut stores), Some(kinds)) => apply_staff_changes(
-            &mut windows.forms,
-            &mut career.staff_left,
-            &mut stores,
-            &kinds,
-        ),
-        // A hub career with no staff list has no kit to release.
-        (None, _) => career.staff_left.clear(),
+        (Some(mut stores), Some(kinds)) => {
+            apply_staff_changes(&mut windows.forms, &mut career, &mut stores, &kinds);
+        }
+        // A hub career with no staff list has no kit to release and no
+        // arsenal to stow in.
+        (None, _) => {
+            career.staff_left.clear();
+            career.won_items.clear();
+        }
         (Some(_), None) => {}
     }
 }
@@ -2232,6 +2253,48 @@ mod tests {
             weapons
                 .iter()
                 .any(|entry| entry.item == 77 && entry.flags == crate::staff::FIGHTER_KIT)
+        );
+    }
+
+    /// The End Day that resolves a week the company took, through the
+    /// live form input: the week's prize goes into the arsenal, free of
+    /// any holder.
+    #[test]
+    fn a_won_week_puts_its_prize_in_the_arsenal() {
+        let (mut windows, mut career) = opened();
+        // Day 7 ends into day 8: the week resolves; the company won all six.
+        career.company.day = 7;
+        career.matches_today = 1;
+        for row in &mut career.entries {
+            row.team_id = 1;
+        }
+        let prize = career.tournament.as_ref().unwrap().prize_id;
+        assert_ne!(prize, 0);
+        windows.refresh_manage(&career);
+        let mut app = form_app(windows, career);
+        app.insert_resource(crate::save_live::ArenaStores::default());
+        let apparel = crate::arsenal::ItemKind {
+            known: true,
+            apparel_layer: Some(1),
+            ..Default::default()
+        };
+        app.insert_resource(crate::arsenal::ShelfKinds(
+            [(prize, apparel)].into_iter().collect(),
+        ));
+        app_click(&mut app, FormWindow::Manage, manage::END_DAY);
+        app.update();
+        let career = app.world().resource::<ArenaCareer>();
+        assert_eq!(career.company.tournaments_won, 1);
+        assert!(career.won_items.is_empty());
+        let stores = app.world().resource::<crate::save_live::ArenaStores>();
+        assert!(
+            stores
+                .arsenal
+                .shelves
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|entry| entry.item == prize && entry.flags == 0)
         );
     }
 

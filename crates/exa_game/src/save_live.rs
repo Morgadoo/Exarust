@@ -2207,6 +2207,12 @@ fn load_arena_slot(
         crate::slots::world_object_tier(&loaded.package),
     );
     let restored = restore_arena(&loaded, &kinds, career, &mut stores);
+    // The continued career's fixups follow the read.
+    let fixups = crate::arena_session::continue_career(career);
+    info!(
+        "save: the continued career's fixups ran (tournament generated {}, unfit dropped {})",
+        fixups.generate_tournament, fixups.drop_unfit
+    );
     clock.write(crate::world_clock::RestoreWorldClock {
         saved_seconds: restored.clock,
     });
@@ -4076,6 +4082,46 @@ mod tests {
         app.update();
         assert_eq!(money(&dir), (600, 3));
         assert!(!arena.file(1, SlotKind::Checkpoint).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A continued arena career, through the live slot load: the read is
+    /// followed by the continue fixups, so an unfit entrant leaves its
+    /// pending event.
+    #[test]
+    fn a_continued_arena_career_runs_its_fixups_after_the_load() {
+        let dir = folder("continue-fixups");
+        let mut app = new_game_app(&dir, crate::flow::Mode::Arena, "Manager");
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        // The manager is entered in the first event at a health under the
+        // fit line.
+        career.player.health = 100;
+        career.entries[0].count = 1;
+        career.entries[0].entries[0].actor_id = 0;
+        app.insert_resource(career);
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        app.world_mut().write_message(SaveStep::Save {
+            drop_on_low_health: false,
+        });
+        app.update();
+        let load = |app: &mut App| {
+            app.insert_resource(crate::arena_hub_live::ArenaHub {
+                entered: true,
+                ..Default::default()
+            });
+            app.insert_resource(ArenaSlotLoad { number: 1 });
+            app.update();
+            assert_eq!(
+                app.world().resource::<SaveReport>().loaded.map(|l| l.0),
+                Some(1)
+            );
+        };
+        load(&mut app);
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        // The week's events came back; the unfit entrant left his event.
+        assert!(career.tournament.is_some());
+        assert_eq!(career.entries[0].count, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

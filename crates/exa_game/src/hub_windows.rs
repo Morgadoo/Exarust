@@ -143,6 +143,10 @@ pub struct ArenaCareer {
     /// share of the leaving: the kit's release into the arsenal, which needs
     /// the arena's stores ([`crate::hub_forms::apply_staff_changes`]).
     pub staff_left: Vec<usize>,
+    /// Items the company won (the week's prize, a season's four rewards),
+    /// in order, for the arsenal to stow free of any holder
+    /// ([`crate::hub_forms::apply_staff_changes`]).
+    pub won_items: Vec<u32>,
 }
 
 impl Default for ArenaCareer {
@@ -184,6 +188,7 @@ impl Default for ArenaCareer {
             warn_manager: true,
             rivals: [0; crate::career::RIVAL_FIELD],
             staff_left: Vec::new(),
+            won_items: Vec::new(),
         };
         // A default career is what the play-mode hub starts with: ten
         // candidates, drawn from a fixed seed until a session host replaces

@@ -418,6 +418,35 @@ pub fn hub_arrival(has_physician: bool, has_tournament: bool) -> HubFixups {
     }
 }
 
+/// The continue-career fixups after an arena load, as the original runs
+/// them once the slot is read ([`hub_arrival`]): a missing week's
+/// tournament is generated and the unfit entrants are dropped from the
+/// pending events. The renumbering is implicit (an Exarust id is its
+/// roster place); the physician's weapon and the session hook are the
+/// hub entry's. Returns the fixups.
+pub fn continue_career(career: &mut crate::hub_windows::ArenaCareer) -> HubFixups {
+    let physician = career
+        .company
+        .roster
+        .iter()
+        .any(|member| member.profession == crate::career::Profession::Physician);
+    let fixups = hub_arrival(physician, career.tournament.is_some());
+    if fixups.generate_tournament {
+        career.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
+    }
+    if fixups.drop_unfit {
+        // An entrant's id is its participant id: 0 the manager, `i` roster
+        // member `i - 1`.
+        let healths: Vec<u16> = std::iter::once(career.player.health)
+            .chain(career.company.roster.iter().map(|member| member.health))
+            .collect();
+        crate::arena::drop_unfit(&mut career.entries, |id| {
+            healths.get(id as usize).copied().unwrap_or(0)
+        });
+    }
+    fixups
+}
+
 /// The hub-return day's tournament work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubDayChecks {
@@ -757,6 +786,22 @@ mod tests {
         let resolved = resolve_dead_bodies(&mut edge, true, &mut log, &mut deaths, |_, _| {});
         assert_eq!(resolved, vec![0]);
         assert_eq!(log.records.last().unwrap().id, LOG_SAVED);
+    }
+
+    /// The continue fixups generate a missing week's tournament (which
+    /// clears the entries, as a new week's board does) and keep a present
+    /// one.
+    #[test]
+    fn the_continue_fixups_generate_a_missing_tournament() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        let kept = career.tournament.clone();
+        let fixups = continue_career(&mut career);
+        assert!(!fixups.generate_tournament);
+        assert_eq!(career.tournament, kept);
+        career.tournament = None;
+        let fixups = continue_career(&mut career);
+        assert!(fixups.generate_tournament && fixups.drop_unfit);
+        assert!(career.tournament.is_some());
     }
 
     #[test]
