@@ -354,11 +354,41 @@ chunk instead of exporting one.
 | 4 | f32[3] | position (cm): body x, floor height, body z |
 | 16 | f32 | heading (radians) |
 | 20 | i32 | condition (zero for the living player in both observed saves) |
-| 24 | chunks | sub-chunks to the chunk's end, kept by the loader for the scene import: flat pose `0xCAC0E100`, motion state `0xCAC0EA00`, pose tree `0xCAC0EB00`, attached objects `0xCAC0EC00`, AI home `0xCACE0F77` (both observed saves hold the flat pose and the motion state) |
+| 24 | chunks | sub-chunks to the chunk's end, kept by the loader for the scene import: flat pose `0xCAC0E100`, motion state `0xCAC0EA00`, pose tree `0xCAC0EB00`, running powers `0xCAC0EC00` ([below](#running-powers)), AI home `0xCACE0F77` (both observed saves hold the flat pose and the motion state) |
 
 This is the level exporter's single-placement layout ([RFC.md](RFC.md),
 `exa_formats::rfc_write::write_character_state`); the reader's field order
 matches it.
+
+### Running powers
+
+A living character's placement in save mode ends, after the motion state,
+with `0xCAC0EC00` when the body runs any power: an `i32` count, then per
+power `u32 id`, `u32 size` and `size` bytes. The writer walks the body's
+power list and calls each power's save routine; the count is patched with
+the powers that wrote, and the chunk is taken back out when none did. Six
+classes write (REA, the classes' save slots):
+
+| power | id | size | bytes |
+|---|---|---:|---|
+| Sense Minds (persistent) | `0x20101` | 0 | |
+| Mask Mind (persistent) | `0x20102` | 0 | |
+| Shell | `0x20208` | 0 | |
+| Strikes | `0x2020B` | 0 | |
+| Loyalty | `0x2010A` | 4 | the target's character id |
+| Command Dead | `0x2010D` | 4 | the target's character id |
+
+The record build reads the chunk for every character it builds from a
+placement (the player's and the level's): Mind (`id & 0xff00 = 0x100`) and
+Force (`0x200`) look the id up in their power table; a row with a restore
+constructor is rebuilt, the row's cost becomes the power's held focus and
+is added to the body's reserve (three quarters with the reserve technique,
+and the held focus is then multiplied by 0.75 too). The self powers come
+back running; Loyalty and Command Dead come back ready with the target
+word, and their first tick finds the target by character id (ending when
+it is gone or collapsing) and puts the marker back on it. The spawn then
+runs every power's activation. No retail save at hand holds the chunk;
+Exarust: `characters::RunningPower`, `exa_game::power_save`.
 
 **Export.** The story and arena writers export the placement from the
 player's scene body in save mode. The player's own record is remembered

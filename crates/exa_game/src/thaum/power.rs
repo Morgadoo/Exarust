@@ -20,12 +20,15 @@
 //! - **Domain dispatch** ([`evaluate_domain`]): an id's domain byte
 //!   (bits 8–15) sends an AI evaluation to Force, Energy or Displacement;
 //!   every other domain answers 0x400_0000 (the "cannot use" word).
-//! - **Loading** ([`restore_persistent`]): a save's `(id, size)` pairs are
-//!   rebuilt into running powers, Mind by
-//!   [`crate::mind::casts::restore_mind_power`] and Force by
-//!   [`super::force::restore_force_power`] (each reserves three quarters
-//!   with the technique); a body with the reserve technique then has each
-//!   rebuilt power's held focus multiplied by 0.75 once more.
+//! - **Saving and loading** ([`save_power`], [`saves_running`],
+//!   [`restore_persistent`]): a character's save stores each running power
+//!   whose class has a save routine (id, size, its bytes); the load
+//!   rebuilds them, Mind by [`crate::mind::casts::restore_mind_power`] and
+//!   Force by [`super::force::restore_force_power`] (each reserves three
+//!   quarters with the technique and holds the row's cost); a body with
+//!   the reserve technique then has each rebuilt power's held focus
+//!   multiplied by 0.75, so it holds what it reserved. The live walk is
+//!   [`crate::power_save`].
 //! - **Power Glean** ([`glean`]): a shaper that dies within 20 m teaches
 //!   the player the highest of its domains, Displacement first (Vanish
 //!   0x10601) and then Energy (Shock 0x401), unless the player already
@@ -194,9 +197,12 @@ impl PowerBase {
     }
 }
 
-/// The words a power's save routine writes: its id and a kind word, then —
-/// for a power that names a target — the target's id. The kind is 4 for
-/// Loyalty and Command Dead, 0 for the self powers.
+/// The words a power's save routine writes: its id, the size of what
+/// follows, then — for a power that names a target — the target
+/// character's id. The size is 4 for Loyalty and Command Dead, 0 for the
+/// self powers (Sense Minds, Mask Mind, Shell and Strikes in their
+/// persistent forms). Every other class writes nothing and is not counted
+/// ([`saves_running`]).
 pub fn save_power(id: u32, target: Option<u32>) -> Vec<u32> {
     match target {
         None => vec![id, 0],
@@ -204,9 +210,28 @@ pub fn save_power(id: u32, target: Option<u32>) -> Vec<u32> {
     }
 }
 
-/// The id a save's first word carries, or `None` for an empty record.
+/// What a power's load routine keeps of the bytes its save wrote after the
+/// id and the size: the first word (Loyalty's and Command Dead's target
+/// character id, which their next tick looks up), or `None` for an empty
+/// record.
 pub fn load_power(words: &[u32]) -> Option<u32> {
     words.first().copied()
+}
+
+/// Whether a power with this id writes itself into a character's save: the
+/// classes with a save routine are the persistent Sense Minds and Mask
+/// Mind, Loyalty, Command Dead and the persistent Shell and Strikes.
+pub fn saves_running(id: u32) -> bool {
+    use crate::mind::casts::{COMMAND_DEAD, LOYALTY, MASK_PERSISTENT, SENSE_PERSISTENT};
+    matches!(
+        id,
+        SENSE_PERSISTENT
+            | MASK_PERSISTENT
+            | LOYALTY
+            | COMMAND_DEAD
+            | force::SHELL
+            | super::force::STRIKES
+    )
 }
 
 /// A tick of a sustained power's focus: adds it to what the body spent.
@@ -248,52 +273,57 @@ pub fn evaluate_domain(id: u32, view: &AiView) -> u32 {
     }
 }
 
-/// One saved power the load hands back: its id and its record's size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SavedPower {
-    pub id: u32,
-    pub size: u32,
-}
-
-/// A power the load rebuilt: its id and the focus it holds.
+/// A power the load rebuilt: its id, the focus it holds and, for Loyalty
+/// and Command Dead, the target character id its load kept.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RestoredPower {
     pub id: u32,
     pub held: f32,
+    pub target: Option<u32>,
 }
 
-/// Rebuilds saved persistent powers on a body. Force and Mind powers are
-/// rebuilt by their domain's routine ([`restore_force_power`],
-/// [`crate::mind::casts::restore_mind_power`]), which reserves the row's
-/// cost (three quarters with the reserve technique). A Force power holds
-/// what it reserved and a Mind power its whole cost; the load then
-/// multiplies the held focus by 0.75 for a body with the technique, so a
-/// Force power holds `0.5625 × cost` and a Mind power `0.75 × cost`
-/// against a reserve of `0.75 × cost`. Returns the powers added, in the
-/// save's order.
-pub fn restore_persistent(body: &mut CastBody, saved: &[SavedPower]) -> Vec<RestoredPower> {
+/// Rebuilds a loaded character's saved powers, as the original's record
+/// build does: each saved power goes to its domain by the id's domain byte;
+/// Force and Mind rebuild the rows that have a restore constructor
+/// ([`restore_force_power`], [`crate::mind::casts::restore_mind_power`]),
+/// each adding the row's cost to the reserve (three quarters with the
+/// reserve technique) and holding the whole cost; the load then multiplies
+/// the held focus by 0.75 for a body with the technique, so it holds what
+/// its reserve took. Other domains and rows rebuild nothing. Returns the
+/// powers rebuilt, in the save's order; the caller adds them to the body's
+/// list.
+pub fn restore_persistent(
+    body: &mut CastBody,
+    saved: &[exa_formats::characters::RunningPower],
+) -> Vec<RestoredPower> {
     let mut added = Vec::new();
     for entry in saved {
-        let technique = body.techniques & RESERVE_TECHNIQUE != 0;
-        // What the rebuilt object holds: a Force power what it reserved, a
-        // Mind power its whole cost.
         let held = match entry.id & DOMAIN_MASK {
-            DOMAIN_FORCE => restore_force_power(entry.id, body)
-                .map(|cost| if technique { cost * 0.75 } else { cost }),
+            DOMAIN_FORCE => restore_force_power(entry.id, body),
             DOMAIN_MIND => crate::mind::casts::restore_mind_power(entry.id, body),
             _ => None,
         };
         let Some(mut held) = held else {
             continue;
         };
-        if technique {
+        if body.techniques & RESERVE_TECHNIQUE != 0 {
             held *= 0.75;
         }
-        body.powers.push(super::casting::ActivePower {
+        let words: Vec<u32> = entry
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| u32::from_le_bytes(*w))
+            .collect();
+        let target = matches!(entry.id, mind::LOYALTY | mind::COMMAND_DEAD)
+            .then(|| load_power(&words))
+            .flatten();
+        added.push(RestoredPower {
             id: entry.id,
-            state: READY,
+            held,
+            target,
         });
-        added.push(RestoredPower { id: entry.id, held });
     }
     added
 }
@@ -792,41 +822,40 @@ mod tests {
 
     #[test]
     fn a_save_rebuilds_force_powers() {
+        use exa_formats::characters::RunningPower;
         let mut body = CastBody::default();
-        let saved = [SavedPower {
-            id: 0x20208,
-            size: 0,
-        }];
+        let saved = [RunningPower::bare(0x20208)];
         assert_eq!(
             restore_persistent(&mut body, &saved),
             vec![RestoredPower {
                 id: 0x20208,
-                held: 0.35
+                held: 0.35,
+                target: None,
             }]
         );
-        assert_eq!(body.powers.len(), 1);
-        assert_eq!(body.powers[0].id, 0x20208);
+        // The caller adds the rebuilt power to the list.
+        assert!(body.powers.is_empty());
         let mind = [
-            SavedPower {
-                id: 0x2010A,
-                size: 0,
-            },
-            SavedPower { id: 0x103, size: 0 },
+            RunningPower::with_target(0x2010A, 0x4000_0007),
+            RunningPower::bare(0x103),
         ];
-        // Loyalty has a restore constructor; Calm does not.
+        // Loyalty has a restore constructor and keeps its target word;
+        // Calm has none.
         let back = restore_persistent(&mut body, &mind);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].id, 0x2010A);
         assert_eq!(back[0].held, 0.29);
+        assert_eq!(back[0].target, Some(0x4000_0007));
         assert_eq!(body.reserved, 0.35 + 0.29);
-        // With the technique the reserve takes three quarters and the held
-        // focus three quarters of that.
+        // With the technique the reserve takes three quarters, and so does
+        // the held focus (Force and Mind alike: both restore routines store
+        // the row's whole cost before the reserve's multiply).
         let mut reserving = CastBody {
             techniques: RESERVE_TECHNIQUE,
             ..CastBody::default()
         };
         let back = restore_persistent(&mut reserving, &saved);
-        assert_eq!(back[0].held, 0.35 * 0.75 * 0.75);
+        assert_eq!(back[0].held, 0.35 * 0.75);
         assert_eq!(reserving.reserved, 0.35 * 0.75);
         let mut mind_reserving = CastBody {
             techniques: RESERVE_TECHNIQUE,
@@ -835,6 +864,16 @@ mod tests {
         let back = restore_persistent(&mut mind_reserving, &mind);
         assert_eq!(back[0].held, 0.29 * 0.75);
         assert_eq!(mind_reserving.reserved, 0.29 * 0.75);
+    }
+
+    #[test]
+    fn only_the_six_saving_classes_save() {
+        for id in [0x20101, 0x20102, 0x2010A, 0x2010D, 0x20208, 0x2020B] {
+            assert!(saves_running(id), "{id:#x}");
+        }
+        for id in [0x101, 0x103, 0x106, 0x2010C, 0x201, 0x20207, 0x401] {
+            assert!(!saves_running(id), "{id:#x}");
+        }
     }
 
     #[test]

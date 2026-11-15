@@ -314,7 +314,17 @@ so a recruit's follow survives a load. Each placement carries the live body
 pose tree (`level_save::live_pose_tree`), a living character with a brain its
 pose tree and motion state (action number and progress), an awake guardian
 its AI home; the load puts the motion (an attack becomes the defence stance)
-and the home back (`level_save::restore_saved_state`). Each load also fills
+and the home back (`level_save::restore_saved_state`). Running powers go
+with the placements (`power_save`): the player's and every living scene
+character's persistent Sense Minds, Mask Mind, Shell and Strikes, Loyalty and
+Command Dead are written by each power's save record, and the load rebuilds
+them on the new body, takes their reserve again and runs their activation; a
+loaded Loyalty or Command Dead finds its target by character id on its first
+tick (`mind::runtime::tick_minds`). Every level change first runs the save
+unit's GUI reset (`load_reset`: the death fade, every game screen, the
+crystal drain's sources and the item icon cache), and an adapter journey's
+end saves and refreshes the checkpoint (`SaveStep::SaveAndCheckpoint`).
+Each load also fills
 the save unit's node-hook lists (`save_level::track_scene_content`: door-side
 volumes, zones and markers, scripted devices).
 The save's writers have the pieces the original exports: the world

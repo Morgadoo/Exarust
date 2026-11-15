@@ -299,6 +299,17 @@ impl PanelIcons {
         true
     }
 
+    /// A level or save load's clear (the manager's clear through its global
+    /// wrapper): the cache keeps no entry and the atlas no cell, and the
+    /// renders still to come are dropped. Handles held elsewhere no longer
+    /// name a slot; the panels the load closed gave theirs back first.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+        self.atlas.clear();
+        self.pending.clear();
+        self.version = self.version.wrapping_add(1);
+    }
+
     /// Releases every icon a container's entries hold, as the panel's
     /// destroy does, and leaves the entries without handles. Returns how
     /// many slots were released.

@@ -1555,6 +1555,7 @@ mod tests {
             record,
             position_cm: [100.0, 0.0, 200.0],
             heading: 0.5,
+            powers: Vec::new(),
         };
         let export = crate::save_live::story_player_world(
             &player,

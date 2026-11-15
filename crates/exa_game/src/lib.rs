@@ -95,6 +95,7 @@ pub mod level_save;
 pub mod level_transition;
 pub mod light_probe;
 pub mod limp;
+pub mod load_reset;
 pub mod loadout;
 pub mod loadout_kit;
 pub mod loadout_screen;
@@ -127,6 +128,7 @@ pub mod player_behaviour;
 pub mod player_controls;
 pub mod player_light;
 pub mod player_practice;
+pub mod power_save;
 pub mod power_screen;
 pub mod practice;
 pub mod prelude;
@@ -281,6 +283,8 @@ impl Plugin for GamePlugin {
         .add_plugins(thaum::cast::CastPlugin)
         .add_plugins(mind::draw::MindSightPlugin)
         .add_plugins(mind::runtime::MindRuntimePlugin)
+        .add_plugins(power_save::PowerSavePlugin)
+        .add_plugins(load_reset::LoadResetPlugin)
         .add_plugins(fire_sound::FireSoundPlugin)
         .add_plugins(weather::WeatherPlugin)
         .add_plugins(world_clock::WorldClockPlugin)

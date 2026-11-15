@@ -927,6 +927,13 @@ pub fn export_characters(level: &ReadScene) -> Result<Vec<SceneNode>> {
                 pose,
                 parts,
                 ai,
+                // The running powers go back as each power's own save
+                // wrote them.
+                attachments: placement
+                    .powers
+                    .iter()
+                    .map(|power| power.bytes().map(Some))
+                    .collect::<Result<_>>()?,
                 ..Default::default()
             }),
             ..Default::default()
@@ -1927,6 +1934,16 @@ mod tests {
                     home: [650.0, 20.0, 120.0],
                     home_heading: 0.75,
                 }),
+                // A running Shell writes its record; another power wrote
+                // nothing.
+                attachments: vec![
+                    Some(
+                        crate::characters::RunningPower::bare(0x2_0208)
+                            .bytes()
+                            .unwrap(),
+                    ),
+                    None,
+                ],
                 ..Default::default()
             }),
             ..Default::default()
@@ -2007,6 +2024,13 @@ mod tests {
         assert_eq!(b.id, 0x4000_0004);
         assert_eq!(b.motion.unwrap().state, 6);
         assert_eq!(b.ai_home.unwrap().heading, 0.75);
+        // The running power goes round too; the dead body has none.
+        assert_eq!(
+            b.powers,
+            vec![crate::characters::RunningPower::bare(0x2_0208)]
+        );
+        assert!(a.powers.is_empty());
+        assert_eq!(chars.placements[1].powers, b.powers);
     }
 
     #[test]
