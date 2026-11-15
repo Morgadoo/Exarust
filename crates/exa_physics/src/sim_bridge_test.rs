@@ -707,6 +707,96 @@ fn a_stale_value_never_despawns_the_frames_newer_entity() {
     assert!(world.get_entity(newer).is_ok());
 }
 
+/// The events the free simulation's first steps send to the frame.
+const SENT_EVENTS: u32 = 40;
+
+/// Each step: the counter's `Pos` is the number of tagged entities the
+/// simulation holds; the first steps each send the frame an event that
+/// spawns a tagged entity there and writes a `Ping` (data both worlds
+/// share, written by a frame event).
+fn send_spawns(
+    mut frame: ResMut<crate::sim_app::FrameCommands>,
+    mut sent: Local<u32>,
+    tagged: Query<(), With<Tag>>,
+    mut counters: Query<&mut Pos, Without<Tag>>,
+) {
+    let count = tagged.iter().count() as f32;
+    for mut counter in &mut counters {
+        counter.set_if_neq(Pos(count));
+    }
+    if *sent < SENT_EVENTS {
+        let k = *sent;
+        *sent += 1;
+        frame.send(move |world: &mut World| {
+            world.spawn(Tag(k));
+            world.write_message(Ping(k));
+        });
+    }
+}
+
+/// The pings the simulation heard, kept on the counter.
+fn count_pings(mut pings: MessageReader<Ping>, mut counters: Query<&mut Vel, Without<Tag>>) {
+    let n = pings.read().count() as f32;
+    if n > 0.0 {
+        for mut counter in &mut counters {
+            counter.0 += n;
+        }
+    }
+}
+
+/// A free simulation's frame events that write shared data (B0.6): a
+/// frame that applies several step packets runs their events after the
+/// last one, so no apply settles an event's spawns and messages as its
+/// own and every one reaches the simulation. Run between the applies, the
+/// spawns and pings of all but a frame's last step were never sent.
+#[test]
+fn a_free_steps_frame_events_reach_the_simulation() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_message::<Ping>()
+        .add_systems(FixedUpdate, (send_spawns, count_pings).chain());
+    crate::sim_app::add_frame_commands(&mut app);
+    app.add_plugins((
+        SimShellPlugin {
+            mode: SimMode::Free,
+        },
+        SimBridgePlugin { extra: Vec::new() },
+    ))
+    .bridge_copy::<Tag>()
+    .bridge_copy::<Pos>()
+    .bridge_copy::<Vel>()
+    .bridge_message::<Ping>();
+    let counter = app.world_mut().spawn((Pos(0.0), Vel(0.0))).id();
+    app.world_mut()
+        .resource_mut::<crate::sim_app::SimPause>()
+        .hold(false);
+    // Frames of 30 ms: two or three steps arrive in most of them.
+    let mut most = 0;
+    let until = std::time::Instant::now() + Duration::from_millis(1500);
+    while std::time::Instant::now() < until {
+        app.update();
+        most = most.max(
+            app.world()
+                .resource::<crate::sim_app::FreeLink>()
+                .most_in_a_frame,
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    // The events stopped after half a second; the rest of the run carried
+    // their last spawns over and back.
+    let world = app.world_mut();
+    let tagged = world.query::<&Tag>().iter(world).count() as u32;
+    assert_eq!(tagged, SENT_EVENTS, "the frame ran every event");
+    assert!(most > 1, "no frame applied two steps");
+    let seen = world.get::<Pos>(counter).unwrap().0;
+    let heard = world.get::<Vel>(counter).unwrap().0;
+    assert_eq!(
+        (seen, heard),
+        (SENT_EVENTS as f32, SENT_EVENTS as f32),
+        "the simulation missed frame events' spawns or pings"
+    );
+}
+
 /// A component the frame removes while the free simulation keeps writing
 /// it (its steps in flight still carry it) stays removed on both sides; the
 /// same for one the simulation removes while the frame writes it.

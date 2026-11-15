@@ -836,21 +836,27 @@ fn release_figure(
                 }
             } else {
                 // Elsewhere: the player's pack drops its held entry (its
-                // panel and its listed copy) and the destination takes it.
+                // panel and its listed copy, the last held one) and the
+                // destination takes it.
                 if plan.remove_held_icon {
                     let bulk = catalogue.and_then(|c| c.bulk(drag.id)).map_or(0, i32::from);
                     if let Some(entry) = screens
                         .pack
                         .entries
                         .iter()
-                        .position(|e| e.id == drag.id && e.flags & HELD != 0)
+                        .rposition(|e| e.id == drag.id && e.flags & HELD != 0)
                     {
                         screens.pack.remove_at(entry, bulk);
                     }
                 }
-                if let Some(at) = at {
-                    p.carried.remove(at);
-                }
+                // The inventory's drop-elsewhere rule on the record: the
+                // last copy marked held leaves the carried list, then the
+                // hands keep no more references to the item than the copies
+                // left (the other set's hand of the same item goes too).
+                body_inventory::with_record_items(&mut p, |data| {
+                    data.take_equipped(drag.id);
+                    data.drop_surplus_refs(drag.id, 0);
+                });
                 if let Panel::BodyPack(body) = destination {
                     to_bodies.push((body, drag.id, drag.flags & !HELD, cell, unit, vscale));
                 }
@@ -1077,6 +1083,90 @@ mod tests {
         assert_eq!(
             drop_from_figure(&mut screens, &mut icons, None, drag, None).landed,
             None
+        );
+    }
+
+    /// A hand's item dragged off the figure into a body's pack runs the
+    /// inventory's drop-elsewhere rule on the player's record: the last
+    /// held copy leaves the carried list and the other set's hands keep no
+    /// more references than the copies left; the body's pack takes it.
+    #[test]
+    fn a_hand_item_dropped_elsewhere_leaves_its_last_held_copy_and_spare_hands() {
+        let sword = 0x30;
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<DollItems>()
+            .init_resource::<FigureDrag>()
+            .add_message::<FigureRelease>()
+            .add_systems(Update, release_figure);
+        let carried = |x: i16, id: u32, flags: u32| possession::Carried { id, flags, x, y: 0 };
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                Possessions {
+                    out: [
+                        possession::Hand {
+                            id: sword,
+                            flags: 0,
+                        },
+                        possession::Hand::default(),
+                    ],
+                    stowed: [
+                        possession::Hand {
+                            id: sword,
+                            flags: 0,
+                        },
+                        possession::Hand {
+                            id: sword,
+                            flags: 0,
+                        },
+                    ],
+                    carried: vec![
+                        carried(1, sword, HELD),
+                        carried(2, 0x50, 0),
+                        carried(3, sword, HELD),
+                    ],
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let body = app.world_mut().spawn(Possessions::default()).id();
+        app.world_mut().resource_mut::<FigureDrag>().slot = Some(1);
+        app.world_mut().write_message(FigureRelease {
+            drag: PanelDrag {
+                source: None,
+                icon: 0,
+                grab: Cell::new(0, 0),
+                id: sword,
+                flags: HELD,
+                bulk: 0,
+            },
+            landed: Some((
+                Panel::BodyPack(body.index().index() as i32),
+                Cell::new(0, 0),
+                16,
+                1.0,
+            )),
+            added: true,
+        });
+        app.update();
+        let p = app.world().get::<Possessions>(player).unwrap();
+        assert_eq!(p.out[0].id, 0);
+        assert_eq!(
+            p.carried
+                .iter()
+                .map(|c| (c.x, c.id, c.flags))
+                .collect::<Vec<_>>(),
+            vec![(1, sword, HELD), (2, 0x50, 0)]
+        );
+        // One copy is left, so the stowed pair keeps one reference.
+        assert_eq!([p.stowed[0].id, p.stowed[1].id], [sword, 0]);
+        let b = app.world().get::<Possessions>(body).unwrap();
+        assert_eq!(
+            b.carried.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![sword]
         );
     }
 

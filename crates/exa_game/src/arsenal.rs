@@ -125,6 +125,9 @@ pub struct Holder<'a> {
     /// What his record itself carries, holds and wears, when it is kept
     /// apart from the loadouts (a specialist's own items).
     pub own: Option<OwnItems<'a>>,
+    /// The record's own hands and worn items as the company keeps them
+    /// (a member's outfit: the hand pair and the worn list).
+    pub outfit: Option<&'a mut crate::hirelings::Loadout>,
 }
 
 /// The items a holder's record itself carries, holds and wears.
@@ -135,9 +138,22 @@ pub struct OwnItems<'a> {
 }
 
 impl Holder<'_> {
-    /// Forgets `item` everywhere on the holder's record: what it carries,
-    /// holds and wears, and every loadout.
+    /// Forgets `item` everywhere on the holder's record, as the record's
+    /// own rule does ([`CharacterData::remove_everywhere`]): what it
+    /// carries, holds and wears, its outfit's hands and worn items, and
+    /// every loadout. The company keeps one hand pair and no staged list
+    /// for a member (its record is rebuilt from the outfit, the second
+    /// pair empty), so the record rule's second pair and staged list have
+    /// nothing here to forget.
     fn remove_everywhere(&mut self, item: u32) {
+        if let Some(outfit) = &mut self.outfit {
+            for hand in outfit.hands.iter_mut() {
+                if *hand == item {
+                    *hand = 0;
+                }
+            }
+            outfit.items.retain(|worn| *worn != item);
+        }
         if let Some(own) = &mut self.own {
             own.carried.retain(|held| *held != item);
             for hand in own.hands.iter_mut() {
@@ -500,6 +516,7 @@ mod tests {
             items,
             loadouts,
             own: None,
+            outfit: None,
         }
     }
 
@@ -605,11 +622,23 @@ mod tests {
         let mut worn = vec![(unique, 0)];
         let mut kit = vec![unique];
         let mut employee_loadouts = wearing(unique, 1);
+        let mut manager_outfit = crate::hirelings::Loadout {
+            hands: [unique, 2],
+            items: vec![4, unique],
+        };
+        let mut outfit = crate::hirelings::Loadout {
+            hands: [3, unique],
+            items: vec![unique, unique, 4],
+        };
         let mut holders = [
-            holder(&mut stash, &mut loadouts),
+            Holder {
+                outfit: Some(&mut manager_outfit),
+                ..holder(&mut stash, &mut loadouts)
+            },
             Holder {
                 items: &mut kit,
                 loadouts: &mut employee_loadouts,
+                outfit: Some(&mut outfit),
                 own: Some(OwnItems {
                     carried: &mut carried,
                     hands: &mut hands,
@@ -648,5 +677,21 @@ mod tests {
         assert!(kit.is_empty() && carried.is_empty() && worn.is_empty());
         assert_eq!(hands, [0, 0]);
         assert!(employee_loadouts.iter().all(|l| l.worn.is_empty()));
+        // The members' own outfits lose it too: the hand it filled and
+        // every worn copy.
+        assert_eq!(
+            manager_outfit,
+            crate::hirelings::Loadout {
+                hands: [0, 2],
+                items: vec![4],
+            }
+        );
+        assert_eq!(
+            outfit,
+            crate::hirelings::Loadout {
+                hands: [3, 0],
+                items: vec![4],
+            }
+        );
     }
 }

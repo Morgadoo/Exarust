@@ -68,8 +68,10 @@ tick and time (`FreeStamp`) sent after it. Its `Time` and `Time<Fixed>`
 are its own, advanced a timestep a step. The frame's fixed loop does not
 run: once a frame (`SimExchange`, where the loop ran) the frame sends its
 packet without waiting and applies every step packet that arrived, in
-order, with its events; held, it keeps its changes and posts until it lets
-go. The original's render fraction, 1 + (frame clock − published time) /
+order, then runs their events in send order after the last of them (an
+apply settles the frame's changes made before it as its own, so an event
+run between two applies lost its bridged writes, spawns, despawns and
+messages); held, it keeps its changes and posts until it lets go. The original's render fraction, 1 + (frame clock − published time) /
 step clamped to [−2, 2], goes into the frame's `Time<Fixed>` as its
 overstep: the original draws between the two older of its three history
 entries at that fraction, one step behind the clock; Exarust's bodies keep

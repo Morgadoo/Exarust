@@ -452,7 +452,6 @@ A script's report of an invalid role identifier SHALL be logged as the engine's 
 - **WHEN** a device at the origin grants role 31 with characters 10 m and 20 m away and the player 500 m away
 - **THEN** only the character 10 m away holds role 31
 
-
 ### Requirement: Player input ends the narrator's offer
 While the narrator's reply panel offers at least one choice, the player behaviour tick SHALL end every narrator conversation on the next update when the player holds the left or right button over the game view, holds a movement key (forward, left, back, right) or pushes the movement stick past 0.1 squared.
 
@@ -470,3 +469,10 @@ On request the dialogue engine SHALL end every live conversation in which the gi
 #### Scenario: A fleeing NPC
 - **WHEN** an NPC that is speaking to the player starts to flee
 - **THEN** that conversation ends and its panel closes
+
+### Requirement: Contact write-back behind the bridge
+Behind the simulation bridge the contact mirror and the greeting SHALL post a script's or a line's contact write to the simulation's brain through the step's write queue, and SHALL write the frame's copy without a change mark. A mirror that writes nothing SHALL leave the brain unmarked.
+
+#### Scenario: A script write behind the bridge
+- **WHEN** a script sets a contact's concern while the simulation runs behind the bridge
+- **THEN** the frame's brain shows it at once, the frame's brain is not sent, and the simulation's brain takes the write at its next step

@@ -85,7 +85,7 @@ Commands the frame posts for the simulation SHALL run on the simulation's world 
 - **THEN** they run in that order before that step's schedule, and not again
 
 ### Requirement: Events to the frame
-Events the simulation sends during a step SHALL run on the frame's world after that step, in the order they were sent, each once.
+Events the simulation sends during a step SHALL run on the frame's world after that step, in the order they were sent, each once. With the free mode on they SHALL run after the last step packet the frame applies in that frame.
 
 #### Scenario: Two steps
 - **WHEN** a step sends events A and B
@@ -559,3 +559,10 @@ At the transition's black the frame SHALL close the GUI's forms, move the rooms'
 #### Scenario: Control Mind ends in free mode
 - **WHEN** Control Mind ends while the simulation runs free and the step changes the duellist and the player behaviour every step
 - **THEN** the duellist's roll and the caster's aim never go back on the frame, and the log counts no Duellist or PlayerBody among the frame values applied after a newer simulation write
+
+### Requirement: Free step events run after the frame's last packet
+With the free mode on, the frame SHALL run the events of every step packet it applied in a frame after the last of them, in send order, so that no later apply settles an event's writes, spawns, despawns or messages as its own. Every bridged change an event makes SHALL reach the simulation in the frame's next packet.
+
+#### Scenario: Several steps in one frame
+- **WHEN** each of a free simulation's steps sends an event that spawns a shared entity and writes a shared message, and frames apply two or three steps each
+- **THEN** the simulation holds every spawned entity and hears every message
