@@ -627,14 +627,15 @@ hub's loadout form draws them over its preview.
 hotkeys on a `GuiTask` and draws them through `gui_draw` and
 `exa_game::gui_paint`: the frame, the inventory's pack panel and its item
 icons when the item manager's atlas has any, its Encumbrance label and
-Primary button, and the journal's New and Erase buttons and the selected
-entry's text, from the constructors' words and records; a dead body's loot
+Primary button, and the journal's New and Erase buttons, its entry list and
+its live text box (`game_gui::journal_text_box`), from the constructors'
+words and records; a dead body's loot
 window draws its frame and its pack and equipment panels. They draw with
 `line_skin::shown_palette` at their fade and the line skin's button frame
 (`skin::draw_frame` in `line_control_inks`). The item panel's
 icons use `SkinMode::HltCol`, the item GUI's own program (below). The
-character view, preview bars, the loot panels' body items and the journal's
-entry list are not wired.
+character view, preview bars, the loot panels' body items and the journal
+entry list's drop list are not wired.
 
 ## The item panel's icon program
 
@@ -750,7 +751,9 @@ controller; topic records whose word is the list position, titles
 title-cased, a page's text without its last byte) and the one-time tips
 (single bits 0–30 of the settings mask, the 504-pixel popup measured with
 markup, "Continue" and "Don't show again", the nine titles and their
-presets).
+presets). `Manual::shown_list` is the topic list's item view rescaled to the
+GUI unit and `page_text_box` the page's read-only box, which
+`exa_game::help_live` drives live.
 
 ## Table, skin and blend details
 
