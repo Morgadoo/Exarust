@@ -87,7 +87,7 @@ pub fn line_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
                 };
                 return LineHit {
                     blocked: true,
-                    end: Vec3::new(place(x, width), end.y, place(z, depth)),
+                    end: project_back(start, end, x, z, width, depth),
                 };
             }
             Step::Stand {
@@ -183,8 +183,31 @@ pub(crate) fn voxels(y: f32, base: f32) -> i32 {
     (f64::from(y - base) / super::VOXEL_CM * 100.0).round_ties_even() as i32
 }
 
-fn place(g: f32, n: usize) -> f32 {
-    ((g + 0.5) - (n / 2) as f32) * super::CELL
+/// The blocked line walk's end: the backed-up cell point (grid units,
+/// the minor axis unrounded) put on the floor in centimetres, projected
+/// onto the start-to-end direction, which is normalised with the
+/// processor's reciprocal square root estimate (a zero direction gives a
+/// zero vector, so the end is the start). Only the ground axes move; the
+/// height stays the asked end's. Evidence: the line walk's block arm.
+fn project_back(start: Vec3, end: Vec3, x: f32, z: f32, width: usize, depth: usize) -> Vec3 {
+    let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+    let cell = super::CELL_CM as f32;
+    let (sx, sz) = (cm(start.x), cm(start.z));
+    let px = ((x + 0.5) - (width / 2) as f32) * cell;
+    let pz = ((z + 0.5) - (depth / 2) as f32) * cell;
+    let (ox, oz) = (px - sx, pz - sz);
+    let (mut dx, mut dz) = (cm(end.x) - sx, cm(end.z) - sz);
+    let length_sq = dz * dz + dx * dx;
+    let scale = if length_sq == 0.0 {
+        0.0
+    } else {
+        exa_formats::rfc::reciprocal_sqrt(length_sq)
+    };
+    dx *= scale;
+    dz *= scale;
+    let along = ox * dx + oz * dz;
+    let metres = |c: f32| (f64::from(c) / 100.0) as f32;
+    Vec3::new(metres(dx * along + sx), end.y, metres(dz * along + sz))
 }
 
 struct Raster {
@@ -317,7 +340,7 @@ impl Raster {
         let (width, depth) = grid.size();
         LineHit {
             blocked: true,
-            end: Vec3::new(place(x, width), end.y, place(z, depth)),
+            end: project_back(start, end, x, z, width, depth),
         }
     }
 }
@@ -489,6 +512,54 @@ mod tests {
         let first = line_walk(&walled, face, end);
         assert!(first.blocked);
         assert_eq!(first.end, face);
+    }
+
+    /// A blocked walk ends at the backed-up cell point (the minor axis
+    /// unrounded) projected onto the start-to-end direction, normalised
+    /// with the reciprocal square root estimate: the cell (7, 30/11 + 7·3/11)
+    /// of a walk from cell (1, 3) to (12, 6) walled at x = 8, in the
+    /// instruction order (cm, f32), back in metres.
+    #[test]
+    fn a_blocked_walk_projects_its_end_with_the_estimate() {
+        let mut grid = flat(16, 16);
+        for z in 0..16 {
+            grid.set_cell(
+                8,
+                z,
+                Layer::Lower,
+                NavCell {
+                    floor: 40,
+                    ..NavCell::default()
+                },
+            );
+        }
+        let (start, end) = (at(&grid, 1, 3), at(&grid, 12, 6));
+        let hit = line_walk(&grid, start, end);
+        assert!(hit.blocked);
+        // Start (-195, -135) cm, end (135, -45) cm; the backed-up point.
+        let slope = 3.0f32 / 11.0;
+        let intercept = 3.0f32 - slope;
+        let minor = 7.0f32 * slope + intercept;
+        let (px, pz) = ((7.5f32 - 8.0) * 30.0, ((minor + 0.5) - 8.0) * 30.0);
+        let (ox, oz) = (px - -195.0, pz - -135.0);
+        let (dx, dz) = (330.0f32, 90.0f32);
+        let r = exa_formats::rfc::reciprocal_sqrt(dz * dz + dx * dx);
+        let (dx, dz) = (dx * r, dz * r);
+        let along = ox * dx + oz * dz;
+        let want = Vec3::new(
+            ((dx * along + -195.0) as f64 / 100.0) as f32,
+            end.y,
+            ((dz * along + -135.0) as f64 / 100.0) as f32,
+        );
+        assert_eq!(hit.end, want);
+        // The point already lies on the line: only the estimate moves it,
+        // by well under a millimetre.
+        assert!((hit.end.x - px / 100.0).abs() < 1e-3, "{:?}", hit.end);
+        assert!((hit.end.z - pz / 100.0).abs() < 1e-3, "{:?}", hit.end);
+        // The straight walk's block takes the same projection.
+        let straight = straight_walk(&grid, start, end);
+        assert!(straight.blocked);
+        assert_eq!(straight.end, want);
     }
 
     #[test]
