@@ -1987,11 +1987,15 @@ The throw, the long door and the summoning SHALL take the navigation unit's grou
 - **THEN** the door's point lies 15 cm back along the ray from the hit
 
 ### Requirement: Barricade dismissal pick
-A barricade cast while one runs SHALL take the nearest-mesh pick under the cursor (the ground plane's point when it meets nothing) and SHALL end the running barricade when the segment from the eye to that point meets its node's sphere and then its box.
+A barricade cast while one runs SHALL take the nearest-mesh pick under the cursor (the ground plane's point when it meets nothing) and SHALL end the running barricade when the segment from the eye to that point meets its node's sphere and then its box by the separating-axis test.
 
 #### Scenario: Cast again over the wall
 - **WHEN** a barricade stands at the cursor's ground point and the player casts it again with the cursor unmoved
 - **THEN** the running barricade ends and the cast answers 2
+
+#### Scenario: A segment that stops short of the wall
+- **WHEN** the segment is aimed at the wall's box but ends short of it, with no separating axis between them
+- **THEN** the separating-axis test counts it as meeting the wall, where the slab test would not
 
 ### Requirement: Arc electricity program
 Live electric arcs SHALL draw with the electricity program and the `_ElecMat01` record's emissive layer `BeamNoise01`, with EleCol (0.65, 0.4, 1), EdgCol (0.15, 0.2, 0.4) and a texture offset of (0, the emitter's shown scroll), additive and two-sided.
@@ -2287,3 +2291,10 @@ Before a Mind cast, the target's character flags SHALL be its record's professio
 #### Scenario: A skeleton corpse
 - **WHEN** Raise Dead starts on a dead body whose profession word has race byte 3 (a living kind)
 - **THEN** the body is raised without a revival
+
+### Requirement: Spirit body settles
+Spirit Form's new body SHALL be built settling for 16 ticks.
+
+#### Scenario: The spirit body is built
+- **WHEN** the spirit body's simulated body is built
+- **THEN** it settles for 16 ticks

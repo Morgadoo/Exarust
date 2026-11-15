@@ -116,6 +116,13 @@ impl PlayerPlacement {
     }
 }
 
+/// The settling the next [`PlayerPlacement`] gives the placed player's
+/// body, in ticks ([`crate::flow::Step::SettlePlayer`]): the story
+/// respawn's 16 (`exa_physics::body::PLACED_SETTLE`). Taken with the
+/// placement.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedSettle(pub i32);
+
 /// A level change's arrival: the entrance the change named (a level exit's
 /// spawn word; zero otherwise) and the `locales.rdb` id of the level it
 /// left. The original's level-change load keeps both in its session and

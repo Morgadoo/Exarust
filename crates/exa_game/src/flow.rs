@@ -103,6 +103,9 @@ pub const ALIVE_HEALTH: f64 = 0.01;
 
 /// The motion the story respawn asks the reloaded player for.
 pub const RESPAWN_MOTION: u32 = 0x2f;
+/// How far above the respawn portal's frame a respawned player is placed
+/// (cm): the story respawn's and the save load's pending respawn's.
+pub const PORTAL_LIFT_CM: f32 = 15.0;
 
 /// The practice ladder's first fight number. The first partner is
 /// `opponent01` (novice) or `opponent09` (expert).
@@ -1301,6 +1304,12 @@ pub enum Step {
     PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
+    /// Give the placed player's body the settling state for this many
+    /// ticks once it stands where [`Step::PlacePlayer`] put it (gravity
+    /// without inertia, `exa_physics::body::Ragdoll::settle_for`): the
+    /// story respawn's, applied with the placement once the level is in
+    /// ([`crate::level_change::PlacedSettle`]).
+    SettlePlayer(i32),
     /// Move the placed player out of the level exit that holds it (the
     /// story continue's nudge, [`exit_nudge`]): applied with the placement
     /// once the level is in, against the level's exit zones
@@ -2907,6 +2916,17 @@ impl Flow {
         steps
     }
 
+    /// Where a respawn puts the player: the respawn portal's frame lifted
+    /// by [`PORTAL_LIFT_CM`], as the original's story respawn and its save
+    /// load of a pending respawn place the player. `None` while no portal
+    /// is known.
+    pub fn portal_placement(&self) -> Option<Placement> {
+        self.respawn_portal.map(|portal| Placement {
+            rotation: portal.rotation,
+            position: portal.position + Vec3::Y * PORTAL_LIFT_CM,
+        })
+    }
+
     /// The story's death screen CONTINUE: the player node's story bit
     /// clears, the save is written (without the death rule), the world torn
     /// down and `exanima05` loaded (the loader's second word, 1, is not
@@ -2923,14 +2943,10 @@ impl Flow {
         self.story.wake = Wake::default();
         self.story.reconstruction = REBUILDABLE;
         let _ = now;
-        let portal = self.respawn_portal.unwrap_or(Placement {
+        let placement = self.portal_placement().unwrap_or(Placement {
             rotation: NO_ROTATION,
-            position: Vec3::ZERO,
+            position: Vec3::Y * PORTAL_LIFT_CM,
         });
-        let placement = Placement {
-            rotation: portal.rotation,
-            position: portal.position + Vec3::Y * 15.0,
-        };
         vec![
             // The respawn's scene reset starts with the death fade's reset.
             Step::ResetDeathFade,
@@ -2955,6 +2971,8 @@ impl Flow {
             Step::KnockOut { delay_ms: 0 },
             Step::RequestAction(RESPAWN_MOTION),
             Step::PlacePlayer(placement),
+            // Then the player's node tree settles for 16 ticks.
+            Step::SettlePlayer(exa_physics::body::PLACED_SETTLE),
             Step::Hook(Hook::Story),
         ]
     }
@@ -4135,9 +4153,12 @@ fn apply_steps(
         .position(|step| matches!(step, Step::LoadLevel { .. }))
     {
         let tail = steps.split_off(load + 1);
-        let (now_steps, later): (Vec<Step>, Vec<Step>) = tail
-            .into_iter()
-            .partition(|step| matches!(step, Step::PlacePlayer(_) | Step::ExitNudge));
+        let (now_steps, later): (Vec<Step>, Vec<Step>) = tail.into_iter().partition(|step| {
+            matches!(
+                step,
+                Step::PlacePlayer(_) | Step::SettlePlayer(_) | Step::ExitNudge
+            )
+        });
         steps.extend(now_steps);
         if !later.is_empty() {
             if let Some(after) = story.after_load.as_mut() {
@@ -4234,6 +4255,9 @@ fn apply_steps(
             }
             Step::ExitNudge => {
                 commands.insert_resource(crate::level_change::NudgeOutOfExits);
+            }
+            Step::SettlePlayer(ticks) => {
+                commands.insert_resource(crate::level_change::PlacedSettle(ticks));
             }
             Step::EndMenuUnselected(unselected) => {
                 if let Some(end) = end.as_mut() {
@@ -6860,6 +6884,8 @@ mod tests {
             ]
         );
         assert!(matches!(steps[load + 4], Step::PlacePlayer(_)));
+        // The placed player settles for 16 ticks.
+        assert_eq!(steps[load + 5], Step::SettlePlayer(16));
     }
 
     #[test]
@@ -7893,6 +7919,7 @@ mod tests {
                 teardown: true,
             },
             Step::PlacePlayer(placement),
+            Step::SettlePlayer(16),
         ]);
         app.update();
         let requests: Vec<exa_world::level_lifecycle::LevelChangeRequest> = app
@@ -7914,6 +7941,13 @@ mod tests {
             .resource::<crate::level_change::PlayerPlacement>();
         assert!((at.position - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
         assert!((at.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // The settling goes across the load with the placement.
+        assert_eq!(
+            app.world()
+                .get_resource::<crate::level_change::PlacedSettle>()
+                .copied(),
+            Some(crate::level_change::PlacedSettle(16))
+        );
 
         // The wake steps write the player's animator flags word: the
         // get-up replaces it, the revival sets bits on it.

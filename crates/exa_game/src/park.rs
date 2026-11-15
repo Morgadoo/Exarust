@@ -22,6 +22,10 @@
 //!   before its rise) unparks every parked character in the scene that was
 //!   drawn ([`wake_parked`]); the golem wake unparks the golem it wakes
 //!   (`crate::golem_alarm`).
+//! - **Held items.** The mark and unmark walk the character's node tree,
+//!   where its held items hang: each tick, after the character ticks and
+//!   before the solver, a held item takes its holder's mark
+//!   (`exa_physics::grip_solve::share_holder_park`).
 //!
 //! Evidence: the original's character body tick (its dormant branch, after
 //! the daze block: with the pose word's dormant bits, an undrawn node sets
@@ -40,11 +44,8 @@
 //! the sun's shadow bit the manager's frame also accepts (a body only the
 //! sun's shadow pass saw is unmarked there and marked again by its body
 //! tick in the same step, before the solver, so it stays out; Exarust
-//! leaves it parked), the scene culling's own test (its node bounds and
-//! zones; Exarust tests the body's spheres against the frustum) and the
-//! marks of other
-//! bodies under the character's node (Exarust's character is one body;
-//! held items are bodies of their own, linked by their grips).
+//! leaves it parked) and the scene culling's own test (its node bounds and
+//! zones; Exarust tests the body's spheres against the frustum).
 //! `EXA_NO_PARK=1` turns the drawn test off, so nothing is parked.
 //!
 //! The note makes the simulation read the camera, as the original's body

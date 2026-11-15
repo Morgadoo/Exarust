@@ -323,7 +323,11 @@ flushed and saved, the object world tier and its string library, each
 only when it holds a record) and the player's placement
 (`session::export_player_placement`: the body under the first saved
 record in save mode, the record flush skipped while a respawn is pending;
-`Session::placement` writes it first after the header). The arena's load
+`Session::placement` writes it first after the header). A story load of a
+save written while a respawn was pending turns its transition word to 1,
+places the player at the respawn portal 15 cm up (when a portal is known)
+and settles it 16 ticks (`save_live::take_pending_respawn`,
+`settle_after_placement`). The arena's load
 regenerates its lists (`arena_ids::regenerate_lists`: each employee's own
 list, emptied for class 4, and the manager's take their loadout items by
 the unique append, lose their special duplicates and are shelved with the
@@ -1538,7 +1542,7 @@ bounding sphere and box, the nearest mesh within the best distance, the
 ground pick with its 5 cm/1 mm grown sphere and top-of-sphere ask, and the
 kinesis pick; both record the sphere-top crossing plus the distance the
 mesh callback writes back, shortening the segment so a nearer surface met
-later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the casts ask the ground and nearest-mesh picks from the cursor (`thaum::cast_pick`: the throw, the barricade's placement and dismissal, the long door and the summoning, each with the original's accept test and the 15 cm back-off off a floor mesh), and the
+later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the casts ask the ground and nearest-mesh picks from the cursor (`thaum::cast_pick`: the throw, the barricade's placement and dismissal (the dismissal's box by the separating-axis test, `segment_obb_overlap`), the long door and the summoning, each with the original's accept test and the 15 cm back-off off a floor mesh), and the
 physics world answers as the mesh callback because Exarust keeps no CPU
 triangles for a picked node; where a mesh does carry the engine's kd-tree,
 `KdMesh` answers with its own front-face walk. Its free-camera drag and zoom handlers are `nav_drag`: the
@@ -2164,7 +2168,12 @@ wake, and `exa_combat::condition::track_wake` runs the wake tick live on a
 body with a knock-out while its flags hold 0x20, which clears that bit once
 the body is ready (so the story's first wake-up animation ends when the
 body is up). The story respawn and the story start attach the controls
-again (`Controls(true)`), which gives them back after a story death. A
+again (`Controls(true)`), which gives them back after a story death. The
+story respawn's placement settles the player's body 16 ticks
+(`Step::SettlePlayer`, carried across the load by
+`level_change::PlacedSettle`), and Spirit Form's new body is built settling
+16 ticks (`limp::SettleWhenBuilt`). The item cursor's lock release freezes
+the item where it is (`Ragdoll::freeze_at`). A
 camera shot turns the chase camera to the shot's bearing
 (`ChaseCamera::face_shot`). The rules return named steps;
 `FlowPlugin` runs them on the 12 ms game clock, follows a play level's
