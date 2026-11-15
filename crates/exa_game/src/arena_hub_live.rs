@@ -1598,7 +1598,9 @@ pub fn board_table_input(
 /// [`HubWindows::board_table_input`], one every few frames, at the rows'
 /// centres: `roster:ROW` and `lineup:ROW` double press a row (1-based
 /// table rows), `drag:ROW:TO` drags company row ROW onto lineup row TO (0
-/// for no row) and `back:ROW` drags lineup row ROW onto the company table;
+/// for no row), `hold:ROW` presses company row ROW and keeps it (its drag
+/// label follows `--cursor`) and `back:ROW` drags lineup row ROW onto the
+/// company table;
 /// `tab:N` presses board tab N (0-based) and `winner:ROW` selects a
 /// tournament event row first. Steps are comma separated.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -1615,6 +1617,7 @@ pub struct BoardTableScript {
 pub enum BoardTableStep {
     Double(exa_ui::match_board::TableSlot, usize),
     Drag(usize, usize),
+    Hold(usize),
     Back(usize),
     Tab(usize),
     Winner(usize),
@@ -1635,6 +1638,7 @@ impl BoardTableScript {
                     ["lineup", r] => Some(BoardTableStep::Double(TableSlot::Lineup, row(r)?)),
                     ["drag", from, to] => Some(BoardTableStep::Drag(row(from)?, row(to)?)),
                     ["back", r] => Some(BoardTableStep::Back(row(r)?)),
+                    ["hold", r] => Some(BoardTableStep::Hold(row(r)?)),
                     ["tab", n] => Some(BoardTableStep::Tab(row(n)?)),
                     ["winner", r] => Some(BoardTableStep::Winner(row(r)?)),
                     _ => None,
@@ -1743,6 +1747,12 @@ pub fn board_table_script(
                 return;
             };
             vec![(a, true, false, now), (b, false, true, now)]
+        }
+        BoardTableStep::Hold(row) => {
+            let Some(at) = board_row_centre(&windows, TableSlot::Roster, row) else {
+                return;
+            };
+            vec![(at, true, false, now)]
         }
         BoardTableStep::Back(row) => {
             let (Some(a), Some(b)) = (
@@ -2628,9 +2638,10 @@ mod tests {
     #[test]
     fn the_board_table_steps_read() {
         use exa_ui::match_board::TableSlot;
-        let script =
-            BoardTableScript::parse("tab:2, winner:0, drag:2:0, back:1, roster:3, lineup:1")
-                .unwrap();
+        let script = BoardTableScript::parse(
+            "tab:2, winner:0, drag:2:0, back:1, roster:3, lineup:1, hold:2",
+        )
+        .unwrap();
         assert_eq!(
             script.steps,
             vec![
@@ -2640,6 +2651,7 @@ mod tests {
                 BoardTableStep::Back(1),
                 BoardTableStep::Double(TableSlot::Roster, 3),
                 BoardTableStep::Double(TableSlot::Lineup, 1),
+                BoardTableStep::Hold(2),
             ]
         );
         assert!(BoardTableScript::parse("drag:x").is_none());

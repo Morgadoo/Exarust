@@ -907,13 +907,37 @@ impl FormHost for HubWindowForm {
 }
 
 /// The board's fighter tables between presses: the last press (table, row
-/// and clock) for the double press, the row a press picked up for a drag,
-/// and whether the press was the tables' (its release is theirs too).
+/// and clock) for the double press, the drag a press began (its table, its
+/// 0-based row, its kind and its grab offset in the row) and whether the
+/// press was the tables' (its release is theirs too).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BoardTables {
     pub last_press: Option<(TableSlot, usize, i64)>,
-    pub drag: Option<(TableSlot, usize)>,
+    pub drag: Option<TableDrag>,
     pub took: bool,
+}
+
+/// A row a table's press picked up ([`table_view::TableReply::Drag`]):
+/// its table (Manage Company's roster names [`TableSlot::Roster`]), its
+/// 0-based row, the drag kind, the grab in the row and the screen point
+/// the press was at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableDrag {
+    pub slot: TableSlot,
+    pub row: usize,
+    pub kind: i32,
+    pub grab: (i32, i32),
+    pub from: (i32, i32),
+}
+
+impl TableDrag {
+    /// Whether the pointer has gone past the window manager's drag
+    /// distance from the press ([`exa_ui::gui_core::drag_limit`]), where
+    /// the original's drag (and its label) begins.
+    pub fn moved(&self, pointer: (i32, i32), screen_height: i32) -> bool {
+        let limit = exa_ui::gui_core::drag_limit(screen_height);
+        (pointer.0 - self.from.0).abs() > limit || (pointer.1 - self.from.1).abs() > limit
+    }
 }
 
 /// What the pointer did on the board's company (available) and lineup
@@ -990,16 +1014,23 @@ impl HubWindows {
     }
 
     /// The pointer on the open board's company and lineup tables, at a
-    /// screen point. A press on a fighter row selects it and picks it up; a
-    /// second press on the same row within the GUI's double-press time is
-    /// the table's double click: a company fighter joins the lineup through
-    /// the rank check ([`Board::double_click_available`]), a lineup fighter
-    /// goes back ([`Board::double_click_team`]). A release over the other
-    /// table drops the picked-up row there: onto the lineup at the row
-    /// under the pointer (no row appends), through the drag-over rank check
-    /// ([`exa_ui::match_board::BoardInput::DropOnTeam`]), or back onto the
-    /// company table. A drop on the table it came from does nothing, as the
-    /// company table's drop refuses its own rows.
+    /// screen point, through their table views ([`Board::table_view`]).
+    /// The pointer's row is hovered ([`table_view::TableView::hover_at`]),
+    /// then the press goes to the view ([`table_view::TableView::press`]):
+    /// a press on a row selects it, and a second press on the selected row
+    /// within the GUI's double-press time is the double press, which
+    /// activates it: a company fighter joins the lineup through the rank
+    /// check ([`Board::double_click_available`]), a lineup fighter goes back
+    /// ([`Board::double_click_team`]). A press that does not activate
+    /// begins the row's drag (the view's drag press: the fighter tables'
+    /// kind and the grab). A release over a table offers it the drag: the
+    /// table takes the drop when the kind is its own and its accept check
+    /// passes ([`table_view::TableView::accepts_drop`]; the lineup's is the
+    /// rank check, [`Board::can_drop`]), and its drop callback runs
+    /// ([`table_view::TableView::owner_query`]): the lineup's takes a
+    /// company row at the row under the pointer (no row appends,
+    /// [`exa_ui::match_board::BoardInput::DropOnTeam`]), the company table's
+    /// takes a lineup row back and refuses its own rows.
     pub fn board_table_input(
         &mut self,
         at: (i32, i32),
@@ -1017,8 +1048,9 @@ impl HubWindows {
         let border = self.board_form.as_ref().map_or(0, |f| f.geometry.border);
         let local = (at.0 - bounds.left - border, at.1 - bounds.top - border);
         let visible = board.visible_tables();
-        // The table under the point and the row there, if any.
-        let over = |slot: TableSlot| -> Option<Option<usize>> {
+        // The fighter table under the point, its view with the pointer's
+        // row hovered, and the point in its client.
+        let over = |slot: TableSlot| -> Option<(table_view::TableView, (i32, i32))> {
             if !visible.contains(&slot) {
                 return None;
             }
@@ -1026,53 +1058,79 @@ impl HubWindows {
             if !table.rect.contains(local.0, local.1) {
                 return None;
             }
-            let count = match slot {
-                TableSlot::Roster => board.available.len(),
-                _ => board.team.len(),
-            };
-            Some(table.row_at(local.1).filter(|&row| row < count))
+            let point = table.to_client(local);
+            let mut view = board.table_view(slot);
+            view.hover_at(point.1);
+            Some((view, point))
         };
         let roster = over(TableSlot::Roster);
         let lineup = over(TableSlot::Lineup);
+        let font = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(board.unit)).main;
         let state = &mut self.board_tables;
         if pressed {
             state.drag = None;
             state.took = false;
-            let hit = match (roster, lineup) {
-                (Some(Some(row)), _) => Some((TableSlot::Roster, row)),
-                (_, Some(Some(row))) => Some((TableSlot::Lineup, row)),
-                _ => None,
-            };
-            let Some((slot, row)) = hit else {
+            let hit = [(TableSlot::Roster, roster), (TableSlot::Lineup, lineup)]
+                .into_iter()
+                .find_map(|(slot, view)| {
+                    view.filter(|(view, _)| view.hover > 0).map(|v| (slot, v))
+                });
+            let Some((slot, (mut view, point))) = hit else {
                 state.last_press = None;
                 return BoardTableAction::None;
             };
             state.took = true;
+            let row = (view.hover - 1) as usize;
             let double = state.last_press.is_some_and(|(t, r, when)| {
                 t == slot && r == row && now - when <= i64::from(exa_ui::gui_core::DOUBLE_CLICK)
             });
+            let mut flags = table_view::pointer::PRESS;
+            if double {
+                flags |= table_view::pointer::DOUBLE;
+            }
+            let mut events = Vec::new();
+            view.press(point.0, flags, font, &mut events);
             let Some(board) = self.board.as_mut() else {
                 return BoardTableAction::None;
             };
-            if double {
-                state.last_press = None;
-                let input = if slot == TableSlot::Roster {
-                    BoardInput::DoubleClickAvailable(row)
-                } else {
-                    BoardInput::DoubleClickTeam(row)
-                };
-                return match (board.handle(input), slot) {
-                    (BoardAction::Changed, TableSlot::Roster) => BoardTableAction::Joined,
-                    (BoardAction::Changed, _) => BoardTableAction::Left(row),
-                    _ => BoardTableAction::Took,
-                };
+            for event in &events {
+                match *event {
+                    table_view::TableEvent::Selected(at) => {
+                        let at = Some((at - 1) as usize);
+                        if slot == TableSlot::Roster {
+                            board.available_selection = at;
+                        } else {
+                            board.team_selection = at;
+                        }
+                    }
+                    table_view::TableEvent::Activated(at) => {
+                        state.last_press = None;
+                        let at = (at - 1) as usize;
+                        let input = if slot == TableSlot::Roster {
+                            BoardInput::DoubleClickAvailable(at)
+                        } else {
+                            BoardInput::DoubleClickTeam(at)
+                        };
+                        return match (board.handle(input), slot) {
+                            (BoardAction::Changed, TableSlot::Roster) => BoardTableAction::Joined,
+                            (BoardAction::Changed, _) => BoardTableAction::Left(at),
+                            _ => BoardTableAction::Took,
+                        };
+                    }
+                    _ => {}
+                }
             }
             state.last_press = Some((slot, row, now));
-            state.drag = Some((slot, row));
-            if slot == TableSlot::Roster {
-                board.available_selection = Some(row);
-            } else {
-                board.team_selection = Some(row);
+            if let table_view::TableReply::Drag { row, grab, kind } =
+                view.press(point.0, table_view::pointer::DRAG, font, &mut events)
+            {
+                state.drag = Some(TableDrag {
+                    slot,
+                    row: row as usize,
+                    kind,
+                    grab,
+                    from: at,
+                });
             }
             return BoardTableAction::Took;
         }
@@ -1084,23 +1142,51 @@ impl HubWindows {
         let Some(board) = self.board.as_mut() else {
             return BoardTableAction::None;
         };
-        let action = match drag {
-            Some((TableSlot::Roster, from)) => {
-                lineup.map(
-                    |to| match board.handle(BoardInput::DropOnTeam { from, to }) {
-                        BoardAction::Changed => BoardTableAction::Joined,
-                        _ => BoardTableAction::Took,
-                    },
-                )
+        let action = drag.and_then(|drag| {
+            let from = drag.row;
+            if let Some((view, _)) = &lineup {
+                // The lineup's accept check: the rank check on a company
+                // row (the board has no reorder within the lineup).
+                let refuses = drag.slot == TableSlot::Roster
+                    && !board
+                        .available
+                        .get(from)
+                        .is_some_and(|&pool| board.can_drop(pool));
+                if !view.accepts_drop(drag.kind, false, refuses) {
+                    return Some(BoardTableAction::Took);
+                }
+                let to = (view.hover > 0).then(|| (view.hover - 1) as usize);
+                let mut answer = BoardTableAction::Took;
+                let mut drop = || {
+                    if drag.slot == TableSlot::Roster
+                        && board.handle(BoardInput::DropOnTeam { from, to }) == BoardAction::Changed
+                    {
+                        answer = BoardTableAction::Joined;
+                        return 1;
+                    }
+                    0
+                };
+                view.owner_query(Some(&mut drop));
+                return Some(answer);
             }
-            Some((_, from)) => {
-                roster.map(|_| match board.handle(BoardInput::DropOnAvailable(from)) {
-                    BoardAction::Changed => BoardTableAction::Left(from),
-                    _ => BoardTableAction::Took,
-                })
+            let (view, _) = roster.as_ref()?;
+            if !view.accepts_drop(drag.kind, false, false) {
+                return Some(BoardTableAction::Took);
             }
-            None => None,
-        };
+            let mut answer = BoardTableAction::Took;
+            let mut drop = || {
+                // The company table's drop refuses its own rows.
+                if drag.slot == TableSlot::Lineup
+                    && board.handle(BoardInput::DropOnAvailable(from)) == BoardAction::Changed
+                {
+                    answer = BoardTableAction::Left(from);
+                    return 1;
+                }
+                0
+            };
+            view.owner_query(Some(&mut drop));
+            Some(answer)
+        });
         match action {
             Some(action) => action,
             None if took => BoardTableAction::Took,
@@ -1283,6 +1369,8 @@ impl HubWindows {
         crate::hub_forms::fill_manage(&mut form, &refresh);
         let r = form.rect();
         self.manage = Some(refresh);
+        // New table views: the roster selects its first row.
+        self.forms.manage_tables = crate::hub_forms::ManageTables::default();
         self.kind = HubWindowKind::Manage;
         self.forms.push(crate::hub_forms::FormWindow::Manage, form);
         self.push(
@@ -1667,6 +1755,8 @@ fn paint_board(
     board: &Board,
     form: &exa_ui::record_form::RecordForm,
     look: &Look,
+    pointer: Option<(i32, i32)>,
+    drag: Option<TableDrag>,
 ) -> gui_paint::Painted {
     let r = form.rect();
     let bounds = GuiRect::new(r.x, r.y, r.w, r.h);
@@ -1723,8 +1813,16 @@ fn paint_board(
                 paint_panel(&mut painted, at(origin, rect), look);
             }
             BoardPaint::Tab { .. } => {}
-            BoardPaint::Table { rect, .. } => {
+            BoardPaint::Table { slot, rect } => {
                 held(at(origin, rect), gui_paint::TABLE_WORDS, &mut painted);
+                // The table view's draw puts the selected row's band under
+                // its cells.
+                let b = exa_ui::match_board::TABLE_BORDER;
+                let r = at(origin, rect);
+                let client =
+                    GuiRect::new(r.left + b, r.top + b, r.width() - 2 * b, r.height() - 2 * b);
+                let mut view = board.table_view(slot);
+                paint_table_selection(&mut painted, &mut view, client, pointer, look);
             }
             BoardPaint::Column { pen, title, .. } => {
                 paint_pen_text(&mut painted, at_pen(origin, pen), title, None, look);
@@ -1784,6 +1882,16 @@ fn paint_board(
     }
     painted.layers.extend(child_frames);
     painted.layers.extend(frame);
+    if let (Some(drag), Some(pointer)) = (drag, pointer) {
+        paint_drag_label(
+            &mut painted,
+            &board.table_view(drag.slot),
+            drag.row,
+            drag.grab,
+            pointer,
+            look,
+        );
+    }
     painted
 }
 
@@ -1798,12 +1906,81 @@ fn coin_text_parts(gold: u32, silver: u32, copper: u32) -> String {
     }
 }
 
+/// A dragged row's label at the pointer less its grab, over everything
+/// ([`table_view::TableView::drag_label`] and
+/// [`table_view::TableView::paint_drag_label`]): the box, then the row's
+/// first cell in the text group's ninth shade.
+fn paint_drag_label(
+    painted: &mut gui_paint::Painted,
+    view: &table_view::TableView,
+    row: usize,
+    grab: (i32, i32),
+    pointer: (i32, i32),
+    look: &Look,
+) {
+    let (font, size) = screen_font(look.textures, look.unit);
+    let (label, pen) = view.drag_label(row as i32, pointer, grab, &font);
+    let mut batch = exa_ui::skin::SkinBatch::new();
+    view.paint_drag_label(&mut batch, &look.palette, label);
+    painted.push(exa_ui::gui_draw::GuiLayer::new(
+        batch,
+        exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+    ));
+    let text = view
+        .rows
+        .get(row)
+        .and_then(|row| row.cells.first())
+        .cloned()
+        .unwrap_or_default();
+    if let Some(texture) = size {
+        painted.push(gui_paint::caption_layer(
+            &font,
+            texture,
+            &text,
+            pen,
+            look.palette.text[table_view::DRAG_LABEL_INK],
+        ));
+    }
+}
+
+/// A table view's selected-row band ([`table_view::TableView::paint_selection`])
+/// in the table's client at `client` (screen pixels), the view hovering the
+/// pointer's row when the pointer is in the client.
+fn paint_table_selection(
+    painted: &mut gui_paint::Painted,
+    view: &mut table_view::TableView,
+    client: GuiRect,
+    pointer: Option<(i32, i32)>,
+    look: &Look,
+) {
+    view.hover = 0;
+    if let Some((x, y)) = pointer
+        && client.contains(x, y)
+    {
+        view.hover_at(y - client.top);
+    }
+    if view.selection_band().is_none() {
+        return;
+    }
+    let mut batch = exa_ui::skin::SkinBatch::new();
+    view.paint_selection(&mut batch, &look.palette);
+    gui_paint::offset_batch(&mut batch, client.left, client.top);
+    painted.push(exa_ui::gui_draw::GuiLayer::new(
+        batch,
+        exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+    ));
+}
+
 /// Manage Company: its table-built form, then its two tables (the roster's
-/// headers, rows and health gauges, the report's day title and lines).
+/// headers, selected-row band, rows and health gauges, the report's day
+/// title, band and lines).
 fn paint_manage(
     refresh: &ManageRefresh,
     form: &exa_ui::record_form::RecordForm,
     look: &Look,
+    selected: [i32; 2],
+    pointer: Option<(i32, i32)>,
+    drag: Option<TableDrag>,
 ) -> gui_paint::Painted {
     let r = form.rect();
     let bounds = GuiRect::new(r.x, r.y, r.w, r.h);
@@ -1849,6 +2026,22 @@ fn paint_manage(
     };
     let roster = inner(roster);
     let report_table = inner(report_table);
+    for (table, rows) in [
+        (crate::hub_forms::ROSTER_TABLE, refresh.roster.len()),
+        (crate::hub_forms::REPORT_TABLE, refresh.report.len()),
+    ] {
+        let client = if table == crate::hub_forms::ROSTER_TABLE {
+            roster
+        } else {
+            report_table
+        };
+        let corner = (client.left, client.top);
+        if let Some((mut view, _)) = crate::hub_forms::manage_table_view(form, table, rows, corner)
+        {
+            view.selected = selected[table];
+            paint_table_selection(&mut painted, &mut view, client, pointer, look);
+        }
+    }
     let width = |w: i32| {
         if unit == 4 {
             w
@@ -1898,6 +2091,21 @@ fn paint_manage(
     }
     painted.layers.extend(child_frames);
     painted.layers.extend(frame);
+    if let (Some(drag), Some(pointer)) = (drag, pointer)
+        && let Some((mut view, _)) = crate::hub_forms::manage_table_view(
+            form,
+            crate::hub_forms::ROSTER_TABLE,
+            refresh.roster.len(),
+            (roster.left, roster.top),
+        )
+    {
+        for (at, line) in refresh.roster.iter().enumerate() {
+            if let Some(cell) = view.rows.get_mut(at).and_then(|row| row.cells.first_mut()) {
+                *cell = line.name.text.as_bytes().to_vec();
+            }
+        }
+        paint_drag_label(&mut painted, &view, drag.row, drag.grab, pointer, look);
+    }
     painted
 }
 
@@ -2199,16 +2407,29 @@ pub fn draw_hub_windows(
         .map_or(1.0, |form| fade.alpha(form, windows.kind, now));
     let look = Look::new(alpha, unit, textures, glyphs.as_deref());
     let painted = match windows.kind {
-        HubWindowKind::Board => windows
-            .board
-            .as_ref()
-            .zip(windows.board_form.as_ref())
-            .map(|(board, form)| paint_board(board, form, &look)),
+        HubWindowKind::Board => {
+            windows
+                .board
+                .as_ref()
+                .zip(windows.board_form.as_ref())
+                .map(|(board, form)| {
+                    let drag = windows.board_tables.drag.filter(|drag| {
+                        pointer.is_some_and(|at| drag.moved(at, windows.task.screen.1))
+                    });
+                    paint_board(board, form, &look, pointer, drag)
+                })
+        }
         HubWindowKind::Manage => windows.manage.as_ref().and_then(|manage| {
             windows
                 .forms
                 .get(crate::hub_forms::FormWindow::Manage)
-                .map(|form| paint_manage(manage, form, &look))
+                .map(|form| {
+                    let tables = &windows.forms.manage_tables;
+                    let drag = tables.drag.filter(|drag| {
+                        pointer.is_some_and(|at| drag.moved(at, windows.task.screen.1))
+                    });
+                    paint_manage(manage, form, &look, tables.selected, pointer, drag)
+                })
         }),
         HubWindowKind::Shop => windows
             .shop
@@ -2611,6 +2832,52 @@ mod tests {
         assert_eq!((list[2].id, list[2].x), (5, 0));
     }
 
+    /// The board's tables draw their selected rows' bands through their
+    /// table views: the three standard lists from the start, the company
+    /// table once a row is selected; a drag past the drag distance draws
+    /// its label at the pointer.
+    #[test]
+    fn the_board_tables_draw_selections_and_the_drag_label() {
+        let mut windows = HubWindows::default();
+        windows.task.screen = (1280, 720);
+        windows.open_board(&career());
+        let textures = GuiTextures::default();
+        let look = Look::new(1.0, 4, &textures, None);
+        let board = windows.board.clone().unwrap();
+        let form = windows.board_form.clone().unwrap();
+        let bands = |board: &Board| {
+            [
+                TableSlot::Match,
+                TableSlot::Rank,
+                TableSlot::Tier,
+                TableSlot::Roster,
+            ]
+            .iter()
+            .filter(|&&slot| board.table_view(slot).selection_band().is_some())
+            .count()
+        };
+        assert_eq!(bands(&board), 3);
+        let plain = paint_board(&board, &form, &look, None, None).layers.len();
+        let mut selected = board.clone();
+        selected.available_selection = Some(0);
+        assert_eq!(bands(&selected), 4);
+        let more = paint_board(&selected, &form, &look, None, None)
+            .layers
+            .len();
+        assert_eq!(more, plain + 1);
+        let drag = TableDrag {
+            slot: TableSlot::Roster,
+            row: 0,
+            kind: exa_ui::match_board::FIGHTER_DRAG,
+            grab: (4, 12),
+            from: (300, 400),
+        };
+        assert!(!drag.moved((301, 401), 720));
+        assert!(drag.moved((320, 400), 720));
+        let dragged = paint_board(&selected, &form, &look, Some((320, 400)), Some(drag));
+        assert_eq!(dragged.layers.len(), more + 1);
+    }
+
     #[test]
     fn the_board_click_opens_the_match_and_its_tabs_switch() {
         let mut windows = HubWindows::default();
@@ -2956,9 +3223,10 @@ mod tests {
             // Manage Company and Records over it.
             // Without font textures the captions add no layers: each
             // window's shadow, backdrop and corner frame (the line skin's
-            // form draw), the panels, buttons and table panes give 19.
+            // form draw), the panels, buttons and table panes give 19, and
+            // the roster's selected first row its band.
             assert_eq!(frames.frames.len(), 1);
-            assert_eq!(frames.frames[0].layers.len(), 19);
+            assert_eq!(frames.frames[0].layers.len(), 20);
             assert!(frames.primitives() > 0);
         }
     }

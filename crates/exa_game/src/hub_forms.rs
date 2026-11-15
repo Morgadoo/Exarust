@@ -108,13 +108,28 @@ pub const ROSTER_TABLE: usize = 0;
 pub const REPORT_TABLE: usize = 1;
 
 /// The pointer state of Manage Company's tables: the roster row a press
-/// picked up for a drag, and the last press for the double press.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// picked up for a drag (its 0-based row, its kind and grab), the last
+/// press for the double press, and each table's 1-based selection (the
+/// roster's constructor selects its first row, the report's none).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManageTables {
-    /// The roster's table row (0 the manager) a press picked up.
-    pub drag: Option<usize>,
+    /// The roster's table row (0 the manager) a press picked up, with its
+    /// drag kind, grab and press point.
+    pub drag: Option<crate::hub_windows::TableDrag>,
     /// The last press: its table, its 1-based row and its time (ms).
     pub last_press: Option<(usize, i32, i64)>,
+    /// The tables' selections, 1-based (0 for none).
+    pub selected: [i32; 2],
+}
+
+impl Default for ManageTables {
+    fn default() -> Self {
+        Self {
+            drag: None,
+            last_press: None,
+            selected: [1, 0],
+        }
+    }
 }
 
 /// What the pointer did on Manage Company's tables.
@@ -136,31 +151,83 @@ pub enum ManageTableAction {
 /// The row of one of Manage Company's tables under a screen point: `None`
 /// off the table's client, `Some(0)` on its header or below its `rows`
 /// rows, else the 1-based row. Rows are six units under the six-unit
-/// header, as the tables draw them.
+/// header, as the tables draw them ([`manage_table_view`]).
 pub fn manage_table_row(
     form: &RecordForm,
     table: usize,
     rows: usize,
     at: (i32, i32),
 ) -> Option<i32> {
+    let (mut view, point) = manage_table_view(form, table, rows, at)?;
+    view.hover_at(point.1);
+    Some(view.hover.max(0))
+}
+
+/// The client of one of Manage Company's tables: inside the base form's
+/// border of its pane.
+pub fn manage_table_client(form: &RecordForm, table: usize) -> Option<GuiRect> {
     let pane = form.child(table)?;
     let border = exa_ui::match_board::TABLE_BORDER;
-    let client = GuiRect::new(
+    Some(GuiRect::new(
         pane.x + border,
         pane.y + border,
         pane.w - 2 * border,
         pane.h - 2 * border,
-    );
+    ))
+}
+
+/// One of Manage Company's tables as its table view, with `rows` rows, and
+/// a screen point in its client (`None` off the client): the roster's four
+/// columns (its rows carry the fighters' drag kind), or the report's one,
+/// centred, at the form's unit.
+pub fn manage_table_view(
+    form: &RecordForm,
+    table: usize,
+    rows: usize,
+    at: (i32, i32),
+) -> Option<(exa_ui::table_view::TableView, (i32, i32))> {
+    use exa_ui::table_view::{TableColumn, TableRow, TableView, column};
+    let client = manage_table_client(form, table)?;
     if !client.contains(at.0, at.1) {
         return None;
     }
-    let pitch = exa_ui::table_view::ROW_UNITS * form.unit();
-    let y = at.1 - client.top - pitch;
-    if y < 0 || pitch <= 0 {
-        return Some(0);
-    }
-    let row = y / pitch + 1;
-    Some(if row as usize > rows { 0 } else { row })
+    let unit = form.unit();
+    let mut view = TableView::new(
+        unit,
+        exa_ui::form::ClientRect {
+            left: 0,
+            top: 0,
+            right: client.width(),
+            bottom: client.height(),
+        },
+    );
+    let width = |w: i32| exa_ui::table_view::rescale_width(w, 4, unit);
+    view.columns = if table == ROSTER_TABLE {
+        view.drag_kind = exa_ui::match_board::FIGHTER_DRAG;
+        crate::manage::ROSTER_COLUMNS
+            .iter()
+            .map(|&(title, w)| TableColumn {
+                title: title.as_bytes().to_vec(),
+                width: width(w),
+                ..TableColumn::default()
+            })
+            .collect()
+    } else {
+        vec![TableColumn {
+            width: client.width(),
+            flags: column::CENTRED,
+            ..TableColumn::default()
+        }]
+    };
+    let cells = view.columns.len();
+    view.rows = (0..rows)
+        .map(|_| TableRow {
+            flags: 0,
+            cells: vec![Vec::new(); cells],
+        })
+        .collect();
+    view.realign();
+    Some((view, (at.0 - client.left, at.1 - client.top)))
 }
 
 impl HubForms {
@@ -592,12 +659,16 @@ impl HubWindows {
         self.forms.push(FormWindow::Status, form);
     }
 
-    /// The pointer on Manage Company's tables, when it is the top form. A
-    /// press on a roster row picks it up and a release over the roster
-    /// drops it there (the table's drop runs [`crate::staff::Staff::
-    /// move_employee`]); a second press on the same row within the GUI's
-    /// double-press time activates it: a roster row opens the loadout form
-    /// on that row, a report line runs its action.
+    /// The pointer on Manage Company's tables, when it is the top form,
+    /// through their table views ([`manage_table_view`]): the pointer's row
+    /// is hovered and the press goes to the view. A press on a row selects
+    /// it; a second press on the selected row within the GUI's
+    /// double-press time activates it (a roster row opens the loadout form
+    /// on that row, a report line runs its action); a roster press that
+    /// does not activate begins the row's drag, and a release over the
+    /// roster offers it the drop: its own kind is taken and the table's
+    /// drop callback moves the employee ([`crate::staff::Staff::
+    /// move_employee`]) unless it lands on the row it came from.
     pub fn manage_table_input(
         &mut self,
         at: (i32, i32),
@@ -606,47 +677,89 @@ impl HubWindows {
         now: i64,
     ) -> ManageTableAction {
         if self.forms.top().map(|f| f.window) != Some(FormWindow::Manage) {
-            self.forms.manage_tables = ManageTables::default();
+            let state = &mut self.forms.manage_tables;
+            state.drag = None;
+            state.last_press = None;
             return ManageTableAction::None;
         }
         let (Some(form), Some(refresh)) = (self.forms.get(FormWindow::Manage), &self.manage) else {
             return ManageTableAction::None;
         };
-        let roster = manage_table_row(form, ROSTER_TABLE, refresh.roster.len(), at);
-        let report = manage_table_row(form, REPORT_TABLE, refresh.report.len(), at);
+        let font = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(form.unit())).main;
+        let selected = self.forms.manage_tables.selected;
+        let over = |table: usize, rows: usize| {
+            let (mut view, point) = manage_table_view(form, table, rows, at)?;
+            view.selected = selected[table];
+            view.hover_at(point.1);
+            Some((view, point))
+        };
+        let roster = over(ROSTER_TABLE, refresh.roster.len());
+        let report = over(REPORT_TABLE, refresh.report.len());
         let state = &mut self.forms.manage_tables;
         if pressed {
-            let hit = match (roster, report) {
-                (Some(row), _) if row > 0 => Some((ROSTER_TABLE, row)),
-                (_, Some(row)) if row > 0 => Some((REPORT_TABLE, row)),
-                _ => None,
-            };
+            let hit = [(ROSTER_TABLE, roster), (REPORT_TABLE, report)]
+                .into_iter()
+                .find_map(|(table, view)| {
+                    view.filter(|(view, _)| view.hover > 0).map(|v| (table, v))
+                });
             state.drag = None;
-            let Some((table, row)) = hit else {
+            let Some((table, (mut view, point))) = hit else {
                 state.last_press = None;
                 return ManageTableAction::None;
             };
+            let row = view.hover;
             let double = state.last_press.is_some_and(|(t, r, when)| {
                 t == table && r == row && now - when <= i64::from(exa_ui::gui_core::DOUBLE_CLICK)
             });
+            let mut flags = exa_ui::table_view::pointer::PRESS;
             if double {
+                flags |= exa_ui::table_view::pointer::DOUBLE;
+            }
+            let mut events = Vec::new();
+            view.press(point.0, flags, font, &mut events);
+            state.selected[table] = view.selected;
+            if let Some(&exa_ui::table_view::TableEvent::Activated(at)) = events
+                .iter()
+                .find(|event| matches!(event, exa_ui::table_view::TableEvent::Activated(_)))
+            {
                 state.last_press = None;
                 return if table == ROSTER_TABLE {
-                    ManageTableAction::Roster(row - 1)
+                    ManageTableAction::Roster(at - 1)
                 } else {
-                    ManageTableAction::Report(row as usize - 1)
+                    ManageTableAction::Report(at as usize - 1)
                 };
             }
             state.last_press = Some((table, row, now));
-            if table == ROSTER_TABLE {
-                state.drag = Some(row as usize - 1);
+            if let exa_ui::table_view::TableReply::Drag { row, kind, grab } = view.press(
+                point.0,
+                exa_ui::table_view::pointer::DRAG,
+                font,
+                &mut events,
+            ) {
+                state.drag = Some(crate::hub_windows::TableDrag {
+                    slot: exa_ui::match_board::TableSlot::Roster,
+                    row: row as usize,
+                    kind,
+                    grab,
+                    from: at,
+                });
             }
-        } else if released && let Some(row) = state.drag.take() {
+        } else if released && let Some(drag) = state.drag.take() {
+            let (row, kind) = (drag.row, drag.kind);
             // A release on the row it was picked up from is a click.
-            if let Some(drop) = roster
-                && drop != row as i32 + 1
+            if let Some((view, _)) = roster
+                && view.accepts_drop(kind, false, false)
             {
-                return ManageTableAction::Drop { row, drop };
+                let drop = view.hover.max(0);
+                let mut answer = ManageTableAction::None;
+                let mut callback = || {
+                    if drop != row as i32 + 1 {
+                        answer = ManageTableAction::Drop { row, drop };
+                    }
+                    0
+                };
+                view.owner_query(Some(&mut callback));
+                return answer;
             }
         }
         ManageTableAction::None
