@@ -25,6 +25,13 @@ differences were found:
   tick, not normalised), so most blows over 0.5 take a whole step.
   Exarust normalised the tip's direction (20·J cm).
 
+Also, from the pathfinder lane: the player's steer takes the grid's
+straight walk instead of its line walk for a body with the hover byte.
+That byte is the race record's hover flag (the character init writes it
+from the record's type code, then always overwrites it from the race's
+flag 0x200), ported as the race's hover; Exarust's steer always took the
+line walk.
+
 ## Evidence
 
 The disassembly of Exanima.exe 0.9.5: the body tick's turn block (the
@@ -44,6 +51,8 @@ velocity and cuts it to the step length).
   turn is last tick's error (`limp::bearing` too).
 - `exa_combat::impact::strike_limbs`: the interrupt's and the stab's
   writes on `SwingState`, and the stall on the striker's body.
+- `exa_game::player::steer_player`: a hovering body's look-ahead takes
+  `exa_world::nav::straight_walk`.
 - `exa_combat::knockback_offset` takes the slot vector; `react_to_hits`
   passes the striker's tracker of the slot that struck (the tip's
   velocity in cm a tick without one).

@@ -538,6 +538,7 @@ const MIN_HIT_SPEED: f32 = 1.5;
 /// the scale, the length squared (y² + x²) + z². A slot vector of more than
 /// a few centimetres a tick makes nearly every such blow a whole step.
 /// Strikes is 0 until that power exists.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn knockback_offset(
     impact: f32,
     strikes: f32,

@@ -485,6 +485,13 @@ Damage routine (#8):
 Approximations (DEC-7, left as they are): none in the turn, the gates or the block
 path; the knockback's cut uses SQRTSS (exact). The ones listed for #49 and #8 above stand.
 
+Character init (#73): the body's hover byte, which the feet routine and the player's steer read,
+is written twice: from the character record's type code (0xe00 in the byte above the low one)
+and then, always, from the race record's hover flag (0x200), which overwrites it (no branch skips
+the second write). So it is the race's hover flag, already ported (`RaceMuscles::hovers`, the
+player's `PlayerBody` hover). The steer's look-ahead now takes the grid's straight walk for a
+hovering player body (`exa_game player.rs straight_walk`), as the original's steer does.
+
 Not done here (need other components): the queued-motion start (the AI's and the
 inventory's starters) and the two-hand group call (held-item group masks); the sampler's
 tail (part matrices and foot contacts on the frame) is structurally different and was not
