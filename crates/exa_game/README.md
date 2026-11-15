@@ -1482,6 +1482,23 @@ prize. It also carries the rival company names, the four seasons' reward ids
 and the tournament weapon tiers. The hub keeps the board's close state and
 restores its tab and list selections on the next opening.
 
+`ArenaCareer::board_with` also gives the board the career's six tournament
+rows (each entrant's id as its pool slot, its first word's item as the event
+value, the row's winner), each fighter's event values (the first hand item of
+its loadout at the event's place, the weapon check comparing that item's
+template), the season's week winners (`Company::week_winners`, written by the
+week verdict, `Company::end_day_in_field`, and kept in the tournament chunk's
+weeks) and the lineup order from the staff's order list. The board's company
+and lineup tables take the pointer (`HubWindows::board_table_input`, the
+`arena_hub_live::board_table_input` system before the hub's clicks): a double
+press moves a fighter across through the rank check, a row dragged onto the
+other table drops there (a drop on its own table does nothing), and
+`board_table_answer` keeps the change: on the tournament page in the event's
+row (a join rewrites the entrants, a leaving moves the later ones down), on
+the others in the staff's order list. `--board-table STEPS` scripts these
+presses (debug). A drag inside the lineup, which the original reorders, is
+not in.
+
 The hardware configuration (`hw_config`) runs the settings screen: it holds
 the live options, the saved set and the open page's draft; opens the page
 (reading the settings file again), applies, cancels and runs Defaults per
@@ -2283,8 +2300,11 @@ confirms the row; a window height that moves the GUI scale lays the menus
 out again through `flow::notify_gui_scale`);
 its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
 mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
-the story respawn or exit, and the returns to the title behind the
-transition. A scripted mode registered in the flow's `ScriptModes` table hands
+the story respawn or exit, the arena's CONTINUE (the arena's continue,
+`arena_live::ArenaContinue`: the next round, or the settlement and the way back
+to the hub), and the returns to the title behind the transition. Leaving a
+session in arena mode runs the arena's leave (`arena_hub_live::ArenaLeave`):
+the hub becomes busy and its click hook is cleared until the next entry. A scripted mode registered in the flow's `ScriptModes` table hands
 the clicked row to its handler (`ScriptedEnd`) and leaves the menu to the
 script, as the original's table does.
 

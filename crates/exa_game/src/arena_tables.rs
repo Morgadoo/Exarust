@@ -333,11 +333,15 @@ pub fn from_live(
         rows: rows_from_roster(&career.entries),
         field,
         events,
-        // The season's four week winners: 1 for a week the company took; a
-        // week it did not keeps the rival the save held (Exarust keeps only
-        // whether the company won).
+        // The season's four week winners: the career's own slot once a
+        // verdict wrote it (1 for the company, a rival's id plus one), else
+        // 1 for a week the company took; a week with neither keeps the
+        // rival the save held.
         weeks: std::array::from_fn(|week| {
-            if career.company.weeks[week] {
+            let winner = career.company.week_winners[week];
+            if winner != 0 {
+                winner
+            } else if career.company.weeks[week] {
                 1
             } else if previous.tournament.weeks[week] == 1 {
                 0
@@ -568,6 +572,12 @@ pub fn apply(
     for (won, winner) in career.company.weeks.iter_mut().zip(tables.tournament.weeks) {
         *won |= winner == 1;
     }
+    // The season table reads the chunk's winners; a week the session words
+    // hold as won names the company.
+    career.company.week_winners = std::array::from_fn(|week| match tables.tournament.weeks[week] {
+        0 if career.company.weeks[week] => 1,
+        winner => winner,
+    });
 }
 
 /// The hub stash's item ids from a save's tables.
@@ -800,6 +810,8 @@ mod tests {
         let mut career = career("Hires");
         career.regenerate_tournament_at(0x1357_9bdf);
         career.company.weeks = [true, false, true, false];
+        // A rival took the second week.
+        career.company.week_winners = [1, 7, 1, 0];
         career.hire_pool[0].outfit = crate::hirelings::Loadout {
             hands: [33, 0],
             items: vec![501, 502],
@@ -835,6 +847,7 @@ mod tests {
         let saved = career.tournament.as_ref().unwrap();
         let loaded = back.tournament.as_ref().unwrap();
         assert_eq!(back.company.weeks, career.company.weeks);
+        assert_eq!(back.company.week_winners, [1, 7, 1, 0]);
         assert_eq!(loaded.prize_id, saved.prize_id);
         for (l, s) in loaded.rows.iter().zip(&saved.rows) {
             assert_eq!(

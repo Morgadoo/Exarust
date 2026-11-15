@@ -197,6 +197,10 @@ pub struct EndMenuScreen {
     /// A registered scripted handler the last confirm asked for; the update
     /// system sends it as a [`ScriptedEnd`] and clears it.
     pub scripted: Option<ScriptedEnd>,
+    /// The last confirm was the arena's CONTINUE; the update system sends
+    /// the arena's continue ([`crate::arena_live::ArenaContinue`]) and
+    /// clears it.
+    pub arena_continue: bool,
 }
 
 impl EndMenuScreen {
@@ -209,6 +213,7 @@ impl EndMenuScreen {
         self.pressed = None;
         self.menu = Some(menu);
         self.scripted = None;
+        self.arena_continue = false;
     }
 
     /// Hides the menu.
@@ -289,9 +294,12 @@ impl EndMenuScreen {
                 steps
             }
             EndAction::ArenaContinue => {
-                // The arena unit's continue has no live session bridge yet;
-                // the stand-in leaves to the title.
-                flow.transition(Action::QuitToMenu, true)
+                // The arena unit's continue: the next round, or the match's
+                // settlement and the way back to the hub (or the death
+                // screen), as the arena's own end screen's Continue runs it
+                // ([`crate::arena_live::continue_round`]).
+                self.arena_continue = true;
+                Vec::new()
             }
             EndAction::QuitToMenu => flow.transition(Action::QuitToMenu, true),
             EndAction::Scripted { .. } => Vec::new(),
@@ -310,6 +318,7 @@ impl Plugin for EndMenuScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EndMenuScreen>()
             .add_message::<ScriptedEnd>()
+            .add_message::<crate::arena_live::ArenaContinue>()
             .add_message::<EndMenuConfirm>()
             .add_message::<crate::menu_screen::MenuSound>()
             .add_systems(
@@ -334,6 +343,7 @@ fn update(
     mut pad: MessageReader<EndMenuConfirm>,
     mut roll: Option<ResMut<crate::menu_screen::MenuSoundRoll>>,
     mut sounds: MessageWriter<crate::menu_screen::MenuSound>,
+    mut continues: MessageWriter<crate::arena_live::ArenaContinue>,
 ) {
     let pad_confirm = pad.read().count() > 0;
     // The pad's Select: a menu that is not showing does nothing; one that
@@ -369,6 +379,9 @@ fn update(
         if let Some(scripted) = screen.scripted.take() {
             scripts.write(scripted);
         }
+        if std::mem::take(&mut screen.arena_continue) {
+            continues.write(crate::arena_live::ArenaContinue);
+        }
         steps.steps.extend(out);
         return;
     }
@@ -387,6 +400,9 @@ fn update(
         let out = screen.confirm(flow);
         if let Some(scripted) = screen.scripted.take() {
             scripts.write(scripted);
+        }
+        if std::mem::take(&mut screen.arena_continue) {
+            continues.write(crate::arena_live::ArenaContinue);
         }
         steps.steps.extend(out);
         return;
@@ -421,6 +437,9 @@ fn update(
         let out = screen.confirm(flow);
         if let Some(scripted) = screen.scripted.take() {
             scripts.write(scripted);
+        }
+        if std::mem::take(&mut screen.arena_continue) {
+            continues.write(crate::arena_live::ArenaContinue);
         }
         steps.steps.extend(out);
     }
