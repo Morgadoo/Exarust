@@ -1876,12 +1876,16 @@ pub fn ai_tick(
                         body_look,
                         now,
                     );
+                    // The leave routine also puts back the idle state as
+                    // the current state, at its step 1.
+                    crate::lifecycle::restart_idle(brain);
                     info!(
                         "{talking}: the target pass leaves combat looking at {body_look:.3} rad; \
                          the wide pan waits until {} ms, the narrow pan until {} ms",
                         brain.alert.wide_at_ms, brain.alert.narrow_at_ms
                     );
                 } else {
+                    crate::lifecycle::restart_idle(&mut npc);
                     info!("{talking}: the target pass leaves combat");
                 }
             }
@@ -2205,7 +2209,8 @@ pub fn flee_walk(
     mut npcs: Query<(
         Entity,
         &mut Npc,
-        &crate::Duellist,
+        &mut crate::Duellist,
+        &mut Combatant,
         &Condition,
         &GlobalTransform,
         &mut Transform,
@@ -2236,8 +2241,19 @@ pub fn flee_walk(
         *frame = frame.wrapping_add(1);
         turn.next_turn();
     }
-    for (entity, mut npc, duellist, condition, gt, mut t, parent, presence, anim, mut walking) in
-        &mut npcs
+    for (
+        entity,
+        mut npc,
+        mut duellist,
+        mut combatant,
+        condition,
+        gt,
+        mut t,
+        parent,
+        presence,
+        anim,
+        mut walking,
+    ) in &mut npcs
     {
         if !steer {
             if npc.flight.is_some()
@@ -2263,7 +2279,9 @@ pub fn flee_walk(
                 threat_room: npc.flee_threat_room,
                 room: npc.level_room,
                 home: npc.previous_room,
-                has_foe: npc.flee_focus.is_none(),
+                // The body's target (a character threat) and the object
+                // focus (any other threat): with neither the flight ends.
+                has_foe: combatant.target.is_some(),
                 has_focus: npc.flee_focus.is_some(),
                 route_goal: npc.flight,
                 position: gt.translation() * 100.0,
@@ -2346,7 +2364,7 @@ pub fn flee_walk(
             || near_goal
             || (nav.is_some() && npc.flight_walk.route.is_empty());
         let my_turn = nav.is_none() || (replan && turn.turn(entity.to_bits(), *frame));
-        if replan && my_turn && level_room >= 0 {
+        if replan && my_turn {
             let Some(level) = level.as_deref() else {
                 continue;
             };
@@ -2416,6 +2434,34 @@ pub fn flee_walk(
                 npc.flight_walk.route.len()
             );
             npc.flight = way.map(|way| way.goal);
+            if way.is_none() {
+                // Cornered (the way-out goal callback found no exit, or the
+                // brain stands in no room): the state becomes the combat
+                // state at level 3 with the courage doubled. The combat
+                // state fights the body's target; with none it has nothing
+                // to fight [inf: its tick then leaves combat], so only a
+                // character threat engages the duellist.
+                let mut level = npc.pass.level;
+                let mut morale = contacts::Morale {
+                    courage: npc.morale.courage,
+                    ..contacts::Morale::default()
+                };
+                crate::flee::cornered(&mut level, &mut morale);
+                npc.morale.courage = morale.courage;
+                npc.pass.level = level;
+                npc.integration.level = level;
+                npc.flight_walk.route.clear();
+                if let Some(foe) = combatant.target {
+                    duellist.target = foe;
+                    duellist.engage();
+                    combatant.in_combat = true;
+                }
+                info!(
+                    "{entity}: the flight is cornered in room {level_room}: combat at level \
+                     {level}, courage {:.3}",
+                    npc.morale.courage
+                );
+            }
         }
         match npc.flight {
             Some(goal) => {
@@ -3474,6 +3520,80 @@ mod tests {
         assert_eq!(app.world().get::<Npc>(npc).unwrap().pass.level, 0);
     }
 
+    /// A calm target pass while the duellist fights leaves combat through
+    /// the leave routine, which also puts back the idle state at its first
+    /// step.
+    #[test]
+    fn the_target_pass_leave_restores_the_idle_state() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .insert_resource(BodyTicks(1))
+            .add_message::<exa_combat::AttackAskedHook>()
+            .add_systems(Update, (ai_tick, crate::duellist).chain());
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.contacts.push(ContactRecord {
+            id: player.to_bits(),
+            sighting: 1.0,
+            seen: 1.0,
+            hostility: 5.0,
+            ..ContactRecord::default()
+        });
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+            .id();
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                Mind::new(0.0),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Animator::new("Default", "Idle"),
+                Fighter::default(),
+                Condition::NORMAL,
+                ChildOf(root),
+            ))
+            .id();
+        let tick = |app: &mut App| {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.update();
+        };
+        tick(&mut app);
+        tick(&mut app);
+        assert!(app.world().get::<crate::Duellist>(npc).unwrap().fighting());
+        {
+            let mut brain = app.world_mut().get_mut::<Npc>(npc).unwrap();
+            for c in &mut brain.contacts {
+                c.hostility = 0.0;
+                c.concern = 0.0;
+            }
+            brain.routine.phase = crate::idle::Phase::WalkHome;
+        }
+        let mut left = false;
+        for _ in 0..40 {
+            tick(&mut app);
+            let brain = app.world().get::<Npc>(npc).unwrap();
+            if brain.pass.leave {
+                left = true;
+                assert_eq!(brain.routine.phase, crate::idle::Phase::Wait);
+                break;
+            }
+        }
+        assert!(left, "a calm pass leaves combat");
+        assert!(!app.world().get::<crate::Duellist>(npc).unwrap().engaged);
+    }
+
     /// A role that makes the player hostile engages through the brain's
     /// target pass; a neutral one never engages the player.
     #[test]
@@ -4186,6 +4306,88 @@ mod tests {
                 .desired_velocity,
             Vec3::ZERO
         );
+    }
+
+    /// A flight with no way out (the brain stands in no room) is cornered:
+    /// it goes back to combat at level 3 with its courage doubled, fighting
+    /// the body's target; a flight with neither a body target nor an object
+    /// focus ends at level 0.
+    #[test]
+    fn a_cornered_flight_fights_and_one_without_a_threat_ends() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        grid.edges[7] = CELL_OPEN | 7 | 7 << 4 | 7 << 8 | 7 << 12;
+        let rooms = Rooms::flood(&grid);
+        let mut app = App::new();
+        app.add_systems(Update, flee_walk);
+        app.insert_resource(LevelRooms::new(Arc::new(rooms)));
+        let far = Vec3::new(90.0, 0.0, 90.0);
+        assert_eq!(
+            crate::rooms::level_room(&app.world().resource::<LevelRooms>().rooms, far * 100.0),
+            -1
+        );
+        let player = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(far + Vec3::X))
+            .id();
+        let spawn = |app: &mut App, foe: Option<Entity>| {
+            let root = app
+                .world_mut()
+                .spawn((
+                    CharacterBody::default(),
+                    GlobalTransform::from_translation(far),
+                ))
+                .id();
+            let mut brain = Npc::new([0.0; 4]);
+            brain.pass.level = 4;
+            brain.integration.level = 4;
+            brain.morale.courage = 0.4;
+            let combatant = Combatant {
+                target: foe,
+                ..Combatant::default()
+            };
+            app.world_mut()
+                .spawn((
+                    brain,
+                    crate::Duellist::new(player),
+                    combatant,
+                    Condition::NORMAL,
+                    GlobalTransform::from_translation(far),
+                    Transform::default(),
+                    ChildOf(root),
+                ))
+                .id()
+        };
+        let cornered = spawn(&mut app, Some(player));
+        let calm = spawn(&mut app, None);
+        app.update();
+        let npc = app.world().get::<Npc>(cornered).unwrap();
+        assert_eq!((npc.pass.level, npc.integration.level), (3, 3));
+        assert!((npc.morale.courage - 0.8).abs() < 1e-6);
+        assert!(npc.flight.is_none());
+        assert!(
+            app.world()
+                .get::<crate::Duellist>(cornered)
+                .unwrap()
+                .engaged
+        );
+        assert!(app.world().get::<Combatant>(cornered).unwrap().in_combat);
+        let npc = app.world().get::<Npc>(calm).unwrap();
+        assert_eq!(npc.pass.level, 0, "no foe and no focus: the flight ends");
+        assert!(npc.flee_calm_until_ms >= 10_000);
+        assert!(!app.world().get::<crate::Duellist>(calm).unwrap().engaged);
     }
 
     /// On a level with a navigation grid the flight routes its way out on
