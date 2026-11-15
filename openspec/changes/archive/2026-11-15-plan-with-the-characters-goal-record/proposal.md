@@ -28,6 +28,8 @@ REA (Exanima.exe) and the disassembly, checked against the instructions:
   test that never fails.
 - The line walk's and the straight walk's block arm projects the backed-up
   cell point onto the start-to-end direction normalised with rsqrtss.
+- The three walks share one raster set-up, in centimetres and single
+  precision (`x·(1/30) − ½` plus half the grid).
 - The attach's seed byte comes from a global with no writer.
 
 ## What Changes
@@ -35,7 +37,8 @@ REA (Exanima.exe) and the disassembly, checked against the instructions:
 - `exa_world::nav::find_path_to` takes the search record and an end test.
 - `exa_ai::route::PlanGoal` on each brain; `NavRouter` plans with it and
   the alert count; each planning state writes its fields.
-- The line walk and the straight walk project a blocked end.
+- The line walk and the straight walk project a blocked end; the walks'
+  raster rounds in single precision.
 
 ## Impact
 

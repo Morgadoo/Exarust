@@ -24,72 +24,23 @@ pub struct LineHit {
 
 /// Walk the straight line from `start` to `end` on `grid`.
 pub fn line_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
-    let (width, depth) = grid.size();
-    let gx0 = axis(start.x, width);
-    let gz0 = axis(start.z, depth);
-    let gx1 = axis(end.x, width);
-    let gz1 = axis(end.z, depth);
-    let dx = gx1 - gx0;
-    let dz = gz1 - gz0;
-    // The original takes Z as the major axis on a tie (|dx| <= |dz|).
-    let x_major = dx.abs() > dz.abs();
-    let (d_major, d_minor, g_major, g_minor) = if x_major {
-        (dx, dz, gx0, gz0)
-    } else {
-        (dz, dx, gz0, gx0)
+    let Some(mut walk) = raster(grid, start, end, false) else {
+        return LineHit {
+            blocked: false,
+            end,
+        };
     };
-    if d_major == 0.0 {
-        return LineHit {
-            blocked: false,
-            end,
-        };
-    }
-    let start_i = g_major.round_ties_even() as i32;
-    let end_i = (g_major + d_major).round_ties_even() as i32;
-    let count = (end_i - start_i).unsigned_abs();
-    if count == 0 {
-        return LineHit {
-            blocked: false,
-            end,
-        };
-    }
-    let step = if d_major < 0.0 { -1 } else { 1 };
-    let slope = d_minor / d_major;
-    let intercept = g_minor - g_major * slope;
-    let mut major = start_i;
     let mut height = voxels(start.y, grid.base());
-    let mut offered = count as i32;
+    let mut offered = walk.count as i32;
     // The original walks the cells after the start up to and including the
     // asked end's cell (its loop runs once per cell of the major span).
-    for k in 0..count {
-        major += step;
-        let minor = (major as f32 * slope + intercept).round_ties_even() as i32;
-        let (x, z) = if x_major {
-            (major, minor)
-        } else {
-            (minor, major)
+    for k in 0..walk.count {
+        let Some((x, z)) = walk.advance() else {
+            break;
         };
         match step_cell(grid, x, z, height, offered) {
             Step::Next => {}
-            Step::Blocked => {
-                if k == 0 {
-                    return LineHit {
-                        blocked: true,
-                        end: start,
-                    };
-                }
-                let back = major - step;
-                let minor = back as f32 * slope + intercept;
-                let (x, z) = if x_major {
-                    (back as f32, minor)
-                } else {
-                    (minor, back as f32)
-                };
-                return LineHit {
-                    blocked: true,
-                    end: project_back(start, end, x, z, width, depth),
-                };
-            }
+            Step::Blocked => return walk.clamp(grid, k, start, end),
             Step::Stand {
                 height: next,
                 offered: kept,
@@ -219,32 +170,36 @@ struct Raster {
     count: u32,
 }
 
+/// The walks' raster, set up as the original's: in centimetres and single
+/// precision, the start's grid position `W/2 + (x·(1/30) − ½)`, the end's
+/// cell `round(x·(1/30) − ½) + W/2`, the major axis, slope and step from the
+/// world direction (Z on a tie or a NaN), the intercept through the start.
 fn raster(grid: &NavGrid, start: Vec3, end: Vec3, sign_bit: bool) -> Option<Raster> {
     let (width, depth) = grid.size();
-    let gx0 = axis(start.x, width);
-    let gz0 = axis(start.z, depth);
-    let dx = axis(end.x, width) - gx0;
-    let dz = axis(end.z, depth) - gz0;
-    // The original takes Z as the major axis on a tie (|dx| <= |dz|).
-    let x_major = dx.abs() > dz.abs();
-    let (d_major, d_minor, g_major, g_minor) = if x_major {
-        (dx, dz, gx0, gz0)
-    } else {
-        (dz, dx, gz0, gx0)
-    };
-    if d_major == 0.0 {
+    let inverse = 1.0f32 / super::CELL_CM as f32;
+    let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+    let halves = [(width / 2) as i32, (depth / 2) as i32];
+    let from = [cm(start.x), cm(start.z)];
+    let to = [cm(end.x), cm(end.z)];
+    let g = [0, 1].map(|i| halves[i] as f32 + (from[i] * inverse - 0.5));
+    let end_cell = [0, 1].map(|i| ((to[i] * inverse - 0.5).round_ties_even() as i32) + halves[i]);
+    let way = [to[0] - from[0], to[1] - from[1]];
+    let x_major = way[1].abs() < way[0].abs();
+    let (major, minor) = if x_major { (0, 1) } else { (1, 0) };
+    // [Exarust: a zero direction raster nothing; the original's slope is
+    // then NaN, only reached when rounding puts the end in another cell.]
+    if way[major] == 0.0 {
         return None;
     }
-    let start_i = g_major.round_ties_even() as i32;
-    let end_i = (g_major + d_major).round_ties_even() as i32;
-    let count = (end_i - start_i).unsigned_abs();
+    let start_i = g[major].round_ties_even() as i32;
+    let count = (end_cell[major] - start_i).unsigned_abs();
     if count == 0 {
         return None;
     }
-    let slope = d_minor / d_major;
+    let slope = way[minor] / way[major];
     let step = if sign_bit {
-        if d_major.is_sign_negative() { -1 } else { 1 }
-    } else if d_major < 0.0 {
+        if way[major].is_sign_negative() { -1 } else { 1 }
+    } else if way[major] < 0.0 {
         -1
     } else {
         1
@@ -253,7 +208,7 @@ fn raster(grid: &NavGrid, start: Vec3, end: Vec3, sign_bit: bool) -> Option<Rast
         x_major,
         step,
         slope,
-        intercept: g_minor - g_major * slope,
+        intercept: g[minor] - g[major] * slope,
         major: start_i,
         count,
     })
@@ -560,6 +515,30 @@ mod tests {
         let straight = straight_walk(&grid, start, end);
         assert!(straight.blocked);
         assert_eq!(straight.end, want);
+    }
+
+    /// The raster rounds as the original's single precision: at -180 cm on
+    /// a 16-cell grid, `8 + (-180·(1/30) − ½)` is 1.4999995, so the walk
+    /// starts in cell 1 (the exact 1.5 would round to cell 2) and its first
+    /// step meets a floor too high in cell 2: blocked at once, it keeps its
+    /// start.
+    #[test]
+    fn the_raster_rounds_in_single_precision() {
+        let mut grid = flat(16, 16);
+        grid.set_cell(
+            2,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 40,
+                ..NavCell::default()
+            },
+        );
+        let start = Vec3::new(-1.8, 1.0, at(&grid, 1, 3).z);
+        let end = at(&grid, 6, 3);
+        let hit = line_walk(&grid, start, end);
+        assert!(hit.blocked);
+        assert_eq!(hit.end, start);
     }
 
     #[test]

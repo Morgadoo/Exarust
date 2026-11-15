@@ -410,3 +410,10 @@ A line walk or straight walk blocked after its first step SHALL end at the cell 
 #### Scenario: A wall across a slanted walk
 - **WHEN** a walk from cell (1, 3) to cell (12, 6) meets a wall at x = 8
 - **THEN** the line walk and the straight walk end at the projection of the point (7, 30/11 + 21/11), within a millimetre of it
+
+### Requirement: Line walk raster precision
+The line walk, the straight walk and the obstacle test SHALL set up their raster in centimetres and single precision: the start's grid position as half the grid plus the position times the reciprocal of 30 less a half, the end's cell rounded before half the grid is added, and the major axis, slope and step from the world direction.
+
+#### Scenario: A start that rounds down
+- **WHEN** a line walk on a 16-cell grid starts at -180 cm, whose single-precision grid position is 1.4999995, toward cell 6 past a floor too high in cell 2
+- **THEN** it starts in cell 1, is blocked at its first step and keeps its start
