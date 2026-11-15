@@ -724,7 +724,7 @@ After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 �
 - **THEN** its torso sways and turns back to its pose, its balance stays at 0.6 or more, and it comes to rest
 
 ### Requirement: Carry
-After its inertia each particle of a living part over half its tone t SHALL move by g(1 − a) + carry·a, any other by g: a = t × its support share (pelvis and thighs 1, lower legs 0.5, feet 0.25) or t × E (the upper body). Each character tick SHALL set the carry to gravity, then, with support, take the lift g·f·S off it.
+After its inertia each particle of a living part over half its tone t SHALL move by g(1 − a) + carry·a, any other by g: a = t × its support share (pelvis and thighs 1, lower legs 0.5, feet 0.25) or t × E (the upper body). Each character tick SHALL set the carry to gravity, add the locomotion push while the body moves, then, with support, take the lift g·f·S off it.
 
 #### Scenario: Shares
 - **WHEN** a part of tone 0.9 takes the carry at energy 0.6
@@ -3002,3 +3002,10 @@ The player's third-tick spawn snap SHALL hold its body around the ground placeme
 #### Scenario: The player is snapped to the ground
 - **WHEN** the spawn snap places the player's body
 - **THEN** the kept pair with the body is dropped and its world contacts are empty
+
+### Requirement: The locomotion push precedes the lift
+While the body locomotes, each character tick SHALL add the drive × S² × the gait's push gain × the feet's lag to the carry before the lift servo, whatever the servo finds, with no support test of its own.
+
+#### Scenario: A pelvis over its target
+- **WHEN** a moving body's pelvis rides 20 cm over its target, so the servo gives no lift
+- **THEN** its carry still takes the whole push
