@@ -773,7 +773,13 @@ builds each board table's view (rows, greyed rows, selection, the fighter
 tables' drag kind and pad words), `Board::click` presses through
 `TableView::press`, and `TableView::paint_selection` and
 `TableView::paint_drag_label` draw the selected row's band and a dragged
-row's label through the skin's faded rectangle and selection band.
+row's label through the skin's faded rectangle and selection band. The
+pad reaches the board's tables through `TableView::centre_and_default` (the
+pick) and `TableView::command` (steps and activation words), with
+`Board::select_table_row` answering a selection; the Settings form takes
+the pad's focus and key messages (`settings::FormState::pad_focus_set`,
+`pad_control_key`), and the skill screen's link search
+(`skill::pick_skill_satellite`) keeps the row on a sideways step.
 
 `table_view` now keeps the column choice list that a press opens (its
 entries, width, anchor and picked entry) and routes every key that
