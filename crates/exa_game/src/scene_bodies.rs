@@ -158,6 +158,10 @@ pub struct SceneBodyPlan {
     pub clear_roles: bool,
     /// Its red health as a share of its maximum, 0…1.
     pub health: f32,
+    /// A company entrant's saved health word: the spawn sets red and
+    /// yellow from it as the original does
+    /// ([`crate::arena_match::health_from_word`]), not from [`Self::health`].
+    pub health_word: Option<u16>,
     /// Its first condition word (a generated opponent's damage word).
     pub damage: f32,
     /// Its second condition word (a generated opponent's health word).
@@ -181,6 +185,18 @@ pub struct SceneBodyPlan {
 }
 
 impl SceneBodyPlan {
+    /// The health a body of maximum `max` spawns at: a company entrant's
+    /// saved word as the original's health set computes it (the maximum
+    /// times the word times 1/65535 in double, stored as single), else
+    /// the plan's share of the maximum.
+    #[must_use]
+    pub fn start_health(&self, max: f32) -> f32 {
+        match self.health_word {
+            Some(word) => crate::arena_match::health_from_word(word, max),
+            None => max * self.health,
+        }
+    }
+
     /// A plan from a place (centimetres) with the arena's defaults.
     fn base(place: &Place) -> Self {
         Self {
@@ -193,6 +209,7 @@ impl SceneBodyPlan {
             roles: Vec::new(),
             clear_roles: true,
             health: 1.0,
+            health_word: None,
             damage: SPAWN_DAMAGE,
             condition_health: SPAWN_HEALTH,
             weapon: None,
@@ -388,6 +405,7 @@ pub fn company_plan(
     body.roles = vec![role];
     body.id = id;
     body.health = member.map_or(1.0, |(_, health)| f32::from(health) / f32::from(u16::MAX));
+    body.health_word = member.map(|(_, health)| health);
     body.damage = SPAWN_HEALTH;
     body.condition_health = SPAWN_HEALTH;
     body.brain = BodyBrain::Npc;
@@ -684,7 +702,7 @@ pub fn spawn_scene_body(
             .entity(model_entity)
             .insert(exa_ai::brain::MindWarded);
     }
-    fighter.health.yellow = fighter.health.max * plan.health;
+    fighter.health.yellow = plan.start_health(fighter.health.max);
     fighter.health.red = fighter.health.yellow;
     // A saved record's pools are the spawn's last write. A generated body
     // keeps the plan's share; its record was just rolled and is not a save.
@@ -1425,8 +1443,16 @@ mod tests {
         assert!((plan.health - 0.5).abs() < 1e-4);
         assert!(matches!(plan.brain, BodyBrain::Npc));
         assert_eq!(plan.damage, 100.0);
+        // The word is kept for the spawn, which takes the double product:
+        // a maximum of 0.3 and the word 259 give 0x3a9b6702, where the
+        // single share times the maximum gives 0x3a9b6703.
+        assert_eq!(plan.health_word, Some(32_768));
+        let low = company_plan(Some(("Bo", 259)), None, &place(), 0x11, 3, 0, 3_000);
+        assert_eq!(low.start_health(0.3).to_bits(), 0x3a9b_6702);
+        assert_eq!((0.3 * low.health).to_bits(), 0x3a9b_6703);
         let empty = company_plan(None, None, &place(), 0x11, 1, 0, 3_000);
         assert_eq!(empty.health, 1.0);
+        assert_eq!(empty.start_health(0.25), 0.25);
         assert_eq!(empty.name, None);
     }
 

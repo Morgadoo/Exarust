@@ -534,21 +534,29 @@ pub fn apply(
             companies,
         });
     }
-    // The hire list's candidates from their character exports; a broken
-    // chunk keeps the list the career has.
-    match arena_save::parse_hireables(&tables.hireables, |bytes| {
-        let record = CharacterRecord::parse(0, bytes).ok()?;
-        let size = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
-        Some((record, size + 8))
-    }) {
-        Ok(candidates) if !tables.hireables.is_empty() => {
+    // The hire list's candidates from their character exports. The count
+    // is cleared before the chunk loads, so a save with no candidates (or
+    // a broken chunk) leaves the list empty; Manage Company draws a new
+    // one when it opens on an empty list.
+    career.hire_pool.clear();
+    let parsed = (!tables.hireables.is_empty()).then(|| {
+        arena_save::parse_hireables(&tables.hireables, |bytes| {
+            let record = CharacterRecord::parse(0, bytes).ok()?;
+            let size = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
+            Some((record, size + 8))
+        })
+    });
+    match parsed {
+        Some(Ok(candidates)) => {
             career.hire_pool = candidates
                 .iter()
                 .map(|entry| candidate_member(&entry.character))
                 .collect();
         }
-        Ok(_) => {}
-        Err(error) => bevy::log::warn!("arena load: the hire list does not read ({error:?})"),
+        Some(Err(error)) => {
+            bevy::log::warn!("arena load: the hire list does not read ({error:?})");
+        }
+        None => {}
     }
     bevy::log::info!(
         "arena load: hire list {:?}; week's events {:?}",
@@ -835,6 +843,20 @@ mod tests {
             &wire,
         );
         assert_eq!(back.hire_pool.len(), career.hire_pool.len());
+        // A save whose hire list is empty loads an empty list: the count is
+        // cleared before the chunk is read.
+        let mut none = wire.clone();
+        none.hireables.clear();
+        let mut full = ArenaCareer::default();
+        assert!(!full.hire_pool.is_empty());
+        apply(
+            &mut full,
+            &mut Staff::default(),
+            &mut Arsenal::default(),
+            &mut Vec::new(),
+            &none,
+        );
+        assert!(full.hire_pool.is_empty());
         for (loaded, saved) in back.hire_pool.iter().zip(&career.hire_pool) {
             assert_eq!(loaded.name, saved.name);
             assert_eq!(loaded.profession, saved.profession);

@@ -1983,6 +1983,12 @@ fn hub_clicks(
                 hub.busy = true;
             }
             HubAction::ManageCompany => {
+                // An empty hire list (a load whose chunk held none) is
+                // drawn again before the window is built.
+                if career.hire_pool.is_empty() {
+                    career.fill_hire_pool();
+                    info!("hub manage: the empty hire list is drawn again");
+                }
                 windows.open_manage(&career);
                 hub.busy = true;
             }
@@ -2816,6 +2822,44 @@ mod tests {
             .drain()
             .count();
         assert_eq!(launches, 1);
+    }
+
+    /// Manage Company opened on an empty hire list draws a new one first.
+    #[test]
+    fn manage_company_refills_an_empty_hire_list() {
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        spawn_hub_level(&mut app);
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::hub_windows::ArenaCareer>()
+            .hire_pool
+            .clear();
+        let machine = app
+            .world_mut()
+            .spawn((
+                Name::new("\u{aa}ArenaMach"),
+                GlobalTransform::default(),
+                PartBounds {
+                    centre: Vec3::new(-1.0, 0.0, 0.0),
+                    radius: 1.0,
+                    half_extents: Vec3::splat(1.0),
+                },
+            ))
+            .id();
+        app.world_mut()
+            .write_message(WorldClick::picked(Hit::SceneNode { node: machine }));
+        app.update();
+        assert!(
+            app.world()
+                .resource::<HubWindows>()
+                .is_kind(HubWindowKind::Manage)
+        );
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(career.hire_pool.len(), crate::hirelings::POOL_SIZE);
     }
 
     #[test]
