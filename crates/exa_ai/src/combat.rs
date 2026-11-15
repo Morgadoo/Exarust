@@ -2124,7 +2124,11 @@ pub fn tick(
         return out;
     }
     if me.condition & DOWN != 0 {
+        // The down exit: the look and the heading take the yaw of the
+        // body's facing (the body's own look directions take the facing,
+        // the caller's).
         mind.aim = yaw(me.facing);
+        mind.heading = mind.aim;
         out.exit = Some(Exit::Down);
         return out;
     }
