@@ -1203,7 +1203,10 @@ a level load cancels the pulses; `--object-click F#id` aims a scripted
 click at a placed id). Charged crystals lose 2 charge a game second
 (`crystal_drain`: the collect pass at the end of a level load over the
 player's hands, worn and carried items, then the socket and inventory
-sources once a second; the container sources are not wired). A held
+sources once a second; the item panels file the AR crystal's sources too:
+a drop into a container (kind 2, whose record's crystal stacks then
+drain), into a pack (kind 3), a socket row committed with it (kind 4),
+`GameScreens::drain_sources`). A held
 item's ability runs once a game second for every character
 (`item_ability`); when the hands change, the focus-item check
 (`item_ability::check_focus_items`) sets the body's slot bit from an
@@ -1224,9 +1227,11 @@ value's coin control draws the coin sheet's gold, silver and copper icons
 (at four units, standing on the count's baseline, white at the card's GUI
 alpha) before each count. The item card's
 socket row takes crystals (`socket_drag`): a crystal dragged from a pack
-onto a socket goes in (the one there goes back to the player), one dragged
-out onto a pack comes out, and the row is written into the item's weapon
-or apparel section; the next press of any
+onto a socket goes in (the one there goes back to the player, into the
+open pack by its centre add and place pass), one dragged out onto a pack
+comes out, and the row is written into the item's weapon or apparel
+section (an apparel commit re-runs the player's light switch); a right
+press on a socketed crystal opens its card; the next press of any
 button ends the cursor and is taken, and the dispatcher's door unlock is
 applied (the other branches are reported in `UseReleased`). A cleaning
 or repair kit reads and writes the record in the live object database
@@ -1241,6 +1246,14 @@ template (`use_cursor::repair_record`: the price word, the apparel or
 weapon condition, a factory weapon's stat pass through the shop's factory
 cache) and refreshes an open card of the item in place
 (`item_card::CardRefresh`, `item_card::refresh_card`).
+The card builder reads its gates from the game (`item_card::CardContext`,
+`sync_card_context`): the rank and points rows by the mode switch's rule
+(on in the arena), the value row only while the hub's trade window is
+open, the pronouns by the player record's sex; a use-kind-2 item (the
+Proctor's Seal) runs its device use before its delayed card. An icon that
+cannot be made reports the original's "Item Error: Unable to resolve
+item" (`item_icon_render`), and the dots and the slider's knob take the
+GUI level's large-icon cell (`doll_view::dot_side`).
 A weapon card's Flip weapon button (`item_card::FlipButton`) is drawn
 with the grip icon (`item_card::GripSheet`, the grip sheet at eight units
 in the grip manager's format) through the skin's image draw; a left press
@@ -1965,8 +1978,15 @@ worn items and the shields in the hands (held weapons are not listed)
 through the worn/scatter pass, its generator started from `DOLL_SEED` as a
 stand-in for the engine's shared one. The player's inventory pack is its carried list the same way.
 `panel_live` runs a left-button drag between open panels with the item
-panel's press, accept, drop and drag-end rules; a drop on another pack moves
-the possession entries, a drop on the same panel only repositions, and a
+panel's press, accept, drop and drag-end rules; its hit test is the panel's
+two passes over the icons' alpha (`PanelIcons::pixel_hit`, `near_hit`; an
+icon not rendered yet answers by its cell). A drop on another pack moves
+the possession entries, a drop on the same panel repositions and writes
+the new place into the owner's carried list (`body_inventory::reposition`),
+every centre add is followed by the panel's place pass
+(`PanelIcons::add_placed`, drawing from the item GUI's own generator, a
+stand-in for the engine's shared one), a container popup clamps its
+children after the load, and a
 drop on a body's equipment panel or outside every panel is refused (a loot
 window has no running character view and there is no GUI-to-world drop
 yet). A drop on the inventory's figure is `doll_view`'s. It first runs the
@@ -1978,7 +1998,9 @@ cancelled. The trade preview's drop runs the same test. Then apparel is worn
 through the equip conflict pass (displaced pieces back to the pack, the
 braies dropped, the outfit re-dressed), a weapon goes into the hands by
 the take-in plan and a shield into the off hand, the player's hands and
-held weapon following. `figure_pick` takes items off the figure: the pick
+held weapon following; an item from the inventory's own pack stays there
+at its cell, marked held, and a hand item the take-in frees shows again
+(`doll_view::give_back_displaced`). `figure_pick` takes items off the figure: the pick
 of the item under the pointer (the CPU-skinned merged runs' faces, whose
 garments name the worn item, then the other drawn meshes, a held item's
 answering its hand and slot), a left-press drag off the figure
