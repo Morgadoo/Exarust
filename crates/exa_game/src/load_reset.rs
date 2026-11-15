@@ -41,6 +41,7 @@ pub fn apply_game_gui_reset(world: &mut World, reset: GameGuiReset) {
             drain.drain.sources.len()
         );
         drain.drain.sources.clear();
+        drain.containers.clear();
     }
     if reset.icons {
         // The swept panels' handles go with the cache.

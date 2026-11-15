@@ -197,18 +197,39 @@ pub(crate) fn container_mut(screens: &mut GameScreens, panel: Panel) -> Option<&
     }
 }
 
-/// The top-most entry under a point inside a panel's client; held entries
-/// (the `0x100` mark) are not picked, as the original skips them.
-pub(crate) fn entry_at(container: &Container, local: Cell) -> Option<usize> {
-    crate::item_container::hit_test(
-        container.entries.len(),
-        container.icon_size,
+/// The top-most entry under a point inside a panel's client, by the
+/// panel's own two-pass hit test ([`Container::hit_alpha`]): held entries
+/// (the `0x100` mark) are skipped, the first pass takes the topmost entry
+/// whose icon pixel under the point is opaque, and the second (the GUI's
+/// switch for it is on) the topmost one with an opaque pixel within a GUI
+/// unit of it ([`PanelIcons::pixel_hit`], [`PanelIcons::near_hit`]). An
+/// icon the renderer has not filled yet has no pixels to test; its whole
+/// cell answers (Exarust renders icons a frame or more late, the original
+/// renders them before the panel draws). Without the icon cache
+/// (`icons: None`) the whole cell answers for every entry.
+pub(crate) fn entry_at(
+    container: &Container,
+    icons: Option<&PanelIcons>,
+    local: Cell,
+) -> Option<usize> {
+    let Some(icons) = icons else {
+        return crate::item_container::hit_test(
+            container.entries.len(),
+            container.icon_size,
+            local.x,
+            local.y,
+            |index| {
+                let entry = &container.entries[index];
+                (entry.cell, entry.flags, true)
+            },
+        );
+    };
+    let unit = container.unit;
+    container.hit_alpha(
         local.x,
         local.y,
-        |index| {
-            let entry = &container.entries[index];
-            (entry.cell, entry.flags, true)
-        },
+        |icon, x, y| icons.pixel_hit(icon, x, y),
+        Some(|icon, x, y| icons.near_hit(icon, x, y, unit)),
     )
 }
 
@@ -343,7 +364,7 @@ pub(crate) fn press(
     let Some(container) = container_mut(&mut screens, panel) else {
         return;
     };
-    let Some(index) = entry_at(container, local) else {
+    let Some(index) = entry_at(container, Some(&*icons), local) else {
         return;
     };
     let PanelEvent::StartDrag { grab } = crate::item_container::panel_event(
@@ -478,6 +499,9 @@ pub fn drop_on_panel(
     let cell = dropped
         .and_then(|drop| destination_container.entries.get(drop.index))
         .map(|entry| entry.cell);
+    if let Some(fired) = dropped.and_then(|drop| drop.fired) {
+        screens.drain_sources.push(fired);
+    }
     if let Some(container) = container_mut(screens, destination) {
         *container = destination_container;
     }
@@ -585,7 +609,15 @@ pub(crate) fn release(
         && let Some(i) = crate::socket_drag::socket_at(card, at)
     {
         let landing = objects.as_deref_mut().map(|objects| {
-            crate::socket_drag::drop_on_socket(card, objects, i, drag.id, drag.flags, None)
+            crate::socket_drag::drop_on_socket(
+                card,
+                objects,
+                i,
+                drag.id,
+                drag.flags,
+                None,
+                &mut screens.drain_sources,
+            )
         });
         let accepted = landing.is_some_and(|l| l.code == exa_items::item_gui::DROP_HANDLED);
         if let Some(container) = container_mut(&mut screens, source) {
@@ -606,6 +638,7 @@ pub(crate) fn release(
                 card.item,
                 card.sockets.map(|s| s.0)
             );
+            refresh_after_commit(&mut bodies, player, landing.and_then(|l| l.committed));
             if let Some(back) = landing.and_then(|l| l.back)
                 && let Some(player) = player
                 && let Ok((_, mut p)) = bodies.get_mut(player)
@@ -704,7 +737,14 @@ pub(crate) fn release(
         }),
         _ => false,
     };
-    if let Some((destination, id, flags, cell)) = drop_on_panel(
+    // A move inside a pack: the dragged entry's place before the drop, for
+    // the record's write-back below.
+    let moved_from = (destination == source && matches!(source, Panel::PlayerPack | Panel::BodyPack(_)))
+        .then(|| container(&screens, source))
+        .flatten()
+        .and_then(|c| c.entries.iter().find(|e| e.drag & 1 != 0 && e.icon == drag.icon))
+        .map(|e| e.cell);
+    let dropped = drop_on_panel(
         &mut screens,
         &icons,
         catalogue.as_deref(),
@@ -712,7 +752,29 @@ pub(crate) fn release(
         destination,
         local,
         core_ok,
-    ) {
+    );
+    // The original's pack saves its list into the character's record after
+    // every change (the inventory's pack-changed save and its close);
+    // Exarust writes each move into the possessions, so a move inside the
+    // pack writes the entry's new place (and its raise to the top) here.
+    if let Some(from) = moved_from
+        && let Some(to) = container(&screens, source)
+            .and_then(|c| c.entries.last())
+            .filter(|e| e.icon == drag.icon && e.drag & 1 == 0)
+            .map(|e| e.cell)
+    {
+        let owner = match source {
+            Panel::BodyPack(body) => body_entity(&mut bodies, body),
+            _ => player,
+        };
+        if let Some(owner) = owner
+            && let Ok((_, mut p)) = bodies.get_mut(owner)
+            && body_inventory::reposition(&mut p, drag.id, drag.flags, from, to, unit, vscale)
+        {
+            debug!("item panel: {:#x} moves inside {source:?} to ({}, {})", drag.id, to.x, to.y);
+        }
+    }
+    if let Some((destination, id, flags, cell)) = dropped {
         ended.write(crate::use_cursor::GuiDragEnded {
             accepted: true,
             id: drag.id,
@@ -858,11 +920,13 @@ fn release_socket_drag(
                 drag.id,
                 drag.flags,
                 Some(from),
+                &mut screens.drain_sources,
             );
             icons.release(drag.icon);
             if landing.code != exa_items::item_gui::DROP_HANDLED {
                 return false;
             }
+            refresh_after_commit(bodies, player, landing.committed);
             if let Some(back) = landing.back
                 && let Some(player) = player
                 && let Ok((_, mut p)) = bodies.get_mut(player)
@@ -899,7 +963,9 @@ fn release_socket_drag(
             .or(card.sockets)
             .unwrap_or_default();
         sockets.drag_ended(from);
-        crate::socket_drag::commit(objects, card.item, &sockets);
+        let committed =
+            crate::socket_drag::commit(objects, card.item, &sockets, &mut screens.drain_sources);
+        refresh_after_commit(bodies, player, committed);
         card.sockets = Some(sockets);
         info!(
             "socket row: crystal {} left {:#x}'s socket {from}: {:04x?}",
@@ -907,6 +973,22 @@ fn release_socket_drag(
         );
     }
     landed
+}
+
+/// An apparel socket commit refreshes the player's equipment (the original
+/// calls the player's light switch on its view): the player's possessions
+/// are marked changed, so [`crate::player_light`]'s switch runs again.
+fn refresh_after_commit(
+    bodies: &mut Query<(Entity, &mut Possessions)>,
+    player: Option<Entity>,
+    committed: Option<exa_items::item_gui::SocketCommit>,
+) {
+    if committed.is_some_and(|c| c.target == exa_items::item_gui::CommitTarget::Apparel)
+        && let Some(player) = player
+        && let Ok((_, mut p)) = bodies.get_mut(player)
+    {
+        p.set_changed();
+    }
 }
 
 /// Whether the pointer is over an open screen, so the world's own press and
@@ -1208,12 +1290,12 @@ mod tests {
                 drag: 0,
             },
         ];
-        assert_eq!(entry_at(&container, Cell::new(15, 15)), Some(0));
+        assert_eq!(entry_at(&container, None, Cell::new(15, 15)), Some(0));
         // The held entry is skipped even though the point is inside it and
         // outside every other entry.
-        assert_eq!(entry_at(&container, Cell::new(250, 250)), None);
-        assert_eq!(entry_at(&container, Cell::new(35, 35)), Some(2));
-        assert_eq!(entry_at(&container, Cell::new(500, 500)), None);
+        assert_eq!(entry_at(&container, None, Cell::new(250, 250)), None);
+        assert_eq!(entry_at(&container, None, Cell::new(35, 35)), Some(2));
+        assert_eq!(entry_at(&container, None, Cell::new(500, 500)), None);
     }
 
     /// The shipped golems take their core crystals by their own races: the
@@ -1254,5 +1336,242 @@ mod tests {
         for byte in [0, 13, 200] {
             assert!(!takes(byte, a) && !takes(byte, al), "{byte}");
         }
+    }
+
+    /// A headless app with the live panel input and the crystal drain, a
+    /// primary window and the player's possessions bound to the open
+    /// inventory pack.
+    fn live_app(carried: Vec<exa_items::possession::Carried>) -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins((PanelLivePlugin, crate::crystal_drain::CrystalDrainPlugin))
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<crate::item_card::CardView>()
+            .init_resource::<ScriptedPointer>()
+            .init_resource::<Time<Virtual>>();
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                Possessions {
+                    carried,
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let world = app.world_mut();
+        let possessions = world.get::<Possessions>(player).unwrap().clone();
+        world.resource_scope(|world, mut icons: Mut<PanelIcons>| {
+            let mut screens = world.resource_mut::<GameScreens>();
+            screens.task.screen = (1280, 720);
+            screens.open_inventory(true, true, 4);
+            screens.inventory_body = Some(player);
+            body_inventory::bind_pack(&mut screens.pack, &possessions, &mut icons, None);
+        });
+        (app, player)
+    }
+
+    /// A left press then a release at two window points, a frame each.
+    fn drag_between(app: &mut App, from: IVec2, to: IVec2) {
+        app.world_mut().resource_mut::<ScriptedPointer>().0 = Some(from.as_vec2());
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        buttons.release(MouseButton::Left);
+        buttons.clear();
+        app.world_mut().resource_mut::<ScriptedRelease>().0 = Some(to);
+        app.update();
+    }
+
+    fn pack_client(app: &App) -> GuiRect {
+        let screens = app.world().resource::<GameScreens>();
+        open_panels(screens)
+            .into_iter()
+            .find(|(panel, _)| *panel == Panel::PlayerPack)
+            .unwrap()
+            .1
+    }
+
+    #[test]
+    fn a_move_inside_the_pack_is_written_to_the_carried_list() {
+        use exa_items::possession::Carried;
+        let carried = vec![
+            Carried { id: 10, flags: 0, x: 0, y: 0 },
+            Carried { id: 11, flags: 0, x: 400, y: 400 },
+        ];
+        let (mut app, player) = live_app(carried);
+        let client = pack_client(&app);
+        let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+        let from = IVec2::new(client.left + cell.x + 20, client.top + cell.y + 20);
+        let to = from + IVec2::new(30, 12);
+        drag_between(&mut app, from, to);
+        let screens = app.world().resource::<GameScreens>();
+        // The moved entry is raised to the top at its new cell.
+        let moved = *screens.pack.entries.last().unwrap();
+        assert_eq!(moved.id, 10);
+        assert_eq!(moved.drag & 1, 0);
+        let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
+        let possessions = app.world().get::<Possessions>(player).unwrap();
+        assert_eq!(possessions.carried.len(), 2);
+        let last = possessions.carried.last().unwrap();
+        assert_eq!(last.id, 10);
+        assert_eq!(
+            (last.x, last.y),
+            crate::item_container::to_list_pos(moved.cell, unit, vscale)
+        );
+        assert_ne!((last.x, last.y), (0, 0));
+        // Binding the pack again keeps the place.
+        let mut again = Container::form(unit);
+        again.client = app.world().resource::<GameScreens>().pack.client;
+        body_inventory::bind_pack(
+            &mut again,
+            possessions,
+            &mut PanelIcons::default(),
+            None,
+        );
+        assert_eq!(again.entries.last().unwrap().cell, moved.cell);
+    }
+
+    #[test]
+    fn a_press_on_a_transparent_corner_of_a_rendered_icon_starts_no_drag() {
+        use exa_items::possession::Carried;
+        let (mut app, _) = live_app(vec![Carried { id: 10, flags: 0, x: 0, y: 0 }]);
+        // Render the entry's icon: opaque only in a block at its middle.
+        {
+            let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+            let pending = icons.pending.front().cloned().unwrap();
+            let side = icons.atlas.cell as u32;
+            let mut pixels = vec![0u8; (side * side * 4) as usize];
+            for y in side / 4..side * 3 / 4 {
+                for x in side / 4..side * 3 / 4 {
+                    pixels[((y * side + x) * 4 + 3) as usize] = 255;
+                }
+            }
+            let icon = exa_items::item_icon::IconPixels {
+                width: side,
+                height: side,
+                pixels,
+            };
+            assert!(icons.apply_rendered(pending.id, pending.key, icon, 80.0, 80.0));
+        }
+        let client = pack_client(&app);
+        let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+        let corner = IVec2::new(client.left + cell.x + 3, client.top + cell.y + 3);
+        app.world_mut().resource_mut::<ScriptedPointer>().0 = Some(corner.as_vec2());
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert_eq!(app.world().resource::<PanelDrag>().source, None);
+        // The middle of the icon is hit.
+        let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        buttons.release(MouseButton::Left);
+        buttons.clear();
+        app.update();
+        let middle = IVec2::new(client.left + cell.x + 80, client.top + cell.y + 80);
+        app.world_mut().resource_mut::<ScriptedPointer>().0 = Some(middle.as_vec2());
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert_eq!(
+            app.world().resource::<PanelDrag>().source,
+            Some(Panel::PlayerPack)
+        );
+    }
+
+    #[test]
+    fn the_ar_crystal_dropped_into_a_container_files_and_drains_its_record() {
+        use crate::item_container::{ContainerChild, ContainerRecord};
+        use exa_items::possession::Carried;
+        use exa_script::objects::{CRYSTAL, Source};
+        let charge = 0x30u32 << 16;
+        let (mut app, _) = live_app(vec![Carried {
+            id: CRYSTAL,
+            flags: charge,
+            x: 0,
+            y: 0,
+        }]);
+        let record = ContainerRecord {
+            size: (50, 30),
+            capacity: 400,
+            max_item: 60,
+            children: vec![ContainerChild {
+                id: 9,
+                flags: 0,
+                x: 0,
+                y: 0,
+            }],
+        };
+        let object = app
+            .world_mut()
+            .spawn(exa_world::ObjectSections {
+                placement: 0,
+                usable: None,
+                use_script: None,
+                container: Some(exa_formats::containers::Container {
+                    width: 50,
+                    height: 30,
+                    capacity: 400,
+                    max_item: 60,
+                    children: Vec::new(),
+                }),
+            })
+            .id();
+        let id = exa_formats::objdb::LOCAL | 4;
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .open_container_popup(object, id, &record, (1100, 200), 4, 0, 70, |_, _| {
+                Some((0, 0))
+            });
+        let client = pack_client(&app);
+        let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+        let from = IVec2::new(client.left + cell.x + 20, client.top + cell.y + 20);
+        let popup = {
+            let screens = app.world().resource::<GameScreens>();
+            open_panels(screens)
+                .into_iter()
+                .find(|(panel, _)| *panel == Panel::Container(id))
+                .unwrap()
+                .1
+        };
+        let to = IVec2::new(popup.left + 40, popup.top + 40);
+        drag_between(&mut app, from, to);
+        let drain = app.world().resource::<crate::crystal_drain::CrystalDrain>();
+        assert_eq!(drain.drain.sources, vec![Source::Container(id)]);
+        assert_eq!(drain.containers, vec![(id, object)]);
+        let panel = &app.world().resource::<GameScreens>().popup(id).unwrap().panel;
+        assert!(panel.entries.iter().any(|e| e.id == CRYSTAL));
+        // The record the container keeps loses two charge a game second.
+        app.world_mut()
+            .get_mut::<exa_world::ObjectSections>(object)
+            .unwrap()
+            .container
+            .as_mut()
+            .unwrap()
+            .children = vec![exa_formats::containers::Child {
+            id: CRYSTAL,
+            flags: charge,
+            x: 0,
+            y: 0,
+        }];
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .advance_by(std::time::Duration::from_millis(1500));
+        app.update();
+        let sections = app.world().get::<exa_world::ObjectSections>(object).unwrap();
+        let left = sections.container.as_ref().unwrap().children[0].flags;
+        assert_eq!(left, 0x2e << 16);
+        assert_eq!(
+            app.world()
+                .resource::<crate::crystal_drain::CrystalDrain>()
+                .drain
+                .sources,
+            vec![Source::Container(id)]
+        );
     }
 }

@@ -264,6 +264,45 @@ impl PanelIcons {
             .is_some_and(|entry| entry.cell >= 0)
     }
 
+    /// The panel hit's first pass on icon slot `handle` at `x`, `y` (from
+    /// the icon cell's top-left): the colour atlas's alpha there is above 0
+    /// ([`IconCache::pixel_test`] on [`exa_ui::gui_glyphs::icon_alpha`]). A
+    /// slot the renderer has not filled has no pixels; it answers yes
+    /// (its whole cell), since the original never shows an icon before its
+    /// render. A zero or unknown handle answers no.
+    pub fn pixel_hit(&self, handle: usize, x: i32, y: i32) -> bool {
+        match self.slot_cell(handle) {
+            None => false,
+            Some(cell) if cell < 1 => true,
+            Some(_) => self.cache.pixel_test(handle, (x, y), |cell, x, y| {
+                exa_ui::gui_glyphs::icon_alpha(&self.atlas, cell, x, y)
+            }),
+        }
+    }
+
+    /// The panel hit's second pass: any opaque pixel of the slot's icon
+    /// within `unit` pixels of `x`, `y` ([`IconCache::loose_pixel_test`] on
+    /// [`exa_ui::gui_glyphs::icon_hit`]). An unfilled slot answers yes, as
+    /// [`PanelIcons::pixel_hit`] does.
+    pub fn near_hit(&self, handle: usize, x: i32, y: i32, unit: i32) -> bool {
+        match self.slot_cell(handle) {
+            None => false,
+            Some(cell) if cell < 1 => true,
+            Some(_) => self.cache.loose_pixel_test(handle, (x, y), |cell, x, y| {
+                exa_ui::gui_glyphs::icon_hit(&self.atlas, cell, x, y, unit)
+            }),
+        }
+    }
+
+    /// The atlas cell of an icon slot (below 1 while it waits for its
+    /// render), `None` for no slot.
+    fn slot_cell(&self, handle: usize) -> Option<i32> {
+        self.cache
+            .entries
+            .get(handle.checked_sub(1)?)
+            .map(|entry| entry.cell)
+    }
+
     /// The half extents of an icon slot, for the panel's clamps.
     pub fn half(&self, handle: usize) -> Option<(i32, i32)> {
         self.cache

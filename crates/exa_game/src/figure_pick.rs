@@ -703,9 +703,13 @@ pub fn drop_from_figure(
         return cancel;
     };
     let cell = panel.entries[dropped.index].cell;
+    let (unit, vscale) = (panel.unit, panel.vscale);
+    if let Some(fired) = dropped.fired {
+        screens.drain_sources.push(fired);
+    }
     FigureRelease {
         drag,
-        landed: Some((destination, cell, panel.unit, panel.vscale)),
+        landed: Some((destination, cell, unit, vscale)),
         added: dropped.added.is_some(),
     }
 }

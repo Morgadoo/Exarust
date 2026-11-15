@@ -746,7 +746,7 @@ fn request_card(
     let Some(panel_container) = container(&screens, panel) else {
         return;
     };
-    let Some(index) = entry_at(panel_container, local) else {
+    let Some(index) = entry_at(panel_container, Some(&*icons), local) else {
         if view.shown.is_some() {
             let _ = screens.card.close(now);
             if let Some(card) = &mut view.shown {
@@ -2094,7 +2094,7 @@ fn paint_slider(
 
 /// Whether an item entry is under a physical point, for the right-release
 /// screen close to leave the panel's card request alone.
-pub fn entry_under(screens: &GameScreens, at: IVec2) -> bool {
+pub fn entry_under(screens: &GameScreens, icons: Option<&PanelIcons>, at: IVec2) -> bool {
     open_panels(screens)
         .iter()
         .find_map(|(panel, client)| {
@@ -2102,7 +2102,7 @@ pub fn entry_under(screens: &GameScreens, at: IVec2) -> bool {
                 .contains(at.x, at.y)
                 .then(|| (*panel, Cell::new(at.x - client.left, at.y - client.top)))
         })
-        .and_then(|(panel, local)| container(screens, panel).and_then(|c| entry_at(c, local)))
+        .and_then(|(panel, local)| container(screens, panel).and_then(|c| entry_at(c, icons, local)))
         .is_some()
 }
 
@@ -2584,15 +2584,18 @@ mod tests {
         });
         assert!(entry_under(
             &screens,
+            None,
             IVec2::new(client.left + 15, client.top + 15)
         ));
         assert!(!entry_under(
             &screens,
+            None,
             IVec2::new(client.left + 300, client.top + 300)
         ));
         // Inside the panel but on no entry.
         assert!(!entry_under(
             &screens,
+            None,
             IVec2::new(client.right - 2, client.bottom - 2)
         ));
     }
