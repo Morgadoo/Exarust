@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r220, 11-15) | target |
+| measure | start (r186, 11-10) | now (r222, 11-15) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **51.64%** | **100%** |
+| **Ledger: bytes in a final state** | — | **51.89%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 298 of 2,667 (11%) | 100% |
+| Live rows with scene or retail evidence | — | 301 of 2,683 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,651 | all |
+| Tests passing | 8,489 | 8,667 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -62,10 +62,10 @@ State: `todo`, `doing`, `done`, `blocked`.
 | B0.4 | Torrent stream in lockstep | done | the original draws from the two process-wide generators, which the step streams stand for; the sweep scene needs retuning, not the code |
 | B0.5 | New game creates no save slot; arena saves dropped | done | round 205 (tests); the `--story-session` debug flag skips the real start, so a flag for a real New Game start is owed for a game check |
 | B0.6 | Spirit Form adopt/home and other frame-sent writes in free mode | done | round 208; three bridge-ownership hazards left (item cursor drain race, one-step-stale copy-in values, the frame-side combat heading write) |
-| B1 | Wire the uncalled | doing | rounds 209-220: character data, body dynamics, Mind powers, journal and manual, shader templates, arena board, morphing, saves, line skin, engine call sites; lanes running: skill screens, item GUI |
+| B1 | Wire the uncalled | doing | rounds 209-222: character data, body dynamics, Mind powers, journal and manual, shader templates, arena board and tables, morphing, saves, line skin, skill screen, engine call sites; lanes running: item GUI, gamepad menus |
 | B2 | Reclassify the engine-replaced | doing | round 213 shader templates (DEC-8); round 220 data-stream primitives; lane running: hook lists and the deferred ring |
 | B3 | Close the unreachable | todo | |
-| B4 | Port what is missing | doing | rounds 216, 218: refraction and subsurface, held trees and the respawn portal; lanes running: TMotileAI, TMotileDynamics |
+| B4 | Port what is missing | doing | rounds 216, 218, 222: refraction and subsurface, held trees and the respawn portal, TMotileAI; lanes running: TMotileDynamics, TPathFinder |
 | B5 | Kept deviations | blocked | decision DEC-5 |
 | B6 | Character creator | blocked | decision DEC-3 |
 
@@ -99,10 +99,10 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 184 | 187,026 |
-| UI | 12 | 12 | 423 | 162,588 |
+| UI | 12 | 12 | 404 | 158,328 |
 | Rendering & GPU | 10 | 10 | 296 | 150,648 |
-| AI & behaviour | 8 | 8 | 190 | 120,216 |
 | Thaumaturgy & effects | 9 | 9 | 168 | 119,006 |
+| AI & behaviour | 8 | 8 | 184 | 118,154 |
 | Characters, motion & animation | 8 | 8 | 237 | 107,529 |
 | Game modes, arena & session | 7 | 7 | 228 | 93,831 |
 | World, levels & terrain | 5 | 5 | 172 | 88,138 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,438** | **1,213,632** |
+| **Total** | **90** | **90** | **2,413** | **1,207,310** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-15 | 221–222 | The arena's tables run through the ported table view, with selection bands and drag labels; the skill ring closes on any key (F76, F77); no table in 0.9.5 edits, chooses or grows, so those rows are unreachable (wireskills). NPC flight, leave, combat exits, the nearby gather through the rooms' sight test and the follower's closing walk follow the assembly, lockstep unchanged (motileai, B4). Ledger 51.6% → 51.9%. |
 | 2026-11-15 | 219–220 | The line skin's control draws are the live painters (separators, labels, button glow, combo rail, text field underline; F25, F27, F72, F87); 27 runtime, data and core rows closed (content stream reset at quit, engine maths call sites, data-stream primitives as engine, the old grid layout unreachable). DEC-10 opened (single-instance guard, window icon, adaptive vsync). Ledger 51.2% → 51.6%. |
 | 2026-11-15 | 215–218 | Morph transfer on the original's plane barycentrics, the heal sound, the came-loose hook (wiremorph); refraction for glass and gems, subsurface for candles, soap and ceramics, the fast-loop shadows (refract, B4); running powers saved with the player and rebuilt on load, the GUI reset on level change (wiresave); the held-tree trio, Spirit Form's disable, the respawn portal F542 (holdtree, B4). First rounds on driver 620, no GPU drop. Ledger 50.7% → 51.2%. |
 | 2026-11-15 | — | The GPU fell off the bus again (Xid 79, the tenth since 2026-10-02) after the network card move. The drops began right after the 2026-10-01 update to kernel 7.2 and driver 615 and happen at idle as well as under load, so the driver is the leading suspect; the owner updated to kernel 7.3.3 and driver 620.70.06. `gpu_grid.sh` now refuses runs on a 615 driver. The five running lanes were restarted from their worktrees. |
