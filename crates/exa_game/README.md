@@ -1284,7 +1284,8 @@ its crystal, `--flame-sword` is `--ability-item 3`). The item card's
 value's coin control draws the coin sheet's gold, silver and copper icons
 (at four units, standing on the count's baseline, white at the card's GUI
 alpha) before each count. The item card's
-socket row takes crystals (`socket_drag`): a crystal dragged from a pack
+socket row takes crystals (`socket_drag`; its drag-over answer refuses
+every other item before the drop): a crystal dragged from a pack
 onto a socket goes in (the one there goes back to the player, into the
 open pack by its centre add and place pass), one dragged out onto a pack
 comes out, and the row is written into the item's weapon or apparel
@@ -2087,17 +2088,22 @@ profession word (`& 0xff00 == 0x300`, race 3, refuses), and
 `body_inventory` fills its panels from the body's `Possessions`: the pack
 through the character list's own saved places, the equipment panel with the
 worn items and the shields in the hands (held weapons are not listed)
-through the worn/scatter pass, its generator started from `DOLL_SEED` as a
-stand-in for the engine's shared one. The player's inventory pack is its carried list the same way.
+through the worn/scatter pass, drawing from the frame's engine generator
+(`thaum::live::FrameEffectRoll`) after storing `DOLL_SEED` as the run-time
+library's seed (the frame's run-time stream restarts from it). An item the
+loaded catalogue has no model for gets no icon slot and is left out of the
+list loads, reported as "Item Error". The player's inventory pack is its carried list the same way.
 `panel_live` runs a left-button drag between open panels with the item
 panel's press, accept, drop and drag-end rules; its hit test is the panel's
 two passes over the icons' alpha (`PanelIcons::pixel_hit`, `near_hit`; an
 icon not rendered yet answers by its cell). A drop on another pack moves
 the possession entries, a drop on the same panel repositions and writes
 the new place into the owner's carried list (`body_inventory::reposition`),
-every centre add is followed by the panel's place pass
-(`PanelIcons::add_placed`, drawing from the item GUI's own generator, a
-stand-in for the engine's shared one), a container popup clamps its
+a drop from another panel makes a level-local copy of a base record marked
+for instancing (`panel_live::instance_dropped`), which the destination and
+the possessions take, every centre add is followed by the panel's place
+pass (`PanelIcons::add_placed`, drawing from the frame's engine generator,
+as do the card's description sentences), a container popup clamps its
 children after the load, and a
 drop on a body's equipment panel or outside every panel is refused (a loot
 window has no running character view and there is no GUI-to-world drop
