@@ -412,7 +412,7 @@ fn placement_pose(
     let mut pose = anim.blend_keys(clip, &b, still);
     if b.from_capture && placement_root_from_key(true, action) {
         let (a, z) = (&clip.keys[b.src], &clip.keys[b.dst]);
-        pose.root = Vec3::from(a.root).lerp(Vec3::from(z.root), b.f);
+        pose.root = exa_physics::engine_math::lerp3(Vec3::from(a.root), Vec3::from(z.root), b.f);
         if still {
             pose.root.z = 0.0;
         }
@@ -2000,7 +2000,7 @@ fn blend_first_keys(mut walk: ClipPose, run: ClipPose, t: f32) -> ClipPose {
     for (q, end) in walk.rotations.iter_mut().zip(&run.rotations) {
         *q = slerp(*q, *end, t).normalize();
     }
-    walk.root = walk.root.lerp(run.root, t);
+    walk.root = exa_physics::engine_math::lerp3(walk.root, run.root, t);
     walk
 }
 

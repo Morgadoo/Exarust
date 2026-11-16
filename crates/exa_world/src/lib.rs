@@ -1769,15 +1769,19 @@ pub fn shadow_radius(softness: f32) -> f32 {
 /// scales the light by max((2^(z·(Ly + (1 − Ly)·y)) − 1)/(2^z − 1), 0), with
 /// Ly the vertical part of the direction to the light (1 straight below it).
 /// Lights without a spot get (1, 1), a factor of 1.
+///
+/// y is worked out in double precision as the original does it: `sin(q·π·½)·½`
+/// for q at or above 0 (or not a number), else `−3 / cos((q·½)·π) + 3` with
+/// the half taken in single precision first.
 pub fn vertical_shaping(light: &Light) -> (f32, f32) {
     let Some([q, p]) = light.spot else {
         return (1.0, 1.0);
     };
-    let half_pi = std::f32::consts::FRAC_PI_2;
-    let y = if q >= 0.0 {
-        0.5 * (q * half_pi).sin()
+    let pi = std::f64::consts::PI;
+    let y = if q < 0.0 {
+        (-3.0 / (f64::from(q * 0.5) * pi).cos() + 3.0) as f32
     } else {
-        3.0 - 3.0 / (q * half_pi).cos()
+        ((f64::from(q) * pi * 0.5).sin() * 0.5) as f32
     };
     (y, p + 1.0)
 }
@@ -2785,6 +2789,25 @@ mod tests {
             (0.0, true),
             "the flag puts the light out and the arc still starts"
         );
+    }
+
+    /// The spot's y is worked in double precision (the oracle's case:
+    /// q = 0.5393605 gives 0x3EBFDBB8, where single precision gives one
+    /// unit more).
+    #[test]
+    fn the_spot_shaping_is_worked_in_double() {
+        let light = exa_formats::rfc::Light {
+            flags: 0,
+            color: [0.0; 3],
+            multiplier: 0.0,
+            intensity: 0.0,
+            radius: 0.0,
+            softness: 0.0,
+            spot: Some([f32::from_bits(0x3f0a_1388), 3.963_480_7]),
+            ranged: false,
+            animation: None,
+        };
+        assert_eq!(vertical_shaping(&light).0.to_bits(), 0x3ebf_dbb8);
     }
 
     /// The vertical shaping factor the original's shader takes for a

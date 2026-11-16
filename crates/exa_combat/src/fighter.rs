@@ -398,7 +398,8 @@ impl Health {
     /// tenth of the yellow amount (a twentieth with a potion); with no
     /// lasting wounds (rule bit 0x8) yellow also loses a fifth of the red
     /// amount and red is untouched, else red loses it and yellow is scaled
-    /// by the share of red left (0 when none is). Under [`LOW_HEALTH`] the
+    /// by the share of red left (0 when none is). Under [`LOW_HEALTH`] (a
+    /// NaN is not under it, and nothing more happens) the
     /// damage weakens, unless it is vital and leaves yellow under
     /// [`DEATH`]: then yellow is 0, in the story red loses a tenth of the
     /// maximum, and it kills. Non-vital damage under [`DEATH`] leaves
@@ -422,13 +423,20 @@ impl Health {
         } else {
             let before = self.red;
             self.red = less(self.red, damage.red, RED_SHARE);
-            self.yellow = if self.red > 0.0 {
+            // Only an ordered "not above zero" empties yellow: a NaN red
+            // scales it (to NaN), as the original's unordered branch does.
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
+            let scaled = !(self.red <= 0.0);
+            self.yellow = if scaled {
                 self.red / before * self.yellow
             } else {
                 0.0
             };
         }
-        if self.yellow >= LOW_HEALTH {
+        // An unordered compare (a NaN yellow) also returns at once.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        let unhurt = !(self.yellow < LOW_HEALTH);
+        if unhurt {
             return Taken::Hurt;
         }
         if !failing(self.yellow) {

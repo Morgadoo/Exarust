@@ -252,7 +252,14 @@ fn sight(point: Vec3, chest: Vec3, strict: bool) -> Option<(f32, Vec3)> {
     let offset = point - chest;
     let d2 = (offset.y * offset.y + offset.x * offset.x) + offset.z * offset.z;
     let limit = SIGHT_CM * SIGHT_CM;
-    let inside = if strict { d2 < limit } else { d2 <= limit };
+    // The original's compares let an unordered (NaN) distance through as
+    // within sight.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let inside = if strict {
+        !(d2 >= limit)
+    } else {
+        !(d2 > limit)
+    };
     if !inside {
         return None;
     }
@@ -512,6 +519,27 @@ pub fn avoid_barricade(wall: &Wall, body: Vec3, keeper: &Keeper) -> Avoidance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An effect at a NaN place is within sight for the original (its
+    /// distance compare is unordered): the record is marked seen and its
+    /// words become NaN (the oracle's case).
+    #[test]
+    fn a_nan_place_is_within_sight() {
+        let viewer = Viewer {
+            chest: Vec3::new(60.0, 220.0, 10.0),
+            look: Vec3::X,
+            facing: Vec3::Z,
+        };
+        let at = Vec3::new(f32::NAN, -155.0, -0.5);
+        let mut seen = Seen::default();
+        assert!(assess_blast(at, false, &viewer, false, -80.0, &mut seen));
+        assert_eq!(seen.flags, SEEN_FLAG);
+        assert!(seen.urge.is_nan() && seen.fear.is_nan() && seen.face.is_nan());
+        assert_eq!(seen.relation, 0.0);
+        let mut seen = Seen::default();
+        assert!(assess_wave(at, false, &viewer, -80.0, &mut seen));
+        assert!(seen.near.is_nan());
+    }
 
     fn viewer() -> Viewer {
         Viewer {

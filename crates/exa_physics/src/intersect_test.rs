@@ -978,3 +978,18 @@ fn a_shadow_volume_skips_edges_under_a_centimetre() {
     assert_eq!(shadow.planes.len(), 1);
     close_vec(shadow.planes[0].normal, Vec3::NEG_Y);
 }
+
+/// The pair test's sweep adds +0 to its direction before the reciprocal:
+/// the oracle's case 31 (a sweep straight across x and y, its z −0) has
+/// +∞ there where the plain set-up has −∞.
+#[test]
+fn a_moved_spheres_sweep_clears_negative_zero() {
+    let (start, end) = (Vec3::ZERO, Vec3::new(3.0, 4.0, -0.0));
+    let plain = Sweep::new(start, end);
+    assert_eq!(plain.direction.z.to_bits(), 0x8000_0000);
+    assert_eq!(plain.inverse_direction.z, f32::NEG_INFINITY);
+    let moved = Sweep::of_move(start, end);
+    assert_eq!(moved.inverse_direction.z, f32::INFINITY);
+    assert_eq!(moved.direction, plain.direction);
+    assert_eq!(moved.length, plain.length);
+}

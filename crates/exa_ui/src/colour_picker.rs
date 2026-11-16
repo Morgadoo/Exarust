@@ -61,9 +61,11 @@ pub fn rgb_bytes(colour: Rgba) -> [u8; 3] {
 }
 
 /// A colour written back to a swatch control: all four floats × 255,
-/// rounded to even and saturated to bytes (the engine's packed store).
+/// rounded to even and saturated to bytes (the engine's packed store:
+/// `CVTPS2DQ`, then the two saturating packs, so a product past the 32-bit
+/// range, like a NaN, stores 0).
 pub fn packed_bytes(colour: Rgba) -> [u8; 4] {
-    colour.map(|c| round_f32(c * 255.0).clamp(0, 255) as u8)
+    colour.map(exa_formats::colour::channel_byte)
 }
 
 /// A swatch control's bytes as the picker reads them: × 1/255.
@@ -562,6 +564,17 @@ pub fn record_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The packed store saturates through 32-bit integers: a channel whose
+    /// product passes 2³¹ (the oracle's case, 2²⁴ × 255) stores 0, not 255.
+    #[test]
+    fn a_packed_channel_past_the_integer_range_stores_zero() {
+        assert_eq!(
+            packed_bytes([16_777_216.0, -1.0, 1.005_711_8, 0.806_271_4]),
+            [0, 0, 255, 206]
+        );
+        assert_eq!(packed_bytes([f32::NAN, 2.0, 0.5, 1e9]), [0, 255, 128, 0]);
+    }
 
     fn swatch() -> SwatchControl {
         SwatchControl::new([51, 102, 153, 255])

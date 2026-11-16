@@ -221,9 +221,13 @@ pub fn desc_icon_place_sized(
 }
 
 /// The card's rescale: its height becomes the unit times its share of the
-/// parent's height, rounded half to even.
+/// parent's height, rounded half to even. The original converts to 64 bits
+/// (`CVTSD2SI`) and keeps the low 32: a NaN or out-of-range share (a zero
+/// parent) gives the indefinite word's low half, 0, and a value past the
+/// 32-bit range wraps.
 pub fn desc_rescale(height: i32, parent_height: i32, unit: i32) -> i32 {
-    (f64::from(unit) * (f64::from(height) / f64::from(parent_height))).round_ties_even() as i32
+    exa_formats::pixel::round_f64(f64::from(unit) * (f64::from(height) / f64::from(parent_height)))
+        as i32
 }
 
 /// The keep-open bit a left press sets in the card's form flags; the leave
@@ -542,6 +546,16 @@ pub fn parchment_hits(sample_alpha: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rescale keeps the low 32 bits of the 64-bit conversion (the
+    /// oracle's case: the unit −2³¹ wraps to 464 320 789), and a zero
+    /// parent gives 0.
+    #[test]
+    fn the_card_rescale_keeps_the_conversions_low_word() {
+        assert_eq!(desc_rescale(-700, -185, i32::MIN), 464_320_789);
+        assert_eq!(desc_rescale(100, 0, 30), 0);
+        assert_eq!(desc_rescale(50, 40, 30), 38);
+    }
 
     #[test]
     fn the_parchment_destroy_releases_its_texture_and_format() {

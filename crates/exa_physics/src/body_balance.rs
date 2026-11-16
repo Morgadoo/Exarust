@@ -938,7 +938,7 @@ impl Ragdoll {
             m -= forward * (CROUCH_BACK / CM * bearing.crouch);
             let mut p = support_point(m, contacts[0], contacts[1]);
             if !bearing.moving {
-                p = p.lerp(centre, TOWARD_CENTRE);
+                p = crate::engine_math::lerp3(p, centre, TOWARD_CENTRE);
             }
             b.support_point = p;
             let o = m - p;
@@ -1365,7 +1365,7 @@ impl Ragdoll {
             let mut probe = if bearing.walking {
                 c
             } else {
-                c.lerp(leg.anchor, leg.blend)
+                crate::engine_math::lerp3(c, leg.anchor, leg.blend)
             };
             if let Some(gait) = &gait {
                 probe += forward * (gait.sway / CM);
