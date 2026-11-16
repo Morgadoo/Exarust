@@ -31,9 +31,15 @@
 //! record on its object ([`exa_world::ObjectSections`]) and a bag's in the
 //! live database, so the source remembers the object the panel was opened
 //! on. Kind 1 (every container of the level) is filed by no caller in
-//! 0.9.5 and answers false. The original drains the open inventory panel's
-//! list instead of the record while the inventory is shown; Exarust drains
-//! the record (`Possessions`), which the panel loads from.
+//! 0.9.5 and answers false. While the player's own inventory is shown the
+//! inventory source drains its pack panel's list instead of the record
+//! ([`GameScreens::player_pack_mut`], the character view's answer for the
+//! player's first view): each crystal entry loses its charge and its icon
+//! is resolved again for the new flags ([`drain_open_pack`]); the carried
+//! entry it was loaded from takes the same flags, as the panel's save
+//! would write them.
+//!
+//! [`GameScreens::player_pack_mut`]: crate::gui_screens::GameScreens::player_pack_mut
 //!
 //! Evidence: the drain, the collect pass, the socket drain, the inventory
 //! drain and the game tick's once-a-second call (REA on `Exanima.exe`,
@@ -174,6 +180,51 @@ pub fn drain_carried(possessions: &mut Possessions) -> bool {
     changed
 }
 
+/// The inventory's drain while the player's own inventory is shown: the
+/// open pack panel's crystal stacks drain in its order instead of the
+/// record's, each drained entry's icon is released and resolved again for
+/// item 499 with its new flags (`reicon(old icon, flags)` answers the new
+/// handle), and the answer is whether any charge went down. The original
+/// leaves the record to the panel's save; Exarust's pack writes the carried
+/// list on every change, so the carried entry each panel entry was loaded
+/// from (the crystal saved at the entry's cell with the entry's old flags,
+/// else the first one with those flags not yet written) takes the same
+/// flags here.
+pub fn drain_open_pack(
+    pack: &mut crate::item_container::Container,
+    possessions: &mut Possessions,
+    mut reicon: impl FnMut(usize, u32) -> usize,
+) -> bool {
+    let (unit, vscale) = (pack.unit, pack.vscale);
+    let mut written = vec![false; possessions.carried.len()];
+    let mut changed = false;
+    for entry in pack.entries.iter_mut().filter(|e| e.id == CRYSTAL) {
+        let old = entry.flags;
+        let mut stack = Stack {
+            item: entry.id,
+            word: old,
+        };
+        changed |= stack.drain();
+        entry.flags = stack.word;
+        entry.icon = reicon(entry.icon, entry.flags);
+        let at = crate::item_container::to_list_pos(entry.cell, unit, vscale);
+        let carried = &possessions.carried;
+        let free = |i: usize, c: &exa_items::possession::Carried| {
+            !written[i] && c.id == CRYSTAL && c.flags == old
+        };
+        let source = carried
+            .iter()
+            .enumerate()
+            .position(|(i, c)| free(i, c) && (c.x, c.y) == at)
+            .or_else(|| carried.iter().enumerate().position(|(i, c)| free(i, c)));
+        if let Some(i) = source {
+            written[i] = true;
+            possessions.carried[i].flags = entry.flags;
+        }
+    }
+    changed
+}
+
 /// The slots the collect pass reads from the player's record: the two hand
 /// slots, the worn items and the carried list.
 pub fn slots_of(possessions: &Possessions) -> Slots {
@@ -230,6 +281,11 @@ fn drain_sources(
     mut objects: Option<ResMut<LiveObjects>>,
     mut placed: Query<&mut exa_world::ObjectSections>,
     mut items: Option<ResMut<crate::doll_view::DollItems>>,
+    (mut screens, mut icons, catalogue): (
+        Option<ResMut<crate::gui_screens::GameScreens>>,
+        Option<ResMut<crate::item_panel_draw::PanelIcons>>,
+        Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    ),
 ) {
     if loading.is_some() {
         return;
@@ -252,7 +308,23 @@ fn drain_sources(
         Source::Socketed(id) => objects
             .as_deref_mut()
             .is_some_and(|objects| drain_item(objects, id)),
-        Source::Inventory => player.as_deref_mut().is_some_and(drain_carried),
+        // The player's open view answers its pack panel: its list drains
+        // while it is shown, else the record's.
+        Source::Inventory => {
+            let Some(possessions) = player.as_deref_mut() else {
+                return false;
+            };
+            match screens.as_deref_mut().and_then(|s| s.player_pack_mut()) {
+                Some(pack) => drain_open_pack(pack, possessions, |old, flags| {
+                    let Some(icons) = icons.as_deref_mut() else {
+                        return old;
+                    };
+                    icons.release(old);
+                    icons.reserve(CRYSTAL, flags, catalogue.as_deref()).0
+                }),
+                None => drain_carried(possessions),
+            }
+        }
         Source::Container(id) => {
             let object = containers
                 .iter()
@@ -375,6 +447,101 @@ mod tests {
         possessions.carried[0].flags = 0x02_0000;
         assert!(!drain_carried(&mut possessions));
         assert_eq!(possessions.carried[0].flags, 0);
+    }
+
+    /// The drain's plugin on a player whose own inventory is open: the
+    /// game second drains the pack panel's crystal (its icon resolved
+    /// again for the new charge) and the carried entry it was loaded from;
+    /// once the inventory closes the record drains alone.
+    #[test]
+    fn the_open_inventory_drains_its_pack_panel_and_the_record_follows() {
+        use crate::gui_screens::GameScreens;
+        use crate::item_container::{Cell, Entry, to_list_pos};
+        use crate::item_panel_draw::PanelIcons;
+        use std::time::Duration;
+
+        let mut app = App::new();
+        app.insert_resource(Time::<Virtual>::default())
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_plugins(CrystalDrainPlugin);
+        let cell = Cell::new(40, 24);
+        let (x, y) = {
+            let screens = app.world().resource::<GameScreens>();
+            to_list_pos(cell, screens.pack.unit, screens.pack.vscale)
+        };
+        // A second stack elsewhere in the record, at another cell: the
+        // panel entry finds the one saved at its own cell.
+        app.world_mut().spawn((
+            PlayerBody::new(0.0),
+            Possessions {
+                carried: vec![
+                    Carried {
+                        id: CRYSTAL,
+                        flags: 0x0a_0000,
+                        x: 0,
+                        y: 0,
+                    },
+                    Carried {
+                        id: CRYSTAL,
+                        flags: 0x0a_0000,
+                        x,
+                        y,
+                    },
+                ],
+                ..Possessions::default()
+            },
+        ));
+        {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.open_inventory(true, true, 4);
+            assert!(screens.player_pack_mut().is_some());
+            screens.pack.entries.push(Entry {
+                cell,
+                id: CRYSTAL,
+                icon: 0,
+                flags: 0x0a_0000,
+                drag: 0,
+            });
+        }
+        app.world_mut()
+            .resource_mut::<CrystalDrain>()
+            .drain
+            .add(Source::Inventory);
+        let mut second = || {
+            app.world_mut()
+                .resource_mut::<Time<Virtual>>()
+                .advance_by(Duration::from_secs(1));
+            app.update();
+        };
+        second();
+        let carried = |app: &mut App| {
+            let mut q = app.world_mut().query::<&Possessions>();
+            q.single(app.world()).unwrap().carried.clone()
+        };
+        {
+            let screens = app.world().resource::<GameScreens>();
+            let entry = screens.pack.entries[0];
+            assert_eq!(entry.flags, 0x08_0000);
+            // The icon was resolved again for item 499 with its new flags.
+            assert!(entry.icon > 0);
+        }
+        let now = carried(&mut app);
+        assert_eq!(now[0].flags, 0x0a_0000);
+        assert_eq!(now[1].flags, 0x08_0000);
+        // The source stays: a charge went down.
+        assert_eq!(
+            app.world().resource::<CrystalDrain>().drain.sources,
+            vec![Source::Inventory]
+        );
+        // Closed: the record drains, both stacks.
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .close(exa_ui::game_gui::GameScreen::Inventory);
+        app.world_mut().resource_mut::<Time<Virtual>>().advance_by(Duration::from_secs(1));
+        app.update();
+        let now = carried(&mut app);
+        assert_eq!((now[0].flags, now[1].flags), (0x08_0000, 0x06_0000));
     }
 
     #[test]

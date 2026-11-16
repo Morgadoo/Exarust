@@ -1428,6 +1428,15 @@ impl GameScreens {
         self.inventory_body.or(player)
     }
 
+    /// The pack panel of the player's own open inventory, as the game
+    /// unit's crystal drain asks the character view for it: the first open
+    /// view whose character is the player answers its pack, and none is
+    /// answered while no inventory is open or the open one shows another
+    /// character.
+    pub fn player_pack_mut(&mut self) -> Option<&mut Container> {
+        (self.inventory_character()? == self.player).then_some(&mut self.pack)
+    }
+
     /// The character the open inventory shows, if one is open.
     pub fn inventory_character(&self) -> Option<i32> {
         self.find(GameScreen::Inventory)
