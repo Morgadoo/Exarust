@@ -1428,9 +1428,10 @@ fn finish_collision(
     options: Res<Options>,
     mut pending: ResMut<PendingCollision>,
     building: Query<(), With<exa_physics::StaticGeometry>>,
-    (progress, frame_physics): (
+    (progress, frame_physics, menu): (
         Res<exa_physics::StaticBuild>,
         Res<exa_physics::collision_share::FramePhysics>,
+        Option<Res<exa_game::level_change::MenuSceneView>>,
     ),
     mut status: Option<ResMut<exa_ui::LoadingStatus>>,
     mut cache: ResMut<ModelCache>,
@@ -1618,6 +1619,31 @@ fn finish_collision(
             });
         }
         commands.remove_resource::<exa_game::follower_travel::TravellingFollowers>();
+    }
+    // The main menu's background scene has no player: the surviving one
+    // stays out of the scene ([`exa_game::level_change`]) and the view
+    // stands at the load's fixed camera; the rooms follow that camera's
+    // target, as the original's follow its camera's target.
+    if let Some(menu) = menu.as_deref() {
+        info!(
+            "level {}: the menu scene is in; no player is spawned, the view stands at {} looking at {}",
+            pending.name, menu.eye, menu.target
+        );
+        commands.spawn((
+            Transform::from_translation(menu.target),
+            Visibility::default(),
+            exa_world::room_view::RoomAnchor,
+            exa_world::level_lifecycle::LevelEntity,
+        ));
+        commands.insert_resource(PendingDressing {
+            since: std::time::Instant::now(),
+        });
+        commands.insert_resource(exa_ui::LoadingStatus {
+            title: format!("Loading {}", pending.name),
+            stage: "dressing characters".into(),
+            fraction: COLLIDED_AT,
+        });
+        return;
     }
     let existing = players.iter().next().map(|(entity, _)| entity);
     if let Some((_, mut transform)) = players.into_iter().next().filter(|_| arrival.is_none()) {

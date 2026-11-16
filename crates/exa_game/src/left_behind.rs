@@ -420,4 +420,211 @@ mod tests {
         assert_eq!(*app.world().resource::<LeftBody>(), LeftBody::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The death screen's CONTINUE through the flow's and the save's
+    /// plugins: the stripped record's identity is reset and posted for a
+    /// rebuild; the respawn's save writes it as the player, then the player
+    /// root (the dead body with the dressed copy) goes and the stripped
+    /// record is the next spawn's, so the player wakes in the underwear
+    /// while the corpse keeps the gear in the saved level.
+    #[test]
+    fn the_continue_rebuilds_the_stripped_player_from_its_record() {
+        use crate::flow::{Flow, FlowSteps, Mode, Phase, Step};
+        use crate::save_live::{LoadedPlayerStream, SaveFolder, SaveStep, SavedPlayer};
+        let dir =
+            std::env::temp_dir().join(format!("exarust-continue-rebuild-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .init_resource::<exa_world::gi_volume::GiState>()
+            .init_resource::<exa_world::nav::NavState>()
+            .init_resource::<exa_world::nav::InstalledPathfinder>()
+            .add_plugins((
+                crate::menu_screen::MenuScreenPlugin,
+                crate::flow::FlowPlugin,
+                crate::save_live::SaveLivePlugin,
+                exa_world::level_lifecycle::LevelChangePlugin,
+            ))
+            .insert_resource(SaveFolder(dir.clone()))
+            .insert_resource(exa_ai::brain::RoleDatabase {
+                book: RoleDb::default(),
+                locale: 3,
+                registry: exa_ai::activity::IdleRegistry::shipped(),
+            })
+            .insert_resource(crate::creator_screen::CreatedCharacter(Some(
+                CharacterRecord {
+                    name: "Ash".to_string(),
+                    ..CharacterRecord::reset()
+                },
+            )));
+        app.update();
+        {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            flow.mode = Mode::Story;
+            flow.phase = Phase::Ended;
+            flow.menu_open = false;
+        }
+        let level = exa_formats::rfc_write::export_save_level(
+            &exa_formats::rfc_write::ExportScene {
+                whole_scene: true,
+                ..Default::default()
+            },
+            &exa_formats::rfc_write::ExportOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.insert_resource(exa_world::LevelSource {
+            entry: "exanima05.rfc".to_string(),
+            bytes: level.into(),
+            from_save: false,
+            spawned: Vec::new(),
+        });
+        app.world_mut().spawn(exa_world::LevelRoot {
+            name: "exanima05".to_string(),
+        });
+        let mut record = dressed();
+        record.name = "Ash".to_string();
+        record.set_profession(record.profession() | 0x0300);
+        for hand in &mut record.hands {
+            hand.id &= ID_MASK;
+        }
+        for worn in &mut record.worn {
+            worn.id &= ID_MASK;
+        }
+        for carried in &mut record.inventory {
+            carried.item &= ID_MASK;
+        }
+        let possessions = exa_items::possession::Possessions::of_record(&record);
+        let root = app
+            .world_mut()
+            .spawn((crate::player::Player, Transform::default()))
+            .id();
+        let body = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                exa_combat::Condition(crate::flow::DEAD),
+                exa_combat::Fighter::default(),
+                exa_character::record::CharacterData::of_record(record),
+                possessions,
+                GlobalTransform::from_translation(Vec3::new(1.5, 0.25, -4.0)),
+                ChildOf(root),
+            ))
+            .id();
+        app.world_mut().write_message(SaveStep::NewSlot);
+        app.update();
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::StripPlayer);
+        app.update();
+        // The CONTINUE: the stripped record's race byte is cleared and its
+        // request posted (no AI start, the world scene).
+        let continued = app
+            .world_mut()
+            .resource_mut::<Flow>()
+            .continue_after_death();
+        assert_eq!(continued[0], Step::PlayerData { flags: 0x100 });
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(continued[0]);
+        app.update();
+        let stream = app
+            .world()
+            .get_resource::<LoadedPlayerStream>()
+            .expect("the rebuild's request");
+        assert_eq!(
+            stream.request.flags,
+            exa_assets::content_stream::NO_AI_START
+        );
+        assert_eq!(stream.request.scene, crate::content_requests::WORLD_SCENE);
+        assert_eq!(stream.record.race, 0, "the identity reset");
+        assert!(
+            stream
+                .record
+                .worn
+                .iter()
+                .all(|w| w.id == exa_formats::characters::UNDERWEAR_ITEM)
+        );
+        let left = app.world().resource::<LeftBody>().clone();
+        assert_eq!(left.player.as_ref().unwrap().race, 0);
+        // The respawn at the transition's black.
+        let respawn = app.world_mut().resource_mut::<Flow>().story_respawn(0);
+        let save = respawn
+            .iter()
+            .position(|s| matches!(s, Step::Save { .. }))
+            .unwrap();
+        let rebuild = respawn
+            .iter()
+            .position(|s| *s == Step::RebuildPlayer)
+            .unwrap();
+        let teardown = respawn
+            .iter()
+            .position(|s| *s == Step::TeardownWorld)
+            .unwrap();
+        assert!(save < rebuild && rebuild < teardown);
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .extend(respawn);
+        app.update();
+        app.update();
+        // The save wrote the stripped, reset record as the player.
+        assert_eq!(
+            app.world().resource::<crate::save_live::SaveReport>().saved,
+            Some(1)
+        );
+        let mut list = crate::slots::SlotList::new(crate::slots::Slots::story(&dir));
+        let restored = crate::save_live::restore_story(&mut list, 1, false).unwrap();
+        let saved_player = restored.player.clone().unwrap();
+        assert!(saved_player.hands.iter().all(|h| !h.is_some()));
+        assert_eq!(
+            (saved_player.pools.yellow, saved_player.pools.red),
+            (STRIPPED_POOL, STRIPPED_POOL)
+        );
+        // The old player went with the scene; the next spawn is made from
+        // the stripped record.
+        assert!(app.world().get_entity(root).is_err());
+        assert!(app.world().get_entity(body).is_err());
+        let next = app
+            .world()
+            .get_resource::<SavedPlayer>()
+            .expect("the rebuild's record");
+        assert_eq!(next.record.name, "Ash");
+        assert_eq!(next.record.race, 0);
+        assert!(next.record.hands.iter().all(|h| !h.is_some()));
+        assert!(next.record.inventory.is_empty());
+        // Nothing of the gear is worn (the strip's underwear rule gives the
+        // race-3 record none).
+        assert!(
+            next.record
+                .worn
+                .iter()
+                .all(|w| w.id == exa_formats::characters::UNDERWEAR_ITEM)
+        );
+        assert_ne!(next.record.worn, dressed().worn);
+        assert_eq!(
+            (next.record.pools.yellow, next.record.pools.red),
+            (STRIPPED_POOL, STRIPPED_POOL)
+        );
+        // The saved level keeps the corpse with its gear.
+        let section = restored.level_section.clone().expect("the level section");
+        let scene = exa_formats::rfc::Scene::parse(&section.bytes).unwrap();
+        assert!(
+            scene
+                .characters
+                .as_ref()
+                .unwrap()
+                .placements
+                .iter()
+                .any(|p| p.is_dead())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

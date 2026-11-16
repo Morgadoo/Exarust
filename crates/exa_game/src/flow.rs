@@ -1405,8 +1405,24 @@ pub enum Step {
     /// The AI takes over the player's body for the level change (the exit's
     /// portal bit).
     AiHandover,
+    /// The level exit's transition save
+    /// ([`crate::save_live::SaveStep::TransitionSave`]): with neither an
+    /// `exanima04` section nor one for `locale` in the current slot's save,
+    /// the save is written and copied over the checkpoint (an existing one
+    /// is overwritten), and with `level_time` the engine clock is kept
+    /// ([`Step::LevelTime`]); otherwise a plain save.
+    TransitionSave {
+        locale: &'static str,
+        level_time: bool,
+    },
     /// Leave the world: props, bodies, particles, blood and the level.
     TeardownWorld,
+    /// The main menu's background: the world is reset and the archive's
+    /// `menuscene.rfc` loaded with no player, under the fixed camera the
+    /// load sets ([`crate::level_change::MenuSceneView`]); the title's
+    /// after-splash and every return to the title run it before the menu
+    /// form shows.
+    MenuScene,
     /// Show the end-of-session menu.
     EndMenu(EndMenu),
     /// Hide the end-of-session menu.
@@ -1489,11 +1505,20 @@ pub enum Step {
     /// reset (the race byte cleared) and, while the content stream's hook is
     /// installed, its request posted with the word 0x1000 and the world
     /// scene; `flags` is the request's word before that (the death screen's
-    /// CONTINUE passes 0x100, which the post replaces). [Not applied:
-    /// Exarust's respawn keeps the surviving body.]
+    /// CONTINUE passes 0x100, which the post replaces). The record is the
+    /// stripped one after a strip ([`crate::left_behind::LeftBody`]), else
+    /// the body's; the request is [`crate::save_live::LoadedPlayerStream`],
+    /// which the respawn's player spawn fetches ([`Step::RebuildPlayer`]).
     PlayerData {
         flags: u32,
     },
+    /// The respawn's scene clear takes the player's body with the world and
+    /// the level load spawns a new player from the record
+    /// ([`crate::save_live::RebuildPlayer`]): after the respawn's save, the
+    /// record the save wrote as the player's becomes the next spawn's
+    /// ([`crate::save_live::SavedPlayer`]) and the surviving player root
+    /// goes.
+    RebuildPlayer,
     /// Turn the in-game GUI's frame hook (the HUD) on or off: each session
     /// start and continue turns it on once its level is in, the session's
     /// leave turns it off.
@@ -3121,6 +3146,9 @@ impl Flow {
             Step::Save {
                 drop_on_low_health: false,
             },
+            // The scene clear takes the player's body; the record the save
+            // wrote is the one the level load's spawn builds anew.
+            Step::RebuildPlayer,
             // The end menu hides and the prelude closes before the world
             // goes.
             Step::HideEndMenu,
@@ -3375,6 +3403,9 @@ impl Flow {
         self.hook = Hook::None;
         self.end_menu = None;
         self.menu_open = true;
+        // The menu background scene's load, after the leave and its world
+        // reset, before the title's form.
+        steps.push(Step::MenuScene);
         steps.push(Step::TitleLogo(true));
         let theme = menu_theme(self.alternative_music);
         steps.push(Step::Music {
@@ -3464,17 +3495,20 @@ impl Flow {
         steps.push(Step::SweepScreens(
             crate::gui_screens::ScreenSweep::EveryAndBar,
         ));
-        let checkpoint = exit_save(rule) == ExitSave::Checkpoint;
-        steps.push(Step::Save {
-            drop_on_low_health: false,
-        });
-        if checkpoint {
-            steps.push(Step::Checkpoint);
-            // The sixth level's checkpoint also takes the engine clock: the
-            // level's own time, read back by the save.
-            if exit.level == 6 {
-                steps.push(Step::LevelTime);
-            }
+        if exit_save(rule) == ExitSave::Checkpoint {
+            // The transition save: a save the save unit keeps as the
+            // checkpoint unless the save already holds `exanima04` or the
+            // destination; then it is a plain save. The sixth level's
+            // checkpoint also takes the engine clock (the level's own time,
+            // read back by the save).
+            steps.push(Step::TransitionSave {
+                locale,
+                level_time: exit.level == 6,
+            });
+        } else {
+            steps.push(Step::Save {
+                drop_on_low_health: false,
+            });
         }
         if exit.flags & 1 != 0 {
             steps.push(Step::PortalUse);
@@ -3557,7 +3591,12 @@ impl Flow {
         self.mode = Mode::Menu;
         self.phase = Phase::Menu;
         self.menu_open = true;
-        vec![Step::ShowMenu(Page::Title), Step::SessionTask(false)]
+        // The menu scene's load comes before the form is built and shown.
+        vec![
+            Step::MenuScene,
+            Step::ShowMenu(Page::Title),
+            Step::SessionTask(false),
+        ]
     }
 
     /// The help screen closed: the menu's help flag clears.
@@ -3772,6 +3811,7 @@ impl Plugin for FlowPlugin {
             .add_message::<exa_combat::pain::PainSounded>()
             .add_message::<exa_audio::PointSounded>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::save_live::RebuildPlayer>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
@@ -4002,12 +4042,24 @@ fn travel(
     mut queued: ResMut<FlowSteps>,
     mut journeys: Option<MessageReader<crate::destination::TravelToLevel>>,
     audio: Option<Res<exa_audio::AudioEnvironment>>,
+    (lists, game): (
+        Option<Res<crate::save_live::SlotLists>>,
+        Option<Res<exa_assets::Game>>,
+    ),
 ) {
     let Some(journeys) = journeys.as_mut() else {
         return;
     };
     let playing = audio.as_ref().map_or("", |audio| audio.music_name());
     for journey in journeys.read() {
+        // The exit does nothing for a level neither the save nor the
+        // archive holds.
+        if let Some(locale) = level_locale(journey.level)
+            && !crate::save_live::level_available(lists.as_deref(), game.as_deref(), locale)
+        {
+            warn!("game flow: the journey's level {locale} is in neither the save nor the archive");
+            continue;
+        }
         let music_changes = level_locale(journey.level).is_some_and(|locale| {
             exa_audio::story_music_changes_for_key(locale.as_bytes(), playing)
         });
@@ -4052,6 +4104,10 @@ fn cross_exit_zones(
     mut crossed: Option<MessageReader<crate::zone_scripts::ExitZoneCrossed>>,
     audio: Option<Res<exa_audio::AudioEnvironment>>,
     config: Option<Res<crate::hw_config::HardwareConfig>>,
+    (lists, game): (
+        Option<Res<crate::save_live::SlotLists>>,
+        Option<Res<exa_assets::Game>>,
+    ),
 ) {
     let Some(crossed) = crossed.as_mut() else {
         return;
@@ -4060,6 +4116,14 @@ fn cross_exit_zones(
     let setting = config.as_ref().is_none_or(|c| c.live.checkpoints);
     for exit in crossed.read() {
         let name = exit.destination.as_deref().map(intern_locale);
+        // The exit does nothing for a level neither the save nor the
+        // archive holds.
+        if let Some(locale) = name.or_else(|| level_locale(exit.level))
+            && !crate::save_live::level_available(lists.as_deref(), game.as_deref(), locale)
+        {
+            warn!("game flow: the exit's level {locale} is in neither the save nor the archive");
+            continue;
+        }
         let music_changes = name.is_some_and(|locale| {
             exa_audio::story_music_changes_for_key(locale.as_bytes(), playing)
         });
@@ -4374,7 +4438,7 @@ fn apply_steps(
     // does both, so the destination is not torn down twice.
     let loads = steps
         .iter()
-        .any(|step| matches!(step, Step::LoadLevel { .. }));
+        .any(|step| matches!(step, Step::LoadLevel { .. } | Step::MenuScene));
     for step in steps {
         match step {
             Step::ShowMenu(page) => {
@@ -4442,7 +4506,33 @@ fn apply_steps(
                     end.close();
                 }
                 hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
+                // A level of play ends the menu's background view.
+                commands.remove_resource::<crate::level_change::MenuSceneView>();
                 crate::level_change::request(&mut out.changes, Some(locale), spawn, teardown);
+            }
+            Step::MenuScene => {
+                // The original's menu scene load: the world reset, the
+                // dialogue engine's reset (the session's leave already ended
+                // every conversation), then the archive's menu scene with no
+                // player under its fixed camera.
+                let view = crate::level_change::MenuSceneView::of_load(
+                    &crate::save_scene::menu_scene_load(),
+                );
+                info!(
+                    "game flow: the menu scene {} loads behind the title (camera at {} looking at {}, field {})",
+                    crate::level_change::MENU_SCENE_LEVEL,
+                    view.eye,
+                    view.target,
+                    view.fov_degrees
+                );
+                commands.insert_resource(view);
+                out.resets.write(exa_world::level_lifecycle::WorldReset);
+                crate::level_change::request(
+                    &mut out.changes,
+                    Some(crate::level_change::MENU_SCENE_LEVEL),
+                    0,
+                    true,
+                );
             }
             Step::TeardownWorld => {
                 // The world reset clears what it owns (the weapons' blood
@@ -4450,6 +4540,7 @@ fn apply_steps(
                 out.resets.write(exa_world::level_lifecycle::WorldReset);
                 // A load in this batch tears down by itself.
                 if !loads {
+                    commands.remove_resource::<crate::level_change::MenuSceneView>();
                     crate::level_change::request(&mut out.changes, None, 0, true);
                 }
             }
@@ -5019,6 +5110,10 @@ fn apply_steps(
             Step::Checkpoint => {
                 out.saves.write(crate::save_live::SaveStep::Checkpoint);
             }
+            Step::TransitionSave { locale, level_time } => {
+                out.saves
+                    .write(crate::save_live::SaveStep::TransitionSave { locale, level_time });
+            }
             Step::Discovery => {
                 out.discovery
                     .write(crate::experience_live::DiscoveryTick { now });
@@ -5156,6 +5251,52 @@ fn apply_steps(
                 // that registers one (nor does Exanima 0.9.5), so this only
                 // names it.
                 info!("game flow: scripted mode {mode:#x} hook {hook:?}");
+            }
+            Step::PlayerData { flags } => {
+                // The identity reset on the record the player goes on with:
+                // the stripped one after a strip, else the body's own.
+                let mut record = None;
+                if let Some(stripped) = story.left.as_mut().and_then(|left| left.player.as_mut()) {
+                    stripped.reset_loaded_identity();
+                    record = Some(stripped.clone());
+                } else {
+                    for mut player in &mut players {
+                        if let Some(character) = player.character.as_mut() {
+                            let own = &mut character.bypass_change_detection().record;
+                            own.reset_loaded_identity();
+                            record = Some(own.clone());
+                        }
+                    }
+                }
+                match record {
+                    Some(record) => {
+                        // The post replaces the request's word: no AI start,
+                        // no saved AI pose, built into the world scene.
+                        let request = crate::save_live::loaded_player_request(
+                            crate::content_requests::WORLD_SCENE,
+                        );
+                        info!(
+                            "game flow: the player record {:?} is handed back for a rebuild (word {flags:#x} -> {:#x})",
+                            record.name, request.flags
+                        );
+                        commands.insert_resource(crate::save_live::LoadedPlayerStream {
+                            request,
+                            record,
+                            posted: None,
+                        });
+                    }
+                    None => debug!("game flow: no player record to hand back"),
+                }
+            }
+            Step::RebuildPlayer => {
+                // The save unit's rebuild reads it after the frame's saves.
+                commands.queue(|world: &mut World| {
+                    if let Some(mut rebuilds) =
+                        world.get_resource_mut::<Messages<crate::save_live::RebuildPlayer>>()
+                    {
+                        rebuilds.write(crate::save_live::RebuildPlayer);
+                    }
+                });
             }
             Step::CloseSave => {
                 // The original closes the save manager's open package file.
@@ -6591,8 +6732,11 @@ mod tests {
             0,
             false,
         );
-        assert!(steps.contains(&Step::Checkpoint));
-        assert!(steps.contains(&Step::LevelTime));
+        assert!(steps.contains(&Step::TransitionSave {
+            locale: "exanima06",
+            level_time: true
+        }));
+        assert!(!steps.iter().any(|s| matches!(s, Step::Save { .. })));
         let mut third = Flow {
             mode: Mode::Story,
             phase: Phase::Playing,
@@ -6609,8 +6753,10 @@ mod tests {
             0,
             false,
         );
-        assert!(steps.contains(&Step::Checkpoint));
-        assert!(!steps.contains(&Step::LevelTime));
+        assert!(steps.contains(&Step::TransitionSave {
+            locale: "exanima03",
+            level_time: false
+        }));
         assert_eq!(level_locale(99), None);
         let mut flow = Flow {
             mode: Mode::Story,
@@ -6642,10 +6788,10 @@ mod tests {
                 Step::Controls(false),
                 Step::EndGuiDrag,
                 Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar),
-                Step::Save {
-                    drop_on_low_health: false
+                Step::TransitionSave {
+                    locale: "exanima03",
+                    level_time: false
                 },
-                Step::Checkpoint,
                 Step::PortalUse,
                 Step::AiHandover,
                 Step::Transition,
@@ -6682,7 +6828,14 @@ mod tests {
             steps[1],
             Step::SweepScreens(crate::gui_screens::ScreenSweep::EveryAndBar)
         );
-        assert!(!steps.contains(&Step::Checkpoint));
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, Step::TransitionSave { .. }))
+        );
+        assert!(steps.contains(&Step::Save {
+            drop_on_low_health: false
+        }));
         // Without the portal bit nothing dissolves or hands over.
         assert!(!steps.contains(&Step::PortalUse));
         assert!(!steps.contains(&Step::AiHandover));
@@ -7470,6 +7623,8 @@ mod tests {
         let mut flow = Flow::default();
         let steps = flow.after_splash();
         assert!(steps.contains(&Step::ShowMenu(Page::Title)));
+        // The menu scene loads before the title's form is built.
+        assert_eq!(steps[0], Step::MenuScene);
         assert_eq!(flow.phase, Phase::Menu);
         // The scale notification only fires when it moved.
         assert!(flow.gui_scale_changed(gui_scale(1080), 1080).is_empty());
@@ -7735,6 +7890,11 @@ mod tests {
         // The title logo shows again; the help flag and the GUI scale are
         // not touched.
         assert!(steps.contains(&Step::TitleLogo(true)));
+        // The menu scene loads after the leave's world teardown, before the
+        // title's form.
+        let at = |wanted: &Step| steps.iter().position(|s| s == wanted).unwrap();
+        assert!(at(&Step::TeardownWorld) < at(&Step::MenuScene));
+        assert!(at(&Step::MenuScene) < at(&Step::ShowMenu(Page::Title)));
         assert!(
             !steps
                 .iter()

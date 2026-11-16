@@ -181,3 +181,40 @@ fn the_end_of_play_leaves_the_scene_in_no_mode() {
     assert!(app.world().resource::<GameModes>().is(GameMode::Character));
     assert_eq!(cam(&app, camera).record_flags(), 0x0020_0300);
 }
+
+/// Behind the main menu the chase camera stands at the menu scene's fixed
+/// camera ((0, 500, 700) cm looking at (0, 0, -200) cm, field 60), even
+/// with a surviving player it would otherwise follow; without the menu
+/// scene it follows the player again.
+#[test]
+fn the_menu_scene_holds_the_camera_at_its_fixed_view() {
+    let mut app = app();
+    let camera = camera(&mut app);
+    app.world_mut()
+        .spawn((Player, Transform::from_xyz(30.0, 0.0, 30.0)));
+    let view = crate::level_change::MenuSceneView::of_load(&crate::save_scene::menu_scene_load());
+    app.insert_resource(view);
+    for _ in 0..3 {
+        app.update();
+    }
+    let placed = *app.world().get::<Transform>(camera).unwrap();
+    assert!(placed.translation.distance(Vec3::new(0.0, 5.0, 7.0)) < 1e-5);
+    let forward = placed.forward();
+    let wanted = (Vec3::new(0.0, 0.0, -2.0) - Vec3::new(0.0, 5.0, 7.0)).normalize();
+    assert!(forward.dot(wanted) > 0.99999, "{forward:?}");
+    let Projection::Perspective(perspective) = app.world().get::<Projection>(camera).unwrap()
+    else {
+        panic!("a perspective camera");
+    };
+    assert!((perspective.fov - 60f32.to_radians()).abs() < 1e-6);
+    app.world_mut()
+        .remove_resource::<crate::level_change::MenuSceneView>();
+    for _ in 0..3 {
+        app.update();
+    }
+    let followed = app.world().get::<Transform>(camera).unwrap().translation;
+    assert!(
+        followed.distance(Vec3::new(0.0, 5.0, 7.0)) > 1.0,
+        "{followed:?}"
+    );
+}

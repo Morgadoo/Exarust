@@ -348,6 +348,17 @@ record in the world store and the player goes on with the stripped record;
 the respawn's and the exit's owned-mark clear then make the story save write
 the stripped player into `#playerdata` and the body, dead, into the level
 section (`left_behind::LeftBody`, `level_save::LevelSaveScene::left_character`).
+The death screen's CONTINUE resets the record's identity and posts its
+request (`Step::PlayerData`, `LoadedPlayerStream`); after the respawn's save
+the record it wrote becomes the next spawn's and the old player root goes
+(`Step::RebuildPlayer`, `save_live::RebuildPlayer`), so the player wakes
+stripped while the corpse keeps the gear. A level exit that keeps a
+checkpoint runs the transition save (`SaveStep::TransitionSave`: the save
+copied over the checkpoint only when it holds neither `exanima04` nor the
+destination), and the exits do nothing for a level neither the save nor
+the archive holds (`save_live::level_available`). The title after the splash
+and every return to it load the menu scene with no player under its fixed
+camera (`flow::Step::MenuScene`, `level_change::MenuSceneView`).
 Every story level change reads the save's own section of the destination
 when the save holds one (`save_live::prefer_saved_section`), and the host's
 loads take the session's arrival words (`level_change::SessionArrival`: a

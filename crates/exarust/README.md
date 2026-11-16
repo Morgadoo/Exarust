@@ -122,6 +122,11 @@ holds, on each opponent, the weapon whose object id the match's event drew;
 the career itself stays in the running `ArenaCareer`
 resource and the match's setup in `PendingArenaLaunch`: the launch is an
 in-process level change (`exa_world::level_lifecycle`).
+The menu scene's load (`exa_game::level_change::MenuSceneView`, the title
+after `--splash` and every return to the title) spawns no player: the
+level's collision stage moves straight on to the lighting, a room anchor
+stands at the fixed camera's target and the surviving player stays out of
+the scene.
 The end screen's Continue is Enter or Space until the screen is drawn: a
 next round stands the winner with the reserve or a fresh opponent, and the
 end of the match settles the career and changes back to the hub in process,
