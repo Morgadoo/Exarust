@@ -1,4 +1,6 @@
-//! The force barricade's sounds: the hum and the impacts.
+//! The force barricade's sounds, the hum and the impacts, and the one-shot
+//! sets the Force powers play from the simulation step ([`ForceSounded`]:
+//! the barricade's impacts, Force Strikes' end).
 //!
 //! - **The sounds** (the creator, once a session): the `thmfrc_bi` set is
 //!   the impact, the `thmfrc_bc01` buffer the hum.
@@ -15,7 +17,10 @@
 //!   front at `0.3 + 0.2·r` volume and `0.6 + 0.4·r` pitch, a held weapon
 //!   at `0.1 + 0.3·r` and `0.6 + 0.6·r`, at most every 400 ms, at the last
 //!   struck sphere in front carried into the world. The tick sends them as
-//!   [`BarricadeSounded`].
+//!   [`ForceSounded`].
+//! - **Force Strikes' end** ([`crate::thaum::power::force::Strikes`]): the
+//!   `thmfrc_brf` set at the caster's place, volume 0.3 and pitch
+//!   `0.6 + 0.4·r` (`r` the engine generator's draw, the sum in double).
 //! - **The end**: the destructor stops the hum.
 //!
 //! Evidence: the barricade's creator, entry, frame, body test and
@@ -29,38 +34,39 @@ use bevy::prelude::*;
 use exa_audio::{VoiceHandle, voice_flags};
 
 use super::blast_sound::BlastAudio;
-use super::force::{BARRICADE_HUM, DOME_SOUND};
+use super::force::BARRICADE_HUM;
 use super::live::LiveBarricade;
 use super::torrent_sound::loop_offset;
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
 
-/// An impact the wall's body test played: its place (cm, in the world),
-/// volume and pitch.
+/// A one-shot of a set a Force power played in the simulation step: the
+/// set, its place (cm, in the world), volume and pitch.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
-pub struct BarricadeSounded {
+pub struct ForceSounded {
+    pub set: &'static str,
     pub at: Vec3,
     pub volume: f32,
     pub pitch: f32,
 }
 
-/// The loaded hum buffer and impact set (`None` inside when the buffer
-/// failed to load), and each wall's hum by its entity.
+/// The loaded hum buffer (`None` inside when it failed to load) and sets,
+/// and each wall's hum by its entity.
 #[derive(Default)]
 pub(crate) struct BarricadeVoices {
     hum: Option<Option<u32>>,
-    impact: Option<u32>,
+    sets: HashMap<&'static str, u32>,
     voices: HashMap<Entity, VoiceHandle>,
 }
 
-/// Each frame, after the walls' draw: the impacts the ticks sent play, a
+/// Each frame, after the walls' draw: the sets the steps sent play, a
 /// new wall starts its hum, and each hum follows its wall's node at the
 /// frame's volume and pitch; a wall that left the scene stops its hum.
 pub(crate) fn sound_barricades(
     walls: Query<(Entity, &LiveBarricade)>,
     time: Res<Time<Fixed>>,
-    mut impacts: MessageReader<BarricadeSounded>,
+    mut impacts: MessageReader<ForceSounded>,
     mut audio: BlastAudio,
     mut state: Local<BarricadeVoices>,
 ) {
@@ -86,12 +92,13 @@ pub(crate) fn sound_barricades(
     }
     for impact in impacts.read() {
         let set = *state
-            .impact
-            .get_or_insert_with(|| bank.load_set(game, sources, DOME_SOUND));
+            .sets
+            .entry(impact.set)
+            .or_insert_with(|| bank.load_set(game, sources, impact.set));
         let voice = env.play_set(bank, set, impact.at / CM, impact.volume, impact.pitch, 0);
         info!(
-            "barricade: {DOME_SOUND} at {:?} cm, volume {:.3} pitch {:.3}, voice {voice:?}",
-            impact.at, impact.volume, impact.pitch
+            "force sound: {} at {:?} cm, volume {:.3} pitch {:.3}, voice {voice:?}",
+            impact.set, impact.at, impact.volume, impact.pitch
         );
     }
     let alpha = time.overstep_fraction();
@@ -139,7 +146,7 @@ pub(crate) fn sound_barricades(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thaum::force::{ForceKind, creator_spec};
+    use crate::thaum::force::{DOME_SOUND, ForceKind, creator_spec};
 
     #[test]
     fn the_sounds_are_the_creators() {

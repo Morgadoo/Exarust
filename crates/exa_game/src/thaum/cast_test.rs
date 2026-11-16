@@ -2579,3 +2579,47 @@ fn a_thrown_wave_alerts_the_characters_its_caster_knows() {
     let got = app.world().get::<Combatant>(witness).unwrap().contacts[0].concern;
     assert_eq!(got, concern);
 }
+
+/// Force Strikes told to end plays its end set at the caster, volume 0.3
+/// and pitch `0.6 + 0.4·r` from the engine generator's next draw.
+#[test]
+fn ending_strikes_plays_the_end_set() {
+    use crate::thaum::barricade_sound::ForceSounded;
+    use crate::thaum::force::STRIKES;
+    use crate::thaum::power::force::{STRIKES_END_SOUND, STRIKES_END_VOLUME, strikes_end_pitch};
+    let mut app = new_app();
+    let armed = caster(&mut app, &[STRIKES]);
+    app.world_mut().entity_mut(armed).insert(HeldMoveset {
+        weapon_class: 0x10,
+        ..HeldMoveset::default()
+    });
+    app.world_mut()
+        .get_mut::<PowerCaster>(armed)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    cast(&mut app, armed);
+    app.world_mut().run_schedule(FixedUpdate);
+    let drained = |app: &mut App| -> Vec<ForceSounded> {
+        app.world_mut()
+            .resource_mut::<Messages<ForceSounded>>()
+            .drain()
+            .collect()
+    };
+    assert!(drained(&mut app).is_empty(), "running, it plays nothing");
+    {
+        let mut caster = app.world_mut().get_mut::<PowerCaster>(armed).unwrap();
+        let ActiveClass::Strikes(power) = &mut caster.active[0].class else {
+            panic!("strikes");
+        };
+        power.state = 2;
+    }
+    let mut roll = app.world().resource::<EffectRoll>().0;
+    app.world_mut().run_schedule(FixedUpdate);
+    let sounds = drained(&mut app);
+    assert_eq!(sounds.len(), 1);
+    assert_eq!(sounds[0].set, STRIKES_END_SOUND);
+    assert_eq!(sounds[0].volume, STRIKES_END_VOLUME);
+    assert_eq!(sounds[0].pitch, strikes_end_pitch(roll.unit()));
+    assert_eq!(sounds[0].at, Vec3::ZERO);
+}

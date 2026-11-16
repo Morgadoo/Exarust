@@ -97,7 +97,7 @@ impl Plugin for ThaumEffectsPlugin {
         exa_physics::sim_app::add_frame_commands(app);
         crate::effects::danger::add_hazard_watch(app);
         app.add_message::<ArcShocked>()
-            .add_message::<super::barricade_sound::BarricadeSounded>()
+            .add_message::<super::barricade_sound::ForceSounded>()
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
             .init_resource::<FrameEffectDraws>()
@@ -193,7 +193,7 @@ fn bridge_thaum_effects_types(app: &mut App) {
         .bridge_message::<crate::thaum::hold_live::HoldEnd>()
         .bridge_message::<crate::thaum::kinesis_live::KinesisPicked>()
         .bridge_message::<crate::thaum::live::ArcShocked>()
-        .bridge_message::<crate::thaum::barricade_sound::BarricadeSounded>()
+        .bridge_message::<crate::thaum::barricade_sound::ForceSounded>()
         .bridge_message::<crate::thaum::throw_live::ThrowFade>()
         .bridge_copy::<exa_ai::DuelPowers>()
         .bridge_copy_opaque_resource::<exa_assets::Game>()
@@ -1107,7 +1107,7 @@ pub(crate) fn tick_barricades(
     mut nav: Option<ResMut<NavGrid>>,
     mut minds: Query<&mut Npc>,
     mut routes: Query<&mut exa_ai::route_walk::AiRoute>,
-    mut sounded: MessageWriter<super::barricade_sound::BarricadeSounded>,
+    mut sounded: MessageWriter<super::barricade_sound::ForceSounded>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live, stamped) in &mut walls {
@@ -1197,7 +1197,8 @@ pub(crate) fn tick_barricades(
                 }
                 touched |= shove.touched;
                 if let Some(sound) = shove.sound {
-                    sounded.write(super::barricade_sound::BarricadeSounded {
+                    sounded.write(super::barricade_sound::ForceSounded {
+                        set: super::force::DOME_SOUND,
                         at: live.wall.frame.world(sound.at),
                         volume: sound.volume,
                         pitch: sound.pitch,
@@ -2133,7 +2134,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(BodyTicks(5_000))
             .init_resource::<EffectRoll>()
-            .add_message::<super::super::barricade_sound::BarricadeSounded>()
+            .add_message::<super::super::barricade_sound::ForceSounded>()
             .add_systems(Update, tick_barricades);
         app.world_mut().spawn(LiveBarricade { wall, caster: None });
         let holder = app
@@ -2196,7 +2197,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(BodyTicks(5_000))
             .init_resource::<EffectRoll>()
-            .add_message::<super::super::barricade_sound::BarricadeSounded>()
+            .add_message::<super::super::barricade_sound::ForceSounded>()
             .add_systems(Update, tick_barricades);
         let wall_id = app
             .world_mut()
@@ -2246,7 +2247,7 @@ mod tests {
         // the wall's middle along its facing (+x), carried into the world.
         let sounds: Vec<_> = app
             .world_mut()
-            .resource_mut::<Messages<super::super::barricade_sound::BarricadeSounded>>()
+            .resource_mut::<Messages<super::super::barricade_sound::ForceSounded>>()
             .drain()
             .collect();
         assert_eq!(sounds.len(), 1);
@@ -2272,7 +2273,7 @@ mod tests {
         assert_eq!(npc.alert_count, 5, "the sound's gap has not passed");
         assert!(
             app.world()
-                .resource::<Messages<super::super::barricade_sound::BarricadeSounded>>()
+                .resource::<Messages<super::super::barricade_sound::ForceSounded>>()
                 .is_empty()
         );
     }
