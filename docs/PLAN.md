@@ -1547,6 +1547,8 @@ the save header's camera pair is the view camera's eye in centimetres and the co
 
 Vanish and the Long Door take the body out of the world the original way: the vanished bit on the state flags and status word, the node-tree disable with the first grab dropped, the enable with the 1000-tick settling, and the clear at the fade-in; the duellist drops a vanished target, a vanished player leaves no new footprint, and the Displacement gate sees the bit; the after-image is a real tendril image, and every body image is sized by the body. Two old readings corrected (the restore and clear walks are body-state walks). Left: the Summon's hold on its demon, the vanish and door sounds, the particle contact pass, the fire release hook. Scenes and determinism runs owed while the GPU is on hold.
 
+the arena stagings run behind the transition screen as the original runs them: the end menu Continue's next round and bracket round with the music fade off, the rematch and the hub Begin with it on and the launch sent at black, the screen black over the arena load; a staging callback raises the pause counter for its three frames at black (the lockstep loop holds too), and the screen's close ends the AI staging freeze (the 92-tick count stays only for stagings with no screen). Left: the Continue's hub return and the dead manager's exit still run without the screen, the practice start's creator commit opens no screen, the screen's other close-time writes. Arena and practice scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
