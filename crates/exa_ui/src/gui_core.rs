@@ -1700,6 +1700,151 @@ impl GuiTask {
         out
     }
 
+    /// Closes a form and the forms it takes with it, as the base form's
+    /// close slot does ([`crate::form::close_cascade`]): its child forms
+    /// (each not closing yet, depth first) close before it, every closed
+    /// form is hidden, which clears the window manager's references to it
+    /// ([`GuiTask::sweep_references`]), and the closed forms are deleted.
+    /// The root's children are not tasks here, so no close passes to a
+    /// task, and forms carry no owner, so no owned popup closes with its
+    /// opener. Returns how many forms were deleted.
+    pub fn close_form(&mut self, form: FormId) -> usize {
+        if self.form(form).is_none() {
+            return 0;
+        }
+        let size = self.forms.len() + 1;
+        let root = self.root.map_or(0, |r| r as usize);
+        let mut nodes = vec![crate::form::CloseNode::default(); size];
+        for id in 1..size as FormId {
+            let Some(f) = self.form(id) else {
+                continue;
+            };
+            nodes[id as usize] = crate::form::CloseNode {
+                closing: f.doomed(),
+                closes_once: true,
+                task: root,
+                children: self
+                    .children_of(Some(id))
+                    .into_iter()
+                    .map(|c| c as usize)
+                    .collect(),
+                ..crate::form::CloseNode::default()
+            };
+        }
+        let mut steps = Vec::new();
+        crate::form::close_cascade(&mut nodes, form as usize, &mut steps);
+        for step in steps {
+            match step {
+                crate::form::CloseStep::Hide(i) => self.hide_form(i as FormId),
+                crate::form::CloseStep::Redraw => self.redraw = true,
+                _ => {}
+            }
+        }
+        self.delete_doomed()
+    }
+
+    /// The close's hide: a visible form going hidden clears the window
+    /// manager's references to it and its tree
+    /// ([`crate::form::visibility_plan`]); the form is then marked closed.
+    fn hide_form(&mut self, form: FormId) {
+        let visible = self.form(form).is_some_and(FormHost::is_visible);
+        if crate::form::visibility_plan(visible, false, false).clear_references {
+            self.sweep_references(form);
+        }
+        if let Some(f) = self.form_mut(form) {
+            f.close(0);
+        }
+    }
+
+    /// The freed form's sweep over itself and its tree
+    /// ([`crate::form::sweep_freed_form`]), on the window manager's slots:
+    /// the remembered focus clears; the focused form hands the focus to its
+    /// parent with control -1 when the parent is visible (Exarust's
+    /// stand-in for the task's own focus restore), else to no form through
+    /// [`GuiTask::focus_form`]; the pointer's target clears with its
+    /// control; a capture held by the form is dropped; the tooltip request
+    /// on it clears; a drop it is the source of is reset. The modal slot
+    /// holding it clears too (Exarust's).
+    pub fn sweep_references(&mut self, form: FormId) {
+        let size = self.forms.len() + 1;
+        let mut children = vec![Vec::new(); size];
+        let mut parent = vec![None; size];
+        let mut parent_visible = vec![false; size];
+        for id in 1..size as FormId {
+            let Some(f) = self.form(id) else {
+                continue;
+            };
+            children[id as usize] = self
+                .children_of(Some(id))
+                .into_iter()
+                .map(|c| c as usize)
+                .collect();
+            parent[id as usize] = f.parent().map(|p| p as usize);
+            parent_visible[id as usize] = f
+                .parent()
+                .and_then(|p| self.form(p))
+                .is_some_and(FormHost::is_visible);
+        }
+        let slot = |id: Option<FormId>| id.map(|id| id as usize);
+        let mut slots = crate::form::FormSlots {
+            pressed: slot(self.pointer.capture),
+            saved_focus: slot(self.remembered.map(|(f, _)| f)),
+            focused: slot(self.active),
+            tooltip: slot(self.tooltip.form),
+            task_pressed: slot(self.pointer.target),
+            task_press_word: self.pointer.target_control,
+            drop_payload: slot(self.drop.source),
+            ..crate::form::FormSlots::default()
+        };
+        let mut active_child = vec![None; size];
+        let follow = crate::form::sweep_freed_form(
+            &mut slots,
+            &mut active_child,
+            &children,
+            &parent,
+            &parent_visible,
+            form as usize,
+        );
+        let back = |id: Option<usize>| id.map(|id| id as FormId);
+        if slots.pressed.is_none() && self.pointer.capture.is_some() {
+            self.pointer.capture = None;
+            self.pointer.os_captured = false;
+        }
+        if slots.saved_focus.is_none() {
+            self.remembered = None;
+        }
+        if slots.task_pressed.is_none() && self.pointer.target.is_some() {
+            self.pointer.target = back(slots.task_pressed);
+            self.pointer.target_control = slots.task_press_word;
+        }
+        for step in follow {
+            match step {
+                crate::form::SweepFollowUp::ParentFocus(p) => {
+                    self.focus_form(Some(p as FormId), -1);
+                }
+                crate::form::SweepFollowUp::ClearFocus => {
+                    self.focus_form(None, 0);
+                }
+                crate::form::SweepFollowUp::TooltipReset => self.clear_tooltip(),
+                crate::form::SweepFollowUp::DropReset => self.drop = DropState::default(),
+                crate::form::SweepFollowUp::FallBack => {}
+            }
+        }
+        // The tree is still visible while it is swept (it hides after), so
+        // a focus handed away from it must not remember it.
+        let tree: Vec<FormId> = crate::form::propagation_order(&children, form as usize)
+            .into_iter()
+            .map(|i| i as FormId)
+            .collect();
+        if self.remembered.is_some_and(|(f, _)| tree.contains(&f)) {
+            self.remembered = None;
+        }
+        if self.modal.is_some_and(|m| tree.contains(&m)) {
+            self.modal = None;
+        }
+        self.redraw = true;
+    }
+
     /// Deletes the forms marked for deletion; returns how many.
     pub fn delete_doomed(&mut self) -> usize {
         let mut count = 0;

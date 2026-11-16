@@ -267,3 +267,35 @@ fn a_slider_let_go_off_its_track_still_reports_the_change() {
     let events = &base(&task, id).events;
     assert!(!events.contains(&BaseEvent::Changed(1)), "{events:?}");
 }
+
+/// The close slot's cascade on the window manager: a window's child form
+/// closes before it, both are deleted, and the tooltip request, the drop
+/// they source and the modal slot on them clear; a sibling is untouched.
+#[test]
+fn closing_a_window_closes_its_children_and_sweeps_the_slots() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let mut a = window();
+    a.parent = Some(root);
+    let a = task.add(Box::new(a));
+    let mut child = window();
+    child.parent = Some(a);
+    let child = task.add(Box::new(child));
+    let mut other = window();
+    other.parent = Some(root);
+    let other = task.add(Box::new(other));
+    task.focus_set(Some(child), 0);
+    task.tooltip.form = Some(child);
+    task.drop.source = Some(a);
+    task.drop.kind = 3;
+    task.modal = Some(child);
+    assert_eq!(task.close_form(a), 2);
+    assert!(task.form(a).is_none() && task.form(child).is_none());
+    assert!(task.form(other).is_some());
+    assert_eq!(task.tooltip.form, None);
+    assert_eq!(task.drop.kind, 0);
+    assert_eq!(task.modal, None);
+    // The focus went up the tree to the root (the parents were visible).
+    assert_eq!((task.active, task.active_control), (Some(root), -1));
+    assert_eq!(task.draw_order(), vec![root, other]);
+}

@@ -1602,18 +1602,12 @@ impl GameScreens {
             let b = form.bounds();
             (b.left, b.top)
         });
-        if let Some(form) = self.task.form_mut(screen.form) {
-            form.close(0);
-        }
-        self.task.delete_doomed();
+        // The base form's close: the window's child forms (the journal's
+        // text box) close with it and the window manager forgets them.
+        self.task.close_form(screen.form);
         match screen.kind {
             GameScreen::Journal => {
-                if let Some(text_box) = self.journal_box.take()
-                    && let Some(form) = self.task.form_mut(text_box.form)
-                {
-                    form.close(0);
-                    self.task.delete_doomed();
-                }
+                self.journal_box = None;
                 self.journal.store_text(&self.journal_text);
                 self.journal.place = place;
             }
@@ -4338,6 +4332,59 @@ mod tests {
         assert_eq!(screens.task.remembered, Some((text_box, NO_CONTROL)));
         screens.task.focus_form(None, 0);
         assert!(screens.journal_box_focused());
+    }
+
+    /// The journal's key closes it through the base form's close: its text
+    /// box closes with it, and the window manager forgets both (the focus,
+    /// the pointer's target, the capture and the remembered focus no longer
+    /// name them); the focus falls to the window left.
+    #[test]
+    fn closing_the_journal_closes_its_text_box_and_clears_the_references() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions::default(),
+        ));
+        let ask = |app: &mut App, screen: GameScreen| {
+            app.world_mut()
+                .write_message(ScreenRequest::screen(screen, true, true));
+            app.update();
+        };
+        ask(&mut app, GameScreen::Inventory);
+        ask(&mut app, GameScreen::Journal);
+        let (inventory, journal, text_box) = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            let inventory = screens.find(GameScreen::Inventory).unwrap().form;
+            let journal = screens.find(GameScreen::Journal).unwrap().form;
+            let text_box = screens.journal_box.as_ref().unwrap().form;
+            screens.task.focus_set(Some(journal), NO_CONTROL);
+            screens.task.focus_set(Some(text_box), NO_CONTROL);
+            screens.task.pointer.target = Some(text_box);
+            screens.task.pointer.capture = Some(text_box);
+            assert_eq!(screens.task.remembered.map(|r| r.0), Some(journal));
+            (inventory, journal, text_box)
+        };
+        ask(&mut app, GameScreen::Journal);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(!screens.is_open(GameScreen::Journal));
+        assert!(screens.task.form(journal).is_none());
+        assert!(screens.task.form(text_box).is_none());
+        assert!(screens.journal_box.is_none());
+        assert_eq!(screens.task.active, Some(inventory));
+        assert_eq!(screens.task.pointer.target, None);
+        assert_eq!(screens.task.pointer.capture, None);
+        assert!(
+            screens
+                .task
+                .remembered
+                .is_none_or(|(f, _)| f != journal && f != text_box)
+        );
+        assert_eq!(screens.task.draw_order().len(), 2);
     }
 
     #[test]

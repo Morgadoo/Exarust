@@ -1626,10 +1626,10 @@ impl HubWindows {
 
     /// Removes the form and forgets the window.
     pub fn close(&mut self) {
-        if let Some(form) = self.form.take()
-            && let Some(host) = self.task.form_mut(form)
-        {
-            host.close(0);
+        // The base form's close: the window and its child forms close and
+        // the window manager forgets them.
+        if let Some(form) = self.form.take() {
+            self.task.close_form(form);
         }
         self.task.delete_doomed();
         self.task.root = None;
