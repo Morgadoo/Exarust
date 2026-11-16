@@ -628,6 +628,7 @@ fn shipped_levels() {
             took < std::time::Duration::from_millis(250),
             "{name}: {took:?}"
         );
+        assert_eq!(changed, name == "exanima01", "{name}");
         let reaches = |p: Vec3| {
             let (x, z) = g.cell_at(p).unwrap();
             r.iter().any(|&(rx, rz, _)| (rx, rz) == (x, z))
