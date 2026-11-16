@@ -1557,6 +1557,8 @@ third TMotileAI pass: the combat state drops a collapsing or dead target and lea
 
 the lift's placement follows the original: the item's box centre starts 600 cm back along the cursor ray and slides to the first contact of any of its spheres within 1000 cm (the level, the other props and the loose props' meshes, the held body left out), each sphere starting where its far side reaches the camera's near plane (the old support plane reading was the near plane); with the controls off the hand's own frame places the lift by the GUI drop's rule, and a block holds it. The mouse capture was re-audited; its pad and desk differences are listed. Left: the GUI drop's first placement, character meshes and one-sidedness in the sweep, the request's kinesis and motion-45 gates. Lift scenes owed while the GPU is on hold; their traces change.
 
+the base form's show rebuilds its snap slots (the parent's, its own, each child snap container's) on every screen, journal, manual and settings open; the form hit walks its children as the original does; Tab moves the hub forms' focus through the base form's key slot. The snap slots' only reader is the draw skin's form page, which the line skin replaces, so no form shows them. The textured-skin census: dialogue choices, divination card and parchment hold no control records and the skill selector is unreachable, so the draw skin's panel, box and scroll-bar slots have no textured-skin arm. Left: the key path end to end, the point conversions, routes and scroll metrics, about 18 uncalled rows. Hub and journal scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
