@@ -297,7 +297,7 @@ fn drive_controls_page(
 
 /// The pointer, wheel and keys while the form is open and neither the
 /// key-read nor the warm-up screen covers it.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn form_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
