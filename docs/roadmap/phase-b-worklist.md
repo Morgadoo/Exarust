@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 738 | 186,964 | B1 wire (or prove unreachable) |
-| partial | 1,484 | 949,812 | B4 complete the port |
+| uncalled | 736 | 185,852 | B1 wire (or prove unreachable) |
+| partial | 1,480 | 948,903 | B4 complete the port |
 | missing | 61 | 12,825 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,15 +14,15 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 144,630 | 23,907 | 427 |
+| physics | 144,630 | 23,495 | 427 |
 | ui | 98,154 | 51,141 | 1,311 |
 | render | 123,703 | 22,990 | 3,232 |
 | powers | 112,229 | 3,417 | 3,049 |
-| ai | 104,454 | 5,312 | 28 |
+| ai | 103,626 | 4,612 | 28 |
 | characters | 89,820 | 15,398 | 2,097 |
 | modes | 74,355 | 13,673 | 942 |
 | world | 65,469 | 21,016 | 563 |
-| items | 63,582 | 9,787 | 601 |
+| items | 63,501 | 9,787 | 601 |
 | data | 31,939 | 12,305 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
 | core | 12,324 | 3,411 | 59 |
@@ -34,9 +34,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
-| TMotileDynamics | physics | 48 / 99,121 | 5 / 5,469 | 1 / 38 | 104,628 |
+| TMotileDynamics | physics | 48 / 99,121 | 4 / 5,057 | 1 / 38 | 104,216 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
-| TMotileAI | ai | 26 / 32,570 | 5 / 2,048 | 2 / 28 | 34,646 |
+| TMotileAI | ai | 23 / 31,742 | 4 / 1,348 | 2 / 28 | 33,118 |
 | SG_PlayerControls (unit routines) | ai | 39 / 23,073 | 0 / 0 | 0 / 0 | 23,073 |
 | TSimSector | physics | 29 / 21,802 | 0 / 0 | 0 / 0 | 21,802 |
 | XA_Arena (unit routines) | modes | 32 / 19,158 | 8 / 1,658 | 8 / 942 | 21,758 |
@@ -59,7 +59,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TAISearchActivity | ai | 14 / 9,316 | 3 / 212 | 0 / 0 | 9,528 |
 | TMatchBoard | modes | 6 / 9,526 | 0 / 0 | 0 / 0 | 9,526 |
 | TGUIItemContainer | items | 8 / 7,880 | 2 / 1,584 | 0 / 0 | 9,464 |
-| Character equipment & inventory routines (TCharacterView by address) | items | 16 / 8,575 | 6 / 778 | 0 / 0 | 9,353 |
+| Character equipment & inventory routines (TCharacterView by address) | items | 15 / 8,494 | 6 / 778 | 0 / 0 | 9,272 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTetraRBD | physics | 17 / 8,115 | 4 / 917 | 1 / 151 | 9,183 |
 | SG_GameMain (unit routines) | modes | 20 / 7,488 | 3 / 1,300 | 0 / 0 | 8,788 |
