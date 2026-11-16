@@ -21,6 +21,12 @@ pub struct FlamePlugin;
 
 impl Plugin for FlamePlugin {
     fn build(&self, app: &mut App) {
+        // The particles' body pass, the solver's object stage for the
+        // emitters staged in the simulation ([`crate::particle_stage`]).
+        app.init_resource::<exa_physics::body::SolverStages>();
+        app.world_mut()
+            .resource_mut::<exa_physics::body::SolverStages>()
+            .add(crate::particle_stage::ParticleSolve::default());
         app.insert_resource(FireLightPin::from_env()).add_systems(
             Update,
             (load_flame_assets, attach_flames, simulate, build_meshes).chain(),
