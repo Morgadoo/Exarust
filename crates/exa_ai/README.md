@@ -37,7 +37,10 @@ It already drives the play mode duellist with the original's combat
 state (`combat`), once per body tick: it enters combat in its guard with
 its eagerness at a half, and each tick weighs up to seventeen places
 (where it stands, eight steps and eight long steps) through the position
-score (`place`, with the foe's published arc), keeping its contact with
+score (`place`, with the foe's published arc; a seen barricade's or
+blast's own place score, the barricade's measured along the wall from the
+fighter's chest with its keep weight in the approach term, as the
+original's avoidance slot), keeping its contact with
 the target through the combatant's perception pass (`combatant`), and
 dropping a target that vanishes (its state flags' vanished bit) as it drops
 a dead one; it

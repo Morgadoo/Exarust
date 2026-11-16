@@ -208,3 +208,10 @@ A story level's load SHALL apply, after the indoor preset, the fog distance the 
 #### Scenario: Loading the flooded level
 - **WHEN** exanima04 loads
 - **THEN** its scene environment's fog distance is 1.4
+
+### Requirement: Light colours through the original's sRGB routine
+A light's direct colour and its node colour SHALL linearise the stored colour with the original's sRGB routine (the engine's fast logarithm and exponential), not the renderer's `powf` curve.
+
+#### Scenario: The linear workflow
+- **WHEN** a light updates in the linear workflow
+- **THEN** its direct colour equals the original's bit for bit

@@ -29,8 +29,8 @@ pub use gait::{
 #[path = "body_twist.rs"]
 mod twist;
 pub use twist::{
-    TwistBy, acos_approx, asin_approx, euler_of, from_euler, half_lean, head_look, heading_of,
-    look_rotation, twist, twist_spine,
+    HEAD_PITCH_OFFSET, TwistBy, acos_approx, asin_approx, euler_of, from_euler, half_lean,
+    head_look, head_look_angles, heading_of, look_rotation, twist, twist_spine,
 };
 
 /// Bits of the request's flag word, the original's.
