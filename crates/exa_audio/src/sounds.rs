@@ -134,6 +134,61 @@ pub(crate) fn heal_sounds(
     }
 }
 
+/// An item's handling sound at a body (m): the AI search's put-on of a
+/// worn piece plays it. `index` is the piece's handling sound index, which
+/// names its foley class's set ([`FOLEY_CLASSES`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct HandlingSounded {
+    pub index: u8,
+    pub position: Vec3,
+}
+
+/// Plays the handling sounds at the original's levels
+/// ([`exa_items::instance::handling_sound`]: pitch `0.8 + 0.2·draw`, volume
+/// 0.3): an index of 0 plays nothing and draws nothing; the foley class's
+/// set is loaded once. The draw is the bank's generator, the stand-in the
+/// other point sounds use for the engine's random number.
+pub(crate) fn handling_sounds(
+    game: Option<Res<Game>>,
+    mut requests: MessageReader<HandlingSounded>,
+    mut bank: ResMut<SoundBank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+    mut env: ResMut<AudioEnvironment>,
+    mut sets: Local<HashMap<u8, u32>>,
+) {
+    let Some(game) = game else {
+        requests.clear();
+        return;
+    };
+    for request in requests.read() {
+        if request.index < 1 {
+            continue;
+        }
+        let draw = bank.rng().unit_f64();
+        let Some(sound) = exa_items::instance::handling_sound(request.index, draw) else {
+            continue;
+        };
+        let Some(set) = FOLEY_CLASSES
+            .get(usize::from(sound.index))
+            .copied()
+            .flatten()
+        else {
+            continue;
+        };
+        let id = *sets
+            .entry(sound.index)
+            .or_insert_with(|| bank.load_set(&game, &mut sources, set.prefix));
+        env.play_set(
+            &mut bank,
+            id,
+            request.position,
+            sound.volume,
+            sound.pitch,
+            0,
+        );
+    }
+}
+
 /// A named one-shot at a point (m) at a set volume and pitch: the original's
 /// point sound, which a picked-up object's use sound goes through (volume
 /// 0.25, pitch 1). `flags` are the voice flags the caller adds (the story

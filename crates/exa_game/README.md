@@ -2307,16 +2307,27 @@ its pack; an object at its first node's box centre, searchable when it lies stra
 level, a container's contents from its object sections; reachable is the
 level's sight test, a path the grid's route; the follow's and the search's
 routes are the character's one route, `exa_ai::route_walk::AiRoute`, at the
-follow's urgency, walked by the AI's walk after them; the follow's mode word
-and the leader's planned point live on that route, which every stop clears
-of its mode; while the combat state fights, the follow route is the combat
-state's follow check's to keep or stop, and `publish_follow_leader` gives
-that check the player as its leader each body tick), carrying out each take, wear
-or wield on both sides' `Possessions` and logging comments (no dialogue
-engine). The items' values come from the game's object database and the
+follow's urgency, which the search's calm walk drops to 0, walked by the AI's
+walk after them; the follow's mode word and the leader's planned point live
+on that route, which every stop clears of its mode; while the combat state
+fights, the follow route is the combat state's follow check's to keep or stop,
+and `publish_follow_leader` gives that check the player as its leader each
+body tick), carrying out each take and wear on both sides' `Possessions`; the
+re-arm's hands go through the inventory (the stow through
+`exa_items::possession::PlannedArms`, the wield's take into the hand through
+`doll_view::hold_item`); a put-on plays the piece's handling sound
+(`exa_audio::HandlingSounded`), and a comment barks through the near
+activation of the Explorer role's `ContextPhrase` topic toward the Leader
+(`bark_search_comments`). The leader the search weighs for is the first
+contact attended 50 or more that is a living character holding the Player
+role. The settle snaps the brain's look to the body's heading and the idle
+look turns the body (`exa_ai::motion::settle_look`, `turn_towards`). A
+dead body that still grips its shield lets it go when the search takes it,
+and the shield's node leaves the world. The items' values come from the game's object database and the
 level's own records (tagged local). `carry_out_search` then does what the
 deeds leave: a taken loose object leaves the world with its colliders, a
-changed container is written back into its sections, and a body whose worn
+changed container is written back into its sections (a new entry at the
+panel's far corner, its size times 40, as the original's add), and a body whose worn
 list or hands changed is dressed again (garments off and on its `Outfit`,
 which the dress refits; a corpse gets the underwear rule first; new hands
 and `Wielded`). The original's search plays no kneel clip: it settles the
