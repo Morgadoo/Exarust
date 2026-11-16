@@ -596,10 +596,18 @@ fn arena_pause(
 
 /// Opens the end screen the round's transition asked for, and closes it once
 /// the match carries no transition.
-fn open_end_screen(arena: Option<Res<ArenaMatch>>, mut screen: Option<ResMut<ArenaEndScreen>>) {
+fn open_end_screen(
+    arena: Option<Res<ArenaMatch>>,
+    mut screen: Option<ResMut<ArenaEndScreen>>,
+    staging: Option<Res<crate::arena_fade::ArenaStaging>>,
+) {
     let (Some(arena), Some(screen)) = (arena, screen.as_mut()) else {
         return;
     };
+    // A Continue behind the transition screen keeps the menu closed.
+    if staging.is_some_and(|staging| staging.round_pending()) {
+        return;
+    }
     match arena.screen {
         Some(transition) if !screen.open => screen.show(transition),
         None if screen.open => screen.close(),
@@ -724,10 +732,7 @@ pub(crate) fn stand_first_round(
     players: Query<(), With<crate::player::Player>>,
     clock: Option<Res<crate::effects::EffectClock>>,
     mut commands: MessageWriter<SceneCommand>,
-    (mut fixed, mut freeze): (
-        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
-        Option<ResMut<exa_ai::freeze::StagingFreeze>>,
-    ),
+    ((mut fixed, mut freeze), flow): (FreezeQueue<'_>, Option<Res<crate::flow::Flow>>),
 ) {
     let Some(mut scene) = scene else {
         return;
@@ -774,9 +779,29 @@ pub(crate) fn stand_first_round(
     }
     scene.placed = true;
     // The match start sets the staging freeze as it stages the first round:
-    // the AI states wait out the transition screen's hold and fade-in.
-    exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
+    // the AI states wait out the transition screen's hold and fade-in, until
+    // the screen the hub's Begin opened closes (counted without one, as a
+    // command-line match has none).
+    if flow.is_some_and(|flow| flow.transition_running()) {
+        exa_ai::freeze::stage_held(fixed.as_deref_mut(), freeze.as_deref_mut());
+    } else {
+        exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
+    }
 }
+
+/// The fixed queue and the staging freeze a staging posts to.
+type FreezeQueue<'w> = (
+    Option<ResMut<'w, exa_physics::sim_app::FixedCommands>>,
+    Option<ResMut<'w, exa_ai::freeze::StagingFreeze>>,
+);
+
+/// The flow, its queued steps and the arena's held stagings, which a
+/// Continue behind the transition screen uses.
+type StagingFlow<'w> = (
+    Option<ResMut<'w, crate::flow::Flow>>,
+    Option<ResMut<'w, crate::flow::FlowSteps>>,
+    Option<ResMut<'w, crate::arena_fade::ArenaStaging>>,
+);
 
 /// The end screen's Continue, the next round and the return.
 #[allow(clippy::too_many_arguments)]
@@ -793,117 +818,157 @@ fn continue_round(
     mut level: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
-    (mut fixed, mut freeze): (
-        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
-        Option<ResMut<exa_ai::freeze::StagingFreeze>>,
-    ),
+    (mut fixed, mut freeze): FreezeQueue<'_>,
+    (mut flow, mut queued, mut staging): StagingFlow<'_>,
 ) {
     let (Some(arena), Some(scene)) = (arena.as_mut(), scene.as_mut()) else {
         return;
     };
-    if arena.screen.is_none() || arena.state == MatchState::Fighting {
-        return;
-    }
-    // The end screen's row is the only input now; the auto-continue switch
-    // runs the same handler without it.
-    let pressed = confirms.read().next().is_some();
-    if !pressed && !auto.0 {
-        return;
-    }
-    if auto.0
-        && let Some(screen) = screen.as_mut()
-    {
-        screen.close();
-    }
-    // Continue first resolves the company bodies that fell since the last
-    // tick.
-    sweep_fallen(arena, &fighters, career.as_deref_mut());
-    let action = arena.end_action(scene.tournament);
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
-    match action {
-        EndAction::MainMenu => {
-            for (entity, ..) in &fighters {
-                commands.write(SceneCommand::Despawn(entity));
+    // The transition screen is black: the next round held at the Continue is
+    // staged now, under the screen, whose close ends the staging freeze.
+    let (round, bracket, held) = match staging.as_mut().and_then(|s| s.take_round()) {
+        Some(EndAction::NextRound { round, bracket }) => (
+            round,
+            bracket,
+            flow.as_ref().is_some_and(|flow| flow.transition_running()),
+        ),
+        Some(_) => return,
+        None => {
+            if staging.as_ref().is_some_and(|s| s.round_pending()) {
+                return;
             }
-            exits.write(ArenaExit::MainMenu);
-            arena.screen = None;
-        }
-        EndAction::NextRound { round, bracket } => {
-            if bracket {
-                // A tournament's next round raises the bracket's fight: the
-                // won group keeps team one, the other groups draw their
-                // winner, and the survivors are stood on the ring.
-                let sides = scene_sides(&drawn);
-                let mode = arena.state.word() as i32;
-                if stand_bracket_round(
-                    scene,
-                    career.as_deref(),
-                    &fighters,
-                    &mut kits,
-                    level.as_deref_mut(),
-                    (&sides, mode),
-                    now,
-                    &mut commands,
-                ) {
-                    info!("arena match: tournament round {round} raised the bracket fight");
-                } else {
-                    warn!("arena match: tournament round {round} has no bracket");
+            if arena.screen.is_none() || arena.state == MatchState::Fighting {
+                return;
+            }
+            // The end screen's row is the only input now; the auto-continue
+            // switch runs the same handler without it.
+            let pressed = confirms.read().next().is_some();
+            if !pressed && !auto.0 {
+                return;
+            }
+            if auto.0
+                && let Some(screen) = screen.as_mut()
+            {
+                screen.close();
+            }
+            // Continue first resolves the company bodies that fell since the
+            // last tick.
+            sweep_fallen(arena, &fighters, career.as_deref_mut());
+            let action = arena.end_action(scene.tournament);
+            match action {
+                EndAction::MainMenu => {
+                    for (entity, ..) in &fighters {
+                        commands.write(SceneCommand::Despawn(entity));
+                    }
+                    exits.write(ArenaExit::MainMenu);
+                    arena.screen = None;
+                    return;
                 }
-            } else {
-                let entered = scene.player_entry.is_some();
-                let fighter_dead = fighters.iter().any(|(_, _, condition, body, player)| {
-                    (if entered { player } else { body.company }) && *condition == Condition::DEAD
-                });
-                let opponent_present = fighters.iter().any(|(_, _, condition, body, _)| {
-                    !body.company && *condition != Condition::DEAD
-                });
-                let fight = regenerate_round(
-                    scene.level,
-                    scene.tier,
-                    arena.rounds.losses,
-                    fighter_dead,
-                    opponent_present,
-                );
-                stand_next_round(
-                    &fight,
-                    scene,
-                    career.as_deref(),
-                    &fighters,
-                    &mut kits,
-                    level.as_deref_mut(),
-                    now,
-                    &mut commands,
-                );
+                EndAction::ReturnToHub { tournament } => {
+                    let finish = if arena.state == MatchState::Won {
+                        Finish::Won
+                    } else {
+                        Finish::Lost
+                    };
+                    let sides = scene_sides(&drawn);
+                    let mode = arena.state.word() as i32;
+                    finish_and_exit(
+                        arena,
+                        scene,
+                        career.as_deref_mut(),
+                        finish,
+                        tournament,
+                        (&fighters, &sides, mode),
+                        &mut commands,
+                        &mut exits,
+                    );
+                    return;
+                }
+                EndAction::NextRound { round, bracket } => {
+                    // The Continue raises the round counter, then opens the
+                    // transition screen over the next round (the music
+                    // fade off); the round is staged at its black.
+                    if let Some(staging) = staging.as_mut()
+                        && crate::arena_fade::open_staging(
+                            flow.as_deref_mut(),
+                            queued.as_deref_mut(),
+                            crate::flow::Action::ArenaRound,
+                            false,
+                        )
+                    {
+                        arena.rounds.round = round;
+                        if let Some(screen) = screen.as_mut() {
+                            screen.close();
+                        }
+                        staging.hold_round(action);
+                        info!("arena match: round {round} waits for the transition screen");
+                        return;
+                    }
+                    (round, bracket, false)
+                }
             }
-            // Both the next round's staging and the bracket's set the
-            // staging freeze.
-            exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
-            arena.rounds.round = round;
-            arena.state = MatchState::Fighting;
-            arena.screen = None;
-            arena.started_ms = None;
-            arena.resolved.clear();
         }
-        EndAction::ReturnToHub { tournament } => {
-            let finish = if arena.state == MatchState::Won {
-                Finish::Won
-            } else {
-                Finish::Lost
-            };
-            let sides = scene_sides(&drawn);
-            let mode = arena.state.word() as i32;
-            finish_and_exit(
-                arena,
-                scene,
-                career.as_deref_mut(),
-                finish,
-                tournament,
-                (&fighters, &sides, mode),
-                &mut commands,
-                &mut exits,
-            );
+    };
+    if bracket {
+        // A tournament's next round raises the bracket's fight: the
+        // won group keeps team one, the other groups draw their
+        // winner, and the survivors are stood on the ring.
+        let sides = scene_sides(&drawn);
+        let mode = arena.state.word() as i32;
+        if stand_bracket_round(
+            scene,
+            career.as_deref(),
+            &fighters,
+            &mut kits,
+            level.as_deref_mut(),
+            (&sides, mode),
+            now,
+            &mut commands,
+        ) {
+            info!("arena match: tournament round {round} raised the bracket fight");
+        } else {
+            warn!("arena match: tournament round {round} has no bracket");
         }
+    } else {
+        let entered = scene.player_entry.is_some();
+        let fighter_dead = fighters.iter().any(|(_, _, condition, body, player)| {
+            (if entered { player } else { body.company }) && *condition == Condition::DEAD
+        });
+        let opponent_present = fighters
+            .iter()
+            .any(|(_, _, condition, body, _)| !body.company && *condition != Condition::DEAD);
+        let fight = regenerate_round(
+            scene.level,
+            scene.tier,
+            arena.rounds.losses,
+            fighter_dead,
+            opponent_present,
+        );
+        stand_next_round(
+            &fight,
+            scene,
+            career.as_deref(),
+            &fighters,
+            &mut kits,
+            level.as_deref_mut(),
+            now,
+            &mut commands,
+        );
     }
+    // Both the next round's staging and the bracket's set the
+    // staging freeze: held by the transition screen it runs under,
+    // else counted.
+    if held {
+        exa_ai::freeze::stage_held(fixed.as_deref_mut(), freeze.as_deref_mut());
+    } else {
+        exa_ai::freeze::stage(fixed.as_deref_mut(), freeze.as_deref_mut());
+    }
+    arena.rounds.round = round;
+    arena.state = MatchState::Fighting;
+    arena.screen = None;
+    arena.started_ms = None;
+    arena.resolved.clear();
 }
 
 /// The next round's bodies: the winner stays and the reserve or a fresh
@@ -1814,6 +1879,137 @@ mod tests {
                 .resource::<exa_ai::freeze::StagingFreeze>()
                 .frozen()
         );
+    }
+
+    /// The arena's next round behind the flow's transition screen, on the
+    /// real flow and arena systems: the Continue opens the screen (music
+    /// fade off) and closes the end menu; the round is staged only at black,
+    /// 600 ms later, where the pause counter is raised for three frames and
+    /// the staging freeze is held; the screen's close, after the 500 ms hold
+    /// and the 600 ms fade back in, releases the freeze.
+    #[test]
+    fn the_next_round_is_staged_behind_the_transition_screen() {
+        use exa_physics::sim_app::{FixedCommands, SimPause, run_fixed_commands};
+        let frame_ms = 16_u32;
+        let mut app = arena_app();
+        app.init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .add_plugins((
+                crate::menu_screen::MenuScreenPlugin,
+                crate::flow::FlowPlugin,
+                crate::arena_fade::ArenaFadePlugin,
+            ))
+            .init_resource::<FixedCommands>()
+            .init_resource::<SimPause>()
+            .init_resource::<exa_ai::freeze::StagingFreeze>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(u64::from(frame_ms)),
+            ));
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::menu_screen::MenuScreen>()
+            .close();
+        {
+            let mut flow = app.world_mut().resource_mut::<crate::flow::Flow>();
+            flow.mode = crate::flow::Mode::Arena;
+            flow.phase = crate::flow::Phase::Playing;
+            flow.menu_open = false;
+        }
+        let mut arena = ArenaMatch::begin(7);
+        arena.state = MatchState::NextFight;
+        arena.screen = Some(Screen::NextRound);
+        app.insert_resource(arena);
+        let mut scene = scene();
+        scene.player_entry = None;
+        app.insert_resource(scene);
+        app.world_mut().spawn(body(1, true, Condition::NORMAL));
+        app.world_mut().spawn(body(2, false, Condition::DEAD));
+        app.update();
+        assert!(app.world().resource::<ArenaEndScreen>().open);
+        let round = app.world().resource::<ArenaMatch>().rounds.round;
+        press_continue(&mut app);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::Enter);
+        // The screen opened over the round; the menu closed and stays closed.
+        assert!(
+            app.world()
+                .resource::<crate::flow::Flow>()
+                .transition_running()
+        );
+        assert!(
+            app.world()
+                .resource::<crate::arena_fade::ArenaStaging>()
+                .round_pending()
+        );
+        assert_eq!(app.world().resource::<ArenaMatch>().rounds.round, round + 1);
+        let spawned = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Messages<SceneCommand>>()
+                .drain()
+                .filter(|c| matches!(c, SceneCommand::Spawn(_)))
+                .count()
+        };
+        spawned(&mut app);
+        // The fade out: the game runs on, nothing is staged.
+        let mut frames = 0;
+        while app.world().resource::<ArenaMatch>().state != MatchState::Fighting {
+            app.update();
+            assert!(!app.world().resource::<ArenaEndScreen>().open);
+            frames += 1;
+            assert!(frames < 100, "the round was never staged");
+            if app.world().resource::<ArenaMatch>().state != MatchState::Fighting {
+                assert_eq!(app.world().resource::<SimPause>().raised(), 0);
+            }
+        }
+        // 600 ms at 16 ms a frame: the 38th frame is past black.
+        assert!((37..=40).contains(&frames), "{frames} frames to black");
+        assert_eq!(spawned(&mut app), 1, "the fresh opponent");
+        // The staging raised the pause; the freeze is held by the screen.
+        assert_eq!(app.world().resource::<SimPause>().raised(), 1);
+        run_fixed_commands(app.world_mut());
+        assert!(
+            app.world()
+                .resource::<exa_ai::freeze::StagingFreeze>()
+                .held()
+        );
+        // Three frames paused, lowered on the screen's second frame after
+        // the callback.
+        for frame in 0..3 {
+            assert_eq!(app.world().resource::<SimPause>().raised(), 1, "{frame}");
+            app.update();
+        }
+        assert_eq!(app.world().resource::<SimPause>().raised(), 0);
+        // The hold and the fade back in: the freeze holds until the close.
+        let mut frames = 0;
+        while app
+            .world()
+            .resource::<crate::flow::Flow>()
+            .transition_running()
+        {
+            run_fixed_commands(app.world_mut());
+            assert!(
+                app.world()
+                    .resource::<exa_ai::freeze::StagingFreeze>()
+                    .frozen()
+            );
+            app.update();
+            frames += 1;
+            assert!(frames < 200, "the screen never closed");
+        }
+        // 1100 ms at 16 ms a frame.
+        assert!((68..=72).contains(&frames), "{frames} frames to the close");
+        run_fixed_commands(app.world_mut());
+        assert!(
+            !app.world()
+                .resource::<exa_ai::freeze::StagingFreeze>()
+                .frozen()
+        );
+        assert_eq!(
+            app.world().resource::<crate::flow::Flow>().phase,
+            crate::flow::Phase::Playing
+        );
+        assert!(!app.world().resource::<ArenaEndScreen>().open);
     }
 
     #[test]

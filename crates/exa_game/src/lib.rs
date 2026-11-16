@@ -5,6 +5,7 @@
 pub mod archive_pass;
 pub mod arena;
 pub mod arena_board;
+pub mod arena_fade;
 pub mod arena_hub;
 pub mod arena_hub_live;
 pub mod arena_ids;
@@ -273,7 +274,11 @@ impl Plugin for GamePlugin {
                 end_menu_screen::EndMenuScreenPlugin,
                 arena_match::ArenaMatchPlugin,
                 arena_hub_live::ArenaHubPlugin,
-                (scene_bodies::SceneBodiesPlugin, arena_live::ArenaLivePlugin),
+                (
+                    scene_bodies::SceneBodiesPlugin,
+                    arena_live::ArenaLivePlugin,
+                    arena_fade::ArenaFadePlugin,
+                ),
                 gui_screens::GameScreensPlugin,
                 item_card::ItemCardPlugin,
                 item_icon_render::ItemIconPlugin,

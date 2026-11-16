@@ -864,7 +864,8 @@ table, Escape close and mouse codes; both screens' paints produce their
 centred text quads in the palette colour under the fade. The running
 game's rebinding and Apply drive them (`exa_game::hw_config`), and
 `exa_game::settings_form` draws them. `transition` is the state machine between game states
-(600/800/300/2000-unit fades, the switch, the hold and the fade back).
+(600/800/300/2000-unit fades, the switch, the hold and the fade back; its step reports the
+second frame after the switch, where the original lowers the pause counter).
 `class_select` lays out the four story portraits and their chosen card,
 and has the picker's hit test and key steps. `dialogue_choices` is the
 reply list's entry measure, hit test, pick, fading colours, rows and

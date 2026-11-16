@@ -1530,6 +1530,11 @@ pub enum Step {
     /// (`exa_ai::freeze`). The practice start and the next fight set it as
     /// they finish their staging, before the session hook.
     FreezeAi,
+    /// The arena's staging callback ran at black: the end menu's next
+    /// round (or tournament round), or the match start the hub's Begin and
+    /// the rematch hold ([`crate::arena_fade`]). The match start changes
+    /// the level, so the screen stays black over its load.
+    ArenaStage(ArenaStage),
     /// Add the practice mode's player role.
     PracticePlayer {
         role: u32,
@@ -1602,6 +1607,34 @@ pub enum Action {
     /// registered mode's creator-cancel hook runs (when its entry has one)
     /// and the flow goes back to the title.
     CreatorCancel,
+    /// The arena end menu's Continue into the next round or the next
+    /// tournament round: the round is staged at black and the session
+    /// plays again.
+    ArenaRound,
+    /// The hub's Begin or the rematch: the match starts at black (its level
+    /// loads behind the screen).
+    ArenaMatchStart,
+}
+
+/// Which arena staging a transition's callback runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArenaStage {
+    /// The end menu's next round, standard or tournament.
+    Round,
+    /// The match start: the held launch goes out.
+    MatchStart,
+}
+
+impl Action {
+    /// The callback is a staging: it raises the pause counter (only while
+    /// it is zero) for the screen to lower two frames later, and sets the
+    /// AI staging freeze the screen's close clears.
+    pub const fn stages(self) -> bool {
+        matches!(
+            self,
+            Action::NextPracticeFight | Action::ArenaRound | Action::ArenaMatchStart
+        )
+    }
 }
 
 /// The running transition: its action, the screen's mode flags and, once
@@ -1645,6 +1678,12 @@ pub struct TransitionFrame {
     pub world_fade_reset: bool,
     /// The screen faded back in and closed this frame.
     pub closed: bool,
+    /// The callback was a staging: the pause counter is raised (when it is
+    /// zero), so the simulation sleeps from here.
+    pub raise_pause: bool,
+    /// The second frame after the callback: the pause counter is lowered
+    /// (when it is above zero).
+    pub lower_pause: bool,
 }
 
 /// What the transition screen reads from the running app each frame.
@@ -2584,15 +2623,21 @@ impl Flow {
             frame.audio_fade = Some(screen.dim);
         }
         frame.alpha = step.alpha;
+        frame.lower_pause = step.lower_pause;
         transition.flags = screen.flags;
         transition.screen = Some(screen);
         self.transition = Some(transition);
         if step.callback {
+            frame.raise_pause = transition.action.stages();
             frame.steps = self.apply(transition.action, now);
-            let changes_level = frame
-                .steps
-                .iter()
-                .any(|step| matches!(step, Step::LoadLevel { .. } | Step::TeardownWorld));
+            let changes_level = frame.steps.iter().any(|step| {
+                matches!(
+                    step,
+                    Step::LoadLevel { .. }
+                        | Step::TeardownWorld
+                        | Step::ArenaStage(ArenaStage::MatchStart)
+                )
+            });
             if changes_level && let Some(running) = self.transition.as_mut() {
                 running.load = Some(LoadWait::default());
             }
@@ -2613,6 +2658,17 @@ impl Flow {
             Action::LeaveToMenuForm => self.leave_to_menu_form(),
             Action::ClassCancel => self.quit_to_menu(),
             Action::CreatorCancel => self.creator_cancel(),
+            // The next round's routine ends with the playing phase.
+            Action::ArenaRound => {
+                self.phase = Phase::Playing;
+                vec![Step::ArenaStage(ArenaStage::Round)]
+            }
+            // Exarust's match start keeps the hub's phase until the arena's
+            // session marks it playing (`arena_live`).
+            Action::ArenaMatchStart => {
+                self.phase = self.saved_phase;
+                vec![Step::ArenaStage(ArenaStage::MatchStart)]
+            }
             Action::Locale { locale, spawn } => {
                 // The end menu and the prelude close, the pending level
                 // loads, and the session plays again.
@@ -4041,6 +4097,10 @@ fn run_transition(
         Option<Res<exa_ui::LoadingStatus>>,
         Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
     ),
+    (mut pause, mut fixed): (
+        Option<ResMut<exa_physics::sim_app::SimPause>>,
+        Option<ResMut<exa_physics::sim_app::FixedCommands>>,
+    ),
 ) {
     if !flow.transition_running() {
         if overlay.0 != 0 {
@@ -4073,6 +4133,23 @@ fn run_transition(
         }
     }
     overlay.0 = frame.alpha;
+    // A staging's callback raises the pause counter while it is zero; the
+    // screen's second frame after the callback lowers it while it is above.
+    if let Some(pause) = pause.as_mut() {
+        if frame.raise_pause && pause.raised() == 0 {
+            pause.raise();
+            debug!("game flow: the staging raised the pause counter");
+        }
+        if frame.lower_pause && pause.raised() > 0 {
+            pause.lower();
+            debug!("game flow: the transition lowered the pause counter");
+        }
+    }
+    // The close clears the AI staging freeze, as the original's screen
+    // clears its byte when the fade back in ends.
+    if frame.closed {
+        exa_ai::freeze::release(fixed.as_deref_mut(), None);
+    }
     for step in &frame.steps {
         debug!("game flow: transition action: {step:?}");
     }
@@ -4706,8 +4783,20 @@ fn apply_steps(
                 request_action(&motions, &mut players, motion, true);
             }
             Step::FreezeAi => {
-                // The staging freeze, posted for the next step.
-                exa_ai::freeze::stage(Some(&mut out.fixed), None);
+                // The staging freeze, posted for the next step: held by the
+                // transition screen it runs under, else counted.
+                if flow.transition_running() {
+                    exa_ai::freeze::stage_held(Some(&mut out.fixed), None);
+                } else {
+                    exa_ai::freeze::stage(Some(&mut out.fixed), None);
+                }
+            }
+            Step::ArenaStage(stage) => {
+                // The arena's staging runs in its own systems this frame
+                // ([`crate::arena_fade`]).
+                if let Some(staging) = out.arena.as_mut() {
+                    staging.fire(stage);
+                }
             }
             Step::ForgetTarget => {
                 // The behaviour reset, before the new opponent exists: the
@@ -5090,6 +5179,8 @@ struct FlowOutputs<'w> {
     /// session start hands the first.
     overlays: Option<ResMut<'w, crate::view_overlay::ViewOverlays>>,
     show_fps: Option<Res<'w, exa_ui::ShowFps>>,
+    /// The arena's held stagings, which a transition's callback fires.
+    arena: Option<ResMut<'w, crate::arena_fade::ArenaStaging>>,
 }
 
 /// The resources the story start's and the tips' steps write.
@@ -8114,6 +8205,70 @@ mod tests {
             flow.transition_tick(screen_input(2800), 0),
             TransitionFrame::default()
         );
+    }
+
+    /// A staging's callback (the arena's next round) raises the pause and
+    /// fires its stage with the playing phase; the screen's second frame
+    /// after it lowers the pause, and no other frame does. A callback that
+    /// is not a staging raises nothing.
+    #[test]
+    fn a_staging_callback_raises_the_pause_for_two_frames() {
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        flow.transition(Action::ArenaRound, false);
+        assert_eq!(flow.phase, Phase::Transition);
+        flow.transition_tick(screen_input(1000), 0);
+        let black = flow.transition_tick(screen_input(1601), 0);
+        assert!(black.raise_pause && !black.lower_pause);
+        assert_eq!(black.steps, vec![Step::ArenaStage(ArenaStage::Round)]);
+        assert_eq!(flow.phase, Phase::Playing);
+        let lowers: Vec<bool> = [1610, 1620, 1630, 1640]
+            .into_iter()
+            .map(|clock| flow.transition_tick(screen_input(clock), 0).lower_pause)
+            .collect();
+        assert_eq!(lowers, [false, false, true, false]);
+
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        flow.transition(Action::Revive, false);
+        flow.transition_tick(screen_input(1000), 0);
+        assert!(!flow.transition_tick(screen_input(1601), 0).raise_pause);
+        assert!(Action::ArenaMatchStart.stages() && Action::NextPracticeFight.stages());
+    }
+
+    /// The match start holds the screen black over its level change, as a
+    /// level load does, and gives the phase back.
+    #[test]
+    fn the_match_start_holds_the_screen_over_its_load() {
+        let mut flow = Flow {
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        flow.transition(Action::ArenaMatchStart, true);
+        flow.transition_tick(screen_input(1000), 0);
+        let black = flow.transition_tick(screen_input(1601), 0);
+        assert_eq!(black.steps, vec![Step::ArenaStage(ArenaStage::MatchStart)]);
+        assert!(black.stop_music);
+        assert_eq!(flow.phase, Phase::Playing);
+        // Loading: the screen stays at black and its frames wait.
+        let mut loading = screen_input(5000);
+        loading.loading = true;
+        for _ in 0..5 {
+            let frame = flow.transition_tick(loading, 0);
+            assert_eq!(frame.alpha, 255);
+            assert!(!frame.lower_pause);
+        }
+        let lowers: Vec<bool> = [5010, 5020, 5030]
+            .into_iter()
+            .map(|clock| flow.transition_tick(screen_input(clock), 0).lower_pause)
+            .collect();
+        assert_eq!(lowers, [false, false, true]);
     }
 
     /// The level exit's portal bit gives the screen its long hold: a 2000 ms
