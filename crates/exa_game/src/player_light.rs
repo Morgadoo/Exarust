@@ -288,6 +288,69 @@ mod tests {
         assert!(!switched_on([true], [false, false], true));
     }
 
+    /// The equipment finalisers refresh the player's light switch: a body's
+    /// own finaliser only when the body is the player, a view's whatever its
+    /// body. Exarust re-runs the switch on a change of the player's own
+    /// equipment, and the switch reads nothing but the player's equipment,
+    /// so another body's change leaves the light as the player's equipment
+    /// says (the view finaliser's refresh for another body changes
+    /// nothing), and the player's own change switches it.
+    #[test]
+    fn only_the_players_equipment_switches_the_light() {
+        // An item whose body section sees in the dark.
+        let mut body = vec![0u8; 0x220];
+        body[0x214] = exa_formats::objdb::Burden::SEES_IN_THE_DARK;
+        let mut section = Vec::new();
+        section.extend_from_slice(&0x1000u32.to_le_bytes());
+        section.extend_from_slice(&((8 + body.len()) as u32).to_le_bytes());
+        section.extend_from_slice(&body);
+        let mut file = Vec::new();
+        file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
+        for word in [10u32, 0, 0, section.len() as u32] {
+            file.extend_from_slice(&word.to_le_bytes());
+        }
+        file.extend_from_slice(&[0; 16]);
+        file.extend_from_slice(&section);
+        let db = exa_formats::rdb::Database::parse(&file).unwrap();
+        let catalogue = ItemCatalogue::of_database(&db);
+        assert!(catalogue.kind(10).is_some_and(|k| k.sight));
+        let mut app = App::new();
+        app.insert_resource(catalogue)
+            .add_systems(Update, switch_player_light);
+        let player = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), Possessions::default()))
+            .id();
+        let other = app.world_mut().spawn(Possessions::default()).id();
+        let lit = |app: &mut App| {
+            app.world_mut()
+                .query_filtered::<(), With<PlayerLight>>()
+                .iter(app.world())
+                .count()
+        };
+        let wear = |app: &mut App, body: Entity, ids: &[u32]| {
+            app.world_mut().get_mut::<Possessions>(body).unwrap().worn = ids
+                .iter()
+                .map(|&id| exa_formats::characters::ItemRef::new(id, 0))
+                .collect();
+        };
+        app.update();
+        assert_eq!(lit(&mut app), 0);
+        wear(&mut app, other, &[10]);
+        app.update();
+        assert_eq!(lit(&mut app), 0, "another body's helm is not the player's");
+        wear(&mut app, player, &[10]);
+        app.update();
+        assert_eq!(lit(&mut app), 1);
+        wear(&mut app, other, &[]);
+        app.update();
+        assert_eq!(lit(&mut app), 1, "the player's own helm keeps it on");
+        wear(&mut app, player, &[]);
+        app.update();
+        assert_eq!(lit(&mut app), 0);
+    }
+
     /// From 0.01 it gains 0.0005 per millisecond, so a 16 ms frame adds
     /// 0.008; it stops at 0.4, which it reaches in 780 ms.
     #[test]

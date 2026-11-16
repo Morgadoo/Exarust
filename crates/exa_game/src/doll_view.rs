@@ -1662,6 +1662,12 @@ fn equip_dropped(
                 if let Some(doll) = doll.as_deref_mut() {
                     show_on_view(doll, &mut icons, catalogue, drop.id, flags);
                 }
+                // The world body the view stands for loses its coreless
+                // mark (no armour pass runs: the crystal is not worn).
+                if plan.clear_mark {
+                    commands
+                        .queue(move |world: &mut World| crate::equip::core_shown(world, player));
+                }
                 info!(
                     "character view: the core crystal {:#x} is shown over {:?}'s figure",
                     drop.id, player
@@ -2729,7 +2735,15 @@ mod tests {
             .insert_resource(game)
             .add_message::<DollDrop>()
             .init_resource::<crate::thaum::live::FrameEffectRoll>()
-            .add_systems(Update, (bind_shown_item, equip_dropped).chain());
+            .add_systems(
+                Update,
+                (
+                    bind_shown_item,
+                    equip_dropped,
+                    crate::equip::refresh_worn_specials,
+                )
+                    .chain(),
+            );
         let carried = |x| possession::Carried {
             id: al,
             flags: 0x0a_0000,
@@ -2750,8 +2764,23 @@ mod tests {
                         ..Default::default()
                     },
                 ),
+                {
+                    // A golem without its core: the armour pass's mark.
+                    let mut fighter = exa_combat::Fighter::default();
+                    fighter.stats.golem_core = Some(al);
+                    fighter.stats.rules.0 = crate::equip::CORELESS | 0x40;
+                    fighter
+                },
             ))
             .id();
+        let rules = |app: &App| {
+            app.world()
+                .get::<exa_combat::Fighter>(body)
+                .unwrap()
+                .stats
+                .rules
+                .0
+        };
         let scene = |body| DollScene {
             image: Handle::default(),
             camera: Entity::PLACEHOLDER,
@@ -2810,6 +2839,11 @@ mod tests {
         let p = app.world().get::<Possessions>(body).unwrap();
         assert_eq!(p.carried.iter().filter(|c| c.id == al).count(), 1);
         assert!(p.worn.is_empty(), "the record's lists do not take the core");
+        // The drop clears the body's coreless mark, and the pack's change
+        // runs no armour pass that would set it again.
+        assert_eq!(rules(&app), 0x40);
+        app.update();
+        assert_eq!(rules(&app), 0x40);
         // A second crystal is refused while one is shown.
         drop(&mut app);
         let p = app.world().get::<Possessions>(body).unwrap();

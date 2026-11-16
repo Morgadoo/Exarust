@@ -320,7 +320,7 @@ fn a_raised_corpse_gets_up_and_command_dead_lays_it_down() {
     app.update();
     assert!(app.world().get::<Animator>(body).is_some());
     app.world_mut()
-        .run_system_cached_with(crate::mind::runtime::lay_down, body)
+        .run_system_cached_with(crate::mind::runtime::lay_down, (body, "command dead"))
         .unwrap();
     app.world_mut().flush();
     assert_eq!(

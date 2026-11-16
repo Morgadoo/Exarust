@@ -98,7 +98,9 @@ pub fn refresh_encumbrance(
 ///   wears its core item, an item without an apparel section
 ///   ([`exa_formats::character_stats::golem_rules`]).
 ///
-/// A body's first frame keeps what its spawn set.
+/// A body's first frame keeps what its spawn set. A change that leaves the
+/// worn list and the out set's items as the last pass saw them (an item
+/// taken from or given to the carried list) runs no pass ([`ArmourPassSeen`]).
 #[allow(clippy::type_complexity)]
 pub fn refresh_worn_specials(
     mut commands: Commands,
@@ -110,6 +112,7 @@ pub fn refresh_worn_specials(
             &mut exa_combat::Fighter,
             Option<&mut crate::item_effects::WornEffects>,
             Option<&mut crate::thaum::cast::PowerCaster>,
+            Option<&mut ArmourPassSeen>,
         ),
         Changed<Possessions>,
     >,
@@ -117,7 +120,19 @@ pub fn refresh_worn_specials(
     let Some(catalogue) = catalogue.as_deref() else {
         return;
     };
-    for (entity, possessions, mut fighter, effects, caster) in &mut bodies {
+    for (entity, possessions, mut fighter, effects, caster, seen) in &mut bodies {
+        let now = ArmourPassSeen::of(&possessions);
+        match seen {
+            Some(mut seen) => {
+                if *seen == now {
+                    continue;
+                }
+                *seen = now;
+            }
+            None => {
+                commands.entity(entity).insert(now);
+            }
+        }
         if possessions.is_added() {
             continue;
         }
@@ -200,6 +215,94 @@ pub fn refresh_worn_specials(
              focus bonus {}",
             rules.0, specials.second_wind, specials.mind_ward, specials.focus_regen
         );
+    }
+}
+
+/// What the armour pass last saw of a body's equipment: its worn items
+/// (ids and flags) and the out set's two item ids. The original runs the
+/// pass from the equipment jobs' finalisers and the re-dress, not on every
+/// change of the record's lists, so a change of the carried list alone runs
+/// none, and a mark written straight onto the body between two passes (the
+/// core crystal dropped on a golem's figure clears its coreless mark
+/// without wearing it, [`core_shown`]) stands until the body's next
+/// equipment change.
+#[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
+pub struct ArmourPassSeen {
+    worn: Vec<(u32, u32)>,
+    out: [u32; 2],
+}
+
+impl ArmourPassSeen {
+    pub fn of(p: &Possessions) -> Self {
+        Self {
+            worn: p.worn.iter().map(|w| (w.id, w.flags)).collect(),
+            out: p.out.map(|h| h.id),
+        }
+    }
+}
+
+/// The coreless mark: the body rule bit a golem race carries while it wears
+/// no core crystal ([`exa_formats::character_stats::BodyRules::NO_RED_REGENERATION`]).
+/// The armour pass sets it on a golem race and clears it for a worn core
+/// ([`exa_formats::character_stats::golem_rules`]); it blocks the golem's
+/// wake ([`exa_ai::golem::WAKE_EXEMPT`], the same bit), its rise and its
+/// red regeneration.
+pub const CORELESS: u32 = exa_formats::character_stats::BodyRules::NO_RED_REGENERATION;
+
+/// The glow parameter of a golem's skin material the take-off fades out.
+pub const GLOW_PARAMETER: &str = "go";
+
+/// A core crystal dropped on a golem's figure and shown over it: the body's
+/// coreless mark is cleared at once. The record's lists do not take the
+/// crystal, so no armour pass runs; the mark stays clear until the body's
+/// next equipment change runs one ([`ArmourPassSeen`]). Run on the frame's
+/// world (a queued command of the view's drop).
+pub fn core_shown(world: &mut World, body: Entity) {
+    let Some(mut fighter) = world.get_mut::<exa_combat::Fighter>(body) else {
+        return;
+    };
+    let had = fighter.stats.rules.0 & CORELESS != 0;
+    fighter.stats.rules.0 &= !CORELESS;
+    info!("core shown over {body:?}: coreless mark cleared (it was {had})");
+}
+
+/// The core crystal shown over a golem's figure dragged off it: the body's
+/// coreless mark is set, the glow of its skin material fades to 0, and a
+/// body that does not rest as a statue (its brain's statue byte) collapses
+/// (as a lethal wound starts a collapse, [`crate::mind::runtime::lay_down`]),
+/// posted for the next simulation step as the frame's other writes to
+/// simulation data are. Run on the frame's world (a queued command of the
+/// view's release). [Exarust gap: no live skin material takes the glow
+/// fade, which is logged.]
+pub fn core_taken_off(world: &mut World, body: Entity) {
+    if let Some(mut fighter) = world.get_mut::<exa_combat::Fighter>(body) {
+        fighter.stats.rules.0 |= CORELESS;
+    }
+    let statue = world
+        .get::<exa_ai::brain::Npc>(body)
+        .is_some_and(|npc| npc.statue);
+    info!(
+        "core taken off {body:?}: coreless mark set, skin glow `{GLOW_PARAMETER}` to 0 \
+         (not faded live){}",
+        if statue {
+            "; a resting statue does not collapse"
+        } else {
+            "; it collapses"
+        }
+    );
+    if statue {
+        return;
+    }
+    const WHY: &str = "core taken off";
+    match world.get_resource_mut::<exa_physics::sim_app::FixedCommands>() {
+        Some(mut fixed) => fixed.run(crate::mind::runtime::lay_down, (body, WHY)),
+        None => {
+            if let Err(e) =
+                world.run_system_cached_with(crate::mind::runtime::lay_down, (body, WHY))
+            {
+                warn!("{WHY}: {e}");
+            }
+        }
     }
 }
 

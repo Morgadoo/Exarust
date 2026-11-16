@@ -990,6 +990,12 @@ fn release_figure(
                 Some(at) => p.worn.remove(at).flags,
                 None => shown.map_or(drag.flags, |s| s.flags),
             };
+            // The world body the view stands for is marked coreless, its
+            // glow fades and it collapses unless it rests as a statue.
+            if plan.set_mark {
+                commands
+                    .queue(move |world: &mut World| crate::equip::core_taken_off(world, player));
+            }
             if let Some(doll) = doll.as_deref_mut() {
                 crate::doll_view::show_on_view(doll, &mut icons, catalogue, 0, 0);
             }
@@ -1393,6 +1399,116 @@ mod tests {
         });
         app.update();
         assert!((crate::view_trust::marker_trust(app.world(), body).0 - 4.8).abs() < 1e-6);
+    }
+
+    /// The core crystal shown over a golem's figure, dragged off into the
+    /// pack: it leaves the worn list and the pack takes it, the view shows
+    /// nothing, the body is marked coreless and collapses; a golem resting
+    /// as a statue is marked but does not collapse.
+    #[test]
+    fn the_shown_core_taken_off_marks_the_golem_and_lays_it_down() {
+        use bevy::math::Affine3A;
+        use exa_physics::body::{PartSetup, Ragdoll};
+        let al = possession::crystal::AL;
+        let run = |statue: bool| {
+            let mut app = App::new();
+            app.init_resource::<GameScreens>()
+                .init_resource::<PanelIcons>()
+                .init_resource::<DollItems>()
+                .init_resource::<FigureDrag>()
+                .init_resource::<InventoryDoll>()
+                .add_message::<FigureRelease>()
+                .add_systems(Update, release_figure);
+            let part = |bone, parent, at: Vec3| PartSetup {
+                bone,
+                entity: Entity::PLACEHOLDER,
+                parent,
+                world: Affine3A::from_translation(at),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            };
+            let ragdoll = Ragdoll::new(&[
+                part(1, None, Vec3::new(0.0, 1.0, 0.0)),
+                part(2, Some(0), Vec3::new(0.0, 1.3, 0.0)),
+            ])
+            .with_drive();
+            let mut fighter = exa_combat::Fighter::default();
+            fighter.stats.golem_core = Some(al);
+            fighter.stats.rules.0 = 0x40;
+            let mut npc = exa_ai::brain::Npc::new([0.5; 4]);
+            npc.statue = statue;
+            let body = app
+                .world_mut()
+                .spawn((
+                    Possessions {
+                        worn: vec![ItemRef::new(al, 0x0a_0000)],
+                        ..Default::default()
+                    },
+                    fighter,
+                    npc,
+                    exa_combat::Condition::NORMAL,
+                    exa_anim::Animator::new("Default", "Stand"),
+                    ragdoll,
+                ))
+                .id();
+            app.world_mut().resource_mut::<GameScreens>().inventory_body = Some(body);
+            app.world_mut().resource_mut::<InventoryDoll>().shown =
+                Some(crate::doll_view::ShownItem {
+                    id: al,
+                    flags: 0x0a_0000,
+                    icon: 7,
+                });
+            let drag = PanelDrag {
+                source: Some(Panel::Figure),
+                icon: 7,
+                grab: Cell::new(0, 0),
+                id: al,
+                flags: 0x0a_0000,
+                bulk: 0,
+            };
+            app.world_mut().write_message(FigureRelease {
+                drag,
+                landed: Some((Panel::PlayerPack, Cell::new(0, 0), 4, 1.0)),
+                added: true,
+            });
+            app.update();
+            let world = app.world();
+            let p = world.get::<Possessions>(body).unwrap();
+            assert!(p.worn.is_empty());
+            assert_eq!(
+                p.carried
+                    .iter()
+                    .map(|c| (c.id, c.flags))
+                    .collect::<Vec<_>>(),
+                [(al, 0x0a_0000)]
+            );
+            assert_eq!(world.resource::<InventoryDoll>().shown, None);
+            (
+                world
+                    .get::<exa_combat::Fighter>(body)
+                    .unwrap()
+                    .stats
+                    .rules
+                    .0,
+                *world.get::<exa_combat::Condition>(body).unwrap(),
+            )
+        };
+        assert_eq!(
+            run(false),
+            (
+                crate::equip::CORELESS | 0x40,
+                exa_combat::Condition::COLLAPSING
+            )
+        );
+        assert_eq!(
+            run(true),
+            (crate::equip::CORELESS | 0x40, exa_combat::Condition::NORMAL)
+        );
     }
 
     #[test]

@@ -1101,7 +1101,9 @@ pub fn tick_minds(
             MindAction::LayDown(target) => {
                 if let Some(target) = entity_of(target) {
                     commands.queue(move |world: &mut World| {
-                        if let Err(e) = world.run_system_cached_with(lay_down, target) {
+                        if let Err(e) =
+                            world.run_system_cached_with(lay_down, (target, "command dead"))
+                        {
                             warn!("command dead: {e}");
                         }
                     });
@@ -1295,9 +1297,12 @@ pub fn raise_corpse(
 /// lethal wound starts a collapse ([`exa_combat::collapse::start_collapse`]
 /// at its energy), and its dying tick then lets it die. The original also
 /// clears a body word beside it whose use is not traced (not reproduced).
+/// The same collapse takes a golem whose core crystal was taken off its
+/// figure (`crate::equip::core_taken_off`); `why` names the caller in the
+/// log.
 #[allow(clippy::type_complexity)]
 pub fn lay_down(
-    In(entity): In<Entity>,
+    In((entity, why)): In<(Entity, &'static str)>,
     mut commands: Commands,
     mut bodies: Query<(
         &mut Condition,
@@ -1311,7 +1316,7 @@ pub fn lay_down(
         return;
     };
     let Some(mut anim) = anim else {
-        info!("command dead: {entity:?} has no clip player yet; it does not lie down");
+        info!("{why}: {entity:?} has no clip player yet; it does not lie down");
         return;
     };
     let energy = body.drive.as_ref().map_or(0.0, |d| d.energy);
@@ -1324,7 +1329,7 @@ pub fn lay_down(
         energy,
         hands.map(Mut::into_inner),
     ) {
-        info!("command dead: {entity:?} is collapsing or dead already");
+        info!("{why}: {entity:?} is collapsing or dead already");
         return;
     }
     match flags {
@@ -1336,7 +1341,7 @@ pub fn lay_down(
     commands
         .entity(entity)
         .insert(exa_combat::collapse::Collapse::default());
-    info!("command dead: the raised body {entity:?} lies down again (energy {energy:.3})");
+    info!("{why}: {entity:?} lies down (energy {energy:.3})");
 }
 
 /// Ends the first entry `id` on `body` that `matches` (the original's
