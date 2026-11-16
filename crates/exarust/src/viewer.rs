@@ -52,16 +52,43 @@ impl Plugin for ViewerPlugin {
                     apply_level_change.after(exa_game::save_live::post_loaded_player)
                         .after(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
                         .after(exa_game::save_live::SaveLiveSystems::SavedSection),
-                    continue_level.before(exa_game::crystal_drain::collect_sources).after(finish_collision).run_if(resource_exists::<PendingLevel>),
-                    finish_collision.before(exa_script::run_conversations).after(arena_exit).after(exa_game::body_inventory::activate_cores).after(exa_game::save_live::bench_the_manager).after(shove_props_at_frame).after(exa_game::scene_bodies::apply_scene_commands).run_if(resource_exists::<PendingCollision>),
-                    finish_dressing.before(exa_game::zone_scripts::debug_exit).before(exa_game::new_game::start_on_load).before(exa_game::spectate::start_on_load).after(start_fight).after(kinesis_pick_at_frame).after(scripted_level_changes).after(exa_game::game_event_live::scripted_game_events).run_if(resource_exists::<PendingDressing>),
-                    finish_lighting.before(exa_game::game_event_live::scripted_game_events).after(fell_player).after(shove_at_frame).run_if(resource_exists::<PendingLighting>),
+                    continue_level
+                        .before(exa_game::crystal_drain::collect_sources)
+                        .after(finish_collision)
+                        .run_if(resource_exists::<PendingLevel>),
+                    finish_collision
+                        .before(exa_script::run_conversations)
+                        .after(arena_exit)
+                        .after(exa_game::body_inventory::activate_cores)
+                        .after(exa_game::save_live::bench_the_manager)
+                        .after(shove_props_at_frame)
+                        .after(exa_game::scene_bodies::apply_scene_commands)
+                        .run_if(resource_exists::<PendingCollision>),
+                    finish_dressing
+                        .before(exa_game::zone_scripts::debug_exit)
+                        .before(exa_game::new_game::start_on_load)
+                        .before(exa_game::spectate::start_on_load)
+                        .after(start_fight)
+                        .after(kinesis_pick_at_frame)
+                        .after(scripted_level_changes)
+                        .after(exa_game::game_event_live::scripted_game_events)
+                        .run_if(resource_exists::<PendingDressing>),
+                    finish_lighting
+                        .before(exa_game::game_event_live::scripted_game_events)
+                        .after(fell_player)
+                        .after(shove_at_frame)
+                        .run_if(resource_exists::<PendingLighting>),
                 )
-                    .before(exa_anim::AnimSystems).in_set(exa_physics::FramePhase::Session),
+                    .before(exa_anim::AnimSystems)
+                    .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 Update,
-                (apply_player_placement.before(exa_game::flow::reset_level_state).in_set(exa_physics::FramePhase::Session).after(exa_game::save_live::follow_the_view), trace_placed_player.in_set(exa_physics::FramePhase::Capture))
+                (apply_player_placement
+                    .before(exa_game::flow::reset_level_state)
+                    .in_set(exa_physics::FramePhase::Session)
+                    .after(exa_game::save_live::follow_the_view), trace_placed_player
+                    .in_set(exa_physics::FramePhase::Capture))
                     .chain()
                     .after(finish_lighting),
             )
@@ -69,7 +96,8 @@ impl Plugin for ViewerPlugin {
                 Update,
                 scripted_level_changes.after(finish_lighting)
                     .run_if(|options: Res<Options>| !options.level_changes.is_empty())
-                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown).in_set(exa_physics::FramePhase::Session),
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                        .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 PreUpdate,
@@ -82,29 +110,76 @@ impl Plugin for ViewerPlugin {
             .add_systems(
                 Update,
                 (
-                    fly_camera.in_set(exa_physics::FramePhase::Camera).before(exa_game::player::chase_camera),
-                    screenshot_after_frames.in_set(exa_physics::FramePhase::Capture),
+                    fly_camera
+                        .in_set(exa_physics::FramePhase::Camera)
+                        .before(exa_game::player::chase_camera),
+                    screenshot_after_frames
+                    .in_set(exa_physics::FramePhase::Capture),
                     (
-                        fell_arena_opponents.in_set(exa_physics::FramePhase::Session).before(exa_ai::brain::forget_removed).after(continue_level).after(hurt_casters),
-                        fell_undead_opponent.in_set(exa_physics::FramePhase::Session),
-                        fell_player.in_set(exa_physics::FramePhase::Session).after(fell_undead_opponent),
-                        fell_nearest.in_set(exa_physics::FramePhase::Session).before(exa_game::zone_scripts::check_stay_zones).after(finish_dressing).after(exa_game::script_cast::sync_contacts),
+                        fell_arena_opponents
+                            .in_set(exa_physics::FramePhase::Session)
+                            .before(exa_ai::brain::forget_removed)
+                            .after(continue_level)
+                            .after(hurt_casters),
+                        fell_undead_opponent
+                        .in_set(exa_physics::FramePhase::Session),
+                        fell_player
+                            .in_set(exa_physics::FramePhase::Session)
+                            .after(fell_undead_opponent),
+                        fell_nearest
+                            .in_set(exa_physics::FramePhase::Session)
+                            .before(exa_game::zone_scripts::check_stay_zones)
+                            .after(finish_dressing)
+                            .after(exa_game::script_cast::sync_contacts),
                     ),
-                    give_items.in_set(exa_physics::FramePhase::Session).before(exa_game::crystal_drain::collect_sources).before(exa_game::golem_alarm::return_from_alarm).after(exa_game::save_live::sync_before_level_change),
-                    equip_debug_shields.in_set(exa_physics::FramePhase::Session).before(exa_game::equip::apply_pending_hands).after(exa_game::equip::redress_bodies),
-                    shove_at_frame.in_set(exa_physics::FramePhase::Session),
-                    shove_props_at_frame.in_set(exa_physics::FramePhase::Session).after(exa_game::spectate::spectate_clicks).after(finish_dressing),
-                    kinesis_pick_at_frame.in_set(exa_physics::FramePhase::Session).before(exa_game::spectate::spectate_clicks).after(finish_lighting),
-                    start_fight.in_set(exa_physics::FramePhase::Session).before(exa_game::script_cast::sync_contacts).after(finish_lighting),
-                    launch_arena_match.in_set(exa_physics::FramePhase::Session).before(exa_game::arena_fade::hold_match_launches).after(finish_dressing),
-                    arena_exit.in_set(exa_physics::FramePhase::Session).before(exa_game::save_live::sync_before_level_change).before(exa_game::load_reset::reset_on_level_change).after(launch_arena_match),
-                    spawn_spirit_bodies.in_set(exa_physics::FramePhase::Session).before(exa_game::scene_bodies::apply_scene_commands).after(exa_game::torch::lay_floor_torch),
-                    spawn_summoned_demons.in_set(exa_physics::FramePhase::Session).before(exa_game::save_live::post_loaded_player).after(continue_level),
-                    hurt_casters.in_set(exa_physics::FramePhase::Session).after(exa_game::golem_alarm::restore_saved_alarm),
+                    give_items
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::crystal_drain::collect_sources)
+                        .before(exa_game::golem_alarm::return_from_alarm)
+                        .after(exa_game::save_live::sync_before_level_change),
+                    equip_debug_shields
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::equip::apply_pending_hands)
+                        .after(exa_game::equip::redress_bodies),
+                    shove_at_frame
+                    .in_set(exa_physics::FramePhase::Session),
+                    shove_props_at_frame
+                        .in_set(exa_physics::FramePhase::Session)
+                        .after(exa_game::spectate::spectate_clicks)
+                        .after(finish_dressing),
+                    kinesis_pick_at_frame
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::spectate::spectate_clicks)
+                        .after(finish_lighting),
+                    start_fight
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::script_cast::sync_contacts)
+                        .after(finish_lighting),
+                    launch_arena_match
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::arena_fade::hold_match_launches)
+                        .after(finish_dressing),
+                    arena_exit
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::save_live::sync_before_level_change)
+                        .before(exa_game::load_reset::reset_on_level_change)
+                        .after(launch_arena_match),
+                    spawn_spirit_bodies
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::scene_bodies::apply_scene_commands)
+                        .after(exa_game::torch::lay_floor_torch),
+                    spawn_summoned_demons
+                        .in_set(exa_physics::FramePhase::Session)
+                        .before(exa_game::save_live::post_loaded_player)
+                        .after(continue_level),
+                    hurt_casters
+                        .in_set(exa_physics::FramePhase::Session)
+                        .after(exa_game::golem_alarm::restore_saved_alarm),
                 ),
             )
             // After the hand's own let-go of what it does not hold.
-            .add_systems(PostUpdate, poke_mechanisms_at_frame.in_set(exa_physics::FramePostPhase::Prepare));
+            .add_systems(PostUpdate, poke_mechanisms_at_frame
+                .in_set(exa_physics::FramePostPhase::Prepare));
     }
 }
 

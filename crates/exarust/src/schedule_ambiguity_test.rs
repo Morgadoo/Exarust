@@ -172,9 +172,10 @@ fn pairs_of(app: &mut App, label: InternedScheduleLabel) -> Vec<Pair> {
     let Some(mut schedule) = world.resource_mut::<Schedules>().remove(label) else {
         return Vec::new();
     };
-    schedule
-        .initialize(world)
-        .unwrap_or_else(|e| panic!("schedule {label:?} does not build: {e:?}"));
+    if let Err(e) = schedule.initialize(world) {
+        let why = e.to_string(schedule.graph(), world);
+        panic!("schedule {label:?} does not build: {why}");
+    }
     let names: std::collections::HashMap<_, String> = schedule
         .systems()
         .expect("initialized")
