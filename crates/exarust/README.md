@@ -37,7 +37,8 @@ through 2^32 frames, and the output stream's drop at exit waited 80-125 s for
 it (`EXA_EXIT_TRACE=1` traces the exit, `exa_physics::exit_trace`). It grows into
 the full game as `exa_game` gains modes (see `docs/PLAN.md`). `--frames n`
 without `--screenshot` ends a run after n frames from the end of the load
-(a grid quadrant's game then exits). The debug
+(a grid quadrant's game then exits). With `--screenshot` the run ends once the shot is
+saved (after at most 600 more frames). The debug
 flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--fixed-frames`, `--sim-speed`, `--pause-at-tick`, `--pause-on-stretch`,
 `--pause-on-hit`, `--pause-after-jet`, `--pause-after-collapse`, `--press`,

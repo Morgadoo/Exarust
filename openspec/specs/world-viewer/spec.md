@@ -447,3 +447,10 @@ With `--exit-when-done` and no `--restart`, the grid host SHALL exit once every 
 #### Scenario: Four scenes with their own frame counts
 - **WHEN** a grid runs four scenes with `--frames` and `--exit-when-done`
 - **THEN** the host exits once the last of the four games exits, without a screenshot
+
+### Requirement: Screenshot run ends after the save
+A `--screenshot` run SHALL end once the shot has been captured and written, and SHALL end with a warning when no shot has arrived 600 frames after it was asked for.
+
+#### Scenario: A fast offscreen run
+- **WHEN** `exarust play arena --offscreen f.bin --frames 300 --screenshot s.png` runs at several hundred frames a second
+- **THEN** s.png is written before the run exits
