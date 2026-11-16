@@ -124,6 +124,15 @@ fn watch() {
     }
 }
 
+/// Logs the threads still alive (with the trace on): at `main`'s return,
+/// the ones the process's exit handlers will run beside. A graphics
+/// driver's own threads there mean its device outlived the renderer (F567).
+pub fn report_live_threads() {
+    if enabled() {
+        report_threads();
+    }
+}
+
 /// Every thread's name, state and kernel wait channel (from `/proc`).
 fn report_threads() {
     let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {

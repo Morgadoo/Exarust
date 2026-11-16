@@ -323,6 +323,11 @@ impl ContentRequests {
     /// The stream's main-thread pump: runs the completions and keeps the
     /// streamed characters' bodies it hands over for the level's spawn.
     pub fn pump(&self) {
+        if exa_physics::job_wait::waits() {
+            // A repeatable run: what was posted is built before the pump,
+            // so it lands in the frame after its post whatever the pace.
+            self.worker.wait_idle();
+        }
         let pumped = self.worker.pump();
         if pumped.added.is_empty() {
             return;

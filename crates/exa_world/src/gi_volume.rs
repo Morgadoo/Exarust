@@ -20,7 +20,7 @@ use bevy::camera::primitives::Frustum;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy::transform::TransformSystems;
 use exa_physics::voxel::{self, Bounds};
 use exa_render::gi::{
@@ -1184,7 +1184,7 @@ fn follow_camera(
 ) {
     let Some(mut source) = source else { return };
     if let SourceInputs::Collecting(task) = &mut source.inputs {
-        let Some(inputs) = block_on(poll_once(task)) else {
+        let Some(inputs) = exa_physics::job_wait::poll(task) else {
             return;
         };
         info!(
@@ -1205,7 +1205,7 @@ fn follow_camera(
     let mut active = block.as_ref().map(|b| b.index);
     let mut building = None;
     if let Some(mut build) = build {
-        match block_on(poll_once(&mut build.task)) {
+        match exa_physics::job_wait::poll(&mut build.task) {
             Some(built) => {
                 commands.remove_resource::<GiBuild>();
                 info!(

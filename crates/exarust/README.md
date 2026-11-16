@@ -29,7 +29,7 @@ quadrants, each a separate game in a child process started with
 drawing into an image that is read back each frame into a shared-memory
 file, and input arriving on standard input. The debug screenshots
 (`--screenshot`, `--searcher-shots`) save that image there
-(`exa_game::debug_shot`), since the child has no window to shoot. The window's four cameras each
+(`exa_game::debug_shot`), since the child has no window to shoot. With `--fixed-frames` the child reads its frames back in lockstep (the render world waits for the GPU at each frame's end) and `EXA_OFFSCREEN_SHOTS=F1,F2` saves those frames past the loading screen as `<frame file>-fNNNNN.png`, so a runner's shots are the exact frames. `--frame-digest <file.csv>` (`src/frame_digest.rs`) hashes each frame's picture inputs, to find where two fixed-frame runs part. The window's four cameras each
 have a viewport a quarter of its size, recomputed on resize, as in Bevy's
 split-screen example. The host launches the games one at a time against
 `nvidia-smi`'s free memory and forwards input to the quadrant last

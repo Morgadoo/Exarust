@@ -30,7 +30,7 @@ use std::collections::{HashSet, VecDeque};
 
 use exa_render::material::ExaMaterial;
 
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 
 use crate::Game;
 use crate::model::{self, ModelCache};
@@ -208,7 +208,7 @@ pub fn run_texture_loader(
     // Collect the oldest decode only, so the uploads stay in request order;
     // a finished decode behind it waits its turn.
     while let Some((_, task)) = loader.decoding.front_mut() {
-        let Some(decoded) = block_on(poll_once(task)) else {
+        let Some(decoded) = exa_physics::job_wait::poll(task) else {
             break;
         };
         let (request, _) = loader.decoding.pop_front().expect("a front task");
