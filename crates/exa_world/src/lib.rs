@@ -2141,12 +2141,24 @@ impl LevelLoad {
                                     .collect(),
                             );
                             commands.insert_resource(level);
+                            // The scene is in grid mode: the simulation's
+                            // grids take its size, its sector the grid step.
+                            commands.insert_resource(exa_physics::SceneGrid::Grid(
+                                exa_physics::sector::GridShape::of_scene(
+                                    g.width as i32,
+                                    g.height as i32,
+                                    Vec3::ZERO,
+                                ),
+                            ));
                             grid::GridBuild::new(self.root, Some(rooms))
                         });
                         build.step(commands, loader, g, budget)
                     }
                     None => {
                         commands.remove_resource::<room_view::LevelRooms>();
+                        // No grid chunk: the original's sector takes the
+                        // all-pairs step.
+                        commands.insert_resource(exa_physics::SceneGrid::AllPairs);
                         true
                     }
                 };

@@ -74,13 +74,15 @@ const EXCESSIVE_PUSH2: f32 = 25_600.0;
 const MAX_WEIGHT: f32 = 1.0;
 /// Points a pair keeps.
 const POINTS: usize = 4;
-/// Depth (cm) a pair's point may keep before the pair pass corrects it.
-const SLOP: f32 = 0.01;
-/// The pair friction's limit is (0.01 + 0.99·n_y²)·μ_A·μ_B (cm² a tick²);
-/// a slip it damps loses a hundredth of the limit of itself.
-const FLAT_FRICTION: f32 = 0.01;
-const STEEP_FRICTION: f32 = 0.99;
-const SLIDE: f32 = 0.01;
+/// Depth (cm) a pair's point may keep before the pair pass corrects it:
+/// the original's double 0.01, which no single lies between it and 0.01f32
+/// below, so the single compares the same.
+const SLOP_CM: f64 = 0.01;
+/// The pair friction's limit is (0.99·n_y² + 0.01)·μ_A·μ_B (cm² a tick²),
+/// in double; a slip it damps loses a hundredth of the limit of itself.
+const FLAT_FRICTION: f64 = 0.01;
+const STEEP_FRICTION: f64 = 0.99;
+const SLIDE: f64 = 0.01;
 /// Pairs whose friction product μ_A·μ_B is under this do not rub.
 const MIN_FRICTION: f32 = 1.192_089_9e-7;
 /// A centre this close (squared, m²) to the other sphere's is pushed
@@ -367,7 +369,57 @@ pub(crate) struct CellEntry {
     cell: (i32, i32),
     /// When it was linked there: 0 for a part that has not joined yet.
     stamp: u64,
+    /// The last bounds pass found the part outside the scene grid's rows
+    /// and put it back ([`Pairs::bounds`]): it is bucketed in the grid's
+    /// park cell until a bounds pass finds it inside again, whatever its
+    /// place.
+    parked: bool,
 }
+
+/// The cell keys of the pair stage's grid. Without a scene grid
+/// ([`crate::SceneGrid::Unbounded`]) a key is the world cell (x, z) and the
+/// nine cells around one are [`sector::NEAR_OFFSETS`]. With one, a key is
+/// the original's flat index `z · columns + x` (as `(index, 0)`), its
+/// neighbours the grid's flat offsets, so an x past an edge wraps into the
+/// next or the previous row; a parked part's key is the park cell
+/// `columns + 1` ([`sector::overflow_cell`]).
+#[derive(Debug, Clone, Copy, Default)]
+struct CellKeys {
+    grid: Option<sector::GridShape>,
+}
+
+impl CellKeys {
+    /// The origin a part's cell is computed with.
+    fn origin(&self) -> (i32, i32) {
+        self.grid.map_or((0, 0), |g| g.origin)
+    }
+
+    /// The key of a cell computed with [`Self::origin`], for a part parked
+    /// or not.
+    fn key(&self, cell: (i32, i32), parked: bool) -> (i32, i32) {
+        match self.grid {
+            None => cell,
+            Some(g) if parked => (sector::overflow_cell(g.columns), 0),
+            Some(g) => (sector::cell_index(cell, g.columns), 0),
+        }
+    }
+
+    /// A part's key where it stands.
+    fn part(&self, p: &Part) -> (i32, i32) {
+        self.key(p.cell(self.origin()), p.cell_entry.parked)
+    }
+
+    /// The nine cells around a key, its own first.
+    fn offsets(&self) -> [(i32, i32); 9] {
+        match self.grid {
+            None => sector::NEAR_OFFSETS,
+            Some(g) => g.offsets().map(|o| (o, 0)),
+        }
+    }
+}
+
+/// The original logs the first position overflow of a run only.
+static OVERFLOW_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `EXA_CELL_ORDER`, a debug aid for the cell lists: `join` meets each
 /// cell's parts in joining order (as before the head move), `trace` logs
@@ -419,14 +471,14 @@ struct Seen {
 }
 
 impl Seen {
-    fn of(body: usize, part: usize, list: (u64, usize), p: &Part) -> Self {
-        let pose = p.pose((0, 0));
+    fn of(body: usize, part: usize, list: (u64, usize), p: &Part, keys: CellKeys) -> Self {
+        let pose = p.pose(keys.origin());
         Self {
             body,
             part,
             list,
             entered: p.cell_entry.stamp,
-            cell: pose.cell,
+            cell: keys.key(pose.cell, p.cell_entry.parked),
             sphere: pose.sphere_centre,
             mesh: pose.box_centre,
             now: pose.matrix,
@@ -784,6 +836,12 @@ pub struct Pairs {
     /// Detections run (for `EXA_CELL_ORDER=trace`) and lines it logged.
     detections: u64,
     traced: u32,
+    /// The scene's grid, when it gave one ([`crate::SceneGrid`]): the cell
+    /// keys and the bounds pass's overflow guard.
+    grid: Option<sector::GridShape>,
+    /// The grid changed since the cells were linked: every linked part's
+    /// key is taken again at the next detection (their order is kept).
+    relink: bool,
 }
 
 /// The bodies held out of the pairs: the original's held state (bit
@@ -910,9 +968,36 @@ impl Pairs {
         }
     }
 
+    /// Takes the scene's grid ([`crate::SceneGrid`]), as the original's
+    /// sector constructor takes its scene: a grid scene's step buckets the
+    /// parts in its grid's flat cells and guards their rows, a scene
+    /// without one searches every pair, and with no scene given the parts
+    /// are bucketed in Exarust's unbounded cells.
+    pub fn set_scene(&mut self, scene: crate::SceneGrid) {
+        let phase = match scene {
+            crate::SceneGrid::AllPairs => BroadPhase::AllPairs,
+            crate::SceneGrid::Unbounded | crate::SceneGrid::Grid(_) => BroadPhase::Cells,
+        };
+        let grid = scene.shape();
+        if grid != self.grid {
+            self.relink = true;
+        }
+        self.phase = phase;
+        self.grid = grid;
+    }
+
+    /// The scene grid the stage buckets the parts in, if one was given.
+    pub fn grid(&self) -> Option<sector::GridShape> {
+        self.grid
+    }
+
     /// How this stage finds the parts that may meet.
     pub fn phase(&self) -> BroadPhase {
         self.phase
+    }
+
+    fn keys(&self) -> CellKeys {
+        CellKeys { grid: self.grid }
     }
     /// The contacts found in the last detection, one per pair of parts.
     pub fn touches(&self) -> &[Touch] {
@@ -1003,6 +1088,7 @@ impl Pairs {
             return;
         }
         self.link_cells(bodies, awake);
+        let keys = self.keys();
         // The original's grid sector walks its awake list, which the step
         // filled from the end of the sector's body list: the last body to
         // join first, and in each body its parts from the last in list
@@ -1012,7 +1098,7 @@ impl Pairs {
             for (slot, &k) in body.list_parts().iter().enumerate().rev() {
                 let p = &body.parts[k];
                 if meets(p) {
-                    found.push(Seen::of(b, k, (place, slot), p));
+                    found.push(Seen::of(b, k, (place, slot), p, keys));
                 }
             }
         }
@@ -1022,12 +1108,11 @@ impl Pairs {
         }
         let near = &mut s.near;
         near.clear();
+        let offsets = keys.offsets();
         for seen in found.iter() {
             let (x, z) = seen.cell;
-            for dx in -1..=1 {
-                for dz in -1..=1 {
-                    near.insert((x.wrapping_add(dx), z.wrapping_add(dz)));
-                }
+            for (dx, dz) in offsets {
+                near.insert((x.wrapping_add(dx), z.wrapping_add(dz)));
             }
         }
         let span = bevy::log::info_span!("pairs: gather sleepers").entered();
@@ -1037,8 +1122,8 @@ impl Pairs {
                 let p = &body.parts[k];
                 // The cell first: most sleepers lie far from every awake
                 // part, and the rest of their pose is not needed.
-                if meets(p) && near.contains(&p.cell((0, 0))) {
-                    found.push(Seen::of(b, k, (place, slot), p));
+                if meets(p) && near.contains(&keys.part(p)) {
+                    found.push(Seen::of(b, k, (place, slot), p, keys));
                 }
             }
         }
@@ -1082,7 +1167,10 @@ impl Pairs {
         for x in 0..movers {
             met[x] = true;
             others.clear();
-            others.extend(grid.around(found[x].cell).filter(|&y| !met[y]));
+            others.extend(
+                grid.around_with(found[x].cell, offsets)
+                    .filter(|&y| !met[y]),
+            );
             if debug == CellOrderDebug::Trace && self.traced < 40 && others.len() > 1 {
                 let mut joined = others.clone();
                 joined.sort_by_key(|&i| {
@@ -1136,6 +1224,18 @@ impl Pairs {
                 .max()
                 .unwrap_or(0);
         }
+        let keys = self.keys();
+        if std::mem::take(&mut self.relink) {
+            // A new grid: every linked part's key in it, its place in its
+            // cell's list (its time) kept.
+            for body in bodies.iter_mut() {
+                for p in &mut body.parts {
+                    if p.cell_entry.stamp != 0 {
+                        p.cell_entry.cell = keys.part(p);
+                    }
+                }
+            }
+        }
         let mut joining: Vec<(u64, usize)> = bodies
             .iter()
             .enumerate()
@@ -1150,8 +1250,9 @@ impl Pairs {
                 if p.cell_entry.stamp == 0 {
                     self.cell_clock += 1;
                     p.cell_entry = CellEntry {
-                        cell: p.cell((0, 0)),
+                        cell: keys.part(p),
                         stamp: self.cell_clock,
+                        parked: p.cell_entry.parked,
                     };
                 }
             }
@@ -1163,12 +1264,13 @@ impl Pairs {
                 if p.cell_entry.stamp == 0 {
                     continue;
                 }
-                let cell = p.cell((0, 0));
+                let cell = keys.part(p);
                 if cell != p.cell_entry.cell {
                     self.cell_clock += 1;
                     p.cell_entry = CellEntry {
                         cell,
                         stamp: self.cell_clock,
+                        parked: p.cell_entry.parked,
                     };
                 }
             }
@@ -1181,12 +1283,13 @@ impl Pairs {
     /// it, as in the original.) Bodies without a place keep their order
     /// in `bodies`.
     fn find_all_pairs(&mut self, bodies: &mut [&mut Ragdoll], awake: usize, found: &mut Vec<Seen>) {
+        let keys = self.keys();
         for (b, body) in bodies.iter().enumerate() {
             let place = body.list_place;
             for (slot, &k) in body.list_parts().iter().enumerate() {
                 let p = &body.parts[k];
                 if meets(p) {
-                    found.push(Seen::of(b, k, (place, slot), p));
+                    found.push(Seen::of(b, k, (place, slot), p, keys));
                 }
             }
         }
@@ -1394,7 +1497,8 @@ impl Pairs {
 fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, placed: Option<bool>) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();
-    let previous = pb.settled.inverse() * pa.settled;
+    // The original's relative frames: B's transpose as its inverse.
+    let previous = sector::relative_frame(&pa.settled, &pb.settled);
     let triangles = pb.triangles.clone();
     let tree = pb.tree.clone();
     // The pre-tests take B's mesh box and sphere. The sphere fallback tests
@@ -1422,7 +1526,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
     for i in 0..pa.spheres.len() {
         let (c, r) = pa.spheres[i];
         let start = previous.transform_point3(c);
-        let mut end = (b_now.inverse() * a_now).transform_point3(c);
+        let mut end = sector::relative_frame(&a_now, &b_now).transform_point3(c);
         // The placed callback always runs the static query (the original
         // sweeps only in the dynamic path). Unlike the level detection, the
         // pair stage has no static-only gate.
@@ -1460,7 +1564,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                 took.then(|| {
                     a_now = pa.transform();
                     b_now = pb.transform();
-                    (b_now.inverse() * a_now).transform_point3(c)
+                    sector::relative_frame(&a_now, &b_now).transform_point3(c)
                 })
             };
             if swept {
@@ -1525,7 +1629,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                 if took {
                     a_now = pa.transform();
                     b_now = pb.transform();
-                    end = (b_now.inverse() * a_now).transform_point3(c);
+                    end = sector::relative_frame(&a_now, &b_now).transform_point3(c);
                 }
             }
             continue;
@@ -1587,7 +1691,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
             // Later spheres see where the push left both parts.
             a_now = pa.transform();
             b_now = pb.transform();
-            end = (b_now.inverse() * a_now).transform_point3(c);
+            end = sector::relative_frame(&a_now, &b_now).transform_point3(c);
             from = j + 1;
         }
     }
@@ -1729,8 +1833,8 @@ fn solve_pair(pa: &mut Part, pb: &mut Part, points: &[Point]) -> bool {
         ) else {
             continue;
         };
-        pa.push(&p.a.map(|w| w.max(0.0)), c * sa);
-        pb.push(&p.b.map(|w| w.max(0.0)), c * -sb);
+        push_shared(pa, &p.a, sa, c);
+        push_shared(pb, &p.b, -sb, c);
         work = true;
     }
     if work {
@@ -1740,11 +1844,25 @@ fn solve_pair(pa: &mut Part, pb: &mut Part, points: &[Point]) -> bool {
     work
 }
 
-/// The pair pass's correction for one point (m): the normal part that takes
-/// a depth over the 0.01 cm slop back to it, less the tangential travel of
-/// A against B this tick (cancelled under the friction limit, only a
-/// hundredth of the limit of it kept above). `mu` is the product of the two
-/// parts' level friction. None at or under the slop (a NaN depth too).
+/// The original's scaled push of a pair point: each particle moves by the
+/// correction times `share · max(w, 0)`, the share and the clamped weight
+/// multiplied first (the processor's maximum, so a NaN weight is 0).
+fn push_shared(p: &mut Part, w: &[f32; 4], share: f32, c: Vec3) {
+    for (x, &wi) in p.positions.iter_mut().zip(w) {
+        *x += c * (share * intersect::max_first(wi, 0.0));
+    }
+}
+
+/// The pair pass's correction for one point (m), worked in centimetres as
+/// the original's: the depth `(b − a)·n` must pass the 0.01 cm slop (a
+/// double compare; NaN fails), the correction is `n` times the depth less
+/// the slop (in double, then single); A's travel against B this tick is
+/// `(b_start − a_start) − (b − a)`, its part across the normal
+/// `t + n·(−t·n)`; the friction limit is `(0.99·n_y² + 0.01)·μ` in double
+/// (n_y² in single), `mu` the product of the two parts' level friction.
+/// When the limit reaches the slip's square, or either is NaN, the
+/// correction takes the slip times `limit · −0.01` (double, then single);
+/// otherwise the whole slip is taken away.
 fn correction(
     a: Vec3,
     b: Vec3,
@@ -1753,21 +1871,24 @@ fn correction(
     normal: Vec3,
     mu: f32,
 ) -> Option<Vec3> {
-    let depth = cm((b - a).dot(normal));
-    if depth.is_nan() || depth <= SLOP {
+    let (a, b, a_start, b_start) = (cm(a), cm(b), cm(a_start), cm(b_start));
+    let d = b - a;
+    let depth = d.dot(normal);
+    if depth.is_nan() || f64::from(depth) <= SLOP_CM {
         return None;
     }
-    // A's travel against B's this tick, across the normal.
-    let travel = (a - a_start) - (b - b_start);
-    let across = travel - normal * travel.dot(normal);
-    let mut c = normal * ((depth - SLOP) / CM);
-    let limit = (FLAT_FRICTION + STEEP_FRICTION * normal.y * normal.y) * mu;
-    if limit >= cm(across).length_squared() {
-        c -= across * (SLIDE * limit);
+    let travel = (b_start - a_start) - d;
+    let mut c = normal * (f64::from(depth) - SLOP_CM) as f32;
+    let across = travel + normal * -travel.dot(normal);
+    let across2 = across.length_squared();
+    let ny2 = normal.y * normal.y;
+    let limit = ((f64::from(ny2) * STEEP_FRICTION + FLAT_FRICTION) * f64::from(mu)) as f32;
+    if limit >= across2 || limit.is_nan() || across2.is_nan() {
+        c += across * (f64::from(limit) * -SLIDE) as f32;
     } else {
         c -= across;
     }
-    Some(c)
+    Some(c / CM)
 }
 
 /// [`solve_pair`] for a pair with exactly one placed body: the placed side
@@ -1822,9 +1943,13 @@ fn rub_pair(pa: &mut Part, pb: &mut Part, pair: &Pair) {
     for p in &pair.points[..pair.count] {
         let slip = pb.slip(&p.b) - pa.slip(&p.a);
         let mut across = slip - p.normal * slip.dot(p.normal);
-        let limit = (FLAT_FRICTION + STEEP_FRICTION * p.normal.y * p.normal.y) * mu;
+        // The limit in double (n_y² in single), as in the pair pass; a
+        // slip over it is scaled by a hundredth of it (double, then
+        // single), and a NaN keeps the slip.
+        let ny2 = p.normal.y * p.normal.y;
+        let limit = ((f64::from(ny2) * STEEP_FRICTION + FLAT_FRICTION) * f64::from(mu)) as f32;
         if limit < cm(across).length_squared() {
-            across *= SLIDE * limit;
+            across *= (f64::from(limit) * SLIDE) as f32;
         }
         pa.push(&p.a, across * sa);
         pb.push(&p.b, across * -sb);
@@ -1913,6 +2038,41 @@ impl SolverStage for Pairs {
 
     fn iterated(&mut self, _bodies: &mut [&mut Ragdoll]) {
         self.pairs.clear();
+    }
+
+    /// The original's bounds pass over the solver list, with a scene grid:
+    /// each awake part's cell from its mesh box's world centre; a cell in
+    /// the grid's first or last row (only rows are guarded) is a position
+    /// overflow, logged the first time in a run, and the part is put back
+    /// where the tick before last left it, with no velocity
+    /// ([`Part::reset_to_two_ticks_ago`]), and parked in the grid's park
+    /// cell for this tick's detection. Without a scene grid nothing
+    /// overflows.
+    fn bounds(&mut self, bodies: &mut [&mut Ragdoll]) {
+        let Some(grid) = self.grid else {
+            return;
+        };
+        for body in bodies.iter_mut() {
+            for slot in 0..body.list_parts().len() {
+                let k = body.list_parts()[slot];
+                let p = &mut body.parts[k];
+                // The cell as the detection buckets it ([`Part::pose`]).
+                let index = sector::cell_index(p.cell(grid.origin), grid.columns);
+                let overflow = sector::body_cell_overflow(index, grid.columns, grid.rows);
+                p.cell_entry.parked = overflow;
+                if !overflow {
+                    continue;
+                }
+                if !OVERFLOW_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    warn!(
+                        "Object position overflow: part {:?} (cell index {index}) is outside \
+                         the scene grid's {} rows; put back where it was two ticks ago",
+                        p.entity, grid.rows
+                    );
+                }
+                p.reset_to_two_ticks_ago();
+            }
+        }
     }
 
     fn coupled(&self, bodies: &[&mut Ragdoll], coupled: &mut [bool]) {

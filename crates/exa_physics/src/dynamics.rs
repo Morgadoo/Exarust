@@ -26,6 +26,7 @@ use bevy::math::{Affine3A, Mat3, Mat4, Vec3, Vec4};
 use crate::body::pairs::layers_apart;
 use crate::body::{RETENTION, RETENTION_SPEEDS, per_tick};
 use crate::mechanism::MECHANISM_RETENTION;
+use crate::sector::GridShape;
 
 /// One fixed step: 12 ms, 83 Hz.
 pub const STEP_MS: u32 = 12;
@@ -331,28 +332,6 @@ pub struct GridSize {
     pub height: i32,
 }
 
-/// The processor's rounding conversion (nearest, ties to even) into 64
-/// bits, kept as its low 32 bits: a NaN or out-of-range value gives 0.
-fn round_word(v: f32) -> i32 {
-    let r = v.round_ties_even();
-    if r.is_nan() || r >= 9.223_372e18 || r < -9.223_372e18 {
-        0
-    } else {
-        r as i64 as i32
-    }
-}
-
-/// The original's floor helper (it sets the rounding mode down for one
-/// 32-bit conversion): a NaN or out-of-range value gives `i32::MIN`.
-fn floor_word(v: f32) -> i32 {
-    let r = v.floor();
-    if r.is_nan() || r >= 2_147_483_648.0 || r < -2_147_483_648.0 {
-        i32::MIN
-    } else {
-        r as i32
-    }
-}
-
 /// One of a simulation's two grids: a list per cell, x across and z down
 /// in one flat table, the bias that puts the scene's origin at the grid's
 /// middle, and the nine neighbour offsets the overlap query walks.
@@ -374,23 +353,24 @@ impl Grid {
         let width = size.width.max(0);
         let height = size.height.max(0);
         let len = (width as usize).saturating_mul(height as usize);
-        let w = width;
+        // The live grids' shape ([`crate::sector::GridShape`]): one rule for
+        // the bias and the neighbour table.
+        let shape = GridShape::of_scene(width, height, Vec3::ZERO);
         Self {
             width,
             height,
-            bias: [width >> 1, height >> 1],
-            offsets: [0, -1 - w, -w, 1 - w, -1, 1, w - 1, w, w + 1],
+            bias: [shape.origin.0, shape.origin.1],
+            offsets: shape.offsets(),
             cells: vec![Vec::new(); len],
         }
     }
 
     /// The cell a sector's node at `position` (cm, its translation) caches:
-    /// x and z times the cell's reciprocal, rounded to even, plus the bias.
+    /// x and z times the cell's reciprocal, rounded to even, plus the bias
+    /// ([`GridShape::of_scene`], which the live grids take).
     pub fn sector_cell(&self, position: Vec3) -> [i32; 2] {
-        [
-            round_word(position.x * CELL_RECIPROCAL).wrapping_add(self.bias[0]),
-            round_word(position.z * CELL_RECIPROCAL).wrapping_add(self.bias[1]),
-        ]
+        let origin = GridShape::of_scene(self.width, self.height, position).origin;
+        [origin.0, origin.1]
     }
 
     /// The flat cell a body at `local` (cm, in its sector's space) falls
@@ -398,9 +378,8 @@ impl Grid {
     /// down, plus the sector's cell. None outside the table (the original
     /// reads whatever is there).
     pub fn body_cell(&self, local: Vec3, sector: [i32; 2]) -> Option<usize> {
-        let x = floor_word(local.x * CELL_RECIPROCAL).wrapping_add(sector[0]);
-        let y = floor_word(local.z * CELL_RECIPROCAL).wrapping_add(sector[1]);
-        self.flat(i64::from(y.wrapping_mul(self.width).wrapping_add(x)))
+        let cell = crate::sector::cell_of(local, (sector[0], sector[1]));
+        self.flat(i64::from(crate::sector::cell_index(cell, self.width)))
     }
 
     /// A flat index if it is inside the table.
@@ -1000,13 +979,10 @@ impl World {
         }
         let root = b.root_or(body);
         // The cell the body's bound falls in; the nine offsets around it.
-        let x = floor_word(b.bound.centre.x * CELL_RECIPROCAL);
-        let z = floor_word(b.bound.centre.z * CELL_RECIPROCAL);
-        let base = z
-            .wrapping_add(sector_cell[1])
-            .wrapping_mul(grid.width)
-            .wrapping_add(x)
-            .wrapping_add(sector_cell[0]);
+        let base = crate::sector::cell_index(
+            crate::sector::cell_of(b.bound.centre, (sector_cell[0], sector_cell[1])),
+            grid.width,
+        );
         for offset in grid.offsets {
             let Some(index) = grid.flat(i64::from(base) + i64::from(offset)) else {
                 continue;
