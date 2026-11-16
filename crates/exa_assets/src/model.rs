@@ -810,10 +810,7 @@ impl ModelLoader<'_> {
                     .groups
                     .iter()
                     .map(|g| {
-                        scene
-                            .material(&g.material)
-                            .cloned()
-                            .or_else(|| library_material(self.game, &g.material))
+                        manager_material(self.game, scene, &g.material)
                             .map_or(0, |m| material_split_flags(&m))
                     })
                     .collect(),
@@ -1191,20 +1188,17 @@ impl ModelLoader<'_> {
 
     /// What a rigid body's stored mobility is divided by when its node's
     /// first mesh part has the material `name`, and that material's
-    /// collision sound set: the material's physical divisor (its own
-    /// record, else the libraries'), 1 and no sound when it has none.
+    /// collision sound set: the material's physical divisor (the material
+    /// manager's record, [`manager_material`]), 1 and no sound when it has
+    /// none.
     fn body_material(&mut self, entry: &str, scene: &Scene, name: &str) -> (f32, Option<String>) {
         let key = Self::material_key(entry, scene, name);
         if let Some(d) = self.cache.divisors.get(&key) {
             return d.clone();
         }
-        let d = scene
-            .material(name)
-            .cloned()
-            .or_else(|| library_material(self.game, name))
-            .map_or((1.0, None), |m| {
-                (m.mobility_divisor(), Some(m.collision_sound_set(name)))
-            });
+        let d = manager_material(self.game, scene, name).map_or((1.0, None), |m| {
+            (m.mobility_divisor(), Some(m.collision_sound_set(name)))
+        });
         self.cache.divisors.insert(key, d.clone());
         d
     }
@@ -1215,11 +1209,7 @@ impl ModelLoader<'_> {
         if let Some(&thin) = self.cache.thin.get(&key) {
             return thin;
         }
-        let thin = scene
-            .material(name)
-            .cloned()
-            .or_else(|| library_material(self.game, name))
-            .is_some_and(|m| m.is_thin_for_gi());
+        let thin = manager_material(self.game, scene, name).is_some_and(|m| m.is_thin_for_gi());
         self.cache.thin.insert(key, thin);
         thin
     }
@@ -3623,14 +3613,40 @@ impl SrgbTables {
     }
 }
 
-fn library_material(game: &GameData, name: &str) -> Option<Material> {
-    let libs = game
-        .project()
-        .material_libraries
+/// The material record the original's material manager holds for `name`
+/// when a model's file names it: a library's (the manager's providers) wins,
+/// and the file's own record stands only for a name no library holds, as the
+/// model reader adds a file's material only when the manager has no record
+/// of that name. Its shading, its rigid bodies' divisor and sound set, its
+/// GI thinness and its split flags all read this record.
+fn manager_material(game: &GameData, scene: &Scene, name: &str) -> Option<Material> {
+    manager_record(game, name, || scene.material(name).cloned())
+}
+
+/// [`manager_material`] with the file's own record looked up by `own`.
+fn manager_record(
+    game: &GameData,
+    name: &str,
+    own: impl FnOnce() -> Option<Material>,
+) -> Option<Material> {
+    library_material(game, name).or_else(own)
+}
+
+/// The material providers in the order the manager asks them: the
+/// project's libraries from the last to the first (a later library wins),
+/// then the human body's own library [guess: where the engine registers
+/// `humanbase.rml` is not traced; no shipped name is in two libraries, so
+/// its place decides nothing].
+fn material_providers(project: &[String]) -> impl Iterator<Item = &str> {
+    project
         .iter()
+        .rev()
         .map(String::as_str)
-        .chain(["humanbase.rml"]);
-    for lib in libs {
+        .chain(["humanbase.rml"])
+}
+
+fn library_material(game: &GameData, name: &str) -> Option<Material> {
+    for lib in material_providers(&game.project().material_libraries) {
         if let Some(bytes) = game.resource_file(lib)
             && let Ok(archive) = Archive::parse(bytes)
             && let Some(payload) = archive.get(name)
@@ -4189,6 +4205,50 @@ pub fn painted_model_stem(model: &Model) -> Option<String> {
 mod tests {
     use super::*;
     use bevy::render::render_resource::TextureFormat;
+
+    /// The manager asks its providers from the last registered to the
+    /// first: a later project library answers before an earlier one.
+    #[test]
+    fn the_material_providers_answer_from_the_last() {
+        let project = ["Resource\\Common.rml", "Resource\\Underworld0.rml"]
+            .map(String::from)
+            .to_vec();
+        let order: Vec<&str> = material_providers(&project).collect();
+        assert_eq!(
+            order,
+            [
+                "Resource\\Underworld0.rml",
+                "Resource\\Common.rml",
+                "humanbase.rml"
+            ]
+        );
+    }
+
+    /// A model's rigid bodies, GI thinness and split flags read the
+    /// manager's record: a library's over the file's own one of the same
+    /// name (shipped data).
+    #[test]
+    fn a_library_material_wins_over_the_files_record() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = GameData::open(&dir) else {
+            return;
+        };
+        let Some(library) = library_material(&game, "_black") else {
+            return;
+        };
+        let mut own = library.clone();
+        own.flags ^= 0x40_0000;
+        assert_eq!(
+            manager_record(&game, "_black", || Some(own.clone())),
+            Some(library)
+        );
+        assert_eq!(
+            manager_record(&game, "not in a library", || Some(own.clone())),
+            Some(own)
+        );
+    }
 
     #[test]
     fn a_meshs_triangles_are_its_positions_in_metres() {
@@ -5720,7 +5780,7 @@ mod tests {
     #[test]
     fn the_shipped_cloths_walk_their_links() {
         use exa_rpk::PackKind;
-        let Some(dir) = exa_rpk::locate_install(None) else {
+        let Some(dir) = crate::locate_install(None) else {
             return;
         };
         let game = exa_rpk::GameData::open(&dir).unwrap();

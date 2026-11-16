@@ -614,7 +614,9 @@ pub fn spawn_scene_body(
     let body = context
         .loader
         .morphed_model(PackKind::Resource, &model_name, Some(&morph))?;
-    let (skin_look, skin_composite) = character_skin(
+    let texture_detail = context.loader.cache.textures.settings().texture_detail;
+    let (skin_look, skin_composite) = character_skin_at(
+        texture_detail,
         &context.game.0,
         &model_name,
         &record,
@@ -883,8 +885,33 @@ fn insert_powers(
 /// A character's skin look and the composite job its generated maps come
 /// from: the record's tone, look seed, beard and physique layers with the
 /// race's look word. `seed` starts the generator that replaces a zero look
-/// seed, as the original draws one.
+/// seed, as the original draws one. The maps are
+/// [`exa_character::factory::PIXEL_FORMAT`]'s side; the game's own bodies
+/// take the user's texture detail ([`character_skin_at`]).
 pub fn character_skin(
+    game: &GameData,
+    model_name: &str,
+    record: &CharacterRecord,
+    look_word: u32,
+    physique: &exa_formats::morph::Physique,
+    seed: u32,
+) -> (SkinLook, Option<exa_assets::SkinCompositeJob>) {
+    character_skin_at(
+        exa_character::factory::PIXEL_FORMAT,
+        game,
+        model_name,
+        record,
+        look_word,
+        physique,
+        seed,
+    )
+}
+
+/// [`character_skin`] at the texture detail `texture_detail`: the skin
+/// job's side is 512 below 3 and 1024 from 3, as the original's job reads
+/// the `TextureDetail` setting when it starts.
+pub fn character_skin_at(
+    texture_detail: u32,
     game: &GameData,
     model_name: &str,
     record: &CharacterRecord,
@@ -902,7 +929,7 @@ pub fn character_skin(
     };
     let exists = |name: &str| game.texture(name).is_some();
     let job = exa_character::texture_job::SkinJob::of_record(
-        exa_character::factory::PIXEL_FORMAT,
+        texture_detail,
         &stem,
         record,
         look_word,
@@ -2009,6 +2036,36 @@ mod tests {
             .personality
             .expect("personality");
         assert_eq!((mind.confidence, mind.restraint), (1.0, -1.0));
+    }
+
+    /// The skin job's side follows the texture detail it is given: 512
+    /// below 3, 1024 from 3 (shipped data).
+    #[test]
+    fn the_skin_maps_follow_the_texture_detail() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let record = CharacterRecord::default();
+        let physique = exa_formats::morph::Physique::of_record(&record);
+        let side = |detail| {
+            character_skin_at(
+                detail,
+                &data,
+                model::BODY_MODEL,
+                &record,
+                0x1BF,
+                &physique,
+                1,
+            )
+            .1
+            .map(|job| job.side)
+        };
+        assert_eq!(side(2), Some(512));
+        assert_eq!(side(3), Some(1024));
+        assert_eq!(side(5), Some(1024));
     }
 
     /// An app with the game's packs and the asset registries, when

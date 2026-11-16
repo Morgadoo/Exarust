@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 60.3% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 60.5% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **60.3% closed**, of which 47.9% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 33.5% partial and 6.2% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **60.5% closed**, of which 48.2% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 33.3% partial and 6.2% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -20,14 +20,14 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | section | functions | KB | components | reimplemented | by engine | ledger closed | live | engine | no code | partial | open | largest missing |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
-| Core, math & threading | 282 | 37 | 11 | 86% | 1% | 60% | 39% | 19% | 2% | 31% | 9% |  |
+| Core, math & threading | 282 | 37 | 11 | 86% | 1% | 61% | 40% | 19% | 2% | 31% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
-| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 34% | 7% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 33% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 59% | 51% | 5% | 3% | 32% | 9% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 36% | 33% | 1% | 2% | 57% | 7% |  |
-| Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 50% | 41% | 4% | 4% | 42% | 8% |  |
+| Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 50% | 42% | 4% | 4% | 42% | 8% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
-| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 56% | 53% | 2% | 1% | 38% | 6% | TArsenalContFrame |
+| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 58% | 55% | 2% | 1% | 36% | 6% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 67% | 63% | 1% | 2% | 33% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 65% | 64% | 1% | 0% | 33% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
@@ -139,7 +139,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | FLX_System | Core, math & threading | 12 | 79% | 58% | 20% | 38% | 0% | 18% | 24% |
 | RFT_BoundSphere | Core, math & threading | 8 | 95% | 54% | 54% | 0% | 0% | 46% | 0% |
 | Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 97% | 40% | 33% | 6% | 0% | 58% | 3% |
-| Core string/number formatting utilities | Core, math & threading | 4 | 94% | 89% | 78% | 4% | 6% | 9% | 2% |
+| Core string/number formatting utilities | Core, math & threading | 4 | 94% | 92% | 81% | 4% | 6% | 6% | 2% |
 | Colour helpers and parallel-for dispatch (RF_kdTrees by address) | Core, math & threading | 2 | 75% | 77% | 61% | 2% | 14% | 23% | 0% |
 | RF_WorkerThreads | Core, math & threading | 1 | 46% | 100% | 11% | 89% | 0% | 0% | 0% |
 | RF_MultiLoop | Core, math & threading | 0 | 70% engine | 100% | 0% | 100% | 0% | 0% | 0% |
@@ -147,8 +147,8 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Bounding-sphere vector helpers (FLX_Entities by address) | Core, math & threading | 0 | 90% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TThread@FLX_System | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | TThread@RF_OS_Functions | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| SG_ObjectDB2 | Data, assets & I/O | 19 | 96% | 89% | 83% | 2% | 4% | 10% | 1% |
-| RF_Import_RFC2 | Data, assets & I/O | 17 | 83% | 89% | 84% | 1% | 4% | 9% | 2% |
+| SG_ObjectDB2 | Data, assets & I/O | 19 | 96% | 90% | 83% | 2% | 4% | 9% | 1% |
+| RF_Import_RFC2 | Data, assets & I/O | 17 | 83% | 91% | 86% | 1% | 4% | 7% | 2% |
 | FLX_Content_Stream | Data, assets & I/O | 12 | 84% | 32% | 27% | 4% | 0% | 62% | 6% |
 | RFE_Export_RFC2 | Data, assets & I/O | 11 | 90% | 23% | 18% | 0% | 5% | 75% | 2% |
 | RF_DataIO | Data, assets & I/O | 7 | 93% | 42% | 9% | 33% | 0% | 12% | 46% |
@@ -204,7 +204,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TTerrainMesh | Rendering & GPU | 3 | 70% | 51% | 24% | 18% | 10% | 49% | 0% |
 | TGLGeometry | Rendering & GPU | 3 | 85% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | TLightAlias | Rendering & GPU | 3 | 74% | 80% | 75% | 5% | 0% | 20% | 0% |
-| RF_Material_Manager | Rendering & GPU | 3 | 62% | 50% | 8% | 41% | 0% | 44% | 7% |
+| RF_Material_Manager | Rendering & GPU | 3 | 62% | 93% | 52% | 41% | 0% | 0% | 7% |
 | FLX_IconRender | Rendering & GPU | 3 | 50% | 4% | 0% | 4% | 0% | 0% | 96% |
 | FLX_PostProcess | Rendering & GPU | 2 | 86% | 33% | 33% | 0% | 0% | 60% | 7% |
 | Shading-mask GLSL snippets | Rendering & GPU | 2 | 75% | 16% | 12% | 5% | 0% | 82% | 2% |
@@ -287,7 +287,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | FLX_Character_Textures | Characters, motion & animation | 8 | 83% | 29% | 26% | 3% | 0% | 69% | 2% |
 | TSkinController2 | Characters, motion & animation | 8 | 81% | 39% | 6% | 34% | 0% | 47% | 14% |
 | FLX_Character_Motions | Characters, motion & animation | 6 | 80% | 41% | 40% | 1% | 0% | 26% | 33% |
-| Equipment effects and focus-item slot (RFE_Effects_Electricity by address) | Characters, motion & animation | 3 | 93% | 34% | 34% | 0% | 0% | 48% | 18% |
+| Equipment effects and focus-item slot (RFE_Effects_Electricity by address) | Characters, motion & animation | 3 | 93% | 58% | 58% | 0% | 0% | 37% | 5% |
 | FLXG_Character_Races | Characters, motion & animation | 3 | 68% | 85% | 82% | 3% | 0% | 15% | 0% |
 | Golem guardians and alarm zones (RFE_Effects_Electricity by address) | Characters, motion & animation | 3 | 80% | 61% | 61% | 0% | 0% | 39% | 0% |
 | RF_Dynamics_Animation | Characters, motion & animation | 3 | 60% | 43% | 36% | 7% | 0% | 51% | 6% |
@@ -305,11 +305,11 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TWeaponBlood | Combat, weapons & damage | 2 | 85% | 20% | 20% | 0% | 0% | 80% | 0% |
 | RFE_Effects_Blood | Combat, weapons & damage | 1 | 80% | 41% | 32% | 9% | 0% | 59% | 0% |
 | TBloodSprays | Combat, weapons & damage | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 86% | 85% | 0% | 0% | 9% | 6% |
-| FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
+| TGUIItemContainer | Items, materials & crafting | 26 | 90% | 86% | 86% | 0% | 0% | 8% | 6% |
+| FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 92% | 90% | 3% | 0% | 8% | 0% |
 | Item description phrases | Items, materials & crafting | 16 | 86% | 71% | 65% | 2% | 3% | 29% | 0% |
 | SG_ItemGUI | Items, materials & crafting | 15 | 84% | 68% | 62% | 2% | 4% | 21% | 11% |
-| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 16% | 16% | 0% | 0% | 84% | 0% |
+| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 20% | 20% | 0% | 0% | 80% | 0% |
 | FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 38% | 36% | 2% | 0% | 35% | 27% |
 | TProcMaterial | Items, materials & crafting | 6 | 79% | 0% | 0% | 0% | 0% | 91% | 9% |
 | Item variant & condition randomisers (FLX_Character_Textures by address) | Items, materials & crafting | 5 | 84% | 68% | 67% | 1% | 0% | 32% | 0% |

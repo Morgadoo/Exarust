@@ -2174,8 +2174,29 @@ pub fn sweep_screens(world: &mut World, sweep: ScreenSweep) {
 
 pub struct GameScreensPlugin;
 
+/// Gives the live object database the item factory's pass its migrations
+/// run (a level's local tier, a save's world tier), when the game's data is
+/// open as the plugin is built.
+fn install_factory_hook(app: &mut App) {
+    let Some(game) = app
+        .world()
+        .get_resource::<exa_assets::Game>()
+        .map(|g| g.0.clone())
+    else {
+        return;
+    };
+    app.init_resource::<exa_assets::live_objects::LiveObjects>();
+    let mut live = app
+        .world_mut()
+        .resource_mut::<exa_assets::live_objects::LiveObjects>();
+    if live.factory().is_none() {
+        live.set_factory(crate::shop_stock::factory_hook(game));
+    }
+}
+
 impl Plugin for GameScreensPlugin {
     fn build(&self, app: &mut App) {
+        install_factory_hook(app);
         crate::gui_keys::ensure(app);
         app.init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
@@ -5082,13 +5103,22 @@ mod tests {
     #[test]
     fn the_inventory_bind_charges_the_pack_with_the_worn_bulk() {
         use exa_formats::objdb::{Item, LOCAL};
+        // Each copy weighs as the template its header names (10 + its id).
         let item = |id: u32, bulk: u8| Item {
             model: format!("item{id}"),
             equip_lock: bulk,
+            parent: if id < 10 { LOCAL | (id + 10) } else { 0 },
             ..Item::parse(id, &[]).expect("an empty item")
         };
         let mut catalogue = exa_items::catalogue::ItemCatalogue::default();
-        catalogue.set_level_items(&[item(1, 3), item(2, 5), item(3, 7)]);
+        catalogue.set_level_items(&[
+            item(1, 0),
+            item(2, 0),
+            item(3, 0),
+            item(11, 3),
+            item(12, 5),
+            item(13, 7),
+        ]);
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<GameScreens>()

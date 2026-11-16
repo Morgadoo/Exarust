@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r301, 11-16) | target |
+| measure | start (r186, 11-10) | now (r302, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **60.28%** | **100%** |
+| **Ledger: bytes in a final state** | — | **60.51%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,172 | all |
+| Tests passing | 8,489 | 9,181 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,22 +99,22 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 142 | 159,140 |
-| Rendering & GPU | 10 | 10 | 277 | 139,841 |
+| Rendering & GPU | 10 | 10 | 275 | 138,640 |
 | UI | 12 | 12 | 334 | 126,442 |
 | Thaumaturgy & effects | 9 | 9 | 134 | 104,763 |
-| Characters, motion & animation | 8 | 8 | 222 | 101,754 |
+| Characters, motion & animation | 8 | 8 | 216 | 100,898 |
 | World, levels & terrain | 5 | 5 | 146 | 73,180 |
 | Game modes, arena & session | 7 | 7 | 157 | 72,065 |
 | AI & behaviour | 8 | 8 | 115 | 70,226 |
-| Items, materials & crafting | 5 | 5 | 132 | 62,916 |
-| Data, assets & I/O | 6 | 6 | 118 | 38,360 |
+| Items, materials & crafting | 5 | 5 | 129 | 59,660 |
+| Data, assets & I/O | 6 | 6 | 116 | 37,980 |
 | Runtime & platform | 5 | 5 | 69 | 20,690 |
-| Core, math & threading | 3 | 3 | 72 | 15,238 |
+| Core, math & threading | 3 | 3 | 71 | 15,099 |
 | Script, dialogue & story | 2 | 2 | 28 | 6,544 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,958** | **996,655** |
+| **Total** | **90** | **90** | **1,944** | **990,823** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 302 | Worn effects write their bytes back to the items, the golem suit's switches set the body's stance factor (0.75 powered, the race's value off) and rerun the equipment pass, so a spent suit weighs on its wearer; copies weigh as their template; material lookups follow the manager's provider order and prefer the library record; level, world-tier and archive migrations rebuild factory weapons; the CPU painter magnifies region maps bilinearly and game bodies' skin maps follow the texture detail (1024 at the retail setting). |
 | 2026-11-16 | 301 | Third oracle pass: the door press, wisps, ragdoll detection, placement and overlap touches, sector meets, pushes, negations and rigid inverses now use the original's arithmetic at their call sites; F569 fixed (the barricade place is measured along the wall from the fighter's chest, identical over 5000 cases); head look identical and the light update fixed to the original's sRGB routine (identical over 5000 cases). |
 | 2026-11-16 | 300 | Fixed-frame runs now repeat their pictures exactly (offscreen frames read back in lockstep, the game saves the exact shot frames, pipelines compile synchronously, background jobs are waited for): three-run noise fell from up to 0.15 to 0 on every golden shot; F567 (segfault at quit) was not reproduced in 225 runs, the renderer now finishes its compiles and GPU work before exit and the exit trace lists live threads. |
 | 2026-11-16 | 299 | The arena NEW CAREER opens the company name and emblem dialog first (F446): BACK fades to the title, a named NEXT stores the company and starts the arena creator; the menu plays its back cue and keeps a dragged-off press unselected, its hide takes the version line down, the transition screen takes the pointer, divination deals from a running stream and closes on a right press, the loadout shows the kit's encumbrance dots, the tip banner box is rounded and the destination rows carry their destination words. |
