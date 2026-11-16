@@ -2227,7 +2227,7 @@ impl Plugin for GameScreensPlugin {
             )
             .add_systems(
                 Update,
-                draw_screens.after(crate::save_screen::saves_paint)
+                draw_screens
                     .after(open_requested_screens)
                     .after(crate::item_icon_render::IconRenderSystems).in_set(exa_physics::FramePhase::Gui),
             )

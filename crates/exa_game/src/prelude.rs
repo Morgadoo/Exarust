@@ -197,7 +197,9 @@ impl bevy::prelude::Plugin for TipsScreenPlugin {
             bevy::prelude::Update,
             draw_tips
                 .in_set(exa_physics::FramePhase::Gui)
-                .after(crate::save_screen::open_saves),
+                .after(crate::save_screen::open_saves)
+                // The game screens' draw clears the GUI queue each frame.
+                .after(crate::gui_screens::draw_screens),
         );
     }
 }
