@@ -268,13 +268,14 @@ impl LightBasis {
 }
 
 /// A vector scaled to unit length, summed `(x² + z²) + y²` and zero left
-/// zero, as the original's normalise. The original uses the processor's
-/// approximate reciprocal square root; this uses the exact one, so the
-/// result differs in the last dozen bits.
+/// zero (times zero, so each component keeps its sign), as the original's
+/// normalise. The original uses the processor's approximate reciprocal
+/// square root; this uses the exact one, so the result differs in the last
+/// dozen bits.
 fn normalised(v: Vec3) -> Vec3 {
     let squared = (v.x * v.x + v.z * v.z) + v.y * v.y;
     if squared == 0.0 {
-        return Vec3::ZERO;
+        return v * 0.0;
     }
     v * squared.sqrt().recip()
 }
@@ -739,6 +740,18 @@ pub fn fitted_sphere(volume: &ConvexVolume) -> Option<Sphere> {
 mod tests {
     use super::*;
     use bevy::math::Vec3;
+
+    /// A zero vector keeps its components' signs (times zero), as the
+    /// original's normalise leaves it (the oracle's case: a negative-zero
+    /// direction gives negative-zero basis words).
+    #[test]
+    fn a_zero_vector_normalises_to_its_signed_zero() {
+        let n = normalised(v(-0.0, -0.0, 0.0));
+        assert_eq!(
+            [n.x.to_bits(), n.y.to_bits(), n.z.to_bits()],
+            [0x8000_0000, 0x8000_0000, 0]
+        );
+    }
 
     fn v(x: f32, y: f32, z: f32) -> Vec3 {
         Vec3::new(x, y, z)

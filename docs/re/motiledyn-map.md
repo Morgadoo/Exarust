@@ -745,3 +745,50 @@ transform; none added.
   ones. The armed parry and the stab drive (routine #32) were described as not live because they
   were unreachable; both are reached in 0.9.5 (the auto-parry and swing tick, attack clip 11), and
   are not live because Exarust does not model the armed parry or apply the handling pushes.
+
+## Body and balance tails (bodybal lane, round 291)
+
+Re-checked against the assembly; ported:
+
+- **Golem-suit byte** (read by the leg routine #29): written by the character init (#73) for a
+  golem race, by the armour pass's golem-suit registration (odd kind and a charge under 0xff)
+  and by the suit's worn tick (on while the charge still rises, off once it does not). Now
+  `Drive::golem_powered`, carried into the bearing; it was never set before.
+- **Step end (#16) timers**: a balance step's end stamps the stand-still clock with the game
+  clock plus 100 ms (the byte read before it clears). The zero-leg branch and the nav clamp
+  call the navigation slot, a stub returning false: equivalent. The clock stamp written last
+  has no reader.
+- **Class set-up (#1)**: 80/rate scales the step's approach speed in the feet iteration and
+  rate x 0.0125 the servo's measured motion; 1200/rate has no reader. Both ported.
+- **Body tick (#49)**: the off-balance arms come from the posture block's test alone (Exarust
+  added this tick's balance and support); a dormant body lying still captures its whole pose;
+  the get-up compares the rise with the heading (the locomotion request's), and a NaN progress
+  keeps the clip; the jolt's soft stop of the behaviour is wired for AI bodies (a tick late,
+  after Exarust's movement-stage jolt). The sampler tail was checked block by block and is
+  covered (the carry stage, the pin goals, the lift's push).
+- **Femur posture**: the quaternion product (engine math) is the Hamilton product with its
+  operands swapped; the samplers multiply the clip turn by the posture in that order, i.e. the
+  posture after the clip turn. Exarust had it the other way round. The leg turn and hinge
+  products (part flag 0x4000, set by the leg routine) are post-multiplied in the world frame by
+  Exarust's `fold_pose` and were not changed: their axes' frames are not traced.
+- **Held items' sleep**: an item attached to a hand hangs in its holder's body tree, which
+  shares one countdown from its root. Exarust's grip mark woke the item every tick; it now
+  shares the holder's countdown and sleep before the solver.
+
+Settled without a change:
+
+- The Height Query's swept nearest takes only hits at 0 < t (both its forms), and the down
+  body's foot probe starts at its contact: a contact on the floor misses in the original too.
+  Every game level runs the sphere mode (the grid chunk reader sets the scene's grid bit
+  unconditionally; nothing clears it).
+- The ghouls' half-scale head set-up is ported (the chest pin scale); the creature word 4 is
+  the arena team word, overwritten by the layout hooks; the linked-body list exists in 0.9.5
+  but Exarust's prop bodies hold the whole tree, so the lift's hold-out over it is equivalent;
+  body links never carry the plane flag (the registration masks their flags to 8); the share
+  recompute after the init's mobility change leaves shipped characters' shares unchanged.
+
+Open: the per-body draw lag (the original draws the latest state carried forward by the time
+since it was published; Exarust interpolates the last two ticks, every overstep reader would
+move with it), the leg relaxation's gate (the original relaxes every leg in reach in the feet
+routine's walking pass, without a support gate), the Fend entry and deadline (combat), the
+stab aim reset on a held re-place, the factory weapon's own rigid body.

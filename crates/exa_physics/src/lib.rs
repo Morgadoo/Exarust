@@ -848,7 +848,8 @@ impl CharacterBody {
 
     /// The feet position to draw `alpha` of the way into the next step.
     fn drawn(&self, alpha: f32) -> Option<Vec3> {
-        self.steps.map(|(now, before)| before.lerp(now, alpha))
+        self.steps
+            .map(|(now, before)| engine_math::lerp3(before, now, alpha))
     }
 
     /// One fixed step of `dt` seconds from `start`: across the ground to

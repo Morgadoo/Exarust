@@ -524,29 +524,36 @@ pub fn far_outside(weights: [f32; 4]) -> bool {
     largest_abs(weights) > 1.0
 }
 
-/// Weights with negatives (and NaN) dropped and the rest divided by their
-/// sum, so they add to 1; the original's sum normalisation. The original
+/// Weights with negatives (and NaN) dropped (`MAXPS` against zero: a
+/// weight not above zero, a NaN or −0 included, becomes +0) and the rest
+/// scaled by the reciprocal of their sum, so they add to 1; the original's
+/// sum normalisation, its sum taken `((w₁ + w₀) + w₂) + w₃`. The original
 /// multiplies by the processor's approximate reciprocal of the sum and has
-/// no guard; Exarust divides exactly and gives None when the sum is zero
-/// or NaN, for its callers to skip the hit.
+/// no guard; Exarust's reciprocal is exact (DEC-7) and it gives None when
+/// the sum is zero or NaN, for its callers to skip the hit.
 pub fn normalise_sum(weights: [f32; 4]) -> Option<[f32; 4]> {
-    let clamped = weights.map(|w| w.max(0.0));
-    let sum: f32 = clamped.iter().sum();
+    let clamped = weights.map(|w| max_first(w, 0.0));
+    let sum = ((clamped[1] + clamped[0]) + clamped[2]) + clamped[3];
     if sum.is_nan() || sum <= 0.0 {
         return None;
     }
-    Some(clamped.map(|w| w / sum))
+    let r = 1.0 / sum;
+    Some(clamped.map(|w| w * r))
 }
 
-/// [`normalise_sum`] followed by the original's max normalisation: the
-/// weights divided by their largest so that the largest is 1, and that
-/// largest's reciprocal (φ): 4 at the centroid, 1 on one particle. None
-/// when no weight is positive. The original's reciprocals are the
-/// processor's approximate ones; Exarust's are exact.
+/// The original's max normalisation: the weights times the reciprocal of
+/// their largest magnitude ([`largest_abs`]), so that the largest is ±1,
+/// and that reciprocal (φ). The original's reciprocal is the processor's
+/// approximate one; Exarust's is exact (DEC-7).
+pub fn scale_to_max(weights: [f32; 4]) -> ([f32; 4], f32) {
+    let r = 1.0 / largest_abs(weights);
+    (weights.map(|w| w * r), r)
+}
+
+/// [`normalise_sum`] followed by [`scale_to_max`]: φ is 4 at the
+/// centroid, 1 on one particle. None when no weight is positive.
 pub fn normalise_to_max(weights: [f32; 4]) -> Option<([f32; 4], f32)> {
-    let share = normalise_sum(weights)?;
-    let top = largest_abs(share);
-    Some((share.map(|w| w / top), 1.0 / top))
+    Some(scale_to_max(normalise_sum(weights)?))
 }
 
 /// A part as the meet test sees it: its sphere bound and mesh bound, and

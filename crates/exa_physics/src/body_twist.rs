@@ -125,9 +125,8 @@ pub fn twist(body: &mut Locomotor, by: &TwistBy) {
     } else {
         n.y * HEIGHT_SHARE
     };
-    let d = Vec3::new(n.x, y, n.z);
-    let length = (d.y * d.y + 0.0 + d.x * d.x + d.z * d.z).sqrt();
-    let dir = d * (1.0 / length);
+    // The second is the exact one: `y² + (x² + z²)`, one division.
+    let dir = crate::engine_math::normalize_exact(Vec3::new(n.x, y, n.z));
     body.twist = Quat::from_mat3a(&look_rotation(dir));
 }
 

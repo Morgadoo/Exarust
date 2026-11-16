@@ -1639,7 +1639,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
         let swept = placed.is_none() && cm(end - start).length_squared() > SWEEP_TRAVEL2;
 
         if swept {
-            let sweep = intersect::Sweep::new(start, end);
+            let sweep = intersect::Sweep::of_move(start, end);
             if !intersect::swept_sphere_aabb_hit(&sweep, r, mesh_centre, mesh_half) {
                 continue;
             }

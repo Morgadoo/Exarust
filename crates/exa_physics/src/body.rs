@@ -139,7 +139,7 @@ pub use slide_body::{PendingSlide, SlideBody};
 #[path = "body_rigid.rs"]
 mod rigid;
 pub use drag::{Grab, drag_pull};
-pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart};
+pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart, mobility_shares};
 
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
@@ -794,6 +794,13 @@ impl Part {
         for (p, wi) in self.positions.iter_mut().zip(w) {
             *p += delta * *wi;
         }
+    }
+
+    /// [`push_weighted`] on this part's particles: the original's link
+    /// push, which scales the weights by `scale` (a mobility share) before
+    /// the shared `delta`.
+    fn push_scaled(&mut self, w: &[f32; 4], delta: Vec3, scale: f32) {
+        push_weighted(&mut self.positions, w, delta, scale);
     }
 
     /// Records `delta` times the weights `w` in the placed-offset array
@@ -2285,6 +2292,13 @@ pub struct Drive {
     pub race: RaceMuscles,
     /// What the body takes from its own character's stats.
     pub stats: BodyStats,
+    /// Its golem suit is powered, which halves the standing thigh factor
+    /// and quarters the leg limit ([`Bearing::golem_powered`] each tick).
+    /// The character init sets it for a golem race; the armour pass's
+    /// golem-suit registration sets it from the suit's charge, and the
+    /// suit's worn tick turns it on while the charge still rises and off
+    /// once it does not.
+    pub golem_powered: bool,
     /// What the character tick knows of the body's character this tick.
     pub bearing: Bearing,
     /// Stance factor s: the share of its tone the body uses (T = tone·s).
@@ -2491,6 +2505,7 @@ impl Drive {
             race,
             stance: race.stance,
             stats,
+            golem_powered: race.golem,
             ..Self::default()
         }
     }
@@ -2512,6 +2527,7 @@ impl Default for Drive {
             supported: true,
             race: RaceMuscles::HUMAN,
             stats: BodyStats::HUMAN,
+            golem_powered: false,
             bearing: Bearing::default(),
             stance: RaceMuscles::HUMAN.stance,
             arm: 0.0,
@@ -3416,9 +3432,18 @@ impl Ragdoll {
         self.drive.as_ref().is_some_and(|d| d.step_told_ai())
     }
 
-    /// This tick's jolt told the body's behaviour (it locomoted).
+    /// This tick's jolt told the body's behaviour (it locomoted): the AI's
+    /// soft stop reads it (`exa_ai::route_walk::soft_stop_jolted_routes`).
     pub fn jolt_told(&self) -> bool {
         self.drive.as_ref().is_some_and(|d| d.steps.jolt_told)
+    }
+
+    /// Marks this tick's jolt as told, as the balance tick's jolt does for
+    /// a locomoting body (for a caller standing in for that tick).
+    pub fn tell_jolt(&mut self) {
+        if let Some(d) = self.drive.as_mut() {
+            d.steps.jolt_told = true;
+        }
     }
 
     /// The legs whose feet planted this tick (the walk's gait plants), in
@@ -3615,6 +3640,8 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.race = race;
             d.stance = race.stance;
+            // The init's golem branch powers the body's golem suit.
+            d.golem_powered = race.golem;
         }
         if race.golem {
             self.smooth_golem_links();
@@ -4466,6 +4493,35 @@ impl Ragdoll {
                 p.drawn_particles = (p.positions, p.positions);
             }
         }
+    }
+
+    /// Puts the body to sleep as its post-step does once its countdown is
+    /// down: countdown 0, its first sleeping tick next (which takes its
+    /// velocity away), and the three displacement records emptied (the
+    /// motion, the placed body's contact offsets and the smoothed motion).
+    fn fall_asleep(&mut self) {
+        self.countdown = 0;
+        self.sleep = Sleep::Asleep;
+        self.clear_placed_offsets();
+        for p in &mut self.parts {
+            p.moved = [Vec3::ZERO; 4];
+            p.smoothed = [Vec3::ZERO; 4];
+        }
+    }
+
+    /// A held item's share of its holder's sleep, as the original's body
+    /// tree shares one countdown from its root: the item takes `countdown`
+    /// (the larger of the two, so a moving item has already woken its
+    /// holder), sleeps once its holder sleeps and wakes with it.
+    pub fn follow_holder(&mut self, countdown: i32, holder_asleep: bool) {
+        if holder_asleep {
+            if !self.asleep() {
+                self.fall_asleep();
+            }
+            return;
+        }
+        self.wake_to(countdown);
+        self.countdown = countdown;
     }
 
     /// Takes `ticks` off the body's sleep countdown, never under one, as the
@@ -5412,16 +5468,7 @@ impl Ragdoll {
             p.two_ticks_ago = p.start;
         }
         if self.countdown <= SLEEP_COUNT {
-            self.countdown = 0;
-            self.sleep = Sleep::Asleep;
-            // The original's post-step empties its three displacement
-            // records: the motion, the placed body's contact offsets and
-            // the smoothed motion.
-            self.clear_placed_offsets();
-            for p in &mut self.parts {
-                p.moved = [Vec3::ZERO; 4];
-                p.smoothed = [Vec3::ZERO; 4];
-            }
+            self.fall_asleep();
         }
         if let Some(&root) = self.outward.first()
             && self.parts[root].positions[0].y < FALL_OUT_HEIGHT
@@ -5711,8 +5758,10 @@ impl Ragdoll {
                 } else {
                     l.shares
                 };
-                self.parts[l.part].push(&l.on_part, c * own);
-                self.parts[l.parent].push(&l.on_parent, -c * other);
+                // The original passes the correction and each part's share
+                // to its push, which scales the weights: c·(w·share).
+                self.parts[l.part].push_scaled(&l.on_part, c, own);
+                self.parts[l.parent].push_scaled(&l.on_parent, c, -other);
             }
             self.pull_world_links(i);
             // The hand's grabs come last among a limp part's links.
@@ -6103,20 +6152,40 @@ fn edge_length(v: Vec3) -> f32 {
     ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
 }
 
+/// The original's edge restore of two particles `a` and `b` to the length
+/// `rest`: the gap `d = b − a`, its length summed `(x² + z²) + y²`, and
+/// `d·(len − rest)/(len + len)` added to `a` and taken from `b`. No guard
+/// (a zero gap gives NaN); [`keep_rigid`] skips a gap of 1e-6 or less.
+pub fn restore_edge(a: &mut Vec3, b: &mut Vec3, rest: f32) {
+    let d = *b - *a;
+    let len = edge_length(d);
+    let c = d * ((len - rest) / (len + len));
+    *a += c;
+    *b -= c;
+}
+
+/// The original's weighted push of a part's four particles: the weights
+/// `w` times `scale` first, then each particle moved by `delta` times its
+/// scaled weight, `p + delta·(w·scale)` (a negative weight moves its
+/// particle the other way).
+pub fn push_weighted(positions: &mut [Vec3; 4], w: &[f32; 4], delta: Vec3, scale: f32) {
+    for (p, wi) in positions.iter_mut().zip(w) {
+        *p += delta * (*wi * scale);
+    }
+}
+
 /// Restores a part's six edge lengths.
 fn keep_rigid(p: &mut Part) {
     const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
     for (a, b) in EDGES {
         let rest = edge_length(p.rest[b] - p.rest[a]);
-        let d = p.positions[b] - p.positions[a];
-        let len = edge_length(d);
+        let len = edge_length(p.positions[b] - p.positions[a]);
         if len <= 1e-6 {
             continue;
         }
-        // (len − rest) / (len + len), times the gap.
-        let c = d * ((len - rest) / (len + len));
-        p.positions[a] += c;
-        p.positions[b] -= c;
+        // Every edge has a < b.
+        let (low, high) = p.positions.split_at_mut(b);
+        restore_edge(&mut low[a], &mut high[0], rest);
     }
     // As in the original, restoring the edges starts the strain afresh.
     p.strain = 0.0;
@@ -6444,6 +6513,33 @@ mod tests {
     }
 
     const NONE: &[[Vec3; 3]] = &[];
+
+    /// The link push scales the weights by the share first, then the
+    /// correction: c·(w·share) is 0xBF60A8BE here where (c·share)·w, the
+    /// old form, gave 0xBF60A8BD in the last bit.
+    #[test]
+    fn the_link_push_scales_the_weights_first() {
+        let mut p = [Vec3::ZERO; 4];
+        let w = [-0.647_396_5, 0.0, 0.0, 0.0];
+        push_weighted(&mut p, &w, Vec3::new(4.562_672_6, 0.0, 0.0), 0.297_094_4);
+        assert_eq!(p[0].x.to_bits(), 3_210_782_910);
+        assert_eq!(
+            ((4.562_672_6f32 * 0.297_094_4) * w[0]).to_bits(),
+            3_210_782_909
+        );
+    }
+
+    /// The edge restore moves both particles by half the stretch along the
+    /// gap: a 2-long edge of rest 1 ends 1 long, and a zero gap gives NaN.
+    #[test]
+    fn the_edge_restore_halves_the_stretch() {
+        let (mut a, mut b) = (Vec3::ZERO, Vec3::new(0.0, 2.0, 0.0));
+        restore_edge(&mut a, &mut b, 1.0);
+        assert_eq!((a, b), (Vec3::new(0.0, 0.5, 0.0), Vec3::new(0.0, 1.5, 0.0)));
+        let (mut a, mut b) = (Vec3::ONE, Vec3::ONE);
+        restore_edge(&mut a, &mut b, 1.0);
+        assert!(a.x.is_nan());
+    }
 
     /// A get-up's share is computed first and added to the base E + 0.005,
     /// all in double. E = 0.009986606 at progress 0.032463625 gives

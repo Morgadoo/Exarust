@@ -100,6 +100,9 @@ const PROBE_DEPTH: f32 = 2000.0;
 const LOWEST_ABOVE: f32 = 100.0;
 /// The ground a query that meets nothing gives (cm).
 const NO_GROUND: f32 = -10000.0;
+/// A balance step's end sets the stand-still stamp this far (ms) past the
+/// game clock, so the planted foot keeps its stand-still score bonus.
+const STILL_AFTER_BALANCE_STEP: f32 = 100.0;
 /// The character's ground counts while it lies at most this far (m) under
 /// the pelvis ([`Ragdoll::character_ground`]; Exarust's guard).
 const GROUND_UNDER_PELVIS: f32 = 3.0;
@@ -935,7 +938,7 @@ impl Ragdoll {
             m -= forward * (CROUCH_BACK / CM * bearing.crouch);
             let mut p = support_point(m, contacts[0], contacts[1]);
             if !bearing.moving {
-                p = p.lerp(centre, TOWARD_CENTRE);
+                p = crate::engine_math::lerp3(p, centre, TOWARD_CENTRE);
             }
             b.support_point = p;
             let o = m - p;
@@ -1362,7 +1365,7 @@ impl Ragdoll {
             let mut probe = if bearing.walking {
                 c
             } else {
-                c.lerp(leg.anchor, leg.blend)
+                crate::engine_math::lerp3(c, leg.anchor, leg.blend)
             };
             if let Some(gait) = &gait {
                 probe += forward * (gait.sway / CM);
@@ -1967,6 +1970,10 @@ fn end_step(
     chest: Vec3,
     fast: Vec3,
 ) {
+    // A balance step's end stamps the stand-still clock 100 ms past the
+    // game clock (the byte read before it clears; only with a leg to
+    // plant).
+    let balance_step = steps.balance_step;
     steps.stepping = false;
     steps.out_of_balance = false;
     steps.balance_step = false;
@@ -1989,6 +1996,9 @@ fn end_step(
     let Some(leg) = legs.get_mut(best.0) else {
         return;
     };
+    if balance_step {
+        steps.still_plus = steps.clock as f32 * steps::MS_PER_TICK + STILL_AFTER_BALANCE_STEP;
+    }
     let Some(spot) = spots.get(best.0).copied().flatten() else {
         return;
     };

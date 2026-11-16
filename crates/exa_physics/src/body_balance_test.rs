@@ -1462,6 +1462,28 @@ fn the_step_end_plants_the_nearest_free_foot() {
     }
 }
 
+/// A balance step's end stamps the stand-still clock 100 ms past the game
+/// clock, read before the step's bytes clear; another step's end leaves the
+/// stamp alone.
+#[test]
+fn a_balance_steps_end_stamps_the_stand_still_clock() {
+    let frame = Vec3::ZERO;
+    let (chest, fast) = (Vec3::ZERO, Vec3::ZERO);
+    let spots = [Some(Vec3::X), Some(Vec3::NEG_X)];
+    let ankles = [Vec3::X, Vec3::NEG_X];
+    let mut body = biped();
+    let (drive, legs) = (body.drive.as_mut().unwrap(), &mut body.legs);
+    drive.steps.clock = 50;
+    drive.steps.still_plus = 7.0;
+    drive.steps.balance_step = false;
+    end_step(&mut drive.steps, legs, &spots, &ankles, frame, chest, fast);
+    assert_eq!(drive.steps.still_plus, 7.0);
+    drive.steps.balance_step = true;
+    end_step(&mut drive.steps, legs, &spots, &ankles, frame, chest, fast);
+    assert!(!drive.steps.balance_step);
+    assert_eq!(drive.steps.still_plus, 50.0 * steps::MS_PER_TICK + 100.0);
+}
+
 /// The balance routine's feet-centre pass puts every leg's grip back at
 /// full each tick, whatever the solver's iterations left it at.
 #[test]
