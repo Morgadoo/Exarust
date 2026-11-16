@@ -143,6 +143,7 @@ pub fn hold_revived(
 /// that runs the fixed step.
 pub fn revive_brains(
     In(()): In<()>,
+    mut commands: Commands,
     mut brains: Brains,
     mut roots: Roots,
     mut bodies: Query<(Entity, &mut Ragdoll)>,
@@ -294,6 +295,13 @@ pub fn revive_brains(
                 body.place_at(&worlds);
             }
         }
+        // The placement (and the second one after the space-free query)
+        // puts the body's held items back in its hands where it stands.
+        if bodies.contains(entity) {
+            commands
+                .entity(entity)
+                .insert(exa_physics::grip::ReplaceHeld);
+        }
         // The footprint is stamped again where the body now stands, so the
         // brains reset after it plan around it.
         if let (Some(at), Some(grid), Some(prints)) =
@@ -323,7 +331,8 @@ pub(crate) mod tests {
 
     /// The pass takes its step, heals and clears every awake brain, leaves
     /// a collapsing one alone, and a roaming brain with no room to plan in
-    /// leaves combat where it stands (its space free: no other body).
+    /// leaves combat where it stands, its held items put back in its hands
+    /// (the placement's re-place); a brain that does not roam is not placed.
     #[test]
     fn the_revive_pass_resets_every_awake_brain() {
         let mut app = App::new();
@@ -366,9 +375,36 @@ pub(crate) mod tests {
         };
         let awake = spawn(&mut app, Condition::default(), true);
         let falling = spawn(&mut app, Condition::COLLAPSING, true);
+        let still = spawn(&mut app, Condition::default(), false);
+        let part = exa_physics::body::PartSetup {
+            bone: 1,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        for entity in [awake, falling, still] {
+            let body = Ragdoll::new(std::slice::from_ref(&part));
+            app.world_mut().entity_mut(entity).insert(body);
+        }
         app.update();
         // The reset runs at the start of the next fixed step.
         exa_physics::sim_app::run_fixed_commands(app.world_mut());
+        // Only the roaming body is placed, and its held items with it.
+        let replaced = |e: Entity| {
+            app.world()
+                .get::<exa_physics::grip::ReplaceHeld>(e)
+                .is_some()
+        };
+        assert!(replaced(awake));
+        assert!(!replaced(falling));
+        assert!(!replaced(still));
         assert!(
             app.world()
                 .resource::<crate::flow::FlowSteps>()

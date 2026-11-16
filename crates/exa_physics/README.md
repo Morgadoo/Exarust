@@ -1269,13 +1269,15 @@ the exact class 0x30). The character's equip and the torch
 light a held item's body and its `HeldGrip`. The grip builder keeps where
 the item sits under its holding hand (`grip::HeldRest`); after a move of
 its holder (a `grip::ReplaceHeld` on the holder's body: the player's
-ground placement, a Long Door) `grip_solve::replace_held` puts every item
+ground placement, a Long Door, a golem's alarm-return pose reset, a
+roaming AI's revive placement) `grip_solve::replace_held` puts every item
 back there at rest, turned half a turn if it was flipped since, wakes it,
 and gives an armed weapon's enabled second-hand link its new span as slack
 and held length (logged at info, "held re-place: …"). A freed item
 (`grip_solve::release_freed_grips`) becomes the root of its own tree, its
 link-iteration count 2 plus its parts less one, as the original's unlink
-writes it; a weapon whose holder is still in the world sends
+writes it, and its top part's contact mobility goes back to the base the
+arm setter scaled while it was held (`grip_solve::held_contact_base`); a weapon whose holder is still in the world sends
 `grip::CameLoose`, the holder's came-loose hook (shields and torches send
 none).
 

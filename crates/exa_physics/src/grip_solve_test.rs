@@ -142,8 +142,9 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
 
 /// A dropped item keeps every state bit it had except the strike flags the
 /// attach set, takes the dropped weapon's friction and stays a free body,
-/// the root of its own tree (link iterations 2 + its parts − 1); its holder,
-/// still in the world, hears that it came loose.
+/// the root of its own tree (link iterations 2 + its parts − 1), its top
+/// part's contact mobility back at its base; its holder, still in the
+/// world, hears that it came loose.
 #[test]
 fn a_dropped_item_clears_its_strike_flags() {
     use crate::grip::{GripRelease, GripSpec, HeldGrip, HeldKind};
@@ -155,6 +156,9 @@ fn a_dropped_item_clears_its_strike_flags() {
     body.parts[0].state = PartState(
         PartState::HELD | PartState::STRIKING | PartState::STRIKE_CHAIN | PartState::STRIKE_MARK,
     );
+    // The arm setter's scaled contact mobility while it was held.
+    let base = body.parts[0].inverse_mass;
+    body.parts[0].pairing.mobility = base * 0.3;
     let grip = HeldGrip {
         spec: GripSpec {
             hand: 0,
@@ -215,6 +219,8 @@ fn a_dropped_item_clears_its_strike_flags() {
     assert!(!state.has(PartState::STRIKE_CHAIN));
     assert!(!state.has(PartState::STRIKE_MARK));
     assert_eq!(body.parts[0].friction, 0.75);
+    // The drop puts the contact mobility back at its base.
+    assert_eq!(body.parts[0].pairing.mobility, base);
     assert!(body.held_by.is_none());
     assert!(app.world().get::<HeldGrip>(entity).is_none());
     assert!(app.world().get::<GripRelease>(entity).is_none());

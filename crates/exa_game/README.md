@@ -822,8 +822,9 @@ taken, the player their only contact at concern 10, the body unparked) with the 
 reset, and the alarm return the story revive runs before its save
 (`flow::Step::AlarmReturn`): while an alarm is armed, every awake golem
 within 3000 cm of the knocked-out player goes home (Stand 2, put at its
-home facing its home angle) and sleeps (statue bit and byte, statue rest,
-the sleep scales), and when one did the player is put 200 cm past the
+home facing its home angle, its held items put back in its hands after
+the move, `exa_physics::grip::ReplaceHeld`) and sleeps (statue bit and
+byte, statue rest, the sleep scales), and when one did the player is put 200 cm past the
 third-axis face of the `Alarm_` box holding the armed point, facing back
 across it, asking for motion 0x1d. Then the pass's second part,
 `revive_pass::reset_brains` (`flow::Step::ReviveBrains`), resets every AI
@@ -832,7 +833,8 @@ step in the world that holds the navigation grid (`revive_pass::revive_brains`):
 healed, contacts cleared, and a roaming one, its footprint lifted, moved
 room by room along two rounds of wander and home-side plans, placed,
 asked the space-free query (`exa_physics::sector_lists::space_taken`) and
-moved to the grid's nearest walkable point when its body meets another;
+moved to the grid's nearest walkable point when its body meets another,
+its held items then re-placed in its hands (`exa_physics::grip::ReplaceHeld`);
 its footprint is stamped again where it ends, and it leaves combat and
 returns to idle. `golem_body::rest_sleepers` keeps a
 sleeper's statue byte and gait word as the same statue rest: the sleep

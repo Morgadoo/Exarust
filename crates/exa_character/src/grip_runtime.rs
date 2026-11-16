@@ -511,9 +511,7 @@ pub fn scale_held_contacts(
         let Some(part) = body.parts.iter_mut().find(|p| p.parent.is_none()) else {
             continue;
         };
-        let base = mass
-            .and_then(|m| m.held_contact_base())
-            .unwrap_or(part.inverse_mass);
+        let base = exa_physics::grip_solve::held_contact_base(part, mass);
         if let Some(m) = held_contact_mobility(base, factor, grip.kind, armed)
             && m != part.pairing.mobility
         {

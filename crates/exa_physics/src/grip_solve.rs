@@ -412,6 +412,20 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
     }
 }
 
+/// The base a held item's contact mobility is scaled from while held and
+/// put back at when it is let go: a weapon's top part's contact mobility
+/// as the holding pass's mass redistribution left it
+/// ([`crate::weapon_mass::WeaponMass::held_contact_base`]), another item's
+/// registered mobility (`top`'s inverse mass) [Exarust stand-in where no
+/// weapon mass ran].
+pub fn held_contact_base(
+    top: &crate::body::Part,
+    mass: Option<&crate::weapon_mass::WeaponMass>,
+) -> f32 {
+    mass.and_then(|m| m.held_contact_base())
+        .unwrap_or(top.inverse_mass)
+}
+
 /// The root walk's base: a freed body's link-iteration count is this plus
 /// the nodes its subtree holds, less one (the original's global word 2).
 pub const LOOSE_ITERATION_BASE: i32 = 2;
@@ -461,10 +475,17 @@ pub fn share_holder_park(
 /// own tree, its link-iteration count [`LOOSE_ITERATION_BASE`] plus its
 /// parts less one (the count its root walk takes); and a weapon a holder
 /// still in the world let go of tells it ([`CameLoose`], the came-loose
-/// hook).
+/// hook). The item's top part takes its base contact mobility back
+/// ([`held_contact_base`]): the arm setter no longer scales it.
 pub fn release_freed_grips(
     mut commands: Commands,
-    mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll, Has<GripRelease>)>,
+    mut held: Query<(
+        Entity,
+        &mut HeldGrip,
+        &mut Ragdoll,
+        Has<GripRelease>,
+        Option<&crate::weapon_mass::WeaponMass>,
+    )>,
     bodies: Query<(Entity, &Ragdoll), Without<HeldGrip>>,
     mut loose: MessageWriter<crate::grip::CameLoose>,
 ) {
@@ -475,7 +496,7 @@ pub fn release_freed_grips(
             .map(|(_, grip, ..)| grip.holder_key),
         bodies.iter(),
     );
-    for (entity, mut grip, mut body, released) in &mut held {
+    for (entity, mut grip, mut body, released, mass) in &mut held {
         if !holding(&grip) {
             continue;
         }
@@ -513,6 +534,11 @@ pub fn release_freed_grips(
                     | crate::part::PartState::STRIKE_MARK,
             );
             part.friction = 0.75;
+        }
+        // The drop puts the top part's contact mobility back at its base,
+        // which the arm setter scaled while it was held.
+        if let Some(top) = body.parts.iter_mut().find(|p| p.parent.is_none()) {
+            top.pairing.mobility = held_contact_base(top, mass);
         }
         let nodes = body.parts.len() as i32;
         body.set_link_iterations(LOOSE_ITERATION_BASE + nodes - 1);
