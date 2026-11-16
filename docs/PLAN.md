@@ -1609,6 +1609,8 @@ the held terrain lane was checked with a free camera on the open outdoor arenas:
 
 the game GUI unit's uncalled rows are closed: the inventory's page buttons swap the weapon sets, the journal's entry list drops down and picks an entry, and an open game screen keeps the idle camera from turning (each shown before and after on the build worker's GPU); three readings corrected (the page-button callback, the pointer slot, the always-taken async inventory open) and the unit's control classes confirmed unreachable. Left: the journal's title edit, the async filling state, the arena help tip.
 
+the simulation's mesh queries run the original's per-triangle tests (the face record's closest point, the front push with its two floors, the swept push, the swept nearest of the Height Query, the two-sided test), replacing the library projection and the analytic drop; the overlap query now asks the two-sided test as the original does (a defect fixed); the segment slot is proven unreachable; readings corrected (the cloth-only swept slot, the morph-delta zero fill). Each binary repeats itself exactly on the build worker's GPU; traces differ from main from the first tick, as the contact arithmetic changed; pictures and FPS hold. Follow-ups: a sphere starting within its radius of a face is no longer met by the Height Query (a down body's foot probe), the point-ray Height Query mode, the render build's morph-delta stream.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
