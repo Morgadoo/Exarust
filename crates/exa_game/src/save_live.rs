@@ -4413,7 +4413,7 @@ mod tests {
         let mut package = std::fs::read(&file)
             .ok()
             .and_then(|bytes| save_package::PackageImage::read(&bytes).ok())
-            .unwrap_or_else(save_package::PackageImage::new);
+            .unwrap_or_default();
         package.put_section(&save_package::name("arenahub"), b"the saved hub");
         std::fs::write(&file, package.to_bytes()).unwrap();
         // A hub load that is not the match's return: the archive's.
