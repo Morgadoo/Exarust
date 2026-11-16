@@ -159,7 +159,8 @@ fn worn_changes_match_each_id_once() {
 }
 
 /// A container written back keeps its remaining entries' flags and places
-/// and adds new ones at the panel's origin with no flags.
+/// and adds new ones with no flags at the panel's far corner (its width and
+/// height times 40, as the original's container add writes them).
 #[test]
 fn a_changed_container_writes_back() {
     use exa_formats::containers::{Child, Container as Section};
@@ -187,16 +188,65 @@ fn a_changed_container_writes_back() {
             Child {
                 id: 12,
                 flags: 0,
-                x: 0,
-                y: 0
+                x: 160,
+                y: 160
             }
         ]
     );
 }
 
+/// An item catalogue of records, each id with its sections (tag, body).
+fn catalogue_of(records: &[(u32, Vec<(u32, Vec<u8>)>)]) -> ItemCatalogue {
+    let payloads: Vec<Vec<u8>> = records
+        .iter()
+        .map(|(_, sections)| {
+            let mut payload = Vec::new();
+            for (tag, body) in sections {
+                payload.extend(tag.to_le_bytes());
+                payload.extend(((8 + body.len()) as u32).to_le_bytes());
+                payload.extend(body);
+            }
+            payload
+        })
+        .collect();
+    let mut file = exa_formats::objdb::MAGIC.to_le_bytes().to_vec();
+    file.extend((16 * (records.len() as u32 + 1)).to_le_bytes());
+    let mut offset = 0u32;
+    for ((id, _), payload) in records.iter().zip(&payloads) {
+        for word in [*id, 0, offset, payload.len() as u32] {
+            file.extend(word.to_le_bytes());
+        }
+        offset += payload.len() as u32;
+    }
+    file.extend([0u8; 16]);
+    for payload in &payloads {
+        file.extend(payload);
+    }
+    let db = exa_formats::rdb::Database::parse(&file).unwrap();
+    ItemCatalogue::of_database(&db)
+}
+
+/// A weapon section's body with its flags word (the rest zero).
+fn weapon_body(flags: u32) -> (u32, Vec<u8>) {
+    let mut body = vec![0u8; 0x60];
+    body[..4].copy_from_slice(&flags.to_le_bytes());
+    (0x4000, body)
+}
+
+/// An item catalogue of weapons: each id with its weapon section's flags.
+fn weapon_catalogue(weapons: &[(u32, u32)]) -> ItemCatalogue {
+    let records: Vec<(u32, Vec<(u32, Vec<u8>)>)> = weapons
+        .iter()
+        .map(|&(id, flags)| (id, vec![weapon_body(flags)]))
+        .collect();
+    catalogue_of(&records)
+}
+
 /// A follower near the player searches the level's objects: it loots a
 /// placed chest's better sword (written back into the chest's section) and
-/// takes a loose blade lying in the world, which leaves the world.
+/// takes a loose blade lying in the world, which leaves the world. The
+/// re-arm's hands go through the inventory: the take into the hand holds
+/// the one-handed blade and the planned arms stow the two-handed sword.
 #[test]
 fn a_follower_searches_a_chest_and_a_loose_item() {
     let mut app = App::new();
@@ -219,6 +269,7 @@ fn a_follower_searches_a_chest_and_a_loose_item() {
     // The loose one is of another class, so neither take outweighs the
     // other (the held one stays listed and counts).
     items.loot.insert(102, sword(0x11, 6));
+    app.insert_resource(weapon_catalogue(&[(100, 0x21), (101, 0x21), (102, 0x11)]));
     app.insert_resource(items)
         .init_resource::<SearchWorld>()
         .init_resource::<OpenSearchScreens>()
@@ -653,4 +704,414 @@ fn the_search_reads_the_open_container_registry() {
     app.update();
     let open = app.world().resource::<OpenSearchScreens>().clone();
     assert!(!open.containers.is_open(7 | 0x2000_0000));
+}
+
+/// The re-arm's hands through the inventory. The stow is the planned arms:
+/// a one-handed weapon keeps a light stowed first beside it (its flags
+/// with it) and takes the first stowed slot with no flags; a two-handed
+/// one clears the second slot's item; a weapon without grip bits changes
+/// nothing. The wield marks the first unmarked carried entry held and the
+/// take into the hand holds a weapon; an item without a weapon section
+/// only gets the mark.
+#[test]
+fn the_rearm_hands_go_through_the_inventory() {
+    use exa_items::possession::{HELD, ItemKind};
+    let kind_of = |id: u32| match id {
+        5 => Some(ItemKind {
+            light: true,
+            weapon: Some(0x11),
+            ..ItemKind::default()
+        }),
+        6 => Some(ItemKind {
+            weapon: Some(0x11),
+            ..ItemKind::default()
+        }),
+        7 => Some(ItemKind {
+            weapon: Some(0x21),
+            ..ItemKind::default()
+        }),
+        8 => Some(ItemKind {
+            weapon: Some(0x01),
+            ..ItemKind::default()
+        }),
+        _ => None,
+    };
+    let mut p = Possessions {
+        stowed: [Hand { id: 5, flags: 3 }, Hand::default()],
+        ..Possessions::default()
+    };
+    stow(&mut p, 6, kind_of);
+    assert_eq!(p.stowed, [Hand { id: 6, flags: 0 }, Hand { id: 5, flags: 3 }]);
+    stow(&mut p, 8, kind_of);
+    assert_eq!(p.stowed[0].id, 6);
+    stow(&mut p, 7, kind_of);
+    assert_eq!(p.stowed, [Hand { id: 7, flags: 0 }, Hand { id: 0, flags: 3 }]);
+
+    let entry = |id, flags| Carried { id, flags, x: 0, y: 0 };
+    let mut p = Possessions {
+        carried: vec![entry(6, HELD), entry(6, 0), entry(9, 0)],
+        ..Possessions::default()
+    };
+    assert!(wield(&mut p, 6, kind_of));
+    assert_eq!(p.out[0].id, 6);
+    assert_eq!(p.carried[1].flags, HELD);
+    assert!(!wield(&mut p, 9, kind_of));
+    assert_eq!((p.out[0].id, p.carried[2].flags), (6, HELD));
+}
+
+/// A comment barks through the near activation: the speaker's
+/// `ContextPhrase` takes the phrase; with the installed roles
+/// (`EXANIMA_DIR`) the Explorer role's `ContextPhrase` topic toward the
+/// Leader role (30, which the recruitment gives the follower toward the
+/// player) is activated in the follower's memory of the player.
+#[test]
+fn a_comment_activates_the_context_phrase_topic() {
+    let scripts = std::env::var("EXANIMA_DIR")
+        .ok()
+        .and_then(|dir| exa_assets::GameData::open(std::path::Path::new(&dir)).ok())
+        .map(|data| exa_script::Scripts::load(&data).0)
+        .unwrap_or_default();
+    let mut conversations = exa_script::Conversations::default();
+    let mut follower = exa_script::cast::Character::new(5, "Derrin");
+    follower.add_role(&scripts.roles, COMMENT_ROLE);
+    follower.add_relation(1, COMMENT_TOWARD, 0);
+    follower
+        .contacts
+        .push(exa_script::cast::Contact::new(1));
+    conversations.cast.characters = vec![
+        follower,
+        exa_script::cast::Character::new(1, "player"),
+    ];
+    let topic = exa_formats::roles::Name::from_bytes(COMMENT_TOPIC);
+    let shipped = scripts
+        .roles
+        .get(COMMENT_ROLE)
+        .and_then(|r| r.dialogue_for(COMMENT_TOWARD, 0))
+        .and_then(|d| d.find(&topic))
+        .is_some();
+    let mut app = App::new();
+    app.add_message::<SearchComment>()
+        .add_message::<exa_script::ScriptEffect>()
+        .insert_resource(conversations)
+        .insert_resource(scripts)
+        .add_systems(Update, bark_search_comments);
+    app.world_mut().write_message(SearchComment {
+        speaker: 5,
+        phrase: "I found a sword.".into(),
+    });
+    app.update();
+    let conversations = app.world().resource::<exa_script::Conversations>();
+    let me = conversations.cast.get(5).unwrap();
+    assert_eq!(me.context_phrase, "I found a sword.");
+    if shipped {
+        let block = exa_script::topics::block(me, 1, COMMENT_TOWARD, COMMENT_ROLE);
+        let words = block.and_then(|m| m.words.clone()).unwrap_or_default();
+        assert!(
+            words.iter().skip(1).any(|w| *w != 0),
+            "the topic is activated: {words:?}"
+        );
+    } else if std::env::var("EXANIMA_DIR").is_ok() {
+        panic!("the shipped Explorer role has no ContextPhrase topic toward the Leader");
+    }
+}
+
+/// The leader the search weighs for: the first contact attended 50 or
+/// more that is a living character holding the Player role. A follower
+/// whose leader is in sight tells it about a special piece instead of
+/// taking it (the comment is barked); with the leader dead it takes the
+/// piece itself.
+#[test]
+fn a_living_leader_hears_about_a_special_piece() {
+    for dead in [false, true] {
+        let mut app = App::new();
+        let mut items = SearchItems {
+            tried: true,
+            ..SearchItems::default()
+        };
+        let mut piece = search::Apparel {
+            coverage: [0; 20],
+            protection: [10; 4],
+            occupancy: [0; 20],
+            special: 1,
+            model_mark: 0,
+            sound: 2,
+        };
+        piece.coverage[0] = 100;
+        piece.occupancy[0] = 1;
+        items.loot.insert(100, Loot::Apparel(Box::new(piece)));
+        app.insert_resource(items)
+            .init_resource::<SearchWorld>()
+            .init_resource::<OpenSearchScreens>()
+            .init_resource::<exa_physics::sim_app::FrameCommands>()
+            .insert_resource(BodyTicks(0))
+            .add_message::<SearchShot>()
+            .add_message::<SearchComment>()
+            .add_message::<exa_audio::HandlingSounded>()
+            .add_systems(
+                Update,
+                (
+                    follow_and_search,
+                    carry_out_search,
+                    send_search_shots,
+                    exa_ai::route_walk::walk_routes,
+                )
+                    .chain(),
+            );
+        app.world_mut().spawn((
+            Player,
+            GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 20.0)),
+        ));
+        let mut leader_role = exa_formats::roles::HeldRole {
+            id: exa_ai::roles::PLAYER,
+            weight: 1.0,
+            explicit: true,
+            inherited: 0,
+            values: Vec::new(),
+        };
+        leader_role.explicit = true;
+        let leader = app
+            .world_mut()
+            .spawn((
+                PlayerBody::new(0.0),
+                Roles(vec![leader_role]),
+                if dead { Condition::DEAD } else { Condition::default() },
+                GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 20.0)),
+                Possessions::default(),
+            ))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
+            ))
+            .id();
+        let mut npc = Npc::new([0.0; 4]);
+        npc.applied = Some(exa_ai::activity::Applied {
+            activity: 4,
+            idle_activity: 6,
+            state: IdleState::Follow,
+            leaves_party: false,
+            follow_band_cm: Some(400.0),
+            phase_word: 1,
+            create_idle: None,
+            drop_idle: false,
+            skipped: Vec::new(),
+        });
+        npc.search = Some(Search::new());
+        npc.contacts.push(exa_ai::contacts::ContactRecord {
+            id: leader.to_bits(),
+            attention: 60.0,
+            ..Default::default()
+        });
+        let follower = app
+            .world_mut()
+            .spawn((
+                npc,
+                exa_ai::Duellist::new(leader),
+                Condition::default(),
+                Transform::default(),
+                GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
+                ChildOf(root),
+                CharacterId(5),
+                Possessions::default(),
+            ))
+            .id();
+        let chest_id = exa_formats::objdb::LOCAL | 0x32;
+        app.world_mut().spawn((
+            exa_world::PlacedItem {
+                id: 0x32,
+                tagged_id: chest_id,
+                condition: 0,
+            },
+            exa_world::ObjectSections {
+                placement: 0,
+                usable: None,
+                use_script: None,
+                container: Some(exa_formats::containers::Container {
+                    width: 4,
+                    height: 4,
+                    capacity: 20,
+                    max_item: 5,
+                    children: vec![exa_formats::containers::Child {
+                        id: 100,
+                        flags: 0,
+                        x: 0,
+                        y: 0,
+                    }],
+                }),
+            },
+            GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 23.0)),
+        ));
+        let mut comments = Vec::new();
+        let mut sounds = Vec::new();
+        for tick in 1..8000u64 {
+            app.world_mut().resource_mut::<BodyTicks>().0 = tick;
+            let velocity = app
+                .world()
+                .get::<CharacterBody>(root)
+                .unwrap()
+                .desired_velocity;
+            let mut gt = app.world_mut().get_mut::<GlobalTransform>(root).unwrap();
+            *gt = GlobalTransform::from_translation(gt.translation() + velocity * 0.012);
+            app.update();
+            comments.extend(
+                app.world_mut()
+                    .resource_mut::<Messages<SearchComment>>()
+                    .drain(),
+            );
+            sounds.extend(
+                app.world_mut()
+                    .resource_mut::<Messages<exa_audio::HandlingSounded>>()
+                    .drain(),
+            );
+            let worn = &app.world().get::<Possessions>(follower).unwrap().worn;
+            if !comments.is_empty() || !worn.is_empty() {
+                break;
+            }
+        }
+        let mine = app.world().get::<Possessions>(follower).unwrap();
+        if dead {
+            assert!(comments.is_empty(), "{comments:?}");
+            assert_eq!(mine.worn.iter().map(|w| w.id).collect::<Vec<_>>(), [100]);
+            // The put-on's handling sound plays at the follower.
+            assert_eq!(sounds.len(), 1, "{sounds:?}");
+            assert_eq!(sounds[0].index, 2);
+        } else {
+            assert_eq!(comments.len(), 1, "{mine:?}");
+            assert_eq!(comments[0].speaker, 5);
+            assert!(mine.worn.is_empty());
+        }
+    }
+}
+
+/// A dead body that still grips its shield: when the searcher takes the
+/// shield (here listed among the body's worn items, the take's own test),
+/// the grip lets go, the shield's node leaves the world, the body's second
+/// hand and held entry are cleared and its worn list keeps the item.
+#[test]
+fn a_shield_taken_off_the_dead_leaves_its_arm() {
+    let mut app = App::new();
+    let mut items = SearchItems {
+        tried: true,
+        ..SearchItems::default()
+    };
+    let mut piece = search::Apparel {
+        coverage: [0; 20],
+        protection: [10; 4],
+        occupancy: [0; 20],
+        special: 0,
+        model_mark: 0,
+        sound: 0,
+    };
+    piece.coverage[0] = 100;
+    piece.occupancy[0] = 1;
+    items.loot.insert(200, Loot::Apparel(Box::new(piece)));
+    app.insert_resource(items)
+        .insert_resource(catalogue_of(&[(200, vec![(0x8000, vec![0u8; 0x40])])]))
+        .init_resource::<SearchWorld>()
+        .init_resource::<OpenSearchScreens>()
+        .init_resource::<exa_physics::sim_app::FrameCommands>()
+        .insert_resource(BodyTicks(0))
+        .add_message::<SearchShot>()
+        .add_message::<SearchComment>()
+        .add_message::<exa_audio::HandlingSounded>()
+        .add_systems(
+            Update,
+            (
+                follow_and_search,
+                carry_out_search,
+                send_search_shots,
+                exa_ai::route_walk::walk_routes,
+            )
+                .chain(),
+        );
+    let player = app
+        .world_mut()
+        .spawn((
+            Player,
+            GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 20.0)),
+        ))
+        .id();
+    let root = app
+        .world_mut()
+        .spawn((
+            CharacterBody::default(),
+            GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
+        ))
+        .id();
+    let mut npc = Npc::new([0.0; 4]);
+    npc.applied = Some(exa_ai::activity::Applied {
+        activity: 4,
+        idle_activity: 6,
+        state: IdleState::Follow,
+        leaves_party: false,
+        follow_band_cm: Some(400.0),
+        phase_word: 1,
+        create_idle: None,
+        drop_idle: false,
+        skipped: Vec::new(),
+    });
+    npc.search = Some(Search::new());
+    let follower = app
+        .world_mut()
+        .spawn((
+            npc,
+            exa_ai::Duellist::new(player),
+            Condition::default(),
+            Transform::default(),
+            GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
+            ChildOf(root),
+            CharacterId(5),
+            Possessions::default(),
+        ))
+        .id();
+    let shield = app.world_mut().spawn(Name::new("shield")).id();
+    let guard = exa_combat::block::ShieldHold {
+        item: shield,
+        guard: Default::default(),
+    };
+    let body = app
+        .world_mut()
+        .spawn((
+            Condition::DEAD,
+            GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 23.0)),
+            CharacterId(6),
+            guard,
+            Possessions {
+                out: [Hand::default(), Hand { id: 200, flags: 0 }],
+                worn: vec![ItemRef { id: 200, flags: 0 }],
+                carried: vec![Carried {
+                    id: 200,
+                    flags: exa_items::possession::HELD,
+                    x: 0,
+                    y: 0,
+                }],
+                ..Possessions::default()
+            },
+        ))
+        .id();
+    let mut gone = false;
+    for tick in 1..4000u64 {
+        app.world_mut().resource_mut::<BodyTicks>().0 = tick;
+        let velocity = app
+            .world()
+            .get::<CharacterBody>(root)
+            .unwrap()
+            .desired_velocity;
+        let mut gt = app.world_mut().get_mut::<GlobalTransform>(root).unwrap();
+        *gt = GlobalTransform::from_translation(gt.translation() + velocity * 0.012);
+        app.update();
+        if app.world().get_entity(shield).is_err() {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "the shield leaves the world");
+    let theirs = app.world().get::<Possessions>(body).unwrap();
+    assert_eq!(theirs.out[1].id, 0);
+    assert!(theirs.carried.is_empty(), "{theirs:?}");
+    assert_eq!(theirs.worn.iter().map(|w| w.id).collect::<Vec<_>>(), [200]);
+    let mine = app.world().get::<Possessions>(follower).unwrap();
+    assert_eq!(mine.worn.iter().map(|w| w.id).collect::<Vec<_>>(), [200]);
 }

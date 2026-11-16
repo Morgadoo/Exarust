@@ -58,15 +58,18 @@
 //! The world edits the tick returns as deeds are carried out by
 //! [`apply_deed`]: taking a loose item despawns its object, taking from a
 //! container removes its first matching entry, taking a corpse's worn item
-//! releases it from the corpse's grip when it holds it there and otherwise
-//! removes it from the worn list, and taking a carried entry drops that
-//! entry. Wearing runs the equip conflict pass first (a worn piece it
-//! overlaps with a model byte over 50 refuses it; every other overlapping
-//! piece comes off into the carried list, the underwear excepted, which is
-//! dropped), then puts the item on before taking it from its source;
-//! carrying, wielding and stowing change the pack; dropping waits on a
-//! locked pack and needs the item's size within the container's largest
-//! item. Comments change no state.
+//! lets go of the shield its body grips when that is the item and otherwise
+//! removes it from the worn list, and taking a carried entry removes only
+//! a held entry of it (so a looted carried item stays listed on the corpse,
+//! as in the original). Wearing runs the equip conflict pass first (a worn
+//! piece it overlaps with a model byte over 50 refuses it; every other
+//! overlapping piece comes off into the carried list, the underwear
+//! excepted, which is dropped), then puts the item on before taking it
+//! from its source; carrying adds to the pack; wielding marks the carried
+//! entry held, and the hands themselves are the inventory's (the take into
+//! the hand and the planned arms, carried out by the game); dropping waits
+//! on a locked pack, needs a carried entry of the item and the item's size
+//! within the container's largest item. Comments change no state.
 //!
 //! Evidence: the original's search activity (its tick, gathering, picking,
 //! look sweep, item weighing, comments, re-equipping and tidying), the item
@@ -196,6 +199,9 @@ pub struct Corpse {
     pub pack: Pack,
     /// Its object in the scene.
     pub object: usize,
+    /// The item of the shield its body still grips (a collapse leaves the
+    /// shield on the arm), whose take from the worn list releases it.
+    pub shield: Option<u32>,
 }
 
 /// A container's contents.
@@ -254,6 +260,8 @@ mod at {
     pub const COVERAGE: usize = 0x150;
     pub const PROTECTION: usize = 0x1A0;
     pub const APPAREL_SPECIAL: usize = 0x214;
+    /// The handling sound's index (its foley class; 0 for none).
+    pub const APPAREL_SOUND: usize = 0x1A6;
     /// The model section's model byte.
     pub const MODEL_MARK: usize = 0x1C;
     /// Weapon: flags word, quality, damage, thrust, the tier byte (its low
@@ -310,6 +318,7 @@ impl Apparel {
             occupancy: std::array::from_fn(|i| u64_at(body, at::OCCUPANCY + 8 * i)),
             special: byte_at(body, at::APPAREL_SPECIAL),
             model_mark: mark,
+            sound: byte_at(body, at::APPAREL_SOUND),
         })
     }
 }
@@ -339,6 +348,8 @@ pub struct Apparel {
     pub special: u8,
     /// The model byte above which a worn piece leaves no room [?].
     pub model_mark: u8,
+    /// Its handling sound's index, which a put-on plays (0: none).
+    pub sound: u8,
 }
 
 /// A weapon: its flags, quality, damage, thrust byte, tier (low 5 bits of
@@ -506,9 +517,11 @@ pub enum Deed {
         source: Source,
         item: u32,
     },
-    /// Take `item` in the main hand.
+    /// Take `item` in the main hand: its carried entry is marked held here,
+    /// and the inventory's take into the hand records it (the caller).
     Wield { item: u32 },
-    /// Stow `item` as the second weapon.
+    /// Plan `item` as the stowed weapon: the inventory's planned arms (the
+    /// caller) put it in the first stowed slot by its grip.
     Stow { item: u32 },
     /// Leave `item` in the container `container`.
     Drop { item: u32, container: u32 },
@@ -595,17 +608,24 @@ pub trait Searcher {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Contact {
     pub attention: f32,
+    /// The contact is a character (not an entity).
     pub character: bool,
+    /// Its body is in the dead state.
     pub dead: bool,
+    /// It holds the Player role (7).
     pub player: bool,
 }
 
+/// The attention a leader needs.
+pub const LEADER_ATTENTION: f32 = 50.0;
+
 /// The first contact with attention 50 or more that is a living character
-/// holding the Player role.
+/// holding the Player role. The attention test lets a NaN through, as the
+/// original's compare (only a smaller attention is skipped).
 pub fn find_leader(contacts: &[Contact]) -> Option<usize> {
-    contacts
-        .iter()
-        .position(|c| 50.0 <= c.attention && c.character && !c.dead && c.player)
+    contacts.iter().position(|c| {
+        !(c.attention < LEADER_ATTENTION) && c.character && !c.dead && c.player
+    })
 }
 
 /// A phrase table: templates with one `[a]` or `[i]` placeholder, how many
@@ -1548,21 +1568,18 @@ pub fn take_from_container(container: &mut Container, item: u32) -> bool {
     true
 }
 
-/// Takes a corpse's worn item off it: the item the corpse grips is released,
-/// its second hand slot cleared and its carried entry dropped (the worn
-/// list keeps it); anything else leaves the worn list. True when the item
-/// was there.
-///
-/// The original tests the item of the corpse's gripped object and clears
-/// the second hand slot (the slot after the first hand's id and flags);
-/// Exarust has no grip object and takes the item in that second slot as the
-/// gripped one (a stand-in, labelled as such).
-pub fn take_worn(pack: &mut Pack, item: u32) -> bool {
-    if pack.hands[1] == item {
+/// Takes a corpse's worn item off it. When its body still grips a shield
+/// that is the item, the shield is let go (`shield` cleared, the caller
+/// releases the grip and takes the shield's node out of the world), the
+/// second hand slot is cleared and the carried entry the hand held is
+/// removed ([`remove_held_entry`]); otherwise the first worn entry of the
+/// item leaves the worn list (the caller then gives the body its underwear
+/// rule and a refit). True when the item was the shield or worn.
+pub fn take_worn(pack: &mut Pack, shield: &mut Option<u32>, item: u32) -> bool {
+    if *shield == Some(item) {
+        *shield = None;
         pack.hands[1] = 0;
-        if let Some(at) = pack.carried.iter().position(|c| c.item == item) {
-            pack.carried.remove(at);
-        }
+        remove_held_entry(&mut pack.carried, item);
         return true;
     }
     let Some(at) = pack.worn.iter().position(|w| *w == item) else {
@@ -1572,17 +1589,30 @@ pub fn take_worn(pack: &mut Pack, item: u32) -> bool {
     true
 }
 
-/// Takes `item` out of a corpse's carried entries and clears the fourth
-/// hand when it holds the same item. True when the entry was there.
+/// Removes the last carried entry of `item` that carries the held mark
+/// ([`SKIP_FLAG`]) and answers its index; an entry without the mark is never
+/// removed.
+pub fn remove_held_entry(carried: &mut Vec<Carried>, item: u32) -> Option<usize> {
+    let at = carried
+        .iter()
+        .rposition(|c| c.item == item && c.flags & SKIP_FLAG != 0)?;
+    carried.remove(at);
+    Some(at)
+}
+
+/// Takes `item` out of a corpse's carried entries as the original's carried
+/// take does: only an entry with the held mark is removed
+/// ([`remove_held_entry`]), and the fourth hand is cleared when it holds the
+/// item. The search's carried loot skips marked entries, so a carried item
+/// it takes stays listed on the corpse: the original's own result, kept.
+/// True when an entry or the hand changed.
 pub fn take_carried(pack: &mut Pack, item: u32) -> bool {
-    let Some(at) = pack.carried.iter().position(|c| c.item == item) else {
-        return false;
-    };
-    pack.carried.remove(at);
-    if pack.hands[3] == item {
+    let removed = remove_held_entry(&mut pack.carried, item).is_some();
+    let hand = pack.hands[3] == item;
+    if hand {
         pack.hands[3] = 0;
     }
-    true
+    removed || hand
 }
 
 /// Adds `item` to a container when its record's size byte is within the
@@ -1600,16 +1630,24 @@ pub fn add_to_container(container: &mut Container, item: u32, size: Option<u8>) 
     true
 }
 
-/// Drops `item` from `pack` into `container`: a locked pack refuses, the
-/// item must be carried or in a hand, and its size must fit the container.
-/// True when it went in.
+/// The id tags of the two object databases a container can be in: the
+/// world's and the level's.
+pub const DATABASE_TAGS: u32 = 0xC000_0000;
+
+/// Drops `item` from `pack` into `container`, as the original's drop job:
+/// a locked pack refuses (the job would wait), the item's first carried
+/// entry is found (without one the job stops: an item only in a hand is
+/// not dropped), the container must be in an object database and the item's
+/// size must fit it; the carried entry is then removed (a hand that holds
+/// the item keeps it). True when it went in.
 pub fn drop_item(scene: &mut Scene, pack: &mut Pack, container: u32, item: u32) -> bool {
     if pack.locked {
         return false;
     }
-    let carried = pack.carried.iter().position(|c| c.item == item);
-    let hand = pack.hands.iter().position(|h| *h == item);
-    if carried.is_none() && hand.is_none() {
+    let Some(at) = pack.carried.iter().position(|c| c.item == item) else {
+        return false;
+    };
+    if container & DATABASE_TAGS == 0 {
         return false;
     }
     let size = scene.sizes.get(&item).copied();
@@ -1619,13 +1657,7 @@ pub fn drop_item(scene: &mut Scene, pack: &mut Pack, container: u32, item: u32) 
     if !add_to_container(c, item, size) {
         return false;
     }
-    match (carried, hand) {
-        (Some(at), _) => {
-            pack.carried.remove(at);
-        }
-        (None, Some(at)) => pack.hands[at] = 0,
-        (None, None) => {}
-    }
+    pack.carried.remove(at);
     true
 }
 
@@ -1633,18 +1665,18 @@ pub fn drop_item(scene: &mut Scene, pack: &mut Pack, container: u32, item: u32) 
 ///
 /// Taking a loose item despawns its object; taking from a container removes
 /// the first matching entry and compacts the list; taking a corpse's worn
-/// item releases it from the corpse's grip when it holds it there (the
-/// second hand slot, and its carried entry), and otherwise removes it from the worn
-/// list; taking a carried entry removes that entry. Carrying adds to the
-/// pack; wearing runs the equip conflict pass ([`equip_conflicts`]; a
-/// refusal changes nothing), puts the item on, takes it out of the carried
-/// list and then out of its source; wielding fills the main hand, its
-/// carried entry marked held and the old main's mark cleared, and stowing
-/// fills the first stowed slot; both leave the carried list holding the
-/// item, as the original's inventory keeps its hands' items. Dropping waits while the pack is locked, needs the
-/// item carried (or in a hand) and refuses when the item's size is unknown
-/// or over the container's largest item; it then appends the item and
-/// takes it out of the pack. A comment changes no state.
+/// item lets go of the shield its body grips when that is the item, and
+/// otherwise removes it from the worn list ([`take_worn`]); taking a carried
+/// entry removes only a held one ([`take_carried`]). Carrying adds to the
+/// pack. Wearing needs the object still in the scene, runs the equip
+/// conflict pass ([`equip_conflicts`]; a refusal changes nothing), puts the
+/// item on, takes it out of the carried list and then out of its source
+/// (the caller plays the piece's handling sound). Wielding marks the item's
+/// first unmarked carried entry held, as the original's re-arm marks it
+/// before it asks for the take into the hand; the hand itself, and the
+/// stow, are the inventory's (the caller's take-in and planned arms), so
+/// neither changes the hands here. Dropping is [`drop_item`]. A comment
+/// changes no state.
 pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
     match deed {
         Deed::Take {
@@ -1666,7 +1698,11 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
             source,
             item,
         } => {
-            if !equip_conflicts(&scene.items, pack, *item) {
+            let present = scene
+                .objects
+                .get(*object)
+                .is_some_and(|o| o.kind & object::PRESENT != 0);
+            if !present || !equip_conflicts(&scene.items, pack, *item) {
                 return false;
             }
             if !pack.worn.contains(item) {
@@ -1679,15 +1715,22 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
             true
         }
         Deed::Wield { item } => {
-            wield(pack, *item);
+            mark_held(&mut pack.carried, *item);
             true
         }
-        Deed::Stow { item } => {
-            pack.hands[2] = *item;
-            true
-        }
+        Deed::Stow { .. } => true,
         Deed::Drop { item, container } => drop_item(scene, pack, *container, *item),
         Deed::Comment { .. } => true,
+    }
+}
+
+/// Marks the first carried entry of `item` without the held mark.
+fn mark_held(carried: &mut [Carried], item: u32) {
+    if let Some(c) = carried
+        .iter_mut()
+        .find(|c| c.item == item && c.flags & SKIP_FLAG == 0)
+    {
+        c.flags |= SKIP_FLAG;
     }
 }
 
@@ -1729,39 +1772,6 @@ pub fn equip_conflicts(items: &BTreeMap<u32, Loot>, pack: &mut Pack, item: u32) 
     true
 }
 
-/// Takes `item` in the main hand: the item that was there returns to the
-/// pack (its carried entry loses the held mark) and the item's first
-/// unmarked carried entry takes the mark, as the original's wield marks the
-/// entry and its hand job frees the hand first. Both stay listed.
-fn wield(pack: &mut Pack, item: u32) {
-    let old = pack.hands[0];
-    if old != 0
-        && old != item
-        && let Some(c) = pack
-            .carried
-            .iter_mut()
-            .find(|c| c.item == old && c.flags & SKIP_FLAG != 0)
-    {
-        c.flags &= !SKIP_FLAG;
-    }
-    match pack
-        .carried
-        .iter_mut()
-        .find(|c| c.item == item && c.flags & SKIP_FLAG == 0)
-    {
-        Some(c) => c.flags |= SKIP_FLAG,
-        None => {
-            if !pack.carried.iter().any(|c| c.item == item) {
-                pack.carried.push(Carried {
-                    item,
-                    flags: SKIP_FLAG,
-                });
-            }
-        }
-    }
-    pack.hands[0] = item;
-}
-
 fn take(scene: &mut Scene, object: usize, source: Source, item: u32) -> bool {
     match source {
         Source::Item => {
@@ -1789,7 +1799,7 @@ fn take(scene: &mut Scene, object: usize, source: Source, item: u32) -> bool {
             let Some(corpse) = scene.corpses.get_mut(at) else {
                 return false;
             };
-            take_worn(&mut corpse.pack, item)
+            take_worn(&mut corpse.pack, &mut corpse.shield, item)
         }
         Source::Carried => {
             let Some(at) = scene.objects.get(object).and_then(|o| o.corpse) else {

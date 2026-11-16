@@ -52,7 +52,7 @@ pub use music::{
 pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};
 pub use sounds::{
-    FOLEY_GOLEM, FOLEY_PLAYER, HEAL, HealSound, PointSounded, SWING, foley_set, hit_set,
+    FOLEY_GOLEM, FOLEY_PLAYER, HEAL, HandlingSounded, HealSound, PointSounded, SWING, foley_set, hit_set,
     lock_sound_levels,
 };
 
@@ -69,6 +69,7 @@ impl Plugin for AudioPlugin {
             .add_message::<sounds::HealSound>()
             .add_message::<exa_combat::fighter::SecondWindFired>()
             .add_message::<sounds::PointSounded>()
+            .add_message::<sounds::HandlingSounded>()
             .add_message::<music::MusicOverlay>()
             .add_message::<exa_physics::mechanism::LockSounded>()
             .add_message::<exa_combat::impact::ImpactSounded>()
@@ -104,6 +105,12 @@ impl Plugin for AudioPlugin {
                     efx_bus::drive_reverb_bus,
                 )
                     .chain(),
+            )
+            .add_systems(
+                Update,
+                sounds::handling_sounds
+                    .after(sounds::named_sounds)
+                    .before(playback::advance_audio_environment),
             )
             .add_systems(
                 Update,
