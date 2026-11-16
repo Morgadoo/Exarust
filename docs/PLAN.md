@@ -1507,6 +1507,8 @@ the AI tick's route walk and path follower are ported from the assembly: each ch
 
 the live solver takes the scene's own grid from the level's grid chunk: parts are bucketed by the original's flat cell index, and a part crossing into the grid's first or last row goes back to where it stood two ticks before and is parked, with the overflow logged. The static collider grid's origin bug is fixed, so a long wall is found from every cell it reaches. The pair contact uses the transpose relative frame; the pair pass and friction use the original's doubles, travel order, NaN branch and push order; the level impact gates compare in double and skip disabled bodies. Determinism runs and scenes owed while the GPU is on hold.
 
+the base form's task rules run in the live window manager: forms are inserted at their layer's place and drawn in tree order, the tag search and the active test make the I and J toggles act on the window on top, a press activates through the child raise rule, the focus routine remembers the form it leaves and the window's focus loss parks the focus on the root, a close cascades through child forms and sweeps the GUI's references (the journal's box closes with the journal), the record release always carries its landing bit, and the open screens rescale on a GUI unit change. Grid scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
