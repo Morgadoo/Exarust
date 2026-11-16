@@ -876,6 +876,20 @@ pub struct GameScreens {
     /// on this frame: its record callback asks the shown character to
     /// swap its weapon sets ([`swap_from_page_button`]).
     pub page_swap: bool,
+    /// The journal's entry list as the selection writes it into the list
+    /// record: its titles (in the ANSI code page) and the 1-based row.
+    pub journal_titles: Vec<Vec<u8>>,
+    pub journal_row: i32,
+    /// The journal list's drop-down list while it is open over the
+    /// journal.
+    pub journal_list: Option<JournalList>,
+}
+
+/// The journal list's open drop-down list and its place on the screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalList {
+    pub list: exa_ui::drop_down::DropDownList,
+    pub rect: exa_ui::settings::Rect,
 }
 
 impl Default for GameScreens {
@@ -910,6 +924,9 @@ impl Default for GameScreens {
             drain_sources: Vec::new(),
             tooltip: None,
             page_swap: false,
+            journal_titles: Vec::new(),
+            journal_row: 0,
+            journal_list: None,
         }
     }
 }
@@ -1238,6 +1255,15 @@ impl GameScreens {
     pub fn journal_selected(&mut self) {
         let state = self.journal.list_state();
         self.journal_text = state.text.clone();
+        // The list record keeps the row, the count and every title for its
+        // drop-down list.
+        self.journal_row = state.selected;
+        self.journal_titles = state
+            .titles
+            .iter()
+            .map(|title| crate::os_clipboard::text_to_ansi(title))
+            .collect();
+        debug_assert_eq!(self.journal_titles.len() as i32, state.count);
         if let Some(form) = self
             .find(GameScreen::Journal)
             .and_then(|screen| self.task.form_mut(screen.form))
@@ -1257,10 +1283,12 @@ impl GameScreens {
     /// A journal record's callback: New stores the text, appends a "New
     /// Entry" and selects it, then focuses the third control (the list);
     /// Erase removes the selected entry (or blanks the only one) and
-    /// selects what is left. The list's own change is not wired (its drop
-    /// list does not open on the journal).
+    /// selects what is left. A landed release on the list (the combo box)
+    /// opens its drop-down list of the entries' titles
+    /// ([`GameScreens::open_journal_list`]).
     pub fn journal_record(&mut self, record: usize) {
         match record {
+            JOURNAL_LIST => self.open_journal_list(),
             JOURNAL_NEW => {
                 let text = self.journal_text.clone();
                 self.journal.add_entry(&text);
@@ -1281,6 +1309,77 @@ impl GameScreens {
             }
             _ => {}
         }
+    }
+
+    /// The journal list's drop-down list opens under the list record with
+    /// the titles the selection stored and its row chosen
+    /// ([`crate::option_forms::open_drop_list`]).
+    pub fn open_journal_list(&mut self) {
+        if self.journal_titles.is_empty() {
+            return;
+        }
+        let Some(owner) = self
+            .find(GameScreen::Journal)
+            .and_then(|screen| self.task.form(screen.form))
+            .and_then(|f| f.base())
+            .and_then(|f| f.records.get(JOURNAL_LIST))
+            .map(|r| (r.x, r.y, r.w, r.h))
+        else {
+            return;
+        };
+        let (list, rect) = crate::option_forms::open_drop_list(
+            self.journal_titles.clone(),
+            owner,
+            self.journal_unit.max(1),
+            self.task.screen.1,
+            self.journal_row,
+        );
+        info!(
+            "gui: the journal's entry list opens with {} titles at {rect:?}",
+            list.items.len()
+        );
+        self.journal_list = Some(JournalList { list, rect });
+    }
+
+    /// A row picked in the journal's drop-down list (1-based): the list
+    /// record's callback, not editing, stores the text box's text into the
+    /// selected entry and selects the picked one
+    /// ([`exa_ui::game_gui::Journal::list_changed`]), whose title and text
+    /// the list and the box then show.
+    pub fn journal_pick(&mut self, row: i32) {
+        let text = self.journal_text.clone();
+        self.journal.list_changed(false, "", row, &text);
+        self.journal_selected();
+        info!(
+            "gui: journal entry {} of {} picked",
+            self.journal.current + 1,
+            self.journal.entries.len()
+        );
+    }
+
+    /// The pointer over the journal's open drop-down list, which takes it
+    /// while it is up (its form sits over the others): see
+    /// [`crate::option_forms::drive_drop_list`]. Returns whether the list
+    /// took the frame.
+    pub fn journal_list_pointer(&mut self, frame: &crate::form_input::PointerFrame) -> bool {
+        let Some(mut open) = self.journal_list.take() else {
+            return false;
+        };
+        let at = frame.at.unwrap_or((i32::MIN, i32::MIN));
+        let (keep, row) = crate::option_forms::drive_drop_list(
+            &mut open.list,
+            open.rect,
+            at,
+            frame.pressed,
+            frame.released,
+        );
+        if keep {
+            self.journal_list = Some(open);
+        }
+        if let Some(row) = row {
+            self.journal_pick(row);
+        }
+        true
     }
 
     /// Keeps the journal's text box on its journal (a title drag moves the
@@ -1831,6 +1930,7 @@ impl GameScreens {
         match screen.kind {
             GameScreen::Journal => {
                 self.journal_box = None;
+                self.journal_list = None;
                 self.journal.store_text(&self.journal_text);
                 self.journal.place = place;
             }
@@ -3018,6 +3118,11 @@ fn screens_pointer(
     }
     let screens = &mut *screens;
     screens.sync_journal_box();
+    // The journal's open drop-down list is over the windows and takes the
+    // pointer while it is up.
+    if screens.journal_list_pointer(&frame) {
+        return;
+    }
     let tick = crate::form_input::drive(&mut screens.task, &frame, timers.as_deref_mut());
     crate::form_input::ShownTooltip::follow(
         &mut screens.tooltip,
@@ -4097,6 +4202,22 @@ pub(crate) fn draw_screens(
             },
             _ => continue,
         };
+        painted.submit(&mut frames);
+    }
+    // The journal's drop-down list over the windows.
+    if let Some(open) = screens.journal_list.as_ref() {
+        let list_unit = screens.journal_unit.max(1);
+        let level = exa_ui::gui_font::level_for_unit(list_unit);
+        let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
+        let mut painted = gui_paint::Painted::default();
+        crate::option_forms::paint_drop_list(
+            &mut painted,
+            &open.list,
+            open.rect,
+            (list_unit, 1.0),
+            &gui_paint::palette(),
+            (&font, size),
+        );
         painted.submit(&mut frames);
     }
     // The default tooltip over the windows.
@@ -6488,6 +6609,63 @@ mod tests {
         assert_eq!(screens.journal.entries.len(), 1);
         assert_eq!(screens.journal.current, 0);
         assert_eq!(screens.journal_text, "first");
+        assert_eq!(
+            screens.journal_box.as_ref().unwrap().text.text.as_bytes(),
+            b"first"
+        );
+    }
+
+    /// The journal's entry list: a release over it opens its drop-down list
+    /// of the titles with the selected row chosen; picking the first row
+    /// stores the text typed into the second entry and shows the first.
+    #[test]
+    fn the_journal_list_drops_down_and_picks_an_entry() {
+        let (mut app, window) = journal_app();
+        let (centre, _) = journal_box_points(&app);
+        point(&mut app, centre);
+        app.update();
+        type_text(&mut app, window, "first");
+        let release_over = |app: &mut App, record: usize| {
+            let at = {
+                let screens = app.world().resource::<GameScreens>();
+                let form = screens.find(GameScreen::Journal).unwrap().form;
+                let r = &screens.task.form(form).unwrap().base().unwrap().records[record];
+                ((r.x + r.w / 2) as f32, (r.y + r.h / 2) as f32)
+            };
+            point(app, at);
+            app.update();
+            button(app, MouseButton::Left, true);
+            button(app, MouseButton::Left, false);
+        };
+        release_over(&mut app, JOURNAL_NEW);
+        point(&mut app, centre);
+        app.update();
+        type_text(&mut app, window, "second");
+        release_over(&mut app, JOURNAL_LIST);
+        let (rect, row_y) = {
+            let screens = app.world().resource::<GameScreens>();
+            assert_eq!(screens.journal_row, 2);
+            let open = screens.journal_list.as_ref().expect("the list opens");
+            assert_eq!(
+                open.list.items,
+                vec![b"New Entry".to_vec(), b"New Entry".to_vec()]
+            );
+            assert_eq!(open.list.selected, 2, "the selected entry's row");
+            let y = (open.rect.y..open.rect.y + open.rect.h)
+                .find(|&y| open.list.row_at(y - open.rect.y) == 1)
+                .unwrap();
+            (open.rect, y + 2)
+        };
+        point(&mut app, ((rect.x + rect.w / 2) as f32, row_y as f32));
+        app.update();
+        button(&mut app, MouseButton::Left, true);
+        button(&mut app, MouseButton::Left, false);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(screens.journal_list.is_none(), "the pick closes the list");
+        assert_eq!(screens.journal.current, 0);
+        assert_eq!(screens.journal.entries[1].text, "second");
+        assert_eq!(screens.journal_text, "first");
+        assert_eq!(screens.journal_row, 1);
         assert_eq!(
             screens.journal_box.as_ref().unwrap().text.text.as_bytes(),
             b"first"
