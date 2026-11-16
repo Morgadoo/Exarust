@@ -362,9 +362,12 @@ pub fn crystal_item(items: &[(i32, i32)]) -> (i32, i32) {
         .unwrap_or((0, 0))
 }
 
-/// Whether the record callback rescales the character view: its state
-/// word has either of the 0x60 bits.
-pub fn rescales_view(state: u32) -> bool {
+/// Whether the inventory's page-button callback (Primary and Secondary
+/// share it) asks the shown character to swap its weapon sets: the button
+/// that reported has either of the 0x60 bits (on, lit), as the radio
+/// group's newly pressed member does; the member it turned off reports
+/// with neither and does nothing.
+pub fn page_button_swaps(state: u32) -> bool {
     state & 0x60 != 0
 }
 

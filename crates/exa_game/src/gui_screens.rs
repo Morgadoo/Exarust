@@ -241,7 +241,9 @@ fn button_record(x: i32, y: i32, w: i32, text: &str) -> Control {
 /// dots beside it and the two page buttons, Primary and Secondary, in
 /// radio group 1. The fill lights one of them
 /// ([`exa_ui::game_gui::inventory_tab_states`]; the table stores Primary
-/// lit).
+/// lit). Both buttons carry the same record callback: the one turned on
+/// swaps the shown character's weapon sets
+/// ([`exa_ui::game_gui::page_button_swaps`]).
 fn inventory_records() -> Vec<Control> {
     let mut label = Control::new(5, 4, INVENTORY_LABEL_ROW, 12, 28);
     label.style = 0;
@@ -254,9 +256,11 @@ fn inventory_records() -> Vec<Control> {
     let mut primary = button_record(4, -0x7ff8, 108, "Primary");
     primary.group = 1;
     primary.state = primary_state;
+    primary.reports = true;
     let mut secondary = button_record(-0x7ff7, -0x8000, 108, "Secondary");
     secondary.group = 1;
     secondary.state = secondary_state;
+    secondary.reports = true;
     vec![label, dots, primary, secondary]
 }
 
@@ -868,6 +872,10 @@ pub struct GameScreens {
     pub drain_sources: Vec<(u32, u32)>,
     /// The default tooltip the task's tick showed, while it is up.
     pub tooltip: Option<crate::form_input::ShownTooltip>,
+    /// A page button (Primary or Secondary) of the open inventory turned
+    /// on this frame: its record callback asks the shown character to
+    /// swap its weapon sets ([`swap_from_page_button`]).
+    pub page_swap: bool,
 }
 
 impl Default for GameScreens {
@@ -901,6 +909,7 @@ impl Default for GameScreens {
             released_icons: Vec::new(),
             drain_sources: Vec::new(),
             tooltip: None,
+            page_swap: false,
         }
     }
 }
@@ -929,6 +938,15 @@ impl GameScreens {
         self.journal_box
             .as_ref()
             .is_some_and(|b| self.task.active == Some(b.form))
+    }
+
+    /// Whether an in-game screen is open on the task: any form whose tag
+    /// has the 0xce100000 family bits (the inventory, a loot window, the
+    /// journal, a container popup). The controls' idle turn asks it
+    /// ([`exa_ui::game_gui::has_game_screen`]).
+    pub fn has_game_screen(&self) -> bool {
+        let tags: Vec<u32> = self.open.iter().filter_map(|s| s.kind.tag()).collect();
+        exa_ui::game_gui::has_game_screen(&tags)
     }
 
     /// The window manager's focus is on a game screen (a window or its
@@ -2103,6 +2121,12 @@ impl Plugin for GameScreensPlugin {
             )
             .add_systems(
                 Update,
+                swap_from_page_button
+                    .after(screens_pointer)
+                    .before(exa_items::catalogue::swap_weapon_sets),
+            )
+            .add_systems(
+                Update,
                 draw_screens
                     .after(open_requested_screens)
                     .after(crate::item_icon_render::IconRenderSystems),
@@ -2138,6 +2162,44 @@ impl Plugin for GameScreensPlugin {
 
 /// The inventory's page buttons (records 2 and 3, Primary and Secondary).
 const PAGE_BUTTONS: [usize; 2] = [2, 3];
+
+/// The page buttons' record callback, after the pointer's press: the
+/// character the inventory shows is asked to swap its weapon sets, as the
+/// swap key asks ([`exa_items::possession::Possessions::swap_request`]): a
+/// busy body (state bits 0x10202) or an item drag in flight refuses it,
+/// and with its inventory open the sets swap at once. The open window
+/// then lights the other button and loads its pack again
+/// ([`inventory_follows_the_set`]).
+#[allow(clippy::type_complexity)]
+pub(crate) fn swap_from_page_button(
+    mut commands: Commands,
+    mut screens: ResMut<GameScreens>,
+    drag: Option<Res<crate::panel_live::PanelDrag>>,
+    players: Query<Entity, With<crate::player::PlayerBody>>,
+    bodies: Query<Option<&exa_combat::Condition>, With<exa_items::possession::Possessions>>,
+) {
+    if !std::mem::take(&mut screens.page_swap) {
+        return;
+    }
+    let Some(body) = screens
+        .find(GameScreen::Inventory)
+        .and_then(|_| screens.inventory_bound(players.iter().next()))
+    else {
+        return;
+    };
+    let Ok(condition) = bodies.get(body) else {
+        return;
+    };
+    let word = condition.map_or(0, |c| c.0);
+    let dragging = drag.is_some_and(|d| d.source.is_some());
+    let answer = exa_items::possession::Possessions::swap_request(word, dragging, true);
+    info!("gui: the page button's swap for {body:?}: {answer:?}");
+    if answer == exa_items::possession::SwapRequest::Now {
+        commands
+            .entity(body)
+            .insert(exa_items::catalogue::SwapRequested);
+    }
+}
 
 /// The open inventory follows its character's weapon set. The fill lights
 /// the page button of the set the record has out
@@ -2985,6 +3047,22 @@ fn screens_pointer(
                 }
                 exa_ui::base_form::BaseEvent::Changed(record) if kind == GameScreen::Journal => {
                     screens.journal_record(record);
+                }
+                exa_ui::base_form::BaseEvent::Changed(record)
+                    if kind == GameScreen::Inventory && PAGE_BUTTONS.contains(&record) =>
+                {
+                    // The page buttons' callback: the button that turned on
+                    // asks for the swap; the one turned off does nothing.
+                    let state = screens
+                        .task
+                        .form(form)
+                        .and_then(|f| f.base())
+                        .and_then(|f| f.records.get(record))
+                        .map_or(0, |r| r.state);
+                    if exa_ui::game_gui::page_button_swaps(state) {
+                        info!("gui: inventory page button {record} asks for the set swap");
+                        screens.page_swap = true;
+                    }
                 }
                 _ => {}
             }
@@ -6313,6 +6391,64 @@ mod tests {
             );
         }
         assert!(lit.contains(&true) && lit.contains(&false), "{lit:?}");
+    }
+
+    /// The inventory's Secondary page button, pressed and released, asks
+    /// the shown body for the set swap (its inventory is open, so at
+    /// once); pressing the lit button again asks for nothing, and a busy
+    /// body (a switch in progress) refuses the swap.
+    #[test]
+    fn the_inventory_page_buttons_swap_the_sets() {
+        fn app_with(condition: exa_combat::Condition) -> (App, Entity) {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<ButtonInput<MouseButton>>()
+                .init_resource::<crate::flow::FlowSteps>()
+                .init_resource::<exa_ui::ScriptedPointer>()
+                .add_plugins(GameScreensPlugin);
+            app.world_mut().spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1600, 900),
+                    ..default()
+                },
+                PrimaryWindow,
+            ));
+            let body = app
+                .world_mut()
+                .spawn((crate::player::PlayerBody::new(0.0), condition))
+                .id();
+            app.update();
+            app.world_mut()
+                .write_message(ScreenRequest::screen(GameScreen::Inventory, true, true));
+            app.update();
+            (app, body)
+        }
+        let click = |app: &mut App, record: usize| {
+            let at = {
+                let screens = app.world().resource::<GameScreens>();
+                let form = screens.find(GameScreen::Inventory).unwrap().form;
+                let r = &screens.task.form(form).unwrap().base().unwrap().records[record];
+                ((r.x + r.w / 2) as f32, (r.y + r.h / 2) as f32)
+            };
+            point(app, at);
+            app.update();
+            button(app, MouseButton::Left, true);
+            button(app, MouseButton::Left, false);
+        };
+        let swapping = |app: &App, body: Entity| {
+            app.world()
+                .entity(body)
+                .contains::<exa_items::catalogue::SwapRequested>()
+        };
+        let (mut app, body) = app_with(exa_combat::Condition::NORMAL);
+        click(&mut app, PAGE_BUTTONS[0]);
+        assert!(!swapping(&app, body), "the lit Primary asks for nothing");
+        click(&mut app, PAGE_BUTTONS[1]);
+        assert!(swapping(&app, body), "Secondary asks for the swap");
+        let (mut app, body) = app_with(exa_combat::Condition(0x200));
+        click(&mut app, PAGE_BUTTONS[1]);
+        assert!(!swapping(&app, body), "a busy body refuses it");
     }
 
     /// New stores the text, adds a "New Entry" and shows it empty; Erase

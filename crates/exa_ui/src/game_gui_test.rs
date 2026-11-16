@@ -135,7 +135,7 @@ fn the_inventory_place_and_page() {
     assert_eq!(inventory_tab(0x0100_0000), 3);
     assert_eq!(crystal_item(&[(5, 1), (500, 7), (431, 2)]), (500, 7));
     assert_eq!(crystal_item(&[(5, 1)]), (0, 0));
-    assert!(rescales_view(0x40) && !rescales_view(0x80));
+    assert!(page_button_swaps(0x40) && page_button_swaps(0x60) && !page_button_swaps(0x80));
 }
 
 #[test]
