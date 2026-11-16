@@ -560,7 +560,10 @@ mask texture is the stem, `m` and the mask byte plus `'0'` as one character
 A stored texture layer's opacity over its wear steps is
 `paint::layer_strength`: full at step 0, the decayed share at step 1 in
 double, the engine's fast power for later steps, rounded half to even, and
-nothing from the layer's maximum step on.
+nothing from the layer's maximum step on. An unknown material id paints as
+ClothBasic and is noted once per session (`paint::program_material`,
+`take_invalid_materials`) for the game's "Invalid Procedural Material ID."
+message.
 
 The painter's GPU-side bookkeeping is modelled in `paint_jobs`: the
 256-slot job ring (a full ring flushes all but the newly pushed job), the

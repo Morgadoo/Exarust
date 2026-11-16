@@ -401,8 +401,8 @@ fn prepare_icon_scenes(
 
 /// The item resolve's error for an icon that could not be made, as the
 /// original reports it (level 5, the timed overlay): "Item Error: Unable
-/// to resolve item: <id in hex>". The panel's entry keeps its empty slot.
-fn report_unresolved(id: u32) {
+/// to resolve item: <id in hex>".
+pub(crate) fn report_unresolved(id: u32) {
     if let Some(text) = exa_items::icon_cache::unresolved(id) {
         crate::engine_log::log(5, ITEM_ERROR, &text);
     }
@@ -1007,13 +1007,14 @@ mod tests {
         let id = 0x0F_FFF1;
         let catalogue = app.world().resource::<ItemCatalogue>().clone();
         assert!(catalogue.model(id).is_none());
+        // The acquire answers no icon and reports the item at once.
         let (handle, _) =
             app.world_mut()
                 .resource_mut::<PanelIcons>()
                 .reserve(id, 0, Some(&catalogue));
-        assert_ne!(handle, 0);
-        app.update();
+        assert_eq!(handle, 0);
         assert!(app.world().resource::<PanelIcons>().pending.is_empty());
+        app.update();
         assert!(
             crate::engine_log::overlay_lines()
                 .iter()

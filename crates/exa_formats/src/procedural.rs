@@ -607,8 +607,19 @@ pub fn programs(id: u8) -> Vec<Program> {
     out
 }
 
+/// Whether `id` names one of the 25 procedural materials. The original's
+/// program lookup reports any other id ([`INVALID_MATERIAL`]) and builds
+/// ClothBasic's program for it.
+pub fn known(id: u8) -> bool {
+    (1..=25).contains(&id)
+}
+
+/// The program lookup's error for an unknown material id, shown at level 4
+/// under the title "Error".
+pub const INVALID_MATERIAL: &str = "Invalid Procedural Material ID.";
+
 /// The material with `id`, or ClothBasic for an unknown id (the original
-/// reports "Invalid Procedural Material ID." and falls back to it).
+/// reports [`INVALID_MATERIAL`] and falls back to it).
 pub fn material(id: u8) -> &'static Material {
     if id == 0 || id > 25 {
         &MATERIALS[1]

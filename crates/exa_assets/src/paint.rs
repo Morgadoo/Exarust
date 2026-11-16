@@ -353,10 +353,42 @@ pub fn layer_unit(pass: procedural::Pass, material: u8, layer: usize) -> u32 {
     from + layer as u32
 }
 
+/// The material a paint draw's program is built for: the procedural
+/// material with `id`, or ClothBasic for an unknown id, which the original's
+/// program lookup reports the first time it is asked for it (its program
+/// table keeps the fallback under the id). The report waits in
+/// [`take_invalid_materials`] for the game's message hook.
+pub fn program_material(id: u8) -> &'static procedural::Material {
+    if !procedural::known(id) {
+        let mut reports = INVALID_MATERIALS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !reports.0.contains(&id) {
+            reports.0.push(id);
+            reports.1.push(id);
+        }
+    }
+    procedural::material(id)
+}
+
+/// The unknown material ids already reported, and those whose report is
+/// still to be shown.
+static INVALID_MATERIALS: std::sync::Mutex<(Vec<u8>, Vec<u8>)> =
+    std::sync::Mutex::new((Vec::new(), Vec::new()));
+
+/// The unknown material ids reported since the last call, each once per
+/// session, in the order the painter met them.
+pub fn take_invalid_materials() -> Vec<u8> {
+    let mut reports = INVALID_MATERIALS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::mem::take(&mut reports.1)
+}
+
 /// How many of a material's layer textures a pass's draw binds: all of
 /// them (the loop runs from the first layer through the last).
 pub fn bound_layers(material: u8, pass: procedural::Pass) -> usize {
-    let m = procedural::material(material);
+    let m = program_material(material);
     match pass {
         procedural::Pass::Specular => m.specular.len(),
         procedural::Pass::Normal | procedural::Pass::AlternateNormal => m.normal.len(),
@@ -369,7 +401,7 @@ pub fn bound_layers(material: u8, pass: procedural::Pass) -> usize {
 /// layer count plus two. The picture is the item's own texture, not one of
 /// the material's library textures; the plain colour pass does not bind it.
 pub fn pattern_unit(material: u8) -> u32 {
-    procedural::material(material).colour.len() as u32 + 2
+    program_material(material).colour.len() as u32 + 2
 }
 
 /// The extra sampler a pass's program declares after its layers, as
@@ -397,7 +429,7 @@ pub type Finish = Family;
 /// Material number to finish; unknown ids paint as cloth (the original falls
 /// back to ClothBasic with an error).
 pub fn finish(material: u8) -> Finish {
-    procedural::material(material).family
+    program_material(material).family
 }
 
 /// The material a layer paints with: material 0 takes the first of its set.
@@ -413,17 +445,17 @@ pub fn layer_material(layer: &Layer) -> u8 {
 
 /// Library textures of a material, in the order its colour pass reads them.
 pub fn library(material: u8) -> &'static [&'static str] {
-    &procedural::material(material).colour
+    &program_material(material).colour
 }
 
 /// Specular-pass library textures of a material.
 pub fn specular_library(material: u8) -> &'static [&'static str] {
-    &procedural::material(material).specular
+    &program_material(material).specular
 }
 
 /// Normal-map library textures of a material.
 pub fn normal_library(material: u8) -> &'static [&'static str] {
-    &procedural::material(material).normal
+    &program_material(material).normal
 }
 
 /// Palette colour `index` (family × 8 + shade, shade 0 lightest) on the
@@ -2034,7 +2066,7 @@ impl Pattern<'_> {
 /// materials with the painted-pattern program do; the others fall back to
 /// the plain colour pass over the whole mask.
 fn paints_pattern(layer: &PaintLayer<'_>) -> bool {
-    layer.pattern.is_some() && procedural::material(layer.material).passes.painted_pattern
+    layer.pattern.is_some() && program_material(layer.material).passes.painted_pattern
 }
 
 /// How a painted map's texels are read when sampled.
@@ -2088,7 +2120,7 @@ pub fn paint(
 /// An apparel layer's tint and wear weight: its palette colour on the
 /// linear ramp and its material's wear weight.
 pub fn apparel_tint(material: u8, colour: u8) -> (Vec3, f32) {
-    (palette_colour(colour), procedural::material(material).wear)
+    (palette_colour(colour), program_material(material).wear)
 }
 
 /// Paints an item: every layer's finish over its mask, in order, on black,
@@ -3051,5 +3083,17 @@ mod tests {
         assert_eq!(layer_strength(200, 40, 2, 2), 0);
         assert_eq!(layer_strength(200, 40, 1, 2), 160_000);
         assert_eq!(layer_strength(200, 40, 0, 3), 200_000);
+    }
+
+    #[test]
+    fn an_unknown_material_paints_as_cloth_and_is_reported_once() {
+        assert_eq!(program_material(40).family, procedural::material(1).family);
+        let _ = program_material(40);
+        let _ = program_material(3);
+        let reported = take_invalid_materials();
+        assert_eq!(reported.iter().filter(|&&id| id == 40).count(), 1);
+        assert!(!reported.contains(&3));
+        let _ = program_material(40);
+        assert!(!take_invalid_materials().contains(&40));
     }
 }

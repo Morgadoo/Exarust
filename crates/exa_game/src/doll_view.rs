@@ -1219,6 +1219,7 @@ pub fn give_back_displaced(
     catalogue: Option<&ItemCatalogue>,
     p: &mut Possessions,
     old: Hand,
+    roll: &mut u32,
 ) {
     let listed = p.carried.iter().any(|c| c.id == old.id);
     let pack_open = crate::panel_live::open_panels(screens)
@@ -1240,7 +1241,7 @@ pub fn give_back_displaced(
     let flags = old.flags & !HELD;
     let (icon, _) = icons.reserve(old.id, flags, catalogue);
     let bulk = catalogue.and_then(|c| c.bulk(old.id)).map_or(0, i32::from);
-    if let Some(cell) = icons.add_placed(&mut screens.pack, old.id, icon, flags, bulk)
+    if let Some(cell) = icons.add_placed(&mut screens.pack, old.id, icon, flags, bulk, roll)
         && !listed
     {
         let (unit, vscale) = (screens.pack.unit, screens.pack.vscale);
@@ -1257,7 +1258,10 @@ fn equip_dropped(
     mut commands: Commands,
     mut drops: MessageReader<DollDrop>,
     mut screens: ResMut<GameScreens>,
-    mut icons: ResMut<PanelIcons>,
+    (mut icons, mut roll): (
+        ResMut<PanelIcons>,
+        ResMut<crate::thaum::live::FrameEffectRoll>,
+    ),
     catalogue: Option<Res<ItemCatalogue>>,
     mut items: ResMut<DollItems>,
     game: Option<Res<Game>>,
@@ -1479,7 +1483,14 @@ fn equip_dropped(
                     // The centre add and its place pass: the piece's cell
                     // is where the pass put it.
                     let cell = icons
-                        .add_placed(&mut screens.pack, piece.id, icon, piece.flags, bulk)
+                        .add_placed(
+                            &mut screens.pack,
+                            piece.id,
+                            icon,
+                            piece.flags,
+                            bulk,
+                            roll.word(),
+                        )
                         .unwrap_or_else(|| centre(&screens));
                     body_inventory::give(
                         &mut p,
@@ -1526,7 +1537,14 @@ fn equip_dropped(
                 // pack ([`give_back_displaced`]).
                 for old in before {
                     if old.id != 0 && old.id != drop.id && !p.out.iter().any(|h| h.id == old.id) {
-                        give_back_displaced(&mut screens, &mut icons, catalogue, &mut p, old);
+                        give_back_displaced(
+                            &mut screens,
+                            &mut icons,
+                            catalogue,
+                            &mut p,
+                            old,
+                            roll.word(),
+                        );
                     }
                 }
                 if drop.source == Panel::PlayerPack {
@@ -1542,6 +1560,7 @@ fn equip_dropped(
                                 drop.icon,
                                 flags | HELD,
                                 drop.bulk,
+                                roll.word(),
                             )
                             .unwrap_or_else(|| centre(&screens))
                     } else {
@@ -1765,6 +1784,7 @@ pub struct DollViewPlugin;
 impl Plugin for DollViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InventoryDoll>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .init_resource::<DollItems>()
             .init_resource::<DollDropScript>()
             .add_message::<DollDrop>()
@@ -2308,6 +2328,7 @@ mod tests {
             .insert_resource(catalogue)
             .insert_resource(Game(std::sync::Arc::new(data)))
             .add_message::<DollDrop>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
             .add_systems(Update, equip_dropped);
         let player = app
             .world_mut()

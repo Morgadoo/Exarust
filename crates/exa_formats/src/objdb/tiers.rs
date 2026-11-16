@@ -426,15 +426,20 @@ impl ObjectDb {
     /// word (payload `0x18`) has bit 0, by [`Self::clone_template_into`];
     /// any other id comes back unchanged.
     pub fn instance_of(&mut self, id: u32, tier: Tier) -> u32 {
-        if id & TAG_MASK == 0
+        if self.instances(id) {
+            return self.clone_template_into(id, tier);
+        }
+        id
+    }
+
+    /// Whether [`Self::instance_of`] makes a copy of `id`: an untagged base
+    /// record whose header word has bit 0.
+    pub fn instances(&self, id: u32) -> bool {
+        id & TAG_MASK == 0
             && self
                 .base
                 .find(id)
                 .is_some_and(|r| r.header_word() & super::INSTANCE_ON_USE != 0)
-        {
-            return self.clone_template_into(id, tier);
-        }
-        id
     }
 
     /// The record's parent word (payload `0x1C`), or the id itself when it

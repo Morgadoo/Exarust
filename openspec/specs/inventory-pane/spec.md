@@ -504,11 +504,11 @@ A move inside a pack SHALL write the entry's new cell, in sixteenths of a GUI un
 - **THEN** the carried list's last entry is that item at the new cell, and binding the pack again puts it there
 
 ### Requirement: Place pass after a centre add
-Every item added at a panel's centre SHALL then take a random spot in the middle half of the panel and be pushed out of the other entries, drawing from the item GUI's generator; a carried copy SHALL take the cell it ends at.
+Every item added at a panel's centre SHALL then take a random spot in the middle half of the panel and be pushed out of the other entries, drawing x then y from the frame's engine generator; a carried copy SHALL take the cell it ends at.
 
 #### Scenario: A crystal given back
-- **WHEN** a socket's crystal goes back into the open pack
-- **THEN** its entry is not at the panel's centre and its carried copy has its cell
+- **WHEN** a socket's crystal goes back into the open pack with the frame's engine generator at 0
+- **THEN** its entry is not at the panel's centre, its carried copy has its cell, and the generator stands two steps on
 
 ### Requirement: Pack item held in place
 A weapon or shield taken from the inventory's own pack into a hand SHALL stay in the pack at its cell, marked held; a hand item the take-in frees SHALL show again in the pack.
@@ -551,3 +551,31 @@ The rating dots, the slider's knob and the inventory's encumbrance dots SHALL be
 #### Scenario: Unit 4
 - **WHEN** the dots are cut at GUI unit 4 for a 28-pixel row
 - **THEN** they are 20 pixels and draw 4 below the row's top
+
+### Requirement: Equipment scatter draws
+A looted body's equipment scatter SHALL draw each item's spot from the frame's engine generator and SHALL first store 0xBA28 as the run-time library's seed, so the frame's run-time stream starts again from that seed.
+
+#### Scenario: One worn item
+- **WHEN** a body wearing one item is looted with the generator at 0
+- **THEN** the generator stands two steps on and the run-time stream is the one seeded with 0xBA28
+
+### Requirement: Card sentence draws
+The description card's sentences SHALL draw from the frame's engine generator, each card going on from where the last one left it.
+
+#### Scenario: Two cards
+- **WHEN** two described items' cards are shown in turn
+- **THEN** the generator holds after each what the sentence builder leaves for that card from the state before it
+
+### Requirement: Local copy on a drop
+A drop into an item panel from a panel other than its linked one SHALL make a level-local copy of an untagged base record whose header word has bit 0; the destination SHALL list the copy with its own icon and the payload's flags, the source SHALL give up the base id, and any other id SHALL move as it is.
+
+#### Scenario: A marked and an unmarked item
+- **WHEN** a marked base item and an unmarked one are dragged from the pack into a container popup
+- **THEN** the popup lists the local copy then the unmarked id, and the local tier holds one record
+
+### Requirement: Socket row drag-over
+The socket row SHALL take a drop only of the four power crystals; any other item SHALL get the control's nothing answer, leaving the item's sockets unread and unchanged.
+
+#### Scenario: Not a crystal
+- **WHEN** a pack item that is no crystal is released over a socket of the shown card
+- **THEN** the socket words are unchanged and the item stays in the pack
