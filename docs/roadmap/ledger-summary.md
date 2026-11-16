@@ -27,8 +27,8 @@ The strongest proof each live row carries (roadmap C1.4): retail comparison, a g
 | unreachable | 200 | 61,140 |
 | not-applicable | 1,342 | 167,310 |
 | deviation | 5 | 974 |
-| uncalled | 627 | 155,193 |
-| partial | 1,409 | 887,946 |
+| uncalled | 622 | 154,552 |
+| partial | 1,414 | 888,587 |
 | missing | 54 | 10,344 |
 | unaudited | 0 | 0 |
 
