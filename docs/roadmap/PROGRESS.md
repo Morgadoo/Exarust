@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r234, 11-16) | target |
+| measure | start (r186, 11-10) | now (r236, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **53.43%** | **100%** |
+| **Ledger: bytes in a final state** | — | **53.53%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 311 of 2,764 (11%) | 100% |
+| Live rows with scene or retail evidence | — | 313 of 2,778 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,756 | all |
+| Tests passing | 8,489 | 8,774 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -102,19 +102,19 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | UI | 12 | 12 | 393 | 154,503 |
 | Rendering & GPU | 10 | 10 | 295 | 150,293 |
 | Thaumaturgy & effects | 9 | 9 | 168 | 119,006 |
-| AI & behaviour | 8 | 8 | 177 | 111,744 |
-| Characters, motion & animation | 8 | 8 | 237 | 107,529 |
+| AI & behaviour | 8 | 8 | 165 | 109,550 |
+| Characters, motion & animation | 8 | 8 | 236 | 107,315 |
 | Game modes, arena & session | 7 | 7 | 216 | 89,736 |
 | World, levels & terrain | 5 | 5 | 169 | 87,396 |
 | Items, materials & crafting | 5 | 5 | 164 | 75,270 |
 | Data, assets & I/O | 6 | 6 | 142 | 44,244 |
 | Runtime & platform | 5 | 5 | 70 | 20,869 |
 | Core, math & threading | 3 | 3 | 81 | 15,794 |
-| Script, dialogue & story | 2 | 2 | 31 | 7,304 |
+| Script, dialogue & story | 2 | 2 | 30 | 7,213 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,325** | **1,168,790** |
+| **Total** | **90** | **90** | **2,311** | **1,166,291** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 235–236 | The player controls' switches follow the assembly (Spirit Form's hold, the drag reach limit, the lifted item's turn and put-back, drop scripts, the power retry, the held GUI button's release, object tracks, the idle double click, the pointer warp, the walk-latch reach); two defects fixed: a used object was deleted, the device power-down had the wrong trigger (playerctl). Body part sounds from the race and suit, the step reach's order, the weightless share, held re-places, the drops and attach on the item's own body (motilepart). Scenes owed (GPU on hold). |
 | 2026-11-16 | 234 | The base form's task rules in the live window manager: layer insertion and tree draw order, the I and J toggles acting on the window on top, the press's child raise, the remembered focus and the focus-loss deactivation, the close cascade with the reference sweep, the record release's landing bit, the open screens rescaled on a unit change (guiform). Grid scenes owed (GPU on hold). |
 | 2026-11-16 | 233 | The live solver takes the scene's own grid (the level's grid chunk), with the original's flat cell index and position-overflow reset; the static collider grid's origin bug fixed (long walls were found only from their centre cell); the pair pass, friction and level impact gates in the original's precision (simsector). Determinism runs owed (GPU on hold). |
 | 2026-11-16 | 231–232 | Cloth set-up and step follow the assembly: link walk, full-correction edge pass, integrate order, the scene's wind, the rustle, the draw update between ticks (cloth; an FPS check is owed, the walk roughly doubles the links). One AI route walk and path follower for every state; five duplicate walkers removed; F370 fixed (routewalk). Game checks owed (GPU on hold). |
