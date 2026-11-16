@@ -860,7 +860,6 @@ impl SaveScreen {
         }
         SaveAction::None
     }
-
 }
 
 fn rect_of(c: &Control, ox: i32, oy: i32) -> GuiRect {

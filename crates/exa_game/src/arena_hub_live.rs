@@ -4006,7 +4006,9 @@ mod tests {
         };
         let career = crate::hub_windows::ArenaCareer::default();
         app.world_mut().resource_mut::<ArenaHub>().busy = true;
-        app.world_mut().resource_mut::<HubWindows>().open_manage(&career);
+        app.world_mut()
+            .resource_mut::<HubWindows>()
+            .open_manage(&career);
         send(&mut app, KeyCode::Escape, Key::Escape);
         assert!(
             app.world()
@@ -4019,7 +4021,12 @@ mod tests {
             .open_loadout(crate::manage::PAGE_ROSTER, &career);
         send(&mut app, KeyCode::Escape, Key::Escape);
         let windows = app.world().resource::<HubWindows>();
-        assert!(windows.forms.get(crate::hub_forms::FormWindow::Loadout).is_none());
+        assert!(
+            windows
+                .forms
+                .get(crate::hub_forms::FormWindow::Loadout)
+                .is_none()
+        );
         assert!(windows.is_kind(HubWindowKind::Manage));
         // A message box takes the keys: a typed character does nothing,
         // Enter closes it and the toggle never fires.
@@ -4036,7 +4043,12 @@ mod tests {
         send(&mut app, KeyCode::Escape, Key::Escape);
         let windows = app.world().resource::<HubWindows>();
         assert!(!windows.forms.message_on_top());
-        assert!(windows.forms.get(crate::hub_forms::FormWindow::Loadout).is_some());
+        assert!(
+            windows
+                .forms
+                .get(crate::hub_forms::FormWindow::Loadout)
+                .is_some()
+        );
     }
 
     #[test]
