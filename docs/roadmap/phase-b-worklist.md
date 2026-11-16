@@ -6,7 +6,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
 | uncalled | 600 | 149,021 | B1 wire (or prove unreachable) |
-| partial | 1,388 | 874,139 | B4 complete the port |
+| partial | 1,387 | 872,990 | B4 complete the port |
 | missing | 52 | 10,114 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -16,7 +16,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 143,795 | 17,693 | 276 |
 | render | 115,117 | 21,704 | 3,232 |
-| ui | 87,272 | 40,819 | 288 |
+| ui | 86,123 | 40,819 | 288 |
 | powers | 105,027 | 2,271 | 2,321 |
 | characters | 86,280 | 14,220 | 1,943 |
 | ai | 89,630 | 1,725 | 28 |
@@ -65,7 +65,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceBarricadeEffect | powers | 4 / 7,984 | 0 / 0 | 0 / 0 | 7,984 |
 | TVCCloth | physics | 11 / 6,317 | 6 / 1,514 | 0 / 0 | 7,831 |
 | TRBDDoor | world | 3 / 7,666 | 0 / 0 | 0 / 0 | 7,666 |
-| TCharacterView | ui | 14 / 6,327 | 1 / 866 | 0 / 0 | 7,193 |
 | RF_SceneNodes (unit routines) | world | 5 / 6,798 | 2 / 333 | 0 / 0 | 7,131 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
 | RF_Navigation (unit routines) | render | 7 / 4,895 | 9 / 2,080 | 0 / 0 | 6,975 |
@@ -82,6 +81,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMatchBoard | modes | 4 / 6,481 | 0 / 0 | 0 / 0 | 6,481 |
 | SG_GameMain (unit routines) | modes | 15 / 5,692 | 1 / 442 | 0 / 0 | 6,134 |
 | FLX_Character_Textures (unit routines) | characters | 13 / 5,935 | 1 / 187 | 0 / 0 | 6,122 |
+| TCharacterView | ui | 13 / 5,178 | 1 / 866 | 0 / 0 | 6,044 |
 | T3DViewport | ui | 19 / 4,915 | 2 / 1,101 | 0 / 0 | 6,016 |
 | TForceBlastEffect | powers | 3 / 5,947 | 0 / 0 | 0 / 0 | 5,947 |
 | TParticleSystem | powers | 4 / 4,883 | 4 / 1,039 | 0 / 0 | 5,922 |

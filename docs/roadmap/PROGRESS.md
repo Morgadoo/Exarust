@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r290, 11-16) | target |
+| measure | start (r186, 11-10) | now (r291, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **58.86%** | **100%** |
+| **Ledger: bytes in a final state** | — | **58.9%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,100 | all |
+| Tests passing | 8,489 | 9,105 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -100,7 +100,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 153 | 161,764 |
 | Rendering & GPU | 10 | 10 | 277 | 139,841 |
-| UI | 12 | 12 | 340 | 128,379 |
+| UI | 12 | 12 | 339 | 127,230 |
 | Thaumaturgy & effects | 9 | 9 | 151 | 109,619 |
 | Characters, motion & animation | 8 | 8 | 223 | 102,443 |
 | AI & behaviour | 8 | 8 | 126 | 91,383 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,032** | **1,032,364** |
+| **Total** | **90** | **90** | **2,031** | **1,031,215** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 291 | Three findings from the scene evidence fixed: the saves' character screen drew none of its records (its paint ran before the game screens' per-frame clear; F565), the respawn's rebuilt player got a carried torch and started outside the rooms (F564), the hire page kept the roster's records and the hub's coins drew a row high (F561); F562 is the original's fixed character-view camera (uifix) |
 | 2026-11-16 | 290 | Every schedule the simulation step runs is fully ordered (1149 unordered pairs touching the same data, each kept in the order it already ran, no simulation value changed) and PreUpdate too; a test on the game's own App fails on any new unordered pair, the frame's Update and PostUpdate held at an exact count (5835 and 275) for the next ordering lane (ambiguity) |
 | 2026-11-16 | 289 | A function oracle runs the original's machine code in an emulator on the worker and replays the cases against the Rust ports (exa_oracle crate, no addresses): 29 of 33 functions identical over 5000 cases each; a denormal bug in the floor and ceiling helpers fixed; the DEC-7 numbers measured (Intel and AMD differ on about half of the approximate reciprocal answers); about 70 to 110 open rows are cheap to check next (oracle) |
 | 2026-11-16 | 288 | The scenes owed by rounds 273 to 280 ran on the worker's GPU with new debug hooks (a play-mode fire, weapon seeds, mechanism list and pokes, a device scan); determinism holds per binary; a twelve-scene golden suite now runs after each round (determinism, screenshots against references, log checks); F560 to F566 opened (far characters changed by the fires round, the hire page layout, the golem view's head, the portcullis reading, the respawn's dark torch, the save screen's missing records, the portcullis pick) (evidence2) |

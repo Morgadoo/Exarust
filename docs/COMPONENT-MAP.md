@@ -493,7 +493,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TTextBox | UI | 12 | 88% | 96% | 95% | 1% | 0% | 2% | 2% |
 | TIconManager | UI | 10 | 85% | 44% | 42% | 1% | 1% | 0% | 56% |
 | RF_GUI_Controls | UI | 8 | 80% | 14% | 13% | 1% | 0% | 71% | 15% |
-| TCharacterView | UI | 8 | 76% | 12% | 12% | 0% | 0% | 78% | 11% |
+| TCharacterView | UI | 8 | 76% | 26% | 26% | 0% | 0% | 64% | 11% |
 | TGUITableView | UI | 7 | 90% | 66% | 39% | 4% | 23% | 34% | 0% |
 | RF_GUI_Icons | UI | 7 | 90% | 84% | 74% | 1% | 9% | 9% | 7% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 7 | 87% | 84% | 83% | 1% | 0% | 0% | 16% |
