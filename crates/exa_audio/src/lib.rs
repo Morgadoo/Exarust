@@ -143,7 +143,11 @@ impl Plugin for AudioPlugin {
 /// bridge (`exa_physics::sim_bridge`).
 fn bridge_audio_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
-    app.bridge_copy::<exa_physics::prop::BodySounds>();
+    // The sound sets' variant counts: a cache only the fixed-step body
+    // sound systems use (without it in the simulation world both are
+    // skipped).
+    app.bridge_copy::<exa_physics::prop::BodySounds>()
+        .bridge_move_resource::<bodies::SetSizes>();
 }
 
 #[cfg(test)]

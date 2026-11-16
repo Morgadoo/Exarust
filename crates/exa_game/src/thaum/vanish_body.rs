@@ -104,7 +104,11 @@ impl VanishTurn {
 /// Registers what the turns' fixed-step system touches.
 pub(crate) fn bridge_vanish_body_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
+    // Written by the casters' walk and read by the turns, both in the
+    // simulation's step: without the bridge's message the simulation world
+    // has no queue for it and both systems are skipped.
     app.add_message::<VanishTurn>()
+        .bridge_message::<VanishTurn>()
         .bridge_copy::<StateFlags>()
         .bridge_copy::<HeldGrip>();
 }
