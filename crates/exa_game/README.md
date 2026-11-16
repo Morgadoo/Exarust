@@ -607,6 +607,12 @@ ripple (`thaum::effect_light::shell_lights`), and a strikes caster's landed
 blow ripples its primary weapon's aura at half the hook's strength with
 `thmfrc_shi` (`thaum::effect_draw::ripple_strikes`, from
 `exa_combat::StrikeHooked`) while Strikes holds the body's strike hook;
+A Shock charges 0.01 a tick (the simulation's 12 ms step over 1200, as the
+original's creator reads its scene's step word) and throws its burst on the
+101st charging tick, about 1.2 s after the cast, its first tendril aimed
+from the hand at the caster's aim point (the player's cursor point, a
+duellist's target's chest) within 45° of the facing
+(`exa_ai::combatant::look_direction`).
 Strikes and Shock Weapons share the body's weapon hook slots
 (`thaum::cast::HookSlots`: the later activation takes the item hook,
 either's end clears both). A cast barricade's floor probe meets floor
@@ -1507,8 +1513,12 @@ once with the hub roll and the flow's alternative-music setting, writes the
 track and its start offset through `exa_audio`'s level-music resources,
 installs the click and session hooks and places the manager by
 `arena_spawn::manager_plan` on the hub's known start. The session hook calls
-`hub_fall` every frame; an answer ends the flow's session, and a wipe reaches
-`slots::Slots::drops_after_death` when the host inserted `HubSlots`.
+`hub_fall` every frame once no level loads; an answer ends the flow's
+session through the player's death (`Flow::die`: the screens swept, the
+fall's tip, the controls blocked, the end menu), so a manager the arena sent
+back dead after a fall that was not fatal leaves through the end menu, and
+a wipe reaches `slots::Slots::drops_after_death` when the host inserted
+`HubSlots`; the auto rematch starts nothing once the session has ended.
 `slots::SlotList` is the slot manager's cached list (count −1 until
 scanned, current slot −1, then 0 after a delete or a dropped death) with its
 new-slot, select, touch, delete, death and current-slot load and save.
