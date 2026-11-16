@@ -715,7 +715,13 @@ form returns to the `remembered` visible form or the root with control -1)
 and `deactivate` (the window's focus loss); `close_form` (the close cascade:
 child forms first, each hidden, its references swept by
 `sweep_references` from the focus, remembered focus, pointer target,
-capture, tooltip request, drop and modal slot, then deleted).
+capture, tooltip request, drop and modal slot, then deleted);
+`show_snaps` (the show's snap rebuilds: the parent's slots, the form's and
+its snap containers' with children, stored in `BaseForm::snaps`; the
+rescale walk's `rescale_snaps` rebuilds a form that has slots). The hit
+walks a base form's children as the form hit does: only on its client,
+strictly inside a child's left and top edges, a child taken only when its
+own hit answers a code.
 `PlainForm` is a basic record over `gui_controls::dispatch`;
 `message_box_plan` builds the original's Ok/Cancel box and
 `message_box_button` its buttons' stored result and close (the close mark

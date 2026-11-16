@@ -1032,6 +1032,13 @@ impl GuiTask {
         }
     }
 
+    /// The deepest form under a point below `form`. A base form tests its
+    /// children as its hit slot does: only for a point on its client, the
+    /// last child first, each visible child without the no-hit style bit
+    /// whose rectangle holds the point strictly past its left and top
+    /// edges, and that child only when its own hit (its children's, then
+    /// its own) answers a code; a child answering 0 lets the next one and
+    /// then the parent answer. Other forms test their children's bounds.
     fn hit_in(&self, form: FormId, x: i32, y: i32) -> Option<FormId> {
         let children: Vec<FormId> = self
             .order
@@ -1042,6 +1049,37 @@ impl GuiTask {
                     .is_some_and(|f| f.parent() == Some(form) && f.is_visible())
             })
             .collect();
+        if let Some(parent) = self.form(form).and_then(FormHost::base) {
+            let (left, top) = (parent.bounds.left, parent.bounds.top);
+            let c = parent.client;
+            if !(left + c.left <= x && x < left + c.right && top + c.top <= y && y < top + c.bottom)
+            {
+                return None;
+            }
+            for child in children.into_iter().rev() {
+                let Some(host) = self.form(child) else {
+                    continue;
+                };
+                let b = host.bounds();
+                let no_hit = host
+                    .base()
+                    .is_some_and(|f| f.style & crate::form::style::NO_HIT != 0);
+                let inside = b.left < x
+                    && b.top < y
+                    && i64::from(x) < i64::from(b.left) + i64::from(b.width())
+                    && i64::from(y) < i64::from(b.top) + i64::from(b.height());
+                if no_hit || !inside {
+                    continue;
+                }
+                if let Some(found) = self.hit_in(child, x, y) {
+                    return Some(found);
+                }
+                if host.hit_test(x, y) != 0 {
+                    return Some(child);
+                }
+            }
+            return None;
+        }
         for child in children.into_iter().rev() {
             if let Some(found) = self.hit_in(child, x, y) {
                 return Some(found);
@@ -1714,6 +1752,74 @@ impl GuiTask {
         }
         out.deleted = self.delete_doomed();
         out
+    }
+
+    /// Rebuilds a base form's snap slots ([`crate::form::snap_slots`]): a
+    /// snap container (attribute 0x20) clears its state bit 0x20000 and
+    /// cuts its client into the slots its visible snapping children (an
+    /// attribute bit in 0x30) leave free, each child's client widened by
+    /// its title spacing reserve. A form that is no snap container keeps
+    /// its slots. The children are placed in the container's client.
+    pub fn rebuild_snaps(&mut self, form: FormId) {
+        let Some(container) = self.form(form).and_then(FormHost::base) else {
+            return;
+        };
+        let (origin_x, origin_y) = (
+            container.bounds.left + container.client.left,
+            container.bounds.top + container.client.top,
+        );
+        let (attributes, client) = (container.attributes, container.client);
+        let children: Vec<crate::form::SnapChild> = self
+            .children_of(Some(form))
+            .into_iter()
+            .filter_map(|id| self.form(id).and_then(FormHost::base))
+            .map(|child| crate::form::SnapChild {
+                x: child.bounds.left - origin_x,
+                y: child.bounds.top - origin_y,
+                client: child.client,
+                spacing: child.title_span(),
+                attributes: child.attributes,
+                visible: child.visible,
+            })
+            .collect();
+        let Some(slots) = crate::form::snap_slots(attributes, client, &children) else {
+            return;
+        };
+        if let Some(container) = self.form_mut(form).and_then(FormHost::base_mut) {
+            container.state &= !0x2_0000;
+            container.snaps = slots;
+        }
+    }
+
+    /// The snap rebuilds of the base form's show, after its layout and
+    /// client refresh: the parent's slots (the desktop's are never rebuilt;
+    /// Exarust's root is the task layer, a child of the desktop), the
+    /// form's own, then each child that is a snap container with children
+    /// of its own ([`crate::form::snaps_on_show`]).
+    pub fn show_snaps(&mut self, form: FormId) {
+        if let Some(parent) = self.form(form).and_then(FormHost::parent) {
+            self.rebuild_snaps(parent);
+        }
+        self.rebuild_snaps(form);
+        for child in self.children_of(Some(form)) {
+            let attributes = self.form(child).map_or(0, FormHost::attributes);
+            if crate::form::snaps_on_show(attributes, self.children_of(Some(child)).len()) {
+                self.rebuild_snaps(child);
+            }
+        }
+    }
+
+    /// The rescale walk's snap rebuild: a form that holds slots rebuilds
+    /// them after its rescale (the level switch's walk tests the slot
+    /// count).
+    pub fn rescale_snaps(&mut self, form: FormId) {
+        if self
+            .form(form)
+            .and_then(FormHost::base)
+            .is_some_and(|f| !f.snaps.is_empty())
+        {
+            self.rebuild_snaps(form);
+        }
     }
 
     /// Closes a form and the forms it takes with it, as the base form's
