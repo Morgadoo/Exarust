@@ -1513,6 +1513,8 @@ the player controls' switches follow the assembly: Spirit Form holds the control
 
 the step reach follows the assembly's order; golem and skeleton part sounds and the golem layer class come from the race word and the golem suit; the gauntlets' weightless share reaches the holding pass; the golem alarm-return and revive placements re-place held items; the attach and the three drops write the item's own body by kind (strike flags, friction, the base contact mobility restored). Left: the living re-place of a body (the arena's kept bodies, golems). Determinism runs and scenes owed while the GPU is on hold.
 
+a scanned player's story death runs the original's record strip: the dead body keeps a dressed copy of its record in the world store and the player goes on stripped; the respawn and the stripped exit clear the owned mark, so the save writes the corpse into the level section (F543 closed). Every story level change reads the save's own section of the destination first, so revisited levels keep their saved state. The session's arrival words follow the original's globals, and story levels take the level-enter hook's fog variant. Scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
