@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 57.4% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 57.9% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.4% closed**, of which 45.2% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.7% partial and 6.9% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.9% closed**, of which 45.7% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.3% partial and 6.8% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -21,19 +21,19 @@ The first two percentages are the estimate; the next six come from the ledger (c
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 39% | 19% | 2% | 32% | 9% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 53% | 44% | 7% | 2% | 34% | 13% |  |
+| Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 59% | 50% | 7% | 2% | 31% | 10% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 57% | 40% | 15% | 2% | 36% | 8% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 32% | 11% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 58% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
-| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 55% | 51% | 2% | 1% | 39% | 6% | TArsenalContFrame |
-| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 53% | 50% | 1% | 2% | 46% | 1% |  |
+| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 55% | 52% | 2% | 1% | 38% | 6% | TArsenalContFrame |
+| AI & behaviour | 437 | 206 | 17 | 96% | 0% | 56% | 53% | 1% | 2% | 43% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 63% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 61% | 59% | 2% | 0% | 33% | 6% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 59% | 49% | 1% | 9% | 27% | 14% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 59% | 50% | 1% | 9% | 27% | 14% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -126,7 +126,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | FPC System RTL | Runtime & platform | 69 | 96% engine | 99% | 0% | 99% | 0% | 1% | 0% |
 | FPC SysUtils | Runtime & platform | 42 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | RF_OS_Functions | Runtime & platform | 12 | 68% | 32% | 11% | 19% | 2% | 54% | 14% |
-| Steam Input action bindings | Runtime & platform | 11 | 75% | 36% | 36% | 0% | 0% | 57% | 7% |
+| Steam Input action bindings | Runtime & platform | 11 | 75% | 38% | 37% | 0% | 0% | 57% | 5% |
 | RF_Main | Runtime & platform | 8 | 80% | 41% | 21% | 20% | 0% | 54% | 5% |
 | FPC RTL: lnfodwrf (DWARF line info) | Runtime & platform | 7 | 95% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | OpenGL loader & context setup | Runtime & platform | 6 | 75% engine | 100% | 0% | 100% | 0% | 0% | 0% |
@@ -147,7 +147,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Bounding-sphere vector helpers (FLX_Entities by address) | Core, math & threading | 0 | 90% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TThread@FLX_System | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
 | TThread@RF_OS_Functions | Core, math & threading | 0 | 50% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| SG_ObjectDB2 | Data, assets & I/O | 19 | 96% | 60% | 54% | 2% | 4% | 25% | 15% |
+| SG_ObjectDB2 | Data, assets & I/O | 19 | 96% | 89% | 83% | 2% | 4% | 10% | 1% |
 | RF_Import_RFC2 | Data, assets & I/O | 17 | 83% | 89% | 84% | 1% | 4% | 9% | 2% |
 | FLX_Content_Stream | Data, assets & I/O | 12 | 84% | 32% | 27% | 4% | 0% | 62% | 6% |
 | RFE_Export_RFC2 | Data, assets & I/O | 11 | 90% | 23% | 18% | 0% | 5% | 75% | 2% |
@@ -312,7 +312,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 16% | 16% | 0% | 0% | 78% | 6% |
 | FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 26% | 25% | 2% | 0% | 46% | 28% |
 | TProcMaterial | Items, materials & crafting | 6 | 79% | 0% | 0% | 0% | 0% | 91% | 9% |
-| Item variant & condition randomisers (FLX_Character_Textures by address) | Items, materials & crafting | 5 | 84% | 55% | 54% | 1% | 0% | 45% | 0% |
+| Item variant & condition randomisers (FLX_Character_Textures by address) | Items, materials & crafting | 5 | 84% | 68% | 67% | 1% | 0% | 32% | 0% |
 | TItemGUIManager | Items, materials & crafting | 4 | 62% | 26% | 15% | 7% | 4% | 48% | 27% |
 | TArsenalView | Items, materials & crafting | 3 | 80% | 41% | 41% | 0% | 0% | 40% | 18% |
 | TInventory | Items, materials & crafting | 3 | 80% | 24% | 24% | 0% | 0% | 75% | 1% |
@@ -346,9 +346,9 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TPopUpContainer | Items, materials & crafting | 0 | 85% | 46% | 46% | 0% | 0% | 54% | 0% |
 | TArsenalContFrame | Items, materials & crafting | 0 | 0% | 0% | 0% | 0% | 0% | 0% | 100% |
 | TMotileAI | AI & behaviour | 60 | 99% | 50% | 44% | 0% | 5% | 50% | 0% |
-| SG_PlayerControls | AI & behaviour | 47 | 99% | 55% | 54% | 1% | 0% | 45% | 0% |
+| SG_PlayerControls | AI & behaviour | 47 | 99% | 63% | 61% | 1% | 0% | 37% | 0% |
 | TPathFinder | AI & behaviour | 32 | 91% | 55% | 55% | 0% | 0% | 45% | 0% |
-| TPlayerBehaviour | AI & behaviour | 17 | 99% | 55% | 52% | 3% | 0% | 45% | 0% |
+| TPlayerBehaviour | AI & behaviour | 17 | 99% | 67% | 64% | 3% | 0% | 33% | 0% |
 | TCombatant | AI & behaviour | 17 | 97% | 67% | 60% | 0% | 8% | 28% | 4% |
 | TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 1% |
 | Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 39% | 36% | 3% | 0% | 55% | 5% |
@@ -498,10 +498,10 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | RF_GUI_Icons | UI | 7 | 90% | 84% | 74% | 1% | 9% | 9% | 7% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 7 | 87% | 84% | 83% | 1% | 0% | 0% | 16% |
 | T3DViewport | UI | 6 | 66% | 6% | 0% | 4% | 2% | 77% | 17% |
-| TMainMenu | UI | 6 | 80% | 73% | 73% | 0% | 0% | 22% | 5% |
+| TMainMenu | UI | 6 | 80% | 77% | 76% | 0% | 0% | 23% | 0% |
 | TCompactSkillUI | UI | 6 | 80% | 0% | 0% | 0% | 0% | 0% | 100% |
 | RF_GUI_Text_Edit | UI | 5 | 85% | 75% | 73% | 2% | 0% | 13% | 12% |
-| TSelectionUI | UI | 5 | 88% | 42% | 41% | 1% | 0% | 58% | 0% |
+| TSelectionUI | UI | 5 | 88% | 44% | 43% | 1% | 0% | 56% | 0% |
 | TEmblemForm | UI | 4 | 90% | 100% | 99% | 1% | 0% | 0% | 0% |
 | TSkillSelector | UI | 3 | 80% | 100% | 0% | 0% | 100% | 0% | 0% |
 | TSplashScreen | UI | 3 | 74% | 100% | 93% | 7% | 0% | 0% | 0% |
@@ -513,7 +513,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | XA_HelpSystem | UI | 2 | 82% | 68% | 63% | 5% | 0% | 3% | 29% |
 | TTextRenderer | UI | 2 | 92% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TDropDownList | UI | 2 | 88% | 76% | 76% | 0% | 0% | 11% | 13% |
-| TGUITask | UI | 2 | 85% | 0% | 0% | 0% | 0% | 74% | 26% |
+| TGUITask | UI | 2 | 85% | 27% | 27% | 0% | 0% | 51% | 21% |
 | TTransitionScreen | UI | 2 | 82% | 13% | 11% | 1% | 0% | 86% | 2% |
 | TGUIDrawSkinTex | UI | 1 | 60% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TReadKeyScreen | UI | 1 | 80% | 69% | 65% | 4% | 0% | 31% | 0% |

@@ -1428,6 +1428,15 @@ impl GameScreens {
         self.inventory_body.or(player)
     }
 
+    /// The pack panel of the player's own open inventory, as the game
+    /// unit's crystal drain asks the character view for it: the first open
+    /// view whose character is the player answers its pack, and none is
+    /// answered while no inventory is open or the open one shows another
+    /// character.
+    pub fn player_pack_mut(&mut self) -> Option<&mut Container> {
+        (self.inventory_character()? == self.player).then_some(&mut self.pack)
+    }
+
     /// The character the open inventory shows, if one is open.
     pub fn inventory_character(&self) -> Option<i32> {
         self.find(GameScreen::Inventory)
@@ -3486,6 +3495,34 @@ fn paint_inventory(
         painted.push(clear_layer(view));
         backdrop
     });
+    // The view's draw callback for its shown item: the icon at the view's
+    // lower-left corner, clipped to the view.
+    let mut icons = icons;
+    if let (Some(doll), Some(icons)) = (doll, icons.as_deref_mut())
+        && doll.shown_icon != 0
+        && let Some((x, y)) = crate::doll_view::shown_icon_origin(
+            icons,
+            doll.shown_icon,
+            unit,
+            view.height(),
+            items.icon_size,
+        )
+    {
+        let mut own = Container::form(unit);
+        own.icon_size = items.icon_size;
+        own.entries.push(crate::item_container::Entry {
+            cell: crate::item_container::Cell::new(x, y),
+            id: 0,
+            icon: doll.shown_icon,
+            flags: 0,
+            drag: 0,
+        });
+        if let Some(mut layer) = icons.layer(&own) {
+            gui_paint::offset_batch(&mut layer.batch, view.left, view.top);
+            layer.clip = Some([view.left, view.top, view.width(), view.height()]);
+            painted.push(layer);
+        }
+    }
     painted.layers.extend(doll_form.over());
     let pack = layout.pack_at(bounds);
     let mut pack_form = child(pack, gui_paint::PACK_ATTRIBUTES);
@@ -3922,6 +3959,7 @@ pub(crate) fn draw_screens(
             GameScreen::Inventory => {
                 let paint = doll.as_deref().map(|doll| crate::doll_view::DollPaint {
                     punch: doll.scene.is_some(),
+                    shown_icon: doll.shown.map_or(0, |shown| shown.icon),
                     dots: doll.dots,
                     sheet: doll.sheet.as_ref(),
                 });
@@ -5770,6 +5808,7 @@ mod tests {
         let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64, 22).unwrap();
         let paint = crate::doll_view::DollPaint {
             punch: true,
+            shown_icon: 0,
             dots: Some(2.5),
             sheet: Some(&sheet),
         };

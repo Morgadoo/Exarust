@@ -248,9 +248,23 @@ impl FigurePicker<'_, '_> {
     pub fn pick(
         &self,
         figure: Entity,
+        ray: (Vec3, Vec3),
+        p: &Possessions,
+        items: &DollItems,
+    ) -> Picked {
+        self.pick_shown(figure, ray, p, items, None)
+    }
+
+    /// [`Self::pick`] for a view that shows an item: `shown` is the shown
+    /// item and its flags when the pointer is on its icon, which the pick
+    /// then answers before any mesh.
+    pub fn pick_shown(
+        &self,
+        figure: Entity,
         (origin, dir): (Vec3, Vec3),
         p: &Possessions,
         items: &DollItems,
+        shown: Option<(u32, u32)>,
     ) -> Picked {
         let mut body: Option<(f32, &FaceGarments, usize)> = None;
         let mut nodes = Vec::new();
@@ -305,7 +319,7 @@ impl FigurePicker<'_, '_> {
         });
         let worn: Vec<(u32, u32)> = p.worn.iter().map(|w| (w.id, w.flags)).collect();
         let hand_flags: Vec<u32> = p.out.iter().map(|hand| hand.flags).collect();
-        let hover = hover_pick(None, body, FAR - NEAR, &nodes, &hand_flags, &worn);
+        let hover = hover_pick(shown, body, FAR - NEAR, &nodes, &hand_flags, &worn);
         Picked {
             hover,
             body,
@@ -466,7 +480,22 @@ impl FigurePress<'_, '_> {
             view.width() as f32,
             view.height() as f32,
         );
-        let picked = self.picker.pick(figure, ray, p, &self.items);
+        // The shown item answers first when the pointer is on its icon.
+        let shown = self
+            .doll
+            .shown
+            .filter(|shown| {
+                crate::doll_view::over_shown_icon(
+                    &self.icons,
+                    shown.icon,
+                    (at.x - view.left, at.y - view.top),
+                    self.screens.pack.unit,
+                    view.height(),
+                    self.screens.pack.icon_size,
+                )
+            })
+            .map(|shown| (shown.id, shown.flags));
+        let picked = self.picker.pick_shown(figure, ray, p, &self.items, shown);
         let hover = picked.hover;
         info!(
             "figure pick at ({}, {}) in the view: item {:#x} flags {:#x} slot {:?} \
@@ -801,6 +830,7 @@ fn release_figure(
     >,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
     mut trust: crate::view_trust::ViewTrust,
+    mut doll: Option<ResMut<InventoryDoll>>,
 ) {
     // The figure is the inventory's bound character's; a body pack the
     // item lands in takes it after that character's side is done.
@@ -821,7 +851,12 @@ fn release_figure(
             mind_cost: cost.is_some(),
             hand: slot.map(|s| s - 1),
             shown: true,
-            shown_is_dragged: false,
+            // The dragged icon is the one the view shows (the core
+            // crystal over the figure).
+            shown_is_dragged: doll
+                .as_deref()
+                .and_then(|doll| doll.shown)
+                .is_some_and(|shown| shown.icon != 0 && shown.icon == drag.icon),
             other_panel: true,
             // The payload's source is the view itself, never the pack.
             from_panel: false,
@@ -941,6 +976,38 @@ fn release_figure(
                     commands.entity(player).remove::<exa_character::Wielded>();
                 }
             }
+            continue;
+        }
+        if plan.take_off_shown {
+            // The shown item comes off the worn list and the view shows
+            // nothing; the destination's drop has taken it.
+            let shown = doll.as_deref().and_then(|doll| doll.shown);
+            let flags = match p
+                .worn
+                .iter()
+                .position(|w| Some(w.id) == shown.map(|s| s.id))
+            {
+                Some(at) => p.worn.remove(at).flags,
+                None => shown.map_or(drag.flags, |s| s.flags),
+            };
+            if let Some(doll) = doll.as_deref_mut() {
+                crate::doll_view::show_on_view(doll, &mut icons, catalogue, 0, 0);
+            }
+            match destination {
+                Panel::PlayerPack => {
+                    body_inventory::give(&mut p, drag.id, flags, cell, unit, vscale);
+                }
+                Panel::BodyPack(body) => {
+                    to_bodies.push((body, drag.id, flags, cell, unit, vscale));
+                }
+                _ => {}
+            }
+            info!(
+                "figure release: the shown {:#x} taken off into {:?}; worn now {:?}",
+                drag.id,
+                destination,
+                p.worn.iter().map(|w| w.id).collect::<Vec<_>>()
+            );
             continue;
         }
         if !plan.take_off {
@@ -1267,6 +1334,7 @@ mod tests {
             body: Some(body),
             view,
             backdrop: [0; 4],
+            scale: 2,
         });
         app.insert_resource(doll);
         app.update();

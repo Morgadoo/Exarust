@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r266, 11-16) | target |
+| measure | start (r186, 11-10) | now (r270, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **57.42%** | **100%** |
+| **Ledger: bytes in a final state** | — | **57.94%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,977 | all |
+| Tests passing | 8,489 | 9,012 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -100,21 +100,21 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 154 | 162,146 |
 | Rendering & GPU | 10 | 10 | 291 | 148,394 |
-| UI | 12 | 12 | 361 | 130,571 |
+| UI | 12 | 12 | 356 | 129,755 |
 | Thaumaturgy & effects | 9 | 9 | 155 | 110,772 |
 | Characters, motion & animation | 8 | 8 | 234 | 107,087 |
-| AI & behaviour | 8 | 8 | 142 | 98,602 |
+| AI & behaviour | 8 | 8 | 131 | 92,785 |
 | Game modes, arena & session | 7 | 7 | 182 | 76,611 |
 | World, levels & terrain | 5 | 5 | 153 | 76,455 |
-| Items, materials & crafting | 5 | 5 | 140 | 64,930 |
-| Data, assets & I/O | 6 | 6 | 140 | 44,077 |
-| Runtime & platform | 5 | 5 | 70 | 20,869 |
+| Items, materials & crafting | 5 | 5 | 139 | 64,273 |
+| Data, assets & I/O | 6 | 6 | 118 | 38,360 |
+| Runtime & platform | 5 | 5 | 69 | 20,690 |
 | Core, math & threading | 3 | 3 | 79 | 15,557 |
 | Script, dialogue & story | 2 | 2 | 29 | 7,041 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,142** | **1,068,608** |
+| **Total** | **90** | **90** | **2,102** | **1,055,422** |
 
 ## Open decisions
 
@@ -126,6 +126,10 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 270 | The grid sector step's first pass is live: the force blast and wave strike bodies in the next tick before the character ticks through the sector's cell walk and gates; the particles' body pass is ported exactly and hooked into the solver's object stage (still unfed: the fires step in the frame's world, simfires lane); every fighter carries a burn and its upkeep, which had never run, now runs; round 265's particle reading corrected (simprepass). Blast and wave scenes and determinism runs owed (GPU on hold) |
+| 2026-11-16 | 269 | An older save's world objects run the original's upgrade chain on a live load; three readers the game had duplicated go through the database routines; a loadout cost bug fixed (a one-handed weapon costs a point less); the container instantiate is ported, so a level's chest fill makes local copies with each row's condition (datastream). Chest, loadout and search scenes owed; level-load traces change (GPU on hold) |
+| 2026-11-16 | 268 | The remaining form keys come from the window procedure's key list: the main menu (its name buffer and the music code), the settings form, the power tree (its bound power keys), the skill and destination screens (any key: F76 and F122 fixed) and the hub's fields; the root task's key slot holds the KeyDef lines and the boot's Escape, runs only the best shortcut and ignores repeats (F135 fixed) (guikeys). A camera-mode ordering gap the new systems exposed was fixed on integration. Key scenes owed (GPU on hold) |
+| 2026-11-16 | 267 | The player behaviour's gamepad screen cursor is the original's (eased in screen space, advanced in the post-step and drawn at the render fraction); the capture takes the pad's look buttons and makes the desk skip its mouse move; the cursor read takes the plain aim-plane point except in an Overhead Swing and for the powers; the stagger halt, the dash and Head Pain inputs (motion 45 identified), the kinesis-drag request drop, the placements' heading store and the death hook's capture release are wired (playerbeh). Pad and combat-aim scenes owed (GPU on hold) |
 | 2026-11-16 | 266 | Live arcs test the level and bodies only when their record asks (only the Shock's burst), so hand, mace, shock-weapon arcs and sparks no longer stagger opponents (a bug fixed); the arc nodes are attached, entered, removed and placed under their weapon, item or struck part each frame, so weapon tendrils stay on the blade and sparks ride the struck limb; the records share the original's strided buffer; blow wisps are placed (they had sat in the fade-in) (tendrils). DEC-11 opened. Grid scenes with a picture check owed (GPU on hold) |
 | 2026-11-16 | 265 | The sector step's character walk follows the original's list (the last registered first, the player last), the level and pair hits take the original's exact weights, plane, spread and push split, level friction works in centimetres with doubles, a part's slip is the original's difference routine, and the all-pairs sector meets the level first; no measurable solver cost (simsector2). The missing sim-object pre-pass is found (simprepass lane). Traces change with level contacts or two characters; determinism runs owed (GPU on hold) |
 | 2026-11-16 | 264 | The base form's key path runs as the original's: the key-down's modifier word, the focused form's key slot (Tab moves the focus, other keys go to the record, the rest climb the parents to the task); the game screens, the manual and the hub's Tab use it, and the player's hotkeys hear a key only while no game screen has the focus; corrected: Shift+Tab steps forward, the activation moves the focus only for a nonzero control (guiform3). Key scenes owed (GPU on hold) |

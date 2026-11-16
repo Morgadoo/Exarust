@@ -103,7 +103,20 @@ pub fn doll_layers() -> RenderLayers {
 pub const DOLL_ORIGIN: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
 /// The view renders at this many pixels a view pixel on each axis, and the
 /// UI node scales it down (the view's supersampling, Exarust's measure).
+/// The creator's view keeps it; the inventory's takes [`doll_scale`].
 pub const DOLL_SCALE: u32 = 2;
+
+/// The inventory view's pixels per view pixel on each axis, from the
+/// supersampling level its constructor asks for
+/// ([`exa_ui::character_view::supersample_level`]) at the settings' value:
+/// Exarust's super-sampling switch stands for the original's setting 4
+/// (4x, level 4) when on and 0 (level 1) when off. A level's sub-frames
+/// are drawn as a square grid of samples (Exarust's 2 x 2 for 4x), so the
+/// scale is the level's whole square root: 2 on, 1 off.
+pub fn doll_scale(super_sampling: bool) -> u32 {
+    let level = exa_ui::character_view::supersample_level(if super_sampling { 4 } else { 0 });
+    (level.max(1) as u32).isqrt()
+}
 /// The UI node's depth: under the GUI canvas (200), so the forms, the
 /// dragged icon and the cards draw over the figure.
 pub const DOLL_Z: i32 = 199;
@@ -160,9 +173,16 @@ pub fn light_transform(camera: &Transform) -> Transform {
 
 /// The image the view renders into for a view of `size` pixels.
 pub fn image_size(size: (i32, i32)) -> UVec2 {
+    image_size_at(size, DOLL_SCALE)
+}
+
+/// The image a view of `size` pixels renders into at `scale` pixels a view
+/// pixel.
+pub fn image_size_at(size: (i32, i32), scale: u32) -> UVec2 {
+    let scale = scale.max(1);
     UVec2::new(
-        (size.0.max(1) as u32) * DOLL_SCALE,
-        (size.1.max(1) as u32) * DOLL_SCALE,
+        (size.0.max(1) as u32) * scale,
+        (size.1.max(1) as u32) * scale,
     )
 }
 
@@ -260,6 +280,8 @@ pub fn rating_dots_layer(
 pub struct DollPaint<'a> {
     /// The view draws: the canvas is cleared over it.
     pub punch: bool,
+    /// The icon slot of the item shown over the figure, 0 for none.
+    pub shown_icon: usize,
     /// The rating dots' value, when known.
     pub dots: Option<f32>,
     pub sheet: Option<&'a DotSheet>,
@@ -278,6 +300,10 @@ pub struct DollScene {
     pub view: GuiRect,
     /// The colour the camera clears to.
     pub backdrop: [u8; 4],
+    /// The image's pixels a view pixel, taken from the settings when the
+    /// scene was made ([`doll_scale`]), as the constructor takes its first
+    /// choice of super sampling.
+    pub scale: u32,
 }
 
 /// The inventory's character view state.
@@ -292,6 +318,133 @@ pub struct InventoryDoll {
     pub sheet: Option<DotSheet>,
     /// The dot side the sheet was last tried at.
     sheet_tried: Option<i32>,
+    /// The item shown over the figure: the bound body's core crystal, or
+    /// one a drop gave it ([`show_on_view`]).
+    pub shown: Option<ShownItem>,
+    /// The body the view's bind last looked for a shown item on.
+    shown_for: Option<Entity>,
+}
+
+/// The item a character view shows over its figure, at its lower-left
+/// corner: its id, its flags and the icon slot it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShownItem {
+    pub id: u32,
+    pub flags: u32,
+    pub icon: usize,
+}
+
+/// Shows an item over the view's figure, as the character view's show
+/// does ([`exa_ui::character_view::show_item`]): an item whose icon
+/// resolves is remembered with its flags and its icon, anything else (item
+/// 0 included) clears the shown item. Exarust releases the icon shown
+/// before, which the original's resolve keeps a reference to.
+pub fn show_on_view(
+    doll: &mut InventoryDoll,
+    icons: &mut PanelIcons,
+    catalogue: Option<&ItemCatalogue>,
+    id: u32,
+    flags: u32,
+) {
+    let previous = doll.shown.map_or(0, |shown| shown.icon);
+    let icon = if id == 0 {
+        0
+    } else {
+        icons.reserve(id, flags, catalogue).0
+    };
+    let shown = exa_ui::character_view::show_item(previous, id, flags, icon);
+    if previous != 0 {
+        icons.release(previous);
+    }
+    doll.shown = shown.item.map(|(id, flags)| ShownItem {
+        id,
+        flags,
+        icon: shown.icon,
+    });
+}
+
+/// The view's bind of a body, for the shown item: the first of the body's
+/// worn items that is one of the crystals the view looks for
+/// ([`exa_ui::game_gui::crystal_item`]: crystals A, AL, B, C and AR) is
+/// shown, else the shown item is cleared. It runs once for each body the
+/// view's scene is made for; the shown item goes when the view closes.
+fn bind_shown_item(
+    mut doll: ResMut<InventoryDoll>,
+    icons: Option<ResMut<PanelIcons>>,
+    catalogue: Option<Res<ItemCatalogue>>,
+    bodies: Query<&Possessions>,
+) {
+    let Some(mut icons) = icons else {
+        return;
+    };
+    let Some(body) = doll.scene.as_ref().map(|scene| scene.body) else {
+        if let Some(shown) = doll.shown.take() {
+            icons.release(shown.icon);
+        }
+        doll.shown_for = None;
+        return;
+    };
+    if doll.shown_for == body && body.is_some() {
+        return;
+    }
+    doll.shown_for = body;
+    let worn: Vec<(i32, i32)> = body
+        .and_then(|body| bodies.get(body).ok())
+        .map(|p| {
+            p.worn
+                .iter()
+                .map(|w| (w.id as i32, w.flags as i32))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (id, flags) = exa_ui::game_gui::crystal_item(&worn);
+    show_on_view(
+        &mut doll,
+        &mut icons,
+        catalogue.as_deref(),
+        id as u32,
+        flags as u32,
+    );
+    if let Some(shown) = doll.shown {
+        info!(
+            "character view: shows {:#x} (flags {:#x}) over the figure",
+            shown.id, shown.flags
+        );
+    }
+}
+
+/// Where the view draws its shown item's icon, from the view's top-left:
+/// the icon placed at (unit, view height less unit) by the icon draw's
+/// origin rule ([`exa_items::icon_cache::IconCache::draw_origin`]).
+pub fn shown_icon_origin(
+    icons: &PanelIcons,
+    icon: usize,
+    unit: i32,
+    view_height: i32,
+    icon_size: i32,
+) -> Option<(i32, i32)> {
+    icons
+        .cache
+        .draw_origin(icon, unit, view_height - unit, icon_size)
+}
+
+/// Whether the pointer at `at` (from the view's top-left) is on the shown
+/// item's icon: the point taken into the icon's space
+/// ([`exa_items::icon_cache::IconCache::test_point`] from (unit, view
+/// height less unit)) meets an opaque pixel of it
+/// ([`PanelIcons::pixel_hit`]).
+pub fn over_shown_icon(
+    icons: &PanelIcons,
+    icon: usize,
+    at: (i32, i32),
+    unit: i32,
+    view_height: i32,
+    icon_size: i32,
+) -> bool {
+    icons
+        .cache
+        .test_point(icon, at.0 - unit, at.1 - (view_height - unit), icon_size)
+        .is_some_and(|(x, y)| icons.pixel_hit(icon, x, y))
 }
 
 /// A drop on the inventory's figure: the drag's source panel and payload.
@@ -441,6 +594,29 @@ pub fn figure_accepts(
     has_apparel: bool,
     view_no_changes: bool,
 ) -> bool {
+    figure_accepts_shown(
+        race,
+        id,
+        kind,
+        shield_flags,
+        has_apparel,
+        view_no_changes,
+        0,
+    )
+}
+
+/// [`figure_accepts`] for a view showing the item whose icon slot is
+/// `shown_icon` (0 for none): a core crystal is taken only while nothing
+/// is shown.
+pub fn figure_accepts_shown(
+    race: Option<&exa_formats::races::Race>,
+    id: u32,
+    kind: possession::ItemKind,
+    shield_flags: Option<u32>,
+    has_apparel: bool,
+    view_no_changes: bool,
+    shown_icon: usize,
+) -> bool {
     let (look, core, body) = race.map_or((4, 0, 0), |r| (r.look, r.flags, r.stats.kind));
     exa_ui::character_view::accepts_drag(exa_ui::character_view::AcceptDragInput {
         refused_by_callback: false,
@@ -453,7 +629,7 @@ pub fn figure_accepts(
         race_core_flags: core,
         body_flags: body,
         view_no_changes,
-        shown_icon: 0,
+        shown_icon,
     })
 }
 
@@ -485,8 +661,9 @@ fn spawn_scene(
     images: &mut Assets<Image>,
     view: GuiRect,
     backdrop: [u8; 4],
+    scale: u32,
 ) -> DollScene {
-    let size = image_size((view.width(), view.height()));
+    let size = image_size_at((view.width(), view.height()), scale);
     let mut image = Image::new_uninit(
         Extent3d {
             width: size.x,
@@ -563,6 +740,7 @@ fn spawn_scene(
         body: None,
         view,
         backdrop,
+        scale,
     }
 }
 
@@ -583,6 +761,7 @@ fn sync_doll(
     mut nodes: Query<&mut Node>,
     mut cameras: Query<&mut Camera>,
     game: Option<Res<Game>>,
+    super_sampling: Option<Res<exa_render::supersample::SuperSampling>>,
 ) {
     let Some(view) = open_view(&screens) else {
         if let Some(scene) = doll.scene.take() {
@@ -615,9 +794,10 @@ fn sync_doll(
         despawn_scene(&mut commands, scene);
     }
     let backdrop = doll.backdrop;
+    let sampling = doll_scale(super_sampling.is_none_or(|on| on.0));
     let scene = doll
         .scene
-        .get_or_insert_with(|| spawn_scene(&mut commands, &mut images, view, backdrop));
+        .get_or_insert_with(|| spawn_scene(&mut commands, &mut images, view, backdrop, sampling));
     scene.view = view;
     scene.body = bound;
     if scene.backdrop != backdrop
@@ -1278,6 +1458,7 @@ fn equip_dropped(
     >,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
     (mut trust, live): (crate::view_trust::ViewTrust, Option<Res<LiveObjects>>),
+    mut doll: Option<ResMut<InventoryDoll>>,
 ) {
     // The character the inventory is bound to: its figure takes the drop.
     let target = screens.inventory_bound(player_bodies.iter().next());
@@ -1293,13 +1474,18 @@ fn equip_dropped(
             .and_then(|t| bodies.get(t).ok())
             .and_then(|entry| entry.5)
             .and_then(|data| items.race(data.record.race));
-        if !figure_accepts(
+        let shown_icon = doll
+            .as_deref()
+            .and_then(|doll| doll.shown)
+            .map_or(0, |shown| shown.icon);
+        if !figure_accepts_shown(
             race,
             drop.id,
             kind,
             catalogue.and_then(|c| c.shield_flags(drop.id)),
             has_apparel,
             false,
+            shown_icon,
         ) {
             info!(
                 "character view: refuses the drag of {:#x} (race {:?})",
@@ -1363,6 +1549,15 @@ fn equip_dropped(
             has_shield: kind.shield,
             race_wears_apparel,
             insight,
+            // The body takes the item as its core crystal: its race's core
+            // word names the item and it wears none of the crystals.
+            takes_core: race.is_some_and(|r| {
+                let worn: Vec<u32> = target
+                    .and_then(|t| bodies.get(t).ok())
+                    .map(|entry| entry.1.worn.iter().map(|w| w.id).collect())
+                    .unwrap_or_default();
+                possession::takes_core(r.flags, drop.id & ID_MASK, &worn)
+            }),
             ..DropFacts::default()
         });
         // The change goes into the bound body's trust before the item is
@@ -1405,7 +1600,7 @@ fn equip_dropped(
                     }
                 }
             }
-            (FigureDrop::Weapon | FigureDrop::Shield, _) => None,
+            (FigureDrop::Weapon | FigureDrop::Shield | FigureDrop::Hand, _) => None,
             _ => {
                 cancel(&mut screens, drop);
                 continue;
@@ -1461,6 +1656,17 @@ fn equip_dropped(
             )
         };
         match plan.kind {
+            // The core crystal: the view shows it over the figure; it has
+            // left its source, and the record's lists do not take it.
+            FigureDrop::Hand => {
+                if let Some(doll) = doll.as_deref_mut() {
+                    show_on_view(doll, &mut icons, catalogue, drop.id, flags);
+                }
+                info!(
+                    "character view: the core crystal {:#x} is shown over {:?}'s figure",
+                    drop.id, player
+                );
+            }
             FigureDrop::Apparel => {
                 let Some((removed, worn)) = conflicts else {
                     continue;
@@ -1799,6 +2005,7 @@ impl Plugin for DollViewPlugin {
                 Update,
                 (
                     sync_doll,
+                    bind_shown_item,
                     dress_doll,
                     scripted_doll_drop,
                     equip_dropped,
@@ -1923,6 +2130,40 @@ mod tests {
 
     /// A torch or off-hand root on the figure takes the pick's marker with
     /// its 1-based slot; a striker or the figure's shield does not.
+    /// The view's scene, made by the live sync when the player's inventory
+    /// opens, renders at the settings' supersampling: two image pixels a
+    /// view pixel with super sampling on, one with it off.
+    #[test]
+    fn the_view_image_follows_the_supersampling_setting() {
+        for (on, scale) in [(true, 2), (false, 1)] {
+            let mut app = App::new();
+            app.init_resource::<GameScreens>()
+                .init_resource::<InventoryDoll>()
+                .init_resource::<Assets<Image>>()
+                .init_resource::<crate::char_view::PreviewPointer>()
+                .insert_resource(exa_render::supersample::SuperSampling(on))
+                .add_systems(Update, sync_doll);
+            let view = {
+                let mut screens = app.world_mut().resource_mut::<GameScreens>();
+                screens.open_inventory(true, true, 4);
+                open_view(&screens).unwrap()
+            };
+            app.update();
+            let doll = app.world().resource::<InventoryDoll>();
+            let scene = doll.scene.as_ref().expect("the view's scene");
+            assert_eq!(scene.scale, scale);
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(&scene.image)
+                .unwrap();
+            assert_eq!(
+                image.size(),
+                image_size_at((view.width(), view.height()), scale)
+            );
+        }
+    }
+
     #[test]
     fn figure_hand_roots_take_the_pick_marker() {
         use crate::figure_pick::FigureHeld;
@@ -1940,6 +2181,14 @@ mod tests {
         assert_eq!((view.left, view.top), (18, 18));
         assert_eq!((view.width(), view.height()), (224, 380));
         assert_eq!(image_size((224, 380)), UVec2::new(448, 760));
+        // The inventory's view takes the settings' level: 4x is a 2 x 2
+        // grid, off is one sample.
+        assert_eq!(doll_scale(true), 2);
+        assert_eq!(doll_scale(false), 1);
+        assert_eq!(
+            image_size_at((224, 380), doll_scale(false)),
+            UVec2::new(224, 380)
+        );
     }
 
     /// The dots centre on the record: a 28-pixel record puts the 22-pixel
@@ -2407,6 +2656,177 @@ mod tests {
         assert_eq!(screens.pack.entries.len(), 2);
         assert!(p.carried.iter().any(|c| c.id == old && c.flags & HELD == 0));
         assert!(p.carried.iter().any(|c| c.id == new && c.flags & HELD != 0));
+    }
+
+    /// The shown item's icon sits at the view's lower-left corner: the
+    /// draw origin of (unit, height less unit) and the hover's test point
+    /// agree, so the pointer is on it exactly where it draws.
+    #[test]
+    fn the_shown_icon_draws_and_answers_at_the_views_lower_left() {
+        let mut icons = PanelIcons::new(4);
+        let mut image = IconImage::new(160, 160, 4);
+        image.pixels.fill(255);
+        let cell = icons.atlas.add(&image, 7);
+        icons.cache.entries = vec![exa_items::icon_cache::Entry {
+            id: 500,
+            cell,
+            variant: 0,
+            half_width: 84,
+            half_height: 84,
+            refs: 1,
+        }];
+        // A 380-pixel view at unit 4 with 160-pixel icons.
+        assert_eq!(shown_icon_origin(&icons, 1, 4, 380, 160), Some((8, 212)));
+        // The icon space's rows run up from its bottom edge, so its top
+        // row and its left column start one pixel in, as in a panel.
+        assert!(over_shown_icon(&icons, 1, (9, 213), 4, 380, 160));
+        assert!(over_shown_icon(&icons, 1, (167, 371), 4, 380, 160));
+        assert!(!over_shown_icon(&icons, 1, (7, 300), 4, 380, 160));
+        assert!(!over_shown_icon(&icons, 1, (100, 211), 4, 380, 160));
+        assert!(!over_shown_icon(&icons, 0, (100, 300), 4, 380, 160));
+    }
+
+    /// The inventory's view on a body whose race takes the AL crystal as
+    /// its core (the shipped race table): the bind shows the first worn
+    /// crystal, none for a body that wears none; the AL crystal dropped
+    /// from the pack leaves it and is shown over the figure, and a second
+    /// one is refused while one is shown.
+    #[test]
+    fn the_view_shows_the_core_crystal_and_takes_one_dropped_on_it() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(bytes) = data
+            .pack(PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+        else {
+            return;
+        };
+        let Ok(db) = exa_formats::rdb::Database::parse(bytes) else {
+            return;
+        };
+        let catalogue = ItemCatalogue::of_database(&db);
+        let game = Game(std::sync::Arc::new(data));
+        let races = exa_formats::races::RaceDb::new(crate::scene_bodies::game_races(&game));
+        let Some(golem) =
+            (0..=u8::MAX).find(|&b| races.of_character(b).flags & possession::TAKES_CORE_AL != 0)
+        else {
+            panic!("the shipped race table has a race that takes the AL crystal");
+        };
+        let al = possession::crystal::AL;
+        // The crystal is an item with no apparel, weapon or shield section.
+        let kind = catalogue.kind(al).unwrap_or_default();
+        assert!(kind.weapon.is_none() && !kind.shield);
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<DollItems>()
+            .init_resource::<InventoryDoll>()
+            .insert_resource(catalogue)
+            .insert_resource(game)
+            .add_message::<DollDrop>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .add_systems(Update, (bind_shown_item, equip_dropped).chain());
+        let carried = |x| possession::Carried {
+            id: al,
+            flags: 0x0a_0000,
+            x,
+            y: 0,
+        };
+        let body = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                Possessions {
+                    carried: vec![carried(0), carried(320)],
+                    ..Default::default()
+                },
+                exa_character::record::CharacterData::of_record(
+                    exa_formats::characters::CharacterRecord {
+                        race: golem,
+                        ..Default::default()
+                    },
+                ),
+            ))
+            .id();
+        let scene = |body| DollScene {
+            image: Handle::default(),
+            camera: Entity::PLACEHOLDER,
+            light: Entity::PLACEHOLDER,
+            node: Entity::PLACEHOLDER,
+            figure: None,
+            body: Some(body),
+            view: GuiRect::new(0, 0, 224, 380),
+            backdrop: [0; 4],
+            scale: 2,
+        };
+        let world = app.world_mut();
+        let possessions = world.get::<Possessions>(body).unwrap().clone();
+        world.resource_scope(|world, mut icons: Mut<PanelIcons>| {
+            let catalogue = world.resource::<ItemCatalogue>().clone();
+            let mut screens = world.resource_mut::<GameScreens>();
+            screens.task.screen = (1280, 720);
+            screens.open_inventory(true, true, 4);
+            screens.inventory_body = Some(body);
+            body_inventory::bind_pack(
+                &mut screens.pack,
+                &possessions,
+                &mut icons,
+                Some(&catalogue),
+            );
+        });
+        app.world_mut().resource_mut::<InventoryDoll>().scene = Some(scene(body));
+        app.update();
+        assert_eq!(app.world().resource::<InventoryDoll>().shown, None);
+        let drop = |app: &mut App| {
+            let (icon, flags) = {
+                let mut screens = app.world_mut().resource_mut::<GameScreens>();
+                let entry = screens
+                    .pack
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.id == al && e.drag == 0)
+                    .unwrap();
+                entry.drag = 1;
+                (entry.icon, entry.flags)
+            };
+            app.world_mut().write_message(DollDrop {
+                source: Panel::PlayerPack,
+                id: al,
+                flags,
+                icon,
+                bulk: 0,
+                right_half: false,
+            });
+            app.update();
+        };
+        drop(&mut app);
+        let shown = app.world().resource::<InventoryDoll>().shown.unwrap();
+        assert_eq!((shown.id, shown.flags), (al, 0x0a_0000));
+        assert!(shown.icon > 0);
+        let p = app.world().get::<Possessions>(body).unwrap();
+        assert_eq!(p.carried.iter().filter(|c| c.id == al).count(), 1);
+        assert!(p.worn.is_empty(), "the record's lists do not take the core");
+        // A second crystal is refused while one is shown.
+        drop(&mut app);
+        let p = app.world().get::<Possessions>(body).unwrap();
+        assert_eq!(p.carried.iter().filter(|c| c.id == al).count(), 1);
+        // The view closes and binds again on a body wearing a crystal.
+        app.world_mut().resource_mut::<InventoryDoll>().scene = None;
+        app.update();
+        assert_eq!(app.world().resource::<InventoryDoll>().shown, None);
+        app.world_mut()
+            .get_mut::<Possessions>(body)
+            .unwrap()
+            .worn
+            .push(ItemRef::new(possession::crystal::A, 0x05_0000));
+        app.world_mut().resource_mut::<InventoryDoll>().scene = Some(scene(body));
+        app.update();
+        let shown = app.world().resource::<InventoryDoll>().shown.unwrap();
+        assert_eq!((shown.id, shown.flags), (possession::crystal::A, 0x05_0000));
     }
 
     /// A weapon dropped on a bound body's figure, with the inventory's
