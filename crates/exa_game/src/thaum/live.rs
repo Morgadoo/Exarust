@@ -185,6 +185,7 @@ impl Plugin for ThaumEffectsPlugin {
 fn bridge_thaum_effects_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<exa_combat::impact::LimbImpact>()
+        .bridge_copy::<exa_ai::route_walk::AiRoute>()
         .bridge_message::<crate::thaum::cast::Otherwhere>()
         .bridge_message::<crate::thaum::hold_live::HoldEnd>()
         .bridge_message::<crate::thaum::kinesis_live::KinesisPicked>()
@@ -1101,7 +1102,7 @@ fn tick_barricades(
     mut roll: ResMut<EffectRoll>,
     mut nav: Option<ResMut<NavGrid>>,
     mut minds: Query<&mut Npc>,
-    mut routes: Query<&mut exa_ai::drive::Driven>,
+    mut routes: Query<&mut exa_ai::route_walk::AiRoute>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live, stamped) in &mut walls {
@@ -1216,7 +1217,7 @@ fn tick_barricades(
                 // Each knock also clears the AI behaviour's route byte: it
                 // stops following its route and plans again.
                 if let Ok(mut route) = routes.get_mut(who) {
-                    route.0.driving = false;
+                    route.following = false;
                 }
             }
         }

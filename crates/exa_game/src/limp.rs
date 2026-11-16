@@ -84,6 +84,7 @@ impl Plugin for LimpPlugin {
 fn bridge_limp_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<crate::limp::GroundPlacement>()
+        .bridge_copy::<exa_ai::route_walk::AiRoute>()
         .bridge_copy::<LimpKept>()
         .bridge_copy::<exa_combat::condition::DeathClock>()
         .bridge_copy::<crate::limp::SpawnWatch>()
@@ -586,7 +587,7 @@ pub(crate) fn place_entering(
         (
             &ChildOf,
             &Ragdoll,
-            Option<&exa_ai::brain::Npc>,
+            Option<&exa_ai::route_walk::AiRoute>,
             Option<&mut exa_physics::body::locomotion::Locomotor>,
             Option<&mut exa_physics::body::locomotion::Locomotion>,
             &mut Transform,
@@ -597,7 +598,7 @@ pub(crate) fn place_entering(
 ) {
     use exa_physics::body::locomotion::yaw_of;
     for exa_ai::presence::Entered(entity) in entered.read() {
-        let Ok((parent, body, npc, motor, req, mut model)) = models.get_mut(*entity) else {
+        let Ok((parent, body, route, motor, req, mut model)) = models.get_mut(*entity) else {
             continue;
         };
         let Ok(mut root) = roots.get_mut(parent.parent()) else {
@@ -611,8 +612,8 @@ pub(crate) fn place_entering(
         // While a route is followed the basis faces from the chest toward
         // its goal across the ground; otherwise the character frame's yaw.
         let chest = body.chest_point().unwrap_or(at);
-        let toward = npc
-            .and_then(|n| n.walk.route.last().copied())
+        let toward = route
+            .and_then(exa_ai::route_walk::AiRoute::goal)
             .map(|goal| (goal / CM - chest).with_y(0.0))
             .filter(|d| d.length_squared() > 1e-8);
         let yaw = match (toward, motor.as_deref()) {

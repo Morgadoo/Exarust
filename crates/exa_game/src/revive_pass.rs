@@ -67,6 +67,7 @@ type Brains<'w, 's> = Query<
         &'static Condition,
         Option<&'static StateFlags>,
         Option<&'static mut Duellist>,
+        Option<&'static mut exa_ai::route_walk::AiRoute>,
     ),
 >;
 
@@ -151,8 +152,18 @@ pub fn revive_brains(
     mut prints: Option<ResMut<exa_world::nav::NavFootprints>>,
 ) {
     let (mut reset, mut roamed, mut moved, mut refused) = (0, 0, 0, 0);
-    for (entity, gt, parent, mut npc, mut fighter, mut combatant, condition, flags, duellist) in
-        &mut brains
+    for (
+        entity,
+        gt,
+        parent,
+        mut npc,
+        mut fighter,
+        mut combatant,
+        condition,
+        flags,
+        duellist,
+        walk,
+    ) in &mut brains
     {
         let npc = &mut *npc;
         let roaming = npc
@@ -306,8 +317,9 @@ pub fn revive_brains(
             duellist.leave();
         }
         combatant.in_combat = false;
-        npc.walk.route.clear();
-        npc.walk.velocity = Vec3::ZERO;
+        if let Some(mut walk) = walk {
+            walk.stop();
+        }
         let body_look = exa_ai::motion::yaw_of(gt.rotation() * Vec3::Z);
         exa_ai::lifecycle::return_to_idle(&mut npc.gaze, &mut npc.turn, body_look);
         exa_ai::lifecycle::restart_idle(npc);

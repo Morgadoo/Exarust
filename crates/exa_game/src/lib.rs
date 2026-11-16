@@ -323,6 +323,7 @@ impl Plugin for GamePlugin {
 fn bridge_game_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<crate::item_ability::ItemArcs>()
+        .bridge_copy::<exa_ai::route_walk::AiRoute>()
         .bridge_move_resource::<crate::joint_trace::JointTrace>()
         .bridge_move_resource::<crate::pair_trace::PairTrace>()
         .bridge_snapshot_resource::<crate::path_probe::PathProbe>()

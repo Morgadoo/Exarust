@@ -206,7 +206,7 @@ pub(crate) fn keep_out(
 pub(crate) fn apply_contact(
     contact: &crate::effects::force_dome::Contact,
     body: &mut Ragdoll,
-    route: Option<&mut exa_ai::drive::Driven>,
+    route: Option<&mut exa_ai::route_walk::AiRoute>,
     holder_swing: Option<&mut exa_combat::swing::SwingState>,
     step: f64,
     now: u32,
@@ -228,7 +228,7 @@ pub(crate) fn apply_contact(
             );
         }
         if let Some(route) = route {
-            route.0.driving = false;
+            route.following = false;
         }
     }
     if contact.struck
@@ -269,7 +269,7 @@ pub(crate) fn tick_barriers(
     )>,
     mut bodies: Query<(Entity, &mut Ragdoll, Option<&GlobalTransform>)>,
     (mut routes, mut swings): (
-        Query<&mut exa_ai::drive::Driven>,
+        Query<&mut exa_ai::route_walk::AiRoute>,
         Query<&mut exa_combat::swing::SwingState>,
     ),
     ticks: Option<Res<BodyTicks>>,

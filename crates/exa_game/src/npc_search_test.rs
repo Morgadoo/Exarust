@@ -224,7 +224,15 @@ fn a_follower_searches_a_chest_and_a_loose_item() {
         .init_resource::<OpenSearchScreens>()
         .init_resource::<exa_physics::sim_app::FrameCommands>()
         .insert_resource(BodyTicks(0))
-        .add_systems(Update, (follow_and_search, carry_out_search).chain());
+        .add_systems(
+            Update,
+            (
+                follow_and_search,
+                carry_out_search,
+                exa_ai::route_walk::walk_routes,
+            )
+                .chain(),
+        );
     app.world_mut().spawn((
         Player,
         GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 20.0)),
@@ -437,7 +445,10 @@ fn a_follower_searches_a_dead_body() {
         .init_resource::<OpenSearchScreens>()
         .init_resource::<exa_physics::sim_app::FrameCommands>()
         .insert_resource(BodyTicks(0))
-        .add_systems(Update, follow_and_search);
+        .add_systems(
+            Update,
+            (follow_and_search, exa_ai::route_walk::walk_routes).chain(),
+        );
     // Away from the world origin, where a new search last gathered.
     let player = app
         .world_mut()
@@ -586,16 +597,17 @@ fn a_follower_too_close_backs_off_to_four_metres() {
         "{:?}",
         state.follower.goal
     );
-    assert_eq!(state.walk.route.last().copied(), Some(state.follower.goal));
+    let route = app
+        .world()
+        .get::<exa_ai::route_walk::AiRoute>(follower)
+        .unwrap();
+    assert!(route.follows(exa_ai::route_walk::Walker::Follow));
+    assert_eq!(route.goal(), Some(state.follower.goal));
     // The walk over, the closing mode ends with it.
     app.world_mut()
-        .resource_mut::<SearchWorld>()
-        .following
-        .get_mut(&follower)
+        .get_mut::<exa_ai::route_walk::AiRoute>(follower)
         .unwrap()
-        .walk
-        .route
-        .clear();
+        .stop();
     app.world_mut().resource_mut::<BodyTicks>().0 = 2;
     app.world_mut()
         .entity_mut(root)

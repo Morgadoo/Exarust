@@ -17,10 +17,11 @@
 //! picked only on the brain's turn, and a turn always ends the planning
 //! phase, whether or not the route is long enough to follow.
 //!
-//! [`roam_step`] runs the phases on plain values; [`follow_walk`] walks the
-//! followed route; [`crate::brain::idle_walk`] is the running game's caller.
+//! [`roam_step`] runs the phases on plain values; the route it plans is
+//! walked by the AI's one route walk ([`crate::route_walk`]);
+//! [`crate::brain::idle_walk`] is the running game's caller.
 
-use bevy::math::{Vec2, Vec3};
+use bevy::math::Vec3;
 
 use crate::idle::{self, Exit, Kind, Moment, Phase, Routine};
 use crate::motion::{self, Gaze, Turning};
@@ -99,12 +100,11 @@ pub fn attend(turn: &mut Turning, attended: Option<Attended>, level: f32) -> boo
     true
 }
 
-/// A roam's or patrol's walk: the goal its last pick wrote, the route it
-/// follows and the room the last wander aimed at.
+/// A roam's or patrol's picks: the goal its last pick wrote and the room
+/// the last wander aimed at. The route it plans is the character's one
+/// route ([`crate::route_walk::AiRoute`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdleWalk {
-    /// The followed route (cm); empty while no route is followed.
-    pub route: Vec<Vec3>,
     /// The goal the last pick wrote (cm, height 0); a pick that finds no
     /// exit keeps it, as the original keeps its goal.
     pub goal: Option<Vec3>,
@@ -113,30 +113,14 @@ pub struct IdleWalk {
     pub toward: i32,
     /// The drawn exit's place in the room's list.
     pub cursor: i32,
-    /// When a followed route is given up (ms) [Exarust's guard: the
-    /// original's roam has no deadline; the idle driver's, path length·20 +
-    /// 2000 ms, keeps a walker stuck on the running game's colliders from
-    /// pressing on for ever].
-    pub give_up_ms: u32,
-    /// The velocity the walk last steered (m/s).
-    pub velocity: Vec3,
-    /// Where the out-of-scene slide is on the route: the segment's end
-    /// index and the fraction along it ([`crate::path::slide`]); None while
-    /// the character is in the scene (the follower then projects its
-    /// ground point afresh).
-    pub slide: Option<(u32, f32)>,
 }
 
 impl Default for IdleWalk {
     fn default() -> Self {
         Self {
-            route: Vec::new(),
             goal: None,
             toward: -1,
             cursor: -1,
-            give_up_ms: 0,
-            velocity: Vec3::ZERO,
-            slide: None,
         }
     }
 }
@@ -172,8 +156,9 @@ pub struct RoamStep {
 
 /// One roam or patrol step after the idle head let it through: on its
 /// planning turn the wander (or, for a roam's second leg, the forced
-/// home-side) goal is picked and routed; a walk whose route is no longer
-/// followed settles the look on the yaw of the body's heading direction
+/// home-side) goal is picked and routed into the character's route (a
+/// route the start test refuses stops it, as the planner's route stop
+/// does); a walk whose route is no longer followed settles the look on the yaw of the body's heading direction
 /// ([`motion::settle_look`], its draw before the
 /// pause's) and the phase goes on ([`idle::tick`]). Both draw from `roll`,
 /// the brain's generator (the original's shared one). Any other routine
@@ -182,6 +167,7 @@ pub struct RoamStep {
 pub fn roam_step(
     routine: &mut Routine,
     walk: &mut IdleWalk,
+    route: &mut crate::route_walk::AiRoute,
     place: RoamPlace<'_>,
     gaze: &mut Gaze,
     turn: &mut Turning,
@@ -230,17 +216,15 @@ pub fn roam_step(
         let followed = points.len() >= 2
             && (home_leg
                 || route::FOLLOW_SPAN_CM * route::FOLLOW_SPAN_CM < route::route_span2(&points));
-        walk.route.clear();
         if followed {
-            let length = route::path_length(&points);
-            walk.give_up_ms = now_ms
-                .wrapping_add((length * 20.0).floor() as i32 as u32)
-                .wrapping_add(2000);
-            walk.route = points;
+            route.start_until(points, 0, crate::route_walk::Walker::Roam, now_ms);
+        } else {
+            route.stop();
         }
     }
     let walking = matches!(routine.phase, Phase::WalkWander | Phase::WalkHome);
-    if walking && walk.route.is_empty() {
+    let arrived = !route.follows(crate::route_walk::Walker::Roam);
+    if walking && arrived {
         motion::settle_look(gaze, turn, motion::yaw_of(gaze.body_heading), now_ms, roll);
         step.settled = true;
     }
@@ -250,7 +234,7 @@ pub fn roam_step(
         &Moment {
             now_ms,
             path_accepted: step.planned,
-            arrived: walk.route.is_empty(),
+            arrived,
             ..Moment::default()
         },
     );
@@ -258,55 +242,10 @@ pub fn roam_step(
     step
 }
 
-/// The flat squared reach (cm²) within which a followed route has arrived:
-/// the path follower's urgent stop, 100 cm from the last point.
-const ARRIVED_CM2: f32 = 10_000.0;
-
-/// One step along the followed route from the ground point `feet_cm`: the
-/// carrot 100 cm ahead ([`crate::path::carrot`]) to steer to, or `None`
-/// once the walk is over. The route ends within 100 cm of its last point
-/// (the follower's urgent stop; measured flat, as the running game's root
-/// is not on the grid's floor) or past its give-up time.
-pub fn follow_walk(walk: &mut IdleWalk, feet_cm: Vec3, now_ms: u32) -> Option<Vec3> {
-    let last = *walk.route.last()?;
-    let flat = Vec2::new(last.x - feet_cm.x, last.z - feet_cm.z);
-    if flat.length_squared() < ARRIVED_CM2 || walk.give_up_ms < now_ms {
-        walk.route.clear();
-        return None;
-    }
-    // [Exarust: a carrot that lands on a joint has no goal; the walk then
-    // steers to the route's last point rather than stopping.]
-    crate::path::carrot(&walk.route, feet_cm)
-        .goal
-        .or(Some(last))
-}
-
-/// One tick of the out-of-scene follow: the path follower slides the
-/// standing point 2 cm along the route from where the slide is (or, at its
-/// first tick, from the ground point `feet_cm` projected onto the route),
-/// with no physics. Returns the new ground point (cm, the route's height),
-/// or None without a route of two points. The walk ends as in the scene,
-/// within 100 cm of the last point ([`follow_walk`]).
-pub fn slide_walk(walk: &mut IdleWalk, feet_cm: Vec3, now_ms: u32) -> Option<Vec3> {
-    if walk.route.len() < 2 {
-        walk.slide = None;
-        return None;
-    }
-    let (segment, fraction) = walk.slide.unwrap_or_else(|| {
-        let c = crate::path::carrot(&walk.route, feet_cm);
-        (c.segment, c.fraction)
-    });
-    let moved = crate::path::slide(&walk.route, segment, fraction, 0.0)?;
-    walk.slide = Some((moved.segment, moved.fraction));
-    if follow_walk(walk, moved.ground, now_ms).is_none() {
-        walk.slide = None;
-    }
-    Some(moved.ground)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::math::Vec2;
 
     #[test]
     fn the_attend_window_is_held_between_a_quarter_and_seven_tenths_of_pi() {
@@ -405,7 +344,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn step(
         routine: &mut Routine,
-        walk: &mut IdleWalk,
+        walk: &mut (IdleWalk, crate::route_walk::AiRoute),
         turn: &mut PlanTurn,
         at: Vec3,
         now: u32,
@@ -417,7 +356,8 @@ mod tests {
         let mut router = Straight;
         roam_step(
             routine,
-            walk,
+            &mut walk.0,
+            &mut walk.1,
             RoamPlace {
                 at_cm: at,
                 room: 0,
@@ -441,7 +381,7 @@ mod tests {
     #[test]
     fn a_roam_walks_through_a_door_and_settles_after_each_leg() {
         let mut routine = Routine::roam(100);
-        let mut walk = IdleWalk::default();
+        let mut walk = (IdleWalk::default(), crate::route_walk::AiRoute::default());
         let mut turn = PlanTurn::default();
         let mut roll = 1u32;
         let mut gaze = Gaze::default();
@@ -485,13 +425,16 @@ mod tests {
         );
         assert!(s.planned);
         assert_eq!(routine.phase, Phase::WalkWander);
-        assert_eq!(walk.goal, Some(Vec3::new(150.0, 0.0, 0.0)));
-        assert_eq!((walk.toward, walk.cursor), (4, 0));
-        assert_eq!(walk.route, vec![at, Vec3::new(150.0, 50.0, 0.0)]);
+        assert_eq!(walk.0.goal, Some(Vec3::new(150.0, 0.0, 0.0)));
+        assert_eq!((walk.0.toward, walk.0.cursor), (4, 0));
+        assert_eq!(walk.1.points, vec![at, Vec3::new(150.0, 50.0, 0.0)]);
+        assert!(walk.1.follows(crate::route_walk::Walker::Roam));
+        assert_eq!(walk.1.urgency, 0);
         // 450 cm long: given up 9000 + 2000 ms out.
-        assert_eq!(walk.give_up_ms, 103 + 9000 + 2000);
-        // Arrived (the route cleared): the look settles, then it pauses.
-        walk.route.clear();
+        assert_eq!(walk.1.give_up_ms, Some(103 + 9000 + 2000));
+        // Arrived (the walk ended the route): the look settles, then it
+        // pauses.
+        walk.1.stop();
         let before = roll;
         let s = step(
             &mut routine,
@@ -539,10 +482,11 @@ mod tests {
             &mut look,
         );
         assert_eq!(routine.phase, Phase::WalkHome);
-        assert_eq!(walk.goal, Some(Vec3::new(600.0, 0.0, 0.0)));
+        assert_eq!(walk.0.goal, Some(Vec3::new(600.0, 0.0, 0.0)));
         // 40 cm: short, but the home leg is forced.
-        assert_eq!(walk.route.len(), 2);
-        assert_eq!(walk.toward, 4);
+        assert_eq!(walk.1.points.len(), 2);
+        assert!(walk.1.following);
+        assert_eq!(walk.0.toward, 4);
     }
 
     /// A wander route no longer than 150 cm end to end is not followed: the
@@ -551,7 +495,7 @@ mod tests {
     fn a_short_wander_route_is_not_followed() {
         let mut routine = Routine::patrol(0);
         routine.phase = Phase::PlanWander;
-        let mut walk = IdleWalk::default();
+        let mut walk = (IdleWalk::default(), crate::route_walk::AiRoute::default());
         let mut turn = PlanTurn {
             current: Some(7),
             ..PlanTurn::default()
@@ -569,7 +513,7 @@ mod tests {
             &mut look,
         );
         assert!(s.planned);
-        assert!(walk.route.is_empty());
+        assert!(!walk.1.following);
         assert_eq!(routine.phase, Phase::WalkWander);
         let s = step(
             &mut routine,
@@ -591,50 +535,5 @@ mod tests {
             &mut wait, &mut walk, &mut turn, at, 12, &mut roll, &mut gaze, &mut look,
         );
         assert_eq!(s, RoamStep::default());
-    }
-
-    #[test]
-    fn the_walk_steers_to_the_carrot_and_ends_near_the_last_point() {
-        let mut walk = IdleWalk {
-            route: vec![Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0)],
-            give_up_ms: 1000,
-            ..IdleWalk::default()
-        };
-        assert_eq!(
-            follow_walk(&mut walk, Vec3::new(0.0, 80.0, 0.0), 10),
-            Some(Vec3::new(100.0, 0.0, 0.0))
-        );
-        // Within 100 cm on the flat, whatever the height: arrived.
-        assert_eq!(
-            follow_walk(&mut walk, Vec3::new(401.0, 300.0, 0.0), 10),
-            None
-        );
-        assert!(walk.route.is_empty());
-        assert_eq!(follow_walk(&mut walk, Vec3::ZERO, 10), None);
-        // Past its give-up time it stops too.
-        walk.route = vec![Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0)];
-        assert_eq!(follow_walk(&mut walk, Vec3::ZERO, 1001), None);
-        assert!(walk.route.is_empty());
-    }
-
-    /// Out of the scene the walker slides 2 cm a tick along its route, and
-    /// the leg ends within 100 cm of the last point.
-    #[test]
-    fn a_dormant_walker_slides_two_centimetres_a_tick() {
-        let mut walk = IdleWalk {
-            route: vec![Vec3::ZERO, Vec3::new(300.0, 0.0, 0.0)],
-            give_up_ms: u32::MAX,
-            ..IdleWalk::default()
-        };
-        let mut at = Vec3::new(10.0, 0.0, 0.0);
-        at = slide_walk(&mut walk, at, 0).unwrap();
-        assert!((at.x - 12.0).abs() < 1e-4, "{at}");
-        for _ in 0..94 {
-            at = slide_walk(&mut walk, at, 0).unwrap();
-        }
-        assert!((at.x - 200.0).abs() < 1e-2, "{at}");
-        assert!(!walk.route.is_empty());
-        slide_walk(&mut walk, at, 0);
-        assert!(walk.route.is_empty() && walk.slide.is_none());
     }
 }

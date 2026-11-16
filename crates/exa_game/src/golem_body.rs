@@ -68,7 +68,8 @@ impl Plugin for GolemBodyPlugin {
                     .before(stand_sentries),
                 stand_sentries
                     .after(exa_ai::brain::idle_walk)
-                    .after(crate::npc_search::follow_and_search),
+                    .after(crate::npc_search::follow_and_search)
+                    .before(exa_ai::route_walk::walk_routes),
             ),
         )
         .add_systems(Update, trace_guardians);

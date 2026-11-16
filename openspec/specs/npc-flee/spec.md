@@ -83,11 +83,11 @@ Once a body tick a brain whose target pass stands at level 4, not fighting and p
 - **THEN** it turns toward the centre of the cell behind the door and jogs there, and stops in its idle clip once its level drops to 0
 
 ### Requirement: The routed flight
-On a level with a navigation grid a fleeing brain SHALL choose and route its way out only on its planning turn (one planner a frame) and SHALL choose again while no route is followed; it SHALL follow a route only when its ends lie more than 150 cm apart, steering toward the route's carrot, and SHALL remember the exit's room when a followed route ends in its own room within 15 m of the threat.
+On a level with a navigation grid a fleeing brain SHALL choose and route its way out only on its planning turn (one planner a frame) and SHALL choose again while no grid route is followed; a route whose ends lie more than 150 cm apart SHALL become the character's route at urgency 2, walked by the AI's walk, and the exit's room SHALL be remembered when that route ends in the brain's room within 15 m of the threat.
 
 #### Scenario: Routed on its turn
 - **WHEN** a brain at level 4 flees from the first of two rooms on a level with a walkable navigation grid
-- **THEN** its first frame only records its wait, the next frame picks the way out and follows a grid route ending within 50 cm of it, and it jogs along the route
+- **THEN** its first frame only records its wait, the next frame picks the way out and its route follows a grid path ending within 50 cm of it at urgency 2, and it runs along the route
 
 ### Requirement: The pass starts the flight
 When the target pass's outcome is a flight, the brain SHALL run the flee start with the level it had before the pass, after the pass's alarm mean has raised the alarm: from any level but 4 it SHALL halve the morale's courage, add 2 to the alarm and take level 4; it SHALL mark the target fresh and remember the threat's room either way.
