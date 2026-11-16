@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r296, 11-16) | target |
+| measure | start (r186, 11-10) | now (r297, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **59.03%** | **100%** |
+| **Ledger: bytes in a final state** | — | **59.85%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,142 | all |
+| Tests passing | 8,489 | 9,150 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -103,9 +103,9 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | UI | 12 | 12 | 339 | 127,230 |
 | Thaumaturgy & effects | 9 | 9 | 151 | 109,619 |
 | Characters, motion & animation | 8 | 8 | 222 | 101,754 |
-| AI & behaviour | 8 | 8 | 122 | 90,971 |
 | Game modes, arena & session | 7 | 7 | 178 | 76,192 |
 | World, levels & terrain | 5 | 5 | 146 | 73,180 |
+| AI & behaviour | 8 | 8 | 115 | 70,226 |
 | Items, materials & crafting | 5 | 5 | 132 | 62,916 |
 | Data, assets & I/O | 6 | 6 | 118 | 38,360 |
 | Runtime & platform | 5 | 5 | 69 | 20,690 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,015** | **1,028,117** |
+| **Total** | **90** | **90** | **2,008** | **1,007,372** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 297 | NPC bodies turn and look through their locomotion as the player body does (look, look smoothing and heading kept as in the original, combat look snap past 30 degrees); the search creates the perceived goal entity the brain weighs and attends (F389), and a classify bug was fixed (the attention bonus belongs to the attended contact). |
 | 2026-11-16 | 296 | The frame's Update and PostUpdate are fully ordered in named phases following the original's frame order, and the schedule test now holds every schedule to zero unordered conflicting pairs (seven documented pairs with private engine systems allowed); ordering the frame fixed a GUI bug: paints that ran before the game screens' per-frame clear were wiped every frame, so the story death's tip banner now shows (ambiguity2) |
 | 2026-11-16 | 295 | The function oracle covers 110 original functions bit for bit over 5000 cases each: the callers now take the original's exact normaliser and lerp, the swing time on non-finite input matches, and about fifteen small port defects it found are fixed (NaN and negative-zero handling, a denormal sine, reciprocal-first weights, a bearing in double, a wrapped tick count); the simulation changes in the last bit from the first tick; F569 opened (oracle2) |
 | 2026-11-16 | 294 | The motile body and balance lane from the port queue: the golem-suit leg halving has the original's writers; a balance step's end stamps the stand-still clock; the servo and step-approach factors; the off-balance arms only from the posture block's test; the get-up turned from the body's heading; the femur posture in the engine's quaternion order (it had been reversed); held items sleep and wake with their holder; the AI's soft stop on a jolt; round 285's Height Query questions settled as the original's (bodybal) |
