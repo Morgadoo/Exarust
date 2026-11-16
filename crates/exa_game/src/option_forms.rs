@@ -194,8 +194,13 @@ pub(crate) fn open_drop_list(
         top -= unit - 1;
     }
     let layout = list.lay_out();
-    let place =
-        exa_ui::controls::drop_down_place((x, top, w, h), layout.height, list.border, layout.row, screen_h);
+    let place = exa_ui::controls::drop_down_place(
+        (x, top, w, h),
+        layout.height,
+        list.border,
+        layout.row,
+        screen_h,
+    );
     list.select(selected, 0);
     info!(
         "combo list opens at ({}, {}) {}x{}, rows {} px from y {}",
