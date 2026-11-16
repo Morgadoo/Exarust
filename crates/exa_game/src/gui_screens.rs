@@ -842,6 +842,11 @@ pub struct GameScreens {
     /// The body of [`Self::inventory_owner`] (the player's body for the
     /// player's own inventory), set when the window opens.
     pub inventory_body: Option<Entity>,
+    /// The open inventory's character view shows a body bound by a Loyalty
+    /// or possession marker (the original's fill sets the view's mind
+    /// window flag from [`crate::mind::casts::is_bound`]): a drag out of
+    /// its pack may then break the hold and close the window.
+    pub inventory_mind_window: bool,
     /// The inventory's item pack, drawn through the panel's icon path.
     pub pack: Container,
     /// The description card the panel asked for.
@@ -887,6 +892,7 @@ impl Default for GameScreens {
             player: 0,
             inventory_owner: 0,
             inventory_body: None,
+            inventory_mind_window: false,
             pack: Container::default(),
             card: CardWindow::default(),
             loot: Vec::new(),
@@ -1783,6 +1789,7 @@ impl GameScreens {
                 self.released_icons.extend(released);
                 self.pack = Container::form(unit);
                 self.inventory_body = None;
+                self.inventory_mind_window = false;
             }
             GameScreen::Loot => {
                 if let Some(window) = self
@@ -2579,6 +2586,7 @@ fn open_requested_screens(
     mut icons: Option<ResMut<PanelIcons>>,
     menu: Option<Res<MenuScreen>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    minds: Query<&crate::mind::casts::MindBody>,
     mut screens: ResMut<GameScreens>,
 ) {
     if menu.is_some_and(|menu| menu.open) {
@@ -2628,6 +2636,14 @@ fn open_requested_screens(
                 );
                 if action == ScreenAction::Opened {
                     screens.inventory_body = body;
+                    // The fill's mind window: a shown body bound by a
+                    // Loyalty or possession marker.
+                    screens.inventory_mind_window = body
+                        .and_then(|body| minds.get(body).ok())
+                        .is_some_and(crate::mind::casts::is_bound);
+                    if screens.inventory_mind_window {
+                        info!("GUI: the inventory shows a bound body: its mind window is set");
+                    }
                 }
                 if owner != screens.player {
                     info!("GUI: the inventory of character {owner}: {action:?}");
@@ -4005,6 +4021,45 @@ mod tests {
             screens.task.form(form).unwrap().bounds(),
             GuiRect::new(30, 40, 244, 644)
         );
+    }
+
+    /// The inventory's fill sets the view's mind window for a shown body a
+    /// Loyalty or possession marker binds, and not for a free one.
+    #[test]
+    fn the_inventory_of_a_bound_body_sets_its_mind_window() {
+        use crate::mind::casts::{LOYALTY_MARK, MindBody, MindClass, MindPower};
+        let run = |bound: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<GameScreens>()
+                .add_message::<ScreenRequest>()
+                .add_systems(Update, open_requested_screens);
+            let mut mind = MindBody::new(9);
+            if bound {
+                mind.powers.push(MindPower::new(
+                    LOYALTY_MARK,
+                    MindClass::LoyaltyMark(crate::thaum::power::mind::LoyaltyTarget::new(1)),
+                ));
+            }
+            let body = app
+                .world_mut()
+                .spawn((exa_items::possession::Possessions::default(), mind))
+                .id();
+            app.world_mut().write_message(ScreenRequest {
+                screen: GameScreen::Inventory,
+                player_ready: true,
+                player_alive: true,
+                target: Some(body.index().index() as i32),
+                flags: 0,
+                toggle: true,
+            });
+            app.update();
+            let screens = app.world().resource::<GameScreens>();
+            assert!(screens.is_open(GameScreen::Inventory));
+            screens.inventory_mind_window
+        };
+        assert!(run(true));
+        assert!(!run(false));
     }
 
     #[test]
