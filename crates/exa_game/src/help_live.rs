@@ -1165,6 +1165,33 @@ mod tests {
         app.update();
     }
 
+    /// The manual's close corner through the live pointer: off the client
+    /// the line skin's hit answers, with the wide title band (six units;
+    /// the manual's client starts above it, so the client's records take
+    /// any point below its top): the band's middle is the title (-3), its
+    /// right end the close mark (-4), and a click there closes the manual.
+    #[test]
+    fn the_manuals_title_band_answers_the_close_mark_and_closes_it() {
+        let (mut app, _) = manual_app();
+        let bounds = {
+            let screen = app.world().resource::<ManualScreen>();
+            let forms = screen.forms.as_ref().unwrap();
+            forms.base(screen.outer.unwrap()).unwrap().bounds
+        };
+        let point = |x: i32, y: i32| Vec2::new(x as f32, y as f32);
+        let band = bounds.top + 3;
+        app.world_mut().resource_mut::<exa_ui::ScriptedPointer>().0 =
+            Some(point((bounds.left + bounds.right) / 2, band));
+        app.update();
+        assert_eq!(app.world().resource::<ManualScreen>().outer_hover(), -3);
+        app.world_mut().resource_mut::<exa_ui::ScriptedPointer>().0 =
+            Some(point(bounds.right - 2, band));
+        app.update();
+        assert_eq!(app.world().resource::<ManualScreen>().outer_hover(), -4);
+        click(&mut app);
+        assert!(app.world().resource::<ManualScreen>().manual.is_none());
+    }
+
     /// The topic list is the item view: its rows are five units at the
     /// shown unit, the pointer's row is its hover, a click picks the topic
     /// (the list's callback shows it and focuses the page, the click's

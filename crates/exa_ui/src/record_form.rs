@@ -243,6 +243,17 @@ fn takes_hits(c: &Control) -> bool {
 /// An open record form: its spec, geometry, the coin controls' amounts
 /// (the word at 0x38, which a coin control keeps as an integer) and the
 /// record the pointer holds and hovers.
+/// A form's frame-mark words, for a form whose skin answers frame codes
+/// to the pointer (the draw skin's own instance): the code under the
+/// pointer (the hover word), the code a press went down on (the held
+/// word) and whether the button is still down.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameMarks {
+    pub hover: i32,
+    pub held: i32,
+    pub down: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordForm {
     pub spec: FormSpec,
@@ -260,6 +271,9 @@ pub struct RecordForm {
     /// measures one of its own (a titled form under the draw skin's own
     /// measures: [`crate::skin::BASE_TITLED_CLIENT_TOP`]); else the border.
     pub client_top: Option<i32>,
+    /// The frame-mark words of a form that keeps the draw skin's own
+    /// instance.
+    pub frame: FrameMarks,
     held: Option<usize>,
     hovered: Option<usize>,
 }
@@ -275,6 +289,7 @@ impl RecordForm {
             title: spec.title.to_string(),
             at: None,
             client_top: None,
+            frame: FrameMarks::default(),
             held: None,
             hovered: None,
         }

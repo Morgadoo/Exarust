@@ -1559,7 +1559,16 @@ colour picker form; `--open-hub-window merchant|company|picker` opens them.
 The colour picker keeps the draw skin's default instance (`base_form`): its
 default background and title bar, buttons through the skin's shell and label
 slot, and marker trackbars with the picker's striped colour lists and the
-value bar, in the default instance's palette.
+value bar, in the default instance's palette. Its frame marks answer
+through the draw skin's hit test: the close mark lights under the pointer,
+draws pressed while held, closes the picker on its release, and its icon
+draws from the small glyph atlas; its colour swatches draw the draw skin's
+control fill (style frames, the colour inset by the margin). The drop-down
+lists and the palette swatch popup draw through the line skin's form draw
+with their own words (shadow, backdrop, the wide window frame; a list
+opened from a line-skinned combo loses its panel style and rises by a unit
+less one), the emblem form's swatches the line skin's shade, and the
+board's and Manage Company's tables the line skin's header line.
 The focus follows the pointer to the record under it, and a focused text
 field or combo box takes the keys through its own handler
 (`exa_ui::field_edit`): typing at the caret, Backspace, Delete, the arrows,

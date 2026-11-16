@@ -1940,9 +1940,16 @@ atlas in the idle control ink (255, 250, 230 at 104):
   option word has bit 0x200); the bottom-right corner likewise. The arrows
   and the thumb take the orange hover ink under the pointer (not ported).
 
+- **Wide forms** (attribute 0x40_0000: the drop-down list and the palette
+  swatch popup). The corner style draws the wide window frame (below,
+  *Wide window*) and binds the idle ink again; the panel style draws twelve
+  quads in the idle ink (the highlight group's eighth shade on state bit
+  0x40): along each edge a bar two units thick centred on the edge, from
+  two units in to two units short of the far corner, and a cap at each of
+  its ends. The wide panel draws no scroll bar.
+
 Each atlas quad takes the eight texture coordinates of its sample record
-(`exa_ui::skin::LINE_SAMPLE_RECORDS`, the skin's own table). The wide
-frame is not ported.
+(`exa_ui::skin::LINE_SAMPLE_RECORDS`, the skin's own table).
 
 **The item card** (`exa_game::item_card`). Its name is the form's title,
 centred on the top edge, in the builder's tint when the rank gate is off
@@ -2558,8 +2565,17 @@ background with the title bar (its client starts 26 pixels down,
 slot, and its six channel trackbars through the style frames, the skin's
 slider (a marker trackbar: the striped colour list, the picker's ramps or
 the hue table, and the one-unit bar at the value) and the plain label.
-Its spinners, swatches and colour image draw through their own classes in
-the same palette. Not drawn: the close mark's icon.
+Its spinners and colour image draw through their own classes in the same
+palette, its swatches through the draw skin's control fill. Its frame
+marks answer through the draw skin's own hit test on the rectangles the
+default background draws them at (the close mark -4, the band -3): the
+form keeps the mark under the pointer, the mark a press went down on and
+the button; the close mark draws its hot box under the pointer and its
+pressed box and faded face while held, and a release still over it closes
+the picker. The mark icons come from the small glyph atlas (the close
+mark the first glyph): an active mark (under the pointer, or held with the
+button up) through the atlas's outlined draw at scale 1, any other plain
+in the label group's seventh shade.
 
 ### Line skin
 
@@ -2585,7 +2601,10 @@ creator has a marker trackbar.
   skin keeps the fifth at four units. A once-only flag registers the
   unit.
 - **Hit test.** A point in a window's title band (style bits 0x30 equal
-  to 0x10, y within four units, or six on the wide setting) returns -4
+  to 0x10, y within four units, or six with the GUI's wide-band byte, which
+  starts set, is set again by the hardware settings and the Steam input,
+  and is cleared only around the form's record pass, so the running game
+  hits six units deep) returns -4
   at the close corner and -3 on state bit 1; any other point, that one
   included, goes on to the strip test of state bit 0x200, which returns
   -8 beside the client, -10 below it and -9 above it, within the same
@@ -2621,12 +2640,25 @@ creator has a marker trackbar.
   lower tab beside the client and a square below the scroll thumb. Close
   mark -9 tints the upper tab, -10 the lower one and -8 the square (which
   binds the marker's sample) in 255, 204, 153, 255.
-- **Maximised window.** A window style with state bit 0x40_0000 draws a
-  frame of its own: an outer top bar (only with style bit 4, which also
-  binds the hot ink on style bit 0x40, and not when the window sits within
-  a unit of a focused owner's top), the top, left and right bars, the
-  bottom bar and four corner arms reaching two units outside and six in.
-  The side bars run four units from the corners, or two with style bit 4.
+- **Wide window.** The corner style with attribute 0x40_0000 draws a
+  frame of its own: on a held form (state bit 4, which also binds the hot
+  ink on state bit 0x40) the top bar once more first, unless the window
+  sits within a unit of a titled owner's top; then the top, left and right
+  bars, the bottom bar and four corner arms reaching two units outside and
+  six in. The side bars run four units from the corners, or two on a held
+  form.
+- **Control fill.** The colour swatch's draw calls the skin's control
+  fill. The line skin draws a shade: a cap, a bar and a cap a unit either
+  side of half a unit above the top and below the bottom, the bar from the
+  skin's first side length in (two units while a form draws), in the on
+  ink (255, 250, 230 at 128) or, for a swatch under the pointer, the
+  highlight group's eighth shade at the GUI's alpha; then the colour a unit
+  in at the GUI's alpha. The draw skin draws its style frames by the
+  control's style and the colour inset by the control's margin.
+- **Table header line.** With the line skin a table view draws one span
+  bar instead of its header boxes: two units thick at the row height less
+  half a unit and one, across the client, its caps the first side length
+  long, in the idle ink.
 - **Integer span bar.** The compact skill screen draws a capped span from
   integer arguments with the shared skin and no ink of its own: caps four
   units tall from the top, the middle from two units down.
@@ -4123,7 +4155,9 @@ it is wired into the running game yet.
   control's bytes, the finish and the revert. The conversions are the
   engine's colour helpers.
 - **Drop-down list** (`exa_ui::drop_down`). Style 0x98, attributes
-  0x4a1470, border 3. Rows are six units; up to sixteen make the list that
+  0x4a1470, border 3. The list takes its opener's form skin; with the line
+  skin (its mark word's bit 1) the opener clears the list's style bit 0x80
+  and lifts it by a unit less one, so it draws the wide window frame only. Rows are six units; up to sixteen make the list that
   tall plus twice the border; more cut it at sixteen, set the scrollbar
   attribute (never cleared) and scroll by `1 / (count − 16)` worked in
   double. With no control under the pointer a point hits `y / row + 1`,

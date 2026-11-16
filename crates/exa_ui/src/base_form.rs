@@ -182,6 +182,10 @@ impl BaseForm {
     }
 
     /// The line skin's frame code at a form-local point (off the client).
+    /// The title band is the wide one, six units deep: the skin's hit reads
+    /// the GUI's wide-band byte, which starts set, is set again by the
+    /// hardware settings and the Steam input, and is cleared only around
+    /// the form's first record pass, after the skin's hit has run.
     pub fn frame_code(&self, x: i32, y: i32) -> i32 {
         let rail = self.rail();
         hit_line(
@@ -196,7 +200,7 @@ impl BaseForm {
             x,
             y,
             self.unit,
-            false,
+            true,
         )
     }
 

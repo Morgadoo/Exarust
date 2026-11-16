@@ -618,7 +618,19 @@ pub fn sample_corners(sample: [u32; 4]) -> Option<[f32; 8]> {
 /// words are a record's first two corners, and no two records share them,
 /// so the words find the record. The window draws, the panel frames, the
 /// title caps and the bars bind these.
-pub const LINE_SAMPLE_RECORDS: [[u32; 8]; 19] = [
+pub const LINE_SAMPLE_RECORDS: [[u32; 8]; 20] = [
+    // The wide window frame's corner arm:
+    // 0.15, 0.2, 0.15, 0.5, 0.35, 0.5, 0.35, 0.2
+    [
+        0x3e19_999a,
+        0x3e4c_cccd,
+        0x3e19_999a,
+        0x3f00_0000,
+        0x3eb3_3333,
+        0x3f00_0000,
+        0x3eb3_3333,
+        0x3e4c_cccd,
+    ],
     // 0.4, 0.8, 0.4, 1, 0.5, 1, 0.5, 0.8
     [
         0x3ecc_cccd,
@@ -1874,9 +1886,9 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         crate::line_skin::draw_window_frame(
             unit,
             crate::line_skin::WindowFramePlace {
-                style: place.flags_a,
+                state: place.flags_a,
                 y: place.edge_y,
-                owner_state: place.owner_flags,
+                owner_attributes: place.owner_flags,
                 width: place.width,
                 height: place.height,
             },
@@ -2337,17 +2349,21 @@ fn place_corner(x: f32, y: f32, view: SpanView) -> (f32, f32) {
     )
 }
 
-/// Draws the span bar. `band_word` is the stored count, doubled for the thickness.
+/// Draws the span bar (the line skin's rule, the table view's header line):
+/// the bar two GUI units thick from `inset` in from each end, and a cap at
+/// each end. `inset` is the skin's first side length (two units while a
+/// form draws its contents), `unit` the GUI unit. Checked against the
+/// assembly (the float sums add the inset to the origin as it does).
 pub fn draw_span_bar(
-    unit: i32,
+    inset: i32,
     origin_x: f32,
     origin_y: f32,
     span: f32,
-    band_word: i32,
+    unit: i32,
     view: SpanView,
 ) -> SpanBar {
-    let unit_f = unit as f32;
-    let thick = (i64::from(band_word) << 1) as f32;
+    let unit_f = inset as f32;
+    let thick = (i64::from(unit) << 1) as f32;
     let top = origin_y;
     let bottom = origin_y + thick;
     let inset_l = origin_x + unit_f;
@@ -2974,10 +2990,12 @@ pub struct HitPlace {
     pub bottom: i32,
 }
 
-/// Returns the original's hit code: 0, -3, -4, -8, -9 or -10. The meaning
-/// of each code is not established. A point in the title band that hits
-/// neither the -4 corner nor the -3 band goes on to the 0x200 strip test.
-/// The edge sums are 64-bit, as the original's are.
+/// The line skin's hit test: 0, -3 (the title band), -4 (the close
+/// corner), -8 (the scroll rail), -9 or -10 (its arrows). The title band is
+/// four units deep, or six with `wide` (the GUI's wide-band byte, set in
+/// the running game). A point in the title band that hits neither the -4
+/// corner nor the -3 band goes on to the 0x200 strip test. The edge sums
+/// are 64-bit, as the original's are.
 pub fn hit_line(place: HitPlace, x: i32, y: i32, unit: i32, wide: bool) -> i32 {
     let span = if wide {
         unit.wrapping_mul(6)
@@ -3008,7 +3026,11 @@ pub fn hit_line(place: HitPlace, x: i32, y: i32, unit: i32, wide: bool) -> i32 {
     0
 }
 
-/// A line-shade place. The state band 0x10000 selects the special ink.
+/// A line-shade place (the line skin's control fill, the colour swatch's
+/// back). The state band 0x10000 (the swatch under the pointer) selects
+/// the special ink. `side_inset` is the skin's first side length (two
+/// units while a form draws its records); `alpha` the GUI's alpha byte,
+/// which the special ink and the inner fill take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineShadePlace {
     pub x: i16,
@@ -3018,6 +3040,7 @@ pub struct LineShadePlace {
     pub state: u32,
     pub inner_ink: [u8; 4],
     pub side_inset: i32,
+    pub alpha: u8,
 }
 
 /// The normal and special outer inks.
@@ -3137,13 +3160,13 @@ pub fn draw_line_shade(
     let special = (place.state & 0xf_0000) == 0x1_0000;
     let outer_ink = if special {
         let mut ink = inks.special;
-        ink[3] = 0xff;
+        ink[3] = place.alpha;
         ink
     } else {
         inks.normal
     };
     let mut inner_ink = place.inner_ink;
-    inner_ink[3] = 0xff;
+    inner_ink[3] = place.alpha;
     let inset = unit as i16;
     let inner_left = x.wrapping_add(i32::from(inset));
     let inner_top = y.wrapping_add(i32::from(inset));
@@ -5791,12 +5814,31 @@ pub fn draw_frame_control(
     draw_button_face(batch, rect, pressed, hot, palette);
 }
 
-/// A control's background fill in its own colour, which arrives with its
-/// alpha forced opaque.
-pub fn draw_control_fill(batch: &mut SkinBatch, rect: GuiRect, ink: SkinInk) {
+/// The draw skin's control fill (the colour swatch's back): the style
+/// frames by the control's style word, then a solid rectangle inset by the
+/// control's margin in its own colour at the GUI's alpha byte.
+pub fn draw_control_fill(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    style: u32,
+    margin: i32,
+    ink: SkinInk,
+    alpha: u8,
+    palette: &SkinPalette,
+) {
+    draw_style_frames(batch, rect, style, palette);
     batch.select(1, 0, false);
-    batch.set_ink(with_alpha(ink, 0xff));
-    solid_rect(batch, rect);
+    batch.set_ink(with_alpha(ink, alpha));
+    let m = margin as f32;
+    solid_rect(
+        batch,
+        GuiRect {
+            x0: rect.x0 + m,
+            y0: rect.y0 + m,
+            x1: rect.x1 - m,
+            y1: rect.y1 - m,
+        },
+    );
     batch.select(0x10, 0, false);
 }
 
@@ -6755,6 +6797,31 @@ fn background_rect(place: &FormBackgroundPlace, unit: i32, code: i32) -> Option<
         &mut rect,
     )
     .then_some(rect)
+}
+
+/// The draw skin's own hit test (the skin's hit slot) for a form whose
+/// default background is `place`, at a form-local point: its title band's
+/// close (-4), large (-5) and small (-6) marks or the band (-3), the
+/// vertical scroll bar's arrows (-9, -10) or rail (-8), the horizontal
+/// one's (-13, -14, -12), the grips, else 0. Each mark is probed in the
+/// rectangle the background draws it at.
+pub fn hit_form_background(place: &FormBackgroundPlace, x: i32, y: i32, unit: i32) -> i32 {
+    hit_skin(
+        SkinHitPlace {
+            x0: place.rect.x1 as i32,
+            y0: place.rect.y1 as i32,
+            size: place.inset,
+            limit_right: place.client_right,
+            limit_top: place.client_top,
+            limit_bottom: place.client_bottom,
+            frame_style: place.frame_style,
+            flags: place.flags,
+        },
+        x,
+        y,
+        unit,
+        &|code| background_rect(place, unit, code),
+    )
 }
 
 fn corner_rect(rect: [i32; 4]) -> GuiRect {
@@ -10576,6 +10643,7 @@ mod tests {
             state: 0,
             inner_ink: [1, 2, 3, 4],
             side_inset: 15,
+            alpha: 0xff,
         };
         let inks = LineShadeInks {
             normal: [0x99, 0xaa, 0xbb, 0xcc],
