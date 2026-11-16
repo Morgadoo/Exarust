@@ -176,6 +176,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<crate::hub_forms::OpenHubWindow>()
             .init_resource::<crate::arsenal::ShelfKinds>()
             .init_resource::<crate::loadout_kit::KitPanels>()
+            .init_resource::<crate::loadout_kit::LoadoutDots>()
             .init_resource::<crate::loadout_kit::KitPreview>()
             .init_resource::<crate::doll_view::DollItems>()
             .init_resource::<ArenaRematch>()

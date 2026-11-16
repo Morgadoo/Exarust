@@ -66,6 +66,9 @@ pub const BOX_HEIGHT_UNITS: i32 = 4;
 pub const BOX_TOP_UNITS: i32 = 8;
 /// Its width beyond the text, in units.
 pub const BOX_PAD_UNITS: i32 = 2;
+/// The box's rounded corner, in units (the rounded fill grows the box by
+/// four times it).
+pub const BOX_CORNER: i32 = 4;
 
 /// The tip banner's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,20 +113,20 @@ impl GameTips {
         0
     }
 
-    /// The banner's whole draw: the box as a [`SkinBatch`] of one quad at
-    /// the box's alpha in `ink`, and the text's origin.
-    pub fn box_batch(banner: &TipBanner, ink: [u8; 3]) -> crate::skin::SkinBatch {
+    /// The banner's box: the rounded program's black fill over the box,
+    /// corner [`BOX_CORNER`] units, at the box's alpha (the draw's fixed
+    /// 0xa0), as the original's paint fills it.
+    pub fn box_batch(banner: &TipBanner, unit: i32) -> crate::skin::SkinBatch {
         let mut batch = crate::skin::SkinBatch::new();
-        batch.select(1, 0, false);
-        batch.set_ink([ink[0], ink[1], ink[2], banner.alpha]);
-        batch.begin();
         let [x, y] = banner.box_at.map(|v| v as f32);
         let [w, h] = banner.box_size.map(|v| v as f32);
-        batch.vertex(x, y);
-        batch.vertex(x, y + h);
-        batch.vertex(x + w, y + h);
-        batch.vertex(x + w, y);
-        batch.end_quads();
+        crate::skin::rounded_fill_fixed(
+            &mut batch,
+            crate::skin::GuiRect::sized(x, y, w, h),
+            unit,
+            BOX_CORNER,
+            banner.alpha,
+        );
         batch
     }
 }
@@ -156,9 +159,19 @@ mod tests {
     }
 
     #[test]
-    fn the_box_is_one_quad_at_the_banner_alpha() {
+    fn the_box_is_a_rounded_fill_at_the_banner_alpha() {
         let banner = GameTips::new().draw(640, 4, 100);
-        let batch = GameTips::box_batch(&banner, [0, 0, 0]);
+        let batch = GameTips::box_batch(&banner, 4);
+        let mut expected = crate::skin::SkinBatch::new();
+        crate::skin::rounded_fill_fixed(
+            &mut expected,
+            crate::skin::GuiRect::sized(266.0, 32.0, 108.0, 16.0),
+            4,
+            4,
+            0xa0,
+        );
+        assert_eq!(batch.vertices, expected.vertices);
+        assert_eq!(batch.rounded_scale, expected.rounded_scale);
         assert!(!batch.vertices.is_empty());
     }
 

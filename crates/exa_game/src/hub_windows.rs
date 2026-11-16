@@ -2667,6 +2667,7 @@ pub fn draw_hub_windows(
     game_screens: Option<Res<crate::gui_screens::GameScreens>>,
     mut fade: Local<HubFade>,
     (kit, mut icons, scripted, glyphs, frame_count): HubDrawExtras,
+    loadout_dots: Option<Res<crate::loadout_kit::LoadoutDots>>,
 ) {
     let Some(windows) = windows else {
         return;
@@ -2784,6 +2785,9 @@ pub fn draw_hub_windows(
                 .map(|e| (e.record, e.view))
                 .collect(),
             caret_lit: caret_lit(frame_count.as_deref()),
+            dots: (open.window == crate::hub_forms::FormWindow::Loadout)
+                .then(|| loadout_dots.as_deref().and_then(|dots| dots.sheet.as_ref()))
+                .flatten(),
         };
         let frame = match open.window {
             crate::hub_forms::FormWindow::Manage => None,

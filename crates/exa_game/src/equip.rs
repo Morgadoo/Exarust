@@ -765,7 +765,7 @@ impl Plugin for EquipPlugin {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use exa_items::possession::Hand;
 
@@ -929,7 +929,7 @@ mod tests {
 
     /// A catalogue with one worn body (encumbrance byte `worn`) and one
     /// shield whose weight, block and bulk bytes are given.
-    fn catalogue(worn: u8, shield: [u8; 3]) -> ItemCatalogue {
+    pub(crate) fn catalogue(worn: u8, shield: [u8; 3]) -> ItemCatalogue {
         let mut body = vec![0u8; 0x1B0];
         body[0x1A5] = worn;
         let mut shield_body = vec![0u8; 8];

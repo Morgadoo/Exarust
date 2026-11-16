@@ -5,8 +5,13 @@
 //! ([`exa_ui::div_card`]) through the GUI draw path.
 //!
 //! A class-0 kind-5 use opens the reading ([`crate::use_cursor`] on an item
-//! panel, [`crate::object_click`] on a taken world object) and passes zero,
-//! which this screen deals from.
+//! panel, [`crate::object_click`] on a taken world object) and passes zero.
+//! The original deals from the run-time library's process-wide generator,
+//! which runs on between readings; the screen keeps one stream for every
+//! reading, seeded with the first reading's word, so each reading deals
+//! from where the last one left it. The pointer's buttons reach the
+//! reading's mouse slot ([`DivinationClick`]): the right one closes it. The
+//! reading paints at the window's GUI unit.
 
 use bevy::audio::PlaybackMode;
 use bevy::prelude::*;
@@ -38,28 +43,40 @@ pub struct OpenReading {
     /// The last paint asked for the `PprMov` sound at this step. The draw
     /// system plays it and clears the flag.
     pub sound_step: bool,
+    /// The GUI unit the reading paints at (the window's; 4 until known).
+    pub unit: i32,
 }
 
 /// The open reading, if one is.
 #[derive(Resource, Debug, Default)]
 pub struct DivinationScreen {
     pub open: Option<OpenReading>,
+    /// The running stream the readings deal from, once one was dealt.
+    pub draws: Option<Mt19937>,
 }
 
 impl DivinationScreen {
     /// Opens a reading at `now`, dealing three distinct cards from `random`.
     pub fn open(now: u32, seed: u32) -> Self {
-        let mut random = Mt19937::new(seed);
+        let mut screen = Self::default();
+        screen.deal(now, seed);
+        screen
+    }
+
+    /// Opens a reading at `now`, dealing from the running stream (seeded
+    /// with `seed` when no reading dealt before).
+    pub fn deal(&mut self, now: u32, seed: u32) {
+        let mut random = self.draws.take().unwrap_or_else(|| Mt19937::new(seed));
         let reading = div_card::open(now, &mut |count| random.random(count as i32) as u32);
-        Self {
-            open: Some(OpenReading {
-                reading,
-                random,
-                width: 0,
-                height: 0,
-                sound_step: false,
-            }),
-        }
+        self.draws = Some(random.clone());
+        self.open = Some(OpenReading {
+            reading,
+            random,
+            width: 0,
+            height: 0,
+            sound_step: false,
+            unit: 4,
+        });
     }
 
     /// Routes a click: the right button closes the reading. Returns whether
@@ -81,7 +98,9 @@ impl DivinationScreen {
     ) -> Option<exa_ui::gui_draw::GuiFrame> {
         let open = self.open.as_mut()?;
         let elapsed = now.wrapping_sub(open.reading.start_ms);
-        let draws = div_card::draw_order(&mut open.reading, open.width.max(0) as u32, 4, elapsed);
+        let unit = open.unit.max(1);
+        let draws =
+            div_card::draw_order(&mut open.reading, open.width.max(0) as u32, unit, elapsed);
         open.sound_step = draws
             .iter()
             .any(|draw| matches!(draw, div_card::CardDraw::Sound));
@@ -89,7 +108,7 @@ impl DivinationScreen {
         Some(div_card::frame(
             &draws,
             sheet,
-            4,
+            unit,
             open.width.max(0) as u32,
             open.height.max(0) as u32,
         ))
@@ -107,10 +126,14 @@ impl Plugin for DivinationPlugin {
             // frame's GUI queue afresh.
             .add_systems(
                 Update,
-                (open_reading
-                    .after(crate::dialogue_live::paint_dialogue)
-                    .after(crate::skill_screen::draw), click_reading, paint_reading
-                    .after(crate::arsenal_view::arsenal_live))
+                (
+                    open_reading
+                        .after(crate::dialogue_live::paint_dialogue)
+                        .after(crate::skill_screen::draw),
+                    reading_pointer,
+                    click_reading,
+                    paint_reading.after(crate::arsenal_view::arsenal_live),
+                )
                     .chain()
                     .after(crate::gui_screens::draw_screens)
                     .in_set(exa_physics::FramePhase::Gui),
@@ -130,8 +153,11 @@ pub(crate) fn open_reading(
         return;
     }
     if let Some(message) = opened.read().next() {
-        *screen = DivinationScreen::open(clock.now_ms, message.seed);
-        info!("divination: the reading opens (seed {})", message.seed);
+        screen.deal(clock.now_ms, message.seed);
+        info!(
+            "divination: the reading opens, cards {:?}",
+            screen.open.as_ref().map(|open| open.reading.cards)
+        );
         // The form loads its card sheet when it is made; the interface's
         // textures keep it after.
         if let (Some(game), Some(mut textures)) = (game, textures)
@@ -149,6 +175,27 @@ pub(crate) fn open_reading(
                 }
                 Err(error) => warn!("divination: the card sheet {SHEET:?}: {error}"),
             }
+        }
+    }
+}
+
+/// The pointer's buttons as the reading's mouse words while it is up: a
+/// press is the button bits (left 1, right 2) with 0x1000, a release with
+/// 0x2000.
+fn reading_pointer(
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    screen: Res<DivinationScreen>,
+    mut clicks: MessageWriter<DivinationClick>,
+) {
+    let (Some(mouse), Some(_)) = (mouse, screen.open.as_ref()) else {
+        return;
+    };
+    for (button, bit) in [(MouseButton::Left, 1u16), (MouseButton::Right, 2)] {
+        if mouse.just_pressed(button) {
+            clicks.write(DivinationClick { mask: bit | 0x1000 });
+        }
+        if mouse.just_released(button) {
+            clicks.write(DivinationClick { mask: bit | 0x2000 });
         }
     }
 }
@@ -179,6 +226,7 @@ fn paint_reading(
     {
         open.width = window.physical_width() as i32;
         open.height = window.physical_height() as i32;
+        open.unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
     }
     let Some(textures) = textures.as_deref() else {
         return;
@@ -285,5 +333,67 @@ mod tests {
         app.world_mut().write_message(DivinationClick { mask: 2 });
         app.update();
         assert!(app.world().resource::<DivinationScreen>().open.is_none());
+    }
+
+    /// The readings deal from one running stream: the second reading goes
+    /// on from where the first left it instead of dealing the first cards
+    /// again.
+    #[test]
+    fn readings_deal_from_the_running_stream() {
+        let mut app = app();
+        let mut dealt = Vec::new();
+        for _ in 0..4 {
+            app.world_mut().write_message(OpenDivination { seed: 0 });
+            app.update();
+            let mut screen = app.world_mut().resource_mut::<DivinationScreen>();
+            dealt.push(screen.open.as_ref().unwrap().reading.cards);
+            screen.click(2);
+        }
+        let mut expected = Mt19937::new(0);
+        for cards in &dealt {
+            let reading = div_card::open(0, &mut |count| expected.random(count as i32) as u32);
+            assert_eq!(*cards, reading.cards);
+        }
+        assert!(dealt.windows(2).any(|pair| pair[0] != pair[1]), "{dealt:?}");
+    }
+
+    /// The right button's press closes an open reading through the mouse
+    /// slot; the left one does not.
+    #[test]
+    fn the_right_press_closes_the_reading() {
+        let mut app = app();
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.world_mut().write_message(OpenDivination { seed: 0 });
+        app.update();
+        let press = |app: &mut App, button: MouseButton| {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            mouse.press(button);
+        };
+        press(&mut app, MouseButton::Left);
+        app.update();
+        assert!(app.world().resource::<DivinationScreen>().open.is_some());
+        press(&mut app, MouseButton::Right);
+        app.update();
+        assert!(app.world().resource::<DivinationScreen>().open.is_none());
+    }
+
+    /// The reading paints at the GUI unit it is given.
+    #[test]
+    fn the_reading_paints_at_its_unit() {
+        let textures = textures();
+        let mut frames = Vec::new();
+        for unit in [4, 8] {
+            let mut screen = DivinationScreen::open(0, 7);
+            let open = screen.open.as_mut().unwrap();
+            open.width = 1600;
+            open.height = 1080;
+            open.unit = unit;
+            frames.push(screen.paint(6_000, &textures).unwrap());
+        }
+        assert_ne!(
+            format!("{:?}", frames[0].layers),
+            format!("{:?}", frames[1].layers)
+        );
     }
 }

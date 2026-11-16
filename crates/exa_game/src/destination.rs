@@ -163,9 +163,11 @@ fn open_screen(
         }
         let rows = message.screen.rows();
         state.open = Some(OpenScreen {
+            // The click hands the journey the destination word of the
+            // row's entry, which the rows' markers carry.
             screen: DestinationScreen::open_with_markers(
                 message.screen.destinations.to_vec(),
-                Vec::new(),
+                message.screen.destinations.to_vec(),
                 rows,
                 message.adapter,
                 clock.now_ms,
@@ -537,6 +539,8 @@ mod tests {
         let bubble = journey_entity(&mut app);
         let journey = *app.world().get::<TravelJourney>(bubble).unwrap();
         assert_eq!(journey.journey.level, 7);
+        // The journey carries the row's destination word.
+        assert_eq!(journey.journey.marker, 7);
         assert!(!journey.journey.hold);
         assert_eq!(journey.journey.stored, 3);
         let at_cm = app.world().get::<Transform>(bubble).unwrap().translation;
