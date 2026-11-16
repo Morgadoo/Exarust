@@ -2986,10 +2986,12 @@ pub struct HitPlace {
     pub bottom: i32,
 }
 
-/// Returns the original's hit code: 0, -3, -4, -8, -9 or -10. The meaning
-/// of each code is not established. A point in the title band that hits
-/// neither the -4 corner nor the -3 band goes on to the 0x200 strip test.
-/// The edge sums are 64-bit, as the original's are.
+/// The line skin's hit test: 0, -3 (the title band), -4 (the close
+/// corner), -8 (the scroll rail), -9 or -10 (its arrows). The title band is
+/// four units deep, or six with `wide` (the GUI's wide-band byte, set in
+/// the running game). A point in the title band that hits neither the -4
+/// corner nor the -3 band goes on to the 0x200 strip test. The edge sums
+/// are 64-bit, as the original's are.
 pub fn hit_line(place: HitPlace, x: i32, y: i32, unit: i32, wide: bool) -> i32 {
     let span = if wide {
         unit.wrapping_mul(6)
