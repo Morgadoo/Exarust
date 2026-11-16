@@ -40,7 +40,9 @@ use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
 use crate::Physics;
-use crate::contact::{CONTACT_SLOP, Level, LevelContact, evicted, rub, sphere_hit, swept_hit};
+use crate::contact::{
+    CONTACT_SLOP, Level, LevelContact, evicted, push_floor, rub, sphere_hit, swept_hit,
+};
 use crate::part::PartState;
 
 #[path = "body_sound.rs"]
@@ -5855,11 +5857,13 @@ impl Ragdoll {
                 !level.movable(piece) && crate::sector::level_meets(own_mask, level.mask(piece))
             });
             for &piece in &pieces {
+                let floor = push_floor(level.has_tree(piece));
                 for k in 0..p.spheres.len() {
                     let (centre, r) = p.spheres[k];
                     let start = before.transform_point3(centre);
                     let mut end = p.transform().transform_point3(centre);
                     let swept = !p.static_only && start.distance_squared(end) > SWEEP_TRAVEL2;
+                    let mut record = crate::kd_tree::SweptRecord::new(start, end, r);
                     // Room for the pushes of earlier triangles.
                     let reach = Vec3::splat(2.0 * r);
                     let (lo, hi) = if swept {
@@ -5869,16 +5873,20 @@ impl Ragdoll {
                     };
                     triangles.clear();
                     level.triangles(piece, lo, hi, &mut triangles);
+                    // The record is refreshed from where a hit left the
+                    // sphere, as the pair stage's callback refreshes it.
                     for t in &triangles {
                         let hit = if swept {
-                            swept_hit(t, start, end, r)
+                            swept_hit(t, &record)
                         } else {
-                            sphere_hit(t, end, r)
+                            sphere_hit(t, end, r, floor)
                         };
                         if let Some((q, delta)) = hit
                             && p.hit(centre, q, delta)
                         {
                             end = p.transform().transform_point3(centre);
+                            record.end = end;
+                            record.refresh();
                         }
                     }
                 }
@@ -6208,6 +6216,17 @@ impl Level for MaskedLevel<'_> {
 
     fn movable(&self, piece: u32) -> bool {
         self.world.movable(piece)
+    }
+
+    /// The static colliders' record of the piece's node mesh, else the
+    /// piece's own triangle count.
+    fn has_tree(&self, piece: u32) -> bool {
+        self.masks
+            .and_then(|m| {
+                let (_, handle) = self.world.colliders.get_unknown_gen(piece)?;
+                m.has_tree(handle)
+            })
+            .unwrap_or_else(|| self.world.has_tree(piece))
     }
 
     /// A piece built from a floor node's mesh (the static colliders'

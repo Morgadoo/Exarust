@@ -526,6 +526,9 @@ pub struct StaticColliders {
     /// The colliders (level pieces and rigid bodies' stand-ins) built from
     /// a [`FloorMesh`], by index with their generation.
     floors: HashMap<u32, (u32, bool)>,
+    /// The level pieces whose node mesh answers through a kd-tree, by
+    /// index with their generation.
+    trees: HashMap<u32, (u32, bool)>,
 }
 
 impl Default for StaticColliders {
@@ -535,6 +538,7 @@ impl Default for StaticColliders {
             masks: HashMap::new(),
             meshes: Vec::new(),
             floors: HashMap::new(),
+            trees: HashMap::new(),
         }
     }
 }
@@ -582,6 +586,26 @@ impl StaticColliders {
         self.masks.clear();
         self.meshes.clear();
         self.floors.clear();
+        self.trees.clear();
+    }
+
+    /// Records whether level piece `collider`'s node mesh answers through
+    /// a kd-tree (more than 10 and fewer than 100 000 triangles over the
+    /// node's meshes, [`mesh_tree::takes_tree`]) or its brute-force
+    /// callbacks.
+    pub fn insert_tree(&mut self, collider: ColliderHandle, tree: bool) {
+        let (index, generation) = collider.into_raw_parts();
+        self.trees.insert(index, (generation, tree));
+    }
+
+    /// Whether level piece `collider`'s node mesh answers through a
+    /// kd-tree; `None` for a collider with no record.
+    pub fn has_tree(&self, collider: ColliderHandle) -> Option<bool> {
+        let (index, generation) = collider.into_raw_parts();
+        self.trees
+            .get(&index)
+            .filter(|(g, _)| *g == generation)
+            .map(|(_, tree)| *tree)
     }
 
     /// Records that `collider` was built from a [`FloorMesh`]; `first`
@@ -701,6 +725,9 @@ struct RootBuild {
     first_floors: usize,
     handed: usize,
     tasks: Vec<(usize, Task<Vec<BuiltCollider>>)>,
+    /// Each scene node's triangle count over all its meshes: whether the
+    /// original gives the node's mesh a kd-tree ([`mesh_tree::takes_tree`]).
+    node_triangles: HashMap<Entity, usize>,
 }
 
 /// A built collider, for a rigid body's stand-in the body's root node and
@@ -910,6 +937,18 @@ fn build_static_colliders(
             .iter()
             .filter(|&&e| floor_meshes.get(e) == Ok(true))
             .count();
+        let mut node_triangles: HashMap<Entity, usize> = HashMap::new();
+        for &e in &parts {
+            if let Some(node) = scene_node_of(e, root, &parents, &static_nodes)
+                && let Ok((mesh, _)) = shapes.get(e)
+                && let Some(count) = meshes
+                    .get(&mesh.0)
+                    .and_then(|m| m.indices())
+                    .map(|i| i.len() / 3)
+            {
+                *node_triangles.entry(node).or_default() += count;
+            }
+        }
         build.roots.push(RootBuild {
             root,
             parts,
@@ -917,6 +956,7 @@ fn build_static_colliders(
             first_floors,
             handed: 0,
             tasks: Vec::new(),
+            node_triangles,
         });
     }
     let build = &mut *build;
@@ -927,6 +967,7 @@ fn build_static_colliders(
     // thread finished first: two runs of one scene build the same world.
     for root in &mut build.roots {
         let mut waiting = false;
+        let node_triangles = &root.node_triangles;
         root.tasks.retain_mut(|(count, task)| {
             if waiting {
                 return true;
@@ -945,6 +986,10 @@ fn build_static_colliders(
                 }
                 let level = owner.is_none() && !pick_only;
                 let aabb = level.then(|| collider.compute_aabb());
+                let own_triangles = collider
+                    .shape()
+                    .as_trimesh()
+                    .map_or(0, |m| m.indices().len());
                 // The replica takes it now, the step's world at the next
                 // step, in this order (same handles).
                 let handle = physics.0.0.insert_collider(collider.clone(), None);
@@ -958,6 +1003,15 @@ fn build_static_colliders(
                     stand_ins.0.entry(body).or_default().push((handle, part));
                 } else if let Some(node) = node {
                     collider_nodes.insert(handle, node);
+                }
+                if level {
+                    // The mesh queries' form: the node's kd-tree, or its
+                    // brute-force callbacks.
+                    let count = node.and_then(|n| node_triangles.get(&n).copied());
+                    statics.insert_tree(
+                        handle,
+                        mesh_tree::takes_tree(count.unwrap_or(own_triangles)),
+                    );
                 }
                 if let Some(aabb) = aabb {
                     // The sector's static grid, in the original's centimetres.
@@ -1394,6 +1448,78 @@ mod tests {
             std::f32::consts::FRAC_PI_2,
         )));
         assert_eq!(mask(&flat, &turned), sector::MASK_SMALL);
+    }
+
+    /// The mesh queries' form follows the node's triangle count over all
+    /// its meshes, as the original builds one kd-tree per mesh node: two
+    /// 8-triangle meshes under one scene node (16 triangles) answer through
+    /// the tree, a lone 2-triangle mesh through its brute-force callbacks,
+    /// and the level detection takes the matching push floor.
+    #[test]
+    fn a_level_piece_answers_through_its_nodes_tree() {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<collision_share::FramePhysics>()
+            .init_resource::<StaticBuild>()
+            .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<StaticColliders>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_static_colliders);
+        let (fine, plain) = {
+            let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+            (
+                meshes.add(Plane3d::default().mesh().size(2.0, 2.0).subdivisions(1)),
+                meshes.add(Plane3d::default().mesh().size(2.0, 2.0)),
+            )
+        };
+        let root = app
+            .world_mut()
+            .spawn((StaticGeometry, Transform::default()))
+            .id();
+        let node = app.world_mut().spawn((StaticNode, ChildOf(root))).id();
+        for y in [0.0, 0.5] {
+            app.world_mut().spawn((
+                Mesh3d(fine.clone()),
+                GlobalTransform::from_xyz(0.0, y, 0.0),
+                ChildOf(node),
+            ));
+        }
+        app.world_mut().spawn((
+            Mesh3d(plain),
+            GlobalTransform::from_xyz(5.0, 0.0, 0.0),
+            ChildOf(root),
+        ));
+        for _ in 0..2000 {
+            if !app.world().entity(root).contains::<StaticGeometry>() {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!app.world().entity(root).contains::<StaticGeometry>());
+        use crate::contact::Level;
+        let world = &app.world().resource::<collision_share::FramePhysics>().0.0;
+        let statics = app.world().resource::<StaticColliders>();
+        let masked = body::MaskedLevel {
+            world,
+            masks: Some(statics),
+        };
+        let forms: Vec<(usize, bool)> = world
+            .colliders
+            .iter()
+            .map(|(h, c)| {
+                let count = c.shape().as_trimesh().map_or(0, |m| m.indices().len());
+                (count, masked.has_tree(h.into_raw_parts().0))
+            })
+            .collect();
+        assert_eq!(forms.len(), 3);
+        for (count, tree) in forms {
+            assert_eq!(tree, count == 8, "a {count}-triangle piece");
+        }
+        assert_eq!(contact::push_floor(true), mesh_query::PUSH_FLOOR);
+        assert_eq!(contact::push_floor(false), mesh_query::BRUTE_PUSH_FLOOR);
     }
 
     /// Only a floor node's mesh takes part in the Ground Query: two flat

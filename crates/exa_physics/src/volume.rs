@@ -281,6 +281,27 @@ pub struct Face {
 impl Face {
     /// Sets a triangle up as the original's record builder does.
     pub fn new(vertices: [Vec3; 3]) -> Self {
+        Self::build(
+            vertices,
+            crate::engine_math::reciprocal_sqrt,
+            approximate_reciprocal,
+        )
+    }
+
+    /// The same record with exact maths where the builder takes the
+    /// processor's estimates (the normal's reciprocal square root and the
+    /// Gram determinant's reciprocal): the record the simulation's mesh
+    /// queries use while DEC-7 (approximate float instructions) is open.
+    /// A degenerate face keeps a zero normal, as the builder leaves it.
+    pub fn exact(vertices: [Vec3; 3]) -> Self {
+        Self::build(vertices, |x| 1.0 / x.sqrt(), |x| 1.0 / x)
+    }
+
+    fn build(
+        vertices: [Vec3; 3],
+        reciprocal_sqrt: impl Fn(f32) -> f32,
+        reciprocal: impl Fn(f32) -> f32,
+    ) -> Self {
         let [v0, v1, v2] = vertices;
         let u = v1 - v0;
         let w = v2 - v0;
@@ -293,7 +314,7 @@ impl Face {
         let scale = if length_squared == 0.0 {
             0.0
         } else {
-            crate::engine_math::reciprocal_sqrt(length_squared)
+            reciprocal_sqrt(length_squared)
         };
         let normal = cross * scale;
         let edge_squared = dot(u, u);
@@ -304,7 +325,7 @@ impl Face {
             normal,
             plane: dot(v0, normal),
             edge_squared,
-            inverse_gram: approximate_reciprocal(gram),
+            inverse_gram: reciprocal(gram),
         }
     }
 
@@ -329,6 +350,17 @@ impl Face {
     /// when a projection runs past the second vertex or the face), each
     /// edge parameter taken with the approximate reciprocal.
     pub fn nearest(&self, p: Vec3, distance: f32) -> Vec3 {
+        self.nearest_by(p, distance, approximate_reciprocal)
+    }
+
+    /// [`Face::nearest`] with exact reciprocals for the edge parameters
+    /// (the simulation's mesh queries, while DEC-7 is open): the same
+    /// region test, sums and MAXSS/MINSS clamps.
+    pub fn nearest_exact(&self, p: Vec3, distance: f32) -> Vec3 {
+        self.nearest_by(p, distance, |x| 1.0 / x)
+    }
+
+    fn nearest_by(&self, p: Vec3, distance: f32, reciprocal: impl Fn(f32) -> f32) -> Vec3 {
         let [v0, v1, v2] = self.vertices;
         let q = (p - self.normal * distance) - v0;
         let e1 = v1 - v0;
@@ -343,38 +375,35 @@ impl Face {
             let t = c1 * d2 - b * c2;
             if t > 0.0 {
                 if (s + t) * self.inverse_gram > 1.0 {
-                    return self.nearest_on_far_edge(q, e1);
+                    return self.nearest_on_far_edge(q, e1, &reciprocal);
                 }
                 return q + v0;
             }
             if c2 > d2 {
-                return self.nearest_on_far_edge(q, e1);
+                return self.nearest_on_far_edge(q, e1, &reciprocal);
             }
-            let k = maximum(approximate_reciprocal(d2) * c2, 0.0);
+            let k = maximum(reciprocal(d2) * c2, 0.0);
             return v0 + e2 * k;
         }
         if c1 > 0.0 {
             if c1 > a {
-                return self.nearest_on_far_edge(q, e1);
+                return self.nearest_on_far_edge(q, e1, &reciprocal);
             }
-            let k = approximate_reciprocal(a) * c1;
+            let k = reciprocal(a) * c1;
             return v0 + e1 * k;
         }
         let d2 = dot(e2, e2);
-        let k = minimum(maximum(approximate_reciprocal(d2) * c2, 0.0), 1.0);
+        let k = minimum(maximum(reciprocal(d2) * c2, 0.0), 1.0);
         e2 * k + v0
     }
 
     /// The nearest point on the edge from the second vertex to the third,
     /// its parameter clamped to [0, 1].
-    fn nearest_on_far_edge(&self, q: Vec3, e1: Vec3) -> Vec3 {
+    fn nearest_on_far_edge(&self, q: Vec3, e1: Vec3, reciprocal: &impl Fn(f32) -> f32) -> Vec3 {
         let [_, v1, v2] = self.vertices;
         let f = v2 - v1;
         let g = q - e1;
-        let k = minimum(
-            maximum(approximate_reciprocal(dot(f, f)) * dot(g, f), 0.0),
-            1.0,
-        );
+        let k = minimum(maximum(reciprocal(dot(f, f)) * dot(g, f), 0.0), 1.0);
         f * k + v1
     }
 

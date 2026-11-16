@@ -51,6 +51,7 @@ use bevy::prelude::*;
 
 use crate::body::Ragdoll;
 use crate::contact::Level;
+use crate::mesh_query;
 use crate::mesh_tree::{self, MeshTree};
 use crate::part::PartState;
 use crate::sector::{self, NEAR_OFFSETS};
@@ -429,15 +430,16 @@ pub fn placement_touch(
                 let mut sphere = (at, grown);
                 tree.sphere(&mut sphere, |s, ids| {
                     ids.iter().any(|&id| {
-                        triangles
-                            .get(id as usize)
-                            .is_some_and(|t| crate::contact::sphere_hit(t, s.0, grown).is_some())
+                        triangles.get(id as usize).is_some_and(|t| {
+                            crate::contact::sphere_hit(t, s.0, grown, mesh_query::PUSH_FLOOR)
+                                .is_some()
+                        })
                     })
                 })
             }
-            (None, Some(triangles)) => triangles
-                .iter()
-                .any(|t| crate::contact::sphere_hit(t, at, grown).is_some()),
+            (None, Some(triangles)) => triangles.iter().any(|t| {
+                crate::contact::sphere_hit(t, at, grown, mesh_query::BRUTE_PUSH_FLOOR).is_some()
+            }),
             _ => b
                 .spheres
                 .iter()
@@ -517,9 +519,11 @@ pub fn placement_touches<'a>(
 }
 
 /// Whether a sphere (metres, in a part's own frame) meets the part's mesh,
-/// as the mesh's boolean sphere query answers: the first triangle the
-/// sphere reaches (front side, within its radius), through the kd-tree when
-/// the mesh has one; a part without triangles answers with its spheres.
+/// as the mesh's two-sided sphere query answers (the slot the overlap
+/// query asks): the first triangle whose plane is within the radius on
+/// either side and whose closest point is nearer than `r² − ε`
+/// ([`crate::contact::sphere_touches`]), through the kd-tree when the mesh
+/// has one; a part without triangles answers with its spheres.
 fn mesh_meets(b: &crate::body::Part, at: Vec3, radius: f32) -> bool {
     match (b.tree.as_deref(), b.triangles.as_deref()) {
         (Some(tree), Some(triangles)) => {
@@ -528,13 +532,13 @@ fn mesh_meets(b: &crate::body::Part, at: Vec3, radius: f32) -> bool {
                 ids.iter().any(|&id| {
                     triangles
                         .get(id as usize)
-                        .is_some_and(|t| crate::contact::sphere_hit(t, s.0, radius).is_some())
+                        .is_some_and(|t| crate::contact::sphere_touches(t, s.0, radius))
                 })
             })
         }
         (None, Some(triangles)) => triangles
             .iter()
-            .any(|t| crate::contact::sphere_hit(t, at, radius).is_some()),
+            .any(|t| crate::contact::sphere_touches(t, at, radius)),
         _ => b
             .spheres
             .iter()
