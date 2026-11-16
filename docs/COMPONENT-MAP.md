@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 58.6% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 58.7% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.6% closed**, of which 46.4% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.0% partial and 6.4% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.7% closed**, of which 46.4% live (reimplemented), 9.7% engine and 2.6% closed without code (unreachable or deviation). Still open: 34.9% partial and 6.4% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -25,7 +25,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 59% | 42% | 15% | 2% | 34% | 7% |  |
 | World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 33% | 10% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 58% | 7% |  |
-| Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 48% | 41% | 4% | 3% | 44% | 8% |  |
+| Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 49% | 41% | 4% | 4% | 43% | 8% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 56% | 53% | 2% | 1% | 38% | 6% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 57% | 53% | 1% | 2% | 43% | 1% |  |
@@ -180,7 +180,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | RF_Navigation | Rendering & GPU | 16 | 87% | 56% | 46% | 3% | 7% | 31% | 13% |
 | RFP_Mipmaps_Kaiser | Rendering & GPU | 15 | 86% | 99% | 88% | 2% | 10% | 0% | 1% |
 | FLX_Terrain_Texrender2 | Rendering & GPU | 14 | 81% | 16% | 13% | 3% | 0% | 84% | 0% |
-| RF_Mesh | Rendering & GPU | 13 | 88% | 60% | 57% | 3% | 0% | 23% | 17% |
+| RF_Mesh | Rendering & GPU | 13 | 88% | 66% | 57% | 3% | 5% | 17% | 17% |
 | TShaderBuilder | Rendering & GPU | 13 | 94% | 100% | 0% | 100% | 0% | 0% | 0% |
 | RF_Textures | Rendering & GPU | 11 | 82% | 41% | 30% | 11% | 0% | 49% | 9% |
 | RF_3DView | Rendering & GPU | 11 | 77% | 23% | 3% | 20% | 0% | 67% | 10% |
@@ -283,7 +283,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | SG_CharacterGen | Characters, motion & animation | 43 | 85% | 20% | 18% | 2% | 0% | 68% | 12% |
 | RF_Skinning | Characters, motion & animation | 25 | 91% | 50% | 45% | 5% | 0% | 48% | 1% |
 | SG_Character_Data | Characters, motion & animation | 20 | 97% | 73% | 69% | 1% | 2% | 12% | 16% |
-| RF_Morphing | Characters, motion & animation | 16 | 80% | 57% | 24% | 0% | 33% | 43% | 0% |
+| RF_Morphing | Characters, motion & animation | 16 | 80% | 72% | 24% | 0% | 47% | 28% | 0% |
 | FLX_Character_Textures | Characters, motion & animation | 8 | 83% | 29% | 26% | 3% | 0% | 69% | 2% |
 | TSkinController2 | Characters, motion & animation | 8 | 81% | 39% | 6% | 34% | 0% | 47% | 14% |
 | FLX_Character_Motions | Characters, motion & animation | 6 | 80% | 41% | 40% | 1% | 0% | 26% | 33% |
