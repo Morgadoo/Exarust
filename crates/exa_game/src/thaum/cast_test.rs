@@ -2,6 +2,7 @@ use bevy::math::Affine3A;
 use exa_physics::body::{PartSetup, Ragdoll};
 
 use super::*;
+use crate::thaum::casting::SWITCHED;
 use crate::thaum::displacement::{CONSTANT, VANISH};
 use crate::thaum::energy::SHOCK;
 use crate::thaum::force::BARRICADE;
@@ -2195,4 +2196,56 @@ fn a_vanish_comes_back_through_a_teleport_where_it_stands() {
     let body = app.world().get::<Ragdoll>(caster).unwrap();
     assert!(body.parts[0].transform().translation.length() < 1e-5);
     assert!(body.parts[0].contacts.is_empty());
+}
+
+/// "Not now" (the body is switching its weapon) holds the slot in the
+/// player's controls; the controls' frame retries it every frame
+/// ([`BarAction::Retry`]), "not now" renews the hold, and once the body
+/// can cast the retry starts the power and the hold lets go.
+#[test]
+fn a_not_now_cast_is_held_and_retried_by_the_controls() {
+    use crate::player_controls::PlayerControl;
+    let mut app = new_app();
+    app.add_plugins(crate::hotkeys::HotkeyPlugin)
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<crate::bindings::Bindings>()
+        .init_resource::<PlayerControl>();
+    app.world_mut()
+        .resource_mut::<PlayerControl>()
+        .set_off(false);
+    let caster = caster(&mut app, &[BARRICADE, SHOCK]);
+    app.world_mut()
+        .entity_mut(caster)
+        .insert(exa_combat::Condition(SWITCHED));
+    command(&mut app, caster, BarAction::Toggle);
+    app.update();
+    command(&mut app, caster, BarAction::Pick(1));
+    app.update();
+    cast(&mut app, caster);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::NOT_NOW);
+    assert!(state.active.is_empty());
+    let hold = app.world().resource::<PlayerControl>().power_hold;
+    assert_eq!(hold.slot, 2, "the slot is held from one");
+    // Still switching: the frame's retry answers "not now" again.
+    app.update();
+    app.update();
+    assert_eq!(app.world().resource::<PlayerControl>().power_hold.slot, 2);
+    assert!(
+        app.world()
+            .get::<PowerCaster>(caster)
+            .unwrap()
+            .active
+            .is_empty()
+    );
+    // The switch is over: the next retry casts and the hold lets go.
+    app.world_mut()
+        .entity_mut(caster)
+        .insert(exa_combat::Condition(0));
+    app.update();
+    app.update();
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::STARTED);
+    assert!(matches!(state.active[0].class, ActiveClass::Shock(_)));
+    assert_eq!(app.world().resource::<PlayerControl>().power_hold.slot, 0);
 }

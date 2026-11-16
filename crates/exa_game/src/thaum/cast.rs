@@ -124,6 +124,11 @@ pub enum BarAction {
     Pick(usize),
     /// `Q`: use the picked slot.
     Use,
+    /// The controls' power hold retries the slot a "not now" answer queued
+    /// (their per-frame pad routine): a Use whose answer, unless it is
+    /// "not now" again, lets the hold go
+    /// ([`crate::player_controls::PowerHold`]).
+    Retry,
     /// An arrow: step the choice.
     Step(i32),
 }
@@ -760,6 +765,8 @@ pub(crate) struct BarAim {
     dead_pick: Option<Entity>,
     /// The spirit screen's state, if the screen exists.
     spirit_screen: Option<i32>,
+    /// The cast is the controls' hold's retry ([`BarAction::Retry`]).
+    retry: bool,
 }
 
 /// The frame's side of a bar's cast: what only the frame does with its
@@ -776,6 +783,17 @@ struct BarAnswer {
     /// A Sense Minds cast's overlay, for this long (0 while the persistent
     /// power runs).
     sense_overlay: Option<i32>,
+    /// What the cast does to the controls' power hold.
+    hold: Option<HoldAnswer>,
+}
+
+/// A bar cast's write to the controls' power hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldAnswer {
+    /// "Not now": the slot (from 0) is held for 500 ms from `now_ms`.
+    Pick { slot: usize, now_ms: u32 },
+    /// The hold's retry was answered: the hold lets go.
+    Taken,
 }
 
 impl BarAnswer {
@@ -804,6 +822,22 @@ impl BarAnswer {
         }
         if let Some(duration_ms) = self.sense_overlay {
             crate::mind::draw::start_sense_overlay(world, duration_ms);
+        }
+        if let Some(hold) = self.hold
+            && let Some(mut control) =
+                world.get_resource_mut::<crate::player_controls::PlayerControl>()
+        {
+            match hold {
+                HoldAnswer::Pick { slot, now_ms } => {
+                    control.power_hold =
+                        crate::player_controls::PowerHold::pick(slot as i32, now_ms);
+                    info!(
+                        "power hold: slot {slot} held until {}",
+                        control.power_hold.until_ms
+                    );
+                }
+                HoldAnswer::Taken => control.power_hold.taken(),
+            }
         }
         if self.end_control {
             info!("power cast while controlling another body: the control ends");
@@ -845,7 +879,7 @@ pub(crate) fn run_bar_commands(
         // The bar on a body the player was handed: its cast entry asks the
         // caller to end the control, which ends the held body's Control Mind.
         if !casters.contains(command.caster)
-            && command.action == BarAction::Use
+            && matches!(command.action, BarAction::Use | BarAction::Retry)
             && mind
                 .minds
                 .get(command.caster)
@@ -945,7 +979,7 @@ pub(crate) fn run_bar_commands(
                     screen.sound = Some(crate::thaum::tree::SLOT_SELECT_SOUND);
                 }
             }
-            BarAction::Use => {
+            BarAction::Use | BarAction::Retry => {
                 // The barricade's cast asks the nearest-mesh pick: the
                 // segment from the eye to its point meeting a running
                 // barricade's node bounds ends that barricade.
@@ -1013,6 +1047,7 @@ pub(crate) fn run_bar_commands(
                     mind_pick: mind.pick.0,
                     dead_pick: mind.dead_pick.0,
                     spirit_screen: mind.control.spirit_screen.map(|s| s.state),
+                    retry: command.action == BarAction::Retry,
                 };
                 match fixed.filter(|f| f.bridged()) {
                     Some(fixed) => fixed.post(move |world: &mut World| {
@@ -1055,8 +1090,14 @@ pub(crate) fn cast_from_bar(world: &mut World, entity: Entity, aim: BarAim, in_s
             return;
         }
     };
-    let Some(answer) = answer else {
-        return;
+    // A retry that casts nothing is answered too: the hold lets go.
+    let answer = match answer {
+        Some(answer) => answer,
+        None if aim.retry => BarAnswer {
+            hold: Some(HoldAnswer::Taken),
+            ..BarAnswer::default()
+        },
+        None => return,
     };
     if in_step
         && let Some(mut frame) = world.get_resource_mut::<exa_physics::sim_app::FrameCommands>()
@@ -1226,8 +1267,16 @@ fn cast_bar_slot(
     }
     answer.screen_sound = entry.sound;
     answer.end_control = entry.end_control;
+    // "Not now" holds the slot in the controls for 500 ms (renewed by
+    // each "not now"); any other answer to the hold's retry lets it go.
     if let Some(queued) = entry.queued_slot {
         debug!("cast queued on slot {queued}");
+        answer.hold = Some(HoldAnswer::Pick {
+            slot: queued,
+            now_ms: now,
+        });
+    } else if aim.retry {
+        answer.hold = Some(HoldAnswer::Taken);
     }
     info!(
         "power cast {asked:#x} from slot {slot}: result {result_code} \

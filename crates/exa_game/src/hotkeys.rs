@@ -338,7 +338,8 @@ impl Plugin for HotkeyPlugin {
             .init_resource::<DialogueFocus>()
             .add_systems(
                 Update,
-                press_hotkeys
+                (retry_power_hold, press_hotkeys)
+                    .chain()
                     .in_set(HotkeySet)
                     .after(crate::player::cursor_ground)
                     .before(crate::player::player_combat),
@@ -349,6 +350,39 @@ impl Plugin for HotkeyPlugin {
 /// The system that reads the player's hotkeys.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HotkeySet;
+
+/// The head of the controls' per-frame pad routine: the power bar's hold
+/// on a slot whose power answered "not now" retries the cast every frame
+/// ([`crate::player_controls::PowerHold::frame`]); past its 500 ms it lets
+/// go and asks once for the picked power. A retry answered with anything
+/// but "not now" lets the hold go, and "not now" renews it
+/// ([`BarAction::Retry`]). The routine runs while the controls are on
+/// (blocked or not); the clock is the powers' tick clock.
+fn retry_power_hold(
+    control: Option<ResMut<PlayerControl>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    players: Query<Entity, (With<PlayerBody>, With<PowerCaster>)>,
+    mut bars: MessageWriter<BarCommand>,
+) {
+    let Some(mut control) = control else {
+        return;
+    };
+    if control.off || control.power_hold.slot == 0 {
+        return;
+    }
+    let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+    let Some(slot) = control.power_hold.frame(now) else {
+        return;
+    };
+    let Some(caster) = players.iter().next() else {
+        return;
+    };
+    debug!("power hold: retry (slot {slot})");
+    bars.write(BarCommand {
+        caster,
+        action: BarAction::Retry,
+    });
+}
 
 /// Releases the hand's grab on `body` (run at the start of a fixed step).
 fn release_grab(In(body): In<Entity>, mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>) {

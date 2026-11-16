@@ -352,6 +352,9 @@ pub struct PlayerControl {
     /// dragged body is neither let go beyond 330 cm of the hip nor kept
     /// within 200 cm of it.
     pub drag_limit: bool,
+    /// The power bar's hold on a slot whose power answered "not now",
+    /// retried by the controls' frame ([`PowerHold`]).
+    pub power_hold: PowerHold,
 }
 
 impl Default for PlayerControl {
@@ -371,6 +374,7 @@ impl PlayerControl {
             combat: true,
             window_holds: false,
             drag_limit: true,
+            power_hold: PowerHold::default(),
         }
     }
 
