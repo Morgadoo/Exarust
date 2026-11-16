@@ -5,9 +5,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 637 | 158,256 | B1 wire (or prove unreachable) |
-| partial | 1,408 | 884,774 | B4 complete the port |
-| missing | 55 | 11,367 | B4 port |
+| uncalled | 628 | 157,278 | B1 wire (or prove unreachable) |
+| partial | 1,410 | 886,202 | B4 complete the port |
+| missing | 54 | 10,344 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
 ## By section (open bytes)
@@ -16,7 +16,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 |---|---|---|---|
 | physics | 143,795 | 18,075 | 276 |
 | render | 122,921 | 22,453 | 3,232 |
-| ui | 85,823 | 42,346 | 1,311 |
+| ui | 87,251 | 41,368 | 288 |
 | powers | 105,361 | 3,090 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
 | ai | 89,630 | 2,147 | 28 |
@@ -56,12 +56,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
 | Character equipment & inventory routines (TCharacterView by address) | items | 15 / 8,494 | 5 / 641 | 0 / 0 | 9,135 |
 | TTetraRBD | physics | 18 / 8,305 | 2 / 661 | 0 / 0 | 8,966 |
-| RF_GUI_Main (unit routines) | ui | 7 / 5,075 | 19 / 2,486 | 3 / 1,167 | 8,728 |
 | RF_OS_Functions (unit routines) | runtime | 13 / 6,781 | 5 / 1,749 | 1 / 49 | 8,579 |
 | FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
 | RF_3DView (unit routines) | render | 14 / 7,385 | 0 / 0 | 7 / 1,146 | 8,531 |
 | RFE_Export_RFC2 (unit routines) | data | 13 / 8,152 | 2 / 240 | 0 / 0 | 8,392 |
 | FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
+| RF_GUI_Main (unit routines) | ui | 10 / 6,565 | 10 / 1,508 | 2 / 144 | 8,217 |
 | RF_Morphing (unit routines) | characters | 6 / 7,170 | 2 / 836 | 1 / 154 | 8,160 |
 | TRBDDoor | world | 4 / 5,922 | 1 / 2,085 | 0 / 0 | 8,007 |
 | TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
@@ -242,13 +242,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | FPC System RTL | runtime | 6 / 675 | 1 / 23 | 0 / 0 | 698 |
 | TSteelBlade | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
 | TSteelPlate2 | items | 1 / 692 | 0 / 0 | 0 / 0 | 692 |
-| XA_HelpSystem (unit routines) | ui | 1 / 62 | 1 / 619 | 0 / 0 | 681 |
 | TEndSessionMenu | modes | 2 / 666 | 0 / 0 | 0 / 0 | 666 |
 | TPickerForm | ui | 1 / 184 | 2 / 473 | 0 / 0 | 657 |
 | TPwrControlMind_C | powers | 2 / 656 | 0 / 0 | 0 / 0 | 656 |
 | TForceTorrentGeometry | powers | 1 / 651 | 0 / 0 | 0 / 0 | 651 |
 | TStrikesGeometry | powers | 1 / 646 | 0 / 0 | 0 / 0 | 646 |
 | Program main (Exanima.lpr) | runtime | 4 / 561 | 0 / 0 | 1 / 74 | 635 |
+| XA_HelpSystem (unit routines) | ui | 0 / 0 | 1 / 619 | 0 / 0 | 619 |
 | TStringLibrary | data | 0 / 0 | 4 / 615 | 0 / 0 | 615 |
 | TForceWaveEntity | powers | 1 / 603 | 0 / 0 | 0 / 0 | 603 |
 | TBarricadeGeometry | powers | 2 / 592 | 0 / 0 | 0 / 0 | 592 |
