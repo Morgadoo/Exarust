@@ -70,7 +70,9 @@ use bevy::prelude::*;
 
 use super::{BodySystems, BodyTicks, CM, LINK_DISABLED, Ragdoll, WAKE_COUNT, WorldLink, weights};
 use crate::door::{self, Door, Record, Tick};
-use crate::engine_math::{direction_from_yaw, heading, normalize_approx};
+use crate::engine_math::{
+    direction_from_yaw, heading, normalize_approx_unmasked, remove_component,
+};
 use crate::mechanism_sound::{self, MechanismSounded};
 
 /// A hinged leaf's mobility, whatever its file stores.
@@ -164,8 +166,10 @@ impl DoorBody {
             .inverse()
             .transform_point3(body.world[stop].anchor)
             - origin;
-        let forward = normalize_approx(tied - up * tied.dot(up));
-        let side = normalize_approx(up.cross(forward));
+        // The original's rejection (its dot summed `(x + z) + (y + 0)`) and
+        // its unmasked normaliser, both times.
+        let forward = normalize_approx_unmasked(remove_component(tied, up));
+        let side = normalize_approx_unmasked(up.cross(forward));
         let handle_local = Vec3::new(-HANDLE_CM * shape.sign / CM, pending.handle_height, 0.0);
         let handle = weights(leaf, handle_local);
         let mut glue = Self {

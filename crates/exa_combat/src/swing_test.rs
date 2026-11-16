@@ -146,6 +146,44 @@ fn the_expected_swing_time() {
     assert_eq!(Swing::FISTS.expected_ms(1.2, 110.0, 1.0), 0);
 }
 
+/// The expectation of a swing with no rate (zero speed: +∞ ms) or a NaN
+/// input is `CVTSS2SI`'s indefinite word, as the oracle recorded it (a
+/// zero-speed swing from 0.558 of a 66-frame clip); its low half, 0, caps
+/// the stall, so a release then ends at once. −∞ (a negative count) is
+/// `ms − ms`, NaN, the same word.
+#[test]
+fn an_unbounded_expectation_is_the_indefinite_word() {
+    let still = Swing {
+        speed: 0.0,
+        modulation: 0.0,
+        ..Swing::FISTS
+    };
+    assert_eq!(
+        still.expected_ms(0.558_243_16, 66.121_04, 0.869_571_8),
+        i64::MIN
+    );
+    assert_eq!(Swing::FISTS.expected_ms(f32::NAN, 110.0, 1.0), i64::MIN);
+    let backward = Swing {
+        speed: -0.0,
+        ..Swing::FISTS
+    };
+    assert_eq!(backward.expected_ms(0.5, 110.0, 1.0), i64::MIN);
+    assert_eq!(cvtss2si64(9.223_372e18), i64::MIN);
+    assert_eq!(cvtss2si64(-9.223_372e18), i64::MIN);
+    assert_eq!(cvtss2si64(2.5), 2);
+    let at = SwingAt {
+        now_ms: 12_000,
+        motion: Some(Main(0)),
+        progress: 0.5,
+        last_key: 110.0,
+        base: 1.0,
+    };
+    let mut punch = SwingState::default();
+    punch.start(true, false);
+    punch.release(&still, &at);
+    assert_eq!(punch.end_ms, 12_000);
+}
+
 /// A released swing drains by max(1 − 0.05·|v|, 0.1)/W17 × 0.03 a tick,
 /// at least 0.01: the fists (W17 0.1) still 0.3, at 10 cm a tick 0.15;
 /// the arena sword (W17 0.42) still 0.0714, at 10 cm a tick 0.0357, at

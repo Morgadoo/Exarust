@@ -401,7 +401,7 @@ impl Animator {
             .zip(&target.rotations)
             .map(|(&a, &z)| super::slerp(a, to_quat(z), b.f))
             .collect();
-        let mut root = root_from.lerp(Vec3::from(target.root), b.f);
+        let mut root = engine_math::lerp3(root_from, Vec3::from(target.root), b.f);
         if in_place {
             root.z = 0.0;
         }

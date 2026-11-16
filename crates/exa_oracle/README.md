@@ -12,12 +12,22 @@ the repository (they carry the original's addresses); this crate knows the
 functions by name only.
 
 - `ports()` maps each name to a closure that decodes a case's inputs, calls
-  the Rust port and encodes its outputs in the case's layout (33 functions:
-  the engine maths' normalisers, lerps, minimum and maximum, conversions,
-  logarithm, exponential, sine-cosine, cosine, heading, axis-angle
-  quaternion, triple product, barycentric weights, the 4x3 weighted
-  difference, the face record's builder and closest point, the colour lerp,
-  a door leaf's openness and a swing's expected time).
+  the Rust port and encodes its outputs in the case's layout: the first
+  lane's 31 (the engine maths' normalisers, lerps, minimum and maximum,
+  conversions, logarithm, exponential, sine-cosine, cosine, heading,
+  axis-angle quaternion, triple product, barycentric weights, the 4x3
+  weighted difference, the face record's builder and closest point, the
+  colour lerp, a door leaf's openness and a swing's expected time) in
+  `ports.rs`, and the second lane's 81 in `ports/batch_a.rs` (engine maths:
+  matrix and frame products, inverses, negations, quaternion and Euler
+  builders, projections, the UI's small numeric steps), `batch_b.rs`
+  (physics: sector weights, sweeps, the tetra body's pushes and edge
+  restore, health), `batch_c.rs` (colours, render maths, popups, effect
+  danger, AI steps, key tracks, light flicker) and `batch_d.rs` (the fight
+  AI's and the force powers' routines with a few helpers, the made item's
+  condition roll). 112 ports; two of them (the sun view matrix with
+  `RSQRTSS`, the colour decode by `powf`) are recorded differences whose
+  case files are kept aside.
 - `replay()` runs every case of a file under
   `exa_physics::float_mode::enter` and reports the function identical, or
   its first differing case with the inputs and each differing output's bits.

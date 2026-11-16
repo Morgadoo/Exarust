@@ -953,7 +953,9 @@ fn a_standing_body_plants_its_feet() {
     let far = ankle(&body, 1).0;
     body.measure_balance(floor.as_slice());
     assert_eq!(body.legs[0].state, FootState(FootState::TOUCHING));
-    assert_eq!(body.legs[0].anchor, kept);
+    // The planted foot's probe is the engine's lerp toward its anchor
+    // (`c + (anchor − c)·blend`), which can land a bit off the anchor.
+    assert!((body.legs[0].anchor - kept).abs().max_element() < 1e-6);
     assert_eq!(body.legs[1].state, FootState(FootState::TOUCHING));
     assert!(close(body.legs[1].anchor.x, far.x, 1e-6));
     assert!(close(body.legs[1].anchor.z, far.z, 1e-6));

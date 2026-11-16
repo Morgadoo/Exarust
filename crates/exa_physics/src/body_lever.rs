@@ -64,7 +64,7 @@ use bevy::prelude::*;
 
 use super::{BodySystems, BodyTicks, CM, Ragdoll, WAKE_COUNT};
 use crate::door;
-use crate::engine_math::{direction_from_yaw, heading};
+use crate::engine_math::{direction_from_yaw, heading, normalize_exact};
 use crate::lever::{self, Lever, LeverTick, Record, Signal};
 use crate::mechanism::MechanismSignal;
 use crate::mechanism_sound::{self, MechanismSounded, TickCue};
@@ -121,11 +121,10 @@ pub struct LeverBody {
     light: Option<Entity>,
 }
 
-/// The engine's exact normalisation: the reciprocal of the root of
-/// `(y² + 0) + x² + z²`.
+/// The engine's exact normalisation ([`normalize_exact`]): the squares
+/// summed `y² + (x² + z²)`, then one division `1 / √s`.
 fn unit(v: Vec3) -> Vec3 {
-    let length = ((v.y * v.y + 0.0) + v.x * v.x + v.z * v.z).sqrt();
-    v * (1.0 / length)
+    normalize_exact(v)
 }
 
 /// Wraps an angle into ±π as the lever's hand angle is: under −π (a double

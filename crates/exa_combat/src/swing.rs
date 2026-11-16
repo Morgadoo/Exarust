@@ -280,8 +280,12 @@ impl Swing {
     /// The milliseconds the swing is expected to take from `progress` to
     /// its end, a clip whose last key is at `last_key` frames, its clock's
     /// `base` rate (at 80 ticks a second, by the mean g over what is left,
-    /// as the original reckons it): the cap of every stall.
-    pub fn expected_ms(&self, progress: f32, last_key: f32, base: f32) -> u64 {
+    /// as the original reckons it): the cap of every stall. A negative
+    /// count becomes zero (`ms − ms`, so −∞ becomes NaN), and the count is
+    /// converted as `CVTSS2SI` does ([`cvtss2si64`]): a NaN or one past the
+    /// 64-bit range gives the integer indefinite `i64::MIN`. The stalls
+    /// take its low 32 bits ([`expected_cap`]).
+    pub fn expected_ms(&self, progress: f32, last_key: f32, base: f32) -> i64 {
         let ends = (1.0 - f64::from(self.modulation) * END_SHAPE) as f32;
         let d = (progress - MID_SWING).abs();
         let d = d * d + d;
@@ -293,7 +297,10 @@ impl Swing {
         };
         let per_tick = self.speed * mean * RATE * base;
         let ms = (1.0 - progress) * last_key / (ASSUMED_HZ * per_tick) * MS;
-        whole(ms.max(0.0))
+        // `ms − ms`, as the original zeroes it (−∞ gives NaN).
+        #[allow(clippy::eq_op)]
+        let ms = if ms < 0.0 { ms - ms } else { ms };
+        cvtss2si64(ms)
     }
 
     /// How fast a released swing's strength drains a tick, from `speed2`,
@@ -373,6 +380,32 @@ fn whole(x: f32) -> u64 {
 
 fn whole_signed(x: f32) -> i64 {
     x.round_ties_even() as i64
+}
+
+/// `CVTSS2SI` to a 64-bit register under the engine's rounding (to the
+/// nearest, ties to even): a NaN or a value outside the 64-bit range gives
+/// the integer indefinite, `i64::MIN`.
+pub fn cvtss2si64(x: f32) -> i64 {
+    // 2⁶³ is exact in single precision; −2⁶³ itself converts.
+    const LIMIT: f32 = 9_223_372_036_854_775_808.0;
+    if x.is_nan() || x >= LIMIT || x < -LIMIT {
+        i64::MIN
+    } else {
+        x.round_ties_even() as i64
+    }
+}
+
+/// A stall's length as the original keeps it: the low 32 bits of the
+/// `CVTSS2SI` word of `ms` ([`cvtss2si64`]), unsigned.
+fn stall_ms(ms: f32) -> u32 {
+    cvtss2si64(ms) as u32
+}
+
+/// The stall cap: the low 32 bits of [`Swing::expected_ms`]'s word, which
+/// the original's stalls compare unsigned (the indefinite word's low half
+/// is 0, so a NaN or overflowing expectation ends the stall at once).
+pub fn expected_cap(swing: &Swing, t: &SwingAt) -> u32 {
+    swing.expected_ms(t.progress, t.last_key, t.base) as u32
 }
 
 /// A swing `rate` paced by the fighter's `energy` share of its most: none
@@ -591,9 +624,10 @@ impl SwingState {
         self.recoil = None;
         self.flags |= flags::STALLING | flags::RELEASED;
         self.stall = swing.release_stall(self.tracker[0].speed2);
-        let lasts = whole(MS / (ASSUMED_HZ * self.stall));
-        let expected = swing.expected_ms(t.progress, t.last_key, t.base);
-        self.end_ms = t.now_ms + lasts.min(expected);
+        // Both lengths are the low words of their conversions, the shorter
+        // taken unsigned, as the original's release stores them.
+        let lasts = stall_ms(MS / (ASSUMED_HZ * self.stall));
+        self.end_ms = t.now_ms + u64::from(lasts.min(expected_cap(swing, t)));
         self.renew_ms =
             t.now_ms + swing.renew_after_ms(t.progress, t.motion, self.has(flags::CONTINUED));
     }
@@ -626,9 +660,8 @@ impl SwingState {
             self.stall = r;
             self.flags |= flags::STALLING;
         }
-        let lasts = whole(self.strength / self.stall * DAZE_STALL_LENGTH);
-        let expected = swing.expected_ms(t.progress, t.last_key, t.base);
-        self.end_ms = t.now_ms + lasts.min(expected);
+        let lasts = stall_ms(self.strength / self.stall * DAZE_STALL_LENGTH);
+        self.end_ms = t.now_ms + u64::from(lasts.min(expected_cap(swing, t)));
         Some(r)
     }
 
