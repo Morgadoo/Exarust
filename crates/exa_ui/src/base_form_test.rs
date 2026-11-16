@@ -375,7 +375,12 @@ fn a_shown_child_cuts_its_parents_snap_slots_around_it() {
     // row).
     assert_eq!(
         base(&task, outer).snaps,
-        vec![[0, 0, 96, 12], [0, 12, 12, 96], [28, 12, 96, 96], [12, 28, 28, 96]]
+        vec![
+            [0, 0, 96, 12],
+            [0, 12, 12, 96],
+            [28, 12, 96, 96],
+            [12, 28, 28, 96]
+        ]
     );
     // A snap container's rebuild clears its state bit 0x20000.
     assert_eq!(base(&task, outer).state & 0x2_0000, 0);

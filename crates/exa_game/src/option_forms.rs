@@ -1979,7 +1979,10 @@ mod tests {
             .add_systems(Update, hub_form_typing);
         let mut hub = windows();
         hub.open_company();
-        let name = centre(hub.forms.get(FormWindow::Emblem).unwrap(), emblem_records::NAME);
+        let name = centre(
+            hub.forms.get(FormWindow::Emblem).unwrap(),
+            emblem_records::NAME,
+        );
         hover(&mut hub, name);
         app.insert_resource(hub);
         let window = app.world_mut().spawn_empty().id();
@@ -2002,7 +2005,10 @@ mod tests {
             app.world().resource::<HubWindows>().forms.options.key_focus
         };
         let emblem = |record| Some((FormWindow::Emblem, record));
-        assert_eq!(tab(&mut app, false), emblem(emblem_records::BACKGROUND_NUMBER));
+        assert_eq!(
+            tab(&mut app, false),
+            emblem(emblem_records::BACKGROUND_NUMBER)
+        );
         assert_eq!(tab(&mut app, false), emblem(emblem_records::DESIGN_NUMBER));
         assert_eq!(tab(&mut app, false), emblem(emblem_records::NAME));
         assert_eq!(tab(&mut app, true), emblem(emblem_records::DESIGN_NUMBER));
@@ -2010,7 +2016,10 @@ mod tests {
         // move does.
         let mut hub = app.world_mut().resource_mut::<HubWindows>();
         hover(&mut hub, name);
-        assert_eq!(hub.forms.options.key_focus, emblem(emblem_records::DESIGN_NUMBER));
+        assert_eq!(
+            hub.forms.options.key_focus,
+            emblem(emblem_records::DESIGN_NUMBER)
+        );
         hover(&mut hub, (name.0 + 1, name.1));
         assert_eq!(hub.forms.options.key_focus, emblem(emblem_records::NAME));
         // The focus Tab gave selects the field's text: a typed byte
@@ -2019,7 +2028,10 @@ mod tests {
         hub.form_tab(false);
         type_text(&mut hub, &mut career, "7");
         let form = hub.forms.get(FormWindow::Emblem).unwrap();
-        assert_eq!(form.controls()[emblem_records::BACKGROUND_NUMBER].text, b"7");
+        assert_eq!(
+            form.controls()[emblem_records::BACKGROUND_NUMBER].text,
+            b"7"
+        );
     }
 
     #[test]
