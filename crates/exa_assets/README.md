@@ -623,13 +623,15 @@ transferred once per race and model (a garment piece from the frame of the
 base body part its node names), then the meshes are morphed (normals and
 boxes refitted) and the body parts' translations moved with their joints
 before skinning; the body's parts are skinned on the morphed shape, a
-garment from the unmorphed body. Weights that change nothing, and races
-without a morph body, return the shared model. The controller's
+garment on its unmorphed shape (its pieces with render bit `0x200000` from
+the body's skin records, see Body skin). Weights that change nothing
+return the shared body model, and a garment's skin-only variant on a race
+with a morph body; races without a morph body return the shared model. The controller's
 registration helpers for numbered target nodes are `morph_part_ordinal`
 (the name's second and third characters as a number, which
 `bake_morph_parts` sorts by), `numbered_target_deltas`, `control_matches`
-(a rotated control triangle against its reference, within 1e-8) and
-`nearest_records` (each base point's nearest candidate, 0 by default). See
+(a rotated control triangle against its reference, within 1e-8); the
+body's nearest records are `exa_formats::morph::nearest_skin_records`. See
 [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Morph sets).
 
 Mesh editing (pure, no Bevy types): `mesh_edit::EditMesh` is a decoded
