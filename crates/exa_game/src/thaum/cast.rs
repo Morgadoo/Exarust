@@ -2877,6 +2877,7 @@ fn shock_weapon_hits(
     mut shocked: MessageWriter<super::live::ArcShocked>,
     mut commands: Commands,
     mut draws: ResMut<EffectDraws>,
+    struck: Query<&Ragdoll>,
 ) {
     for hit in impacts.read() {
         let Ok(blade) = blades.get(hit.other) else {
@@ -2912,6 +2913,11 @@ fn shock_weapon_hits(
         let at = Some(hit.point * CM);
         let mut burst = super::arcs::spark_burst(&mut draws.0);
         burst.anchor = at;
+        // The spark's node hangs under the struck part at the contact.
+        let on = struck
+            .get(hit.target)
+            .ok()
+            .and_then(|body| super::live::spark_on_part(body, hit.target, hit.bone, hit.point));
         commands.spawn((
             Name::new("_WeaponSpark"),
             LiveArcs {
@@ -2920,6 +2926,9 @@ fn shock_weapon_hits(
                 weapon: None,
                 caster: Some(blade.wielder),
                 keep: false,
+                node: crate::thaum::arcs::ArcNode::built(true),
+                offset: on.map_or(Vec3::ZERO, |(_, local)| local),
+                part: on.map(|(part, _)| part),
             },
         ));
     }
@@ -2948,6 +2957,9 @@ fn spawn_weapon_arcs(
                         weapon: Some(weapon.entity),
                         caster: Some(caster),
                         keep: false,
+                        node: crate::thaum::arcs::ArcNode::built(true),
+                        offset: Vec3::ZERO,
+                        part: None,
                     },
                 ))
                 .id()
@@ -2973,6 +2985,9 @@ fn spawn_hand_arcs(
                 weapon: None,
                 caster: Some(caster),
                 keep: false,
+                node: crate::thaum::arcs::ArcNode::built(false),
+                offset: Vec3::ZERO,
+                part: None,
             },
         ))
         .id()
@@ -3359,6 +3374,9 @@ pub(crate) fn tick_casters(
                                     weapon: None,
                                     caster: Some(caster_entity),
                                     keep: false,
+                                    node: crate::thaum::arcs::ArcNode::built(false),
+                                    offset: Vec3::ZERO,
+                                    part: None,
                                 },
                             ));
                             debug!("energy shock: the burst fires at the hand");

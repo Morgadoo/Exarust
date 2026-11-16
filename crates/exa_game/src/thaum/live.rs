@@ -3,9 +3,11 @@
 //! [`super::barricade`], [`super::wisps`]) run at the body tick against the
 //! physical bodies and the level, and whose meshes are rebuilt each frame.
 //!
-//! - **Each tick** (after the bodies): an arc follows its hand, ticks,
-//!   ends at the level (the static colliders) and tests every other body's
-//!   parts, sending [`ArcShocked`] for a struck character. A shock reaches
+//! - **Each tick** (after the bodies): an arc follows its hand (or its
+//!   weapon), enters the world on its first step, ticks, and, when its
+//!   record asks for them, ends at the level (the static colliders) and
+//!   tests every other body's parts, sending [`ArcShocked`] for a struck
+//!   character. A shock reaches
 //!   a fighter once the game clock is within 150 ms of its next shock time
 //!   ([`ShockReady`]), which then moves to 500 ms plus a draw below 200 ms
 //!   of the engine's generator ahead; a fighter that is not collapsing or
@@ -65,7 +67,10 @@ use exa_render::gi::VoxelLight;
 use exa_render::glow::GlowMaterial;
 use exa_world::nav::{NavGrid, NavPatch, stamp_line, unstamp_line};
 
-use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLight, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
+use super::arcs::{
+    ARC_COLOUR, ArcEmitter, ArcLight, ArcLimb, ArcNode, HAND_ARCS_OFFSET, TESTS_BODIES,
+    TESTS_LEVEL, hand_arcs,
+};
 use super::barricade::{
     Barricade, GridFrame, WAKE_TICKS, WallBody, WallBodyKind, WallFrame, barricade_mesh, nav_stamp,
     power_ends, slide_mesh,
@@ -387,8 +392,9 @@ pub fn shock_reaction(
 }
 
 /// Arcs in the scene: the body and bone whose part they ride (its place is
-/// their frame's anchor, the hand arcs' node offset turned with it), and
-/// the body that casts them.
+/// the hand the tests take the points from, and with the hand arcs' node
+/// offset turned with it, where the frame draws them), and the body that
+/// casts them.
 #[derive(Component, Clone, Debug)]
 pub struct LiveArcs {
     pub arcs: ArcEmitter,
@@ -398,6 +404,36 @@ pub struct LiveArcs {
     pub caster: Option<Entity>,
     /// Kept in the scene when its tendrils are gone (the test arcs).
     pub keep: bool,
+    /// The electricity node the emitter is attached to: built with it,
+    /// entered into the world on the emitter's first step.
+    pub node: ArcNode,
+    /// The node's offset from its parent node, in the parent's frame (cm):
+    /// the mace's hum arcs sit 53 cm along it, a spark at the contact.
+    pub offset: Vec3,
+    /// The body and bone of the part whose node the arcs hang under (a
+    /// spark on the part a shock weapon struck).
+    pub part: Option<(Entity, usize)>,
+}
+
+impl LiveArcs {
+    /// Arcs on a freshly built electricity node, the emitter attached to it
+    /// ([`super::arcs::ArcNode::built`]). `parent_local_frame` when the node
+    /// hangs under a node that keeps its own frame (a weapon's or an item's
+    /// body), whose frame then places it every frame
+    /// ([`super::arcs::follow_parent`]); arcs held in a hand have their own
+    /// unplaced node.
+    pub fn new(arcs: ArcEmitter, parent_local_frame: bool) -> Self {
+        Self {
+            arcs,
+            hand: None,
+            weapon: None,
+            caster: None,
+            keep: false,
+            node: ArcNode::built(parent_local_frame),
+            offset: Vec3::ZERO,
+            part: None,
+        }
+    }
 }
 
 /// A barricade in the scene and who cast it.
@@ -413,6 +449,20 @@ pub struct LiveWisps {
     pub wisps: Wisps,
     pub body: Entity,
     pub parts: Vec<usize>,
+}
+
+/// A spark's node under the part `bone` of `body` (entity `target`) that a
+/// blow struck at `point` (m): the part, and the contact in its frame (cm),
+/// the node's offset. `None` when the body has no such part.
+pub(crate) fn spark_on_part(
+    body: &Ragdoll,
+    target: Entity,
+    bone: usize,
+    point: Vec3,
+) -> Option<((Entity, usize), Vec3)> {
+    let part = body.parts.iter().find(|part| part.bone == bone)?;
+    let local = part.transform().inverse().transform_point3(point) * CM;
+    Some(((target, bone), local))
 }
 
 /// The mesh an effect draws.
@@ -444,36 +494,54 @@ pub(crate) fn tick_arcs(
     for mut live in &mut arcs {
         let live = &mut *live;
         if let Some((body, bone)) = live.hand {
-            let anchor = bodies
+            // The tests and the bounds take the hand part's place; the frame
+            // draws from the hand's node offset point.
+            let part = bodies
                 .get(body)
                 .ok()
-                .and_then(|(_, b)| part_point(b, bone_part(b, bone)?, HAND_ARCS_OFFSET));
-            live.arcs.anchor = anchor.or(live.arcs.anchor);
+                .and_then(|(_, b)| Some((b, bone_part(b, bone)?)));
+            if let Some((b, k)) = part {
+                live.arcs.hand = part_point(b, k, Vec3::ZERO).or(live.arcs.hand);
+                live.arcs.anchor = part_point(b, k, HAND_ARCS_OFFSET).or(live.arcs.anchor);
+            }
         }
         if let Some(weapon) = live.weapon
             && let Ok((_, body)) = bodies.get(weapon)
             && let Some(part) = body.parts.iter().find(|part| !part.spheres.is_empty())
         {
+            // The node hangs under the weapon's body at its origin: the
+            // spheres, in that body's frame, are the arcs' own points.
             let placed = part.transform();
             live.arcs.anchor = Some(Vec3::from(placed.translation) * CM);
             let (_, rotation, _) = placed.to_scale_rotation_translation();
             live.arcs.frame = rotation;
-            // The spheres stay in the weapon's own frame: a point more than
-            // 10 cm along its local y is where a tendril may start, turned
-            // with the weapon.
             live.arcs.source_spheres = part
                 .spheres
                 .iter()
                 .map(|(centre, _)| *centre * CM)
                 .collect();
         }
+        if !live.arcs.in_world {
+            // The simulation registers the emitter before its first step,
+            // which enters it into the world on its node.
+            let at = live.arcs.anchor.unwrap_or(Vec3::ZERO);
+            live.arcs.add_to_world(&mut live.node, at, at);
+        }
         live.arcs.tick(&mut draws.0);
-        if let Some(physics) = physics.as_deref() {
+        // The simulation runs the level's and the bodies' tests only for an
+        // emitter whose record asks for them (the Shock's burst asks for
+        // both; the hand, weapon, mace and spark arcs for neither).
+        if live.arcs.tests & TESTS_LEVEL != 0
+            && let Some(physics) = physics.as_deref()
+        {
             live.arcs.clip_to_level(|start, dir, len| {
                 physics
                     .fixed_hit(start / CM, dir, len / CM)
                     .map(|hit| hit * CM)
             });
+        }
+        if live.arcs.tests & TESTS_BODIES == 0 {
+            continue;
         }
         for (entity, body) in &bodies {
             if Some(entity) == live.caster || body.drive.is_none() {
@@ -672,10 +740,15 @@ pub(crate) fn shock_fighters(
 }
 
 /// One frame of an arc hum. `voice` is the looping voice, if it has started.
+/// An emitter in the world with a hum starts it silent at pitch 1 at its
+/// node's place `start_at` (the original's add-to-world), and the frame
+/// then gives it its gain, its pitch and its place `at` (m).
+#[allow(clippy::too_many_arguments)]
 fn drive_arc_hum(
     audio: &mut ShockAudio,
     voice: &mut Option<u32>,
     name: Option<&str>,
+    start_at: Vec3,
     at: Vec3,
     gain: f32,
     pitch: Option<f32>,
@@ -706,12 +779,11 @@ fn drive_arc_hum(
         *voice = env.play_set(
             bank,
             set,
-            at,
-            gain,
-            pitch.unwrap_or(1.0),
+            start_at,
+            0.0,
+            1.0,
             exa_audio::voice_flags::LOOPING,
         );
-        return;
     }
     if let Some(id) = *voice
         && let Some(playing) = env.voice_mut(id)
@@ -745,15 +817,18 @@ struct ArcVoxelOf(Entity);
 /// Bits the frame sets on a voxel light's flag word after the colour update.
 const VOXEL_FRAME_FLAGS: u32 = 9;
 
-/// The frame's voxel light, at the arcs' mean. A point light is not this.
+/// The frame's voxel light, at the arcs' mean `mean` (world, cm: the light
+/// hangs under the electricity node). A point light is not this.
 /// An ended frame drops it. An emitter with no lamp (the kind set on its
 /// own) places nothing.
+#[allow(clippy::too_many_arguments)]
 fn drive_arc_voxel(
     commands: &mut Commands,
     entity: Entity,
     held: Option<&HeldVoxel>,
     lights: &mut Query<(&mut VoxelLight, &mut Transform, &mut GlobalTransform), Without<Camera3d>>,
     arcs: &ArcEmitter,
+    mean: Vec3,
     strength: f32,
     stop: bool,
 ) {
@@ -767,7 +842,7 @@ fn drive_arc_voxel(
         }
         return;
     }
-    let at = arcs.mean / CM;
+    let at = mean / CM;
     let place = Transform::from_translation(at);
     match held.and_then(|held| lights.get_mut(held.0).ok()) {
         Some((mut light, mut transform, mut global)) => {
@@ -1343,6 +1418,9 @@ fn spawn_debug_effects(
                 weapon: None,
                 caster: Some(player),
                 keep: true,
+                node: ArcNode::built(false),
+                offset: Vec3::ZERO,
+                part: None,
             },
         ));
         info!("debug arcs on the player's right hand");
@@ -1535,6 +1613,83 @@ fn drop_orphan_arc_voxels(
     }
 }
 
+/// The nodes an electricity node can hang under: a weapon's body and a held
+/// item, as the frame draws them.
+#[derive(bevy::ecs::system::SystemParam)]
+struct ArcParents<'w, 's> {
+    bodies: Query<'w, 's, &'static Ragdoll>,
+    items: Query<'w, 's, &'static GlobalTransform, (Without<Camera3d>, Without<VoxelLight>)>,
+}
+
+/// A part's or an item's drawn frame as the scene keeps a node's matrix:
+/// its three axis rows and its translation row in cm.
+fn node_rows(placed: bevy::math::Affine3A) -> super::arcs::NodeMatrix {
+    let m = placed.matrix3;
+    let t = Vec3::from(placed.translation) * CM;
+    [
+        [m.x_axis.x, m.x_axis.y, m.x_axis.z, 0.0],
+        [m.y_axis.x, m.y_axis.y, m.y_axis.z, 0.0],
+        [m.z_axis.x, m.z_axis.y, m.z_axis.z, 0.0],
+        [t.x, t.y, t.z, 1.0],
+    ]
+}
+
+/// Where the frame draws an emitter's points (cm): the node's matrix. A
+/// node whose parent keeps a local frame takes the parent's drawn matrix,
+/// its translation the node's offset carried through it, each frame
+/// ([`super::arcs::follow_parent`], the original's node update under such
+/// a parent); any other node stays where the simulation left it, which
+/// for arcs held in a hand is the hand's node offset point, unturned.
+fn arc_node_place(
+    live: &LiveArcs,
+    riding: Option<&crate::item_ability::ItemArcs>,
+    parents: &ArcParents,
+    alpha: f32,
+) -> bevy::math::Affine3A {
+    let held = bevy::math::Affine3A::from_rotation_translation(
+        live.arcs.frame,
+        live.arcs.anchor.unwrap_or(Vec3::ZERO),
+    );
+    // The draw places a node through its child (the attached emitter) only
+    // when the node took the local-frame bit from its parent.
+    if !live.node.child || live.node.render & super::arcs::LOCAL_FRAME == 0 {
+        return held;
+    }
+    let parent = if let Some((body, bone)) = live.part {
+        parents.bodies.get(body).ok().and_then(|body| {
+            body.parts
+                .iter()
+                .find(|part| part.bone == bone)
+                .map(|part| part.drawn(alpha))
+        })
+    } else if let Some(weapon) = live.weapon {
+        parents.bodies.get(weapon).ok().and_then(|body| {
+            body.parts
+                .iter()
+                .find(|part| !part.spheres.is_empty())
+                .map(|part| part.drawn(alpha))
+        })
+    } else {
+        riding.and_then(|r| parents.items.get(r.item).ok().map(|g| g.affine()))
+    };
+    let Some(parent) = parent else {
+        return held;
+    };
+    let Some(m) = super::arcs::follow_parent(
+        live.node.parent_local_frame,
+        &node_rows(parent),
+        live.offset,
+    ) else {
+        return held;
+    };
+    bevy::math::Affine3A::from_cols(
+        Vec3::new(m[0][0], m[0][1], m[0][2]).into(),
+        Vec3::new(m[1][0], m[1][1], m[1][2]).into(),
+        Vec3::new(m[2][0], m[2][1], m[2][2]).into(),
+        Vec3::new(m[3][0], m[3][1], m[3][2]).into(),
+    )
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw_arcs(
     mut commands: Commands,
@@ -1545,6 +1700,7 @@ fn draw_arcs(
         Option<&EffectMesh>,
         Option<&MeshMaterial3d<ArcMaterial>>,
         Option<&super::effect_light::EffectLight>,
+        Option<&crate::item_ability::ItemArcs>,
     )>,
     mut shapes: Query<(
         &mut exa_render::gi::GiShape,
@@ -1553,6 +1709,7 @@ fn draw_arcs(
     held_voxels: Query<&HeldVoxel>,
     mut voxels: Query<(&mut VoxelLight, &mut Transform, &mut GlobalTransform), Without<Camera3d>>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    parents: ArcParents,
     time: Res<Time<Fixed>>,
     mut draws: ResMut<FrameEffectDraws>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1560,11 +1717,28 @@ fn draw_arcs(
     mut look: ArcLook,
     mut audio: ShockAudio,
     mut hums: Local<bevy::platform::collections::HashMap<Entity, Option<u32>>>,
+    mut gone: RemovedComponents<LiveArcs>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
 ) {
-    let eye = camera_axis(&cameras);
+    // An emitter despawned elsewhere leaves the world with its node: its
+    // hum stops.
+    for entity in gone.read() {
+        if let Some(mut voice) = hums.remove(&entity) {
+            drive_arc_hum(
+                &mut audio,
+                &mut voice,
+                None,
+                Vec3::ZERO,
+                Vec3::ZERO,
+                0.0,
+                None,
+                true,
+            );
+        }
+    }
+    let eye_world = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
-    for (entity, mut live, glow, drawn, material, light) in &mut arcs {
+    for (entity, mut live, glow, drawn, material, light, riding) in &mut arcs {
         let voxel = held_voxels.get(entity).ok();
         // The frame's flickers and light points are its own
         // ([`super::arcs::ArcGlow`]); the draw writes nothing of the
@@ -1577,25 +1751,39 @@ fn draw_arcs(
             Some(glow) => glow.into_inner(),
             None => fresh.insert(super::arcs::ArcGlow::default()),
         };
+        let node = arc_node_place(&live, riding, &parents, alpha);
+        let to_world = |p: Vec3| node.transform_point3(p);
+        // The camera's axis taken into the node's frame.
+        let eye = node.matrix3.transpose() * eye_world;
+        // No cut-away or other fade reaches an electricity node: its fade
+        // stays 0.
         let frame = live
             .arcs
-            .frame(glow, alpha, eye, 0.0, |p| p, &mut draws.0.0);
-        if !frame.removed {
+            .frame(glow, alpha, eye, NODE_FADE, to_world, &mut draws.0.0);
+        let removal = if frame.removed {
+            Some(live.arcs.remove_from_world(glow))
+        } else {
             let settle = |live: &mut LiveArcs| live.arcs.settle_origins();
             match fixed.as_deref_mut() {
                 Some(fixed) => fixed.write(entity, &mut live, settle),
                 None => settle(&mut live),
             }
-        }
-        let at = live.arcs.anchor.map(|p| p / CM).unwrap_or(Vec3::ZERO);
+            None
+        };
+        // The hum (started silent at pitch 1 at the node once the emitter
+        // is in the world) sits at the arcs' mean, carried into the world
+        // by the node.
+        let start_at = Vec3::from(node.translation) / CM;
+        let at = to_world(live.arcs.mean) / CM;
         drive_arc_hum(
             &mut audio,
             hums.entry(entity).or_default(),
-            live.arcs.sound,
+            live.arcs.sound.filter(|_| live.arcs.in_world),
+            start_at,
             at,
             frame.gain,
             frame.pitch,
-            frame.removed,
+            removal.is_some_and(|r| r.sound),
         );
         drive_arc_light(
             &mut commands,
@@ -1605,7 +1793,7 @@ fn draw_arcs(
             &live.arcs,
             glow,
             frame.light,
-            frame.removed,
+            removal.is_some(),
         );
         drive_arc_voxel(
             &mut commands,
@@ -1613,18 +1801,24 @@ fn draw_arcs(
             voxel,
             &mut voxels,
             &live.arcs,
+            to_world(live.arcs.mean),
             frame.light,
-            frame.removed,
+            removal.is_some(),
         );
         if let Some(glow) = fresh {
             commands.entity(entity).insert(glow);
         }
         if frame.removed && !live.keep {
+            hums.remove(&entity);
             commands.entity(entity).despawn();
             continue;
         }
         let r = &frame.ribbon;
-        let positions = r.positions.iter().map(|p| (*p / CM).to_array()).collect();
+        let positions = r
+            .positions
+            .iter()
+            .map(|p| (to_world(*p) / CM).to_array())
+            .collect();
         let uvs = r.uvs.to_vec();
         let [red, green, blue] = ARC_COLOUR.map(|c| f32::from(c) / 255.0);
         let colours = r
@@ -1668,6 +1862,12 @@ fn draw_arcs(
         }
     }
 }
+
+/// The fade an electricity node draws with. The original reads its node's
+/// fade word for the voxel light's and the light points' strength; only the
+/// cut-away fade writes that word, for level meshes the camera marks, and
+/// no electricity node is one.
+pub const NODE_FADE: f32 = 0.0;
 
 /// `_ElecMat01`'s emissive layer, which the electricity unit's material
 /// record names `BeamNoise01.rfi`: the texture pack's entry is its stem.
@@ -1958,6 +2158,9 @@ mod tests {
                 weapon: None,
                 caster: None,
                 keep: true,
+                node: ArcNode::built(false),
+                offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         let hand = ArcEmitter::new(&hand_arcs(), &mut Mt19937::new(1));
@@ -1969,6 +2172,9 @@ mod tests {
                 weapon: None,
                 caster: None,
                 keep: true,
+                node: ArcNode::built(false),
+                offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         app.update();
@@ -2034,6 +2240,9 @@ mod tests {
                 weapon: None,
                 caster: None,
                 keep: true,
+                node: ArcNode::built(false),
+                offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         app.update();
@@ -2072,6 +2281,9 @@ mod tests {
                 weapon: None,
                 caster: None,
                 keep: true,
+                node: ArcNode::built(false),
+                offset: Vec3::ZERO,
+                part: None,
             })
             .id();
         app.update();
@@ -2129,6 +2341,204 @@ mod tests {
         app.world_mut().despawn(arc);
         app.update();
         assert!(app.world().get_entity(held).is_err());
+    }
+
+    /// A driven one-part body placed by `world` (m), its part a 10 cm sphere.
+    fn target_body(world: bevy::math::Affine3A) -> Ragdoll {
+        use exa_physics::body::PartSetup;
+        Ragdoll::new(&[PartSetup {
+            bone: CHEST,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }])
+        .with_drive()
+    }
+
+    /// Arcs whose first tendril runs straight through the body at the
+    /// origin, 60 cm along x.
+    fn through_the_origin(mut arcs: ArcEmitter) -> ArcEmitter {
+        let t = &mut arcs.tendrils[0];
+        t.count = 4;
+        t.timer = 30;
+        t.life = 1.0;
+        for k in 0..4 {
+            arcs.points[k] = Vec3::new(k as f32 * 20.0 - 30.0, 0.0, 0.0);
+            arcs.previous[k] = arcs.points[k];
+        }
+        arcs.source = arcs.points[0];
+        arcs
+    }
+
+    /// The simulation tests the bodies only for arcs whose record asks for
+    /// it: the Shock's burst (bits 0x30000) shocks the body its tendril
+    /// runs through, the hand arcs (record 0x201) on the same line do not.
+    /// Both enter the world on their first step.
+    #[test]
+    fn only_a_record_that_asks_for_it_shocks_the_bodies() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<ArcShocked>()
+            .insert_resource(EffectDraws(Mt19937::new(5489)))
+            .add_systems(Update, tick_arcs);
+        app.world_mut()
+            .spawn(target_body(bevy::math::Affine3A::IDENTITY));
+        let mut draws = Mt19937::new(1);
+        let burst = ArcEmitter::new(&super::super::arcs::shock_burst(), &mut draws);
+        assert_eq!(burst.tests, TESTS_LEVEL | TESTS_BODIES);
+        let hand = ArcEmitter::new(&hand_arcs(), &mut draws);
+        assert_eq!(hand.tests, 0);
+        let held = app
+            .world_mut()
+            .spawn(LiveArcs::new(through_the_origin(hand), false))
+            .id();
+        app.update();
+        let shocks = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Messages<ArcShocked>>()
+                .drain()
+                .count()
+        };
+        assert_eq!(shocks(&mut app), 0, "the hand arcs test no body");
+        assert!(app.world().get::<LiveArcs>(held).unwrap().arcs.in_world);
+        let fired = app
+            .world_mut()
+            .spawn(LiveArcs::new(through_the_origin(burst), false))
+            .id();
+        app.update();
+        assert_eq!(shocks(&mut app), 1, "the burst shocks the body");
+        let live = app.world().get::<LiveArcs>(fired).unwrap();
+        assert!(live.arcs.in_world);
+        // The node keeps the child bit the build's attach gave it; held in
+        // a hand, it takes no local frame from a parent.
+        assert_eq!(
+            live.node.flags & super::super::arcs::HAS_CHILD,
+            super::super::arcs::HAS_CHILD
+        );
+        assert_eq!(live.node.render & super::super::arcs::LOCAL_FRAME, 0);
+    }
+
+    /// A shock weapon's arcs are the weapon's own points: entering the world
+    /// under the weapon's body gives their node the local-frame bit, and the
+    /// frame then draws them through the weapon's drawn matrix (a quarter
+    /// turn about y and 1 m along x here), the camera taken into that frame.
+    #[test]
+    fn a_weapons_arcs_are_drawn_in_the_weapons_frame() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<ArcMaterial>()
+            .add_message::<ArcShocked>()
+            .insert_resource(EffectDraws(Mt19937::new(5489)))
+            .insert_resource(FrameEffectDraws::default())
+            .add_systems(Update, (tick_arcs, draw_arcs).chain());
+        let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let placed = bevy::math::Affine3A::from_rotation_translation(turn, Vec3::X);
+        let mut weapon = target_body(placed);
+        weapon.drive = None;
+        let weapon = app.world_mut().spawn(weapon).id();
+        let mut arcs = ArcEmitter::allocate(1, 4, 2.0);
+        arcs.respawns = false;
+        let arc = app
+            .world_mut()
+            .spawn(LiveArcs {
+                weapon: Some(weapon),
+                keep: true,
+                ..LiveArcs::new(arcs, true)
+            })
+            .id();
+        app.update();
+        let live = app.world().get::<LiveArcs>(arc).unwrap();
+        assert_eq!(
+            live.node.render & super::super::arcs::LOCAL_FRAME,
+            super::super::arcs::LOCAL_FRAME
+        );
+        let count = live.arcs.tendrils[0].count;
+        assert!(count >= 2);
+        let local = live.arcs.point(0, count as usize - 1);
+        let handle = app.world().get::<Mesh3d>(arc).expect("a ribbon").0.clone();
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        let mesh = meshes.get(&handle).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(drawn)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("positions");
+        };
+        // The last pair straddles the tendril's end, carried by the weapon's
+        // frame: half way between the pair is the end, turned and moved.
+        let n = drawn.len();
+        let mid = (Vec3::from(drawn[n - 2]) + Vec3::from(drawn[n - 1])) * 0.5;
+        let expect = (turn * local) / CM + Vec3::X;
+        assert!((mid - expect).length() < 1e-4, "{mid} {expect}");
+    }
+
+    /// A spark's node hangs under the part it struck at the contact: the
+    /// frame draws it where the part's drawn matrix carries the contact,
+    /// so it rides the part as it moves.
+    #[test]
+    fn a_spark_rides_the_part_it_struck() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<ArcMaterial>()
+            .add_message::<ArcShocked>()
+            .insert_resource(EffectDraws(Mt19937::new(5489)))
+            .insert_resource(FrameEffectDraws::default())
+            .add_systems(Update, (tick_arcs, draw_arcs).chain());
+        let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let placed =
+            bevy::math::Affine3A::from_rotation_translation(turn, Vec3::new(0.0, 1.0, 0.0));
+        let body = target_body(placed);
+        let contact = Vec3::new(0.1, 1.0, 0.0);
+        let (part, local) =
+            spark_on_part(&body, Entity::PLACEHOLDER, CHEST, contact).expect("the struck part");
+        assert_eq!(part.1, CHEST);
+        let struck = app.world_mut().spawn(body).id();
+        let mut arcs = ArcEmitter::allocate(1, 4, 2.0);
+        arcs.anchor = Some(contact * CM);
+        let spark = app
+            .world_mut()
+            .spawn(LiveArcs {
+                keep: true,
+                offset: local,
+                part: Some((struck, CHEST)),
+                ..LiveArcs::new(arcs, true)
+            })
+            .id();
+        app.update();
+        let live = app.world().get::<LiveArcs>(spark).unwrap();
+        let count = live.arcs.tendrils[0].count;
+        let end = live.arcs.point(0, count as usize - 1);
+        let handle = app
+            .world()
+            .get::<Mesh3d>(spark)
+            .expect("a ribbon")
+            .0
+            .clone();
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(drawn)) = meshes
+            .get(&handle)
+            .unwrap()
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("positions");
+        };
+        let n = drawn.len();
+        let mid = (Vec3::from(drawn[n - 2]) + Vec3::from(drawn[n - 1])) * 0.5;
+        // The node sits at the contact, turned with the part.
+        let expect = contact + (turn * end) / CM;
+        assert!((mid - expect).length() < 1e-4, "{mid} {expect}");
     }
 
     /// A held weapon whose strike chain meets the wall breaks the holder's

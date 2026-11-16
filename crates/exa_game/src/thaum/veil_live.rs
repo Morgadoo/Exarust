@@ -56,6 +56,7 @@ use super::cast::{ActiveClass, PowerCaster};
 use super::displacement::{
     CONSTANT_HUM, DISPLACED_BIT, PHASE_MS, PHASE_SOUND, PHASE_VOLUME, PHASED_BITS,
 };
+use super::engine::Roll;
 use super::live::LiveWisps;
 use super::wisps::blow_wisps;
 
@@ -214,6 +215,10 @@ pub(crate) fn phase_blows(
     mut bodies: Query<&mut Ragdoll>,
     mut sounds: MessageWriter<VeilSounded>,
     ticks: Option<Res<BodyTicks>>,
+    mut effects: Option<(
+        ResMut<super::live::EffectDraws>,
+        ResMut<super::live::EffectRoll>,
+    )>,
     mut serial: Local<u64>,
 ) {
     let now = ticks.as_deref().map_or(0, BodyTicks::millis);
@@ -253,7 +258,19 @@ pub(crate) fn phase_blows(
                     p.transform().transform_point3(s.local / CM) * CM
                 })
             };
-            let wisps = blow_wisps(local, 0, place);
+            let mut spare = (super::live::EffectDraws::default(), Roll::default());
+            let (draws, roll) = match effects.as_mut() {
+                Some((draws, roll)) => (&mut draws.0, &mut roll.0),
+                None => (&mut spare.0.0, &mut spare.1),
+            };
+            let wisps = blow_wisps(
+                local,
+                0,
+                place,
+                || draws.unit() as f32,
+                super::cast::TICK_MS,
+                roll,
+            );
             *serial += 1;
             commands.spawn((
                 Name::new("_PhaseTendril"),
