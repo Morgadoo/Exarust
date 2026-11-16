@@ -2555,7 +2555,7 @@ fn log_encumbrance(who: &str, stats: &CharacterStats) {
 /// frame write to their transforms is replaced by the simulation's newer
 /// copy, so the move is also posted to the next fixed step
 /// ([`place_player_in_step`]), which moves the root, turns the body and
-/// carries the body's parts by the same offset. Without it a loaded save's
+/// puts the body living at the placement. Without it a loaded save's
 /// player stayed at the level's start in the simulation while the frame
 /// drew it at the saved place, and fell to its death there.
 #[allow(clippy::too_many_arguments)]
@@ -2678,11 +2678,15 @@ fn trace_placed_player(
 }
 
 /// The level placement on the simulation's side: the player's root goes to
-/// `at`, its body turns to `yaw`, and the body's parts move by `by` (the
-/// root's offset as the frame saw it), keeping their pose; the body wakes.
-/// In one world the root already stands at `at` and only the parts move.
-/// A `settle` over zero then gives the body the settling state for that
-/// many ticks (the story respawn's, after its placement).
+/// `at` (`by` is its offset as the frame saw it, for the log), its body
+/// turns to `yaw`, and the body is put living there
+/// ([`exa_game::limp::LivingPlacement`], run later in the same step): its
+/// current clip sampled afresh and the pelvis put at the pose's pelvis
+/// target over the feet, as the original's save landing frames it [the
+/// original's target word there is 108.18 − 11.1 × the body's extent; the
+/// pose's own target stands in for it], then its held items re-placed
+/// unless it settles. A `settle` over zero gives the body the settling
+/// state for that many ticks (the story respawn's, after its placement).
 #[allow(clippy::type_complexity)]
 fn place_player_in_step(
     In((at, by, yaw, settle)): In<(Vec3, Vec3, f32, i32)>,
@@ -2694,13 +2698,18 @@ fn place_player_in_step(
         ),
     >,
     mut bodies: Query<
-        (&mut Transform, Option<&mut exa_physics::body::Ragdoll>),
+        (
+            Entity,
+            &mut Transform,
+            Option<&mut exa_physics::body::Ragdoll>,
+        ),
         (
             With<exa_game::player::PlayerBody>,
             Without<exa_game::player::Player>,
         ),
     >,
     physics: Option<Res<exa_physics::Physics>>,
+    mut commands: Commands,
 ) {
     if let Some(physics) = physics.as_deref() {
         info!(
@@ -2728,44 +2737,25 @@ fn place_player_in_step(
             .map(|p| p.transform().translation.y)
             .fold(f32::INFINITY, f32::min)
     };
-    for (mut transform, mut ragdoll) in &mut bodies {
-        // The parts turn with the body about the root (as the frame saw it)
-        // and move with it.
-        let turn = Quat::from_rotation_y(yaw) * transform.rotation.inverse();
+    for (entity, mut transform, mut ragdoll) in &mut bodies {
         transform.rotation = Quat::from_rotation_y(yaw);
-        // A standing body carried by its root (a surviving player) follows
-        // the root's move and turn at its next tick: moving its parts too
-        // would move it twice.
-        if let Some(ragdoll) = ragdoll.as_ref().filter(|ragdoll| ragdoll.carried()) {
+        // The original's save landing puts the living body at its frame:
+        // the clip sampled afresh, the pelvis at the pose's pelvis target
+        // over the feet the probe found, facing the placement's yaw, its
+        // held items put back in its hands (not after the story respawn's
+        // settling placement, which the original does not re-place).
+        if let Some(ragdoll) = ragdoll.as_ref() {
             info!(
-                "level placement: the body is carried by its root; its lowest part at {:.2} m goes with it",
+                "level placement: the body's lowest part at {:.2} m is put living at the placement (root was {was:?} in the simulation)",
                 lowest(ragdoll)
             );
-        } else if let Some(ragdoll) = ragdoll.as_mut()
-            && (by != Vec3::ZERO || turn.angle_between(Quat::IDENTITY) > 1e-4)
-        {
-            let before = lowest(ragdoll);
-            // A pure displacement first: the particles' histories, contacts
-            // and foot anchors travel too, so the move carries no velocity
-            // (a placement that left the feet anchored in the old level
-            // dragged the body through the new floor).
-            ragdoll.translate(by);
-            if turn.angle_between(Quat::IDENTITY) > 1e-4 {
-                let shift = bevy::math::Affine3A::from_translation(at)
-                    * bevy::math::Affine3A::from_quat(turn)
-                    * bevy::math::Affine3A::from_translation(-at);
-                let worlds: Vec<bevy::math::Affine3A> = ragdoll
-                    .parts
-                    .iter()
-                    .map(|p| shift * p.transform())
-                    .collect();
-                ragdoll.place_at(&worlds);
-            }
-            ragdoll.wake();
-            info!(
-                "level placement: the body's lowest part was at {before:.2} m, now {:.2} m (root was {was:?} in the simulation)",
-                lowest(ragdoll)
+            let mut placement = exa_game::limp::LivingPlacement::at(
+                at,
+                yaw,
+                exa_game::limp::FrameHeight::Target(0.0),
             );
+            placement.replace_held = settle == 0;
+            commands.entity(entity).insert(placement);
         }
         if settle > 0 {
             match ragdoll.as_mut() {
@@ -2779,7 +2769,9 @@ fn place_player_in_step(
             }
         }
     }
-    info!("level placement: the simulation's player root at {at}, its body's parts moved by {by}");
+    info!(
+        "level placement: the simulation's player root at {at} (moved by {by} as the frame saw it)"
+    );
 }
 
 /// Frames after a level is in before `--level-change` counts it again, so
@@ -4953,5 +4945,39 @@ mod placement_tests {
             .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::X, 0.5, PLACED_SETTLE))
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 16);
+    }
+
+    /// The step's placement asks the living placement of the player's body
+    /// at the probed feet, facing the placement's yaw, the pelvis at the
+    /// pose's pelvis target over them; the held items are re-placed after
+    /// it unless the body settles (the story respawn's placement).
+    #[test]
+    fn the_step_placement_puts_the_players_body_living() {
+        let mut world = World::new();
+        world.spawn((exa_game::player::Player, Transform::default()));
+        let body = world
+            .spawn((
+                exa_game::player::PlayerBody::new(0.0),
+                Transform::default(),
+                Ragdoll::new(&[]),
+            ))
+            .id();
+        let at = Vec3::new(3.0, 0.4, -2.0);
+        world
+            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, 0))
+            .unwrap();
+        let asked = *world
+            .get::<exa_game::limp::LivingPlacement>(body)
+            .expect("the body is placed");
+        assert_eq!(
+            asked,
+            exa_game::limp::LivingPlacement::at(at, 0.7, exa_game::limp::FrameHeight::Target(0.0))
+        );
+        assert!(asked.replace_held);
+        world
+            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, PLACED_SETTLE))
+            .unwrap();
+        let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
+        assert!(!asked.replace_held);
     }
 }

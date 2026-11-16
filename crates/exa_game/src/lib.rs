@@ -172,6 +172,7 @@ pub mod trade;
 pub mod transition_screen;
 pub mod use_cursor;
 pub mod view_overlay;
+pub mod view_trust;
 pub mod weather;
 pub mod window;
 pub mod world_characters;

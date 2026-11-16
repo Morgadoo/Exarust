@@ -5,9 +5,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 753 | 189,707 | B1 wire (or prove unreachable) |
-| partial | 1,479 | 956,067 | B4 complete the port |
-| missing | 64 | 14,580 | B4 port |
+| uncalled | 738 | 186,964 | B1 wire (or prove unreachable) |
+| partial | 1,487 | 958,277 | B4 complete the port |
+| missing | 62 | 14,463 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
 ## By section (open bytes)
@@ -15,14 +15,14 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 153,634 | 23,907 | 2,065 |
-| ui | 97,814 | 51,433 | 1,359 |
-| render | 123,703 | 23,570 | 3,232 |
-| powers | 112,105 | 3,755 | 3,049 |
-| ai | 104,210 | 5,312 | 28 |
+| ui | 98,154 | 51,141 | 1,311 |
+| render | 123,703 | 22,990 | 3,232 |
+| powers | 112,229 | 3,417 | 3,049 |
+| ai | 103,915 | 5,312 | 28 |
 | characters | 89,820 | 15,398 | 2,097 |
-| modes | 73,059 | 13,673 | 942 |
-| world | 65,235 | 21,250 | 563 |
-| items | 63,071 | 11,086 | 670 |
+| modes | 74,355 | 13,673 | 942 |
+| world | 65,469 | 21,016 | 563 |
+| items | 63,582 | 9,787 | 601 |
 | data | 31,939 | 12,305 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
 | core | 12,324 | 3,411 | 59 |
@@ -37,9 +37,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMotileDynamics | physics | 48 / 99,121 | 5 / 5,469 | 1 / 38 | 104,628 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
 | TMotileAI | ai | 26 / 32,570 | 5 / 2,048 | 2 / 28 | 34,646 |
-| SG_PlayerControls (unit routines) | ai | 39 / 22,829 | 0 / 0 | 0 / 0 | 22,829 |
-| XA_Arena (unit routines) | modes | 32 / 19,447 | 8 / 1,658 | 8 / 942 | 22,047 |
+| SG_PlayerControls (unit routines) | ai | 38 / 22,534 | 0 / 0 | 0 / 0 | 22,534 |
 | TSimSector | physics | 29 / 21,802 | 0 / 0 | 0 / 0 | 21,802 |
+| XA_Arena (unit routines) | modes | 32 / 19,158 | 8 / 1,658 | 8 / 942 | 21,758 |
 | TMotilePart | characters | 36 / 17,100 | 6 / 1,449 | 2 / 1,370 | 19,919 |
 | TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
 | TVCCloth | physics | 15 / 15,321 | 6 / 1,514 | 1 / 1,638 | 18,473 |
@@ -49,20 +49,21 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
 | TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
 | TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
+| XA_SaveGames (unit routines) | modes | 24 / 12,557 | 3 / 704 | 0 / 0 | 13,261 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
-| XA_SaveGames (unit routines) | modes | 23 / 11,426 | 3 / 704 | 0 / 0 | 12,130 |
 | TForceTorrentEffect | powers | 6 / 11,171 | 0 / 0 | 1 / 728 | 11,899 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | TStaticTerrain | world | 12 / 10,617 | 3 / 522 | 0 / 0 | 11,139 |
 | TForceBarricadeEffect | powers | 5 / 10,372 | 0 / 0 | 0 / 0 | 10,372 |
-| Character equipment & inventory routines (TCharacterView by address) | items | 16 / 8,337 | 9 / 1,514 | 0 / 0 | 9,851 |
 | TTendrilEmitter | powers | 6 / 9,672 | 1 / 67 | 0 / 0 | 9,739 |
 | TAISearchActivity | ai | 14 / 9,316 | 3 / 212 | 0 / 0 | 9,528 |
 | TMatchBoard | modes | 6 / 9,526 | 0 / 0 | 0 / 0 | 9,526 |
 | TGUIItemContainer | items | 8 / 7,880 | 2 / 1,584 | 0 / 0 | 9,464 |
+| Character equipment & inventory routines (TCharacterView by address) | items | 16 / 8,575 | 6 / 778 | 0 / 0 | 9,353 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTetraRBD | physics | 17 / 8,115 | 4 / 917 | 1 / 151 | 9,183 |
+| SG_GameMain (unit routines) | modes | 20 / 7,488 | 3 / 1,300 | 0 / 0 | 8,788 |
 | RF_GUI_Main (unit routines) | ui | 7 / 5,075 | 19 / 2,486 | 3 / 1,167 | 8,728 |
 | RF_OS_Functions (unit routines) | runtime | 13 / 6,781 | 5 / 1,749 | 1 / 49 | 8,579 |
 | FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
@@ -70,14 +71,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | FLX_Materials_Procedural (unit routines) | items | 9 / 5,600 | 11 / 2,821 | 1 / 76 | 8,497 |
 | RFE_Export_RFC2 (unit routines) | data | 13 / 8,152 | 2 / 240 | 0 / 0 | 8,392 |
 | FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
-| SG_GameMain (unit routines) | modes | 19 / 7,034 | 3 / 1,300 | 0 / 0 | 8,334 |
 | RF_Morphing (unit routines) | characters | 6 / 7,170 | 2 / 836 | 1 / 154 | 8,160 |
 | TTendrilEffect | powers | 2 / 8,075 | 0 / 0 | 0 / 0 | 8,075 |
 | SG_ObjectDB2 (unit routines) | data | 8 / 4,937 | 25 / 3,098 | 0 / 0 | 8,035 |
 | TPlayerBehaviour | ai | 9 / 7,954 | 2 / 79 | 0 / 0 | 8,033 |
 | TRBDDoor | world | 4 / 5,922 | 1 / 2,085 | 0 / 0 | 8,007 |
 | TGUIItemView | ui | 1 / 4,979 | 17 / 3,011 | 0 / 0 | 7,990 |
-| TCharacterView | ui | 11 / 5,987 | 6 / 1,433 | 1 / 48 | 7,468 |
+| TCharacterView | ui | 14 / 6,327 | 4 / 1,141 | 0 / 0 | 7,468 |
 | SG_GameGUI (unit routines) | ui | 12 / 6,906 | 6 / 549 | 0 / 0 | 7,455 |
 | RF_Dynamics (unit routines) | physics | 5 / 2,122 | 15 / 5,244 | 0 / 0 | 7,366 |
 | FLX_Character_Textures (unit routines) | characters | 14 / 6,969 | 1 / 187 | 0 / 0 | 7,156 |
@@ -92,7 +92,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_Textures (unit routines) | render | 17 / 5,574 | 9 / 1,051 | 0 / 0 | 6,625 |
 | TLoadoutForm | modes | 7 / 6,452 | 1 / 80 | 0 / 0 | 6,532 |
 | T3DViewport | ui | 19 / 4,915 | 2 / 1,101 | 0 / 0 | 6,016 |
-| TNavCameraControl | render | 2 / 5,215 | 3 / 772 | 0 / 0 | 5,987 |
 | TForceBlastEffect | powers | 3 / 5,947 | 0 / 0 | 0 / 0 | 5,947 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
 | SG_Character_Data (unit routines) | characters | 10 / 2,511 | 22 / 3,260 | 0 / 0 | 5,771 |
@@ -100,11 +99,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TProcMaterial | items | 9 / 5,114 | 0 / 0 | 1 / 525 | 5,639 |
 | TIconManager | ui | 0 / 0 | 6 / 5,573 | 0 / 0 | 5,573 |
 | TCombatant | ai | 9 / 4,839 | 3 / 690 | 0 / 0 | 5,529 |
+| TNavCameraControl | render | 2 / 5,215 | 1 / 192 | 0 / 0 | 5,407 |
 | TSkinController2 | characters | 6 / 3,997 | 2 / 1,193 | 0 / 0 | 5,190 |
 | Engine math (vectors, matrices, fast trig) | core | 18 / 4,941 | 1 / 235 | 0 / 0 | 5,176 |
-| Item description phrases | items | 5 / 4,855 | 2 / 288 | 0 / 0 | 5,143 |
 | RF_Mesh (unit routines) | render | 3 / 2,922 | 1 / 2,210 | 0 / 0 | 5,132 |
 | RF_HW_Config (unit routines) | ui | 8 / 4,879 | 3 / 198 | 0 / 0 | 5,077 |
+| Item description phrases | items | 5 / 4,855 | 1 / 164 | 0 / 0 | 5,019 |
 | TForceShellEffect | powers | 6 / 4,985 | 0 / 0 | 0 / 0 | 4,985 |
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
 | SG_Thaum_DIsp (unit routines) | powers | 12 / 4,042 | 3 / 691 | 0 / 0 | 4,733 |
@@ -146,15 +146,14 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TGUITableView | ui | 1 / 2,523 | 0 / 0 | 0 / 0 | 2,523 |
 | FLX_IconRender (unit routines) | render | 0 / 0 | 7 / 2,195 | 2 / 286 | 2,481 |
 | RF_Dynamics_Game (unit routines) | world | 7 / 1,969 | 3 / 470 | 0 / 0 | 2,439 |
-| TInventory | items | 8 / 2,297 | 1 / 41 | 1 / 69 | 2,407 |
 | RFE_MeshTools (unit routines) | render | 1 / 37 | 6 / 2,341 | 0 / 0 | 2,378 |
 | TProjectManager | data | 3 / 2,370 | 0 / 0 | 0 / 0 | 2,370 |
 | RF_kdTrees (unit routines) | world | 10 / 2,369 | 0 / 0 | 0 / 0 | 2,369 |
 | TAudioEnvironment | audio | 3 / 2,097 | 2 / 270 | 0 / 0 | 2,367 |
+| TInventory | items | 8 / 2,297 | 1 / 41 | 0 / 0 | 2,338 |
 | Item variant & condition randomisers (FLX_Character_Textures (unit routines) by address) | items | 2 / 2,319 | 0 / 0 | 0 / 0 | 2,319 |
 | RF_Dynamics_Animation (unit routines) | characters | 5 / 2,100 | 0 / 0 | 2 / 173 | 2,273 |
 | TGridEnvManager | world | 3 / 2,199 | 0 / 0 | 0 / 0 | 2,199 |
-| TArsenalView | items | 1 / 1,076 | 6 / 1,047 | 0 / 0 | 2,123 |
 | TScene | world | 1 / 740 | 8 / 1,355 | 0 / 0 | 2,095 |
 | Equipment effects and focus-item slot (RFE_Effects_Electricity (unit routines) by address) | characters | 6 / 1,501 | 1 / 167 | 4 / 400 | 2,068 |
 | TThaumTree | powers | 6 / 1,800 | 3 / 246 | 0 / 0 | 2,046 |
@@ -162,6 +161,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceBarrierEffect | powers | 2 / 2,028 | 0 / 0 | 0 / 0 | 2,028 |
 | SG_GameFunctions (unit routines) | script | 5 / 1,314 | 3 / 673 | 0 / 0 | 1,987 |
 | TPwrForceStrikes_C | powers | 4 / 1,977 | 0 / 0 | 0 / 0 | 1,977 |
+| TArsenalView | items | 3 / 1,349 | 2 / 608 | 0 / 0 | 1,957 |
 | TClassSelect | modes | 5 / 1,940 | 0 / 0 | 0 / 0 | 1,940 |
 | Shading-mask GLSL snippets | render | 2 / 1,895 | 1 / 38 | 0 / 0 | 1,933 |
 | Scene content helpers (unit before RF_Dynamics) | world | 1 / 925 | 4 / 768 | 1 / 239 | 1,932 |
@@ -176,7 +176,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPwrDispLongDoor_I | powers | 3 / 1,841 | 0 / 0 | 0 / 0 | 1,841 |
 | TCharDecomp2 | characters | 5 / 1,766 | 0 / 0 | 0 / 0 | 1,766 |
 | TRTDialogue | script | 2 / 1,734 | 0 / 0 | 0 / 0 | 1,734 |
-| SG_Thaum_Mind (unit routines) | powers | 3 / 1,121 | 2 / 589 | 0 / 0 | 1,710 |
 | TMainMenu | ui | 6 / 1,379 | 2 / 305 | 0 / 0 | 1,684 |
 | RF_Env_Effects (unit routines) | powers | 1 / 1,666 | 0 / 0 | 0 / 0 | 1,666 |
 | XA_Arena save and rank helpers (TMatchBoard by address) | modes | 0 / 0 | 4 / 1,659 | 0 / 0 | 1,659 |
@@ -185,6 +184,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TBarricadeEntity | powers | 2 / 1,556 | 0 / 0 | 0 / 0 | 1,556 |
 | TTErrainkdTree | world | 0 / 0 | 5 / 1,513 | 0 / 0 | 1,513 |
 | RF_ObjectLibs (unit routines) | data | 4 / 1,227 | 1 / 284 | 0 / 0 | 1,511 |
+| SG_Thaum_Mind (unit routines) | powers | 3 / 1,121 | 1 / 375 | 0 / 0 | 1,496 |
 | TWeaponBlood | combat | 2 / 1,494 | 0 / 0 | 0 / 0 | 1,494 |
 | TPwrForceThrow_I | powers | 3 / 1,309 | 1 / 170 | 0 / 0 | 1,479 |
 | Screen-quad GLSL snippets | render | 5 / 1,457 | 0 / 0 | 0 / 0 | 1,457 |
@@ -195,7 +195,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | RF_UIDManager (unit routines) | data | 1 / 248 | 7 / 1,148 | 0 / 0 | 1,396 |
 | RF_Material_Manager (unit routines) | render | 2 / 1,201 | 1 / 180 | 0 / 0 | 1,381 |
 | TMemBlockLibrary | data | 1 / 272 | 4 / 1,092 | 0 / 0 | 1,364 |
-| RF_SceneEditor (unit routines) | world | 0 / 0 | 4 / 1,351 | 0 / 0 | 1,351 |
+| RF_SceneEditor (unit routines) | world | 1 / 234 | 3 / 1,117 | 0 / 0 | 1,351 |
 | FG_AIFunctions (unit routines) | script | 11 / 1,343 | 0 / 0 | 0 / 0 | 1,343 |
 | TTexture | render | 2 / 872 | 2 / 451 | 0 / 0 | 1,323 |
 | RF_Renderer (unit routines) | render | 0 / 0 | 6 / 1,315 | 0 / 0 | 1,315 |
@@ -274,7 +274,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TWoodFineA | items | 1 / 488 | 0 / 0 | 0 / 0 | 488 |
 | TWoodRoughA | items | 1 / 488 | 0 / 0 | 0 / 0 | 488 |
 | FLX_GUI_Skinned (unit routines) | ui | 3 / 485 | 0 / 0 | 0 / 0 | 485 |
-| TPwrLoyalty_E | powers | 1 / 360 | 1 / 124 | 0 / 0 | 484 |
+| TPwrLoyalty_E | powers | 2 / 484 | 0 / 0 | 0 / 0 | 484 |
 | TTaskInterface | ui | 0 / 0 | 3 / 476 | 0 / 0 | 476 |
 | FLX_GUI_Graphics (unit routines) | ui | 5 / 470 | 0 / 0 | 0 / 0 | 470 |
 | RF_Terrain_Static (unit routines) | world | 0 / 0 | 1 / 468 | 0 / 0 | 468 |

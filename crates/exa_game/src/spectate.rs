@@ -118,9 +118,17 @@ fn start_on_load(
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut session: ResMut<SpectateSession>,
     control: Option<ResMut<crate::player_controls::PlayerControl>>,
+    modes: Option<ResMut<crate::player_controls::GameModes>>,
 ) {
     if loading.is_some() {
         return;
+    }
+    if let Some(mut modes) = modes {
+        crate::player_controls::enter_mode(
+            &mut modes,
+            Some(crate::player_controls::GameMode::Spectate),
+            "spectate starts",
+        );
     }
     session.start();
     if let Some(mut control) = control {
@@ -223,21 +231,29 @@ pub(crate) fn followed_hip(
         .map(|pelvis| Vec3::from(pelvis.drawn(alpha).translation))
 }
 
-/// The room walk follows the session: while it runs the view follows no
+/// The room walk follows the scene's mode: in Spectate the view follows no
 /// player, so the walk takes its forced-room branch with the arena's spawn
-/// spot (the original's walk tests the scene's control mode each frame and
-/// its match start stores the room at the spot).
+/// spot (the original's walk tests the scene's mode word against the
+/// Character mode's id each frame, and its match start stores the room at
+/// the spot).
 ///
 /// The point holds only in the match's own level: the original stores the
 /// room's index for the arena, and its hub load clears it, so the hub the
 /// return loads (still in Spectate until the manager stands) keeps its rooms.
 fn force_the_room_walk(
     session: Res<SpectateSession>,
+    modes: Option<Res<crate::player_controls::GameModes>>,
     scene: Option<Res<crate::arena_live::ArenaScene>>,
     mut forced: ResMut<exa_world::room_view::ForcedRoom>,
 ) {
+    // The walk is forced while the scene's mode is a game mode other than
+    // Character (Exarust's views outside the game modes keep their rooms).
+    let active = match modes.as_deref() {
+        Some(modes) => modes.is(crate::player_controls::GameMode::Spectate),
+        None => session.active,
+    };
     let want = exa_world::room_view::ForcedRoom {
-        active: session.active,
+        active,
         at: session
             .forced_room_at
             .filter(|_| scene.is_some())
@@ -330,3 +346,7 @@ mod tests {
         assert_eq!(spectate_follow(None), None);
     }
 }
+
+#[cfg(test)]
+#[path = "camera_modes_test.rs"]
+mod camera_modes_test;

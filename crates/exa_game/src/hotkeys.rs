@@ -416,12 +416,13 @@ fn press_hotkeys(
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
     mut skills: MessageWriter<crate::skill_screen::OpenSkills>,
-    (mut dialogue, control, mut confirms, gui, hub): (
+    (mut dialogue, control, mut confirms, gui, hub, panel_drag): (
         DialogueSide,
         Option<Res<PlayerControl>>,
         MessageWriter<crate::end_menu_screen::EndMenuConfirm>,
         Option<Res<crate::gui_screens::GameScreens>>,
         Option<Res<crate::hub_windows::HubWindows>>,
+        Option<Res<crate::panel_live::PanelDrag>>,
     ),
 ) {
     // The controls off, the key-down handler and the pad routine (the
@@ -512,24 +513,28 @@ fn press_hotkeys(
                     }
                 }
                 Hotkey::SwapSets => {
+                    // The gate's drag is the GUI's (an item drag in
+                    // flight); a lift in the hand refuses too [Exarust
+                    // guard]. The body's own open inventory swaps at once;
+                    // otherwise the request writes the switch motion into
+                    // the body's requested motion: the body tick starts it
+                    // when the body is free, and the clip's swap point
+                    // swaps the sets (`equip::swap_at_switch_point`).
                     let lifting = hand.as_deref().is_some_and(|h| h.holding == Holding::Lift);
-                    // The view's finder: the character's own inventory
-                    // window is open (and shown).
+                    let dragging = panel_drag.as_deref().is_some_and(|d| d.source.is_some());
                     let pack_open = gui.as_deref().is_some_and(|gui| {
-                        gui.is_open(GameScreen::Inventory)
+                        gui.find(exa_ui::game_gui::GameScreen::Inventory).is_some()
                             && gui.inventory_bound(Some(entity)) == Some(entity)
                     });
-                    match Possessions::swap_request(word.0, lifting, pack_open) {
+                    let answer = Possessions::swap_request(word.0, lifting || dragging, pack_open);
+                    debug!("swap sets: {answer:?}");
+                    match answer {
                         SwapRequest::Refused => {}
                         SwapRequest::Now => {
                             commands
                                 .entity(entity)
                                 .insert(exa_items::catalogue::SwapRequested);
                         }
-                        // The swap request writes the switch motion into the
-                        // body's requested motion; the body tick starts it
-                        // when the body is free, and the clip's swap point
-                        // swaps the sets (`swap_at_switch_point`).
                         SwapRequest::Animate => {
                             if let Some(animator) = animator.as_mut() {
                                 animator.requested =
@@ -936,6 +941,56 @@ mod tests {
         };
         assert!(run(Condition::NORMAL));
         assert!(!run(Condition::DEAD));
+    }
+
+    /// The swap key asks for the weapon switch (the requested motion)
+    /// unless an item drag of the GUI is in flight (the swap gate's drag
+    /// test).
+    #[test]
+    fn a_gui_drag_refuses_the_swap_key() {
+        let run = |dragging: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Bindings>()
+                .init_resource::<Hand>()
+                .add_message::<ScreenRequest>()
+                .add_message::<crate::end_menu_screen::EndMenuConfirm>()
+                .add_message::<crate::skill_screen::OpenSkills>()
+                .add_message::<BarCommand>()
+                .add_message::<FlipWeaponRequest>()
+                .init_resource::<DialogueFocus>()
+                .add_message::<exa_script::Talk>()
+                .add_message::<exa_script::PickReply>()
+                .add_message::<exa_script::LeaveDialogue>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .init_resource::<crate::panel_live::PanelDrag>()
+                .add_systems(Update, press_hotkeys);
+            if dragging {
+                app.world_mut()
+                    .resource_mut::<crate::panel_live::PanelDrag>()
+                    .source = Some(crate::panel_live::Panel::PlayerPack);
+            }
+            let player = app
+                .world_mut()
+                .spawn((
+                    PlayerBody::new(0.0),
+                    Condition::NORMAL,
+                    Possessions::default(),
+                    exa_anim::Animator::new("Default", "Idle"),
+                ))
+                .id();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyR);
+            app.update();
+            app.world()
+                .get::<exa_anim::Animator>(player)
+                .unwrap()
+                .requested
+                == 0x1F
+        };
+        assert!(run(false));
+        assert!(!run(true));
     }
 
     /// The spirit form's switch leaves the hotkeys only the powers': the

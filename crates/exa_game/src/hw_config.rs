@@ -673,6 +673,7 @@ fn apply_options(
     mut audio: Option<ResMut<AudioEnvironment>>,
     mut music: Option<ResMut<MusicSetting>>,
     mut show_fps: Option<ResMut<exa_ui::ShowFps>>,
+    mut sharpen: Option<ResMut<exa_render::post::PostSharpen>>,
 ) {
     let Some(config) = config else {
         return;
@@ -684,6 +685,14 @@ fn apply_options(
     let sampling_on = live.supersample > 0;
     if sampling.0 != sampling_on {
         sampling.0 = sampling_on;
+    }
+    // The level setter's sharpen: 0 off, else 1.5·(0.075·level + 0.4).
+    if let Some(sharpen) = sharpen.as_mut() {
+        let level = exa_render::view::SupersampleLevel(live.supersample.clamp(0, 255) as u8);
+        let want = exa_render::post::PostSharpen(level.sharpen());
+        if **sharpen != want {
+            **sharpen = want;
+        }
     }
     let mut bias = None;
     if let Some(models) = models.as_mut() {
@@ -1483,6 +1492,33 @@ mod tests {
         let mut config = HardwareConfig::default();
         assert_eq!(config.apply(), None);
         assert!(!config.warm_pending);
+    }
+
+    /// The level setter's sharpen follows the live supersample level: 0
+    /// off, 1.5·(0.075·n + 0.4) on (0.9375 at the 4× level 3).
+    #[test]
+    fn the_post_sharpen_follows_the_supersample_level() {
+        let mut app = App::new();
+        app.init_resource::<SuperSampling>()
+            .init_resource::<ShadowQuality>()
+            .init_resource::<ShadingQuality>()
+            .init_resource::<MultisampleSetting>()
+            .init_resource::<exa_render::post::PostSharpen>()
+            .insert_resource(HardwareConfig::default())
+            .add_systems(Update, apply_options);
+        for (level, sharpen) in [(1, (1.5 * (0.075 + 0.4)) as f32), (3, 0.9375), (0, 0.0)] {
+            app.world_mut()
+                .resource_mut::<HardwareConfig>()
+                .live
+                .supersample = level;
+            app.update();
+            assert_eq!(
+                app.world().resource::<exa_render::post::PostSharpen>().0,
+                sharpen,
+                "level {level}"
+            );
+            assert_eq!(app.world().resource::<SuperSampling>().0, level > 0);
+        }
     }
 
     #[test]

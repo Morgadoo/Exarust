@@ -88,11 +88,14 @@ pub const BODY_FAR: f32 = f32::from_bits(0x7f7f_c99e);
 pub struct FigureHeld(pub usize);
 
 /// The drag off the figure in flight: the slot its pick found (the view's
-/// stored slot, which the release reads) and the payload's icon.
-#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// stored slot, which the release reads), the payload's icon and the mind
+/// cost the drag start took off a bound body's trust (the view's stored
+/// cost, which a cancelled release gives back).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
 pub struct FigureDrag {
     pub slot: Option<usize>,
     pub icon: usize,
+    pub cost: Option<f32>,
 }
 
 /// A drag off the figure ended: where it landed (the panel, the dropped
@@ -420,7 +423,7 @@ enum FigureAction {
 struct FigurePress<'w, 's> {
     picker: FigurePicker<'w, 's>,
     doll: Res<'w, InventoryDoll>,
-    screens: Res<'w, GameScreens>,
+    screens: ResMut<'w, GameScreens>,
     drag: ResMut<'w, PanelDrag>,
     figure_drag: ResMut<'w, FigureDrag>,
     icons: ResMut<'w, PanelIcons>,
@@ -430,6 +433,8 @@ struct FigurePress<'w, 's> {
     players: Query<'w, 's, &'static Possessions>,
     player_bodies: Query<'w, 's, Entity, With<crate::player::PlayerBody>>,
     cards: MessageWriter<'w, crate::item_card::FigureCard>,
+    trust: crate::view_trust::ViewTrust<'w, 's>,
+    live: Option<Res<'w, exa_assets::live_objects::LiveObjects>>,
 }
 
 impl FigurePress<'_, '_> {
@@ -506,18 +511,50 @@ impl FigurePress<'_, '_> {
                 } else {
                     self.icons.reserve(hover.item, hover.flags, catalogue).0
                 };
-                // The player's own view: not frozen, not locked, no mind
-                // cost.
+                // The inventory's view is never frozen or locked. With its
+                // mind window set (a bound body shown) the item's cost is
+                // taken off the body's trust first, whatever the press hit
+                // (no item weighs 0); a binding that ends closes the window.
+                let shown = self
+                    .screens
+                    .inventory_bound(self.player_bodies.iter().next());
+                let cost = shown
+                    .filter(|_| self.screens.inventory_mind_window)
+                    .map(|body| {
+                        let values =
+                            crate::view_trust::ItemValues::of(self.live.as_deref(), hover.item);
+                        let cost = exa_ui::character_view::drag_over_cost(
+                            values.apparel.is_some(),
+                            values.weapon.is_some(),
+                            values.protection(),
+                            values.desirability(),
+                        )
+                        .unwrap_or(0.0);
+                        (body, cost)
+                    });
+                let refuses = cost.is_some_and(|(body, cost)| self.trust.change(body, -cost));
                 let plan = drag_start_plan(
                     false,
                     hover.slot.unwrap_or(0),
                     icon,
                     false,
                     hover.flags,
-                    None,
-                    false,
+                    cost.map(|(_, cost)| cost),
+                    refuses,
                     self.screens.pack.icon_size.max(0) as u32,
                 );
+                if plan.cancel {
+                    if icon != 0 {
+                        self.icons.release(icon);
+                    }
+                    info!(
+                        "figure drag: {:#x} off the bound body ends its binding; \
+                         the inventory closes",
+                        hover.item
+                    );
+                    self.screens.close(exa_ui::game_gui::GameScreen::Inventory);
+                    return true;
+                }
                 let Some(payload) = plan.payload else {
                     if icon != 0 {
                         self.icons.release(icon);
@@ -538,6 +575,7 @@ impl FigurePress<'_, '_> {
                 *self.figure_drag = FigureDrag {
                     slot: hover.slot,
                     icon,
+                    cost: plan.cost,
                 };
                 info!(
                     "figure drag: {:#x} (flags {:#x}, slot {:?}) off the figure, payload {:#x}",
@@ -762,6 +800,7 @@ fn release_figure(
         Without<crate::doll_view::DollHands>,
     >,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
+    mut trust: crate::view_trust::ViewTrust,
 ) {
     // The figure is the inventory's bound character's; a body pack the
     // item lands in takes it after that character's side is done.
@@ -769,7 +808,7 @@ fn release_figure(
     let mut to_bodies: Vec<(i32, u32, u32, Cell, i32, f32)> = Vec::new();
     for release in releases.read().copied() {
         let drag = release.drag;
-        let slot = std::mem::take(&mut *figure_drag).slot;
+        let FigureDrag { slot, cost, .. } = std::mem::take(&mut *figure_drag);
         let plan = release_on_figure(ReleaseFacts {
             slot: if release.landed.is_some() {
                 slot.map_or(0, |s| s as i32)
@@ -778,7 +817,8 @@ fn release_figure(
             },
             locked: false,
             payload_flags: drag.flags,
-            mind_cost: false,
+            // The drag start kept a cost only with the mind window set.
+            mind_cost: cost.is_some(),
             hand: slot.map(|s| s - 1),
             shown: true,
             shown_is_dragged: false,
@@ -795,6 +835,13 @@ fn release_figure(
         }
         let Some((destination, cell, unit, vscale)) = release.landed else {
             info!("figure release: {:#x} cancelled, nothing moves", drag.id);
+            // The cancelled drag gives the bound body's trust its kept
+            // cost back (its answer is not read).
+            if plan.charge_cost
+                && let (Some(body), Some(cost)) = (target, cost)
+            {
+                trust.change(body, cost);
+            }
             continue;
         };
         items.ensure(game.as_deref());
@@ -1177,6 +1224,107 @@ mod tests {
             b.carried.iter().map(|c| c.id).collect::<Vec<_>>(),
             vec![sword]
         );
+    }
+
+    /// The inventory of a bound body with its mind window set: a press on
+    /// the figure runs the drag start's trust change even where it picks
+    /// no item (a change of 0), which ends a marker already past its limit
+    /// (a hostile body: limit 10, trust 0) and closes the window.
+    #[test]
+    fn a_press_on_a_bound_bodys_figure_runs_its_trust_test() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<DollItems>()
+            .init_resource::<FigureDrag>()
+            .init_resource::<PanelDrag>()
+            .init_resource::<panel_live::ScriptedRelease>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
+            .add_message::<crate::item_card::FigureCard>()
+            .insert_resource(FigureScript {
+                drag: FigureScript::parse_drag("v0.5,0.5>v0.5,0.5@1"),
+                card: None,
+            })
+            .add_systems(Update, scripted_figure);
+        let (_, body) = crate::view_trust::bound_pair(app.world_mut(), -100.0);
+        let figure = app.world_mut().spawn_empty().id();
+        let view = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.task.screen = (1280, 720);
+            screens.show_inventory(true, true, 4, true, 3);
+            screens.inventory_body = Some(body);
+            screens.inventory_mind_window = true;
+            open_view(&screens).unwrap()
+        };
+        let mut doll = InventoryDoll::default();
+        doll.scene = Some(crate::doll_view::DollScene {
+            image: Handle::default(),
+            camera: Entity::PLACEHOLDER,
+            light: Entity::PLACEHOLDER,
+            node: Entity::PLACEHOLDER,
+            figure: Some(figure),
+            body: Some(body),
+            view,
+            backdrop: [0; 4],
+        });
+        app.insert_resource(doll);
+        app.update();
+        let (trust, runs) = crate::view_trust::marker_trust(app.world(), body);
+        assert_eq!(trust, 0.0);
+        assert!(!runs);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(
+            screens
+                .find(exa_ui::game_gui::GameScreen::Inventory)
+                .is_none()
+        );
+        assert!(app.world().resource::<PanelDrag>().source.is_none());
+    }
+
+    /// A cancelled drag off a bound body's figure gives its trust the cost
+    /// the drag start took back; a drag that landed does not.
+    #[test]
+    fn a_cancelled_drag_gives_the_bound_body_its_cost_back() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<DollItems>()
+            .init_resource::<FigureDrag>()
+            .add_message::<FigureRelease>()
+            .add_systems(Update, release_figure);
+        let (_, body) = crate::view_trust::bound_pair(app.world_mut(), 50.0);
+        app.world_mut().resource_mut::<GameScreens>().inventory_body = Some(body);
+        let drag = PanelDrag {
+            source: Some(Panel::Figure),
+            icon: 0,
+            grab: Cell::new(0, 0),
+            id: 0x30,
+            flags: 0,
+            bulk: 0,
+        };
+        *app.world_mut().resource_mut::<FigureDrag>() = FigureDrag {
+            slot: Some(1),
+            icon: 0,
+            cost: Some(4.8),
+        };
+        app.world_mut().write_message(FigureRelease {
+            drag,
+            landed: None,
+            added: false,
+        });
+        app.update();
+        let (trust, runs) = crate::view_trust::marker_trust(app.world(), body);
+        assert!((trust - 4.8).abs() < 1e-6);
+        assert!(runs);
+        // A drag without a kept cost (no mind window) changes nothing.
+        app.world_mut().write_message(FigureRelease {
+            drag,
+            landed: None,
+            added: false,
+        });
+        app.update();
+        assert!((crate::view_trust::marker_trust(app.world(), body).0 - 4.8).abs() < 1e-6);
     }
 
     #[test]

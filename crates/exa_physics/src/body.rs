@@ -55,7 +55,7 @@ pub use muscle::{
 
 #[path = "body_balance.rs"]
 mod balance;
-pub use balance::{Balance, Leg, legs_swap, reset_heading};
+pub use balance::{Balance, Leg, PlacementHeights, legs_swap, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
 #[path = "body_limp.rs"]

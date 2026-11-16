@@ -1852,9 +1852,12 @@ fn press_hand(
             // screen point (the lift start's warp flag), so the item does
             // not jump to where the button went down.
             let node_at = held.saved_frame.position;
+            // In window pixels, as the warp takes them (the supersampled
+            // camera's own viewport is twice the window).
             if let Some(warps) = warps.as_deref_mut()
                 && let Ok((camera, eye)) = cameras.single()
-                && let Ok(point) = camera.world_to_viewport(eye, node_at)
+                && let Ok(window) = windows.single()
+                && let Some(point) = crate::player::window_point(camera, eye, window, node_at)
             {
                 warps.write(crate::os_pointer::WarpPointer(point));
             }
