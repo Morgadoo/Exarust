@@ -3622,6 +3622,7 @@ impl Plugin for FlowPlugin {
             .init_resource::<AfterLoad>()
             .init_resource::<crate::save_kit::KitScratch>()
             .init_resource::<crate::left_behind::LeftBody>()
+            .init_resource::<crate::level_change::SessionArrival>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()

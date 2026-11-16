@@ -502,7 +502,10 @@ fn apply_level_change(
         Option<Res<exa_game::level_change::PortalArrival>>,
     ),
     travelling: Option<Res<exa_game::follower_travel::TravellingFollowers>>,
-    mut world: Option<ResMut<exa_game::world_characters::WorldCharacters>>,
+    (mut world, mut session_arrival): (
+        Option<ResMut<exa_game::world_characters::WorldCharacters>>,
+        Option<ResMut<exa_game::level_change::SessionArrival>>,
+    ),
     last: Option<Res<LastLevel>>,
 ) {
     let Some(ready) = ready else {
@@ -510,6 +513,7 @@ fn apply_level_change(
     };
     let level = ready.level.clone();
     let spawn = ready.spawn;
+    let door = ready.door;
     commands.remove_resource::<exa_world::level_lifecycle::LevelChangeReady>();
     // A level that was still building is abandoned with its state.
     commands.remove_resource::<PendingLevel>();
@@ -542,18 +546,37 @@ fn apply_level_change(
                 .and_then(|b| exa_formats::roles::locale_id(b, &last.0))
         })
         .unwrap_or(exa_assets::content_stream::NO_PREVIOUS_LEVEL);
-    // A respawn's load (the story respawn, a pending respawn's save) takes
-    // the session-start word, as the original sets the session's arrival
-    // word before the load (its story save reader does it on every load):
-    // the level's reconstruction device (operative kind 18) names the
-    // player. The original leaves the previous level as it was; Exarust
-    // passes none, which only a marker whose entrance word is the
-    // session-start word could tell apart (none in exanima05, checked).
-    let arrival_words = portal.is_some().then_some((
-        exa_assets::content_stream::SESSION_START_WORD,
-        exa_assets::content_stream::NO_PREVIOUS_LEVEL,
-    ));
-    let (entrance, previous_level) = arrival_words.unwrap_or((spawn, previous_level));
+    // The session's arrival words the load names its player object by
+    // ([`exa_game::level_change::SessionArrival`]): a door's entrance and
+    // the level it leaves; the session-start word for a respawn's load
+    // (the story respawn, a pending respawn's save), so the level's
+    // reconstruction device (operative kind 18) names the player; for any
+    // other load the word the session last left, with no previous level.
+    use exa_game::level_change::ArrivalLoad;
+    let load_kind = match portal.as_deref() {
+        Some(portal) if portal.without.is_some() => ArrivalLoad::Respawn,
+        Some(_) => ArrivalLoad::PendingRespawn,
+        None if door => ArrivalLoad::Door {
+            entrance: spawn,
+            previous_level,
+        },
+        None => ArrivalLoad::Other,
+    };
+    let arrival_words = Some(match session_arrival.as_mut() {
+        Some(session) => session.load_words(load_kind),
+        None => exa_game::level_change::SessionArrival::default().load_words(load_kind),
+    });
+    debug!("level change: {load_kind:?} reads the arrival words {arrival_words:x?}");
+    // The arrival placement's words: the respawn's, else the change's
+    // entrance and the level it leaves.
+    let (entrance, previous_level) = if portal.is_some() {
+        (
+            exa_assets::content_stream::SESSION_START_WORD,
+            exa_assets::content_stream::NO_PREVIOUS_LEVEL,
+        )
+    } else {
+        (spawn, previous_level)
+    };
     commands.insert_resource(exa_game::level_change::LevelArrival {
         entrance,
         previous_level,
