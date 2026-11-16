@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r282, 11-16) | target |
+| measure | start (r186, 11-10) | now (r283, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,071 | all |
+| Tests passing | 8,489 | 9,072 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 283 | The held terrain lane checked with a free camera on the open outdoor arenas: its 44 m cut-off is the original's and no shipped camera sees it, so it is releasable once blank blocks' plants leave the camera draws (terrainrel lane); F550 split: its light lines were rain whose odd vertex count broke the line pairs across the supersample copies (fixed), its seam is the voxel GI's block edge (open) (terraincheck) |
 | 2026-11-16 | 282 | A test now builds the game's own App headless with the lockstep bridge and fails on any system skipped for a missing resource or message (the bug class of F547); F549 fixed (the Shock charges about 1.2 s by the step length and its burst is aimed); F551 fixed (a dead manager back in the hub ends the session through the death flow and the end menu); F552 fixed (the GI shape box arithmetic wraps) (bridgeaudit) |
 | 2026-11-16 | 281 | The GI manager's shape list is cleared at the level teardown, its dirty-marking slot proven unreachable; voxel lights and shapes blend one pass at a time in the manager's order, meshes splat in centimetres, terrain columns read the tile's vertex grid and moving meshes are boxed by their node bounds; worker GPU pictures unchanged within noise, FPS holds (gimanager) |
 | 2026-11-16 | 280 | The fires' particle systems are simulation objects as the original's sector objects are: each step ticks every flame in the solver's object stage (a carried flame at its part's pose) and meets the bodies with it, the doses reaching the characters' burn; the draw keeps the step's snapshot with no flicker in either simulation mode and takes the original's render fraction (one to two ticks); the beds and portal sparks meet no body (simfires). Torch and brazier scenes owed |
