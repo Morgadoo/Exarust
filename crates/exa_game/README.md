@@ -952,7 +952,7 @@ walk's foot plant sends a `Footstep` at the character plus `3·speed + 4`
 cm along its facing for the race's set (`movement::gait_footsteps`), and
 a shock on a releasing race ends its step and stops its clip rate
 (`Ragdoll::force_release`, from the energy arcs' `shock_fighters`), with
-its next shock 500 ms on, no draw and no burn; a body asked to go limp keeps its motion unless
+its next shock 500 ms on, no draw and no burn (attacking, its swing stalls with no strength until 600 ms on; dying, it takes no shock at all); a body asked to go limp keeps its motion unless
 given a velocity (`limp`), and a level's placed dead are built limp from their
 saved pose and registered at rest (`exa_physics::body::PlacedCorpse`: one
 tick, then sleep; only a `--corpse` without a pose falls),
