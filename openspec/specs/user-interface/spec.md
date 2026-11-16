@@ -31,6 +31,13 @@ The system SHALL show a loading screen while a level loads: a dark page with "Lo
 - **WHEN** the installation has no base font
 - **THEN** the loading screen shows its progress bar without text
 
+### Requirement: Interface camera sees no world mesh
+The loading screen's camera, which stays to draw the interface over the game's view, SHALL belong to no render layer, so that it lists no world mesh in its view and marks none as seen; the interface SHALL still draw through it.
+
+#### Scenario: Terrain inside its box
+- **WHEN** a level's terrain blocks lie inside the interface camera's orthographic box but outside the game camera's view
+- **THEN** the interface camera lists none of them and they count as not in view
+
 ### Requirement: Long-frame log
 The system SHALL time every frame of a load and of the 10 s after it (or after the start, when nothing loads), log a frame longer than 250 ms as a warning with the stage it was spent in, and log the load's length and its longest frame when it ends.
 

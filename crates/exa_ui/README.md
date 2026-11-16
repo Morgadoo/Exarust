@@ -11,7 +11,9 @@ mesh draw the same way, and the arena loadout's 27 control records are
 decoded (`loadout::CONTROLS`); the game's bitmap font
 (`font`), the interface scale from the window's height (`scale`), the
 ShowFPS setting (`fps`; the readout is `exa_game::view_overlay`), the loading screen (`loading`, whose camera
-draws the whole interface over the game's view, premultiplied), the
+draws the whole interface over the game's view, premultiplied; it is
+`_InterfaceCamera` and belongs to no render layer, so it lists no world
+mesh and marks none as seen), the
 character creator's labels and page captions (`creation`; the game crate
 owns the rules and places) and its three control-record tables with
 their layout and the story backgrounds' names and descriptions

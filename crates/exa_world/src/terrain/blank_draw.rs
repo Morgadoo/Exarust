@@ -148,10 +148,12 @@ pub fn mark_blank_blocks(
 ///
 /// Every 240 frames it logs the counts; with `EXA_TERRAIN_DRAW_DEBUG=1` the
 /// log also names each camera that listed a blank block (to find a view
-/// that lists more than it should).
+/// that lists more than it should) and counts the plant chunks that name no
+/// block (they would draw whatever their ground does).
 pub fn skip_blank_blocks(
     mut blank: ResMut<BlankTerrainBlocks>,
     mut cameras: Query<(Entity, &mut VisibleEntities, &Camera, Option<&Name>)>,
+    unlinked: Query<(), (With<super::PlantChunk>, Without<PlantBlock>)>,
     mut debug: Local<Option<bool>>,
 ) {
     if blank.blocks.is_empty() {
@@ -193,6 +195,12 @@ pub fn skip_blank_blocks(
         );
         for line in per_camera {
             info!("terrain blank blocks by camera: {line}");
+        }
+        if debug {
+            info!(
+                "terrain blank blocks: {} plant chunks name no block",
+                unlinked.iter().count()
+            );
         }
     }
     blank.frames += 1;
