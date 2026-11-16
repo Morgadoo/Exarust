@@ -4010,6 +4010,7 @@ fn open_named_level(
     mut items: ResMut<crate::doll_view::DollItems>,
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
+    lists: Option<Res<crate::save_live::SlotLists>>,
 ) {
     items.ensure(game.as_deref());
     for read in reads.read() {
@@ -4019,12 +4020,10 @@ fn open_named_level(
         if name.is_empty() {
             continue;
         }
-        let file = format!("{name}.rfc");
-        let exists = game.as_ref().is_some_and(|game| {
-            game.0
-                .pack(exa_assets::PackKind::Resource)
-                .is_some_and(|pack| pack.get(&file).is_some())
-        });
+        // The level-available test: the current story slot's save holds
+        // the locale's section, else the archive holds `<name>.rfc`.
+        let exists = game.is_some()
+            && crate::save_live::level_available(lists.as_deref(), game.as_deref(), &name);
         if !exists {
             continue;
         }
