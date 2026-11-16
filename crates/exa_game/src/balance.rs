@@ -447,14 +447,16 @@ fn start_getting_up(
     let progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));
-    if playing == Some(rise) && progress >= SETTLED_FROM {
+    // The compare's unordered branch keeps the clip too: a NaN progress
+    // changes nothing.
+    if playing == Some(rise) && !(progress < SETTLED_FROM) {
         return Rising::Keeps;
     }
     condition.get_up();
     // The get-up's start clears the feet's states.
     body.clear_feet();
     let at = Vec3::from(pelvis.translation);
-    let heading = (root.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+    let heading = get_up_heading(player.as_ref().map(|(req, _)| req.heading), root);
     if let Some(d) = chest.and_then(|c| rise_heading(c, at, rise))
         && turns_to_rise(heading, d)
     {
@@ -467,6 +469,16 @@ fn start_getting_up(
         anim.capture_whole();
     }
     Rising::Rises(started)
+}
+
+/// The heading a get-up's turn compares its rising direction with: the
+/// body's heading (the locomotion request's yaw, which the movement and
+/// the turns write), else the root's facing across the ground.
+pub fn get_up_heading(requested: Option<f32>, root: &Transform) -> Vec3 {
+    match requested {
+        Some(yaw) => Vec3::new(yaw.sin(), 0.0, yaw.cos()),
+        None => (root.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z),
+    }
 }
 
 /// Puts the body back on its controller, unless it stands on it already.
@@ -598,10 +610,14 @@ pub(crate) fn take_posture(
                 body.fall();
             }
             if flags.has(StateFlags::DORMANT) {
+                // A dormant body lies limp: no tone, no energy, and the
+                // whole pose captured from where it lies (the eased pelvis
+                // target the original also zeroes has no live counterpart).
                 if let Some(d) = body.drive.as_mut() {
                     d.tone = 0.0;
                     d.energy = 0.0;
                 }
+                anim.capture_whole();
             } else if let Rising::Rises(true) = start_getting_up(
                 &mut body,
                 &mut anim,

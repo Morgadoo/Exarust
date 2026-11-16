@@ -544,6 +544,53 @@ fn lying_still_it_gets_up_by_its_pelvis() {
     assert_eq!(world.get::<Animator>(id).unwrap().action, "Get up");
 }
 
+/// Lying still and dormant, a body does not get up: it lies limp (no tone,
+/// no energy) and its whole pose is captured from where it lies.
+#[test]
+fn a_dormant_body_lies_limp_and_captures_its_pose() {
+    let mut body = pelvis(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+    body.fall();
+    let (mut world, id) = posed(body, "Fall Backward", Branch::LyingStill, Condition::DOWN);
+    *world.get_mut::<StateFlags>(id).unwrap() = StateFlags(StateFlags::DORMANT);
+    world.run_system_once(take_posture).unwrap();
+    let anim = world.get::<Animator>(id).unwrap();
+    assert_eq!(anim.action, "Fall Backward");
+    assert_eq!(anim.pending, Some(Capture::Whole));
+    let drive = world.get::<Ragdoll>(id).unwrap().drive.as_ref().unwrap();
+    assert_eq!((drive.tone, drive.energy), (0.0, 0.0));
+    assert_eq!(*world.get::<Condition>(id).unwrap(), Condition::DOWN);
+}
+
+/// A get-up compares its rising direction with the body's heading (the
+/// locomotion request's yaw), not the root's yaw: a body whose root still
+/// faces where it fell but whose heading points along the rise does not
+/// turn.
+#[test]
+fn a_get_up_turns_from_the_bodys_heading() {
+    let root = Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    let rise = Vec3::Z;
+    let along = get_up_heading(Some(0.1), &root);
+    assert!(!turns_to_rise(along, rise));
+    assert!(turns_to_rise(get_up_heading(None, &root), rise));
+    assert!(turns_to_rise(get_up_heading(Some(1.0), &root), rise));
+    let x = get_up_heading(Some(std::f32::consts::FRAC_PI_2), &root);
+    assert!((x - Vec3::X).length() < 1e-6);
+}
+
+/// A get-up already playing with a NaN progress keeps playing: the
+/// compare's unordered branch returns before the condition and the stand.
+#[test]
+fn a_nan_progress_keeps_the_get_up() {
+    let mut body = pelvis(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+    body.fall();
+    let (mut world, id) = posed(body, "Get Up 2", Branch::LyingStill, Condition::DOWN);
+    set_time(&mut world, id, f32::NAN);
+    world.run_system_once(take_posture).unwrap();
+    assert_eq!(*world.get::<Condition>(id).unwrap(), Condition::DOWN);
+    let ragdoll = world.get::<Ragdoll>(id).unwrap();
+    assert!(!ragdoll.drive.as_ref().unwrap().supported);
+}
+
 /// Sets the clip clock of `id`'s animator.
 fn set_time(world: &mut World, id: Entity, time: f32) {
     world.get_mut::<Animator>(id).unwrap().time = time;
