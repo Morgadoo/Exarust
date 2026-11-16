@@ -1,7 +1,12 @@
 //! Footsteps of moving characters, at a rate following their speed.
 //!
-//! Each step is a one-shot from a numbered set, so it goes through the
-//! mixer's voice pool and source ranking.
+//! A physical body's footsteps (its sampler's walking plants and its
+//! footwork's step ends) play on the body's two step voices, as the
+//! original's character keeps two voices for them: each step flips which
+//! one plays and restarts it on a variant of the step set, so a step cuts
+//! the one two steps before it. The wet steps and the capsule's steps are
+//! one-shots from a numbered set, through the mixer's voice pool and source
+//! ranking.
 
 use std::collections::HashMap;
 
@@ -25,6 +30,54 @@ pub(crate) const HEAVY_STEPS: SoundSet<'static> = SoundSet::new("stphvy", 6);
 #[derive(Component, Default)]
 pub(crate) struct StepClock(f32);
 
+/// Each body's two step voices and which one played last. The voices are
+/// taken from the pool on the body's first step and given back once the
+/// body is gone (the original allocates them in its character init and
+/// frees them in its destructor).
+#[derive(Resource, Default)]
+pub(crate) struct StepVoices(HashMap<Entity, StepPair>);
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StepPair {
+    voices: [Option<u32>; 2],
+    last: usize,
+}
+
+impl StepVoices {
+    /// The voice this step of `body` plays on: the other one than last
+    /// time. None while the first voice could not be taken (the original
+    /// plays no step without it).
+    fn next(&mut self, env: &mut AudioEnvironment, body: Entity) -> Option<u32> {
+        let pair = self.0.entry(body).or_default();
+        for voice in &mut pair.voices {
+            if voice.is_none() {
+                *voice = env.allocate();
+            }
+        }
+        pair.voices[0]?;
+        pair.last = (!pair.last) & 1;
+        pair.voices[pair.last]
+    }
+
+    /// Gives back the voices of the bodies `present` no longer finds.
+    fn free_gone(
+        &mut self,
+        env: &mut AudioEnvironment,
+        bank: &mut SoundBank,
+        present: impl Fn(Entity) -> bool,
+    ) {
+        self.0.retain(|&body, pair| {
+            if present(body) {
+                return true;
+            }
+            for id in pair.voices.iter().flatten() {
+                env.free_voice(bank, *id);
+            }
+            false
+        });
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn footsteps(
     mut commands: Commands,
@@ -38,6 +91,7 @@ pub(crate) fn footsteps(
     mut plants: MessageReader<Footstep>,
     water: Option<Res<WaterLevel>>,
     mut wet_set: Local<Option<u32>>,
+    mut voices: ResMut<StepVoices>,
     mut walkers: Query<(
         Entity,
         &CharacterBody,
@@ -67,7 +121,9 @@ pub(crate) fn footsteps(
         let pitch_roll = bank.random_unit();
         let gain_roll = bank.random_unit();
         let step = gait_step(plant.speed_cm, plant.volume, pitch_roll, gain_roll);
-        env.play_set(&mut bank, set, plant.position, step.gain, step.pitch, 0);
+        if let Some(voice) = voices.next(&mut env, plant.body) {
+            env.retrigger_set(&mut bank, voice, set, plant.position, step.gain, step.pitch);
+        }
         debug!(
             "walk step: {name} contact {:.1} cm, speed {:.3}, gain {:.4} pitch {:.3}",
             plant.contact_cm, plant.speed_cm, step.gain, step.pitch
@@ -169,11 +225,13 @@ pub(crate) fn foot_sounds(
     mut clocks: Local<HashMap<Entity, FootClocks>>,
     mut sets: Local<HashMap<&'static str, u32>>,
     water: Option<Res<WaterLevel>>,
+    mut voices: ResMut<StepVoices>,
 ) {
     let Some(game) = game else {
         cues.clear();
         return;
     };
+    voices.free_gone(&mut env, &mut bank, |body| fighters.contains(body));
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
     for sounded in cues.read() {
         let Ok((fighter, suit)) = fighters.get(sounded.body) else {
@@ -240,7 +298,9 @@ pub(crate) fn foot_sounds(
                 let id = *sets
                     .entry(name)
                     .or_insert_with(|| bank.load_set(&game, &mut sources, name));
-                env.play_set(&mut bank, id, sounded.hip, step.gain, step.pitch, 0);
+                if let Some(voice) = voices.next(&mut env, sounded.body) {
+                    env.retrigger_set(&mut bank, voice, id, sounded.hip, step.gain, step.pitch);
+                }
                 debug!(
                     "foot step: {:?} leg {leg} {name} loudness {loudness:.3} gain {:.4} pitch {:.3}",
                     sounded.body, step.gain, step.pitch
@@ -277,3 +337,32 @@ pub(crate) fn foot_sounds(
 
 /// The character's sound gain, 1 from the constructor.
 const SOUND_GAIN: f32 = 1.0;
+
+#[cfg(test)]
+mod step_voice_tests {
+    use super::*;
+
+    /// A body's steps alternate between its two voices, taken on its first
+    /// step; another body has its own pair; a body that is gone gives both
+    /// back to the pool.
+    #[test]
+    fn steps_alternate_between_the_bodys_two_voices() {
+        let mut env = AudioEnvironment::default();
+        let mut bank = SoundBank::default();
+        let mut voices = StepVoices::default();
+        let a = Entity::from_raw_u32(1).unwrap();
+        let b = Entity::from_raw_u32(2).unwrap();
+        let first = voices.next(&mut env, a).unwrap();
+        let second = voices.next(&mut env, a).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(voices.next(&mut env, a), Some(first));
+        assert_eq!(voices.next(&mut env, a), Some(second));
+        let other = voices.next(&mut env, b).unwrap();
+        assert!(other != first && other != second);
+        voices.free_gone(&mut env, &mut bank, |e| e == b);
+        assert!(!voices.0.contains_key(&a));
+        // The freed voices are the pool's again.
+        let again = env.allocate().unwrap();
+        assert!(again == first || again == second, "{again}");
+    }
+}

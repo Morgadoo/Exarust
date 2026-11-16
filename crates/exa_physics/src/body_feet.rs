@@ -1148,6 +1148,8 @@ pub fn rustle_clock(now_ms: u32, roll: &mut u32) -> u32 {
 /// and the race's footstep set (empty when the race has none).
 #[derive(Debug, Clone, Copy, Message, PartialEq)]
 pub struct Footstep {
+    /// The body whose foot planted (its two step voices play it).
+    pub body: Entity,
     pub position: Vec3,
     pub speed_cm: f32,
     /// The character's footstep volume (its stats' `footstep_volume`).

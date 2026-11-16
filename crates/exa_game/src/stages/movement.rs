@@ -490,6 +490,7 @@ pub(crate) fn gait_footsteps(
     for leg in body.planted_feet() {
         let contact_cm = body.foot_contact(leg).map_or(0.0, |at| at.y * 100.0);
         steps.write(Footstep {
+            body: ticked.body,
             position: step_position(origin, drive.bearing.facing, drive.bearing.speed),
             speed_cm: drive.bearing.speed,
             volume: fighter.stats.footstep_volume,
