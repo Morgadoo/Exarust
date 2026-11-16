@@ -972,10 +972,7 @@ impl GameScreens {
         let unit = unit.max(1);
         let mut count = 0;
         for screen in self.open.clone() {
-            if matches!(
-                screen.kind,
-                GameScreen::Container | GameScreen::TechniqueSelector
-            ) {
+            if screen.kind == GameScreen::TechniqueSelector {
                 continue;
             }
             let Some((old, bounds)) = self
@@ -1003,6 +1000,35 @@ impl GameScreens {
                 GameScreen::Journal => {
                     self.journal_unit = unit;
                     ScreenLayout::journal(unit).size
+                }
+                GameScreen::Container => {
+                    // The popup follows the walk's scale (`v / old · unit`)
+                    // for its icon area, its panel is laid out from the
+                    // record's cells at the new unit and its items move by
+                    // the panel's own rescale [guess: the popup's class has
+                    // no rescale of its own, so its plan is rebuilt].
+                    let Some(popup) = self.popups.iter_mut().find(|p| p.form == screen.form) else {
+                        continue;
+                    };
+                    popup.icon_height = scale(popup.icon_height);
+                    let Some(plan) = open_container(
+                        false,
+                        Some(popup.stored.size),
+                        unit,
+                        POPUP_PANEL_BORDER,
+                        popup.icon_height,
+                    ) else {
+                        continue;
+                    };
+                    popup.plan = plan;
+                    popup.panel.rescale(old, unit);
+                    popup.panel.unit = unit;
+                    popup.panel.icon_size = exa_items::icon_cache::icon_size(unit);
+                    popup.panel.client = (
+                        plan.inner.0 - 2 * POPUP_PANEL_BORDER,
+                        plan.inner.1 - 2 * POPUP_PANEL_BORDER,
+                    );
+                    popup_form_size(plan, unit, POPUP_BORDER)
                 }
                 _ => {
                     if let Some(window) = self.loot.iter_mut().find(|w| w.form == screen.form) {
@@ -2480,14 +2506,12 @@ fn rescale_open_screens(
     };
     let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
     let stale = screens.open.iter().any(|screen| {
-        !matches!(
-            screen.kind,
-            GameScreen::Container | GameScreen::TechniqueSelector
-        ) && screens
-            .task
-            .form(screen.form)
-            .and_then(|f| f.base())
-            .is_some_and(|f| f.unit != unit.max(1))
+        screen.kind != GameScreen::TechniqueSelector
+            && screens
+                .task
+                .form(screen.form)
+                .and_then(|f| f.base())
+                .is_some_and(|f| f.unit != unit.max(1))
     });
     if stale {
         let count = screens.rescale_open(unit);
@@ -4715,6 +4739,92 @@ mod tests {
         );
         // One text box: the old one closed with the walk.
         assert_eq!(screens.task.draw_order().len(), 4);
+    }
+
+    /// A container popup follows a unit change too: its panel is laid out
+    /// from the record's cells at the new unit, its items' places scale,
+    /// and its form takes the new size at its scaled place.
+    #[test]
+    fn a_unit_change_rescales_an_open_container_popup() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .add_systems(Update, (sync_screen_size, rescale_open_screens).chain());
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1280, 720),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.update();
+        let record = ContainerRecord {
+            size: (50, 30),
+            capacity: 400,
+            max_item: 60,
+            children: Vec::new(),
+        };
+        let form = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            let id = exa_formats::objdb::LOCAL | 4;
+            let action = screens.open_container_popup(
+                Entity::from_bits(42),
+                id,
+                &record,
+                (640, 400),
+                4,
+                3,
+                70,
+                |_, _| None,
+            );
+            assert_eq!(action, ScreenAction::Opened);
+            let popup = screens.popups.last_mut().unwrap();
+            popup.panel.entries.push(crate::item_container::Entry {
+                cell: crate::item_container::Cell::new(40, 10),
+                id: 9,
+                ..Default::default()
+            });
+            popup.form
+        };
+        let before = app
+            .world()
+            .resource::<GameScreens>()
+            .task
+            .form(form)
+            .and_then(|f| f.base())
+            .unwrap()
+            .bounds;
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(1920, 1080);
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        let popup = &screens.popups[0];
+        assert_eq!(popup.panel.unit, 6);
+        assert_eq!(
+            popup.panel.entries[0].cell,
+            crate::item_container::Cell::new(60, 15)
+        );
+        let plan = open_container(
+            false,
+            Some(record.size),
+            6,
+            POPUP_PANEL_BORDER,
+            popup.icon_height,
+        )
+        .unwrap();
+        assert_eq!(popup.plan, plan);
+        let size = popup_form_size(plan, 6, POPUP_BORDER);
+        let form = screens.task.form(form).and_then(|f| f.base()).unwrap();
+        assert_eq!(form.unit, 6);
+        assert_eq!(
+            form.bounds,
+            GuiRect::new(before.left / 4 * 6, before.top / 4 * 6, size.0, size.1)
+        );
     }
 
     #[test]
