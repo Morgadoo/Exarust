@@ -56,13 +56,15 @@
 //!   through the grid: a blocked line clears the run bit and asks for a
 //!   plan.
 //!
-//! The soft stop ([`soft_stop`]) ends the route, clears the run bit, sets
-//! the stopping bit, pulls a goal farther than `8·speed + 20` cm back along
-//! the frame's forward and walks the line from the ground point to it,
-//! which clamps it where the grid blocks. The route stop ([`route_stop`])
-//! ends the route, drops the plan request and clears the run bit. The walk
-//! writes its flags after the follower's, so a soft stop the follower made
-//! keeps only its goal: the walk asks the body to move toward it.
+//! The soft stop ([`soft_stop`]) ends the route and its mode word, clears
+//! the run bit, sets the stopping bit, pulls a goal farther than
+//! `8·speed + 20` cm back along the frame's forward and walks the line
+//! from the ground point to it, which clamps it where the grid blocks. The
+//! route stop ([`route_stop`]) ends the route and its mode word, drops the
+//! plan request and clears the run bit. The walk writes its flags after
+//! the follower's, so a soft stop the follower made keeps only its goal:
+//! the walk asks the body to move toward it. The in-the-way test skips the
+//! body the walk lets pass (the leader a follow walks to).
 //!
 //! The planner's end test (the goal record's flat or half-height radius
 //! test) belongs to the plan, not to the follower: the follower makes no
@@ -81,8 +83,10 @@
 //!   [Exarust: the original fights that tick];
 //! - a body without muscles (no locomotion request) is steered by the NPC
 //!   driver's stand-in toward the follower's goal, with its walk clip;
-//! - the walk's clear of the carried body and the follow mode word, and
-//!   the stop bytes beside the following byte, are not modelled.
+//! - the stop bytes beside the following byte are not modelled; the
+//!   walk's clear of the body it lets pass and of the mode word at the end
+//!   of its after-route count runs only when the walk is called without a
+//!   route, which the AI tick never does (it walks only a followed route).
 //!
 //! Evidence: the original's AI walk, its path follower, its route stop and
 //! soft stop, its head look and its body-in-the-way test, read from the
@@ -177,6 +181,15 @@ pub struct AiRoute {
     pub give_up_ms: Option<u32>,
     /// [Exarust] The stand-in's velocity for a body without muscles (m/s).
     pub velocity: Vec3,
+    /// The walk's mode word: the follow's 4 while it follows its leader, 6
+    /// while it closes on it; every stop (the route stop and the soft stop)
+    /// clears it.
+    pub mode: i32,
+    /// Where the leader stood when the follow last planned to it (cm).
+    pub leader_at: Vec3,
+    /// The body the walk lets pass: its in-the-way test skips it (the
+    /// leader a follow walks to), as entity bits.
+    pub passes: Option<u64>,
 }
 
 impl Default for AiRoute {
@@ -193,6 +206,9 @@ impl Default for AiRoute {
             straight: false,
             give_up_ms: None,
             velocity: Vec3::ZERO,
+            mode: 0,
+            leader_at: Vec3::ZERO,
+            passes: None,
         }
     }
 }
@@ -230,11 +246,12 @@ impl AiRoute {
         self.straight = true;
     }
 
-    /// The route stop's AI side: the route is no longer followed and no
-    /// plan is wanted.
+    /// The route stop's AI side: the route is no longer followed, no plan
+    /// is wanted and the walk's mode word clears.
     pub fn stop(&mut self) {
         self.following = false;
         self.wants_plan = false;
+        self.mode = 0;
     }
 
     /// Stops the route when `owner` planned it.
@@ -339,7 +356,8 @@ pub fn route_stop(route: &mut AiRoute, body: &mut WalkBody) {
     body.flags &= !flags::RUN;
 }
 
-/// The soft stop: the route ends (a plan request stays), the run bit
+/// The soft stop: the route ends (a plan request stays, the mode word
+/// clears), the run bit
 /// clears and the stopping bit is set; a goal farther than `8·speed + 20`
 /// cm from the standing point (3-D, a NaN distance not) is pulled back to
 /// that along the frame's forward, and the line from the ground point to
@@ -347,6 +365,7 @@ pub fn route_stop(route: &mut AiRoute, body: &mut WalkBody) {
 /// blocks.
 pub fn soft_stop(route: &mut AiRoute, body: &mut WalkBody, grid: Option<&NavGrid>) {
     route.following = false;
+    route.mode = 0;
     body.flags = (body.flags & !flags::RUN) | flags::STOPPING;
     let limit = STOP_SPEED * body.speed + STOP_BASE_CM;
     if distance2(body.standing_cm, body.goal_cm) > limit * limit {
@@ -759,8 +778,9 @@ pub fn walk_routes(
             let driver = &mut driven.0;
             let skip: Vec<usize> = nearby
                 .iter()
-                .position(|(id, ..)| Some(*id) == driver.in_way)
-                .into_iter()
+                .enumerate()
+                .filter(|(_, (id, ..))| Some(*id) == driver.in_way || Some(*id) == route.passes)
+                .map(|(i, _)| i)
                 .collect();
             let mut body = request_body(&req, driver, &at);
             let mut own = driver.gaze;

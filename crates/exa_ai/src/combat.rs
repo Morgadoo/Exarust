@@ -1962,8 +1962,10 @@ pub enum Exit {
 pub struct Leader {
     pub position: Vec3,
     pub facing: Vec3,
-    /// Its locomotion asks for a sprint (bit 4) or a run (bit 8).
+    /// Its locomotion request's bit 4 (Exarust's run bit), which turns the
+    /// band toward where the follower stands ahead of it.
     pub sprinting: bool,
+    /// Its request's bit 8 (the sprint latch), which makes the follow run.
     pub running: bool,
 }
 

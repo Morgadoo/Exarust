@@ -77,6 +77,13 @@ pub struct AiPlugin;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DuelSystems;
 
+/// The leader a following character keeps track of in combat: its body
+/// (the entity the walk lets pass) and where it stands (cm), how it faces
+/// and its request's run and sprint bits. The game writes it each body tick
+/// (the player); without one no follower is called back.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct FollowLeader(pub Option<(Entity, combat::Leader)>);
+
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         exa_physics::sim_app::add_frame_start(app);
@@ -85,6 +92,7 @@ impl Plugin for AiPlugin {
             .init_resource::<rooms::RoomCells>()
             .init_resource::<brain::BrainClock>()
             .init_resource::<pass_turn::PassTurn>()
+            .init_resource::<FollowLeader>()
             .add_message::<presence::Entered>()
             .add_message::<brain::StatueByte>()
             .add_message::<exa_script::EndConversationsOf>()
@@ -187,6 +195,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_message::<exa_combat::AttackAskedHook>()
         .bridge_snapshot_resource::<crate::BrainTickClock>()
         .bridge_copy::<crate::Duellist>()
+        .bridge_move_resource::<crate::FollowLeader>()
         .bridge_copy::<crate::drive::Driven>()
         .bridge_copy::<crate::route_walk::AiRoute>()
         .bridge_move_resource::<crate::brain::BrainClock>()
@@ -394,6 +403,10 @@ pub struct Duellist {
     /// Its last combat tick cleared the body's pose word: the down exit
     /// and every tick past the leave do.
     clears_pose: bool,
+    /// How far a following fighter lets its leader go before the combat
+    /// state's follow check calls it back (cm): the follow state's 400
+    /// out of combat, eased toward 700 in combat.
+    pub follow_band: f32,
 }
 
 /// The body's step as the combat tick left it, whether it started a step,
@@ -469,6 +482,7 @@ impl Duellist {
             feet_write: None,
             down_arc: None,
             clears_pose: false,
+            follow_band: idle::FOLLOW_BAND_CM,
         }
     }
 
@@ -759,6 +773,102 @@ fn published_blow(
         angle: 0.0,
     }
 }
+
+/// The combat state's follow check for a fighter whose activity is the
+/// follow ([`combat::follow_check`]): its band eases toward 700 cm (500 cm
+/// plus 100 cm by how far ahead of a running leader it is); inside the band
+/// a follower on its walk to the leader soft-stops; outside it the walk's
+/// urgency is 2 when the leader sprints or is three bands away, else 1, the
+/// walk lets the leader pass while it follows, and the follow plans a route
+/// to the leader's ground point 20 cm up (forced, stop 40, size class 1, the
+/// follow's half-height end test), which on success becomes the follow
+/// (mode 4) from where the leader stands. Returns whether the leader calls
+/// it: a follower already walking to its leader, whose combat tick then
+/// ends.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn combat_follow(
+    ai: &mut Duellist,
+    npc: &mut brain::Npc,
+    (leader_body, leader): (Entity, combat::Leader),
+    route: &mut route_walk::AiRoute,
+    walking: Option<(
+        &mut exa_physics::body::locomotion::Locomotion,
+        &exa_physics::body::locomotion::Locomotor,
+        &mut drive::Driven,
+        Option<&Ragdoll>,
+    )>,
+    feet: Vec3,
+    grid: Option<&exa_world::nav::NavGrid>,
+    (turn, frame, who, now): (&mut PlanTurn, u32, u64, u32),
+    target_down: bool,
+) -> bool {
+    use route::Router as _;
+    use route_walk::Walker;
+    let me = feet * CM;
+    let mut following = combat::Following {
+        band: ai.follow_band,
+        following: route.mode == idle::FOLLOWING,
+        route_to: route.follows(Walker::Follow).then_some(route.leader_at),
+    };
+    let check = combat::follow_check(me, &leader, &mut following);
+    ai.follow_band = following.band;
+    if check.stop {
+        // The soft stop: the walk ends, its mode word clears.
+        match walking {
+            Some((req, motor, driven, ragdoll)) => {
+                let at = drive::DriveBody::of(feet, motor, ragdoll);
+                route_walk::stop_request(route, req, &mut driven.0, &at, grid);
+            }
+            None => {
+                route.following = false;
+                route.mode = 0;
+            }
+        }
+        return false;
+    }
+    if check.urgency == 0 {
+        return false;
+    }
+    route.urgency = check.urgency;
+    if following.following {
+        route.passes = Some(leader_body.to_bits());
+    }
+    if check.replan {
+        let point = leader.position + Vec3::new(0.0, 20.0, 0.0);
+        let planned = match grid {
+            Some(grid) => {
+                let shift = npc.alert_count;
+                let mut router = NavRouter::new(grid, &mut npc.plan_goal, shift);
+                if let Some(record) = router.goal() {
+                    record.accept = COMBAT_FOLLOW_STOP;
+                    record.size = COMBAT_FOLLOW_SIZE;
+                    record.toward_target(target_down);
+                }
+                let goal = route::Goal {
+                    point,
+                    radius_cm: COMBAT_FOLLOW_STOP as f32,
+                    motion: 0,
+                };
+                route::plan(turn, who, frame, me, goal, true, &mut router)
+                    .filter(|p| p.following)
+                    .map(|p| p.route.points)
+            }
+            // No grid: a straight walk to the leader [Exarust, as the
+            // follow state's].
+            None => Some(vec![me, point]),
+        };
+        if let Some(points) = planned {
+            route.start_until(points, check.urgency, Walker::Follow, now);
+            route.mode = idle::FOLLOWING;
+            route.leader_at = leader.position;
+        }
+    }
+    check.calls
+}
+
+/// The combat follow's plan: stop at four cells, the size class 1.
+const COMBAT_FOLLOW_STOP: i32 = 40;
+const COMBAT_FOLLOW_SIZE: u8 = 1;
 
 /// The arc kind a downed duellist at or under `who` published from its down
 /// exit ([`Duellist::down_arc`]), if any.
@@ -1148,7 +1258,7 @@ fn duellist(
         >,
     ),
     mut brains: Query<&mut brain::Npc>,
-    role_db: Option<Res<brain::RoleDatabase>>,
+    (role_db, follow_leader): (Option<Res<brain::RoleDatabase>>, Option<Res<FollowLeader>>),
     role_lists: Query<&crate::roles::Roles>,
     ids: Query<&brain::CharacterId>,
     mut npcs: Query<(
@@ -1864,6 +1974,34 @@ fn duellist(
             };
             me.can_step = combat::can_act(&me) && !ai.holds_ground;
             ai.queue = 0;
+            // The follow check, first in the combat tick while it does not
+            // step, for a fighter whose activity is the follow.
+            let leader_calls = match follow_leader.as_deref().and_then(|l| l.0) {
+                Some(leader) if !me.stepping => match brains.get_mut(entity) {
+                    Ok(mut npc) if npc.state() == Some(activity::IdleState::Follow) => {
+                        let walking = match (walk.as_deref_mut(), locomotor, driven.as_deref_mut())
+                        {
+                            (Some(req), Some(motor), Some(driven)) => {
+                                Some((req, motor, driven, ragdoll))
+                            }
+                            _ => None,
+                        };
+                        combat_follow(
+                            &mut ai,
+                            &mut npc,
+                            leader,
+                            &mut route,
+                            walking,
+                            feet,
+                            nav.as_deref(),
+                            (&mut *turn, *frame, entity.to_bits(), now as u32),
+                            target_condition.off_feet(),
+                        )
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
             let ai_target_bits = ai.target.to_bits();
             let focused = if ai.dropped { None } else { ai.focus };
             let no_foe = focused.is_some() || ai.dropped;
@@ -2092,7 +2230,7 @@ fn duellist(
                     contacts: &mut contacts,
                     around: &around,
                     field: &mut field,
-                    leader_calls: false,
+                    leader_calls,
                 },
                 roll,
             );
@@ -3577,6 +3715,101 @@ mod tests {
         let ai = app.world().get::<Duellist>(fighter).unwrap();
         assert_eq!(ai.down_arc(), None);
         assert!(ai.fighting());
+    }
+
+    /// A follower in combat: its band eases toward 700 cm; past it the
+    /// combat state's follow check plans the walk to its leader (the
+    /// follow's mode 4, from where the leader stands); the next tick,
+    /// walking to its leader, the leader calls it and its combat tick ends
+    /// there; inside 0.7 of the band its walk stops and the mode word
+    /// clears.
+    #[test]
+    fn a_fighting_follower_is_called_back_by_its_leader() {
+        let (mut app, follower, _) = duel(3.0, false);
+        let leader_body = app.world_mut().spawn_empty().id();
+        let leader = combat::Leader {
+            position: Vec3::new(0.0, 0.0, 1500.0),
+            facing: Vec3::Z,
+            sprinting: false,
+            running: false,
+        };
+        app.insert_resource(FollowLeader(Some((leader_body, leader))));
+        let mut npc = brain::Npc::new([0.0; 4]);
+        npc.applied = Some(activity::Applied {
+            activity: 4,
+            idle_activity: 6,
+            state: activity::IdleState::Follow,
+            leaves_party: false,
+            follow_band_cm: Some(400.0),
+            phase_word: 1,
+            create_idle: None,
+            drop_idle: false,
+            skipped: Vec::new(),
+        });
+        app.world_mut().entity_mut(follower).insert(npc);
+        engage(&mut app, follower);
+        // Into combat, then the first combat tick: 400 cm eases to
+        // 0.99·400 + 0.01·700 (in double); 1500 cm is past three bands, so
+        // the walk runs (urgency 2), planned straight without a grid.
+        step(&mut app);
+        assert_eq!(
+            app.world().get::<Duellist>(follower).unwrap().follow_band,
+            400.0
+        );
+        step(&mut app);
+        let band = (400.0f64 * 0.99 + 700.0f64 * 0.01) as f32;
+        let w = app.world();
+        let ai = w.get::<Duellist>(follower).unwrap();
+        assert!(ai.fighting());
+        assert_eq!(ai.follow_band, band);
+        // Not yet walking to the leader: the combat tick went on.
+        assert!(ai.clears_pose());
+        let route = w.get::<route_walk::AiRoute>(follower).unwrap();
+        assert!(route.follows(route_walk::Walker::Follow));
+        assert_eq!(route.mode, idle::FOLLOWING);
+        assert_eq!(route.leader_at, leader.position);
+        assert_eq!(route.urgency, 2);
+        assert_eq!(
+            route.points.last().copied(),
+            Some(leader.position + Vec3::new(0.0, 20.0, 0.0))
+        );
+        assert_eq!(route.passes, None);
+        // Walking to the leader: it calls, the combat tick ends at the
+        // follow (the pose word is left), and the walk lets it pass.
+        step(&mut app);
+        let band = (f64::from(band) * 0.99 + 700.0f64 * 0.01) as f32;
+        let w = app.world();
+        let ai = w.get::<Duellist>(follower).unwrap();
+        assert!(ai.fighting());
+        assert_eq!(ai.follow_band, band);
+        assert!(!ai.clears_pose());
+        let route = w.get::<route_walk::AiRoute>(follower).unwrap();
+        assert!(route.follows(route_walk::Walker::Follow));
+        assert_eq!(route.passes, Some(leader_body.to_bits()));
+        // The leader comes within 0.7 of the band: the walk stops.
+        app.insert_resource(FollowLeader(Some((
+            leader_body,
+            combat::Leader {
+                position: Vec3::new(0.0, 0.0, 250.0),
+                ..leader
+            },
+        ))));
+        step(&mut app);
+        let route = app.world().get::<route_walk::AiRoute>(follower).unwrap();
+        assert!(!route.following);
+        assert_eq!(route.mode, 0);
+        // A fighter that does not follow is never called back.
+        let (mut app, fighter, _) = duel(3.0, false);
+        app.insert_resource(FollowLeader(Some((leader_body, leader))));
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert(brain::Npc::new([0.0; 4]));
+        engage(&mut app, fighter);
+        step(&mut app);
+        step(&mut app);
+        let w = app.world();
+        assert_eq!(w.get::<Duellist>(fighter).unwrap().follow_band, 400.0);
+        assert!(!w.get::<route_walk::AiRoute>(fighter).unwrap().following);
     }
 
     /// The down exit's arc gives way past a clock of 0.9 (a double

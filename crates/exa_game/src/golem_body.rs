@@ -68,6 +68,7 @@ impl Plugin for GolemBodyPlugin {
                     .before(stand_sentries),
                 clear_fighting_poses
                     .after(exa_ai::DuelSystems)
+                    .after(rest_sleepers)
                     .before(stand_sentries),
                 stand_sentries
                     .after(exa_ai::brain::idle_walk)
