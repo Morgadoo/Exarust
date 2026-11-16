@@ -59,7 +59,7 @@ use exa_assets::Game;
 use exa_assets::texture::ColorSpace;
 use exa_combat::CombatSystems;
 use exa_combat::wounds::{Spray, jet_droplets, spray_strength};
-use exa_physics::body::{BODY_HZ, BodySystems, Ragdoll};
+use exa_physics::body::{BODY_HZ, Ragdoll};
 use exa_physics::engine_math::normalize_approx;
 use exa_render::spray::{SPRAY_TEXTURE, SprayMaterial};
 use exa_world::level_lifecycle::LevelChangeRequest;
@@ -96,7 +96,7 @@ impl Plugin for SprayPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    tick_sprays.after(BodySystems),
+                    tick_sprays.in_set(exa_physics::body::AfterSolver::Sprays),
                     start_jets.after(tick_sprays).after(CombatSystems),
                 ),
             )
@@ -582,7 +582,7 @@ fn find_part(
 }
 
 /// Starts a jet for each bleeding blow of the frame, on the struck part.
-fn start_jets(
+pub fn start_jets(
     mut sprays: MessageReader<Spray>,
     mut state: ResMut<BloodSprays>,
     children: Query<&Children>,
@@ -624,7 +624,7 @@ fn start_jets(
 /// ([`BloodSprays::reset`]). The droplets in flight fly on. Guess: the
 /// original's reset runs from the game's session routines that clear the
 /// world; Exarust's teardown request stands for them.
-fn reset_sprays(
+pub fn reset_sprays(
     mut changes: MessageReader<LevelChangeRequest>,
     mut sprays: ResMut<BloodSprays>,
     mut fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
