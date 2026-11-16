@@ -578,13 +578,13 @@ impl Operative {
     /// length is under 1 or the body is too short for it, as the original's
     /// script accessor answers no text for a length under 1. (The word at
     /// `0x38` is also a teleporter's last destination slot; only a scripted
-    /// device's use reads it as a script.)
+    /// device's use reads it as a script.) The text is the object
+    /// database's counted list of the body ([`counted_list`]), cut to the
+    /// length word, as the use hands the interpreter both.
     pub fn script(b: &[u8]) -> Option<&[u8]> {
-        let len = i32::from_le_bytes(b.get(0x38..0x3C)?.try_into().expect("4 bytes"));
-        if len < 1 {
-            return None;
-        }
-        b.get(0x3C..0x3C + len as usize)
+        let text = counted_list(b)?;
+        let len = i32::from_le_bytes(b.get(0x38..0x3C)?.try_into().ok()?) as usize;
+        text.get(..len)
     }
 
     /// A lever's auto-return time in milliseconds.

@@ -141,11 +141,19 @@ impl SearchItems {
     }
 }
 
-/// The size byte an item's container entry is checked by: its model
-/// section's (the equip byte), for an item with a model.
-fn size_of(item: &exa_formats::objdb::Item) -> Option<u8> {
-    (!item.model.is_empty()).then_some(item.equip_lock)
+/// The size byte an item's container entry is checked by, as the
+/// original's container add reads it: the model section the object
+/// database's flagged lookup gives ([`exa_formats::objdb::ObjectDb::flagged_section`]:
+/// the table flags must name the model, and a world id has none), its byte
+/// `0x1C`.
+pub fn model_size(db: &exa_formats::objdb::ObjectDb, id: u32) -> Option<u8> {
+    db.flagged_section(id, search::section::MODEL)?
+        .get(MODEL_SIZE)
+        .copied()
 }
+
+/// Where the size byte lies in a model section's body.
+const MODEL_SIZE: usize = 0x1C;
 
 /// The debug searcher (`--searcher <record id>`): the level character with
 /// this record id gets the shipped recruitment's role edits
@@ -700,7 +708,11 @@ pub fn room_grid_in_cells(
 }
 
 /// Reads the items' search values from the game's object database once.
-pub fn load_search_items(game: Option<Res<Game>>, mut items: ResMut<SearchItems>) {
+pub fn load_search_items(
+    game: Option<Res<Game>>,
+    live: Option<ResMut<exa_assets::live_objects::LiveObjects>>,
+    mut items: ResMut<SearchItems>,
+) {
     if items.tried {
         return;
     }
@@ -708,6 +720,17 @@ pub fn load_search_items(game: Option<Res<Game>>, mut items: ResMut<SearchItems>
         return;
     };
     items.tried = true;
+    // The sizes come from the live database's base tier, as the original's
+    // container add looks them up.
+    if let Some(mut live) = live {
+        live.ensure_base(&game.0);
+        let db = live.db();
+        items.sizes = db
+            .base
+            .records()
+            .filter_map(|r| Some((r.id, model_size(db, r.id)?)))
+            .collect();
+    }
     let Some(bytes) = game
         .0
         .pack(PackKind::Resource)
@@ -723,10 +746,6 @@ pub fn load_search_items(game: Option<Res<Game>>, mut items: ResMut<SearchItems>
         .records
         .iter()
         .filter_map(|r| Some((r.id, Loot::of_payload(db.payload(r))?)))
-        .collect();
-    items.sizes = exa_formats::objdb::items(&db)
-        .iter()
-        .filter_map(|item| Some((item.id, size_of(item)?)))
         .collect();
     items.generation = items.generation.wrapping_add(1);
     info!("search: {} items it can weigh", items.loot.len());
@@ -755,7 +774,7 @@ pub fn load_level_search_items(
     items.level_sizes = local
         .0
         .iter()
-        .filter_map(|item| Some((tag(item.id), size_of(item)?)))
+        .filter_map(|item| Some((tag(item.id), model_size(live.db(), tag(item.id))?)))
         .collect();
     items.generation = items.generation.wrapping_add(1);
     info!(

@@ -4365,4 +4365,95 @@ mod tests {
         assert_eq!(transform.translation, Vec3::new(0.0, 0.05, 2.5));
         assert_eq!(transform.rotation, Quat::IDENTITY);
     }
+
+    /// A won week's prize is graded pristine as the week's verdict stows
+    /// it: the factory weapon (header flag bit 0, an `@` model) is copied
+    /// into the local tier and the copy's condition takes grade −1: quality
+    /// 255 with the quality spread set from 0.0, no damage or dirt and
+    /// their spreads cleared.
+    #[test]
+    fn a_won_prize_is_graded_pristine_when_stowed() {
+        fn section(tag: u32, body: &[u8]) -> Vec<u8> {
+            let mut v = tag.to_le_bytes().to_vec();
+            v.extend((body.len() as u32 + 8).to_le_bytes());
+            v.extend_from_slice(body);
+            v
+        }
+        const NAME: u32 = 0x1000_0000;
+        const MODEL: u32 = 0x10_0000;
+        const WEAPON: u32 = 0x4000;
+        let mut header = b"Sword".to_vec();
+        header.resize(16, 0);
+        header.extend(1u32.to_le_bytes());
+        header.extend(0u32.to_le_bytes());
+        let mut model = b"@Sword".to_vec();
+        model.resize(0x28, 0);
+        let mut weapon = vec![0u8; 0x60];
+        weapon[0xC..0x10].copy_from_slice(&[0x80, 0x40, 0x40, 0xFF]);
+        let payload = [
+            section(NAME, &header),
+            section(MODEL, &model),
+            section(WEAPON, &weapon),
+        ]
+        .concat();
+        let mut file = exa_formats::objdb::MAGIC.to_le_bytes().to_vec();
+        file.extend(32u32.to_le_bytes());
+        for w in [50, NAME | MODEL | WEAPON, 0, payload.len() as u32] {
+            file.extend(w.to_le_bytes());
+        }
+        file.extend([0; 16]);
+        file.extend(&payload);
+        let mut live = exa_assets::live_objects::LiveObjects::default();
+        live.db_mut().base = exa_formats::objdb::Store::parse(&file).unwrap();
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career
+            .won_items
+            .push(crate::arena_rewards::WonItem::Prize(50));
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(live)
+            .insert_resource(career)
+            .init_resource::<crate::save_live::ArenaStores>()
+            .insert_resource(crate::arsenal::ShelfKinds(
+                [(
+                    50,
+                    crate::arsenal::ItemKind {
+                        known: true,
+                        weapon: true,
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+            ))
+            .init_resource::<crate::shop_stock::LiveShopStock>()
+            .init_resource::<crate::shop_stock::ItemPalette>()
+            .init_resource::<crate::shop_stock::ShopFactories>()
+            .init_resource::<crate::hub_windows::HubItemNames>()
+            .init_resource::<crate::thaum::live::FrameEffectRoll>()
+            .add_systems(Update, hub_stow_won);
+        app.update();
+        let stores = app.world().resource::<crate::save_live::ArenaStores>();
+        let stowed: Vec<u32> = stores
+            .arsenal
+            .shelves
+            .iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.item)
+            .collect();
+        let local = exa_formats::objdb::LOCAL;
+        assert_eq!(stowed, vec![local | 1]);
+        let db = app
+            .world()
+            .resource::<exa_assets::live_objects::LiveObjects>()
+            .db();
+        let body = db.find(local | 1).unwrap().section(WEAPON).unwrap().to_vec();
+        let condition = exa_items::refresh::made_condition(&body).unwrap();
+        assert_eq!(
+            (condition.quality, condition.damage, condition.dirt),
+            (0xFF, 0, 0)
+        );
+        assert_eq!(condition.spreads.0, 0);
+        assert_eq!(app.world().resource::<crate::hub_windows::ArenaCareer>().won_items.len(), 0);
+    }
 }

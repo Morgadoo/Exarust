@@ -279,7 +279,13 @@ carried order (with the original's dead second-pair replacements), and the
 equip pass instantiates them, rewrites the attached hand nodes and the
 carried duplicates, and frees the temporary database. A load imports the
 save's world character and object databases into their world tiers
-(`Slots::world_characters`/`world_objects`). `level_transition` now also
+(`Slots::world_characters`/`world_objects`); an older save's object
+database goes through the loader's upgrade chain, the oldest bodies'
+paint seeds drawn from a run-time library twister seeded from the clock
+(`slots::world_object_tier`). The loadout form's equip cost reads the
+object database's weapon points (one less for a one-handed weapon,
+`exa_items::card::weapon_points`), and the search's container sizes come
+from the live database's flagged model lookup (`npc_search::model_size`). `level_transition` now also
 has the transition's ordered flow: the teardown and flush, the destination
 read (save section or archive), the import, the spawn matrix choice, the
 story respawn, the grid arrays, the followers and the post-load pass, with
