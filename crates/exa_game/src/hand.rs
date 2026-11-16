@@ -2286,6 +2286,16 @@ pub(crate) fn hold_hand(
                 // The lift's own out-of-reach answer cancels it.
                 end_lift(&mut items, &mut bodies, &mut fixed, hand.out_of_reach, None);
             } else {
+                // Blocked or second-blocked, the controls' frame stops
+                // before its request: the lift is neither turned nor
+                // placed. With the controls off their frame is replaced by
+                // the hand's own, which turns the item and places it by
+                // the GUI drop's rule (below).
+                if !controls_off
+                    && player_controls::PlayerControl::input_suspended(control.as_deref())
+                {
+                    return;
+                }
                 // The movement inputs turn the item (the lift keeps the
                 // movement request): the pad's raw move stick, or the move
                 // keys under its dead zone. The base speed ramps after
@@ -2445,94 +2455,107 @@ pub(crate) fn hold_hand(
                         .find(|(i, ..)| *i == part)
                         .map(|(_, at, _)| at.transform_point3(box_centre));
                     let bodies_ref = &bodies;
-                    let point = item_cursor::lift_point(origin, dir, hit_at, limit)
-                        .filter(|_| !behind_occluder)
-                        .and_then(|base| {
-                            // The sweep starts the item's box centre 600 cm
-                            // back along the ray from the placed point and
-                            // moves it to the first contact of any of its
-                            // spheres, at most 1000 cm on: the level, the
-                            // props' stand-ins and the loose props' meshes,
-                            // the held body's own left out. A sweep that
-                            // meets nothing moves it the whole 1000 cm.
-                            let start = item_cursor::sweep_start(base, dir);
-                            let shift = start - centre_now?;
-                            let mut spheres = Vec::new();
-                            for (index, at, own) in &parts_now {
-                                let frame = Frame::new(
-                                    Vec3::from(at.translation) + shift,
-                                    Mat3::from(at.matrix3),
-                                );
-                                let local: Vec<item_cursor::SweepSphere> = own
-                                    .iter()
-                                    .map(|&(centre, radius)| item_cursor::SweepSphere {
-                                        centre,
-                                        radius,
-                                    })
-                                    .collect();
-                                let pulls = match view {
-                                    Some((back, eye, near)) => item_cursor::near_plane_pulls(
-                                        back, eye, near, frame, dir, &local,
-                                    ),
-                                    None => vec![0.0; local.len()],
-                                };
-                                for (sphere, pull) in local.iter().zip(pulls) {
-                                    if sphere.radius.is_nan() || sphere.radius <= 0.0 {
-                                        continue;
-                                    }
-                                    let world = frame.position + frame.rotation * sphere.centre;
-                                    spheres.push(item_cursor::SphereOf {
-                                        part: *index,
-                                        sphere: item_cursor::SweepSphere {
-                                            centre: world - start,
-                                            radius: sphere.radius,
-                                        },
-                                        pull: pull * CM,
-                                    });
-                                }
-                            }
-                            let own_stand_in = |h| {
-                                sources
-                                    .stand_ins
-                                    .owner_of(h)
-                                    .is_some_and(|(owner, _)| owner == body)
-                            };
-                            let contact = item_cursor::per_sphere_contact(
-                                spheres,
-                                dir,
-                                |_, offset, dir, from, length, radius| {
-                                    let at = start + offset + dir * from;
-                                    let level = sources
-                                        .physics
-                                        .solid_sweep_except(at, dir, length, radius, &own_stand_in)
-                                        .filter(|toi| *toi > 0.0);
-                                    let props = loose_props(bodies_ref, &sources.stand_ins)
-                                        .filter(|(e, _)| *e != body)
-                                        .flat_map(|(_, r)| r.parts.iter())
-                                        .filter_map(|p| {
-                                            exa_physics::body::pairs::ball_cast(
-                                                p, at, dir, length, radius,
-                                            )
-                                        })
-                                        .reduce(f32::min);
-                                    match (level, props) {
-                                        (Some(a), Some(b)) => Some(a.min(b)),
-                                        (a, b) => a.or(b),
-                                    }
-                                },
+                    // With the controls off the hand's frame places by the
+                    // GUI drop's rule instead: the far limit (−100 000 cm,
+                    // a hit at or over it kept, a climbing ray refused only
+                    // when it falls back to the plane) and no room query.
+                    let ray_point = if controls_off {
+                        item_cursor::place_point(
+                            origin,
+                            dir,
+                            hit_at,
+                            item_cursor::PLACEMENT_LIMIT_CM,
+                        )
+                    } else {
+                        item_cursor::lift_point(origin, dir, hit_at, limit)
+                            .filter(|_| !behind_occluder)
+                    };
+                    let point = ray_point.and_then(|base| {
+                        // The sweep starts the item's box centre 600 cm
+                        // back along the ray from the placed point and
+                        // moves it to the first contact of any of its
+                        // spheres, at most 1000 cm on: the level, the
+                        // props' stand-ins and the loose props' meshes,
+                        // the held body's own left out. A sweep that
+                        // meets nothing moves it the whole 1000 cm.
+                        let start = item_cursor::sweep_start(base, dir);
+                        let shift = start - centre_now?;
+                        let mut spheres = Vec::new();
+                        for (index, at, own) in &parts_now {
+                            let frame = Frame::new(
+                                Vec3::from(at.translation) + shift,
+                                Mat3::from(at.matrix3),
                             );
-                            if let Some(hit) = contact {
-                                debug!(
-                                    "hand: lift sweep stops part {} at {:.1} cm from its start",
-                                    hit.part, hit.contact
-                                );
+                            let local: Vec<item_cursor::SweepSphere> = own
+                                .iter()
+                                .map(|&(centre, radius)| item_cursor::SweepSphere {
+                                    centre,
+                                    radius,
+                                })
+                                .collect();
+                            let pulls = match view {
+                                Some((back, eye, near)) => item_cursor::near_plane_pulls(
+                                    back, eye, near, frame, dir, &local,
+                                ),
+                                None => vec![0.0; local.len()],
+                            };
+                            for (sphere, pull) in local.iter().zip(pulls) {
+                                if sphere.radius.is_nan() || sphere.radius <= 0.0 {
+                                    continue;
+                                }
+                                let world = frame.position + frame.rotation * sphere.centre;
+                                spheres.push(item_cursor::SphereOf {
+                                    part: *index,
+                                    sphere: item_cursor::SweepSphere {
+                                        centre: world - start,
+                                        radius: sphere.radius,
+                                    },
+                                    pull: pull * CM,
+                                });
                             }
-                            item_cursor::placement_point(
-                                start,
-                                dir,
-                                item_cursor::sweep_distance(contact),
-                            )
-                        });
+                        }
+                        let own_stand_in = |h| {
+                            sources
+                                .stand_ins
+                                .owner_of(h)
+                                .is_some_and(|(owner, _)| owner == body)
+                        };
+                        let contact = item_cursor::per_sphere_contact(
+                            spheres,
+                            dir,
+                            |_, offset, dir, from, length, radius| {
+                                let at = start + offset + dir * from;
+                                let level = sources
+                                    .physics
+                                    .solid_sweep_except(at, dir, length, radius, &own_stand_in)
+                                    .filter(|toi| *toi > 0.0);
+                                let props = loose_props(bodies_ref, &sources.stand_ins)
+                                    .filter(|(e, _)| *e != body)
+                                    .flat_map(|(_, r)| r.parts.iter())
+                                    .filter_map(|p| {
+                                        exa_physics::body::pairs::ball_cast(
+                                            p, at, dir, length, radius,
+                                        )
+                                    })
+                                    .reduce(f32::min);
+                                match (level, props) {
+                                    (Some(a), Some(b)) => Some(a.min(b)),
+                                    (a, b) => a.or(b),
+                                }
+                            },
+                        );
+                        if let Some(hit) = contact {
+                            debug!(
+                                "hand: lift sweep stops part {} at {:.1} cm from its start",
+                                hit.part, hit.contact
+                            );
+                        }
+                        item_cursor::placement_point(
+                            start,
+                            dir,
+                            item_cursor::sweep_distance(contact),
+                        )
+                    });
                     // A placement marker named for the item (its id or its
                     // template) snaps it onto the marker's frame: the ray's
                     // segment runs to the picked point, or 10 000 cm
@@ -2562,7 +2585,7 @@ pub(crate) fn hold_hand(
                             bodies_ref.iter().map(|(e, r, ..)| (e, r)),
                         )
                     };
-                    let snapped = if behind_occluder {
+                    let snapped = if behind_occluder || controls_off {
                         None
                     } else {
                         items.snap(origin, dir, length, overlaps)
@@ -2586,6 +2609,43 @@ pub(crate) fn hold_hand(
                             pick::walk_within_reach(at * CM, hip * CM, lift_region(rooms, hip, at))
                         })
                     };
+                    // The controls-off frame: the item goes where the sweep
+                    // leaves it whether or not its box fits, with no reach
+                    // test, hover word or kept frame; a fitting placement
+                    // thaws a frozen item.
+                    if controls_off {
+                        if let Some(point) = point
+                            && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body)
+                        {
+                            let (frame, fits) = item_cursor::centred_frame(
+                                items.rotation,
+                                point,
+                                box_centre,
+                                box_half,
+                            );
+                            let worlds = item_cursor::snapped_parts(
+                                &ragdoll
+                                    .parts
+                                    .iter()
+                                    .map(|p| p.transform())
+                                    .collect::<Vec<_>>(),
+                                part,
+                                frame,
+                            );
+                            fixed.write(body, &mut ragdoll, move |r| {
+                                r.place_at(&worlds);
+                                r.hold_grab_still();
+                                r.hold_out();
+                                if fits && r.frozen() {
+                                    r.freeze(false);
+                                }
+                            });
+                            if let Some(held) = items.held.as_mut() {
+                                held.shown = frame;
+                            }
+                        }
+                        return;
+                    }
                     let held_frame = match (snapped, point) {
                         (Some(snap), _) => {
                             item_cursor::lift_frame(snap.hover, true, in_reach(snap.frame.position))
@@ -3907,6 +3967,16 @@ mod tests {
     /// part's box centre in the world after the frame, the ray's
     /// direction, and whether the frame held.
     fn lift_over_floor(props: Vec<Ragdoll>) -> (Vec3, Vec3, bool) {
+        let (centre, dir, held, _) = lift_over_floor_with(props, None);
+        (centre, dir, held)
+    }
+
+    /// [`lift_over_floor`] with the controls' state, also answering the
+    /// hover word the frame left.
+    fn lift_over_floor_with(
+        props: Vec<Ragdoll>,
+        control: Option<player_controls::PlayerControl>,
+    ) -> (Vec3, Vec3, bool, u32) {
         use bevy::camera::{ComputedCameraValues, RenderTargetInfo};
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
@@ -3969,11 +4039,15 @@ mod tests {
             .insert((body, PropBody::new(Vec::new())));
         app.world_mut().resource_mut::<ItemCursor>().begin(held);
         app.world_mut().resource_mut::<Hand>().holding = Holding::Lift;
+        if let Some(control) = control {
+            app.insert_resource(control);
+        }
         app.update();
         let at = app.world().get::<Ragdoll>(item).unwrap().parts[0].transform();
         let dir = (Vec3::ZERO - eye.translation).normalize();
         let held = !app.world().resource::<Hand>().out_of_reach;
-        (at.transform_point3(centre), dir, held)
+        let hover = app.world().resource::<ItemCursor>().hover;
+        (at.transform_point3(centre), dir, held, hover)
     }
 
     /// The lift's free placement puts the item's box centre on the cursor's
@@ -3990,6 +4064,31 @@ mod tests {
         let across = (off - dir * off.dot(dir)).length();
         assert!(across < 1e-3, "the box centre is on the ray: {centre}");
         assert!((centre.y - 0.4).abs() < 0.01, "{centre}");
+    }
+
+    /// With the controls off the hand's own frame places the lift by the
+    /// GUI drop's rule: the same sweep puts the item on the floor, but no
+    /// hover word is set. Blocked, the controls' frame neither turns nor
+    /// places it: it stays where the lift took it.
+    #[test]
+    fn the_controls_off_frame_places_the_lift_and_a_block_holds_it() {
+        let mut off = player_controls::PlayerControl::default();
+        off.set_off(true);
+        let (centre, _, _, hover) = lift_over_floor_with(Vec::new(), Some(off));
+        assert!((centre.y - 0.4).abs() < 0.01, "{centre}");
+        assert_eq!(hover, 0);
+        let (_, _, _, hover) = lift_over_floor_with(Vec::new(), None);
+        assert_eq!(hover, item_cursor::HOVER_FREE);
+        let mut blocked = player_controls::PlayerControl::default();
+        blocked.set_off(false);
+        crate::controls_live::block_controls(&mut blocked, true, "test");
+        let (centre, _, _, hover) = lift_over_floor_with(Vec::new(), Some(blocked));
+        // The ball's box centre where the lift took it, 20 cm over (1, 0.3, 1).
+        assert!(
+            (centre - Vec3::new(1.0, 0.5, 1.0)).length() < 1e-4,
+            "{centre}"
+        );
+        assert_eq!(hover, 0);
     }
 
     /// A loose prop under the cursor (a dropped item, no stand-in) is
