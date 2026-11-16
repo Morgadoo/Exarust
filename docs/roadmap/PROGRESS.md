@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r260, 11-16) | target |
+| measure | start (r186, 11-10) | now (r261, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,943 | all |
+| Tests passing | 8,489 | 8,950 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 261 | The step radius base follows the body tick (30 moving, 65 off its feet, 60 at a new body), a stopping walker seeds its jolt term, parries aim at the blade's parry-height point, a shield parry holds by a plane link, and footsteps play on the body's two alternating voices; several old gaps found stale or vestigial (motiledyn5). The arena next-round test, flaky on the lane branch, passed eight repeats on the integration branch. Traces change from the first standing tick; determinism runs and duel scenes owed (GPU on hold) |
 | 2026-11-16 | 260 | The arena's return to the hub and the dead manager's leave to the title run behind the transition screen; both round stagings write the company's health back first; later tournament rounds keep the company's living bodies instead of rebuilding them, which had reset health and could bring a dead fighter back; the wind call is the cloth wake (an older reading had the wrong slot); the arsenal's shelves load and store, the board's item slots open cards, the hub entry plays the manager's motion (arena3). Arena scenes and determinism runs owed (GPU on hold) |
 | 2026-11-16 | 259 | The base form's show rebuilds its snap slots on every screen, journal, manual and settings open, the form hit walks its children as the original does, and Tab moves the hub forms' focus; the snap slots' only reader is the draw skin's page, which the line skin replaces, and the textured-skin forms hold no control records, so the draw skin's panel, box and scroll-bar slots have no textured-skin arm (guiform2). Hub and journal scenes owed (GPU on hold) |
 | 2026-11-16 | 258 | The lift's placement follows the original: the item's box centre starts 600 cm back along the cursor ray and slides to its spheres' first contact within 1000 cm (the level, the other props and the loose props' meshes); each sphere starts at the camera's near plane, which an older reading had taken for a support plane; with the controls off the hand's own frame places the lift and a block holds it (playerctl2). Lift scenes owed and their traces change (GPU on hold) |
