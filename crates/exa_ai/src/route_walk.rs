@@ -367,7 +367,6 @@ pub fn follow(route: &mut AiRoute, body: &mut WalkBody, in_scene: bool, grid: Op
     }
     let p = route.points.clone();
     let mut key: usize = 1;
-    let fraction: f32;
     if !in_scene {
         // [Exarust: a key outside the route is held to its segments; the
         // original reads past the points.]
@@ -394,7 +393,6 @@ pub fn follow(route: &mut AiRoute, body: &mut WalkBody, in_scene: bool, grid: Op
         body.standing_cm = slid;
         body.standing_cm.y = slid.y + body.pelvis_cm;
         body.ground_cm = slid;
-        fraction = route.fraction;
     } else {
         let ground = body.ground_cm;
         let mut best = FAR;
@@ -426,8 +424,8 @@ pub fn follow(route: &mut AiRoute, body: &mut WalkBody, in_scene: bool, grid: Op
         }
         route.key = key as u32;
         route.fraction = t_best;
-        fraction = t_best;
     }
+    let fraction = route.fraction;
     let d = p[key] - p[key - 1];
     let h = flat2(d);
     if h < EPS {
@@ -1316,5 +1314,45 @@ mod tests {
         tick(&mut app);
         let brain = app.world().get::<crate::brain::Npc>(npc).unwrap();
         assert_eq!(brain.routine.phase, crate::idle::Phase::WaitHome);
+    }
+
+    /// The real AI plugin's brains' tick stops the route of a character
+    /// that is down, whichever state planned it.
+    #[test]
+    fn the_ai_tick_stops_a_downed_characters_route() {
+        for (condition, followed) in [(Condition::NORMAL, true), (Condition::DOWN, false)] {
+            let mut app = App::new();
+            app.add_plugins((bevy::MinimalPlugins, crate::AiPlugin));
+            app.insert_resource(BodyTicks(1));
+            let target = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+            let root = app
+                .world_mut()
+                .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+                .id();
+            // A follow's route: no other state of the exa_ai chain ends it.
+            let mut route = AiRoute::default();
+            route.start(
+                vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 800.0)],
+                0,
+                Walker::Follow,
+            );
+            let npc = app
+                .world_mut()
+                .spawn((
+                    crate::brain::Npc::new([0.0; 4]),
+                    crate::Duellist::new(target),
+                    route,
+                    condition,
+                    exa_combat::Fighter::default(),
+                    GlobalTransform::IDENTITY,
+                    Transform::default(),
+                    ChildOf(root),
+                ))
+                .id();
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.world_mut().run_schedule(crate::BrainChain);
+            let route = app.world().get::<AiRoute>(npc).unwrap();
+            assert_eq!(route.following, followed, "{condition:?}");
+        }
     }
 }

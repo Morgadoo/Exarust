@@ -10,8 +10,9 @@ Exarust builds the grid as the original does (`exa_world::nav`, changes
 `build-the-navigation-grid` and `build-nav-terrain-only-where-blocks-are`).
 The planner searches that grid (`nav::find_path`) and the look-ahead is
 `nav::look_ahead` (75 + 6·v² cm, 45 + 6·v² in combat, 70 cm back). An NPC
-follows the path by the same heading and desired velocity the player
-writes. A line walk steps the longer axis and blocks on a floor more than
+follows the path through the AI's one route walk (`exa_ai::route_walk`):
+the path follower's carrot 100 cm along it, the walk's locomotion request,
+the soft stop at its end ([Following a route](#following-a-route)). A line walk steps the longer axis and blocks on a floor more than
 four above the current height when its underside is within ten. A straight
 walk allows five and follows a floor down. A line of 40 cm or less is not
 an obstacle. A point on a cell cheaper than 80 keeps its place; else a
@@ -383,6 +384,30 @@ on which plans ran before it, on every thread, in an order the frame's
 schedule does not fix; it only matters to a flood that runs past 15
 cells from its start, which needs a long narrow strip of costly cells.
 
+## Following a route
+
+The original keeps one route on the AI and walks it from the AI tick,
+after the state call, while the route is followed. Each tick the path
+follower places the movement goal: in the scene it projects the ground
+point onto every segment with a horizontal length (the parameter clamped
+to [0, 1], the nearest projection in 3-D taking the segment and its
+unclamped parameter); out of the scene it slides the standing point 2 cm
+along the route instead (no physics). The goal is the carrot 100 cm on
+from there along the route, spilling onto the later segments. At urgency
+0 (a walk) the run bit stays set until the carrot lies past 0.99 of the
+last segment; then it clears, and a ground point within 30 cm of the
+carrot soft-stops the walk. Above 0 (a hurry or a flight) the run bit
+clears and a ground point within a metre of the last point soft-stops.
+In the scene the line from the ground point to the carrot is walked
+through the pathfinder (the line walk above): a blocked line clears the
+run bit and asks the state to plan again. The soft stop ends the route,
+pulls a goal farther than `8·speed + 20` cm back along the body's
+forward and line-walks it. The walk then aims the body along the carrot
+(150 cm out once the body faces it within the 0.7 gate, 0.007 a cm under
+a metre) and runs it at an urgency on ground the pathfinder prices at
+most 0.5. The follower makes no call through the goal record: the end
+test (the flat or half-height radius test) is the planner's only.
+
 ## Exarust
 
 - `exa_world::nav::NavGrid` is the grid (a resource once built),
@@ -397,9 +422,11 @@ cells from its start, which needs a long narrow strip of costly cells.
   never blocks the player's look-ahead. `NavPlugin` installs the
   fallback for each new level and the grid when its build finishes; the
   fallback needs no teardown (Rust drops it).
-- The NPC chase route (`exa_ai::chase`, `exa_ai::route`) plans through
-  `nav::find_path`, one brain a frame (the original's plan turn), and is
-  followed when its ends lie more than 150 cm apart.
+- Every NPC route (the roam's, the flight's, the chase's, the follow's and
+  its search's; `exa_ai::route`) plans through `nav::find_path_to` with the
+  character's goal record, one brain a frame (the original's plan turn),
+  and is followed when its ends lie more than 150 cm apart (or forced),
+  as the character's one route (`exa_ai::route_walk::AiRoute`).
 - `exarust --debug-nav` (or F6) draws it ([DEBUGGING.md](DEBUGGING.md)).
 - `exa-tool nav <level> [--png file]` builds a level's grid without a
   window, prints its counts and draws its layers to a picture.
