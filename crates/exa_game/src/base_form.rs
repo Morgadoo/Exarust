@@ -65,10 +65,12 @@ pub(crate) fn base_look<'a>(look: &Look<'a>) -> Look<'a> {
     }
 }
 
-/// The default background's place for a form at its committed words.
+/// The default background's place for a form at its committed words, with
+/// its title's measured width and its frame-mark words (the mark under the
+/// pointer and the one a press holds).
 fn background_place(
     form: &RecordForm,
-    font: &GuiFont,
+    title_width: i32,
     words: gui_paint::LineFormWords,
 ) -> FormBackgroundPlace {
     let r = form.rect();
@@ -90,13 +92,32 @@ fn background_place(
         fill: None,
         vertical: None,
         horizontal: None,
-        title_width: font.text_width(form.title.as_bytes()),
+        title_width,
         title_icon: false,
-        line_height: font.line_height,
-        hover_code: 0,
-        pressed_code: 0,
-        button_down: false,
+        line_height: 0,
+        hover_code: form.frame.hover,
+        pressed_code: form.frame.held,
+        button_down: form.frame.down,
     }
+}
+
+/// The frame mark of a form that keeps the draw skin's default instance
+/// under a screen point: the skin's own hit test
+/// ([`exa_ui::skin::hit_form_background`]) on the default background the
+/// form draws (the picker's close mark -4, its title band -3), 0 off the
+/// form.
+pub(crate) fn frame_code(form: &RecordForm, at: (i32, i32)) -> i32 {
+    if !form.contains(at.0, at.1) {
+        return 0;
+    }
+    let words = gui_paint::commit_words(form.spec.placement, form.spec.attributes, true);
+    let r = form.rect();
+    exa_ui::skin::hit_form_background(
+        &background_place(form, 0, words),
+        at.0 - r.x,
+        at.1 - r.y,
+        form.unit(),
+    )
 }
 
 /// Paints the form's default background and its title blocks, with the
@@ -107,18 +128,25 @@ pub(crate) fn paint_base_frame(
     palette: &SkinPalette,
     font: &GuiFont,
     font_texture: Option<(u16, u16)>,
+    glyphs: Option<&exa_ui::GuiLevelState>,
 ) {
     let words = gui_paint::commit_words(form.spec.placement, form.spec.attributes, true);
     let r = form.rect();
     let mut batch = SkinBatch::new();
-    let drawn = draw_form_background(
-        &mut batch,
-        background_place(form, font, words),
-        form.unit(),
-        palette,
-    );
+    let mut place = background_place(form, font.text_width(form.title.as_bytes()), words);
+    place.line_height = font.line_height;
+    let drawn = draw_form_background(&mut batch, place, form.unit(), palette);
     gui_paint::offset_batch(&mut batch, r.x, r.y);
     painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+    // The arrow and mark icons from the small glyph atlas, before the
+    // title's text.
+    let icons: Vec<_> = drawn
+        .arrow_icons
+        .iter()
+        .chain(&drawn.mark_icons)
+        .copied()
+        .collect();
+    gui_paint::paint_mark_icons(painted, &icons, (r.x, r.y), palette, glyphs);
     if let (Some(title), Some(texture)) = (drawn.title, font_texture) {
         for block in title {
             painted.push(caption_layer(
@@ -240,7 +268,7 @@ pub(crate) fn paint_base_form(
 ) {
     let base = base_look(look);
     let (font, size) = crate::hub_windows::screen_font(base.textures, base.unit);
-    paint_base_frame(painted, form, &base.palette, &font, size);
+    paint_base_frame(painted, form, &base.palette, &font, size, base.glyphs);
     let origin = form.origin();
     let text = crate::settings_form::Text { font: &font, size };
     for (i, c) in form.controls().iter().enumerate() {

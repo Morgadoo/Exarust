@@ -1051,6 +1051,44 @@ pub(crate) fn text_slot(palette: &SkinPalette, slot: u8) -> [u8; 4] {
 
 /// The small atlas's built-in glyphs as a texture: white with each texel's
 /// coverage as alpha, rows turned top-down.
+/// Paints a default background's scroll-arrow and mark icons from the
+/// small atlas of built-in glyphs, at `origin` (the form's top left on the
+/// screen): an active mark (under the pointer, or held with the button up)
+/// through the atlas's outlined draw at scale 1 in the skin's icon inks,
+/// any other through its plain draw in the ink the background bound.
+pub(crate) fn paint_mark_icons(
+    painted: &mut Painted,
+    icons: &[exa_ui::skin::MarkIcon],
+    origin: (i32, i32),
+    palette: &SkinPalette,
+    glyphs: Option<&exa_ui::GuiLevelState>,
+) {
+    let Some(level) = glyphs else {
+        return;
+    };
+    let Some(texture) = glyph_texture(&level.small) else {
+        return;
+    };
+    for icon in icons {
+        let handle = icon.id as i32;
+        let (x, y) = (origin.0 + icon.x as i32, origin.1 + icon.y as i32);
+        let (quads, ink) = match (icon.scale, icon.ink) {
+            (Some(scale), _) => {
+                let inks = exa_ui::hud_status::status_inks(palette);
+                (level.small.draw_outlined(handle, x, y, scale, &inks), inks.face)
+            }
+            (None, Some(ink)) => (level.small.draw(handle, x as f32, y as f32), ink),
+            (None, None) => continue,
+        };
+        if !quads.is_empty() {
+            painted.push(GuiLayer::new(
+                exa_ui::gui_draw::icon_batch(&quads, ink),
+                LayerTexture::Owned(texture.clone()),
+            ));
+        }
+    }
+}
+
 fn glyph_texture(atlas: &exa_ui::icon_atlas::IconAtlas) -> Option<exa_ui::gui_draw::GuiTexture> {
     let image = &atlas.image;
     let channels = usize::from(image.channels.max(1));

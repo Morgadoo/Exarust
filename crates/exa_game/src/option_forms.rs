@@ -2068,6 +2068,104 @@ mod tests {
         assert!(windows.forms.get(FormWindow::Picker).is_none());
     }
 
+    /// The hub draw's layers after a few updates of a headless App with
+    /// the real game-screen and hub draw systems over `windows`, with the
+    /// interface level's glyph atlas at unit 4.
+    fn drawn_layers(windows: HubWindows) -> Vec<exa_ui::gui_draw::GuiLayer> {
+        use exa_ui::gui_draw::GuiFrames;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GuiFrames>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .init_resource::<crate::item_panel_draw::PanelIcons>()
+            .init_resource::<crate::gui_screens::DebugGuiForm>()
+            .insert_resource(exa_ui::GuiLevelState::at(1))
+            .insert_resource(windows);
+        app.add_systems(Update, crate::gui_screens::draw_screens);
+        crate::hub_windows::add_hub_draw(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world()
+            .resource::<GuiFrames>()
+            .frames
+            .iter()
+            .flat_map(|f| f.layers.iter().cloned())
+            .collect()
+    }
+
+    /// The picker's close mark: its frame code under a point of its title
+    /// band's right end.
+    fn picker_close_mark(windows: &HubWindows) -> (i32, i32) {
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        let r = form.rect();
+        (r.x + r.w / 2..r.x + r.w)
+            .flat_map(|x| (r.y..r.y + 26).map(move |y| (x, y)))
+            .find(|&at| crate::base_form::frame_code(form, at) == -4)
+            .expect("the close mark")
+    }
+
+    #[test]
+    fn the_pickers_close_mark_lights_draws_its_icon_and_closes_the_picker() {
+        let picker = |hovered: bool| {
+            let mut windows = windows();
+            windows.open_picker([255, 0, 0, 255], "Global Tint");
+            let mark = picker_close_mark(&windows);
+            if hovered {
+                hover(&mut windows, mark);
+            }
+            (windows, mark)
+        };
+        let palette = exa_ui::skin::shown_base_palette(1.0);
+        let icon_ink = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .filter(|l| matches!(l.texture, exa_ui::gui_draw::LayerTexture::Owned(_)))
+                .filter_map(|l| l.batch.vertices.first().map(|v| v.ink))
+                .collect::<Vec<_>>()
+        };
+        let bevels = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .flat_map(|l| l.batch.vertices.iter())
+                .filter(|v| v.ink == palette.form_hot[6])
+                .count()
+        };
+        // Away from the mark its icon draws plain in the label ink.
+        let idle = drawn_layers(picker(false).0);
+        assert!(icon_ink(&idle).contains(&palette.text[6]));
+        let (windows, _) = picker(true);
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        assert_eq!(form.frame.hover, -4);
+        // Under the pointer: the hot box (its outer bevel in the hot form
+        // group's seventh shade) and the outlined icon in the skin's face
+        // ink.
+        let hot = drawn_layers(windows);
+        assert!(icon_ink(&hot).contains(&exa_ui::hud_status::status_inks(&palette).face));
+        assert!(bevels(&hot) > bevels(&idle));
+        // Held down: the pressed box and its faded face, from the form
+        // group's fourth shade up to its third, a pixel in.
+        let (mut windows, mark) = picker(true);
+        windows.forms.input(mark, true, false);
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        assert_eq!((form.frame.held, form.frame.down), (-4, true));
+        let faces = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .flat_map(|l| l.batch.vertices.iter())
+                .filter(|v| v.ink == palette.form[2])
+                .count()
+        };
+        let pressed = drawn_layers(windows);
+        assert!(faces(&pressed) > faces(&hot));
+        // A press and release on the mark closes the picker.
+        let (mut windows, mark) = picker(true);
+        let mut career = ArenaCareer::default();
+        click(&mut windows, &mut career, mark);
+        assert!(windows.forms.get(FormWindow::Picker).is_none());
+        assert!(windows.forms.options.picker.is_none());
+    }
+
     /// The hub draw's frames after a few updates of a headless App with
     /// the real game-screen and hub draw systems over `windows`.
     fn drawn_quads(windows: HubWindows) -> Vec<[exa_ui::skin::GuiVertex; 4]> {

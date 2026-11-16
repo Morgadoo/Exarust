@@ -526,6 +526,9 @@ impl HubForms {
             None => return Vec::new(),
         };
         let screen_h = self.forms[target].form.screen.1;
+        if self.frame_marks(target, at, pressed, released) {
+            return Vec::new();
+        }
         let top = &mut self.forms[target];
         let window = top.window;
         let mut out: Vec<(FormWindow, usize, bool)> = top
@@ -567,6 +570,52 @@ impl HubForms {
             );
         }
         out
+    }
+
+    /// The frame-mark words of a form that keeps the draw skin's default
+    /// instance (the colour picker): the skin's hit test gives the mark
+    /// under the pointer off the records (the hover word); a press holds
+    /// it with the button down; the release acts on the held mark while
+    /// the pointer is still over it (the close mark closes the form) and
+    /// clears it. Returns true when the release closed the form.
+    fn frame_marks(&mut self, target: usize, at: (i32, i32), pressed: bool, released: bool) -> bool {
+        let top = &mut self.forms[target];
+        if top.form.client_top.is_none() {
+            return false;
+        }
+        let code = if top.form.hit(at.0, at.1).is_some() {
+            0
+        } else {
+            crate::base_form::frame_code(&top.form, at)
+        };
+        let frame = &mut top.form.frame;
+        frame.hover = code;
+        if pressed {
+            frame.held = code;
+            frame.down = true;
+        }
+        if !released {
+            return false;
+        }
+        frame.down = false;
+        let held = std::mem::take(&mut frame.held);
+        if held >= 0 {
+            return false;
+        }
+        let words = crate::gui_paint::commit_words(
+            top.form.spec.placement,
+            top.form.spec.attributes,
+            true,
+        );
+        let last = top.form.controls().len() as i32 - 1;
+        let actions = exa_ui::form::release_actions(held, code == held, last, words.attributes, false);
+        if actions.contains(&exa_ui::form::ReleaseAction::Close) {
+            let window = top.window;
+            info!("{window:?}: the close mark closes the form");
+            self.remove(window);
+            return true;
+        }
+        false
     }
 }
 

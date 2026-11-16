@@ -6769,6 +6769,31 @@ fn background_rect(place: &FormBackgroundPlace, unit: i32, code: i32) -> Option<
     .then_some(rect)
 }
 
+/// The draw skin's own hit test (the skin's hit slot) for a form whose
+/// default background is `place`, at a form-local point: its title band's
+/// close (-4), large (-5) and small (-6) marks or the band (-3), the
+/// vertical scroll bar's arrows (-9, -10) or rail (-8), the horizontal
+/// one's (-13, -14, -12), the grips, else 0. Each mark is probed in the
+/// rectangle the background draws it at.
+pub fn hit_form_background(place: &FormBackgroundPlace, x: i32, y: i32, unit: i32) -> i32 {
+    hit_skin(
+        SkinHitPlace {
+            x0: place.rect.x1 as i32,
+            y0: place.rect.y1 as i32,
+            size: place.inset,
+            limit_right: place.client_right,
+            limit_top: place.client_top,
+            limit_bottom: place.client_bottom,
+            frame_style: place.frame_style,
+            flags: place.flags,
+        },
+        x,
+        y,
+        unit,
+        &|code| background_rect(place, unit, code),
+    )
+}
+
 fn corner_rect(rect: [i32; 4]) -> GuiRect {
     GuiRect::corners(
         rect[0] as f32,
