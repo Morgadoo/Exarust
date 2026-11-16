@@ -3149,6 +3149,7 @@ fn shove_at_frame(
                     daze: 0.5,
                     step: None,
                     sag: None,
+                    light: false,
                 });
             }
         }
@@ -3475,6 +3476,7 @@ fn shove_props_at_frame(
                     daze: 0.0,
                     step: None,
                     sag: None,
+                    light: false,
                 });
             }
             shoved.push((e, c));

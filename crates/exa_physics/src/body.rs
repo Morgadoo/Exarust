@@ -2756,6 +2756,10 @@ pub struct Shove {
     /// The blow sag the blow sets on a living body (min(2·I, 1) for a blow
     /// on a limb); none leaves it.
     pub sag: Option<f32>,
+    /// A light blow (impact at most one half, or NaN): the damage routine
+    /// dates the struck body's step start a second back instead of a
+    /// knockback ([`Ragdoll::date_step_back`]).
+    pub light: bool,
 }
 
 /// Blows waiting for the next tick.
@@ -5075,6 +5079,16 @@ impl Ragdoll {
         steps::begin_knockback(&mut drive.steps, chest + offset, landings);
     }
 
+    /// A light blow's write in place of the knockback: the step's start is
+    /// dated a second back, so every window measured from it (the episode's
+    /// 100 and 200 ms, the behaviours' 200 and 300 ms) has passed. The
+    /// stepping flag and the target stay.
+    pub fn date_step_back(&mut self) {
+        if let Some(drive) = self.drive.as_mut() {
+            steps::date_back(&mut drive.steps);
+        }
+    }
+
     /// The grip list holds a second entry: a shock's cry is the short groan.
     pub fn second_grip(&self) -> bool {
         self.grabs.len() > 1
@@ -6006,6 +6020,8 @@ pub fn deal_shoves(
             }
             if let Some(offset) = s.step {
                 body.begin_knockback(offset);
+            } else if s.light {
+                body.date_step_back();
             }
             dealt.0.push(s);
         }

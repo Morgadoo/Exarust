@@ -60,6 +60,7 @@ fn run_at(fps: f32, ticks: usize) -> Vec<Vec<[Vec3; 4]>> {
         daze: 0.3,
         step: None,
         sag: None,
+        light: false,
     });
     while app.world().resource::<History>().0.len() < ticks {
         app.update();
@@ -162,6 +163,7 @@ fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
         daze: 0.5,
         step: None,
         sag: None,
+        light: false,
     });
     app.update();
     assert_eq!(ticks(&app), before, "the frame ran a tick");
@@ -309,4 +311,47 @@ fn body_tick_timing() {
     let walking = run(true);
     println!("body tick walking/standing: {:.2}x", walking / standing);
     assert!(standing > 0.0 && walking > 0.0);
+}
+
+/// A light blow (the damage routine's impact at most one half) dates the
+/// struck body's step start a second back where a heavy one would knock it
+/// back: a knockback dealt at a step clock of 500 ticks is fresh a tick
+/// later; a light blow dealt by the next tick makes it at least 1000 ms
+/// old, so every window measured from it (100, 200, 300 ms) has passed.
+/// The same body without the light blow keeps its fresh step.
+#[test]
+fn a_light_blow_dates_the_step_start_a_second_back() {
+    let run = |light: bool| {
+        let mut app = app(Physics::default(), 1.0 / 60.0);
+        let (setup, pose) = humanoid(Vec3::ZERO);
+        let mut ragdoll = Ragdoll::new(&setup).with_drive();
+        ragdoll.drive.as_mut().unwrap().steps.clock = 500;
+        let body = app.world_mut().spawn((ragdoll, Aim::still(pose))).id();
+        super::floor_test::run_ticks(&mut app, 1);
+        let blow = |app: &mut App, step: Option<Vec3>, light: bool| {
+            app.world_mut().write_message(Shove {
+                body,
+                bone: 8,
+                velocity: Vec3::ZERO,
+                daze: 0.0,
+                step,
+                sag: None,
+                light,
+            });
+            super::floor_test::run_ticks(app, 1);
+            app.world()
+                .get::<Ragdoll>(body)
+                .unwrap()
+                .footwork_step()
+                .unwrap()
+        };
+        let knocked = blow(&mut app, Some(Vec3::Z * 0.3), false);
+        assert!(knocked.stepping && knocked.long);
+        assert!(knocked.age_ms < 100.0, "{}", knocked.age_ms);
+        blow(&mut app, None, light).age_ms
+    };
+    let plain = run(false);
+    assert!(plain < 100.0, "{plain}");
+    let dated = run(true);
+    assert!(dated >= 1000.0, "{dated}");
 }
