@@ -65,6 +65,11 @@ matter:
   the goal entity and pick flag, the pass's goal sighting.
 - `exa_ai::entity`: `GoalEntity`, `pick`, `release`, `goal_id`.
 - `exa_ai::search`: the pick and release hooks.
+- `exa_ai::contacts::target_pass`: the classify's +3 notice bonus and the
+  fled-alarm keep go to the contact the brain attends as the pass starts
+  (the original compares with its attention word), not the body's target;
+  without it an attended goal flipped with a leader scoring about as much
+  and the live search never left its look.
 - `exa_game::npc_search`: the searcher's attention is the brain's.
 - `exa_combat::stab`: the duplicate `StabAim::step` is gone.
 
