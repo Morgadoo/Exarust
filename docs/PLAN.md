@@ -1501,6 +1501,10 @@ the live scene registers every level light as an omni light node in its room's s
 
 the arena's company bookkeeping: deaths in a match, departures before one, dismissals and hires reach the roster, the entries, the log and the arsenal through one removal and one stores pass; the day board, the hire list and the continue fixups survive a save and load; End Day clears the log; kept bodies are reset between rounds; entrant health is bit-exact; won prizes and season rewards go into the arsenal; the points line follows the dragged rank. Left: the kept body's living re-place, the board's Choose button, item instances. Grid scenes owed while the GPU is on hold.
 
+the cloth's set-up and step follow the assembly: the link walk out from the pins in the original's list order with half rests, the full-correction edge pass, the integrate's add order, the world's wind (the scene preset's wind on its own random stream, sampled in the tile's frame), the rustle reaching an audio voice, and the draw update placing the mesh between ticks with rebuilt normals. Cloth traces change in every scene with cloth. Owed while the GPU is on hold: the grid scenes, determinism runs and an FPS check (the walk roughly doubles the link count).
+
+the AI tick's route walk and path follower are ported from the assembly: each character has one route, walked once a body tick after every state, and roam, flight, chase and follow or search only plan into it; five duplicate walkers are removed. The follower's own stops (a soft stop near the carrot or the last point, a blocked line asking for a plan) replace the flat 100 cm arrival (F370 fixed); the end tests belong to the planner, already wired. NPC traces change wherever routes are walked; determinism runs and grid scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
