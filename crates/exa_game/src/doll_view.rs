@@ -1182,13 +1182,27 @@ pub fn held_mark(id: u32, flags: u32) -> possession::HeldMark {
     }
 }
 
-/// Takes a shield into the off hand, freeing it first.
-pub fn hold_shield(p: &mut Possessions, id: u32, flags: u32) {
+/// Takes a shield into the off hand by the shield take
+/// ([`exa_items::doll::take_shield`]): the off hand's item is taken out
+/// first (its carried copy loses the held mark), the record's off hand takes
+/// the shield with all its flags. The answer's `clears_part` (no weapon
+/// class bits in the class word guessed from the main hand's grip) is the
+/// world body's return to empty-hand words, which Exarust's hands refresh
+/// writes after the hands change (`exa_character::body_words`); the figure
+/// has no physics.
+pub fn hold_shield(
+    p: &mut Possessions,
+    id: u32,
+    flags: u32,
+    kind_of: impl Fn(u32) -> Option<possession::ItemKind>,
+) -> exa_items::doll::ShieldTaken {
     let old = p.out[1];
     if old.id != 0 {
         possession::release_held(&mut p.carried, old.id, 1);
     }
-    p.out[1] = Hand { id, flags };
+    let main_kind = (p.out[0].id != 0).then(|| kind_of(p.out[0].id).unwrap_or_default());
+    let off = (old.id != 0).then_some((old.id, exa_items::doll::HeldPlace::Shield));
+    exa_items::doll::take_shield(off, id, flags, p, class_word(main_kind.map(|k| k.grip())))
 }
 
 /// The inventory's give-back of an item a take-in freed from a hand: the
@@ -1504,7 +1518,9 @@ fn equip_dropped(
                         commands.entity(player).insert(mark);
                     }
                 } else {
-                    hold_shield(&mut p, drop.id, flags);
+                    hold_shield(&mut p, drop.id, flags, |id| {
+                        catalogue.and_then(|c| c.kind(id))
+                    });
                 }
                 // The hands the take-in freed give their items back to the
                 // pack ([`give_back_displaced`]).
@@ -1969,8 +1985,10 @@ mod tests {
         hold_item(&mut p, 6, 0x10, sword, false, kinds);
         assert_eq!(p.out[0], Hand { id: 6, flags: 0 });
         assert_eq!(p.carried[0].flags, 0);
-        hold_shield(&mut p, 7, 0);
+        let taken = hold_shield(&mut p, 7, 0, kinds);
         assert_eq!(p.out[1], Hand { id: 7, flags: 0 });
+        // A one-hander in the main hand: its class bits keep the part.
+        assert!(!taken.clears_part && !taken.frees_off);
         hold_item(&mut p, 8, 0x20, great, false, kinds);
         assert_eq!(p.out, [Hand { id: 8, flags: 0 }, Hand::default()]);
         // A one-hander asked for the off hand (the pointer's right half

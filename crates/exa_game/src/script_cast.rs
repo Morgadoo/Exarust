@@ -70,6 +70,7 @@ impl Plugin for ScriptCastPlugin {
                     mirror_player,
                     grant_witness_roles,
                     mirror_cast,
+                    mirror_items,
                     sync_contacts,
                     announce_witnessed,
                     report_script_problems,
@@ -201,6 +202,73 @@ fn mirror_cast(
             out_of_action: condition.map(|c| c.dying()),
         };
         conversations.cast.mirror(&[reading]);
+    }
+}
+
+/// The items a script's `HasItem` finds on a character: its carried list
+/// (the hands' items are listed there too, marked held), and in each
+/// carried container, by its record's container section, what that holds,
+/// containers inside it included. `children` gives a container's child ids
+/// (`None` for an item without a container section). A container met again
+/// further down is not entered twice [Exarust guard: the original recurses
+/// without one].
+pub fn has_item_list(
+    p: &exa_items::possession::Possessions,
+    children: impl Fn(u32) -> Option<Vec<u32>>,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut open: Vec<u32> = Vec::new();
+    for carried in &p.carried {
+        out.push(carried.id);
+        open.push(carried.id);
+    }
+    let mut entered: Vec<u32> = Vec::new();
+    while let Some(id) = open.pop() {
+        if entered.contains(&id) {
+            continue;
+        }
+        let Some(inside) = children(id) else {
+            continue;
+        };
+        entered.push(id);
+        for child in inside {
+            out.push(child);
+            open.push(child);
+        }
+    }
+    out
+}
+
+/// Mirrors each cast character's item list for `HasItem`
+/// ([`has_item_list`] over the body's possessions and the live database's
+/// container sections). The original's `HasItem` first saves the
+/// character's open pack panels into its list; Exarust's panels write the
+/// list on every move, so it is current. The cast is written only when the
+/// list changed.
+fn mirror_items(
+    conversations: Option<ResMut<Conversations>>,
+    characters: Query<(&CharacterId, &exa_items::possession::Possessions)>,
+    live: Option<Res<exa_assets::live_objects::LiveObjects>>,
+) {
+    let Some(mut conversations) = conversations else {
+        return;
+    };
+    let children = |id: u32| {
+        let live = live.as_deref()?;
+        let body = live.db().section(id, exa_formats::objdb::CONTAINER)?;
+        let container = exa_formats::containers::Container::parse(body)?;
+        Some(container.children.iter().map(|c| c.id).collect())
+    };
+    for (id, p) in &characters {
+        let Some(c) = conversations.cast.get(id.0) else {
+            continue;
+        };
+        let items = has_item_list(p, children);
+        if c.items != items
+            && let Some(c) = conversations.cast.get_mut(id.0)
+        {
+            c.items = items;
+        }
     }
 }
 
@@ -510,6 +578,60 @@ mod tests {
         // cast had it.
         assert_eq!(c.arousal, 0.0);
         assert_eq!(c.health, (1.0, 1.0));
+    }
+
+    /// A script's `HasItem` finds a character's carried items and what its
+    /// carried containers hold, nested, from the live database's container
+    /// sections: the item list the cast mirror writes.
+    #[test]
+    fn has_item_finds_what_the_carried_containers_hold() {
+        use exa_formats::objdb::{ObjectDb, Store};
+        let container = |children: &[u32]| {
+            let mut body = vec![0u8; 0x18];
+            body[0] = 4;
+            body[2] = 4;
+            body[0x14..0x18].copy_from_slice(&(children.len() as u32).to_le_bytes());
+            for &id in children {
+                body.extend(id.to_le_bytes());
+                body.extend([0u8; 8]);
+            }
+            let mut payload = exa_formats::objdb::CONTAINER.to_le_bytes().to_vec();
+            payload.extend((body.len() as u32 + 8).to_le_bytes());
+            payload.extend(body);
+            payload
+        };
+        let (bag, pouch) = (container(&[0x41, 0x50]), container(&[0x99]));
+        let mut db = ObjectDb::default();
+        db.base = Store::from_records([(0x40, 0, bag.as_slice()), (0x50, 0, pouch.as_slice())]);
+        assert!(
+            db.section(0x40, exa_formats::objdb::CONTAINER)
+                .and_then(exa_formats::containers::Container::parse)
+                .is_some_and(|c| c.children.len() == 2),
+            "the synthetic bag parses"
+        );
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin);
+        app.insert_resource(Conversations::default())
+            .insert_resource(exa_assets::live_objects::LiveObjects::of(db));
+        let carried = |id: u32| exa_items::possession::Carried {
+            id,
+            flags: 0,
+            x: 0,
+            y: 0,
+        };
+        app.world_mut().spawn((
+            CharacterId(9),
+            Roles(vec![role(5)]),
+            exa_items::possession::Possessions {
+                carried: vec![carried(3), carried(0x40)],
+                ..Default::default()
+            },
+        ));
+        app.update();
+        let conversations = app.world().resource::<Conversations>();
+        let mut items = conversations.cast.get(9).unwrap().items.clone();
+        items.sort_unstable();
+        assert_eq!(items, [3, 0x40, 0x41, 0x50, 0x99]);
     }
 
     /// A role a script added survives the next frames: the cast's list goes
