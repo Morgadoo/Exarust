@@ -62,6 +62,7 @@ pub(crate) fn base_look<'a>(look: &Look<'a>) -> Look<'a> {
         unit: look.unit,
         textures: look.textures,
         glyphs: look.glyphs,
+        base_skin: true,
     }
 }
 
@@ -334,6 +335,7 @@ mod tests {
             unit: 4,
             textures,
             glyphs: None,
+            base_skin: false,
         }
     }
 

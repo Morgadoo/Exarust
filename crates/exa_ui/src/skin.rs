@@ -3022,7 +3022,11 @@ pub fn hit_line(place: HitPlace, x: i32, y: i32, unit: i32, wide: bool) -> i32 {
     0
 }
 
-/// A line-shade place. The state band 0x10000 selects the special ink.
+/// A line-shade place (the line skin's control fill, the colour swatch's
+/// back). The state band 0x10000 (the swatch under the pointer) selects
+/// the special ink. `side_inset` is the skin's first side length (two
+/// units while a form draws its records); `alpha` the GUI's alpha byte,
+/// which the special ink and the inner fill take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineShadePlace {
     pub x: i16,
@@ -3032,6 +3036,7 @@ pub struct LineShadePlace {
     pub state: u32,
     pub inner_ink: [u8; 4],
     pub side_inset: i32,
+    pub alpha: u8,
 }
 
 /// The normal and special outer inks.
@@ -3151,13 +3156,13 @@ pub fn draw_line_shade(
     let special = (place.state & 0xf_0000) == 0x1_0000;
     let outer_ink = if special {
         let mut ink = inks.special;
-        ink[3] = 0xff;
+        ink[3] = place.alpha;
         ink
     } else {
         inks.normal
     };
     let mut inner_ink = place.inner_ink;
-    inner_ink[3] = 0xff;
+    inner_ink[3] = place.alpha;
     let inset = unit as i16;
     let inner_left = x.wrapping_add(i32::from(inset));
     let inner_top = y.wrapping_add(i32::from(inset));
@@ -5805,12 +5810,31 @@ pub fn draw_frame_control(
     draw_button_face(batch, rect, pressed, hot, palette);
 }
 
-/// A control's background fill in its own colour, which arrives with its
-/// alpha forced opaque.
-pub fn draw_control_fill(batch: &mut SkinBatch, rect: GuiRect, ink: SkinInk) {
+/// The draw skin's control fill (the colour swatch's back): the style
+/// frames by the control's style word, then a solid rectangle inset by the
+/// control's margin in its own colour at the GUI's alpha byte.
+pub fn draw_control_fill(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    style: u32,
+    margin: i32,
+    ink: SkinInk,
+    alpha: u8,
+    palette: &SkinPalette,
+) {
+    draw_style_frames(batch, rect, style, palette);
     batch.select(1, 0, false);
-    batch.set_ink(with_alpha(ink, 0xff));
-    solid_rect(batch, rect);
+    batch.set_ink(with_alpha(ink, alpha));
+    let m = margin as f32;
+    solid_rect(
+        batch,
+        GuiRect {
+            x0: rect.x0 + m,
+            y0: rect.y0 + m,
+            x1: rect.x1 - m,
+            y1: rect.y1 - m,
+        },
+    );
     batch.select(0x10, 0, false);
 }
 
@@ -10615,6 +10639,7 @@ mod tests {
             state: 0,
             inner_ink: [1, 2, 3, 4],
             side_inset: 15,
+            alpha: 0xff,
         };
         let inks = LineShadeInks {
             normal: [0x99, 0xaa, 0xbb, 0xcc],

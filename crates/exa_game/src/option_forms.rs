@@ -1398,16 +1398,7 @@ pub(crate) fn paint_extended(
             true
         }
         COLOUR_SWATCH => {
-            crate::hub_windows::paint_panel(painted, rect, look);
-            if let Some([r, g, b, _]) = c.colour {
-                let inner = [
-                    rect.left + 2,
-                    rect.top + 2,
-                    (rect.width() - 4).max(0),
-                    (rect.height() - 4).max(0),
-                ];
-                painted.push(exa_ui::loadout::solid_layer(inner, [r, g, b, 0xff]));
-            }
+            paint_swatch_back(painted, c, rect, look);
             true
         }
         SPINNER => {
@@ -1478,6 +1469,78 @@ pub(crate) fn paint_extended(
         }
         _ => false,
     }
+}
+
+/// A colour swatch's back: its draw message calls the current skin's
+/// control fill. The draw skin's own instance (the colour picker) draws
+/// the style frames and the colour inset by the margin
+/// ([`exa_ui::skin::draw_control_fill`]); the line skin (the emblem form)
+/// its shade: six atlas quads a unit either side of the top and bottom
+/// edges in the on ink (the highlight ink under the pointer), then the
+/// colour a unit in ([`exa_ui::skin::draw_line_shade`]). Both take the
+/// GUI's alpha.
+fn paint_swatch_back(painted: &mut Painted, c: &Control, rect: GuiRect, look: &Look) {
+    use exa_ui::gui_draw::{GuiLayer, LayerTexture, SKIN_TEXTURE};
+    use exa_ui::skin::SkinBatch;
+    let colour = c.colour.unwrap_or_default();
+    let alpha = exa_ui::line_skin::hover_alpha(look.fade);
+    if look.base_skin {
+        let mut batch = SkinBatch::new();
+        exa_ui::skin::draw_control_fill(
+            &mut batch,
+            exa_ui::skin::GuiRect::sized(
+                rect.left as f32,
+                rect.top as f32,
+                rect.width() as f32,
+                rect.height() as f32,
+            ),
+            c.style,
+            c.margin,
+            colour,
+            alpha,
+            &look.palette,
+        );
+        painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+        return;
+    }
+    let shade = exa_ui::skin::draw_line_shade(
+        look.unit,
+        exa_ui::skin::LineShadePlace {
+            x: rect.left as i16,
+            y: rect.top as i16,
+            w: rect.width() as i16,
+            h: rect.height() as i16,
+            state: c.state,
+            inner_ink: colour,
+            side_inset: look.unit * 2,
+            alpha,
+        },
+        exa_ui::skin::LineShadeInks {
+            normal: exa_ui::line_skin::line_control_inks(look.fade)[2],
+            special: look.palette.highlight[7],
+        },
+        exa_ui::skin::SPAN_VIEW_UNSET,
+    );
+    let mut batch = exa_ui::skin::line_skin_batch();
+    batch.set_ink(shade.outer_ink);
+    for quad in &shade.outer {
+        let uv = quad.sample.map(|s| s.map(f32::from_bits)).unwrap_or_default();
+        for (k, (x, y)) in quad.corners.iter().enumerate() {
+            batch.set_uv(uv[k * 2], uv[k * 2 + 1]);
+            batch.vertex(*x, *y);
+        }
+    }
+    batch.end_quads();
+    painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+    let mut fill = SkinBatch::new();
+    fill.select(1, 0, false);
+    fill.set_ink(shade.inner.ink);
+    fill.begin();
+    for (x, y) in shade.inner.corners {
+        fill.vertex(x, y);
+    }
+    fill.end_quads();
+    painted.push(GuiLayer::new(fill, LayerTexture::None));
 }
 
 /// The line skin's form draw for a popup that took its owner's line skin
@@ -2164,6 +2227,55 @@ mod tests {
         click(&mut windows, &mut career, mark);
         assert!(windows.forms.get(FormWindow::Picker).is_none());
         assert!(windows.forms.options.picker.is_none());
+    }
+
+    #[test]
+    fn the_emblem_swatches_draw_the_line_shade_and_the_pickers_the_control_fill() {
+        let vertices = |layers: &[exa_ui::gui_draw::GuiLayer]| {
+            layers
+                .iter()
+                .flat_map(|l| l.batch.vertices.as_chunks::<4>().0.to_vec())
+                .collect::<Vec<_>>()
+        };
+        let mut windows = windows();
+        windows.open_company();
+        let form = windows.forms.get(FormWindow::Emblem).unwrap();
+        let c = form.controls()[emblem_records::SWATCHES[0]].clone();
+        let rect = on_screen(form, &c);
+        let [r, g, b, _] = c.colour.expect("a swatch colour");
+        let quads = vertices(&drawn_layers(windows));
+        let unit = 4;
+        // The colour a unit in, at the GUI's alpha.
+        assert!(quads.iter().any(|q| q[1].ink == [r, g, b, 0xff]
+            && (q[1].x, q[1].y) == ((rect.left + unit) as f32, (rect.top + unit) as f32)
+            && q[2].y == (rect.bottom - unit) as f32));
+        // The shade's top-left cap: the cap record from two units in, a
+        // unit either side of half a unit above the top, in the on ink.
+        let top = rect.top - unit / 2;
+        assert!(quads.iter().any(|q| (q[0].u, q[0].v) == (0.7, 0.1)
+            && (q[0].x, q[0].y) == ((rect.left + 2 * unit) as f32, (top + unit) as f32)
+            && q[2].x == rect.left as f32
+            && q[0].ink == exa_ui::line_skin::line_control_inks(1.0)[2]));
+
+        let mut windows = super::tests::windows();
+        windows.open_picker([10, 200, 30, 255], "Tint");
+        let form = windows.forms.get(FormWindow::Picker).unwrap();
+        let (i, c) = form
+            .controls()
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.class == COLOUR_SWATCH && c.colour.is_some())
+            .map(|(i, c)| (i, c.clone()))
+            .expect("a picker swatch");
+        let rect = on_screen(form, &c);
+        let [r, g, b, _] = form.controls()[i].colour.unwrap();
+        let quads = vertices(&drawn_layers(windows));
+        let m = c.margin;
+        // The draw skin's fill: the colour inset by the margin, the solid
+        // rectangle's top-right first.
+        assert!(quads.iter().any(|q| q[0].ink == [r, g, b, 0xff]
+            && (q[0].x, q[0].y) == ((rect.right - m) as f32, (rect.top + m) as f32)
+            && (q[2].x, q[2].y) == ((rect.left + m) as f32, (rect.bottom - m) as f32)));
     }
 
     /// The hub draw's frames after a few updates of a headless App with

@@ -1825,6 +1825,9 @@ pub(crate) struct Look<'a> {
     /// The interface level's small atlas of built-in glyphs (a combo box's
     /// arrow), when the GUI has one.
     pub(crate) glyphs: Option<&'a exa_ui::GuiLevelState>,
+    /// The form keeps the draw skin's own instance (the colour picker),
+    /// not the line skin: the skin's control slots are the draw skin's.
+    pub(crate) base_skin: bool,
 }
 
 impl<'a> Look<'a> {
@@ -1840,6 +1843,7 @@ impl<'a> Look<'a> {
             unit,
             textures,
             glyphs,
+            base_skin: false,
         }
     }
 }
