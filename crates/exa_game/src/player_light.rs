@@ -143,7 +143,19 @@ pub struct PlayerLightPlugin;
 
 impl Plugin for PlayerLightPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (switch_player_light, place_player_light).chain());
+        app.add_systems(
+            Update,
+            (
+                switch_player_light,
+                place_player_light
+                    .after(exa_world::terrain::live::drive_terrain_stream)
+                    .before(exa_world::arc::drive_device_lights)
+                    .after(exa_anim::tracks::play_tracks)
+                    .after(exa_world::fire::flicker),
+            )
+                .chain()
+                .in_set(exa_physics::FramePhase::World),
+        );
     }
 }
 

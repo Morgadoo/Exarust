@@ -511,7 +511,8 @@ impl Plugin for CastPlugin {
         app.add_message::<BarCommand>()
             .add_message::<exa_combat::veto::BlowPhased>()
             .add_message::<super::veil_live::VeilSounded>()
-            .add_systems(PostUpdate, super::veil_live::sound_veils)
+            .add_systems(PostUpdate, super::veil_live::sound_veils
+                .in_set(exa_physics::FramePostPhase::Placed))
             // The constant displacement's veil: the start's collision bit,
             // then the restore hook and the phased blows of this step.
             .add_systems(
@@ -587,36 +588,48 @@ impl Plugin for CastPlugin {
             .init_resource::<crate::mind::runtime::MindAim>()
             .init_resource::<crate::mind::runtime::MindControl>()
             .add_message::<crate::mind::runtime::SpiritBodyAsked>()
-            .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
+            .add_systems(Update, (run_bar_commands, sync_screen_bar
+                .after(publish_power_factors))
+                .chain()
+                .in_set(exa_physics::FramePhase::Controls))
             .add_message::<exa_script::Narrate>()
             .add_systems(
                 Update,
                 (
                     super::effect_draw::ripple_shell_hits,
-                    super::effect_draw::ripple_strikes,
-                ),
+                    super::effect_draw::ripple_strikes
+                        .before(exa_character::equip_outfits)
+                        .after(crate::thaum::effect_draw::ripple_shell_hits),
+                )
+                .in_set(exa_physics::FramePhase::World),
             )
-            .add_systems(Update, super::power::teach_on_death)
+            .add_systems(Update, super::power::teach_on_death
+                .in_set(exa_physics::FramePhase::Session)
+                .after(crate::scene_bodies::reset_kept_bodies))
             .add_systems(
                 Update,
                 super::debug_cast::run_debug_casts
+                    .after(crate::thaum::effect_light::debug_force_casts)
                     .after(crate::player::cursor_ground)
-                    .before(run_bar_commands),
+                    .before(run_bar_commands)
+                    .in_set(exa_physics::FramePhase::Input),
             )
             .add_systems(
                 Update,
                 (
                     super::kinesis_live::read_kinesis_input,
-                    super::throw_live::pick_throw,
+                    super::throw_live::pick_throw.after(crate::controls_live::hand_bytes),
                 )
                     .chain()
-                    .before(run_bar_commands),
+                    .before(run_bar_commands)
+                    .in_set(exa_physics::FramePhase::Controls),
             )
             .add_systems(
                 Update,
                 super::kinesis_live::see_kinesis_reach
                     .after(super::kinesis_live::read_kinesis_input)
-                    .before(crate::hand::HandSystems),
+                    .before(crate::hand::HandSystems)
+                    .in_set(exa_physics::FramePhase::Controls),
             )
             // The duellists' power system answers their combat state and
             // casts what it chose, in the brains' tick, every body tick.
@@ -632,12 +645,18 @@ impl Plugin for CastPlugin {
                         .before(exa_ai::brain::flee_walk),
                 ),
             )
-            .add_systems(Update, publish_power_factors.after(run_bar_commands))
+            .add_systems(Update, publish_power_factors
+                .after(run_bar_commands)
+                .in_set(exa_physics::FramePhase::Controls))
             .add_systems(
                 Update,
-                broadcast_level_change.run_if(resource_exists::<
+                broadcast_level_change
+                    .after(crate::save_live::sync_before_level_change)
+                    .after(exa_ai::brain::forget_removed)
+                    .run_if(resource_exists::<
                     Messages<exa_world::level_lifecycle::LevelChangeRequest>,
-                >),
+                >)
+                .in_set(exa_physics::FramePhase::Session),
             )
             .add_systems(
                 FixedUpdate,

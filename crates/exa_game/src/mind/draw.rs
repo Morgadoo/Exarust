@@ -514,7 +514,9 @@ impl Plugin for MindSightPlugin {
             .init_resource::<FrameEffectRoll>()
             .add_systems(
                 PostUpdate,
-                (drop_minds_on_level, run_mind_sight, draw_mind_sight).chain(),
+                (drop_minds_on_level, run_mind_sight, draw_mind_sight)
+                    .chain()
+                    .in_set(exa_physics::FramePostPhase::Prepare),
             );
     }
 }

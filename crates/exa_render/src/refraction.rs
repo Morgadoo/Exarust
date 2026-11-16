@@ -111,7 +111,14 @@ pub struct RefractionPlugin;
 impl Plugin for RefractionPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(ExtractResourcePlugin::<SceneHighField>::default())
-            .add_systems(PostUpdate, (follow_window, bind_fields).chain());
+            .add_systems(
+                PostUpdate,
+                (
+                    follow_window.in_set(exa_physics::FramePostPhase::Prepare),
+                    bind_fields.in_set(exa_physics::FramePostPhase::View),
+                )
+                    .chain(),
+            );
     }
 }
 

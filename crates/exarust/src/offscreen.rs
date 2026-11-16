@@ -354,6 +354,7 @@ impl Plugin for OffscreenPlugin {
         .add_systems(
             PostUpdate,
             retarget_cameras
+                .in_set(exa_physics::FramePostPhase::Prepare)
                 .before(CameraUpdateSystems)
                 .before(bevy::ui::UiSystems::Prepare),
         );

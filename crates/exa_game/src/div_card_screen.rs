@@ -107,14 +107,18 @@ impl Plugin for DivinationPlugin {
             // frame's GUI queue afresh.
             .add_systems(
                 Update,
-                (open_reading, click_reading, paint_reading)
+                (open_reading
+                    .after(crate::dialogue_live::paint_dialogue)
+                    .after(crate::skill_screen::draw), click_reading, paint_reading
+                    .after(crate::arsenal_view::arsenal_live))
                     .chain()
-                    .after(crate::gui_screens::draw_screens),
+                    .after(crate::gui_screens::draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
 
-fn open_reading(
+pub(crate) fn open_reading(
     mut opened: MessageReader<OpenDivination>,
     clock: Res<EffectClock>,
     mut screen: ResMut<DivinationScreen>,

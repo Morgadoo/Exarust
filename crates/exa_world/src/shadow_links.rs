@@ -69,17 +69,20 @@ impl Plugin for ShadowLinksPlugin {
                     .before(crate::scene_live::run_scene)
                     .before(LightsSystems::Cubes)
                     .before(VisibilitySystems::CheckVisibility)
-                    .in_set(LightCells),
+                    .in_set(LightCells)
+                    .in_set(exa_physics::FramePostPhase::View),
             )
             .add_systems(
                 PostUpdate,
                 (link_casters, dirty_moved_casters, see_light_layers)
                     .chain()
+                    .after(bevy::mesh::mark_3d_meshes_as_changed_if_their_assets_changed)
                     .after(track_lights)
                     .after(crate::scene_live::run_scene)
                     .before(LightsSystems::Cubes)
                     .before(VisibilitySystems::CheckVisibility)
-                    .in_set(LightCells),
+                    .in_set(LightCells)
+                    .in_set(exa_physics::FramePostPhase::View),
             );
     }
 }

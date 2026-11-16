@@ -556,7 +556,7 @@ fn begin_use(
 
 /// What the dispatcher reads under the pointer.
 #[derive(bevy::ecs::system::SystemParam)]
-struct UseUnder<'w, 's> {
+pub(crate) struct UseUnder<'w, 's> {
     scripted: Res<'w, ScriptedPointer>,
     windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     cameras: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<ChaseCamera>>,
@@ -571,7 +571,7 @@ struct UseUnder<'w, 's> {
 }
 
 /// The use cursor's end on the next mouse press (see the module notes).
-fn end_use(
+pub(crate) fn end_use(
     buttons: Res<ButtonInput<MouseButton>>,
     time: Option<Res<Time<Virtual>>>,
     mut cursor: ResMut<UseCursor>,
@@ -1396,10 +1396,10 @@ impl Plugin for UseCursorPlugin {
             .add_systems(
                 Update,
                 (
-                    end_use,
+                    end_use.after(crate::item_icon_render::paint_icon_jobs),
                     apply_pour,
                     scripted_kit,
-                    apply_kit,
+                    apply_kit.after(crate::socket_drag::refresh_card_sockets),
                     transfer_gui,
                     tick_kits,
                     scripted_double_click,
@@ -1411,9 +1411,16 @@ impl Plugin for UseCursorPlugin {
                     .in_set(UseCursorSystems)
                     .after(crate::panel_live::track_pointer)
                     .before(crate::panel_live::PanelInput)
-                    .before(crate::hand::HandSystems),
+                    .before(crate::hand::HandSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
-            .add_systems(Update, settle_gui_lift.after(crate::panel_live::PanelInput));
+            .add_systems(
+                Update,
+                settle_gui_lift
+                    .after(crate::figure_pick::release_figure)
+                    .after(crate::panel_live::PanelInput)
+                    .in_set(exa_physics::FramePhase::Gui),
+            );
     }
 }
 
@@ -1421,7 +1428,7 @@ impl Plugin for UseCursorPlugin {
 /// the operative's target, and plays the operative's sound. A cancel leaves
 /// that slot alone.
 #[allow(clippy::too_many_arguments)]
-fn settle_gui_lift(
+pub(crate) fn settle_gui_lift(
     mut ended: MessageReader<GuiDragEnded>,
     mut lift: ResMut<GuiItemLift>,
     mut screens: ResMut<GameScreens>,

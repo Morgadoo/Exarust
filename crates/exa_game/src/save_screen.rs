@@ -942,11 +942,18 @@ impl Plugin for SaveScreenPlugin {
             // records (F565). The creator's chain is ordered the same way.
             .add_systems(
                 Update,
-                (open_saves, saves_input, saves_paint)
+                (
+                    open_saves,
+                    saves_input.after(crate::gui_screens::screens_keys),
+                    saves_paint
+                        .after(crate::destination::paint_screen)
+                        .before(crate::creator_screen::open_screens),
+                )
                     .chain()
                     .in_set(CreatorSystems)
                     .after(crate::menu_screen::MenuScreenSystems)
-                    .after(crate::gui_screens::draw_screens),
+                    .after(crate::gui_screens::draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -967,7 +974,7 @@ fn item_names(game: Option<&exa_assets::Game>) -> HashMap<u32, String> {
 /// Opens the screen for a CONTINUE row (or `--open-saves`), hiding the menu
 /// as the creator's show does.
 #[allow(clippy::too_many_arguments)]
-fn open_saves(
+pub(crate) fn open_saves(
     mut choices: MessageReader<MenuChoice>,
     mut scripted: ResMut<ScriptedSaveScreen>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
@@ -1057,7 +1064,7 @@ fn open_saves(
 /// the toggle is the creation form's cancel, which leaves to the menu at
 /// once (an open box or list goes with the screen).
 #[allow(clippy::too_many_arguments)]
-fn saves_input(
+pub(crate) fn saves_input(
     (gui_keys, mut climbed, mut toggles): (
         Option<Res<crate::gui_keys::GuiKeyFrame>>,
         Option<ResMut<crate::gui_keys::TaskKeys>>,
@@ -1523,7 +1530,7 @@ pub fn paint_saves(saves: &SaveScreen, textures: &GuiTextures) -> Painted {
     painted
 }
 
-fn saves_paint(
+pub(crate) fn saves_paint(
     screen: Res<CreatorScreen>,
     textures: Option<Res<GuiTextures>>,
     mut frames: ResMut<GuiFrames>,

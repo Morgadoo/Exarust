@@ -170,7 +170,9 @@ impl Plugin for SimControlPlugin {
         app.init_resource::<SimControl>()
             .init_resource::<SimStepping>()
             .add_message::<exa_combat::Hit>()
-            .add_systems(Update, start_speed.run_if(|s: Res<SimStepping>| !s.started))
+            .add_systems(Update, start_speed
+                .run_if(|s: Res<SimStepping>| !s.started)
+                .in_set(exa_physics::FramePhase::Input))
             .add_systems(
                 // After the hit chain, in the fixed step's post-step.
                 FixedUpdate,
@@ -186,7 +188,10 @@ impl Plugin for SimControlPlugin {
                     .after(exa_ai::struck::HitReactions)
                     .before(crate::thaum::live::shock_fighters),
             )
-            .add_systems(Update, sim_keys)
+            .add_systems(Update, sim_keys
+                .in_set(exa_physics::FramePhase::Input)
+                .after(exa_world::room_view::toggle_nearest_door)
+                .after(start_speed))
             // The fixed loop neither takes the frame's time nor runs while
             // the loading screen shows, nor while a screen has raised the
             // pause counter (a staging's transition, for its frames at
@@ -250,7 +255,7 @@ fn bound_to_game(key: KeyCode, bindings: Option<&Bindings>) -> bool {
     keys.iter().any(|&bound| bound & 0xFFFF == code)
 }
 
-fn sim_keys(
+pub(crate) fn sim_keys(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     bindings: Option<Res<Bindings>>,
     (mut control, mut stepping, mut fixed): (

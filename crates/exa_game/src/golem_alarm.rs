@@ -241,13 +241,16 @@ impl Plugin for GolemAlarmPlugin {
                 exa_physics::sim_app::SimPreStep,
                 check_alarm_zones.after(crate::rise::restore_revived),
             )
-            .add_systems(Update, restore_saved_alarm)
+            .add_systems(Update, restore_saved_alarm
+                .in_set(exa_physics::FramePhase::Session)
+                .after(crate::zone_scripts::check_stay_zones))
             .add_systems(
                 Update,
                 (return_from_alarm, crate::revive_pass::reset_brains)
                     .chain()
                     .after(crate::flow::FlowSystems::Transition)
-                    .before(crate::flow::FlowSystems::ApplySteps),
+                    .before(crate::flow::FlowSystems::ApplySteps)
+                        .in_set(exa_physics::FramePhase::Session),
             );
         exa_physics::sim_app::add_frame_start(app);
         bridge_alarm_types(app);

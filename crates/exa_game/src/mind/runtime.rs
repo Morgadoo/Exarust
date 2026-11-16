@@ -217,14 +217,27 @@ impl Plugin for MindRuntimePlugin {
             .add_systems(
                 Update,
                 (
-                    attach_minds,
-                    adopt_spirit_bodies,
+                    attach_minds
+                        .in_set(exa_physics::FramePhase::Session)
+                        .after(crate::scene_bodies::reset_kept_bodies),
+                    adopt_spirit_bodies.in_set(exa_physics::FramePhase::Session),
                     pick_mind_target
+                        .in_set(exa_physics::FramePhase::Controls)
                         .after(crate::thaum::debug_cast::run_debug_casts)
                         .before(crate::thaum::cast::run_bar_commands),
-                    run_mind_fade,
-                    step_spirit_screen,
-                    log_mind_bodies,
+                    // The hand-back's transition (an exclusive system) runs as
+                    // the original's modal list does, after the game task's
+                    // frame list (its last entry, the spirit screen, in
+                    // `Hand`) and before the cursor and the world's draw, and
+                    // before Bevy's own frame work.
+                    run_mind_fade
+                        .after(exa_physics::FramePhase::Hand)
+                        .before(exa_physics::FramePhase::Cursor)
+                        .before(bevy::render::view::window::screenshot::trigger_screenshots)
+                        .before(bevy::sprite_render::update_tilemap_chunk_indices)
+                        .before(bevy::light::automatically_add_parallax_correction_components),
+                    step_spirit_screen.in_set(exa_physics::FramePhase::Hand),
+                    log_mind_bodies.in_set(exa_physics::FramePhase::Capture),
                 ),
             )
             .add_systems(

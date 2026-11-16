@@ -144,7 +144,15 @@ impl Plugin for ViewOverlayPlugin {
         app.init_resource::<ViewOverlays>()
             .init_resource::<FpsReadout>()
             .add_systems(Startup, spawn_overlay_node)
-            .add_systems(PostUpdate, (follow_setting, draw_overlays).chain());
+            .add_systems(
+                PostUpdate,
+                (
+                    follow_setting,
+                    draw_overlays.after(exa_ui::gui_draw::render_frames),
+                )
+                    .chain()
+                    .in_set(exa_physics::FramePostPhase::Prepare),
+            );
     }
 }
 
@@ -154,7 +162,7 @@ impl Plugin for ViewOverlayPlugin {
 /// rasterised, and only when the line or its place changes, so the window's
 /// GUI canvas is left alone.
 #[derive(Component, Default)]
-struct OverlayNode {
+pub(crate) struct OverlayNode {
     drawn: Option<DrawnLine>,
 }
 
@@ -192,7 +200,7 @@ fn follow_setting(show: Option<Res<exa_ui::ShowFps>>, mut overlays: ResMut<ViewO
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_overlays(
+pub(crate) fn draw_overlays(
     time: Res<Time<Real>>,
     overlays: Res<ViewOverlays>,
     mut readout: ResMut<FpsReadout>,

@@ -3832,21 +3832,33 @@ impl Plugin for FlowPlugin {
             .add_systems(
                 Update,
                 (
-                    (apply_menu_choices, tick, follow_player).chain(),
+                    (apply_menu_choices
+                        .after(crate::arena_match::tick_arena_match), tick
+                        .after(crate::follower_travel::restore_arrivals), follow_player)
+                        .chain(),
                     notify_gui_scale.before(FlowSystems::ApplySteps),
                     (
                         open_named_level,
                         travel,
                         cross_exit_zones,
-                        crate::game_event_live::run_game_events,
+                        crate::game_event_live::run_game_events
+                            .before(exa_script::run_conversations)
+                            .after(crate::experience_live::begin_story_experience)
+                            .after(crate::thaum::cast::broadcast_level_change),
                         run_transition.in_set(FlowSystems::Transition),
-                        release_after_load,
-                        apply_steps.in_set(FlowSystems::ApplySteps),
+                        release_after_load.after(crate::revive_pass::reset_brains),
+                        apply_steps
+                            .after(crate::crystal_drain::drain_sources)
+                            .after(exa_script::run_conversations)
+                            .after(crate::experience_live::tick_story_experience)
+                            .after(crate::load_reset::reset_on_level_change)
+                            .in_set(FlowSystems::ApplySteps),
                         reset_level_state,
                     )
                         .chain(),
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Session),
             );
     }
 }
@@ -3855,7 +3867,7 @@ impl Plugin for FlowPlugin {
 /// navigation room cells (their entity ids belong to the old world) and the
 /// hub entry (so the destination's hub runs its entry and places its
 /// manager). The settled return placement survives into the hub's level.
-fn reset_level_state(
+pub fn reset_level_state(
     changes: Option<Res<exa_world::level_lifecycle::LevelChangeState>>,
     mut seen: Local<u64>,
     fixed: Option<ResMut<exa_physics::sim_app::FixedCommands>>,
@@ -3947,7 +3959,7 @@ fn tick(
 /// character would end a "round" at once. A practice started from the menu
 /// installs the hook itself. With [`StorySession`] the level runs as a
 /// story-mode session with the story hook instead.
-fn follow_player(
+pub(crate) fn follow_player(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     menu: Option<Res<MenuScreen>>,
@@ -4004,7 +4016,7 @@ pub struct ReadNamedLevel {
 /// Loads the level a kind-7 use named, when `name.rfc` is in the resource
 /// pack. A missing record, an empty name or a missing file leaves the
 /// current level.
-fn open_named_level(
+pub(crate) fn open_named_level(
     mut reads: MessageReader<ReadNamedLevel>,
     game: Option<Res<exa_assets::Game>>,
     mut items: ResMut<crate::doll_view::DollItems>,
@@ -4379,7 +4391,7 @@ fn notify_gui_scale(
 /// logged and left to the host. The transition screen runs in
 /// [`run_transition`].
 #[allow(clippy::too_many_arguments)]
-fn apply_steps(
+pub(crate) fn apply_steps(
     mut commands: Commands,
     mut queued: ResMut<FlowSteps>,
     flow: Res<Flow>,
@@ -5316,7 +5328,7 @@ fn apply_steps(
 /// settings entry, the application's exit, the save unit's work and the
 /// discovery pass.
 #[derive(bevy::ecs::system::SystemParam)]
-struct FlowOutputs<'w> {
+pub(crate) struct FlowOutputs<'w> {
     changes: MessageWriter<'w, exa_world::level_lifecycle::LevelChangeRequest>,
     resets: MessageWriter<'w, exa_world::level_lifecycle::WorldReset>,
     forfeit: MessageWriter<'w, ForfeitMatch>,
@@ -5341,7 +5353,7 @@ struct FlowOutputs<'w> {
 
 /// The resources the story start's and the tips' steps write.
 #[derive(bevy::ecs::system::SystemParam)]
-struct StoryParts<'w> {
+pub(crate) struct StoryParts<'w> {
     created: Option<ResMut<'w, crate::creator_screen::CreatedCharacter>>,
     roles: Option<Res<'w, exa_ai::brain::RoleDatabase>>,
     start: Option<Res<'w, StoryStartPlayer>>,
@@ -5512,7 +5524,7 @@ fn release_after_load(
 /// The player body's parts the flow's steps write.
 #[derive(bevy::ecs::query::QueryData)]
 #[query_data(mutable)]
-struct PlayerParts {
+pub(crate) struct PlayerParts {
     entity: Entity,
     body: &'static mut crate::player::PlayerBody,
     condition: Option<&'static mut exa_combat::Condition>,

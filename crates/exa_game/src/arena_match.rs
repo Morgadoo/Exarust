@@ -1169,8 +1169,13 @@ pub struct ArenaMatchPlugin;
 
 impl Plugin for ArenaMatchPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ArenaPicks>()
-            .add_systems(Update, tick_arena_match);
+        app.init_resource::<ArenaPicks>().add_systems(
+            Update,
+            tick_arena_match
+                .in_set(exa_physics::FramePhase::Session)
+                .after(crate::arena_fade::hold_match_launches)
+                .after(crate::spectate::start_on_load),
+        );
     }
 }
 
@@ -1183,7 +1188,7 @@ type MatchFighter<'a> = (
     Option<&'a mut exa_combat::CombatScore>,
 );
 
-fn tick_arena_match(
+pub(crate) fn tick_arena_match(
     arena: Option<ResMut<ArenaMatch>>,
     clock: Option<Res<EffectClock>>,
     mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,

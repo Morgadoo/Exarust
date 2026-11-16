@@ -479,10 +479,22 @@ impl Plugin for GuiDropPlugin {
             .init_resource::<ItemCursor>()
             .add_systems(
                 Update,
-                (run_gui_drops, scripted_gui_drop, claim_gui_drag)
+                (
+                    run_gui_drops
+                        .after(crate::use_cursor::settle_gui_lift)
+                        .after(crate::gui_screens::debug_open_loot)
+                        .after(crate::body_overlay::update_panel),
+                    scripted_gui_drop
+                        .after(crate::gui_screens::open_requested_screens)
+                        .before(exa_items::catalogue::swap_weapon_sets),
+                    claim_gui_drag
+                        .after(crate::gui_screens::swap_from_page_button)
+                        .after(crate::skill_screen::pointer),
+                )
                     .chain()
                     .after(crate::panel_live::PanelInput)
-                    .before(crate::hand::HandSystems),
+                    .before(crate::hand::HandSystems)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }

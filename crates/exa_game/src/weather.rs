@@ -63,7 +63,15 @@ impl Plugin for WeatherPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeatherEffects>().add_systems(
             PostUpdate,
-            (rain_effect, weather_sounds, arena_weather_ambience)
+            (
+                rain_effect
+                    .in_set(exa_physics::FramePostPhase::Prepare)
+                    .after(crate::view_overlay::draw_overlays),
+                weather_sounds
+                    .in_set(exa_physics::FramePostPhase::Placed)
+                    .after(crate::thaum::live::draw_arcs),
+                arena_weather_ambience.in_set(exa_physics::FramePostPhase::Placed),
+            )
                 .chain()
                 .after(LiveEnvironment),
         );

@@ -117,7 +117,7 @@ pub fn open_staging(
 
 /// Holds each launch for the transition screen the match start runs under
 /// (the music fades with it), or sends it on at once without the flow.
-fn hold_match_launches(
+pub fn hold_match_launches(
     mut launches: MessageReader<ArenaMatchLaunch>,
     mut flow: Option<ResMut<Flow>>,
     mut queued: Option<ResMut<FlowSteps>>,
@@ -147,7 +147,10 @@ fn hold_match_launches(
 }
 
 /// The screen is black: the held launch goes out.
-fn start_held_match(mut staging: ResMut<ArenaStaging>, mut starts: MessageWriter<ArenaMatchStart>) {
+pub(crate) fn start_held_match(
+    mut staging: ResMut<ArenaStaging>,
+    mut starts: MessageWriter<ArenaMatchStart>,
+) {
     if let Some(launch) = staging.take_launch() {
         info!(
             "arena match start: template {} at the screen's black",
@@ -168,9 +171,12 @@ impl Plugin for ArenaFadePlugin {
             .add_systems(
                 Update,
                 (
-                    hold_match_launches.before(crate::flow::FlowSystems::Transition),
+                    hold_match_launches
+                        .after(crate::new_game::start_on_load)
+                        .before(crate::flow::FlowSystems::Transition),
                     start_held_match.after(crate::flow::FlowSystems::ApplySteps),
-                ),
+                )
+                    .in_set(exa_physics::FramePhase::Session),
             );
     }
 }

@@ -470,7 +470,7 @@ impl GiShapes {
 
 /// Lists every new [`GiShape`] and drops every removed one, as the effects'
 /// constructors and destructors register and unregister theirs.
-fn track_shapes(
+pub fn track_shapes(
     mut shapes: ResMut<GiShapes>,
     added: Query<Entity, Added<GiShape>>,
     mut removed: RemovedComponents<GiShape>,
@@ -489,8 +489,12 @@ pub struct GiShapePlugin;
 
 impl Plugin for GiShapePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GiShapes>()
-            .add_systems(PostUpdate, track_shapes.before(crate::gi::GiSystems));
+        app.init_resource::<GiShapes>().add_systems(
+            PostUpdate,
+            track_shapes
+                .before(crate::gi::GiSystems)
+                .in_set(exa_physics::FramePostPhase::Placed),
+        );
     }
 }
 

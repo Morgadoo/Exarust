@@ -2195,19 +2195,20 @@ impl Plugin for GameScreensPlugin {
             .add_systems(
                 Update,
                 (
-                    sync_screen_size,
+                    sync_screen_size.after(crate::parchment::open_parchment),
                     rescale_open_screens,
                     register_level_items,
                     crate::container_fill::fill_level_containers,
                     show_script_inventory,
                     debug_open_loot,
-                    open_requested_screens,
-                    debug_open_container,
+                    open_requested_screens.after(crate::gui_drop::run_gui_drops),
+                    debug_open_container.after(store_saved_containers),
                     open_requested_containers,
                 )
                     .chain()
                     .after(crate::hotkeys::HotkeySet)
-                    .before(crate::player::player_combat),
+                    .before(crate::player::player_combat)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .init_resource::<DebugRecordHint>()
             .add_message::<bevy::input::mouse::MouseWheel>()
@@ -2217,45 +2218,61 @@ impl Plugin for GameScreensPlugin {
                     .after(open_requested_screens)
                     .after(close_on_right_release)
                     .after(crate::player::cursor_look)
-                    .before(draw_screens),
+                    .before(draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 swap_from_page_button
                     .after(screens_pointer)
-                    .before(exa_items::catalogue::swap_weapon_sets),
+                    .before(exa_items::catalogue::swap_weapon_sets)
+                        .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 draw_screens
                     .after(open_requested_screens)
-                    .after(crate::item_icon_render::IconRenderSystems),
+                    .after(crate::item_icon_render::IconRenderSystems)
+                        .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
-                (close_on_right_release, close_changed_loot_windows).after(open_requested_screens),
+                (close_on_right_release
+                    .after(close_changed_loot_windows), close_changed_loot_windows)
+                    .after(open_requested_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_message::<bevy::window::WindowFocused>()
-            .add_systems(Update, deactivate_on_focus_loss.before(screens_pointer))
+            .add_systems(Update, deactivate_on_focus_loss
+                .after(screens_keys)
+                .before(screens_pointer)
+                .in_set(exa_physics::FramePhase::Gui))
             .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_systems(
                 Update,
-                (journal_typing, screens_keys)
+                (journal_typing.after(crate::item_card::figure_cards), screens_keys)
                     .before(crate::hotkeys::HotkeySet)
-                    .before(open_requested_screens),
+                    .before(open_requested_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
                 inventory_follows_the_set
+                    .after(open_requested_containers)
+                    .after(store_saved_containers)
                     .after(exa_items::catalogue::swap_weapon_sets)
                     .after(open_requested_screens)
-                    .before(draw_screens),
+                    .before(draw_screens)
+                    .in_set(exa_physics::FramePhase::Gui),
             )
             .add_systems(
                 Update,
-                (release_closed_icons, store_saved_containers)
+                (release_closed_icons
+                    .after(swap_from_page_button), store_saved_containers
+                    .after(release_closed_icons))
                     .after(close_on_right_release)
-                    .after(close_changed_loot_windows),
+                    .after(close_changed_loot_windows)
+                    .in_set(exa_physics::FramePhase::Gui),
             );
     }
 }
@@ -2394,7 +2411,7 @@ pub(crate) fn deactivate_on_focus_loss(
 /// then the object's container section is loaded into a new popup at the
 /// pointer. An object without the section opens nothing.
 #[allow(clippy::too_many_arguments)]
-fn open_requested_containers(
+pub(crate) fn open_requested_containers(
     mut requests: MessageReader<ContainerRequest>,
     objects: Query<&exa_world::ObjectSections>,
     mut items: ResMut<crate::doll_view::DollItems>,
@@ -2589,7 +2606,7 @@ pub struct DebugOpenLoot(pub Option<u32>);
 
 /// Runs [`DebugOpenLoot`]: counts frames once a player is present and, at
 /// the frame asked for, requests the nearest dead body's loot window.
-fn debug_open_loot(
+pub(crate) fn debug_open_loot(
     debug: Option<Res<DebugOpenLoot>>,
     players: Query<&GlobalTransform, With<crate::player::Player>>,
     bodies: Query<(Entity, &exa_physics::body::Ragdoll, &exa_combat::Condition)>,
@@ -2641,7 +2658,7 @@ fn debug_open_loot(
 /// tier, each under its tagged ids, so their icons render, their bulk
 /// counts and their cards read their own bytes. A record written in place
 /// is read again alone (a template's, or its tier's).
-fn register_level_items(
+pub(crate) fn register_level_items(
     live: Option<Res<exa_assets::live_objects::LiveObjects>>,
     catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
     mut seen: Local<Option<u64>>,
@@ -2806,7 +2823,10 @@ pub fn save_open_screens_for_saves<const AT_QUIT: bool>(
 
 /// Gives the icon manager back the handles of the panels the screens
 /// closed this frame.
-fn release_closed_icons(mut screens: ResMut<GameScreens>, mut icons: ResMut<PanelIcons>) {
+pub(crate) fn release_closed_icons(
+    mut screens: ResMut<GameScreens>,
+    mut icons: ResMut<PanelIcons>,
+) {
     for handle in screens.released_icons.drain(..) {
         icons.release(handle);
     }
@@ -2831,7 +2851,7 @@ fn sync_screen_size(
 /// The GUI unit follows the window's height (the level switch); a change
 /// runs the rescale walk over the open screens
 /// ([`GameScreens::rescale_open`]).
-fn rescale_open_screens(
+pub(crate) fn rescale_open_screens(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut screens: ResMut<GameScreens>,
 ) {
@@ -2903,7 +2923,7 @@ fn show_script_inventory(
 /// Opens the screens the hotkeys asked for; Escape closes the focused one.
 /// Nothing happens while the main menu is open.
 #[allow(clippy::too_many_arguments)]
-fn open_requested_screens(
+pub(crate) fn open_requested_screens(
     keys: Res<ButtonInput<KeyCode>>,
     mut requests: MessageReader<ScreenRequest>,
     players: Query<Entity, With<crate::player::Player>>,

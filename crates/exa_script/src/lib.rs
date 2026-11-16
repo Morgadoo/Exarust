@@ -49,10 +49,16 @@ impl Plugin for ScriptPlugin {
                         .run_if(not(resource_exists::<Scripts>)),
                     run_conversations.run_if(resource_exists::<Scripts>),
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(ScriptSystems),
             );
     }
 }
+
+/// The scripts' load and the conversations' frame, in `Update`. The game
+/// places the set in its frame phases (the session's frame).
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScriptSystems;
 
 /// The installation's role database and narrator graph.
 #[derive(Resource, Debug, Default, Clone)]
@@ -212,7 +218,7 @@ fn load_scripts(game: Res<Game>, mut commands: Commands) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_conversations(
+pub fn run_conversations(
     time: Res<Time<Virtual>>,
     scripts: Res<Scripts>,
     mut conversations: ResMut<Conversations>,

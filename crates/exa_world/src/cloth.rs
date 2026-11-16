@@ -995,7 +995,8 @@ impl Plugin for ClothPlugin {
             .init_resource::<SceneWind>()
             .init_resource::<ClothWind>()
             .insert_resource(ClothDebug::from_env())
-            .add_systems(Update, (build_cloth_nodes, publish_scene_wind))
+            .add_systems(Update, (build_cloth_nodes, publish_scene_wind)
+                .in_set(exa_physics::FramePhase::World))
             // The sector runs its simulated objects inside the bodies'
             // tick: their own step before the solver, their body contacts in
             // it (the solver's cloth stage), their pass after the collisions

@@ -191,7 +191,16 @@ impl Plugin for TeleportPlugin {
                     .chain()
                     .after(crate::effects::advance_clock),
             )
-            .add_systems(Update, (debug_scan, debug_slot));
+            .add_systems(
+                Update,
+                (
+                    debug_scan
+                        .before(exa_world::room_view::toggle_nearest_door)
+                        .after(debug_slot),
+                    debug_slot,
+                )
+                    .in_set(exa_physics::FramePhase::Input),
+            );
     }
 }
 

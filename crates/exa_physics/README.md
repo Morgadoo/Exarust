@@ -1811,6 +1811,16 @@ whether two systems it leaves unordered conflict in their data, and where
 a schedule sits in the main frame. The hook-list checks
 (`docs/re/hook-lists.md`) use it to show the original's priority orders.
 
+`frame_phase` names the drawn frame's phases, after the original's frame
+order: `FramePhase` in `Update` (`Input`, `Gui`, `Hub`, `Session`,
+`Controls`, `Camera`, `Hand`, `Cursor`, `World`, `Audio`, `Draw`, `Capture`)
+and `FramePostPhase` in `PostUpdate` (`Prepare` before the transforms
+propagate, the camera update, the UI and the asset events; `Placed` after
+the propagation, before the bounds, frusta and visibility; `View`;
+`Trace`). `configure_frame_phases` chains them; the game's plugin calls it.
+Every game system of the two schedules sits in one phase, and a pair of one
+phase that touches the same data has its own `before`/`after`.
+
 ## Scope
 
 - The mesh voxeliser and its voxel map (`voxel`): the floor heightfield and

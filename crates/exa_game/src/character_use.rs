@@ -73,7 +73,8 @@ impl Plugin for CharacterUsePlugin {
                 Update,
                 (scripted_character_uses, run_character_uses)
                     .chain()
-                    .after(crate::hand::HandSystems),
+                    .after(crate::hand::HandSystems)
+                    .in_set(exa_physics::FramePhase::Hand),
             );
     }
 }
