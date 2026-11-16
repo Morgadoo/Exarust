@@ -797,7 +797,10 @@ mod tests {
         let at = Vec3::new(0.0, 0.35, 0.0);
         let part = app
             .world_mut()
-            .spawn((Transform::from_translation(at), GlobalTransform::from_translation(at)))
+            .spawn((
+                Transform::from_translation(at),
+                GlobalTransform::from_translation(at),
+            ))
             .id();
         let mut body = Ragdoll::new(&[PartSetup {
             bone: 8,

@@ -1509,7 +1509,9 @@ impl Emitter {
         let frame = light.frame(self.params.flags);
         walks.peak = light.peak;
         walks.full = light.full;
-        walks.sound.frame(self.light.density, self.params.flags, rng);
+        walks
+            .sound
+            .frame(self.light.density, self.params.flags, rng);
         frame
     }
 

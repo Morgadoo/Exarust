@@ -131,9 +131,9 @@ fn plugins(mode: Option<SimMode>) -> App {
         .bridge_copy::<exa_physics::weapon_mass::WeaponMass>();
     }
     if mode != Some(SimMode::Free) {
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(
-            Duration::from_secs_f64(1.0 / 60.0),
-        ));
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )));
     }
     app
 }
@@ -186,7 +186,9 @@ fn a_carried_flame_rides_its_part_in_the_solver() {
         .add_systems(FixedUpdate, take.after(BodySystems));
     let start = Vec3::new(0.0, 2.0, 0.0);
     let (root, part) = body(&mut app, start, Sleep::Awake);
-    app.world_mut().entity_mut(part).insert((CarriedFire, ChildOf(root)));
+    app.world_mut()
+        .entity_mut(part)
+        .insert((CarriedFire, ChildOf(root)));
     let emitter = Emitter::new(
         fire::preset(0.8).flame.template,
         0.8,
@@ -313,7 +315,8 @@ fn a_held_free_load_settles_the_fires_on_both_sides() {
         settled
     );
     assert!(app.world().get::<Fire>(flame).unwrap().settled());
-    app.world_mut().remove_resource::<crate::gi_volume::PendingGi>();
+    app.world_mut()
+        .remove_resource::<crate::gi_volume::PendingGi>();
     app.world_mut().resource_mut::<Time<Virtual>>().unpause();
     app.world_mut().resource_mut::<SimPause>().hold(false);
     let mut seen = Seen::default();
@@ -328,5 +331,9 @@ fn a_held_free_load_settles_the_fires_on_both_sides() {
         "the step's copy started over: {:?}",
         seen.ticks
     );
-    assert!(*seen.ticks.last().unwrap() > settled + 10, "{:?}", seen.ticks);
+    assert!(
+        *seen.ticks.last().unwrap() > settled + 10,
+        "{:?}",
+        seen.ticks
+    );
 }

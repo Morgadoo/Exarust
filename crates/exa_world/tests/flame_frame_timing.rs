@@ -74,9 +74,9 @@ fn level_app(game: &std::sync::Arc<GameData>, level: &str, mode: Mode) -> App {
     }
     if !matches!(mode, Mode::Free) {
         // Sixty frames a second of game time, whatever the frames take.
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(
-            Duration::from_secs_f64(1.0 / 60.0),
-        ));
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )));
     }
     let mut queue = bevy::ecs::world::CommandQueue::default();
     {
@@ -128,7 +128,10 @@ fn run(game: &std::sync::Arc<GameData>, level: &str, count: usize, size: f32, mo
     for at in lights {
         let node = app
             .world_mut()
-            .spawn((Transform::from_translation(at), GlobalTransform::from_translation(at)))
+            .spawn((
+                Transform::from_translation(at),
+                GlobalTransform::from_translation(at),
+            ))
             .id();
         let mut commands = Commands::new(&mut queue, app.world());
         exa_world::fire::spawn_fire(&mut commands, node, size);

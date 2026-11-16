@@ -49,7 +49,11 @@ REA (Exanima.exe), checked against the assembly:
   original's fraction (1 + the frame's overstep).
 - `exa_world::particle_stage`: `StagedStep`, `step_flame`, `node_frame`;
   `ParticleSolve::sim_objects` ticks the staged flames in the object
-  stage, a carried one at its part's pose in the solver.
+  stage, a carried one at its part's pose in the solver. The body passes
+  read the parts through a cell index kept from tick to tick (the cloth
+  stage's `PartCells`: a still body keeps its cells and its bound
+  spheres), so a pass no longer buckets every part of the level;
+  `EXA_PARTICLE_TIMING=1` logs the stage's cost.
 - `exa_world::particles`: `FrameWalks`, `Emitter::frame_walks`,
   `Emitter::frame_on` (the frame's half, reading the emitter only).
 - `exa_world::fire`: the bed is built without the body-contact bit;
