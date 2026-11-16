@@ -232,6 +232,20 @@ const NEAR_DEPTH: f32 = 2.0;
 
 /// The Height Query over a level's triangles: the near column first, then
 /// the whole one.
+///
+/// A sphere that starts touching or inside a face meets nothing there: the
+/// original's swept nearest test takes only hits at `0 < t` (the brute-force
+/// and the kd-tree leaf forms alike), and its Height Query raises the start
+/// by the radius, so a probe whose lowest point starts on the floor misses
+/// it. The down body's foot probe starts at its contact (its 70 cm raise is
+/// 0 while the body is down), so a contact resting on or in the floor gives
+/// the feet routine its miss value, in the original as here.
+///
+/// Every game level runs the query's sphere mode: the scene word's grid bit
+/// is set by the level's grid chunk reader (unconditionally), the grid
+/// environment's room builder and the grid resize, and nothing clears it.
+/// The point-ray mode (a ray over the sectors' flat lists, a miss answering
+/// height 0) is left to a scene with no grid, which no shipped level is.
 fn height_query<L: Level + ?Sized>(level: &L, at: Vec3, radius: f32, depth: f32) -> Option<f32> {
     if !(radius > 0.0 && depth > 0.0 && at.is_finite()) {
         return None;
@@ -470,6 +484,23 @@ pub(crate) fn rub(slip: Vec3, n: Vec3, friction: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The down body's foot probe starts at its contact: on (or in) the
+    /// floor the Height Query meets nothing (the original's `0 < t`), a
+    /// millimetre above it the floor is found.
+    #[test]
+    fn a_probe_starting_on_the_floor_misses_it() {
+        let floor: [[Vec3; 3]; 1] = [[
+            Vec3::new(-1.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, -1.0),
+        ]];
+        let level: &[[Vec3; 3]] = &floor;
+        assert_eq!(level.height_below(Vec3::ZERO, 0.05, 20.0), None);
+        assert_eq!(level.height_below(Vec3::new(0.0, -0.001, 0.0), 0.05, 20.0), None);
+        let above = level.height_below(Vec3::new(0.0, 0.001, 0.0), 0.05, 20.0);
+        assert!(above.is_some_and(|y| y.abs() < 1e-5), "{above:?}");
+    }
 
     /// The squares are summed in the engine's pairs, which rounds apart
     /// from a left-to-right sum.
