@@ -2981,9 +2981,16 @@ fn screens_pointer(
 /// character goes to the focused form's key slot
 /// ([`exa_ui::gui_core::GuiTask::key`]): a Tab moves a window's focus among
 /// its tab stops, a record's key message (0xa0) answers 0 for every record
-/// class the game screens hold, and the key climbs to the task. The
-/// journal's text box has its own key slot ([`journal_typing`]).
-pub fn screens_keys(frame: Res<crate::gui_keys::GuiKeyFrame>, mut screens: ResMut<GameScreens>) {
+/// class the game screens hold, and the key climbs to the task: the root
+/// task's shortcuts ([`crate::gui_keys::TaskKeys`]). Escape is Exarust's
+/// close of the focused screen ([`GameScreens::close_focused`]), which
+/// takes it. The journal's text box has its own key slot
+/// ([`journal_typing`]).
+pub fn screens_keys(
+    frame: Res<crate::gui_keys::GuiKeyFrame>,
+    mut screens: ResMut<GameScreens>,
+    mut climbed: Option<ResMut<crate::gui_keys::TaskKeys>>,
+) {
     if frame.keys.is_empty() || !screens.keys_to_window() || screens.journal_box_focused() {
         return;
     }
@@ -2993,6 +3000,12 @@ pub fn screens_keys(frame: Res<crate::gui_keys::GuiKeyFrame>, mut screens: ResMu
             "gui: key {:#x} (word {:#x}) on the game screens: {route:?}",
             key.key, key.flags
         );
+        if route == exa_ui::gui_core::KeyRoute::Task
+            && key.key != u32::from(crate::commands::MENU_TOGGLE_KEY)
+            && let Some(climbed) = climbed.as_deref_mut()
+        {
+            climbed.forward(*key);
+        }
     }
 }
 

@@ -959,7 +959,10 @@ The original's own forms and controls that Exarust rebuilds, with the
   `(1 − turn) + (2.5 − i)·2π/(count − 1)` with the engine's sine across and
   cosine down; a 500 ms reveal (the alpha eased once, the ring twice), a
   256 ms close, a 200 ms hover flash and the 14-unit hit on the three
-  orbit nodes; only the adapter's orbit wobbles. The row fill is the
+  orbit nodes; only the adapter's orbit wobbles. Any key leaves (the
+  key slot reads neither the key nor its word: a key-down, a repeat or a
+  typed character), once the reveal is within its last 400 ms and no
+  close runs. The row fill is the
   original's: the shipped 7, 10, 12, 13 show as 13, 7, 10, 12. The symbol
   shader runs per fragment into an image per row (`selection::symbol_image`),
   drawn with the backdrop, coloured `base + add · mix`: the base is the
@@ -1259,7 +1262,14 @@ Mersenne twister. The screen follows `TMainMenu`'s rules
   pages resume, open the settings, or finish the match, as a forfeit
   unless the session was won. Escape goes back from the arena and practice
   pages, as the original's does at the main menu, and closes the screen
-  elsewhere; Backspace goes back.
+  elsewhere; Backspace goes back. The keys reach the menu's key slot with
+  the window procedure's words: a typed character shifts into a ten-byte
+  buffer (A-Z lowered), and when it reads `barechoons` the menu music
+  toggles (the drum-and-bass theme at 0.2, else the plain one at 0.1, the
+  alternative-music flag flipped); a key-down goes to the base form's key
+  slot and up to the task, whose Escape is the menu toggle. Up, Down,
+  Enter and Backspace are Exarust's keyboard stand-ins for the pad's menu
+  words (the original's menu hears no other key from the keyboard).
 - **Font.** The original draws the rows with its menu font record, whose
   texture is `titlefont.rfi`: 112-pixel letter cells, A to Z in four
   columns, ascent 98, a space of 36, line height 128 and a trim of 6,
@@ -1642,7 +1652,23 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   pointer (the focus follows it) the hotkeys hear nothing
   (`GameScreens::keys_to_window`); the game screens and the manual hand
   the frame's keys (`exa_game::gui_keys::GuiKeyFrame`) to their focused
-  form. The openers' activation raises a window without moving the key
+  form. So do the main menu, the settings form, the power tree, the skill
+  and destination screens and the hub's text fields. A key that climbs to
+  the task (`exa_game::gui_keys::TaskKeys`: from the game screens, the main
+  menu, the settings form, and the game view after the player's hotkeys
+  while no screen or form holds the keys) reaches the root task's key slot
+  (`exa_game::commands::root_task_keys`, after every other key handler of
+  the frame): a repeat, a typed character and Shift alone do nothing;
+  otherwise the one shortcut for the key whose required modifiers are all
+  held and most numerous runs (the earlier entry wins a tie), and the root
+  passes nothing on. Its table holds the settings file's first six bound
+  `KeyDef` lines (each names a modifier and one character), then the game
+  boot's Escape, the main menu's toggle: on the open menu it goes back
+  from the start and arena pages and closes the screen elsewhere
+  (`menu_screen::menu_toggle_key`); the toggle's opening arms stay with F1
+  (Exarust's key for the menu) and the screens' own Escape (the arena's
+  pause). Escape over an open game screen or on the settings form stays
+  Exarust's close of it and does not climb. The openers' activation raises a window without moving the key
   focus (the focus call runs only for a nonzero control, which the press
   passes); a new inventory's and journal's open and every hide end with
   the forced pointer update, so the focus is the form under the pointer.
@@ -3020,7 +3046,8 @@ pass a sixth level read the next skill's bytes, as the original's do.
   along rows of `width / cell` cells, its texture size divided in double
   precision.
 - **Keys.** With the player's controls off the screen's key method hears
-  every key. On the ring (not a page, not the compact tree) any key closes
+  every key the window procedure sends: a key-down, its repeats and the
+  character it typed (the slot reads neither the key nor its word). On the ring (not a page, not the compact tree) any key closes
   the screen through the open routine's toggle, except in the reveal's first
   100 ms (so the key that opened it does not shut it) and while it hides. A
   request to open while it is up also closes it.
@@ -3834,7 +3861,9 @@ Cancel closing the form. Opening fills the rows as `rows` says, the
 anti-aliasing row set to 0 and disabled while super-sampling is on.
 Escape closes the form without Apply (Exarust's; the original's form has no
 key for it), as hiding the menu does: the live changes stay, the draft is
-dropped. While the key-read or warm-up screen is up the form takes no
+dropped. Its key slot is the base form's: no record takes a key (the key
+focus a press gives is not modelled), so its other keys climb to the
+root task's shortcuts. While the key-read or warm-up screen is up the form takes no
 input.
 
 The menu stays drawn under the form: its click handler only remembers the

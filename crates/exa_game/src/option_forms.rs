@@ -59,6 +59,7 @@ use exa_ui::emblem_form::{
 use exa_ui::field_edit::{self, FieldKey, FieldWords};
 use exa_ui::gui_controls::{Control, state};
 use exa_ui::gui_core::GuiRect;
+use exa_ui::gui_keys::GuiKey;
 use exa_ui::record_form::RecordForm;
 use exa_ui::settings::Rect;
 use exa_ui::text_edit::{EditAction, EditView};
@@ -1747,31 +1748,88 @@ pub fn load_emblem_textures(
     }
 }
 
-/// The edit keys a key-down sends as the original's key bytes (the
-/// virtual-key codes the edit unit switches on).
-fn edit_key_byte(code: KeyCode) -> Option<u8> {
+/// The edit keys among the virtual keys a key-down sends (the codes the
+/// edit unit switches on); the rest the text field passes over.
+fn edit_key_byte(vk: u32) -> Option<u8> {
     use exa_ui::text_edit::key;
-    Some(match code {
-        KeyCode::Backspace => key::BACKSPACE,
-        KeyCode::Delete => key::DELETE,
-        KeyCode::ArrowLeft => key::LEFT,
-        KeyCode::ArrowRight => key::RIGHT,
-        KeyCode::Home => key::HOME,
-        KeyCode::End => key::END,
-        KeyCode::Enter | KeyCode::NumpadEnter => field_edit::ENTER,
-        KeyCode::KeyC => key::COPY,
-        KeyCode::KeyV => key::PASTE,
-        KeyCode::KeyX => key::CUT,
-        _ => return None,
-    })
+    let byte = u8::try_from(vk).ok()?;
+    matches!(
+        byte,
+        key::BACKSPACE
+            | key::DELETE
+            | key::LEFT
+            | key::RIGHT
+            | key::HOME
+            | key::END
+            | field_edit::ENTER
+            | key::COPY
+            | key::PASTE
+            | key::CUT
+    )
+    .then_some(byte)
 }
 
-/// Keys reach the hub's forms: the focused text field or combo box (the
-/// record under the pointer) takes each key-down as its key byte and each
-/// typed character as a typed byte, through its own handler; Ctrl with C,
-/// X or V asks the system clipboard. The colour picker's clicked spinner
-/// keeps its own typing ([`HubWindows::type_key`]). A message box on top
-/// takes the keys instead.
+/// The keys of the frame as the window procedure sends them: from the
+/// frame's key list, else (an app without it) from the keyboard messages
+/// and the scripted presses, with Shift 0x20 and Ctrl 0x40 in the word.
+fn frame_keys(
+    frame: Option<&crate::gui_keys::GuiKeyFrame>,
+    events: &[KeyboardInput],
+    keys: &ButtonInput<KeyCode>,
+) -> Vec<GuiKey> {
+    if let Some(frame) = frame {
+        return frame.keys.clone();
+    }
+    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let word =
+        u32::from(shift) * exa_ui::gui_keys::SHIFT + u32::from(ctrl) * exa_ui::gui_keys::CTRL;
+    let mut out = Vec::new();
+    let mut sent: Vec<KeyCode> = Vec::new();
+    for event in events.iter().filter(|e| e.state.is_pressed()) {
+        sent.push(event.key_code);
+        if let Some(vk) = crate::bindings::virtual_key(event.key_code) {
+            out.push(GuiKey {
+                key: vk,
+                flags: word,
+            });
+        }
+        if ctrl {
+            continue;
+        }
+        let text = match &event.logical_key {
+            Key::Character(text) => text.to_string(),
+            Key::Space => " ".to_string(),
+            _ => continue,
+        };
+        out.extend(
+            text.chars()
+                .filter_map(|c| u8::try_from(c).ok())
+                .filter_map(|b| exa_ui::gui_keys::KeyMask::typed(u32::from(b))),
+        );
+    }
+    for code in keys.get_just_pressed() {
+        if !sent.contains(code)
+            && let Some(vk) = crate::bindings::virtual_key(*code)
+        {
+            out.push(GuiKey {
+                key: vk,
+                flags: word,
+            });
+        }
+    }
+    out
+}
+
+/// Keys reach the hub's forms as the window procedure sends them (the
+/// key-down with its word, then the character it typed with the word 2):
+/// Tab is the form's own (its key slot moves the focus among the tab
+/// stops); any other key is the focused record's key message (0xa0): the
+/// focused text field or combo box (the record under the pointer) takes a
+/// key-down's edit key, with Ctrl and Shift as the word holds them, and a
+/// typed character; Ctrl with C, X or V asks the system clipboard. The
+/// colour picker's clicked spinner keeps its own typing
+/// ([`HubWindows::type_key`]). A message box on top takes the keys instead.
 #[allow(clippy::too_many_arguments)]
 pub fn hub_form_typing(
     mut typed: MessageReader<KeyboardInput>,
@@ -1790,125 +1848,67 @@ pub fn hub_form_typing(
     if windows.forms.message_on_top() {
         return;
     }
-    // Tab is the form's key (its key slot moves the focus among the tab
-    // stops), with the key-down's mask word; the fields never hear it.
-    let tabs: Vec<u32> = match gui_keys.as_deref() {
-        Some(frame) => frame
-            .key_downs()
-            .filter(|k| k.key == 9)
-            .map(|k| k.flags)
-            .collect(),
-        None => {
-            let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-            let word = if shift { exa_ui::gui_keys::SHIFT } else { 0 };
-            let tabs = events
-                .iter()
-                .filter(|e| e.state.is_pressed() && e.key_code == KeyCode::Tab)
-                .count();
-            let tabs = if tabs == 0 && keys.just_pressed(KeyCode::Tab) {
-                1
-            } else {
-                tabs
-            };
-            vec![word; tabs]
-        }
-    };
-    for flags in tabs {
-        windows.form_tab(flags);
-    }
+    let frame = frame_keys(gui_keys.as_deref(), &events, &keys);
     let mut clipboard = clipboard;
-    if windows.forms.options.key_focus.is_some() {
-        let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-        let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-        let mut sent: Vec<KeyCode> = Vec::new();
-        let mut presses: Vec<FieldKey> = Vec::new();
-        for event in events.iter().filter(|e| e.state.is_pressed()) {
-            // The key-down first, as the window procedure sends it; the
-            // character after it (not with Ctrl).
-            let key_byte =
-                edit_key_byte(event.key_code).filter(|&b| ctrl || !matches!(b, 0x43 | 0x56 | 0x58));
-            if let Some(byte) = key_byte {
-                sent.push(event.key_code);
-                presses.push(FieldKey {
+    for key in frame {
+        let typed = key.flags & exa_ui::gui_keys::TYPED != 0;
+        // Tab is the form's key: the fields never hear it.
+        if !typed && key.key == 9 {
+            windows.form_tab(key.flags);
+            continue;
+        }
+        if windows.forms.options.key_focus.is_some() {
+            let press = if typed {
+                let byte = u8::try_from(key.key)
+                    .ok()
+                    .filter(|b| (b' '..=b'~').contains(b));
+                byte.map(|byte| FieldKey {
                     byte,
-                    typed: false,
-                    ctrl,
-                    shift,
-                });
-            }
-            if ctrl {
-                continue;
-            }
-            let text: Option<String> = match &event.logical_key {
-                Key::Character(text) => Some(text.to_string()),
-                Key::Space => Some(" ".to_string()),
-                _ => None,
-            };
-            for ch in text.iter().flat_map(|t| t.chars()) {
-                if (' '..='~').contains(&ch) {
-                    presses.push(FieldKey {
-                        byte: ch as u8,
-                        typed: true,
+                    typed: true,
+                    ctrl: false,
+                    shift: false,
+                })
+            } else {
+                let ctrl = key.flags & exa_ui::gui_keys::CTRL != 0;
+                let shift = key.flags & exa_ui::gui_keys::SHIFT != 0;
+                edit_key_byte(key.key)
+                    .filter(|&b| ctrl || !matches!(b, 0x43 | 0x56 | 0x58))
+                    .map(|byte| FieldKey {
+                        byte,
+                        typed: false,
                         ctrl,
                         shift,
-                    });
-                }
-            }
-        }
-        // Scripted key-downs (`--press`) come without a keyboard message.
-        for code in keys.get_just_pressed() {
-            if sent.contains(code) {
+                    })
+            };
+            let Some(press) = press else {
                 continue;
-            }
-            if let Some(byte) =
-                edit_key_byte(*code).filter(|&b| ctrl || !matches!(b, 0x43 | 0x56 | 0x58))
+            };
+            let pasted =
+                (press.ctrl && !press.typed && press.byte == exa_ui::text_edit::key::PASTE)
+                    .then(|| clipboard.as_deref_mut().and_then(|c| c.read()))
+                    .flatten();
+            let action = windows.field_key(&mut career, press, pasted.as_deref());
+            if let Some(EditAction::Copy(bytes) | EditAction::Cut(bytes)) = action
+                && let Some(c) = clipboard.as_deref_mut()
             {
-                presses.push(FieldKey {
-                    byte,
-                    typed: false,
-                    ctrl,
-                    shift,
-                });
+                c.put(&bytes);
             }
+            continue;
         }
-        for key in presses {
-            let pasted = (key.ctrl && !key.typed && key.byte == exa_ui::text_edit::key::PASTE)
-                .then(|| clipboard.as_deref_mut().and_then(|c| c.read()))
-                .flatten();
-            let action = windows.field_key(&mut career, key, pasted.as_deref());
-            match action {
-                Some(EditAction::Copy(bytes)) | Some(EditAction::Cut(bytes)) => {
-                    if let Some(c) = clipboard.as_deref_mut() {
-                        c.put(&bytes);
-                    }
-                }
+        if windows.forms.options.focus.is_none() {
+            continue;
+        }
+        if typed {
+            if let Ok(byte) = u8::try_from(key.key) {
+                windows.type_key(TypedKey::Char(char::from(byte)));
+            }
+        } else if key.flags & exa_ui::gui_keys::REPEAT == 0 {
+            match key.key {
+                0x08 => windows.type_key(TypedKey::Backspace),
+                0x0d => windows.type_key(TypedKey::Enter),
                 _ => {}
             }
         }
-        return;
-    }
-    if windows.forms.options.focus.is_none() {
-        return;
-    }
-    for event in &events {
-        if !event.state.is_pressed() {
-            continue;
-        }
-        match &event.logical_key {
-            Key::Character(text) => {
-                for ch in text.chars() {
-                    windows.type_key(TypedKey::Char(ch));
-                }
-            }
-            Key::Space => windows.type_key(TypedKey::Char(' ')),
-            _ => {}
-        }
-    }
-    if keys.just_pressed(KeyCode::Backspace) {
-        windows.type_key(TypedKey::Backspace);
-    }
-    if keys.just_pressed(KeyCode::Enter) {
-        windows.type_key(TypedKey::Enter);
     }
 }
 
@@ -2067,6 +2067,68 @@ mod tests {
             form.controls()[emblem_records::BACKGROUND_NUMBER].text,
             b"7"
         );
+    }
+
+    /// The live typing hears the window procedure's keys: each key-down
+    /// (its edit key) and the character it typed reach the focused name
+    /// field's key message in order, and Shift with a letter types the
+    /// capital the character carries.
+    #[test]
+    fn the_name_field_types_through_the_frames_keys() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::Key;
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ArenaCareer>()
+            .add_plugins(crate::gui_keys::GuiKeysPlugin)
+            .add_systems(Update, hub_form_typing);
+        let mut hub = windows();
+        hub.open_company();
+        let name = centre(
+            hub.forms.get(FormWindow::Emblem).unwrap(),
+            emblem_records::NAME,
+        );
+        hover(&mut hub, name);
+        app.insert_resource(hub);
+        let window = app.world_mut().spawn_empty().id();
+        let send = |app: &mut App, key_code: KeyCode, logical_key: Key, pressed: bool| {
+            app.world_mut().write_message(KeyboardInput {
+                key_code,
+                logical_key,
+                state: if pressed {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                },
+                text: None,
+                repeat: false,
+                window,
+            });
+        };
+        let text = |app: &App| {
+            app.world()
+                .resource::<HubWindows>()
+                .forms
+                .get(FormWindow::Emblem)
+                .unwrap()
+                .controls()[emblem_records::NAME]
+                .text
+                .clone()
+        };
+        let before = text(&app);
+        send(&mut app, KeyCode::KeyA, Key::Character("a".into()), true);
+        send(&mut app, KeyCode::KeyA, Key::Character("a".into()), false);
+        send(&mut app, KeyCode::ShiftLeft, Key::Shift, true);
+        send(&mut app, KeyCode::KeyB, Key::Character("B".into()), true);
+        send(&mut app, KeyCode::KeyB, Key::Character("B".into()), false);
+        send(&mut app, KeyCode::ShiftLeft, Key::Shift, false);
+        send(&mut app, KeyCode::ArrowLeft, Key::ArrowLeft, true);
+        send(&mut app, KeyCode::ArrowLeft, Key::ArrowLeft, false);
+        send(&mut app, KeyCode::KeyC, Key::Character("c".into()), true);
+        app.update();
+        let mut want = before.clone();
+        want.extend_from_slice(b"acB");
+        assert_eq!(text(&app), want);
     }
 
     #[test]

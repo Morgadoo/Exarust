@@ -254,7 +254,9 @@ sound to once per 200 units. Its key handler confirms a positive selection,
 forwards and backs, and moves within the limit. The inventory detaches by
 marking its owner, placing a visible child, releasing its stack and copying the
 loot pane's origin, and maps an argument of -1 to page -3. The main-menu name
-entry shifts a ten-byte buffer, lowers A-Z and submits on "barechoons". The
+entry shifts a ten-byte buffer, lowers A-Z and submits on "barechoons"
+(`exa_game::menu_screen` runs it on the typed characters its key slot
+hears and toggles the menu music, `toggle_menu_music`). The
 splash screen's bounds are the screen and two -1 values, and its destroy
 releases, frees two pointers, releases a list and calls the base before the
 final free call. The skill selector draws a page-2 title or the measured icon
@@ -761,7 +763,8 @@ stretches with the root (no attributes, no border), its forms drawn in
 order and hit from the top down (the style's no-hit bit and the layer's own
 hit flag skip them), its 16-byte shortcut table (each entry scores its
 held modifiers plus one, so an unmodified entry fires; Shift is never a
-shortcut and is forwarded to the parent unless the layer is the root), the
+shortcut and is forwarded to the parent unless the layer is the root; the
+root's key slot runs live in `exa_game::commands::root_task_keys`), the
 active/root 1.0 draw against the inactive 0.75 and 0.5, the notice word,
 the frame callback list (a callback answering false is dropped) and the
 focus hooks: leaving saves the focused form when it is on the layer,

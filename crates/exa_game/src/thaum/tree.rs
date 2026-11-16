@@ -738,6 +738,10 @@ pub struct KeyInput {
     /// The form's stamp in milliseconds.
     pub stamp: u32,
     pub now: u32,
+    /// The bound next-power and previous-power keys (their binding slots'
+    /// low 16 bits; the right and left arrows as shipped).
+    pub next: u32,
+    pub previous: u32,
 }
 
 /// What a key did.
@@ -1861,8 +1865,9 @@ impl TreeScreen {
         out
     }
 
-    /// The tree form's key slot: the bar cycle on the right (0x27) and
-    /// left (0x25) keys (not for a typed character), and on any other key
+    /// The tree form's key slot: the bar cycle on the bound next-power and
+    /// previous-power keys (the right and left arrows as shipped; not for
+    /// a typed character), and on any other key
     /// the tree's open-or-close routine, which closes the shown tree. A
     /// form in its opening fade ignores keys until 950 ms before its stamp
     /// has passed (signed, in 64 bits: a stamp under 950 never guards); a
@@ -1881,6 +1886,8 @@ impl TreeScreen {
             hidden,
             stamp,
             now,
+            next,
+            previous,
         } = input;
         let mut out = KeyResult::default();
         if self.mode != TreeMode::Play {
@@ -1891,14 +1898,14 @@ impl TreeScreen {
             return out;
         }
         if flags & 2 == 0 {
-            if key == 0x27 {
+            if key as u32 == next & 0xffff {
                 out.cycled = bar.cycle(1, record);
                 if out.cycled {
                     out.sound = Some(SLOT_SELECT_SOUND);
                 }
                 return out;
             }
-            if key == 0x25 {
+            if key as u32 == previous & 0xffff {
                 out.cycled = bar.cycle(-1, record);
                 if out.cycled {
                     out.sound = Some(SLOT_SELECT_SOUND);
@@ -4824,6 +4831,8 @@ mod tests {
             hidden,
             stamp,
             now,
+            next: 0x27,
+            previous: 0x25,
         };
         // Any other key runs the toggle, unless the closing fade runs.
         let out = screen.key(input(0x50, 0, false, false, 0, 0), &mut bar, None);
@@ -4850,6 +4859,32 @@ mod tests {
         let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
         let out = create.key(input(0x50, 0, false, false, 0, 0), &mut bar, None);
         assert!(!out.toggle && !out.cycled && out.base);
+    }
+
+    /// The cycle keys are the bound next-power and previous-power keys
+    /// (the slot compares their binding words, not the arrows): rebound,
+    /// the arrow closes the tree like any other key.
+    #[test]
+    fn the_tree_cycles_on_the_bound_power_keys() {
+        let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        let mut bar = PowerBar::default();
+        let input = |key, next, previous| KeyInput {
+            key,
+            flags: 0,
+            guarded: false,
+            hidden: false,
+            stamp: 0,
+            now: 0,
+            next,
+            previous,
+        };
+        let out = screen.key(input(0x45, 0x45, 0x51), &mut bar, None);
+        assert!(out.cycled && !out.toggle);
+        let out = screen.key(input(0x27, 0x45, 0x51), &mut bar, None);
+        assert!(out.toggle && !out.cycled);
+        // Only the binding word's low 16 bits count.
+        let out = screen.key(input(0x51, 0x45, 0x1_0051), &mut bar, None);
+        assert!(!out.toggle);
     }
 
     #[test]

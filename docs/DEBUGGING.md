@@ -43,7 +43,11 @@ a handler, a line is split at its first space, the command is matched with
 ASCII case ignored, and the handler gets the rest. Two commands are
 registered: `cshd` (reload the shader programs) and `msm` (smooth a
 scene's meshes). The settings file's `KeyDef` lines hold lists of such
-lines; Exarust runs them one per frame, which is a guess. `exa_game::commands`
+lines; Exarust runs them one per frame, which is a guess. A binding is a
+shortcut of the root task: it fires when its key reaches the root's key
+slot (from the game view, a game screen, the main menu or the settings
+form) with its modifier held, and only the best binding for a key runs
+(the most required modifiers held, the earlier on a tie). `exa_game::commands`
 is that registry and queue; `exarust` registers `cshd`
 (`exa_render::shader_reload::reload` asks the asset server to reload the 12
 embedded shaders) and `msm`, whose handler only logs: the subdivision itself

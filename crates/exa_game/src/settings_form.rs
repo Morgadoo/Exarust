@@ -76,6 +76,7 @@ pub struct SettingsFormPlugin;
 
 impl Plugin for SettingsFormPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<SettingsForm>()
             .init_resource::<OpenSettingsOnLoad>()
             .init_resource::<BindingEditor>()
@@ -293,6 +294,10 @@ fn form_input(
     mut applied: MessageWriter<BindingsApplied>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
     mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
+    (gui_keys, mut climbed): (
+        Option<Res<crate::gui_keys::GuiKeyFrame>>,
+        Option<ResMut<crate::gui_keys::TaskKeys>>,
+    ),
 ) {
     let notches: f32 = wheel
         .read()
@@ -321,7 +326,27 @@ fn form_input(
         if screen != form.screen || unit != form.unit() {
             form.resize(screen, unit);
         }
-        if keys.just_pressed(KeyCode::Escape) {
+        // The form's key slot is the base form's: no record of the form
+        // takes a key (the key focus a press gives is not modelled), so a
+        // key-down climbs to the task's shortcuts. Escape closing the form
+        // is Exarust's and takes the key.
+        let escape = match gui_keys.as_deref() {
+            Some(frame) => {
+                let mut escape = false;
+                for key in frame.key_downs() {
+                    if key.key == 0x1b && key.flags & exa_ui::gui_keys::REPEAT == 0 {
+                        escape = true;
+                    } else if key.flags & 3 == 0
+                        && let Some(climbed) = climbed.as_deref_mut()
+                    {
+                        climbed.forward(key);
+                    }
+                }
+                escape
+            }
+            None => keys.just_pressed(KeyCode::Escape),
+        };
+        if escape {
             config.close();
             keep = false;
         } else {

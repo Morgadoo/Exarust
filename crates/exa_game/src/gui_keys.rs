@@ -9,7 +9,10 @@
 //! In play the player's hotkeys are the game view's key handler, which a
 //! key reaches only while the view has the focus (no game screen under
 //! the pointer); [`crate::hotkeys`] reads
-//! [`crate::gui_screens::GameScreens::keys_to_window`] for that.
+//! [`crate::gui_screens::GameScreens::keys_to_window`] for that. A key
+//! that climbs to the task goes into [`TaskKeys`], which the root task's
+//! key slot reads after every form and the view had theirs
+//! ([`crate::commands::root_task_keys`]).
 
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
@@ -30,6 +33,22 @@ impl GuiKeyFrame {
             .iter()
             .copied()
             .filter(|k| k.flags & exa_ui::gui_keys::TYPED == 0)
+    }
+}
+
+/// The keys of this frame that the forms passed up to the task's key
+/// slot (a form's base key slot answering "parent", the game view after
+/// its key handler), in the order they climbed. The root task's key slot
+/// drains them ([`crate::commands::root_task_keys`]).
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskKeys {
+    pub keys: Vec<GuiKey>,
+}
+
+impl TaskKeys {
+    /// A key climbs to the task.
+    pub fn forward(&mut self, key: GuiKey) {
+        self.keys.push(key);
     }
 }
 
@@ -94,14 +113,25 @@ pub fn read_gui_keys(
     }
 }
 
+/// The frame's key reader ([`read_gui_keys`]), after Bevy's input: a
+/// system that presses keys for a scripted run goes before it.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GuiKeySet;
+
 /// Installs [`GuiKeyFrame`] and its reader, after Bevy's input.
 pub struct GuiKeysPlugin;
 
 impl Plugin for GuiKeysPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GuiKeyFrame>()
+            .init_resource::<TaskKeys>()
             .add_message::<KeyboardInput>()
-            .add_systems(PreUpdate, read_gui_keys.after(bevy::input::InputSystems));
+            .add_systems(
+                PreUpdate,
+                read_gui_keys
+                    .in_set(GuiKeySet)
+                    .after(bevy::input::InputSystems),
+            );
     }
 }
 

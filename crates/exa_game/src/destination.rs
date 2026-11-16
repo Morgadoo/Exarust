@@ -108,6 +108,7 @@ pub struct DestinationPlugin;
 impl Plugin for DestinationPlugin {
     fn build(&self, app: &mut App) {
         bridge_destination_types(app);
+        crate::gui_keys::ensure(app);
         app.init_resource::<PortalScreenState>()
             .add_message::<OpenPortalScreen>()
             .add_message::<PortalInput>()
@@ -172,7 +173,7 @@ const NODE_LOG_FRAME: u32 = 90;
 /// The window's pointer as the open screen reads it, once a frame while a
 /// screen shows: its point in physical pixels (the scripted pointer of an
 /// unattended run, else the mouse over the window), a press of the left
-/// (bit 0) or right (bit 1) button this frame, Escape as the leave key,
+/// (bit 0) or right (bit 1) button this frame, any key as the leave key,
 /// and the window's physical size with the interface's GUI scale as its
 /// unit. The first input of a screen, and the one [`NODE_LOG_FRAME`]
 /// frames later (its reveal over), log where its three row nodes stand.
@@ -183,6 +184,7 @@ fn portal_pointer(
     scripted: Option<Res<exa_ui::cursor::ScriptedPointer>>,
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
+    gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
     gui: Option<Res<exa_ui::scale::GuiScale>>,
     mut inputs: MessageWriter<PortalInput>,
     mut shown: Local<u32>,
@@ -204,9 +206,15 @@ fn portal_pointer(
     let pressed = |button| mouse.as_ref().is_some_and(|m| m.just_pressed(button));
     let buttons =
         u16::from(pressed(MouseButton::Left)) | (u16::from(pressed(MouseButton::Right)) << 1);
-    let leave = keys
-        .as_ref()
-        .is_some_and(|k| k.just_pressed(KeyCode::Escape));
+    // The screen's key slot reads neither the key nor its word: any key
+    // the window procedure sends (a key-down, a repeat, a typed character)
+    // is the leave key.
+    let leave = match gui_keys.as_deref() {
+        Some(frame) => !frame.keys.is_empty(),
+        None => keys
+            .as_ref()
+            .is_some_and(|k| k.get_just_pressed().next().is_some()),
+    };
     let (width, height) = (
         window.physical_width() as i32,
         window.physical_height() as i32,
@@ -697,6 +705,32 @@ mod tests {
         assert_eq!(state.open.as_ref().unwrap().screen.state & 2, 0);
         app.world_mut().write_message(leave);
         at(&mut app, 1_100);
+        let state = app.world().resource::<PortalScreenState>();
+        assert!(state.open.as_ref().unwrap().screen.state & 2 != 0);
+    }
+
+    /// The screen's key slot reads no key code: any key the window
+    /// procedure sends (here W, not Escape) leaves once the reveal is
+    /// within its last 400 ms.
+    #[test]
+    fn any_key_leaves_the_screen() {
+        let mut app = app();
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow));
+        open(&mut app, POWER_CRYSTAL, 0);
+        at(&mut app, 1_000);
+        let press = |app: &mut App, ms: u32| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release_all();
+            keys.clear();
+            keys.press(KeyCode::KeyW);
+            at(app, ms);
+        };
+        press(&mut app, 1_050);
+        let state = app.world().resource::<PortalScreenState>();
+        assert_eq!(state.open.as_ref().unwrap().screen.state & 2, 0);
+        press(&mut app, 1_100);
         let state = app.world().resource::<PortalScreenState>();
         assert!(state.open.as_ref().unwrap().screen.state & 2 != 0);
     }
