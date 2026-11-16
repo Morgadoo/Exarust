@@ -35,7 +35,7 @@ use exa_assets::{Archive, Game, PackKind};
 use exa_ui::form::ClientRect;
 use exa_ui::game_tips::GameTips;
 use exa_ui::gui_core::GuiRect;
-use exa_ui::gui_draw::{GuiFrame, GuiFrames, GuiLayer, GuiTextures, LayerTexture};
+use exa_ui::gui_draw::{GuiFrame, GuiFrames, GuiLayer, GuiTexture, GuiTextures, LayerTexture};
 use exa_ui::help_screen::{TwoPane, two_pane_key};
 use exa_ui::help_system::{self, Manual, ManualSource, TopicRef};
 use exa_ui::item_view::{ItemView, ViewEvent, ViewReply};
@@ -421,6 +421,7 @@ impl Plugin for HelpLivePlugin {
     fn build(&self, app: &mut App) {
         crate::gui_keys::ensure(app);
         app.init_resource::<ManualScreen>()
+            .init_resource::<exa_ui::text_edit::TextPictures>()
             .init_resource::<crate::prelude::Tips>()
             .init_resource::<GuiFrames>()
             .add_message::<MenuChoice>()
@@ -572,7 +573,10 @@ fn manual_input(
     let rect = screen.rect(size, unit);
     screen.build_forms(rect, unit);
     let now = time.elapsed().as_millis() as u32;
-    let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
+    // The manual is open with the controls off: the middle button is the
+    // GUI's too.
+    let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now)
+        .with_keys(&mouse, Some(&keys), true);
     let (Some(outer), Some(page), Some(list_form)) = (screen.outer, screen.page, screen.list_form)
     else {
         return;
@@ -792,6 +796,29 @@ fn page_fraction(screen: &ManualScreen) -> f32 {
         .map_or(screen.scroll, |s| s.fraction)
 }
 
+/// A text picture `NAME.rfi` from the installation; a missing one is
+/// logged once (the store remembers it).
+fn load_text_picture(game: &exa_assets::Game, name: &str) -> Option<GuiTexture> {
+    match game.load_rgba(name) {
+        Ok(image) => {
+            let texture = exa_ui::gui_draw::GuiTexture::from_bottom_up(
+                image.width,
+                image.height,
+                &image.pixels,
+            );
+            info!(
+                "manual: picture {name:?} ({}x{})",
+                image.width, image.height
+            );
+            texture
+        }
+        Err(error) => {
+            error!("manual: picture {name:?}: {error}");
+            None
+        }
+    }
+}
+
 /// The level's main font, with its atlas when loaded.
 fn list_font(unit: i32, textures: &GuiTextures) -> (exa_ui::gui_font::GuiFont, Option<(u16, u16)>) {
     let level = exa_ui::gui_font::level_for_unit(unit);
@@ -806,6 +833,10 @@ pub(crate) fn paint_manual(
     textures: Option<Res<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
+    (game, mut pictures): (
+        Option<Res<exa_assets::Game>>,
+        Option<ResMut<exa_ui::text_edit::TextPictures>>,
+    ),
 ) {
     let Some(manual) = screen.manual.as_ref() else {
         return;
@@ -901,6 +932,14 @@ pub(crate) fn paint_manual(
     };
     if screen.page_set != Some((record, unit)) {
         let scroll = text_box.scroll_target;
+        // The page's `[rimg=NAME]` pictures: loaded once, their sizes laid
+        // out with the text.
+        if let Some(pictures) = pictures.as_deref_mut() {
+            if let Some(game) = game.as_deref() {
+                pictures.ensure(&text, |name| load_text_picture(game, name));
+            }
+            text_box.picture_sizes = pictures.sizes_for(&text);
+        }
         text_box.set_text(&text, Some(&key_name));
         if screen.page_set.is_some_and(|(r, _)| r == record) {
             text_box.set_scroll(scroll);
@@ -913,7 +952,7 @@ pub(crate) fn paint_manual(
         selection: palette.highlight[2],
         slant: font.slant,
     };
-    let draw = text_box.draw(&inks, &|_| None);
+    let draw = text_box.draw(&inks, &|name| text_box.picture_size(name));
     // The page form's scroll runs over the box's lines: its content is the
     // box's content height, one step a line's share.
     let client = text_box.client;
@@ -940,6 +979,14 @@ pub(crate) fn paint_manual(
             (glyph.y >= top && glyph.y + font.line_height <= bottom).then_some(glyph)
         })
         .collect();
+    // The inline pictures, in the page's client (a picture scrolled half
+    // out of the page is cut at its edge).
+    if let Some(pictures) = pictures.as_deref() {
+        let clip = [origin.0, top, client.width(), client.height()];
+        painted
+            .layers
+            .extend(pictures.layers(&draw.pictures, (origin.0, origin.1 - shift), clip));
+    }
     if !glyphs.is_empty() {
         let batch = exa_ui::gui_draw::glyph_batch(&font, &glyphs, atlas, 1.0);
         painted.push(GuiLayer::new(batch, LayerTexture::Named(font.texture)));
@@ -1098,7 +1145,11 @@ mod tests {
     /// A synthetic manual pack: two records whose list positions are
     /// swapped (the second record names the first row).
     fn pack() -> Vec<u8> {
-        let texts: [&[u8]; 2] = [b"Moving about.\0", b"Fighting.\0"];
+        pack_of([b"Moving about.\0", b"Fighting.\0"])
+    }
+
+    /// [`pack`] with other page texts.
+    fn pack_of(texts: [&[u8]; 2]) -> Vec<u8> {
         let mut table = Vec::new();
         let mut data = Vec::new();
         for (i, (name, text)) in [("movement", texts[0]), ("combat", texts[1])]
@@ -1119,6 +1170,87 @@ mod tests {
         bytes.extend_from_slice(&table);
         bytes.extend_from_slice(&data);
         bytes
+    }
+
+    /// A page's `[rimg=NAME]` picture: its size from the loaded picture
+    /// (a 120 × 60 picture is 20 × 10 units, 100 × 50 pixels at unit 5)
+    /// makes room in the text box's layout, and the page draws it centred
+    /// in the text's width, in white under the premultiplied blend,
+    /// clipped to the page's client.
+    #[test]
+    fn the_pages_inline_picture_is_laid_out_and_drawn() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::ScriptedPointer>()
+            .add_plugins(HelpLivePlugin);
+        app.world_mut().spawn((
+            Window {
+                resolution: bevy::window::WindowResolution::new(1600, 900),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        let picture = GuiTexture {
+            width: 120,
+            height: 60,
+            pixels: vec![[10, 20, 30, 255]; 120 * 60],
+        };
+        app.world_mut()
+            .resource_mut::<exa_ui::text_edit::TextPictures>()
+            .insert(b"TutTest", Some(picture.clone()));
+        // The page draws once the level's font atlas is loaded.
+        let mut textures = GuiTextures::default();
+        for font in exa_ui::gui_font::FONTS {
+            textures.textures.insert(
+                font.texture.to_string(),
+                GuiTexture {
+                    width: 256,
+                    height: 256,
+                    pixels: vec![[255; 4]; 256 * 256],
+                },
+            );
+        }
+        app.insert_resource(textures);
+        let (topics, pages) = read_manual(&pack_of([
+            b"Moving about.\0",
+            b"Above[rimg=TutTest]Below.\0",
+        ]))
+        .unwrap();
+        app.world_mut()
+            .resource_mut::<ManualScreen>()
+            .open(topics, pages, MANUAL_FROM_MENU);
+        app.update();
+        app.update();
+        let screen = app.world().resource::<ManualScreen>();
+        assert_eq!(
+            screen.manual.as_ref().unwrap().text,
+            b"Above[rimg=TutTest]Below."
+        );
+        let text_box = screen.page_box.as_ref().unwrap();
+        assert_eq!(text_box.text.as_bytes(), b"Above[rimg=TutTest]Below.");
+        assert_eq!(text_box.picture_size(b"TutTest"), Some((120, 60)));
+        let draw = text_box.draw(
+            &exa_ui::text_layout::TextInks {
+                text: [0; 4],
+                tag_alpha: 255,
+                selection: [0; 4],
+                slant: 0,
+            },
+            &|name| text_box.picture_size(name),
+        );
+        assert_eq!(draw.pictures.len(), 1);
+        assert_eq!(draw.pictures[0].rect[2..], [100, 50]);
+        let frames = app.world().resource::<GuiFrames>();
+        let layer = frames
+            .frames
+            .iter()
+            .flat_map(|f| f.layers.iter())
+            .find(|l| l.texture == LayerTexture::Owned(picture.clone()))
+            .expect("the picture's layer");
+        assert_eq!(layer.batch.blend, exa_ui::text_layout::PICTURE_BLEND);
+        assert!(layer.clip.is_some());
     }
 
     #[test]

@@ -200,7 +200,12 @@ pub struct DialogClick {
     pub result: i32,
 }
 
-/// The four confirmation dialogs' click rule.
+/// The four confirmation dialogs' click rule (their press slot): a press
+/// whose hover word is not a record (`selection` < 1: the client, a label
+/// that passes the point through, or the frame) closes the dialog and
+/// answers 0x40; a press on a record goes to the base form's press.
+/// Live for the arena's Dismiss and yes/no dialogs and the save screen's
+/// delete and reset-to-portal boxes.
 pub fn dialog_click(selection: i32, base: impl FnOnce() -> i32) -> DialogClick {
     if selection < 1 {
         DialogClick {

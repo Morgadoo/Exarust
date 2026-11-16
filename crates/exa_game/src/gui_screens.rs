@@ -2398,9 +2398,11 @@ pub(crate) fn inventory_follows_the_set(
 }
 
 /// The application's deactivation (the window procedure's focus loss): the
-/// window managers' focused forms deselect and the focus goes to their
-/// root, remembered for a later focus to no form
-/// ([`exa_ui::gui_core::GuiTask::deactivate`]). The in-game screens, the
+/// window managers' held buttons release, their pointer shape and capture
+/// clear, and their focused forms deselect with the focus on their root,
+/// remembered ([`exa_ui::gui_core::GuiTask::focus_lost`]); the focus's
+/// return goes back to the remembered form
+/// ([`exa_ui::gui_core::GuiTask::focus_regained`]). The in-game screens, the
 /// hub's windows, the main menu and the power tree hang from their own
 /// tasks in Exarust; each is told, as the original's one GUI is.
 pub(crate) fn deactivate_on_focus_loss(
@@ -2410,20 +2412,34 @@ pub(crate) fn deactivate_on_focus_loss(
     menu: Option<ResMut<crate::menu_screen::MenuRouter>>,
     tree: Option<ResMut<crate::power_screen::PowerRouter>>,
 ) {
-    if !focus.read().any(|event| !event.focused) {
+    // The last focus message of the frame decides (a loss then a gain in
+    // one frame runs both, in order).
+    let events: Vec<bool> = focus.read().map(|event| event.focused).collect();
+    if events.is_empty() {
         return;
     }
-    if let Some(mut screens) = screens {
-        screens.task.deactivate();
+    let mut tasks: Vec<&mut exa_ui::gui_core::GuiTask> = Vec::new();
+    let (mut screens, mut hub, mut menu, mut tree) = (screens, hub, menu, tree);
+    if let Some(screens) = screens.as_mut() {
+        tasks.push(&mut screens.task);
     }
-    if let Some(mut hub) = hub {
-        hub.task.deactivate();
+    if let Some(hub) = hub.as_mut() {
+        tasks.push(&mut hub.task);
     }
-    if let Some(mut menu) = menu {
-        menu.task.deactivate();
+    if let Some(menu) = menu.as_mut() {
+        tasks.push(&mut menu.task);
     }
-    if let Some(mut tree) = tree {
-        tree.task.deactivate();
+    if let Some(tree) = tree.as_mut() {
+        tasks.push(&mut tree.task);
+    }
+    for focused in events {
+        for task in tasks.iter_mut() {
+            if focused {
+                task.focus_regained();
+            } else {
+                task.focus_lost();
+            }
+        }
     }
 }
 
@@ -3130,6 +3146,7 @@ fn screens_pointer(
     mut screens: ResMut<GameScreens>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
     taken: Option<Res<crate::player::CaptureAnswer>>,
+    controls: Option<Res<crate::player_controls::PlayerControl>>,
 ) {
     let delta = crate::form_input::wheel_delta(&mut wheel);
     if screens.open.is_empty() || menu.is_some_and(|menu| menu.open) {
@@ -3150,8 +3167,14 @@ fn screens_pointer(
         primary.hint = text.as_bytes().to_vec();
     }
     let now = time.elapsed().as_millis() as u32;
+    // The middle button reaches the GUI only while the controls are off.
+    let gui_middle = controls.is_none_or(|c| c.off);
     let mut frame =
-        crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
+        crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now).with_keys(
+            &mouse,
+            keys.as_deref(),
+            gui_middle,
+        );
     // The controls' mouse capture took the frame's mouse: the desk skips
     // its mouse-move processing (the hover and a drag's start).
     if taken.is_some_and(|t| t.0) {
@@ -4267,7 +4290,7 @@ pub(crate) fn draw_screens(
         let (font, atlas) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
         let screen = screens.task.screen;
         let palette = gui_paint::palette();
-        if let Some(layers) = tip.paint(screens.task.clock, screen, &font, atlas, &palette) {
+        if let Some(layers) = tip.paint(screens.task.clock, unit, screen, &font, atlas, &palette) {
             let mut painted = gui_paint::Painted::default();
             for layer in layers {
                 painted.push(layer);
@@ -5244,28 +5267,35 @@ mod tests {
             let mut screens = app.world_mut().resource_mut::<GameScreens>();
             screens.open_journal(true, true);
             let text_box = screens.journal_box.as_ref().unwrap().form;
-            screens.task.focus_set(Some(text_box), NO_CONTROL);
+            // The pointer rests on the box: its hover focuses it.
+            let b = screens.task.form(text_box).unwrap().bounds();
+            screens.task.screen = (4096, 4096);
+            screens
+                .task
+                .update(false, ((b.left + b.right) / 2, (b.top + b.bottom) / 2));
             assert!(screens.journal_box_focused());
             text_box
         };
+        app.world_mut().write_message(bevy::window::WindowFocused {
+            window,
+            focused: false,
+        });
+        app.update();
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert!(!screens.journal_box_focused());
+            assert_eq!(screens.task.active, screens.task.root);
+            assert_eq!(screens.task.active_control, -1);
+            assert_eq!(screens.task.remembered.map(|r| r.0), Some(text_box));
+        }
+        // The focus's return is a focus to no form: the box is focused
+        // again.
         app.world_mut().write_message(bevy::window::WindowFocused {
             window,
             focused: true,
         });
         app.update();
         assert!(app.world().resource::<GameScreens>().journal_box_focused());
-        app.world_mut().write_message(bevy::window::WindowFocused {
-            window,
-            focused: false,
-        });
-        app.update();
-        let mut screens = app.world_mut().resource_mut::<GameScreens>();
-        assert!(!screens.journal_box_focused());
-        assert_eq!(screens.task.active, screens.task.root);
-        assert_eq!(screens.task.active_control, -1);
-        assert_eq!(screens.task.remembered, Some((text_box, NO_CONTROL)));
-        screens.task.focus_form(None, 0);
-        assert!(screens.journal_box_focused());
     }
 
     /// The main menu's and the power tree's tasks are told about the focus
@@ -5287,12 +5317,17 @@ mod tests {
         let window = app.world_mut().spawn_empty().id();
         {
             let world = app.world_mut();
+            // The pointer rests on each task's root.
             let mut menu = world.resource_mut::<crate::menu_screen::MenuRouter>();
             let root = menu.task.root;
+            menu.task.screen = (4096, 4096);
+            menu.task.update(false, (1, 1));
             menu.task.focus_set(root, 2);
             assert_eq!(menu.task.active_control, 2);
             let mut tree = world.resource_mut::<crate::power_screen::PowerRouter>();
             let root = tree.task.root;
+            tree.task.screen = (4096, 4096);
+            tree.task.update(false, (1, 1));
             tree.task.focus_set(root, 1);
         }
         app.world_mut().write_message(bevy::window::WindowFocused {

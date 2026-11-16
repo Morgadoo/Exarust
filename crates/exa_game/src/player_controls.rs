@@ -1030,7 +1030,7 @@ pub fn interaction_allowed(g: InteractGate) -> bool {
 /// time of the first, under 2 pixels from it, is a double click. The
 /// original asks Windows for that time at start-up (`GetDoubleClickTime`);
 /// Exarust uses Windows' default, 500 ms.
-pub const DOUBLE_CLICK_MS: u64 = 500;
+pub const DOUBLE_CLICK_MS: u64 = exa_ui::gui_core::DOUBLE_CLICK as u64;
 pub const DOUBLE_CLICK_PX: i64 = 2;
 
 /// Whether a press at `at`, `now_ms`, is the double click of the press at

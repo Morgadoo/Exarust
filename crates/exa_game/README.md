@@ -3175,3 +3175,10 @@ an item a searching character picks up is listed at the record's default
 cell `0x28, 4` (`npc_search::sync_possessions`); and a level-placed
 character's body takes its record's yellow and red shares
 (`save_live::restore_placed_pools`, called by the viewer's placed spawn).
+
+Round uitoolkit (L15): `form_input::PointerFrame` carries the right and
+middle buttons and the press modifier bits (`with_keys`; the middle only
+while the controls are off); the tooltip's background is the skin's rounded
+fill; the manual draws its inline pictures; the hub's Dismiss and yes/no
+dialogs and the save screen's delete and reset boxes close on a press off
+their buttons.
