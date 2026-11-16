@@ -614,45 +614,63 @@ fn facing_back(flat: Vec3) -> f32 {
     }
 }
 
-/// The place score a barricade gives the combat tick. The close term stays 0.
-/// The danger is the keep-away weight and the strike is the distance score,
-/// so a place against the wall costs more than one clear of it.
-pub fn barricade_place(wall: WallStep, at: Vec3, body: &Body, skill: f32) -> PlaceScore {
+/// The place score a barricade gives the combat tick (the barricade's
+/// avoidance slot). The nearest wall point is measured along the wall from
+/// the fighter's chest (clamped to the half width by the engine's sign),
+/// the distance and the bearing from the scored place `at` to it, across
+/// the ground. The strike term is the reach score, `(300 − |d − reach|) ·
+/// 0.003` in double, the reach the step length times 1.5 plus the reach
+/// word (times 1.4, in double, above a body scale of 1.3). The keep weight
+/// goes to the approach word: a window of `150 − 50·caution` (doubled past
+/// a feral level of a half, again on the near side) about the lunge reach
+/// `keep` plus 10 cm, scaled by `(300 − keep)·0.01` (double) under 200 cm.
+/// The close and danger terms stay 0.
+pub fn barricade_place(
+    wall: WallStep,
+    at: Vec3,
+    body: &Body,
+    caution: f32,
+    keep: f32,
+) -> PlaceScore {
     let along = wall.along;
-    let mut t = at.dot(along) - wall.centre.dot(along);
+    let dot = |a: Vec3, b: Vec3| (a.x * b.x + a.y * b.y) + a.z * b.z;
+    let mut t = dot(body.chest, along) - dot(wall.centre, along);
     let limit = wall.half_width;
     if t.abs() > limit {
-        t = t.signum() * limit;
+        t = exa_physics::engine_math::sign(t) * limit;
     }
     let point = wall.centre + along * t;
     let mut flat = at - point;
     flat.y = 0.0;
     let distance = (flat.x * flat.x + flat.z * flat.z).sqrt();
     let heading = facing_back(flat);
-    let reach = if body.scale <= 1.3 {
-        body.reach_cm
+    let reach = if f64::from(body.scale) > 1.3 {
+        (f64::from(body.step_cm) * 1.4 + f64::from(body.reach_cm)) as f32
     } else {
-        body.reach_cm * 1.4
+        body.step_cm * 1.5 + body.reach_cm
     };
-    let score = (300.0 - (distance - reach).abs()) * 0.003;
-    let mut window = 150.0 - skill * 50.0;
-    let keep_at = body.reach_cm + 140.0;
-    let mut gap = (distance - keep_at) - 10.0;
+    let score = (f64::from(300.0 - (distance - reach).abs()) * 0.003) as f32;
+    let mut window = 150.0 - caution * 50.0;
+    if body.feral > 0.5 {
+        window *= 2.0;
+    }
+    let mut gap = (distance - keep) - 10.0;
     if gap < 0.0 {
         window *= 2.0;
         gap = -gap;
     }
-    let mut keep = 0.0;
+    let mut approach = 0.0;
     if gap < window {
         let w = (window - gap) / window;
-        keep = w * w * 0.5;
-        if keep_at < 200.0 {
-            keep *= (300.0 - keep_at) * 0.01;
+        approach = w * w * 0.5;
+        if keep < 200.0 {
+            approach = (f64::from(300.0 - keep) * 0.01 * f64::from(approach)) as f32;
         }
     }
     PlaceScore {
         close: 0.0,
-        danger: keep,
+        danger: 0.0,
+        approach,
         strike: score,
         bearing: heading,
         distance_cm: distance,
@@ -1475,7 +1493,7 @@ pub fn search(
             let mut best = (0.1f32, None);
             for (c, contact) in contacts.iter_mut().enumerate() {
                 let mut s = if let Some(wall) = contact.wall {
-                    barricade_place(wall, v, me, traits.skill)
+                    barricade_place(wall, v, me, traits.skill, mind.lunge_reach_cm)
                 } else if let Some(blast) = contact.blast {
                     blast_place(blast, v)
                 } else {
@@ -1525,7 +1543,7 @@ pub fn search(
             for (c, contact) in contacts.iter().enumerate() {
                 let level = if contact.is_foe { contact.level } else { 0 };
                 let mut s = if let Some(wall) = contact.wall {
-                    barricade_place(wall, v, me, traits.skill)
+                    barricade_place(wall, v, me, traits.skill, mind.lunge_reach_cm)
                 } else if let Some(blast) = contact.blast {
                     blast_place(blast, v)
                 } else {
@@ -2577,12 +2595,49 @@ mod wall_place {
             reach_cm: 50.0,
             ..Body::default()
         };
-        let near = barricade_place(wall, Vec3::new(0.0, 0.0, 80.0), &body, 0.0);
-        let far = barricade_place(wall, Vec3::new(0.0, 0.0, 800.0), &body, 0.0);
-        assert_eq!(near.close, 0.0);
-        assert!(near.danger > 0.0, "{}", near.danger);
-        assert_eq!(far.danger, 0.0);
-        assert!(near.danger > far.danger);
+        let near = barricade_place(wall, Vec3::new(0.0, 0.0, 80.0), &body, 0.0, 190.0);
+        let far = barricade_place(wall, Vec3::new(0.0, 0.0, 800.0), &body, 0.0, 190.0);
+        assert_eq!((near.close, near.danger), (0.0, 0.0));
+        assert!(near.approach > 0.0, "{}", near.approach);
+        assert_eq!(far.approach, 0.0);
+    }
+
+    /// F569, from the original's avoidance slot run in the emulator: the
+    /// wall point is measured along the wall from the fighter's chest, the
+    /// distance from the scored place, and the keep weight is the approach
+    /// word (the danger stays 0).
+    #[test]
+    fn the_wall_point_is_measured_from_the_chest_and_keeping_is_approach() {
+        let wall = WallStep {
+            centre: Vec3::ZERO,
+            along: Vec3::X,
+            half_width: 300.0,
+        };
+        let body = Body {
+            scale: 1.0,
+            reach_cm: 50.0,
+            step_cm: 80.0,
+            chest: Vec3::new(250.0, 120.0, 0.0),
+            ..Body::default()
+        };
+        let s = barricade_place(wall, Vec3::new(0.0, 0.0, 100.0), &body, 0.0, 200.0);
+        let distance = (250.0f32 * 250.0 + 100.0 * 100.0).sqrt();
+        assert_eq!(s.distance_cm, distance);
+        let reach = 80.0f32 * 1.5 + 50.0;
+        assert_eq!(
+            s.strike,
+            (f64::from(300.0 - (distance - reach).abs()) * 0.003) as f32
+        );
+        let w = (150.0 - ((distance - 200.0) - 10.0)) / 150.0;
+        assert_eq!(s.approach, w * w * 0.5);
+        assert_eq!((s.close, s.danger), (0.0, 0.0));
+        // Past the half width the chest's offset is clamped to the wall's end.
+        let far_body = Body {
+            chest: Vec3::new(900.0, 0.0, 0.0),
+            ..body
+        };
+        let s = barricade_place(wall, Vec3::new(0.0, 0.0, 100.0), &far_body, 0.0, 200.0);
+        assert_eq!(s.distance_cm, (300.0f32 * 300.0 + 100.0 * 100.0).sqrt());
     }
 
     #[test]
