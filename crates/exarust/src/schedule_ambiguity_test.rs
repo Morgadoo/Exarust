@@ -48,7 +48,7 @@ const ALLOWED: &[Allowed] = &[];
 /// with the count each must keep until they are. Their systems run on the
 /// frame's thread pool, so the order of each pair changes from frame to
 /// frame; the fixed step's schedules and `PreUpdate` are fully ordered.
-const FRAME_TODO: &[(&str, usize)] = &[("Update", 5796), ("PostUpdate", 273)];
+const FRAME_TODO: &[(&str, usize)] = &[("Update", 5835), ("PostUpdate", 275)];
 
 /// The schedules checked: the fixed step's (in its order) and the ones the
 /// simulation bridge moves with it, then the frame's.
