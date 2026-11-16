@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 56.7% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 57.2% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **56.7% closed**, of which 44.6% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 36.2% partial and 7.0% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.2% closed**, of which 45.0% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.9% partial and 6.9% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -22,8 +22,8 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Runtime & platform | 2,407 | 293 | 26 | 14% | 75% | 87% | 4% | 82% | 1% | 11% | 2% |  |
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 38% | 19% | 2% | 32% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 53% | 44% | 7% | 2% | 34% | 13% |  |
-| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 56% | 39% | 15% | 2% | 36% | 8% |  |
-| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 51% | 45% | 4% | 3% | 37% | 12% |  |
+| Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 57% | 40% | 15% | 2% | 36% | 8% |  |
+| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 57% | 49% | 5% | 3% | 32% | 11% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 34% | 31% | 1% | 2% | 58% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
@@ -203,7 +203,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Default material shader factory | Rendering & GPU | 4 | 62% | 96% | 94% | 2% | 0% | 0% | 4% |
 | TTerrainMesh | Rendering & GPU | 3 | 70% | 51% | 24% | 18% | 10% | 49% | 0% |
 | TGLGeometry | Rendering & GPU | 3 | 85% engine | 100% | 0% | 100% | 0% | 0% | 0% |
-| TLightAlias | Rendering & GPU | 3 | 74% | 33% | 28% | 5% | 0% | 48% | 19% |
+| TLightAlias | Rendering & GPU | 3 | 74% | 80% | 75% | 5% | 0% | 20% | 0% |
 | RF_Material_Manager | Rendering & GPU | 3 | 62% | 50% | 8% | 41% | 0% | 44% | 7% |
 | FLX_IconRender | Rendering & GPU | 3 | 50% | 4% | 0% | 4% | 0% | 0% | 96% |
 | FLX_PostProcess | Rendering & GPU | 2 | 86% | 33% | 33% | 0% | 0% | 60% | 7% |
@@ -235,7 +235,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TShadowMap | Rendering & GPU | 0 | 70% | 100% | 0% | 0% | 100% | 0% | 0% |
 | TShaderFactory | Rendering & GPU | 0 | 90% engine | 100% | 0% | 0% | 100% | 0% | 0% |
 | TGIEmissive | Rendering & GPU | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
-| RF_SceneNodes | World, levels & terrain | 24 | 92% | 28% | 25% | 3% | 0% | 63% | 10% |
+| RF_SceneNodes | World, levels & terrain | 24 | 92% | 71% | 59% | 11% | 1% | 28% | 1% |
 | TStaticTerrain | World, levels & terrain | 20 | 82% | 45% | 36% | 5% | 5% | 52% | 3% |
 | RFE_GridEnvs | World, levels & terrain | 15 | 81% | 56% | 50% | 0% | 5% | 44% | 0% |
 | TGridEnvManager | World, levels & terrain | 15 | 83% | 86% | 76% | 3% | 7% | 14% | 0% |

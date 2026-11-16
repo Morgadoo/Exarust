@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r262, 11-16) | target |
+| measure | start (r186, 11-10) | now (r263, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **56.74%** | **100%** |
+| **Ledger: bytes in a final state** | — | **57.21%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,953 | all |
+| Tests passing | 8,489 | 8,957 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,13 +99,13 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 156 | 162,692 |
-| Rendering & GPU | 10 | 10 | 293 | 149,713 |
+| Rendering & GPU | 10 | 10 | 291 | 148,394 |
 | UI | 12 | 12 | 362 | 131,128 |
 | Thaumaturgy & effects | 9 | 9 | 161 | 114,574 |
 | Characters, motion & animation | 8 | 8 | 234 | 107,087 |
 | AI & behaviour | 8 | 8 | 142 | 98,602 |
-| World, levels & terrain | 5 | 5 | 168 | 87,048 |
 | Game modes, arena & session | 7 | 7 | 182 | 76,611 |
+| World, levels & terrain | 5 | 5 | 153 | 76,455 |
 | Items, materials & crafting | 5 | 5 | 140 | 64,930 |
 | Data, assets & I/O | 6 | 6 | 140 | 44,077 |
 | Runtime & platform | 5 | 5 | 70 | 20,869 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,169** | **1,085,556** |
+| **Total** | **90** | **90** | **2,152** | **1,073,644** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 263 | The live scene's node passes weigh every bucket mesh by the original's two alias link methods, with real light values from the alias sync, real material colour bounds and the cell flood's wall test as the gate: 7 to 12 thousand weighted meshes per shipped dungeon at no measurable frame cost; readings corrected (the gate is the sector grid bit, the light option 0x40000 is the ranged flag, the sun's directional fill is reachable) and the scene list and material queue rows are engine (scenenodes2). No picture change expected; scenes and an FPS check owed (GPU on hold) |
 | 2026-11-16 | 262 | The pathfinder's planner, corner line test and nearest-walkable flood match the original block by block, including its unchecked grid index (a column past the side reads the next row); the movers sample through the original's pre-scaled frame and the room offset is confirmed; meshes flagged for it (1536 shipped props, and dropped items) queue the grid's refresh when they register (pathfinder2). DEC-5 still open. Determinism runs and a nav scene owed (GPU on hold) |
 | 2026-11-16 | 261 | The step radius base follows the body tick (30 moving, 65 off its feet, 60 at a new body), a stopping walker seeds its jolt term, parries aim at the blade's parry-height point, a shield parry holds by a plane link, and footsteps play on the body's two alternating voices; several old gaps found stale or vestigial (motiledyn5). The arena next-round test, flaky on the lane branch, passed eight repeats on the integration branch. Traces change from the first standing tick; determinism runs and duel scenes owed (GPU on hold) |
 | 2026-11-16 | 260 | The arena's return to the hub and the dead manager's leave to the title run behind the transition screen; both round stagings write the company's health back first; later tournament rounds keep the company's living bodies instead of rebuilding them, which had reset health and could bring a dead fighter back; the wind call is the cloth wake (an older reading had the wrong slot); the arsenal's shelves load and store, the board's item slots open cards, the hub entry plays the manager's motion (arena3). Arena scenes and determinism runs owed (GPU on hold) |
