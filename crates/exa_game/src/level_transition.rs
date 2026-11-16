@@ -97,10 +97,7 @@ impl<'a> TransitionInput<'a> {
     pub fn new(scene: &'a ExportScene) -> Self {
         Self {
             scene,
-            options: ExportOptions {
-                save_mode: true,
-                ..ExportOptions::default()
-            },
+            options: ExportOptions::save(),
             story: true,
             settings: SettingsState::reset(),
             position: [0.0; 3],
@@ -184,10 +181,7 @@ pub fn export_level_scene(
         });
     export_save_level(
         &export,
-        &ExportOptions {
-            save_mode: true,
-            ..ExportOptions::default()
-        },
+        &ExportOptions::save(),
         settings,
     )
 }

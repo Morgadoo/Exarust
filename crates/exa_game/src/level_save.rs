@@ -1105,6 +1105,18 @@ mod tests {
         assert!(counts.removed >= 1);
         let back = Scene::parse(&saved).unwrap();
         assert!(back.level_errors.is_empty(), "{:?}", back.level_errors);
+        // The save exporter's option word 4: no mesh keeps its triangle
+        // edge or flag sub-chunks.
+        assert!(scene.nodes.iter().any(|node| matches!(
+            &node.body,
+            exa_formats::rfc::NodeBody::Mesh(m) if m.triangle_flags.is_some()
+        )));
+        assert!(back.nodes.iter().all(|node| match &node.body {
+            exa_formats::rfc::NodeBody::Mesh(m) =>
+                m.triangle_flags.is_none() && m.triangle_edges.is_none(),
+            _ => true,
+        }));
+        assert!(saved.len() < source.len());
         assert_eq!(back.local_database.unwrap().write(), records);
         let kept = back.placed_objects.len();
         assert_eq!(kept, scene.placed_objects.len() - counts.removed + 1);
@@ -1119,6 +1131,38 @@ mod tests {
                 .any(|object| object.id == moved_before.id
                     && (object.transform[3][1] - moved_before.transform[3][1] - 0.5).abs() < 1e-3)
         );
+    }
+
+    /// Leaving the triangle flags out of a save's section costs no cloth its
+    /// pins: no shipped level stores a cloth mesh among its own nodes (the
+    /// banners are objects from the libraries, whose meshes a load reads
+    /// from the library, not from the section). Skipped without the game.
+    #[test]
+    fn no_shipped_level_keeps_a_cloth_in_its_own_nodes() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let mut levels = 0;
+        for entry in pack.entries().iter().filter(|e| e.name.ends_with(".rfc")) {
+            let name = &entry.name;
+            let Ok(scene) = Scene::parse(pack.bytes(entry)) else {
+                continue;
+            };
+            if scene.grid.is_none() && scene.placed_objects.is_empty() {
+                continue;
+            }
+            levels += 1;
+            let cloth: Vec<&str> = scene
+                .nodes
+                .iter()
+                .filter(|node| node.cloth_marker)
+                .map(|node| node.name.as_str())
+                .collect();
+            assert!(cloth.is_empty(), "{name}: {cloth:?}");
+        }
+        assert!(levels >= 4, "{levels}");
     }
 
     fn stored(id: u32, x: f32) -> Placement {
