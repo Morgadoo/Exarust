@@ -342,7 +342,9 @@ impl Plugin for ArenaLivePlugin {
                     arena_pause,
                     open_end_screen,
                     update_end_screen,
-                    continue_round,
+                    // The staging the flow's transition callback fired this
+                    // frame is taken in the same frame.
+                    continue_round.after(crate::flow::FlowSystems::ApplySteps),
                     forfeit_match::<false>,
                     draw_end_screen,
                 )
@@ -1499,7 +1501,12 @@ mod tests {
             .init_resource::<ArenaEndScreen>()
             .add_systems(
                 Update,
-                (open_end_screen, update_end_screen, continue_round).chain(),
+                (
+                    open_end_screen,
+                    update_end_screen,
+                    continue_round.after(crate::flow::FlowSystems::ApplySteps),
+                )
+                    .chain(),
             );
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>();

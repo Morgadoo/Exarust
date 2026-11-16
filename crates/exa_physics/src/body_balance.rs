@@ -947,6 +947,13 @@ impl Ragdoll {
             let was_stepping = drive.steps.stepping;
             if bearing.getting_up {
                 b.get_up();
+                // A get-up tick also ends any step (the stepping and
+                // balance-step bytes and the long kind) and clears the
+                // posture switch's wait.
+                drive.steps.stepping = false;
+                drive.steps.balance_step = false;
+                drive.steps.knockback = false;
+                drive.posture_wait = 0;
             } else {
                 let mut q = score(b.lean.y, bearing.moving, bonus);
                 let v = cm(b.slow.y).abs();

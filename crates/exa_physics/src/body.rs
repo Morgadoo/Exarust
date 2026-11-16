@@ -3684,9 +3684,9 @@ impl Ragdoll {
     /// The right and left hands a parry locks, and each hand's parent with them.
     pub const PARRY_HANDS: [usize; 2] = [17, 18];
 
-    fn set_parry_arms(&mut self, hands: [usize; 2], on: bool) {
+    fn set_parry_arms(&mut self, hands: &[usize], on: bool) {
         let arm = crate::part::PartState::ARM;
-        for bone in hands {
+        for &bone in hands {
             let Some(i) = self.parts.iter().position(|part| part.bone == bone) else {
                 continue;
             };
@@ -3711,13 +3711,20 @@ impl Ragdoll {
     /// A parry's hold: each hand, and that hand's parent part, takes the arm
     /// class bit. A hand with no part is skipped.
     pub fn hold_parry_arms(&mut self, hands: [usize; 2]) {
-        self.set_parry_arms(hands, true);
+        self.set_parry_arms(&hands, true);
+    }
+
+    /// One hand's guard through a two-weapon attack: the hand of `bone`
+    /// and its parent part take the arm class bit, as the parry's hold
+    /// gives both. A bone with no part is skipped.
+    pub fn hold_parry_arm(&mut self, bone: usize) {
+        self.set_parry_arms(&[bone], true);
     }
 
     /// A parry's end: each hand, and that hand's parent part, loses the arm
     /// class bit. A hand with no part is skipped.
     pub fn clear_parry_arms(&mut self, hands: [usize; 2]) {
-        self.set_parry_arms(hands, false);
+        self.set_parry_arms(&hands, false);
     }
 
     pub fn set_fist(&mut self, bone: usize, on: bool) -> bool {
