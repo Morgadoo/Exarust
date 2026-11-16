@@ -1860,6 +1860,61 @@ mod tests {
         assert_eq!(live.db().store(Tier::Local).len(), 1);
     }
 
+    /// A pack item that is not a power crystal, released over a socket of
+    /// the shown card's row: the row's drag-over answer refuses it, so the
+    /// socket keeps its words and the item stays in the pack.
+    #[test]
+    fn the_socket_row_refuses_an_item_that_is_no_crystal() {
+        use exa_items::possession::Carried;
+        let (mut app, player) = live_app(vec![Carried {
+            id: 10,
+            flags: 0,
+            x: 0,
+            y: 0,
+        }]);
+        app.init_resource::<exa_assets::live_objects::LiveObjects>();
+        let row = GuiRect::new(1000, 600, 80, 22);
+        app.world_mut()
+            .resource_mut::<crate::item_card::CardView>()
+            .shown = Some(crate::item_card::ShownCard {
+            item: 0x1234,
+            flags: 0,
+            name: String::new(),
+            built: exa_items::card::BuiltCard {
+                page: exa_items::card::CardPage::Plain,
+                value: 0,
+                title_colour: None,
+                content: None,
+                description: String::new(),
+            },
+            icon: 0,
+            at: (900, 300),
+            size: (300, 400),
+            pointer: (900, 300),
+            fade: Default::default(),
+            form_flags: 0,
+            world: false,
+            sockets: Some(exa_items::item_gui::Sockets([0x0080, 0, 0, 0])),
+            socket_row: Some((row, 4)),
+            sides: [[0; 3]; 2],
+            flip: Default::default(),
+        });
+        let client = pack_client(&app);
+        let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+        let from = IVec2::new(client.left + cell.x + 20, client.top + cell.y + 20);
+        drag_between(&mut app, from, IVec2::new(row.left + 5, row.top + 5));
+        let card = app.world().resource::<crate::item_card::CardView>();
+        assert_eq!(
+            card.shown.as_ref().unwrap().sockets,
+            Some(exa_items::item_gui::Sockets([0x0080, 0, 0, 0]))
+        );
+        let screens = app.world().resource::<GameScreens>();
+        let entry = screens.pack.entries.iter().find(|e| e.id == 10).unwrap();
+        assert_eq!(entry.drag & 1, 0);
+        let p = app.world().get::<Possessions>(player).unwrap();
+        assert!(p.carried.iter().any(|c| c.id == 10));
+    }
+
     /// Crystals dragged from the pack onto a shipped weapon's first socket:
     /// crystal B goes in, then the AR crystal takes its place, files the
     /// weapon as a drain source, and B comes back into the pack by the
