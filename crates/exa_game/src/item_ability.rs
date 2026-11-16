@@ -155,7 +155,8 @@ impl Plugin for ItemAbilityPlugin {
             .add_systems(
                 FixedUpdate,
                 follow_items
-                    .after(exa_physics::body::BodySystems)
+                    .in_set(exa_physics::body::AfterSolver::Observe)
+                    .after(crate::thaum::long_door_live::pick_long_doors)
                     .before(crate::thaum::live::tick_arcs),
             );
     }
@@ -867,7 +868,7 @@ fn hit_hooks(
 
 /// Arcs riding a held item follow it: their frame sits `offset` along the
 /// item's own axes and turns with it. Arcs whose item is gone end.
-fn follow_items(
+pub(crate) fn follow_items(
     mut commands: Commands,
     mut arcs: Query<(Entity, &mut LiveArcs, &ItemArcs)>,
     items: Query<&GlobalTransform>,

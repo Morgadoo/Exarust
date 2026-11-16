@@ -1204,16 +1204,29 @@ pub(crate) fn plugin(app: &mut App) {
             (sync_held_striking, sync_fist_striking)
                 .chain()
                 .after(exa_physics::body::TickBehaviour)
+                .before(exa_physics::body::MechanismRegistration)
+                .before(exa_physics::body::BodyPreStep)
+                .before(crate::regen::HealthTick)
                 .before(BodySystems),
         )
-        .add_systems(FixedUpdate, strike_limbs.after(BodySystems))
+        .add_systems(
+            FixedUpdate,
+            strike_limbs.in_set(exa_physics::body::AfterSolver::Strikes),
+        )
         .add_systems(
             FixedUpdate,
             crate::block::strike_held
-                .after(BodySystems)
+                .in_set(exa_physics::body::AfterSolver::Strikes)
                 .before(strike_limbs),
         )
-        .add_systems(FixedUpdate, level_impacts.after(strike_limbs));
+        // After the physics' follow-up (the props and the sector lists
+        // it reads) and the relays the levers sent.
+        .add_systems(
+            FixedUpdate,
+            level_impacts
+                .after(strike_limbs)
+                .after(exa_physics::body::AfterSolver::Physics),
+        );
 }
 
 #[cfg(test)]

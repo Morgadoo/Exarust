@@ -287,7 +287,7 @@ pub fn hands_in_frame(body: &Ragdoll) -> Vec<Vec3> {
 /// fighter whose tick comes at or after that game clock (once each), as
 /// if its counter had passed 60, to watch what a tangle break holds.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn break_tangles(
+pub fn break_tangles(
     mut commands: Commands,
     ticked: Res<TickedCharacter>,
     ticks: Option<Res<BodyTicks>>,

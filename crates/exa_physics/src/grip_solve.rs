@@ -801,6 +801,14 @@ pub fn plugin(app: &mut App) {
                 .in_set(GripSolveSet::Build),
         )
         .add_systems(FixedUpdate, sync_grips.in_set(GripSolveSet::Sync))
+        // The links' copy for the solver, after the character ticks and the
+        // holder's park, before the bodies step.
+        .configure_sets(
+            FixedUpdate,
+            GripSolveSet::Sync
+                .after(crate::body::CharacterTicks)
+                .before(BodySystems),
+        )
         // The holder's park reaches its items after the character ticks
         // (the park) and before the solver.
         .add_systems(
@@ -808,9 +816,15 @@ pub fn plugin(app: &mut App) {
             share_holder_park
                 .after(GripSolveSet::Build)
                 .after(crate::body::CharacterTicks)
+                .before(GripSolveSet::Sync)
                 .before(BodySystems),
         )
-        .add_systems(FixedUpdate, store_grip_lengths.after(BodySystems));
+        .add_systems(
+            FixedUpdate,
+            store_grip_lengths
+                .in_set(crate::body::AfterSolver::Physics)
+                .before(crate::body::MechanismStep),
+        );
 }
 
 #[cfg(test)]

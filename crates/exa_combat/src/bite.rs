@@ -31,7 +31,7 @@
 //! branch.
 
 use bevy::prelude::*;
-use exa_physics::body::{BodySystems, BodyTicks, GrabPull, Ragdoll, SolverStage, SolverStages};
+use exa_physics::body::{BodyTicks, GrabPull, Ragdoll, SolverStage, SolverStages};
 
 /// Flags when the capped depth is not above 0.4.
 const SHALLOW: u32 = 0x11000;
@@ -463,7 +463,12 @@ pub fn install_stage(stages: Option<ResMut<SolverStages>>) {
 pub fn plugin(app: &mut App) {
     app.add_message::<BiteTaken>()
         .add_systems(Startup, install_stage)
-        .add_systems(FixedUpdate, log_broken_bites.after(BodySystems));
+        .add_systems(
+            FixedUpdate,
+            log_broken_bites
+                .in_set(exa_physics::body::AfterSolver::Strikes)
+                .before(crate::block::strike_held),
+        );
 }
 
 #[cfg(test)]

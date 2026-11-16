@@ -405,16 +405,19 @@ pub(crate) fn plugin(app: &mut App) {
         FixedUpdate,
         (
             register_levers
-                .after(crate::body::TickBehaviour)
+                .in_set(crate::body::MechanismRegistration)
+                .after(crate::body::plate_body::register_plates)
                 .before(BodySystems),
-            step_levers.after(BodySystems),
+            step_levers
+                .in_set(crate::body::MechanismStep)
+                .after(crate::body::plate_body::step_plates),
         ),
     );
 }
 
 /// Turns each registered arm with a [`PendingLever`] into a [`LeverBody`]:
 /// mobility 1, the mechanism environment, and the frame from its node.
-fn register_levers(
+pub(crate) fn register_levers(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
     mut pending: Query<(Entity, &PendingLever, &mut Ragdoll)>,
@@ -459,7 +462,7 @@ fn register_levers(
 
 /// Counts down every armed return and steps every awake arm, sending the
 /// signals and the sounds its reports make.
-fn step_levers(
+pub(crate) fn step_levers(
     ticks: Option<Res<BodyTicks>>,
     mut levers: Query<(Entity, &mut LeverBody, &mut Ragdoll)>,
     mut signals: MessageWriter<MechanismSignal>,
