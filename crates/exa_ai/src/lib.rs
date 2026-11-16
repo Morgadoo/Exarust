@@ -2629,6 +2629,21 @@ fn duellist(
             // Debug aid: `EXA_DUEL_TRACE` logs what the combat tick read
             // and chose.
             if std::env::var_os("EXA_DUEL_TRACE").is_some() {
+                // The body's turn: the AI's heading, the look smoothing and
+                // the heading of the body's directions (the heading as the
+                // last look snap left it) and the body's yaw.
+                let dirs = match brains.get(entity) {
+                    Ok(npc) => Some(npc.gaze),
+                    Err(_) => driven.as_deref().map(|d| d.0.gaze),
+                };
+                info!(
+                    "duel-turn {entity:?} t{} aim {:.3} look {:.3} heading {:.3} body {:.3}",
+                    me.now_ms,
+                    ai.mind.heading,
+                    dirs.map_or(f32::NAN, |g| crate::motion::yaw_of(g.body_smooth)),
+                    dirs.map_or(f32::NAN, |g| crate::motion::yaw_of(g.body_heading)),
+                    yaw
+                );
                 info!(
                     "duel-trace {entity:?} t{} dist {:.0} can_step {} block {} run {} spd {:.2} \
                      tone {:.2} sup {:.2} stepping {} state {} queue {} chosen {:?} step {:?} exit {:?} \
