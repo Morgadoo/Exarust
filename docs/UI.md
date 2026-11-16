@@ -3976,7 +3976,7 @@ replaced, or the line is appended):
 `PerfIndex` (two decimals, trailing zeros kept), `Volume` (percent,
 rounded), `Supersample`, `ShadingQuality`, `TextureDetail`,
 `TextureQuality`, `ShadowDetail`, `ShadowQuality`, `HWMultisample`,
-`InputMode` (`0` for the keyboard, `51` for a controller), `AimSpeed`,
+`InputMode` (`0` for the keyboard, `3` for a controller), `AimSpeed`,
 `Fullscreen`, `Music`, `ShowFPS`, `ShowGameTips`, `Checkpoints`,
 `VerticalSync`, and `ShowFPS` again (the original's duplicate).
 
@@ -4099,7 +4099,7 @@ Exarust applies:
   22 rows (each with a key cell, Power Tree included) show the keys' names;
   a click starts a rebinding of the page's copy and the next key or mouse
   button replaces the slot (Escape cancels); Apply commits the copy and the launcher saves it to the store at once. The
-  controller-mode switch sets `InputMode` (0 or 51) for Apply and the live
+  controller-mode switch sets `InputMode` (0 or 3) for Apply and the live
   controller flag, which the running game copies into the saved bindings'
   controller flag; the player then reads the gamepad
   ([PLAYER.md](PLAYER.md), Gamepad). Enable Rumble is a session flag: the

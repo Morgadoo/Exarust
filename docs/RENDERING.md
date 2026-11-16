@@ -1676,6 +1676,16 @@ on the vertices' current skinned positions:
   255·(1 − f·g²), rounded to the nearest byte, written only when lower.
   0 on the axis, 128–223 at f = ½, 191–251 at f = ¼.
 
+A plain (rigid) mesh is painted in its own frame, as the original's mesh
+painter does: c and D go into the mesh's frame (a scaled node takes the
+wound smaller), and the paint runs once per position element (one random
+draw per element inside the wound), every vertex of the element taking its
+value, so the vertices a seam splits never differ. A cloth (long hair)
+is painted in place on the mesh its simulation moves, by the cloth's
+painter: the same arithmetic per drawn vertex, with c taken into the
+node's frame and D left a world direction (the original's cloth painter
+transforms the point only).
+
 **Shading** (`exa_render::material::BloodProgram`, `exa.wesl`): a material
 with the mode binds `spatter01` (`Resource.rpk`, 1024², BC4, one channel)
 as its dirt map. With a the speckle at UV×2 (UV×1 on hair) and α the

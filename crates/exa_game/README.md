@@ -533,7 +533,10 @@ place; one whose body is gone leaves too), and the player's goes to
 its record (the record on the player's body; a story player always has
 one), the body takes the `TechniqueWord` component at the level start and on
 a rise, `apply_technique_word` puts it on the body's caster and adds the
-record's perks to its fighter, and play's end writes a changed account
+record's perks to its fighter (a companion's rise puts its own word on its
+body; a rise in the armour skill, the player's or a companion's, puts
+`ArmourRefresh` on the body and `refresh_armour` re-reads Deflection and
+runs the armour pass again over `exa_character::WornArmour`), and play's end writes a changed account
 experience back through a `SettingsEntry`. Each pass first explores in a
 grid level (`StoryExperience::explore` over `RoomCells`, the level's rooms):
 the 5 × 5 cells around the player whose plane A open flag is set and whose
@@ -892,7 +895,8 @@ unparks a drawn one before its rise (`park::wake_parked`);
 `EXA_NO_PARK=1` turns the note off. A story save's level section carries the golem
 alarm (armed flag, point, pass, alarm count) in its settings chunk
 (`GolemAlarm::saved_settings`), and a level read from a save's section
-restores it over the level start's reset (`golem_alarm::restore_saved_alarm`).
+restores it over the level start's reset (`golem_alarm::restore_saved_alarm`;
+the reset, `golem_alarm::reset_at_level_start`, keeps the pass word).
 `golem_alarm` runs their alarm zones live: the AI
 manager's zone check for the player (past 3 cm from its last checked
 point), the pass item search, and the ring that wakes the statue golems
@@ -1600,9 +1604,13 @@ routine with the character as its actor and `ZoneID` (`exanima01`'s
 `Checkpoint` zone runs `CheckpointSave(1);`, the others narrator topics). Every
 save writes the current level's section after the world databases
 (`level_save`: the section the level was read from, `exa_world::LevelSource`,
-with the live local tier and the live placed objects written over it; gone
-objects leave with what they held, drops are added; a story save also
-writes the live scene characters and the live local character database)
+with the live local tier, the live placed objects and the live props
+(`level_save::props_after`, each prop root's placement in its parent's
+frame from `exa_world::PropIndex`) written over it; gone objects leave
+with what they held, drops are added; a body hung from the world by its
+links moves no saved placement; a story save also writes the live scene
+characters and the live local character database; the save exporter's
+switches leave the triangle data out, `ExportOptions::save`)
 and a story load reads
 the level from the save's own section (`exa_world::SavedLevelSection`). The
 arena's save runs its promotion pass first, with the id remap table on: the
@@ -3167,3 +3175,18 @@ an item a searching character picks up is listed at the record's default
 cell `0x28, 4` (`npc_search::sync_possessions`); and a level-placed
 character's body takes its record's yellow and red shares
 (`save_live::restore_placed_pools`, called by the viewer's placed spawn).
+
+Round uitoolkit (L15): `form_input::PointerFrame` carries the right and
+middle buttons and the press modifier bits (`with_keys`; the middle only
+while the controls are off); the tooltip's background is the skin's rounded
+fill; the manual draws its inline pictures; the hub's Dismiss and yes/no
+dialogs and the save screen's delete and reset boxes close on a press off
+their buttons.
+
+Round uiscreens (L14): `bindings::Bindings` keeps the saved rows and the
+file's controller word as read or captured (`set_row`, `rows`,
+`row_key_name` for the Controls page's cells); Apply writes `InputMode` 3
+for the controller; `player::reselect_on_mode_switch` forces the GUI's
+reselect on each game mode switch; the settings form shows the Controls
+view tabs while a pad is connected; icons render with
+`exa_items::item_icon::render_variant` (weapon light preset).

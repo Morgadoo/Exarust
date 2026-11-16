@@ -425,7 +425,9 @@ tested rules of their own.
   it (`ungroup_dead_hands`). The choice runs in the frame; behind the simulation
   bridge its switch of the animator's config is queued for the
   simulation's copy (`FixedCommands::write`), not sent as the frame's whole
-  animator; the dresser's armour layers reach the fighter the same way.
+  animator; the dresser's armour layers reach the fighter the same way
+  (`Fighter::wear`), and the worn protection stays on the body
+  (`WornArmour`) for the armour refresh after a rise in the armour skill.
 - The off hand's item is attached by `offhand` after the dresser: a shield
   from either hand (its own model, body, a back pivot to its forearm and two face
   pivots to the left hand, and its soft weld, turned −5° about z on the hand) or a second
@@ -495,7 +497,11 @@ words). Nothing builds that node yet.
   behind and a smear ahead, into the vertex colour's alpha (255 clean,
   only ever lowered) of the character's skinned meshes and the meshes under
   its head, on their current skinned positions. Held items, rigid items on
-  other parts and hidden parts are never painted.
+  other parts and hidden parts are never painted. A plain mesh is painted
+  in its own frame, once per position element (`blood::paint_mesh`: a
+  seam's vertices keep one value); a cloth (long hair) in place on the
+  mesh its simulation moves, by the cloth's painter (`blood::paint_cloth`,
+  the point in the node's frame, the travel a world direction).
 - A model's meshes stay shared until a wound lowers a value of one: the
   struck character then gets its own copy (marked `Bloodied`), painted in
   place afterwards. A whole human body in braies costs 278 KiB, the

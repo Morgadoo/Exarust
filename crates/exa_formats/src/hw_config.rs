@@ -676,7 +676,7 @@ impl Screen {
             ("HWMultisample", format_int(draft.multisample)),
             (
                 "InputMode",
-                if live.controller { "51" } else { "0" }.to_string(),
+                if live.controller { "3" } else { "0" }.to_string(),
             ),
             (
                 "AimSpeed",

@@ -25,8 +25,8 @@
 //!   its body is kept awake for 256 ticks and its place and facing become
 //!   its home. Exempt or not, its contacts (the combatant's list and the
 //!   brain's integration copy) become the player alone at a concern of 10. A ring that woke any counts one more alarm.
-//! - **Reset.** Each level start disarms the alarm and zeroes the count
-//!   ([`GolemAlarm::default`]).
+//! - **Reset.** Each level start disarms the alarm and zeroes the count,
+//!   keeping the pass word ([`GolemAlarm::level_start_reset`]).
 //! - **Return.** The story revive of a knocked-out player
 //!   ([`crate::flow::Step::AlarmReturn`], before its save) runs the alarm
 //!   return while an alarm is armed ([`return_from_alarm`],
@@ -120,6 +120,17 @@ impl Default for GolemAlarm {
 }
 
 impl GolemAlarm {
+    /// The reset a level start runs over the running alarm: disarmed, the
+    /// point back at the reset point and the count zeroed, while the pass
+    /// word of the zone that last armed it stays (the original's reset
+    /// writes the armed byte, the three point words and the count, never
+    /// the pass).
+    pub fn level_start_reset(&mut self) {
+        let pass = self.armed.pass;
+        *self = Self::default();
+        self.armed.pass = pass;
+    }
+
     /// The alarm as a story save's level section carries it (its settings
     /// chunk, [`crate::level_transition::SettingsState`]): the armed flag
     /// (the chunk's "old tag" gate), the armed point as the twelve-byte
@@ -198,6 +209,23 @@ pub fn restore_saved_alarm(
         source.entry, saved.armed.armed, saved.armed.at, saved.armed.pass, saved.rung
     );
     exa_physics::sim_app::write_resource(fixed.as_deref_mut(), &mut alarm, move |a| *a = saved);
+}
+
+/// The level start's alarm reset ([`GolemAlarm::level_start_reset`]): the
+/// alarm is the simulation's, so the reset is a posted write (the frame's
+/// copy at once, the simulation's at its next step).
+pub fn reset_at_level_start(world: &mut World) {
+    if !world.contains_resource::<GolemAlarm>() {
+        return;
+    }
+    world.resource_scope(|world, mut alarm: Mut<GolemAlarm>| {
+        let mut fixed = world.get_resource_mut::<FixedCommands>();
+        exa_physics::sim_app::write_resource(
+            fixed.as_deref_mut(),
+            &mut alarm,
+            GolemAlarm::level_start_reset,
+        );
+    });
 }
 
 /// The point (cm) the player's zones were last checked at.
@@ -1020,6 +1048,25 @@ mod tests {
             .entity_mut(player)
             .insert(GlobalTransform::from_translation(at_m));
         app.update();
+    }
+
+    /// A level start's reset after the gate rang disarms the alarm, puts
+    /// its point back and zeroes the count, but keeps the gate's pass word.
+    #[test]
+    fn the_level_start_reset_keeps_the_pass_word() {
+        let mut app = app();
+        let player = player(&mut app, Vec3::new(10.5, 0.0, 66.0), &[]);
+        golem(&mut app, Vec3::new(9.0, 0.0, 75.0), true, 0);
+        app.update();
+        walk(&mut app, player, Vec3::new(10.5, 0.0, 67.5));
+        assert!(app.world().resource::<GolemAlarm>().armed.armed);
+        reset_at_level_start(app.world_mut());
+        app.update();
+        let alarm = *app.world().resource::<GolemAlarm>();
+        assert!(!alarm.armed.armed);
+        assert_eq!(alarm.rung, 0);
+        assert_eq!(alarm.armed.at, AlarmZone::reset().at);
+        assert_eq!(alarm.armed.pass, 474);
     }
 
     /// Walking into the gate without its token wakes the statue golems

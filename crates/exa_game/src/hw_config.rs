@@ -66,9 +66,10 @@ pub struct HardwareConfig {
     /// The window size the launcher asked for, kept for a return to windowed
     /// mode.
     pub window_size: Option<(u32, u32)>,
-    /// Whether Steam Input drives the Controller page's tabs. Exarust has no
-    /// Steam, so the Keyboard/Controller tabs stay hidden and the controller
-    /// view is never shown (its rules are modelled all the same).
+    /// Whether Steam Input has a controller handle, which shows the Controls
+    /// page's Keyboard and Controller tabs at the page switch. Exarust has no
+    /// Steam: a connected pad stands for the handle (the settings form sets
+    /// it from [`crate::gamepad::PadStatus`]).
     pub steam_input: bool,
     /// The `ScreenWidth` and `ScreenHeight` settings: the full-screen display
     /// mode's size, 0 when unset ([`crate::window::fullscreen_mode`]).
@@ -432,17 +433,10 @@ pub enum Rebind {
     None,
 }
 
-/// The Controls page's table as the original's key screen sees it: each
-/// row's saved-table code ([`bindings::row_code`] of the slot it fills),
-/// 0 for the row no slot reads.
+/// The Controls page's table as the original's key screen sees it: the
+/// saved rows as read or captured ([`Bindings::rows`]).
 pub fn page_rows(bindings: &Bindings) -> [u32; bindings::COUNT] {
-    let mut rows = [0; bindings::COUNT];
-    for (row, slot) in bindings::ROW_SLOTS.iter().enumerate() {
-        if let Some(slot) = slot {
-            rows[row] = bindings::row_code(bindings.keys()[*slot]);
-        }
-    }
-    rows
+    *bindings.rows()
 }
 
 impl BindingEditor {
@@ -466,10 +460,10 @@ impl BindingEditor {
         self.row.take().is_some()
     }
 
-    /// Applies the screen's answer: a captured code goes into the row's
-    /// slot of `bindings` (the page's copy) through the original's
-    /// conversion ([`bindings::slot_code`]) and closes the screen; Escape
-    /// closes it.
+    /// Applies the screen's answer: a captured code goes into the row of
+    /// `bindings` (the page's copy) as it is, and into the row's slot
+    /// through the original's conversion ([`bindings::slot_code`]), and
+    /// closes the screen; Escape closes it.
     fn answer(&mut self, answer: KeyAnswer, bindings: &mut Bindings) -> Rebind {
         match answer {
             KeyAnswer::Ignored => Rebind::None,
@@ -479,12 +473,11 @@ impl BindingEditor {
                 Rebind::Cancelled
             }
             KeyAnswer::Captured(code) => {
-                let slot = self
+                if let Some(row) = self
                     .screen
                     .and_then(|screen| (screen.action as usize).checked_sub(1))
-                    .and_then(|row| bindings::ROW_SLOTS.get(row).copied().flatten());
-                if let Some(action) = slot.and_then(action_at) {
-                    bindings.set_key(action, bindings::slot_code(code));
+                {
+                    bindings.set_row(row, code);
                 }
                 self.cancel();
                 Rebind::Assigned(code)
@@ -528,16 +521,18 @@ pub fn action_at(slot: usize) -> Option<Action> {
     Action::from_slot(slot)
 }
 
-/// The Controls page's rows: each label and its key's name from `bindings`.
+/// The Controls page's rows: each label and its key cell's name, from the
+/// page's saved rows as the original refreshes its cells
+/// ([`Bindings::row_name`]: the primary and secondary mouse buttons have
+/// an empty caption, an extended key keeps its own name).
 pub fn binding_rows(bindings: &Bindings) -> Vec<(&'static str, String)> {
     settings::BINDINGS
         .iter()
         .map(|binding| {
-            let name = binding
-                .slot
-                .and_then(action_at)
-                .map(|action| bindings.key_name(action))
-                .unwrap_or_default();
+            let name = match binding.slot {
+                Some(_) => bindings.row_name(usize::from(binding.action).saturating_sub(1)),
+                None => String::new(),
+            };
             (binding.label, name)
         })
         .collect()
@@ -1323,7 +1318,7 @@ mod tests {
         config.open(None);
         assert!(config.set_controller(true));
         assert!(config.live.controller);
-        assert_eq!(config.lines().unwrap()[9], ("InputMode", "51".to_string()));
+        assert_eq!(config.lines().unwrap()[9], ("InputMode", "3".to_string()));
         config.set_rumble(false);
         assert!(!config.rumble);
     }
@@ -1520,6 +1515,31 @@ mod tests {
             );
             assert_eq!(app.world().resource::<SuperSampling>().0, level > 0);
         }
+    }
+
+    #[test]
+    fn a_captured_right_control_is_saved_and_named_as_it_is() {
+        let mut config = HardwareConfig::default();
+        config.open(Some(&Bindings::default()));
+        let mut editor = BindingEditor::default();
+        let copy = config.bindings.as_mut().unwrap();
+        // The Interact row (page row 8, saved row 8) takes right control.
+        let row = exa_ui::settings::BINDINGS
+            .iter()
+            .position(|binding| binding.slot == Some(Action::Interact.slot()))
+            .unwrap();
+        assert!(editor.begin(row, 0));
+        let word = bindings::key_state_word(KeyCode::ControlRight);
+        assert_eq!(editor.key(0xA3, word, copy, 10), Rebind::Assigned(0x11D));
+        let saved = usize::from(exa_ui::settings::BINDINGS[row].action) - 1;
+        // The row keeps the extended scan code; the slot reads the left key.
+        assert_eq!(copy.rows()[saved], 0x11D);
+        assert_eq!(copy.key(Action::Interact), 0xA2);
+        assert_eq!(binding_rows(copy)[row].1, "Right Ctrl");
+        let applied = config.apply().unwrap();
+        let committed = applied.bindings.unwrap();
+        let bytes = committed.encode();
+        assert_eq!(&bytes[(3 + saved) * 4..][..4], &0x11Du32.to_le_bytes());
     }
 
     #[test]

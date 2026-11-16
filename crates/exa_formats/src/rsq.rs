@@ -1279,4 +1279,33 @@ mod tests {
         assert_eq!(links.len(), 36);
         assert!(links.iter().all(|&f| f == 0), "{links:x?}");
     }
+
+    /// The shipped skeleton names every node with its own two-digit bone
+    /// number. The original's part transfer at a character's add pairs a
+    /// motion-library part with the new body's part whose name starts with
+    /// the same two characters, among the children not yet claimed, so the
+    /// loader's child sort by |x| ([`sort_by_abs_x`]) cannot change a
+    /// pairing: each part meets its own bone number, as Exarust's map by
+    /// bone number ([`bone_index`]) gives it.
+    #[test]
+    fn shipped_skeleton_bone_numbers_are_unique() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let seq = Sequences::parse(pack.get("humanoid.rsq").unwrap()).unwrap();
+        let nodes = &seq.skeleton.nodes;
+        let numbers: Vec<Option<usize>> = nodes.iter().map(|n| bone_index(&n.name)).collect();
+        assert!(
+            numbers.iter().all(Option::is_some),
+            "{:?}",
+            nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+        let mut seen = std::collections::HashSet::new();
+        for (node, number) in nodes.iter().zip(&numbers) {
+            assert!(seen.insert(*number), "{} repeats its number", node.name);
+        }
+        assert_eq!(seen.len(), seq.bodies.len());
+    }
 }

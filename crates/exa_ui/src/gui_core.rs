@@ -34,8 +34,11 @@ pub const NO_CONTROL: i32 = i32::MIN;
 pub const TOOLTIP_DELAY: u32 = 400;
 
 /// Two presses of the same button within this many clock units, at most
-/// one pixel apart, are a double click.
-pub const DOUBLE_CLICK: u32 = 450;
+/// one pixel apart, are a double click. The original's start-up overwrites
+/// its built-in 450 with the system's double-click time before any window
+/// opens; Exarust takes the system's default, 500 ms (the GUI, the item
+/// panels and the world's double clicks all read this one value).
+pub const DOUBLE_CLICK: u32 = 500;
 
 /// The active control the forced idle step stores, so the next focus
 /// always reselects.
@@ -1307,6 +1310,23 @@ impl GuiTask {
         if result & 3 == 3 {
             self.redraw = true;
         }
+    }
+
+    /// The window procedure's kill-focus for the GUI root: the held
+    /// buttons release (a title drag or a held control lets go), the
+    /// pointer shape goes back to 0, the capture drops, and the focused
+    /// form deselects with the focus parked on the root ([`Self::deactivate`]).
+    pub fn focus_lost(&mut self) {
+        self.release((self.pointer.buttons & 0xffff) as u16);
+        self.set_cursor(0);
+        self.set_capture(None);
+        self.deactivate();
+    }
+
+    /// The window procedure's set-focus: a focus to no form, which returns
+    /// to the form the focus loss remembered ([`Self::focus_form`]).
+    pub fn focus_regained(&mut self) {
+        self.focus_form(None, 0);
     }
 
     /// The gamepad's leave check: a selected control whose state asks for
@@ -2656,6 +2676,32 @@ mod tests {
     }
 
     #[test]
+    fn the_focus_loss_releases_the_held_press_and_the_return_refocuses() {
+        let (mut task, root, log) = task_with(|_| {});
+        let mut child = Recorder::new(rect(50, 50, 100, 100), &log);
+        child.parent = Some(root);
+        let id = task.add(Box::new(child));
+        task.update(false, (100, 100));
+        task.focus_set(Some(id), 1);
+        task.press(1 | 0x40);
+        assert!(task.pointer.held);
+        task.focus_lost();
+        // The held press (with its modifier bits) is released to its form
+        // and the focus is parked on the root. The shape went to 0, then
+        // the capture's drop re-read the pointer (its hit's shape, 2).
+        assert_eq!(task.pointer.buttons, 0);
+        assert_eq!(log.lock().unwrap().releases, vec![0x41]);
+        assert_eq!(task.cursor, 2);
+        assert_eq!(task.pointer.capture, None);
+        assert_eq!(task.remembered.map(|r| r.0), Some(id));
+        assert_eq!(task.active, Some(root));
+        task.focus_regained();
+        assert_eq!(task.active, Some(id));
+        // The system's double-click time.
+        assert_eq!(DOUBLE_CLICK, 500);
+    }
+
+    #[test]
     fn an_unheld_press_clicks_on_the_release() {
         let (mut task, _id, log) = task_with(|f| f.press_result = 0);
         task.update(false, (100, 100));
@@ -2843,15 +2889,16 @@ mod tests {
             log.lock().unwrap().presses,
             vec![0x1001, 0x2001, 0x8001, 0x1001]
         );
-        // 450 or more after the stamp is a single press again.
+        // The double-click time (500) or more after the stamp is a single
+        // press again.
         task.release(1);
-        task.clock = 1450;
+        task.clock = 1000 + DOUBLE_CLICK;
         task.press(1);
         assert_eq!(
             log.lock().unwrap().presses,
             vec![0x1001, 0x2001, 0x8001, 0x1001, 0x2001, 0x1001]
         );
-        // A 32-bit wrap does not wrap the difference: from the stamp 1450
+        // A 32-bit wrap does not wrap the difference: from the stamp 1500
         // a clock of u32::MAX is far outside the window.
         task.release(1);
         task.clock = u32::MAX;

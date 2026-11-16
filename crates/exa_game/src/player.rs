@@ -818,6 +818,9 @@ impl Plugin for PlayerPlugin {
                     .in_set(exa_physics::FramePhase::Camera)
                         .after(begin_play_session)
                         .after(end_play_session),
+                    reselect_on_mode_switch
+                        .in_set(exa_physics::FramePhase::Camera)
+                        .after(take_mode_records),
                     chase_camera
                     .in_set(exa_physics::FramePhase::Camera),
                     crate::pad_cursor::take_pad_view
@@ -908,6 +911,28 @@ fn end_play_session(
     }
     session.end();
     info!("end of play: activation radius 200 m");
+}
+
+/// The game modes' start and end routines (the Character mode's and the
+/// Spectate mode's) end with the GUI's forced reselect: the active control
+/// becomes the reselect code and the pointer is read again, so the control
+/// under the pointer is selected afresh after the switch
+/// ([`exa_ui::gui_core::GuiTask::reselect`]). One reselect a frame stands
+/// for the leaving mode's and the entered mode's, which run back to back.
+pub(crate) fn reselect_on_mode_switch(
+    modes: Option<Res<crate::player_controls::GameModes>>,
+    screens: Option<ResMut<crate::gui_screens::GameScreens>>,
+    mut seen: Local<u32>,
+) {
+    let (Some(modes), Some(mut screens)) = (modes, screens) else {
+        return;
+    };
+    if modes.switches == *seen {
+        return;
+    }
+    *seen = modes.switches;
+    screens.task.reselect();
+    debug!("game mode switch: the GUI reselects under the pointer");
 }
 
 /// The camera switch's camera half: a camera that has not seen the last
@@ -3590,6 +3615,39 @@ pub fn chase_camera(
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    /// A game mode switch (the start of play, its end, the spectate start)
+    /// ends with the GUI's forced reselect; a frame without one does not.
+    #[test]
+    fn a_mode_switch_reselects_the_gui() {
+        use crate::player_controls::{GameMode, GameModes, enter_mode};
+        let mut app = App::new();
+        app.init_resource::<GameModes>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .add_systems(Update, reselect_on_mode_switch);
+        app.update();
+        let active = |app: &App| {
+            app.world()
+                .resource::<crate::gui_screens::GameScreens>()
+                .task
+                .active_control
+        };
+        assert_ne!(active(&app), exa_ui::gui_core::RESELECT);
+        enter_mode(
+            &mut app.world_mut().resource_mut::<GameModes>(),
+            Some(GameMode::Character),
+            "test",
+        );
+        app.update();
+        assert_eq!(active(&app), exa_ui::gui_core::RESELECT);
+        // The next frame without a switch leaves the task alone.
+        app.world_mut()
+            .resource_mut::<crate::gui_screens::GameScreens>()
+            .task
+            .active_control = 7;
+        app.update();
+        assert_eq!(active(&app), 7);
+    }
 
     #[test]
     fn steering_with_w_and_a_walks_a_circle() {
