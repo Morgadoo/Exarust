@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r230, 11-16) | target |
+| measure | start (r186, 11-10) | now (r232, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **52.97%** | **100%** |
+| **Ledger: bytes in a final state** | — | **53.32%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
-| Live rows with scene or retail evidence | — | 306 of 2,742 (11%) | 100% |
+| Live rows with scene or retail evidence | — | 309 of 2,755 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,730 | all |
+| Tests passing | 8,489 | 8,737 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,23 +98,23 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 183 | 186,643 |
+| Physics, bodies & cloth | 7 | 7 | 176 | 181,824 |
 | UI | 12 | 12 | 395 | 154,760 |
-| Rendering & GPU | 10 | 10 | 296 | 150,648 |
+| Rendering & GPU | 10 | 10 | 295 | 150,293 |
 | Thaumaturgy & effects | 9 | 9 | 168 | 119,006 |
-| AI & behaviour | 8 | 8 | 181 | 115,293 |
+| AI & behaviour | 8 | 8 | 177 | 111,744 |
 | Characters, motion & animation | 8 | 8 | 237 | 107,529 |
 | Game modes, arena & session | 7 | 7 | 216 | 89,736 |
 | World, levels & terrain | 5 | 5 | 169 | 87,396 |
 | Items, materials & crafting | 5 | 5 | 165 | 75,411 |
 | Data, assets & I/O | 6 | 6 | 142 | 44,244 |
 | Runtime & platform | 5 | 5 | 70 | 20,869 |
-| Core, math & threading | 3 | 3 | 82 | 15,890 |
+| Core, math & threading | 3 | 3 | 81 | 15,794 |
 | Script, dialogue & story | 2 | 2 | 31 | 7,304 |
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,347** | **1,180,225** |
+| **Total** | **90** | **90** | **2,334** | **1,171,406** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 231–232 | Cloth set-up and step follow the assembly: link walk, full-correction edge pass, integrate order, the scene's wind, the rustle, the draw update between ticks (cloth; an FPS check is owed, the walk roughly doubles the links). One AI route walk and path follower for every state; five duplicate walkers removed; F370 fixed (routewalk). Game checks owed (GPU on hold). |
 | 2026-11-16 | 229–230 | Level lights are registered as scene light nodes; their aliases come from the light flood's cells and equal the old room lists on three shipped levels (scenenodes). The arena's company deaths, departures, hires, day board, hire list, continue fixups and kept bodies follow the assembly; won prizes reach the arsenal (arenapart). Game checks owed (GPU on hold). |
 | 2026-11-15 | 227–228 | The path planner plans with each AI state's goal record (size class, alert shift, accept distance, end test) and the walks use the original's single-precision raster (pathfinder). The turn stall, the hard hit's frozen swing and the knockback along the striker's slot vector follow the assembly; a hovering player looks ahead by the straight walk (motiledyn2). Game checks owed (GPU on hold). |
 | 2026-11-15 | 223–226 | Hook lists closed as engine with schedule-order tests; the deferred ring's wrap confirmed and left open (hookorder). Item panels, cards, sockets and the crystal drain, 17 findings (wireitems). A limb struck through a parry is wounded; the locomotion push enters before the lift (motiledyn). The gamepad's menu dispatch on gilrs (menupad). The GPU dropped again on driver 620: diagnosed as a hardware fault (the card was twice not found at power-on); GPU runs on hold (`context/tools/GPU_HOLD`) until the owner reseats it, so these rounds' game checks and determinism runs are owed. Ledger 51.9% → 52.6%. |

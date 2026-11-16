@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 780 | 197,048 | B1 wire (or prove unreachable) |
-| partial | 1,508 | 969,146 | B4 complete the port |
+| uncalled | 775 | 193,979 | B1 wire (or prove unreachable) |
+| partial | 1,500 | 963,396 | B4 complete the port |
 | missing | 67 | 14,941 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,18 +14,18 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 158,812 | 25,766 | 2,065 |
+| physics | 155,030 | 24,729 | 2,065 |
 | ui | 99,805 | 53,282 | 1,673 |
-| render | 123,703 | 23,925 | 3,232 |
+| render | 123,703 | 23,570 | 3,232 |
 | powers | 112,105 | 3,852 | 3,049 |
-| ai | 107,236 | 7,982 | 75 |
+| ai | 105,364 | 6,305 | 75 |
 | characters | 90,034 | 15,398 | 2,097 |
 | modes | 74,751 | 14,043 | 942 |
 | world | 65,583 | 21,250 | 563 |
 | items | 63,514 | 11,227 | 670 |
 | data | 31,939 | 12,305 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
-| core | 12,420 | 3,411 | 59 |
+| core | 12,324 | 3,411 | 59 |
 | script | 5,501 | 1,803 | 0 |
 | audio | 3,025 | 270 | 0 |
 | combat | 2,201 | 0 | 0 |
@@ -35,20 +35,20 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | component | section | partial (fn / bytes) | uncalled (fn / bytes) | missing (fn / bytes) | open bytes |
 |---|---|---|---|---|---|
 | TMotileDynamics | physics | 48 / 99,121 | 5 / 5,469 | 1 / 38 | 104,628 |
-| TMotileAI | ai | 26 / 34,180 | 7 / 3,725 | 2 / 28 | 37,933 |
 | SG_CharacterGen (unit routines) | characters | 47 / 30,266 | 25 / 5,384 | 0 / 0 | 35,650 |
+| TMotileAI | ai | 26 / 32,570 | 5 / 2,048 | 2 / 28 | 34,646 |
 | SG_PlayerControls (unit routines) | ai | 44 / 23,983 | 6 / 993 | 1 / 47 | 25,023 |
 | TSimSector | physics | 33 / 23,628 | 1 / 224 | 0 / 0 | 23,852 |
-| TVCCloth | physics | 20 / 19,103 | 8 / 2,551 | 1 / 1,638 | 23,292 |
 | XA_Arena (unit routines) | modes | 32 / 19,447 | 8 / 1,658 | 8 / 942 | 22,047 |
 | TMotilePart | characters | 37 / 17,314 | 6 / 1,449 | 2 / 1,370 | 20,133 |
 | TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
+| TVCCloth | physics | 15 / 15,321 | 6 / 1,514 | 1 / 1,638 | 18,473 |
 | RF_SceneNodes (unit routines) | world | 10 / 15,347 | 12 / 2,377 | 0 / 0 | 17,724 |
 | TGUIForm | ui | 29 / 9,509 | 28 / 7,744 | 1 / 153 | 17,406 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
 | TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
-| TMesh | render | 20 / 13,220 | 4 / 1,746 | 0 / 0 | 14,966 |
+| TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
 | XA_SaveGames (unit routines) | modes | 24 / 12,546 | 6 / 1,074 | 0 / 0 | 13,620 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
@@ -95,11 +95,11 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TNavCameraControl | render | 2 / 5,215 | 3 / 772 | 0 / 0 | 5,987 |
 | TForceBlastEffect | powers | 3 / 5,947 | 0 / 0 | 0 / 0 | 5,947 |
 | TCompactSkillUI | ui | 0 / 0 | 11 / 5,838 | 0 / 0 | 5,838 |
-| FLX_System (unit routines) | core | 32 / 2,657 | 23 / 3,089 | 1 / 59 | 5,805 |
-| TCombatant | ai | 11 / 5,101 | 3 / 690 | 0 / 0 | 5,791 |
 | SG_Character_Data (unit routines) | characters | 10 / 2,511 | 22 / 3,260 | 0 / 0 | 5,771 |
+| FLX_System (unit routines) | core | 31 / 2,561 | 23 / 3,089 | 1 / 59 | 5,709 |
 | TProcMaterial | items | 9 / 5,114 | 0 / 0 | 1 / 525 | 5,639 |
 | TIconManager | ui | 0 / 0 | 6 / 5,573 | 0 / 0 | 5,573 |
+| TCombatant | ai | 9 / 4,839 | 3 / 690 | 0 / 0 | 5,529 |
 | TSkinController2 | characters | 6 / 3,997 | 2 / 1,193 | 0 / 0 | 5,190 |
 | Engine math (vectors, matrices, fast trig) | core | 18 / 4,941 | 1 / 235 | 0 / 0 | 5,176 |
 | Item description phrases | items | 5 / 4,855 | 2 / 288 | 0 / 0 | 5,143 |
