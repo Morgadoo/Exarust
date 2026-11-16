@@ -1067,46 +1067,36 @@ fn quads(
     }
 }
 
-/// `CVTSS2SI` keeping the low byte: half to even, the indefinite value
-/// (low byte 0) for a NaN or an overflow.
-fn alpha_byte(value: f32) -> u8 {
-    let rounded = value.round_ties_even();
-    if rounded.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&rounded) {
-        0
-    } else {
-        (rounded as i32) as u8
-    }
-}
-
-/// The skin's rounded box behind a tooltip: black at the box's alpha,
-/// grown by the unit times 2 × 4, its scale cut from the grown box.
+/// The skin's rounded box behind a tooltip: the skin's rounded fill
+/// ([`exa_ui::skin::rounded_fill`], radius 2: grown by the unit times
+/// 2 × 4, black at the box's alpha, its scale cut from the grown box), its
+/// quad handed to the screen's canvas.
 fn tip_box(canvas: &mut Canvas, tip: &SkillTip, unit: i32) {
-    let grow = unit as f32 * 2.0 * 4.0;
-    let alpha = f32::from(alpha_byte(tip.alpha * 255.0)) / 255.0;
-    let sx = (tip.width / (grow * 2.0 + tip.width)) * 0.5;
-    let sy = (tip.height / (grow * 2.0 + tip.height)) * 0.5;
-    let scale = [sx, sy, 1.0 / (0.5 - sx), 1.0 / (0.5 - sy)];
-    let (x0, y0) = (tip.left - grow, tip.top - grow);
-    let (x1, y1) = (tip.left + tip.width + grow, tip.top + tip.height + grow);
-    let corner = |x: f32, y: f32, u: f32, v: f32| SkillVertex {
-        x,
-        y,
-        u,
-        v,
-        ink: [0.0, 0.0, 0.0, alpha],
+    let mut batch = exa_ui::skin::SkinBatch::new();
+    exa_ui::skin::rounded_fill(
+        &mut batch,
+        exa_ui::skin::GuiRect::sized(tip.left, tip.top, tip.width, tip.height),
+        unit,
+        2.0,
+        tip.alpha,
+    );
+    let Some(scale) = batch.rounded_scale else {
+        return;
     };
+    let corners: Vec<SkillVertex> = batch
+        .vertices
+        .iter()
+        .map(|v| SkillVertex {
+            x: v.x,
+            y: v.y,
+            u: v.u,
+            v: v.v,
+            ink: v.ink.map(|byte| f32::from(byte) / 255.0),
+        })
+        .collect();
     let shade =
         move |uv: [f32; 2], ink: [f32; 4]| exa_ui::wheel_draw::rounded_fragment(uv, ink, scale);
-    quads(
-        canvas,
-        &[
-            corner(x0, y0, 0.0, 0.0),
-            corner(x0, y1, 0.0, 1.0),
-            corner(x1, y1, 1.0, 1.0),
-            corner(x1, y0, 1.0, 0.0),
-        ],
-        &shade,
-    );
+    quads(canvas, &corners, &shade);
 }
 
 /// A label's glyph quads in the GUI font, sampled from its atlas (the
@@ -1226,6 +1216,56 @@ mod tests {
             [1.0; 4],
         );
         assert_eq!(half[3], 0.6);
+    }
+
+    /// The tooltip box through the skin's rounded fill draws the pixels
+    /// the screen's own quad drew (the formula it replaced, inline here).
+    #[test]
+    fn the_tip_box_is_the_skins_rounded_fill() {
+        let tip = SkillTip {
+            left: 30.0,
+            top: 26.0,
+            width: 41.0,
+            height: 17.0,
+            alpha: 0.6,
+            order: 0,
+        };
+        let canvas = || Canvas {
+            width: 120,
+            height: 80,
+            pixels: vec![[0.0; 4]; 120 * 80],
+        };
+        let mut through_skin = canvas();
+        tip_box(&mut through_skin, &tip, 3);
+        let mut own = canvas();
+        let grow = 3.0 * 2.0 * 4.0;
+        let alpha = f32::from((tip.alpha * 255.0_f32).round_ties_even() as i32 as u8) / 255.0;
+        let sx = (tip.width / (grow * 2.0 + tip.width)) * 0.5;
+        let sy = (tip.height / (grow * 2.0 + tip.height)) * 0.5;
+        let scale = [sx, sy, 1.0 / (0.5 - sx), 1.0 / (0.5 - sy)];
+        let (x0, y0) = (tip.left - grow, tip.top - grow);
+        let (x1, y1) = (tip.left + tip.width + grow, tip.top + tip.height + grow);
+        let corner = |x: f32, y: f32, u: f32, v: f32| SkillVertex {
+            x,
+            y,
+            u,
+            v,
+            ink: [0.0, 0.0, 0.0, alpha],
+        };
+        let shade =
+            move |uv: [f32; 2], ink: [f32; 4]| exa_ui::wheel_draw::rounded_fragment(uv, ink, scale);
+        quads(
+            &mut own,
+            &[
+                corner(x0, y0, 0.0, 0.0),
+                corner(x0, y1, 0.0, 1.0),
+                corner(x1, y1, 1.0, 1.0),
+                corner(x1, y0, 1.0, 0.0),
+            ],
+            &shade,
+        );
+        assert_eq!(through_skin.pixels, own.pixels);
+        assert!(through_skin.pixels.iter().any(|p| p[3] > 0.5));
     }
 
     #[test]

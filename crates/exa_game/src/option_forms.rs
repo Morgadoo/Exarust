@@ -360,11 +360,15 @@ impl HubWindows {
             unit,
         );
         // The list takes its opener's form skin. The hub's forms keep the
-        // line skin, whose mark word has bit 1: the opener then clears the
-        // list's panel frame style (0x80), so the line skin draws only its
-        // wide window frame, and lifts the list by a unit less one.
-        list.style &= !0x80;
-        rect.top -= unit - 1;
+        // line skin, whose opening sets bit 1 of its mark word: the opener
+        // then clears the list's panel frame style (0x80), so the line
+        // skin draws only its wide window frame, and lifts the list by a
+        // unit less one.
+        let mark = exa_ui::skin::open_skin(unit, 0, true).map_or(0, |skin| skin.mark);
+        if mark & 1 != 0 {
+            list.style &= !0x80;
+            rect.top -= unit - 1;
+        }
         let layout = list.lay_out();
         let place = exa_ui::controls::drop_down_place(
             (rect.left, rect.top, c.w, c.h),

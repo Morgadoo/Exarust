@@ -2230,8 +2230,10 @@ fn paint_table_selection(
     {
         view.hover_at(y - client.top);
     }
-    // The line skin's header line first: the span bar in the idle control
-    // ink along the header's foot.
+    // The line skin's header line first (the hub's tables keep the line
+    // skin, whose opening sets bit 1 of its mark word): the span bar in the
+    // idle control ink along the header's foot.
+    let mark = exa_ui::skin::open_skin(look.unit, 0, true).map_or(0, |skin| skin.mark);
     let [x, y, w] = view.header_rule();
     let bar = exa_ui::skin::draw_span_bar(
         look.unit * 2,
@@ -2251,10 +2253,12 @@ fn paint_table_selection(
         }
     }
     rule.end_quads();
-    painted.push(exa_ui::gui_draw::GuiLayer::new(
-        rule,
-        exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
-    ));
+    if mark & 1 != 0 {
+        painted.push(exa_ui::gui_draw::GuiLayer::new(
+            rule,
+            exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+        ));
+    }
     if view.selection_band().is_none() {
         return;
     }
