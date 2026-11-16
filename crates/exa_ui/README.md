@@ -687,7 +687,17 @@ release, drag move, drop, close), and `GuiTask` keeps the task's state —
 the focused form and control with its tooltip request and the tick that
 shows it, the modal form, the pointer's target, press point, held word,
 double click, drag threshold and capture, the drop hand-over and the cursor
-shape. `PlainForm` is a basic record over `gui_controls::dispatch`;
+shape. It also runs the base form's (`TGUIForm`) task rules: `add` puts a
+form at its layer's place among its siblings and `draw_order` draws child
+forms with their parent; `find_by_tag` (visible children by type tag),
+`is_active` (the topmost outside the upper layer), `activate` and the
+press's raise (the child rule, `raise_child`); `focus_form` (a focus to no
+form returns to the `remembered` visible form or the root with control -1)
+and `deactivate` (the window's focus loss); `close_form` (the close cascade:
+child forms first, each hidden, its references swept by
+`sweep_references` from the focus, remembered focus, pointer target,
+capture, tooltip request, drop and modal slot, then deleted).
+`PlainForm` is a basic record over `gui_controls::dispatch`;
 `message_box_plan` builds the original's Ok/Cancel box and
 `message_box_button` its buttons' stored result and close (the close mark
 destroys through the parent), `place_form`, `clamp_form` and `edge_rect`

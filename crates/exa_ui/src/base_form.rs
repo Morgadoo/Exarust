@@ -105,6 +105,8 @@ pub struct BaseForm {
     /// When the held arrow repeats next.
     pub repeat_at: Option<u32>,
     pub doomed: bool,
+    /// The form's type tag (0 none), for the openers' tag search.
+    pub tag: u32,
     pub events: Vec<BaseEvent>,
 }
 
@@ -135,6 +137,7 @@ impl BaseForm {
             clock: 0,
             repeat_at: None,
             doomed: false,
+            tag: 0,
             events: Vec::new(),
         }
     }
@@ -531,8 +534,10 @@ impl FormHost for BaseForm {
 
     /// The release slot ([`form::release_actions`]): a held record hears
     /// it, a held mark acts while the pointer is still over it; the held
-    /// code and the repeat clear.
-    fn release(&mut self, _word: u32) -> u32 {
+    /// code and the repeat clear. The record's release carries the release
+    /// word with the landing bit always (the record tests the point itself:
+    /// `over` here), so a slider let go off its track still reports.
+    fn release(&mut self, word: u32) -> u32 {
         let (lx, ly) = self.local(self.pointer);
         if self.held != 0 {
             self.over = self.holds(self.hit_local(lx, ly));
@@ -552,7 +557,7 @@ impl FormHost for BaseForm {
                         i,
                         Message {
                             message: message::RELEASE,
-                            param: if over { gui_controls::RELEASE_LANDS } else { 0 },
+                            param: (word & 0xffff) | gui_controls::RELEASE_LANDS,
                             extra: 1,
                             over,
                             ..Message::default()
@@ -595,6 +600,10 @@ impl FormHost for BaseForm {
 
     fn attributes(&self) -> u32 {
         self.attributes
+    }
+
+    fn tag(&self) -> u32 {
+        self.tag
     }
 
     fn hint_record(&self, control: i32) -> i32 {

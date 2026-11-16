@@ -184,6 +184,11 @@ pub trait FormHost: Send + Sync {
     fn attributes(&self) -> u32 {
         0
     }
+    /// The form's type tag (0 none), which the openers search the task's
+    /// children by ([`GuiTask::find_by_tag`]).
+    fn tag(&self) -> u32 {
+        0
+    }
     /// The default tooltip's text for a record of this form.
     fn tooltip_text(&self, _record: i32) -> Vec<u8> {
         Vec::new()
@@ -765,6 +770,10 @@ pub struct GuiTask {
     pub cursor: i32,
     /// A redraw was asked for.
     pub redraw: bool,
+    /// The focus a visible form held when it lost the focus, and its
+    /// control then: a focus to no form returns to it
+    /// ([`GuiTask::focus_form`]).
+    pub remembered: Option<(FormId, i32)>,
 }
 
 impl Default for GuiTask {
@@ -794,18 +803,92 @@ impl GuiTask {
             drop: DropState::default(),
             cursor: -1,
             redraw: false,
+            remembered: None,
         }
     }
 
-    /// Adds a form and returns its id; the first form becomes the root.
+    /// Adds a form and returns its id; the first form becomes the root. A
+    /// form joins its parent's children at its layer's place
+    /// ([`crate::form::add_child_index`]: a lower-layer form above the last
+    /// lower-layer sibling, an upper-layer form on top, any other below the
+    /// trailing upper-layer siblings), as the base form's add-child does.
     pub fn add(&mut self, form: Box<dyn FormHost>) -> FormId {
+        let parent = form.parent();
+        let attributes = form.attributes();
+        let siblings = self.children_of(parent);
+        let words: Vec<u32> = siblings
+            .iter()
+            .map(|&id| self.form(id).map_or(0, FormHost::attributes))
+            .collect();
+        let at = crate::form::add_child_index(&words, attributes);
         self.forms.push(Some(form));
         let id = self.forms.len() as FormId;
-        self.order.push(id);
+        match siblings
+            .get(at)
+            .and_then(|s| self.order.iter().position(|o| o == s))
+        {
+            Some(slot) if self.root.is_some() => self.order.insert(slot, id),
+            _ => self.order.push(id),
+        }
         if self.root.is_none() {
             self.root = Some(id);
         }
         id
+    }
+
+    /// The live children of `parent` in draw order (the last on top); `None`
+    /// lists the forms with no parent.
+    pub fn children_of(&self, parent: Option<FormId>) -> Vec<FormId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|&id| self.form(id).is_some_and(|f| f.parent() == parent))
+            .collect()
+    }
+
+    /// The tag search the openers run over the task's children (the root's,
+    /// in draw order, first first): the first visible child with the tag
+    /// ([`crate::form::find_form_by_tag`]). A tag of 0 finds nothing.
+    pub fn find_by_tag(&self, tag: u32) -> Option<FormId> {
+        let children = self.children_of(self.root);
+        let tagged: Vec<crate::form::TaggedForm> = children
+            .iter()
+            .map(|&id| {
+                let f = self.form(id);
+                crate::form::TaggedForm {
+                    tag: f.map_or(0, FormHost::tag),
+                    visible: f.is_some_and(FormHost::is_visible),
+                }
+            })
+            .collect();
+        crate::form::find_form_by_tag(&tagged, tag).map(|i| children[i])
+    }
+
+    /// Whether `form` is the active one among its parent's children
+    /// ([`crate::form::is_active`]): the topmost outside the upper layer,
+    /// or the first child for a form whose attribute word is the upper
+    /// layer alone. It reads the draw order, not the focus: the openers'
+    /// toggles close a window only when it is on top.
+    pub fn is_active(&self, form: FormId) -> bool {
+        let Some(parent) = self.form(form).map(FormHost::parent) else {
+            return false;
+        };
+        let children = self.children_of(parent);
+        let words: Vec<u32> = children
+            .iter()
+            .map(|&id| self.form(id).map_or(0, FormHost::attributes))
+            .collect();
+        children
+            .iter()
+            .position(|&id| id == form)
+            .is_some_and(|i| crate::form::is_active(&words, i))
+    }
+
+    /// Activates a form: it comes to the front of its siblings and takes
+    /// the focus with no control (the base form's focus routine with no
+    /// control, as the openers call it on a window that is already open).
+    pub fn activate(&mut self, form: FormId) {
+        self.bring_to_front(form, NO_CONTROL);
     }
 
     pub fn form(&self, id: FormId) -> Option<&dyn FormHost> {
@@ -866,18 +949,40 @@ impl GuiTask {
         (Some(form), code, cursor)
     }
 
-    /// The forms in draw order (the last on top).
+    /// The forms in draw order (the last on top): each form, then its
+    /// children in their order, depth first, so a raised window's child
+    /// forms stay with it.
     pub fn draw_order(&self) -> Vec<FormId> {
-        self.order
-            .iter()
-            .copied()
-            .filter(|&id| self.form(id).is_some())
-            .collect()
+        let mut out = Vec::new();
+        let mut stack: Vec<FormId> = self.children_of(None).into_iter().rev().collect();
+        // Every live form is visited once; a parent link that loops (no
+        // parentless form above it) is never reached, as in the hit test.
+        while let Some(id) = stack.pop() {
+            if out.contains(&id) || out.len() > self.forms.len() {
+                continue;
+            }
+            out.push(id);
+            stack.extend(self.children_of(Some(id)).into_iter().rev());
+        }
+        out
     }
 
     /// Raises the top-level form holding `form` among the root's children
-    /// by the base form's layer rule ([`crate::form::raise_top_level`]).
+    /// by the base form's top-level layer rule
+    /// ([`crate::form::raise_top_level`]: the show fade's raise).
     pub fn raise(&mut self, form: FormId) {
+        self.raise_with(form, crate::form::raise_top_level);
+    }
+
+    /// The activation's raise: the top-level form holding `form` is raised
+    /// within its parent by the child rule ([`crate::form::raise_child`]:
+    /// the lower-layer search starts at the second child, and the forms it
+    /// owns follow it; Exarust's forms carry no owner).
+    pub fn raise_child(&mut self, form: FormId) {
+        self.raise_with(form, crate::form::raise_child);
+    }
+
+    fn raise_with(&mut self, form: FormId, rule: fn(&mut Vec<crate::form::Sibling>, u32) -> bool) {
         let top = self.root_of(form);
         let root = self.root;
         let siblings: Vec<FormId> = self
@@ -894,7 +999,7 @@ impl GuiTask {
                 owner: None,
             })
             .collect();
-        if !crate::form::raise_top_level(&mut list, top) {
+        if !rule(&mut list, top) {
             return;
         }
         let mut raised = list.into_iter().map(|s| s.id);
@@ -989,6 +1094,7 @@ impl GuiTask {
                 if self.gamepad {
                     self.gamepad_leave(previous);
                 }
+                self.remember(previous);
                 result = self.select(previous, 0) | 1;
             }
             self.active_control = NO_CONTROL;
@@ -1032,6 +1138,75 @@ impl GuiTask {
         result
     }
 
+    /// Remembers a form losing the focus, with its selected control (read
+    /// before its deselect), when it is visible.
+    fn remember(&mut self, form: FormId) {
+        if self.form(form).is_some_and(FormHost::is_visible) {
+            self.remembered = Some((form, self.selected(form)));
+        }
+    }
+
+    /// The base form's focus routine. No form means the remembered focus
+    /// when it is still there, visible and not the focus already, else the
+    /// root with control -1. The focused form selects the control; a
+    /// change deselects the old form (remembered first when visible) and
+    /// moves the focus. An answer with both 3 bits asks for a redraw.
+    pub fn focus_form(&mut self, form: Option<FormId>, control: i32) -> u32 {
+        let (target, control) = match form {
+            Some(form) => (Some(form), control),
+            None => match self.remembered {
+                Some((kept, kept_control))
+                    if Some(kept) != self.active
+                        && self.form(kept).is_some_and(FormHost::is_visible) =>
+                {
+                    (Some(kept), kept_control)
+                }
+                _ => (self.root, -1),
+            },
+        };
+        let Some(target) = target else {
+            return 0;
+        };
+        let mut result = self.select(target, control);
+        if Some(target) != self.active {
+            if let Some(previous) = self.active {
+                let kept = self.selected(previous);
+                result |= self.select(previous, 0);
+                if self.form(previous).is_some_and(FormHost::is_visible) {
+                    self.remembered = Some((previous, kept));
+                }
+            }
+            self.active = Some(target);
+        }
+        self.active_control = control;
+        if result & 3 == 3 {
+            self.redraw = true;
+        }
+        result
+    }
+
+    /// The application lost the system's focus: the focused form deselects
+    /// (remembered when visible) and the focus moves to the root with
+    /// control -1. Nothing happens with no focus.
+    pub fn deactivate(&mut self) {
+        let Some(previous) = self.active else {
+            return;
+        };
+        let kept = self.selected(previous);
+        let mut result = self.select(previous, 0);
+        if self.form(previous).is_some_and(FormHost::is_visible) {
+            self.remembered = Some((previous, kept));
+        }
+        self.active = self.root;
+        self.active_control = -1;
+        if let Some(root) = self.root {
+            result |= self.select(root, -1);
+        }
+        if result & 3 == 3 {
+            self.redraw = true;
+        }
+    }
+
     /// The gamepad's leave check: a selected control whose state asks for
     /// it drops the focus altogether.
     fn gamepad_leave(&mut self, form: FormId) {
@@ -1039,7 +1214,7 @@ impl GuiTask {
         if selected > 0 && self.form(form).is_some_and(|f| f.drops_focus(selected)) {
             // The forms' own focus call; it does not check the gamepad again.
             self.gamepad = false;
-            self.focus_set(None, 0);
+            self.focus_form(None, 0);
             self.gamepad = true;
         }
     }
@@ -1283,7 +1458,7 @@ impl GuiTask {
     /// Brings a form to the front of its siblings with a control focused
     /// (the forms' activation; the order of the form list is its z-order).
     fn bring_to_front(&mut self, form: FormId, control: i32) {
-        self.raise(form);
+        self.raise_child(form);
         self.focus_set(Some(form), control);
     }
 
@@ -1539,6 +1714,151 @@ impl GuiTask {
         }
         out.deleted = self.delete_doomed();
         out
+    }
+
+    /// Closes a form and the forms it takes with it, as the base form's
+    /// close slot does ([`crate::form::close_cascade`]): its child forms
+    /// (each not closing yet, depth first) close before it, every closed
+    /// form is hidden, which clears the window manager's references to it
+    /// ([`GuiTask::sweep_references`]), and the closed forms are deleted.
+    /// The root's children are not tasks here, so no close passes to a
+    /// task, and forms carry no owner, so no owned popup closes with its
+    /// opener. Returns how many forms were deleted.
+    pub fn close_form(&mut self, form: FormId) -> usize {
+        if self.form(form).is_none() {
+            return 0;
+        }
+        let size = self.forms.len() + 1;
+        let root = self.root.map_or(0, |r| r as usize);
+        let mut nodes = vec![crate::form::CloseNode::default(); size];
+        for id in 1..size as FormId {
+            let Some(f) = self.form(id) else {
+                continue;
+            };
+            nodes[id as usize] = crate::form::CloseNode {
+                closing: f.doomed(),
+                closes_once: true,
+                task: root,
+                children: self
+                    .children_of(Some(id))
+                    .into_iter()
+                    .map(|c| c as usize)
+                    .collect(),
+                ..crate::form::CloseNode::default()
+            };
+        }
+        let mut steps = Vec::new();
+        crate::form::close_cascade(&mut nodes, form as usize, &mut steps);
+        for step in steps {
+            match step {
+                crate::form::CloseStep::Hide(i) => self.hide_form(i as FormId),
+                crate::form::CloseStep::Redraw => self.redraw = true,
+                _ => {}
+            }
+        }
+        self.delete_doomed()
+    }
+
+    /// The close's hide: a visible form going hidden clears the window
+    /// manager's references to it and its tree
+    /// ([`crate::form::visibility_plan`]); the form is then marked closed.
+    fn hide_form(&mut self, form: FormId) {
+        let visible = self.form(form).is_some_and(FormHost::is_visible);
+        if crate::form::visibility_plan(visible, false, false).clear_references {
+            self.sweep_references(form);
+        }
+        if let Some(f) = self.form_mut(form) {
+            f.close(0);
+        }
+    }
+
+    /// The freed form's sweep over itself and its tree
+    /// ([`crate::form::sweep_freed_form`]), on the window manager's slots:
+    /// the remembered focus clears; the focused form hands the focus to its
+    /// parent with control -1 when the parent is visible (Exarust's
+    /// stand-in for the task's own focus restore), else to no form through
+    /// [`GuiTask::focus_form`]; the pointer's target clears with its
+    /// control; a capture held by the form is dropped; the tooltip request
+    /// on it clears; a drop it is the source of is reset. The modal slot
+    /// holding it clears too (Exarust's).
+    pub fn sweep_references(&mut self, form: FormId) {
+        let size = self.forms.len() + 1;
+        let mut children = vec![Vec::new(); size];
+        let mut parent = vec![None; size];
+        let mut parent_visible = vec![false; size];
+        for id in 1..size as FormId {
+            let Some(f) = self.form(id) else {
+                continue;
+            };
+            children[id as usize] = self
+                .children_of(Some(id))
+                .into_iter()
+                .map(|c| c as usize)
+                .collect();
+            parent[id as usize] = f.parent().map(|p| p as usize);
+            parent_visible[id as usize] = f
+                .parent()
+                .and_then(|p| self.form(p))
+                .is_some_and(FormHost::is_visible);
+        }
+        let slot = |id: Option<FormId>| id.map(|id| id as usize);
+        let mut slots = crate::form::FormSlots {
+            pressed: slot(self.pointer.capture),
+            saved_focus: slot(self.remembered.map(|(f, _)| f)),
+            focused: slot(self.active),
+            tooltip: slot(self.tooltip.form),
+            task_pressed: slot(self.pointer.target),
+            task_press_word: self.pointer.target_control,
+            drop_payload: slot(self.drop.source),
+            ..crate::form::FormSlots::default()
+        };
+        let mut active_child = vec![None; size];
+        let follow = crate::form::sweep_freed_form(
+            &mut slots,
+            &mut active_child,
+            &children,
+            &parent,
+            &parent_visible,
+            form as usize,
+        );
+        let back = |id: Option<usize>| id.map(|id| id as FormId);
+        if slots.pressed.is_none() && self.pointer.capture.is_some() {
+            self.pointer.capture = None;
+            self.pointer.os_captured = false;
+        }
+        if slots.saved_focus.is_none() {
+            self.remembered = None;
+        }
+        if slots.task_pressed.is_none() && self.pointer.target.is_some() {
+            self.pointer.target = back(slots.task_pressed);
+            self.pointer.target_control = slots.task_press_word;
+        }
+        for step in follow {
+            match step {
+                crate::form::SweepFollowUp::ParentFocus(p) => {
+                    self.focus_form(Some(p as FormId), -1);
+                }
+                crate::form::SweepFollowUp::ClearFocus => {
+                    self.focus_form(None, 0);
+                }
+                crate::form::SweepFollowUp::TooltipReset => self.clear_tooltip(),
+                crate::form::SweepFollowUp::DropReset => self.drop = DropState::default(),
+                crate::form::SweepFollowUp::FallBack => {}
+            }
+        }
+        // The tree is still visible while it is swept (it hides after), so
+        // a focus handed away from it must not remember it.
+        let tree: Vec<FormId> = crate::form::propagation_order(&children, form as usize)
+            .into_iter()
+            .map(|i| i as FormId)
+            .collect();
+        if self.remembered.is_some_and(|(f, _)| tree.contains(&f)) {
+            self.remembered = None;
+        }
+        if self.modal.is_some_and(|m| tree.contains(&m)) {
+            self.modal = None;
+        }
+        self.redraw = true;
     }
 
     /// Deletes the forms marked for deletion; returns how many.

@@ -934,14 +934,9 @@ impl GameScreens {
         }
     }
 
-    fn push(&mut self, kind: GameScreen, bounds: GuiRect, unit: i32) -> FormId {
-        let root = self.task.root;
-        let controls = match kind {
-            GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
-            GameScreen::Journal => ScreenLayout::journal(self.journal_unit).controls_at(bounds),
-            _ => screen_controls(kind, bounds),
-        };
-        let (words, border) = match kind {
+    /// The words and border a screen's form is built with.
+    fn screen_words(&self, kind: GameScreen) -> (gui_paint::FormWords, i32) {
+        match kind {
             GameScreen::Inventory => (
                 gui_paint::FormWords {
                     style: gui_paint::SCREEN_STYLE,
@@ -952,9 +947,141 @@ impl GameScreens {
             GameScreen::Journal => (gui_paint::JOURNAL_WORDS, gui_paint::FORM_SPACING),
             GameScreen::Container => (gui_paint::CONTAINER_WORDS, POPUP_BORDER),
             _ => (gui_paint::LOOT_WORDS, gui_paint::FORM_SPACING),
-        };
+        }
+    }
+
+    /// A screen's records at `bounds`, at the unit its layout keeps.
+    fn screen_records(&self, kind: GameScreen, bounds: GuiRect) -> Vec<Control> {
+        match kind {
+            GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
+            GameScreen::Journal => ScreenLayout::journal(self.journal_unit).controls_at(bounds),
+            _ => screen_controls(kind, bounds),
+        }
+    }
+
+    /// The GUI's rescale walk over the open screens (the level switch's
+    /// pass over the root's children, each form scaled from its old unit to
+    /// `unit`): a screen at another unit takes its place scaled as a free
+    /// form's (`v / old · unit`), its layout's size, client and records at
+    /// the new unit, and its item panels run their class's rescale
+    /// ([`Container::rescale`]: each entry's place `round(unit · place /
+    /// old)`). The journal's text box is laid out again. Container popups
+    /// keep the unit they opened at (their size follows their container's
+    /// record). Returns how many screens were rescaled.
+    pub fn rescale_open(&mut self, unit: i32) -> usize {
+        let unit = unit.max(1);
+        let mut count = 0;
+        for screen in self.open.clone() {
+            if matches!(
+                screen.kind,
+                GameScreen::Container | GameScreen::TechniqueSelector
+            ) {
+                continue;
+            }
+            let Some((old, bounds)) = self
+                .task
+                .form(screen.form)
+                .and_then(|f| f.base())
+                .map(|f| (f.unit, f.bounds))
+            else {
+                continue;
+            };
+            if old == unit || old <= 0 {
+                continue;
+            }
+            let scale = |v: i32| v / old * unit;
+            let size = match screen.kind {
+                GameScreen::Inventory => {
+                    self.inventory_unit = unit;
+                    self.pack.rescale(old, unit);
+                    self.pack.unit = unit;
+                    self.pack.icon_size = exa_items::icon_cache::icon_size(unit);
+                    let layout = self.inventory_layout();
+                    self.pack.client = (layout.pack.width(), layout.pack.height());
+                    layout.size
+                }
+                GameScreen::Journal => {
+                    self.journal_unit = unit;
+                    ScreenLayout::journal(unit).size
+                }
+                _ => {
+                    if let Some(window) = self.loot.iter_mut().find(|w| w.form == screen.form) {
+                        for panel in [&mut window.pack, &mut window.worn] {
+                            panel.rescale(old, unit);
+                            panel.unit = unit;
+                            panel.icon_size = exa_items::icon_cache::icon_size(unit);
+                        }
+                    }
+                    ScreenLayout::loot(unit).size
+                }
+            };
+            let bounds = GuiRect::new(scale(bounds.left), scale(bounds.top), size.0, size.1);
+            let (words, border) = self.screen_words(screen.kind);
+            let committed = gui_paint::commit_words(words.style, words.attributes, true);
+            let client = exa_ui::line_skin::line_client(
+                bounds.width(),
+                bounds.height(),
+                border,
+                committed.style,
+                committed.attributes,
+                unit,
+            );
+            let records = self.screen_records(screen.kind, bounds);
+            if let Some(form) = self.task.form_mut(screen.form).and_then(|f| f.base_mut()) {
+                form.bounds = bounds;
+                form.in_owner = (bounds.left, bounds.top);
+                form.unit = unit;
+                form.client = client;
+                form.records = records;
+                form.hover = 0;
+                form.held = 0;
+                form.over = false;
+                form.repeat_at = None;
+            }
+            if screen.kind == GameScreen::Journal {
+                if let Some(text_box) = self.journal_box.take() {
+                    self.task.close_form(text_box.form);
+                }
+                self.open_journal_box(screen.form);
+                self.journal_selected();
+            }
+            count += 1;
+        }
+        count
+    }
+
+    fn push(&mut self, kind: GameScreen, bounds: GuiRect, unit: i32) -> FormId {
+        let root = self.task.root;
+        let (words, border) = self.screen_words(kind);
         let unit = unit.max(1);
         let committed = gui_paint::commit_words(words.style, words.attributes, true);
+        // The base form's show: a window with a parent is raised in it, and
+        // a centring style re-centres it in the parent's client after the
+        // layout (no game screen's style centres in 0.9.5: their places
+        // come from their openers).
+        let plan = exa_ui::form::show_plan(exa_ui::form::ShowInput {
+            has_parent: root.is_some(),
+            raise: true,
+            y_unset: bounds.top == UNPLACED,
+            style: words.style,
+            adopt_title: false,
+            parent_not_root: false,
+            unit,
+        });
+        let bounds = if plan.recentre_x || plan.recentre_y {
+            let (x, y) = exa_ui::form::show_place(
+                bounds.left,
+                bounds.top,
+                bounds.width(),
+                bounds.height(),
+                words.style,
+                self.root_client(),
+            );
+            GuiRect::new(x, y, bounds.width(), bounds.height())
+        } else {
+            bounds
+        };
+        let controls = self.screen_records(kind, bounds);
         let client = exa_ui::line_skin::line_client(
             bounds.width(),
             bounds.height(),
@@ -971,9 +1098,14 @@ impl GameScreens {
         );
         form.parent = root;
         form.records = controls;
+        form.tag = kind.tag().unwrap_or(0);
         let form = self.task.add(Box::new(form));
         self.open.push(OpenScreen { kind, form });
-        self.task.focus_set(Some(form), NO_CONTROL);
+        if plan.raise {
+            self.task.activate(form);
+        } else {
+            self.task.focus_set(Some(form), NO_CONTROL);
+        }
         form
     }
 
@@ -1285,7 +1417,9 @@ impl GameScreens {
             player_mode_ok: player_alive,
             open: open.is_some(),
             filling: false,
-            active: open.is_some() && self.focused() == Some(GameScreen::Inventory),
+            // The opener's test is the base form's: the window is its
+            // task's topmost child, whatever the pointer hovers.
+            active: open.is_some_and(|screen| self.task.is_active(screen.form)),
             toggle,
         });
         match (action, open) {
@@ -1320,7 +1454,7 @@ impl GameScreens {
                 );
             }
             (ScreenAction::Focused, Some(screen)) => {
-                self.task.focus_set(Some(screen.form), NO_CONTROL);
+                self.task.activate(screen.form);
             }
             (ScreenAction::Closed, _) => {
                 self.close(GameScreen::Inventory);
@@ -1344,12 +1478,18 @@ impl GameScreens {
         player_alive: bool,
         unit: i32,
     ) -> ScreenAction {
-        let open = self.find(GameScreen::Journal);
+        // The opener searches the task's children by the journal's tag (a
+        // hidden journal is not found) and closes it only when it is the
+        // topmost child.
+        let open = self
+            .task
+            .find_by_tag(exa_ui::game_gui::JOURNAL_SCREEN)
+            .and_then(|form| self.open.iter().copied().find(|s| s.form == form));
         let action = journal_screen(JournalInput {
             player_ready,
             player_mode_ok: player_alive,
             open: open.is_some(),
-            active: self.focused() == Some(GameScreen::Journal),
+            active: open.is_some_and(|screen| self.task.is_active(screen.form)),
         });
         match (action, open) {
             (ScreenAction::Opened, _) => {
@@ -1377,7 +1517,7 @@ impl GameScreens {
                 self.journal_selected();
             }
             (ScreenAction::Focused, Some(screen)) => {
-                self.task.focus_set(Some(screen.form), NO_CONTROL);
+                self.task.activate(screen.form);
             }
             (ScreenAction::Closed, _) => {
                 self.close(GameScreen::Journal);
@@ -1404,7 +1544,7 @@ impl GameScreens {
         match action {
             ScreenAction::Focused => {
                 if let Some(form) = existing {
-                    self.task.focus_set(Some(form), NO_CONTROL);
+                    self.task.activate(form);
                 }
             }
             ScreenAction::Opened => {
@@ -1593,18 +1733,12 @@ impl GameScreens {
             let b = form.bounds();
             (b.left, b.top)
         });
-        if let Some(form) = self.task.form_mut(screen.form) {
-            form.close(0);
-        }
-        self.task.delete_doomed();
+        // The base form's close: the window's child forms (the journal's
+        // text box) close with it and the window manager forgets them.
+        self.task.close_form(screen.form);
         match screen.kind {
             GameScreen::Journal => {
-                if let Some(text_box) = self.journal_box.take()
-                    && let Some(form) = self.task.form_mut(text_box.form)
-                {
-                    form.close(0);
-                    self.task.delete_doomed();
-                }
+                self.journal_box = None;
                 self.journal.store_text(&self.journal_text);
                 self.journal.place = place;
             }
@@ -1846,6 +1980,7 @@ impl Plugin for GameScreensPlugin {
                 Update,
                 (
                     sync_screen_size,
+                    rescale_open_screens,
                     register_level_items,
                     crate::container_fill::fill_level_containers,
                     show_script_inventory,
@@ -1877,6 +2012,8 @@ impl Plugin for GameScreensPlugin {
                 Update,
                 (close_on_right_release, close_changed_loot_windows).after(open_requested_screens),
             )
+            .add_message::<bevy::window::WindowFocused>()
+            .add_systems(Update, deactivate_on_focus_loss.before(screens_pointer))
             .add_message::<bevy::input::keyboard::KeyboardInput>()
             .add_systems(
                 Update,
@@ -1890,6 +2027,27 @@ impl Plugin for GameScreensPlugin {
                     .after(close_on_right_release)
                     .after(close_changed_loot_windows),
             );
+    }
+}
+
+/// The application's deactivation (the window procedure's focus loss): the
+/// window managers' focused forms deselect and the focus goes to their
+/// root, remembered for a later focus to no form
+/// ([`exa_ui::gui_core::GuiTask::deactivate`]). The in-game screens and the
+/// hub's windows hang from their own tasks in Exarust; each is told.
+pub fn deactivate_on_focus_loss(
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    screens: Option<ResMut<GameScreens>>,
+    hub: Option<ResMut<crate::hub_windows::HubWindows>>,
+) {
+    if !focus.read().any(|event| !event.focused) {
+        return;
+    }
+    if let Some(mut screens) = screens {
+        screens.task.deactivate();
+    }
+    if let Some(mut hub) = hub {
+        hub.task.deactivate();
     }
 }
 
@@ -2297,6 +2455,35 @@ fn sync_screen_size(
         );
         if size != screens.task.screen {
             screens.task.screen = size;
+        }
+    }
+}
+
+/// The GUI unit follows the window's height (the level switch); a change
+/// runs the rescale walk over the open screens
+/// ([`GameScreens::rescale_open`]).
+fn rescale_open_screens(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut screens: ResMut<GameScreens>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
+    let stale = screens.open.iter().any(|screen| {
+        !matches!(
+            screen.kind,
+            GameScreen::Container | GameScreen::TechniqueSelector
+        ) && screens
+            .task
+            .form(screen.form)
+            .and_then(|f| f.base())
+            .is_some_and(|f| f.unit != unit.max(1))
+    });
+    if stale {
+        let count = screens.rescale_open(unit);
+        if count > 0 {
+            info!("GUI: {count} open screens rescale to unit {unit}");
         }
     }
 }
@@ -4195,6 +4382,259 @@ mod tests {
         let screens = app.world().resource::<GameScreens>();
         assert_eq!(screens.pack.entries.len(), 1);
         assert_eq!(screens.pack.used, 3 + 5 + 7);
+    }
+
+    /// The openers' toggles read the draw order, not the hover focus: the
+    /// journal on top closes on its key even while the pointer focuses the
+    /// inventory under it; the inventory's key then raises it (the
+    /// activation), and only a second press closes it. The journal is
+    /// found by its tag on the task's children.
+    #[test]
+    fn the_toggles_close_the_topmost_window_and_raise_the_others() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions::default(),
+        ));
+        let ask = |app: &mut App, screen: GameScreen| {
+            app.world_mut()
+                .write_message(ScreenRequest::screen(screen, true, true));
+            app.update();
+        };
+        ask(&mut app, GameScreen::Inventory);
+        ask(&mut app, GameScreen::Journal);
+        let (inventory, journal) = {
+            let screens = app.world().resource::<GameScreens>();
+            let inventory = screens.find(GameScreen::Inventory).unwrap().form;
+            let journal = screens.find(GameScreen::Journal).unwrap().form;
+            assert_eq!(
+                screens.task.find_by_tag(exa_ui::game_gui::JOURNAL_SCREEN),
+                Some(journal)
+            );
+            assert!(screens.task.is_active(journal));
+            assert!(!screens.task.is_active(inventory));
+            (inventory, journal)
+        };
+        // The pointer's hover focuses the inventory under the journal.
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .task
+            .focus_set(Some(inventory), NO_CONTROL);
+        assert_eq!(
+            app.world().resource::<GameScreens>().focused(),
+            Some(GameScreen::Inventory)
+        );
+        // The inventory's key raises the inventory over the journal.
+        ask(&mut app, GameScreen::Inventory);
+        {
+            let screens = app.world().resource::<GameScreens>();
+            assert!(screens.is_open(GameScreen::Inventory));
+            assert!(screens.task.is_active(inventory));
+            assert_eq!(screens.task.draw_order().last(), Some(&inventory));
+        }
+        // The journal's key now raises the journal (it is not on top) ...
+        ask(&mut app, GameScreen::Journal);
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .task
+                .is_active(journal)
+        );
+        // ... and closes it once it is, whatever the hover focuses.
+        app.world_mut()
+            .resource_mut::<GameScreens>()
+            .task
+            .focus_set(Some(inventory), NO_CONTROL);
+        ask(&mut app, GameScreen::Journal);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(!screens.is_open(GameScreen::Journal));
+        assert!(screens.is_open(GameScreen::Inventory));
+        assert_eq!(
+            screens.task.find_by_tag(exa_ui::game_gui::JOURNAL_SCREEN),
+            None
+        );
+    }
+
+    /// Losing the system's focus moves the window manager's focus off the
+    /// journal's text box to the root (control -1), remembering the box; a
+    /// later focus to no form goes back to it.
+    #[test]
+    fn the_focus_loss_parks_the_focus_on_the_root_and_remembers_the_box() {
+        let mut app = App::new();
+        app.init_resource::<GameScreens>()
+            .add_message::<bevy::window::WindowFocused>()
+            .add_systems(Update, deactivate_on_focus_loss);
+        let window = app.world_mut().spawn_empty().id();
+        let text_box = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.open_journal(true, true);
+            let text_box = screens.journal_box.as_ref().unwrap().form;
+            screens.task.focus_set(Some(text_box), NO_CONTROL);
+            assert!(screens.journal_box_focused());
+            text_box
+        };
+        app.world_mut().write_message(bevy::window::WindowFocused {
+            window,
+            focused: true,
+        });
+        app.update();
+        assert!(app.world().resource::<GameScreens>().journal_box_focused());
+        app.world_mut().write_message(bevy::window::WindowFocused {
+            window,
+            focused: false,
+        });
+        app.update();
+        let mut screens = app.world_mut().resource_mut::<GameScreens>();
+        assert!(!screens.journal_box_focused());
+        assert_eq!(screens.task.active, screens.task.root);
+        assert_eq!(screens.task.active_control, -1);
+        assert_eq!(screens.task.remembered, Some((text_box, NO_CONTROL)));
+        screens.task.focus_form(None, 0);
+        assert!(screens.journal_box_focused());
+    }
+
+    /// The journal's key closes it through the base form's close: its text
+    /// box closes with it, and the window manager forgets both (the focus,
+    /// the pointer's target, the capture and the remembered focus no longer
+    /// name them); the focus falls to the window left.
+    #[test]
+    fn closing_the_journal_closes_its_text_box_and_clears_the_references() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions::default(),
+        ));
+        let ask = |app: &mut App, screen: GameScreen| {
+            app.world_mut()
+                .write_message(ScreenRequest::screen(screen, true, true));
+            app.update();
+        };
+        ask(&mut app, GameScreen::Inventory);
+        ask(&mut app, GameScreen::Journal);
+        let (inventory, journal, text_box) = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            let inventory = screens.find(GameScreen::Inventory).unwrap().form;
+            let journal = screens.find(GameScreen::Journal).unwrap().form;
+            let text_box = screens.journal_box.as_ref().unwrap().form;
+            screens.task.focus_set(Some(journal), NO_CONTROL);
+            screens.task.focus_set(Some(text_box), NO_CONTROL);
+            screens.task.pointer.target = Some(text_box);
+            screens.task.pointer.capture = Some(text_box);
+            assert_eq!(screens.task.remembered.map(|r| r.0), Some(journal));
+            (inventory, journal, text_box)
+        };
+        ask(&mut app, GameScreen::Journal);
+        let screens = app.world().resource::<GameScreens>();
+        assert!(!screens.is_open(GameScreen::Journal));
+        assert!(screens.task.form(journal).is_none());
+        assert!(screens.task.form(text_box).is_none());
+        assert!(screens.journal_box.is_none());
+        assert_eq!(screens.task.active, Some(inventory));
+        assert_eq!(screens.task.pointer.target, None);
+        assert_eq!(screens.task.pointer.capture, None);
+        assert!(
+            screens
+                .task
+                .remembered
+                .is_none_or(|(f, _)| f != journal && f != text_box)
+        );
+        assert_eq!(screens.task.draw_order().len(), 2);
+    }
+
+    /// A window grown past a height step changes the GUI unit, and the
+    /// rescale walk takes the open screens with it: the inventory's place
+    /// scales as a free form's, its size, client and records are its
+    /// layout's at the new unit and its pack's entries rescale; the
+    /// journal and its text box follow.
+    #[test]
+    fn a_unit_change_rescales_the_open_screens() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(
+                Update,
+                (
+                    sync_screen_size,
+                    rescale_open_screens,
+                    open_requested_screens,
+                )
+                    .chain(),
+            );
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions::default(),
+        ));
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1280, 720),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        for screen in [GameScreen::Inventory, GameScreen::Journal] {
+            app.world_mut()
+                .write_message(ScreenRequest::screen(screen, true, true));
+            app.update();
+        }
+        let inventory = {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            assert_eq!(screens.inventory_unit, 4);
+            screens.pack.entries.push(crate::item_container::Entry {
+                cell: crate::item_container::Cell::new(40, 10),
+                id: 0x30,
+                ..Default::default()
+            });
+            screens.find(GameScreen::Inventory).unwrap().form
+        };
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(1920, 1080);
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        assert_eq!(screens.inventory_unit, 6);
+        let layout = InventoryLayout::at(6);
+        let form = screens.task.form(inventory).and_then(|f| f.base()).unwrap();
+        assert_eq!(form.unit, 6);
+        assert_eq!(
+            form.bounds,
+            GuiRect::new(12, 12, layout.size.0, layout.size.1)
+        );
+        assert_eq!(form.records, layout.controls_at(form.bounds));
+        assert_eq!(
+            screens.pack.entries[0].cell,
+            crate::item_container::Cell::new(60, 15)
+        );
+        assert_eq!(screens.pack.unit, 6);
+        assert_eq!(screens.journal_unit, 6);
+        let text_box = screens.journal_box.as_ref().unwrap().form;
+        assert_eq!(
+            screens
+                .task
+                .form(text_box)
+                .and_then(|f| f.base())
+                .unwrap()
+                .unit,
+            6
+        );
+        // One text box: the old one closed with the walk.
+        assert_eq!(screens.task.draw_order().len(), 4);
     }
 
     #[test]
