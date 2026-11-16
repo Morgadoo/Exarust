@@ -715,12 +715,10 @@ fn power_down_devices(
 
 /// Strip a reconstructed player's live body: no hand or worn data, the
 /// underwear rule, and yellow and red health at the record's 0x7FFF share
-/// of the maximum. The original strips the character record (hands and worn
-/// list cleared, one empty action, health and stamina at 0x7FFF), runs the
-/// underwear rule on the cleared list, and leaves a dressed copy of the
-/// record as the corpse; Exarust has no record copy, so the corpse is left
-/// to the record owner. The emptied outfit and hand refit the live body
-/// (`exa_character::refit`): its garments and weapon come off.
+/// of the maximum. This is the device unit's own session end
+/// ([`end_sessions`]); the story's death runs the original's record strip
+/// instead ([`crate::left_behind::leave_behind`]: the dead body keeps a
+/// dressed copy, the player goes on with the stripped record).
 pub fn strip_body(commands: &mut Commands, entity: Entity, fighter: &mut exa_combat::Fighter) {
     let share = teleporters::stripped_share();
     fighter.health.yellow = fighter.health.max * share;
@@ -734,9 +732,9 @@ pub fn strip_body(commands: &mut Commands, entity: Entity, fighter: &mut exa_com
 /// The session end: the player's red health, the mode and the latch decide
 /// it. The first reconstruction after a scan strips the player: no hand or
 /// worn data, the underwear rule, and yellow and red health at the record's
-/// 0x7FFF share of the maximum. (The original also leaves the dressed
-/// copy of the record behind as the corpse; Exarust has no record copy
-/// yet.)
+/// 0x7FFF share of the maximum. (The story's death path leaves the dressed
+/// copy behind as the corpse, [`crate::left_behind`]; nothing sends this
+/// unit's [`EndSession`] in the running game.)
 fn end_sessions(
     mut ends: MessageReader<EndSession>,
     mut latch: ResMut<Latch>,

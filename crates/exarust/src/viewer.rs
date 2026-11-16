@@ -49,7 +49,9 @@ impl Plugin for ViewerPlugin {
             .add_systems(
                 Update,
                 (
-                    apply_level_change.after(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+                    apply_level_change
+                        .after(exa_world::level_lifecycle::LevelChangeSystems::Teardown)
+                        .after(exa_game::save_live::SaveLiveSystems::SavedSection),
                     continue_level.run_if(resource_exists::<PendingLevel>),
                     finish_collision.run_if(resource_exists::<PendingCollision>),
                     finish_dressing.run_if(resource_exists::<PendingDressing>),
@@ -595,6 +597,7 @@ fn apply_level_change(
     // The live world character database's records other than the
     // player's slot (the player is spawned on its own).
     let world_characters = world.as_mut().map(|w| w.others()).unwrap_or_default();
+    let from_save = section.is_some();
     let found = begin_level(
         &mut commands,
         &mut loader,
@@ -607,9 +610,10 @@ fn apply_level_change(
     // The save unit's transition flow around the change: which copy the
     // destination comes from, the spawn matrix and the abort when the
     // archive lacks the level. Kept for the save path's disable flag.
-    let transition = exa_game::level_transition::live_transition(
+    let transition = exa_game::level_transition::live_transition_from(
         &level,
         spawn,
+        from_save,
         found,
         travelling.map_or(0, |t| t.travellers.len()),
     );

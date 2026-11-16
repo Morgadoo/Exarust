@@ -32,6 +32,10 @@
 //! ([`crate::world_characters::LocalCharacters`]); each placement carries
 //! its live body ([`live_state`]: a new corpse's pose tree, a driven
 //! character's pose tree and motion state, an awake guardian's AI home).
+//! The player's body is left out (its spawn sets the exporter's owned mark),
+//! except the dead player's body once the story's respawn or exit cleared
+//! that mark ([`crate::left_behind`]): it is written as a dead character
+//! under its left-behind record.
 //! [Exarust's: the props, the doors' and levers' positions and the settings
 //! chunk's live words are the loaded section's; the living spawn does not
 //! restore a saved pose tree.]
@@ -597,7 +601,20 @@ pub struct LevelSaveScene<'w, 's> {
     /// The golem alarm the story's section carries in its settings chunk
     /// (the frame's copy).
     alarm: Option<Res<'w, crate::golem_alarm::GolemAlarm>>,
+    /// The dead player's body the flow left in the level, and the player
+    /// bodies' place, turn and parts ([`Self::left_character`]).
+    left: Option<Res<'w, crate::left_behind::LeftBody>>,
+    left_bodies: Query<'w, 's, LeftBodyParts, With<crate::player::PlayerBody>>,
 }
+
+/// A player body's place, locomotion turn and parts, for the left body's
+/// placement.
+type LeftBodyParts = (
+    Entity,
+    &'static GlobalTransform,
+    Option<&'static exa_physics::body::locomotion::Locomotor>,
+    Option<&'static exa_physics::body::Ragdoll>,
+);
 
 /// A scene character's body and record, for the save's target names.
 type SceneRecord = (Entity, &'static exa_character::record::CharacterData);
@@ -625,6 +642,44 @@ type SceneCharacter = (
 );
 
 impl LevelSaveScene<'_, '_> {
+    /// The flow's record of the dead player's body, if any.
+    pub fn left(&self) -> Option<&crate::left_behind::LeftBody> {
+        self.left.as_deref()
+    }
+
+    /// The dead player's body as one of the scene's characters, once its
+    /// owned mark is cleared ([`crate::left_behind`]): record `id`, the
+    /// body's place, its locomotion's heading, `dead`, and its live pose
+    /// tree. `None` while the mark stands or without the body.
+    pub fn left_character(&self, id: u32, dead: bool) -> Option<LiveCharacter> {
+        let left = self.left.as_deref().filter(|left| left.exported)?;
+        let (_, transform, locomotor, ragdoll) = self
+            .left_bodies
+            .iter()
+            .find(|(entity, ..)| left.writes(*entity))?;
+        let yaw = locomotor.map_or_else(
+            || transform.rotation().to_euler(EulerRot::YXZ).0,
+            |locomotor| locomotor.yaw,
+        );
+        let pose = ragdoll.map(|body| {
+            let parts: Vec<_> = body
+                .parts
+                .iter()
+                .map(|part| (part.bone, part.parent, part.transform()))
+                .collect();
+            live_pose_tree(&parts)
+        });
+        Some(LiveCharacter {
+            id,
+            position: transform.translation().to_array(),
+            yaw,
+            dead,
+            pose,
+            motion: None,
+            ai_home: None,
+        })
+    }
+
     /// Each scene character's body id and record id
     /// ([`crate::power_save::record_ids`]).
     pub fn record_ids(&self) -> Vec<(crate::mind::casts::BodyId, u32)> {
