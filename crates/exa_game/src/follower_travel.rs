@@ -284,11 +284,19 @@ pub fn restore_arrivals(
             &exa_character::record::CharacterData,
             &mut exa_combat::Fighter,
             Option<&mut exa_combat::StateFlags>,
+            Option<&mut exa_ai::brain::Npc>,
         ),
         With<ArrivedFollower>,
     >,
 ) {
-    for (entity, data, mut fighter, flags) in &mut arrived {
+    for (entity, data, mut fighter, flags, brain) in &mut arrived {
+        // The arrival restarts the follower's idle activity (its search
+        // stands again at the world origin with nothing picked).
+        if let Some(mut brain) = brain
+            && brain.restart_idle_activity()
+        {
+            info!("Migration: {} restarts its idle activity", data.record.name);
+        }
         let mut state = flags.as_deref().copied().unwrap_or_default();
         let mut focus = crate::save_live::record_focus(&data.record);
         crate::save_live::restore_body_health(&data.record, &mut fighter, &mut state, &mut focus);
@@ -326,6 +334,40 @@ mod tests {
         // The heading is the one PlayerPlacement reads back.
         let rows = spawn_frame(Some(0.7));
         assert!((rows[2][0].atan2(rows[0][0]) - 0.7).abs() < 1e-6);
+    }
+
+    /// An arrived follower's idle activity restarts: its search stands at
+    /// the world origin with nothing picked, and the arrival mark goes.
+    #[test]
+    fn an_arrival_restarts_the_followers_idle_activity() {
+        let mut app = App::new();
+        app.add_systems(Update, restore_arrivals);
+        let mut brain = exa_ai::brain::Npc::new([0.0; 4]);
+        let mut search = exa_ai::search::Search::new();
+        search.origin = Vec3::new(3.0, 0.0, 4.0);
+        search.state = exa_ai::search::State::Pick;
+        search.candidates = vec![2, 5];
+        search.picked = 1;
+        brain.search = Some(search);
+        let follower = app
+            .world_mut()
+            .spawn((
+                exa_character::record::CharacterData::of_record(
+                    exa_formats::characters::CharacterRecord::new(),
+                ),
+                exa_combat::Fighter::default(),
+                brain,
+                ArrivedFollower,
+            ))
+            .id();
+        app.update();
+        let brain = app.world().get::<exa_ai::brain::Npc>(follower).unwrap();
+        let search = brain.search.as_ref().unwrap();
+        assert_eq!(search.origin, Vec3::ZERO);
+        assert_eq!(search.state, exa_ai::search::State::Stand);
+        assert!(search.candidates.is_empty());
+        assert_eq!(search.picked, 0);
+        assert!(app.world().get::<ArrivedFollower>(follower).is_none());
     }
 
     #[test]
