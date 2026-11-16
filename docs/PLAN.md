@@ -1603,6 +1603,8 @@ the fires' particle systems are simulation objects as the original's sector obje
 
 the GI manager's shape list is cleared at the level teardown and its dirty-marking slot is proven unreachable; the voxel lights and shapes are blended one pass at a time in the manager's order over their whole boxes, the meshes splat in centimetres through their frames, the terrain columns read the tile's vertex grid, and moving meshes are boxed by their node bounds; pictures on exanima01 and an outdoor arena on the build worker's GPU are unchanged within noise and FPS holds. Left: the terrain-record block layout, the light-texture hand-off, the per-block live gather, the warm-up and camera-first build adaptations, the sky's depth map.
 
+the bug class behind F547 is now a test failure: a test builds the game's own App headless with the lockstep bridge and fails on any system either world skips for a missing resource or message (none on the current code; it catches the vanish-turn regression when reintroduced). F549 fixed: the Shock read the cast clip's length where the original reads the step length, so its burst fired on the second tick; it now charges about 1.2 s and its burst is aimed at the target (the earlier jolts were the duellist's sword). F551 fixed: a dead manager back in the hub ends the session through the player's death and the end menu, as the original's hub hook does. F552 opened (a checked subtraction in the GI shape draw).
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
