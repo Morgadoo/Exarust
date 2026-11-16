@@ -35,6 +35,15 @@ pub mod voices;
 
 use bevy::prelude::*;
 
+/// The bodies' impact class, in the fixed step before the behaviour.
+#[derive(bevy::ecs::schedule::SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImpactClassSystems;
+
+/// The bodies' impact and scrape sounds, in the fixed step after the
+/// solver.
+#[derive(bevy::ecs::schedule::SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BodySoundSystems;
+
 pub use ambience::{
     AmbienceArea, ArenaAmbience, LevelAmbience, LevelAmbienceBed, ambience_for_level,
     arena_ambience, bed_name, set_prefix,
@@ -124,8 +133,15 @@ impl Plugin for AudioPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    bodies::impact_class.before(exa_physics::body::BodySystems),
-                    bodies::body_sounds.after(exa_physics::body::BodySystems),
+                    // Before the behaviour, after the stance, as the bodies'
+                    // impact class reads them first in the tick.
+                    bodies::impact_class
+                        .in_set(ImpactClassSystems)
+                        .after(exa_combat::stance::StanceTick)
+                        .before(exa_physics::body::TickBehaviour),
+                    bodies::body_sounds
+                        .in_set(BodySoundSystems)
+                        .in_set(exa_physics::body::AfterSolver::Sounds),
                 ),
             );
         exa_physics::sim_app::add_frame_commands(app);

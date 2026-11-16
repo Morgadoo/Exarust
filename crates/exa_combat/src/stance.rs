@@ -108,7 +108,10 @@ impl Plugin for StancePlugin {
         // The body tick's part: before each living body's clip advances.
         app.add_systems(
             FixedUpdate,
-            take_stance.in_set(StanceTick).before(CharacterTicks),
+            take_stance
+                .in_set(StanceTick)
+                .before(exa_physics::body::TickBehaviour)
+                .before(CharacterTicks),
         );
     }
 }

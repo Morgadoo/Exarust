@@ -709,12 +709,22 @@ impl Plugin for EquipPlugin {
             .add_systems(Update, forget_loose_hands.before(refresh_encumbrance))
             .add_systems(
                 FixedUpdate,
-                apply_head_height.before(exa_physics::grip_solve::GripSolveSet::Build),
+                // After the bodies' impact class, before the shoves and the
+                // behaviour: the first writes of the tick to the bodies.
+                apply_head_height
+                    .after(exa_audio::ImpactClassSystems)
+                    .before(exa_physics::body::deal_shoves)
+                    .before(exa_physics::body::TickBehaviour)
+                    .before(exa_physics::grip_solve::GripSolveSet::Build),
             )
             .add_systems(
                 FixedUpdate,
                 crate::item_effects::run_worn_effects
                     .after(exa_combat::regen::HealthTick)
+                    .after(exa_physics::grip_solve::GripSolveSet::Build)
+                    .after(exa_character::grip_runtime::release_collapsed)
+                    .after(crate::thaum::hold_live::grab_thrown)
+                    .after(crate::destination::tick_journeys)
                     .before(exa_physics::body::CharacterTicks),
             );
     }

@@ -454,18 +454,27 @@ impl Plugin for GripRuntimePlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    flip_requests,
+                    flip_requests
+                        .after(refresh_holds)
+                        .before(exa_physics::body::MechanismRegistration),
                     // The modes the character tick wrote (its motion starts
-                    // and locomotion) apply before the bodies step.
+                    // and locomotion) apply before the bodies step: the
+                    // contacts' scale, the flame staging, then the modes.
                     animate_grips
                         .after(exa_physics::body::CharacterTicks)
+                        .after(scale_held_contacts)
+                        .after(exa_world::flame::stage_flames)
                         .before(exa_physics::body::BodySystems),
                     scale_held_contacts
                         .after(exa_physics::body::CharacterTicks)
+                        .before(exa_world::flame::stage_flames)
                         .before(exa_physics::body::BodySystems),
-                    refresh_holds,
+                    refresh_holds
+                        .after(resolve_pending_grips)
+                        .before(exa_physics::body::MechanismRegistration),
                 )
                     .after(TickBehaviour)
+                    .after(crate::body_words::drop_collapsed_hands)
                     .before(GripSolveSet::Sync),
             )
             .add_systems(
@@ -478,6 +487,7 @@ impl Plugin for GripRuntimePlugin {
                 (resolve_pending_grips, release_collapsed)
                     .chain()
                     .after(TickBehaviour)
+                    .after(crate::body_words::drop_collapsed_hands)
                     .before(GripSolveSet::Build),
             );
     }

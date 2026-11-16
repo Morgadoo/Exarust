@@ -276,6 +276,11 @@ impl Plugin for BodyWordsPlugin {
             )
                 .chain()
                 .after(exa_physics::body::TickBehaviour)
+                .after(exa_combat::impact::sync_fist_striking)
+                .before(exa_physics::body::MechanismRegistration)
+                .before(exa_physics::body::BodyPreStep)
+                .before(exa_physics::grip_solve::GripSolveSet::Build)
+                .before(exa_combat::regen::HealthTick)
                 .before(exa_physics::grip_solve::GripSolveSet::Sync),
         )
         .add_systems(
@@ -288,6 +293,8 @@ impl Plugin for BodyWordsPlugin {
             FixedUpdate,
             ungroup_dead_hands
                 .after(exa_physics::body::CharacterTicks)
+                .after(crate::grip_runtime::animate_grips)
+                .after(exa_world::flame::stage_flames)
                 .before(exa_physics::body::BodySystems),
         );
     }

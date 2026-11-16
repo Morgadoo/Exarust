@@ -17,7 +17,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use exa_anim::Animator;
 use exa_physics::body::inspect::{JointAngles, JointReport, LinkReport};
-use exa_physics::body::{BodySystems, BodyTicks, DealtShoves, Ragdoll, Sleep};
+use exa_physics::body::{BodyTicks, DealtShoves, Ragdoll, Sleep};
 use exa_physics::prop::PropBody;
 
 use crate::player::PlayerBody;
@@ -184,8 +184,12 @@ impl Plugin for JointTracePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
+            // The joints after the physics' follow-up, before the level
+            // impacts' damage.
             trace_joints
-                .after(BodySystems)
+                .after(exa_physics::body::AfterSolver::Physics)
+                .after(crate::sim_control::scripted_pause)
+                .before(exa_combat::impact::level_impacts)
                 .run_if(resource_exists::<JointTrace>),
         );
     }

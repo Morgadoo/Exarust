@@ -148,6 +148,7 @@ impl Plugin for MapPanelPlugin {
                 PreUpdate,
                 keep_mouse
                     .after(UiSystems::Focus)
+                    .before(crate::viewer::press_keys)
                     .run_if(|panel: Res<MapPanel>| panel.open),
             )
             .add_systems(
