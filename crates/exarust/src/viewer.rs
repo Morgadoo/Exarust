@@ -1303,7 +1303,13 @@ fn place_at_portal(
         ),
     }
     if let Some(placement) = placement {
+        // The original puts the pelvis at the portal's frame 15 cm up (or
+        // the respawn's identity frame there): the frame's height is the
+        // pelvis's own, with no floor probe.
         commands.insert_resource(exa_game::level_change::PlayerPlacement::of_flow(&placement));
+        commands.insert_resource(exa_game::level_change::PlacedFrame(
+            exa_game::limp::FrameHeight::Given,
+        ));
     }
 }
 
@@ -2568,9 +2574,10 @@ fn apply_player_placement(
     frame_physics: Res<exa_physics::collision_share::FramePhysics>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     (arrival, level_pending): (Option<Res<ArrivalPlacement>>, Option<Res<PendingLevel>>),
-    (collision_pending, settle): (
+    (collision_pending, settle, frame): (
         Option<Res<PendingCollision>>,
         Option<Res<exa_game::level_change::PlacedSettle>>,
+        Option<Res<exa_game::level_change::PlacedFrame>>,
     ),
     mut players: Query<(Entity, &mut Transform), With<exa_game::player::Player>>,
     mut bodies: Query<
@@ -2620,12 +2627,26 @@ fn apply_player_placement(
             ),
         }
     }
-    let at = exa_game::save_level::landing_feet(position, |from, dir, reach| {
-        frame_physics.0.line_cast(from, dir, reach)
-    });
-    info!(
-        "level placement: the player placed at {position} stands at {at} (the line cast's floor)"
-    );
+    // A caller that wrote its frame's height puts the pelvis by its rule
+    // at the frame; any other placement lands on the floor the save
+    // landing probes, the pelvis at the pose's target over it.
+    let (at, height) = match frame.as_deref() {
+        Some(&exa_game::level_change::PlacedFrame(height)) => {
+            info!(
+                "level placement: the player placed at {position} by its frame ({height:?}); no floor probe"
+            );
+            (position, height)
+        }
+        None => {
+            let at = exa_game::save_level::landing_feet(position, |from, dir, reach| {
+                frame_physics.0.line_cast(from, dir, reach)
+            });
+            info!(
+                "level placement: the player placed at {position} stands at {at} (the line cast's floor)"
+            );
+            (at, exa_game::limp::FrameHeight::Target(0.0))
+        }
+    };
     let mut by = Vec3::ZERO;
     for (_, mut transform) in &mut players {
         by = at - transform.translation;
@@ -2636,10 +2657,14 @@ fn apply_player_placement(
     }
     // The story respawn's settling goes with its placement.
     let settle = settle.map_or(0, |settle| settle.0);
-    fixed.run(place_player_in_step, (at, by, placement.yaw, settle));
+    fixed.run(
+        place_player_in_step,
+        (at, by, placement.yaw, settle, height),
+    );
     commands.insert_resource(PlacedTrace(1200));
     commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
     commands.remove_resource::<exa_game::level_change::PlacedSettle>();
+    commands.remove_resource::<exa_game::level_change::PlacedFrame>();
     commands.remove_resource::<ArrivalPlacement>();
 }
 
@@ -2681,15 +2706,17 @@ fn trace_placed_player(
 /// `at` (`by` is its offset as the frame saw it, for the log), its body
 /// turns to `yaw`, and the body is put living there
 /// ([`exa_game::limp::LivingPlacement`], run later in the same step): its
-/// current clip sampled afresh and the pelvis put at the pose's pelvis
-/// target over the feet, as the original's save landing frames it [the
-/// original's target word there is 108.18 − 11.1 × the body's extent; the
-/// pose's own target stands in for it], then its held items re-placed
-/// unless it settles. A `settle` over zero gives the body the settling
-/// state for that many ticks (the story respawn's, after its placement).
+/// current clip sampled afresh and the pelvis put by `height` over `at`.
+/// The save landing frames it at the pose's pelvis target over the probed
+/// feet [the original's target word there is 108.18 − 11.1 × the body's
+/// extent; the pose's own target stands in for it]; the practice fights
+/// and the respawn at its portal write their own frame heights. Its held
+/// items are re-placed unless it settles. A `settle` over zero gives the
+/// body the settling state for that many ticks (the story respawn's, after
+/// its placement).
 #[allow(clippy::type_complexity)]
 fn place_player_in_step(
-    In((at, by, yaw, settle)): In<(Vec3, Vec3, f32, i32)>,
+    In((at, by, yaw, settle, height)): In<(Vec3, Vec3, f32, i32, exa_game::limp::FrameHeight)>,
     mut roots: Query<
         (&mut Transform, Option<&mut exa_physics::CharacterBody>),
         (
@@ -2739,21 +2766,17 @@ fn place_player_in_step(
     };
     for (entity, mut transform, mut ragdoll) in &mut bodies {
         transform.rotation = Quat::from_rotation_y(yaw);
-        // The original's save landing puts the living body at its frame:
-        // the clip sampled afresh, the pelvis at the pose's pelvis target
-        // over the feet the probe found, facing the placement's yaw, its
-        // held items put back in its hands (not after the story respawn's
-        // settling placement, which the original does not re-place).
+        // The original puts the living body at its frame: the clip
+        // sampled afresh, the pelvis by the frame's height rule, facing the
+        // placement's yaw, its held items put back in its hands (not after
+        // the story respawn's settling placement, which the original does
+        // not re-place).
         if let Some(ragdoll) = ragdoll.as_ref() {
             info!(
                 "level placement: the body's lowest part at {:.2} m is put living at the placement (root was {was:?} in the simulation)",
                 lowest(ragdoll)
             );
-            let mut placement = exa_game::limp::LivingPlacement::at(
-                at,
-                yaw,
-                exa_game::limp::FrameHeight::Target(0.0),
-            );
+            let mut placement = exa_game::limp::LivingPlacement::at(at, yaw, height);
             placement.replace_held = settle == 0;
             commands.entity(entity).insert(placement);
         }
@@ -4919,7 +4942,11 @@ mod kinesis_pick_tests {
 mod placement_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+    use exa_game::limp::FrameHeight;
     use exa_physics::body::{PLACED_SETTLE, Ragdoll};
+
+    /// The save landing's frame height.
+    const LANDING: FrameHeight = FrameHeight::Target(0.0);
 
     /// The step's placement gives the player's body the settling it was
     /// asked for (the story respawn's 16) and leaves it alone when none
@@ -4936,11 +4963,14 @@ mod placement_tests {
             ))
             .id();
         world
-            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::ZERO, 0.0, 0))
+            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::ZERO, 0.0, 0, LANDING))
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 0);
         world
-            .run_system_once_with(place_player_in_step, (Vec3::X, Vec3::X, 0.5, PLACED_SETTLE))
+            .run_system_once_with(
+                place_player_in_step,
+                (Vec3::X, Vec3::X, 0.5, PLACED_SETTLE, FrameHeight::Given),
+            )
             .unwrap();
         assert_eq!(world.get::<Ragdoll>(body).unwrap().settling(), 16);
     }
@@ -4962,20 +4992,33 @@ mod placement_tests {
             .id();
         let at = Vec3::new(3.0, 0.4, -2.0);
         world
-            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, 0))
+            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, 0, LANDING))
             .unwrap();
         let asked = *world
             .get::<exa_game::limp::LivingPlacement>(body)
             .expect("the body is placed");
-        assert_eq!(
-            asked,
-            exa_game::limp::LivingPlacement::at(at, 0.7, exa_game::limp::FrameHeight::Target(0.0))
-        );
+        assert_eq!(asked, exa_game::limp::LivingPlacement::at(at, 0.7, LANDING));
         assert!(asked.replace_held);
+        // The respawn's placement at its portal: the frame's height is the
+        // pelvis's, with no re-place after its settling.
         world
-            .run_system_once_with(place_player_in_step, (at, Vec3::ZERO, 0.7, PLACED_SETTLE))
+            .run_system_once_with(
+                place_player_in_step,
+                (at, Vec3::ZERO, 0.7, PLACED_SETTLE, FrameHeight::Given),
+            )
             .unwrap();
         let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
         assert!(!asked.replace_held);
+        assert_eq!(asked.height, FrameHeight::Given);
+        // A practice fight's: the stand height over the origin.
+        world
+            .run_system_once_with(
+                place_player_in_step,
+                (at.with_y(0.0), Vec3::ZERO, 0.7, 0, FrameHeight::Stand),
+            )
+            .unwrap();
+        let asked = world.get::<exa_game::limp::LivingPlacement>(body).unwrap();
+        assert_eq!(asked.height, FrameHeight::Stand);
+        assert_eq!(asked.frame.translation.y, 0.0);
     }
 }

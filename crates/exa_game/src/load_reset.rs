@@ -8,10 +8,12 @@
 //! the panels giving their icons back); the crystal drain forgets its
 //! sources, which the next level's collect pass files again
 //! ([`crate::crystal_drain`]); the item icon cache and its atlas are
-//! emptied ([`crate::item_panel_draw::PanelIcons::clear`]). Exarust runs it
+//! emptied ([`crate::item_panel_draw::PanelIcons::clear`]); the story's
+//! first wake-up stops being watched (the game-main flag byte the original
+//! clears last, [`crate::flow::Wake::animating`]: a new story sets it again
+//! once its level is in, [`crate::flow::Step::FirstWake`]). Exarust runs it
 //! when a level change is asked for ([`LevelChangeRequest`]), every scene
-//! load's way in. The game-main flag byte the original clears last has no
-//! Exarust counterpart (logged).
+//! load's way in.
 //!
 //! Evidence: the save unit's GUI reset and its four callees, read from the
 //! instructions of `Exanima.exe`.
@@ -63,10 +65,14 @@ pub fn apply_game_gui_reset(world: &mut World, reset: GameGuiReset) {
             info!("load reset: the item icon cache is cleared ({held} icon(s) dropped)");
         }
     }
-    debug!(
-        "load reset: the game-main flag byte ({}) has no Exarust counterpart",
-        reset.word
-    );
+    // The byte is the story's first-wake animating flag; the reset writes
+    // its word.
+    if let Some(mut flow) = world.get_resource_mut::<crate::flow::Flow>()
+        && flow.story.wake.animating != (reset.word != 0)
+    {
+        flow.story.wake.animating = reset.word != 0;
+        info!("load reset: the first wake-up is no longer watched");
+    }
 }
 
 /// A scene load's way in: each level change asked for runs the reset once.

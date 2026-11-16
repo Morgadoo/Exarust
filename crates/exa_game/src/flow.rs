@@ -117,6 +117,10 @@ pub const PRACTICE_ROLE: u32 = 0x10;
 /// The motion a practice start and each next fight asks the player for.
 pub const PRACTICE_MOTION: u32 = 3;
 
+/// How far over the pose's pelvis target the practice start puts the
+/// pelvis (cm), over the origin.
+pub const PRACTICE_START_LIFT_CM: f32 = 5.0;
+
 /// The victory screen's menu number.
 pub const MENU_WON: u32 = 2;
 /// The next-fight screen's menu number.
@@ -733,14 +737,6 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
     }
 }
 
-/// The practice start's spawn height: the player body's smoothed standing
-/// height plus 5 cm. (The next fight computes the same plus 5, or 13 in
-/// combat mode, then overwrites it with the body's measured stand height
-/// before it places the body: [`Flow::stand_height`].)
-pub fn practice_height(standing: f32) -> f32 {
-    standing + 5.0
-}
-
 /// One row of the end-of-session menu.
 pub type EndRow = &'static str;
 
@@ -1295,6 +1291,15 @@ pub enum Step {
     },
     /// Tick the dialogue engine.
     Dialogue,
+    /// End every conversation: live ones end with their topic recorded,
+    /// all are released, a pending narration is dropped and the reply
+    /// panel closes (the session leave's and the story exit's,
+    /// [`exa_script::EndAllConversations`]).
+    EndDialogues,
+    /// The first wake-up's animation starts being watched: the new story's
+    /// unknown background sets it once its level is in, after the load's
+    /// GUI reset cleared it ([`crate::load_reset`]).
+    FirstWake,
     /// Run the discovery system's pass (every story frame; its conversions
     /// keep their own clocks).
     Discovery,
@@ -1308,11 +1313,16 @@ pub enum Step {
         /// Put the level's objects in a fresh world first.
         teardown: bool,
     },
-    /// Filter the loaded level's nodes: a container's children and the
-    /// player's own objects go (the practice scene filter).
-    PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
+    /// Where the next [`Step::PlacePlayer`] puts the pelvis: the frame
+    /// height its caller writes before the living placement
+    /// ([`crate::limp::FrameHeight`]). The practice start writes the pose's
+    /// pelvis target plus 5 cm over the origin, each next fight its stand
+    /// height over the origin; with no such step a placement lands on the
+    /// floor the save landing probes. Taken with the placement
+    /// ([`crate::level_change::PlacedFrame`]).
+    PlacedFrame(crate::limp::FrameHeight),
     /// Place the player at the respawn portal the loaded level names: the
     /// load takes the session-start arrival word, so its reconstruction
     /// device (or a transition marker naming the same words) is the
@@ -1971,8 +1981,10 @@ pub struct Flow {
     /// The fifth level's respawn portal, as the host found it when the level
     /// loaded.
     pub respawn_portal: Option<Placement>,
-    /// The player body's measured stand height (its root over its lowest
-    /// contact), which the next practice fight places the body at.
+    /// The player body's measured stand height (cm) the practice start's
+    /// caller hands it. The practice placements take the fresh pose's own
+    /// heights instead, as the original reads them from the body as it
+    /// places it ([`Step::PlacedFrame`]), so the flow does not read it.
     pub stand_height: f32,
 }
 
@@ -2184,8 +2196,9 @@ impl Flow {
         let wake_start = now.wrapping_add(WAKE_LEAD_MS);
         let motion = match background {
             Background::Unknown => {
+                // The animating flag is set once the level is in
+                // ([`Step::FirstWake`]): the load's GUI reset clears it.
                 self.story.wake = Wake {
-                    animating: true,
                     start_ms: wake_start,
                     ..Default::default()
                 };
@@ -2233,6 +2246,12 @@ impl Flow {
         ];
         if let Some(light) = start.light {
             steps.push(Step::StoryLight(light));
+        }
+        // After the light the original clears the three wake flags and, for
+        // the unknown background, sets the animating one: after its load,
+        // whose GUI reset clears that flag.
+        if background == Background::Unknown {
+            steps.push(Step::FirstWake);
         }
         steps.push(Step::RequestAction(motion));
         if let Some(delay_ms) = start.knock_out_ms {
@@ -2290,13 +2309,15 @@ impl Flow {
             music: practice_music(ladder, self.alternative_music),
             view: PRACTICE_VIEW,
         };
+        // The table's frame with its vertical overwritten by the pose's
+        // pelvis target plus 5 cm: over the origin, so the frame's floor is
+        // 0 and the living placement adds the target the fresh pose gives
+        // ([`Step::PlacedFrame`]). The caller's `standing` is not read: the
+        // original reads the word from the body as it places it.
+        let _ = standing;
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(
-                PRACTICE_POINT.x,
-                practice_height(standing),
-                PRACTICE_POINT.z,
-            ),
+            position: Vec3::new(PRACTICE_POINT.x, 0.0, PRACTICE_POINT.z),
         };
         self.viewport = viewport;
         vec![
@@ -2308,7 +2329,9 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
-            Step::PracticeFilter,
+            // The arena is imported without a filter: the original passes
+            // its practice scene filter to the named level load, which never
+            // reads that argument.
             Step::PracticePlayer {
                 role: PRACTICE_ROLE,
             },
@@ -2323,6 +2346,7 @@ impl Flow {
             Step::Controls(true),
             Step::CombatMode(true),
             Step::RequestAction(PRACTICE_MOTION),
+            Step::PlacedFrame(crate::limp::FrameHeight::Target(PRACTICE_START_LIFT_CM)),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(PRACTICE_POINT, true, false, viewport)),
             Step::Music {
@@ -2761,9 +2785,14 @@ impl Flow {
         self.practice.start_ms = now;
         self.phase = Phase::Playing;
         self.hook = Hook::Practice;
+        // The table's frame with its vertical overwritten by the body's
+        // stand height once the fight's motion has started: over the
+        // origin, the living placement adds the fresh pose's stand height
+        // ([`Step::PlacedFrame`]). (The original first writes the pelvis
+        // target plus 5, or 13 with its combat byte, and overwrites it.)
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(PRACTICE_POINT.x, self.stand_height, PRACTICE_POINT.z),
+            position: Vec3::new(PRACTICE_POINT.x, 0.0, PRACTICE_POINT.z),
         };
         let mut steps = self.close_end_menu();
         steps.extend([
@@ -2771,12 +2800,11 @@ impl Flow {
             // original's next fight prepares the player's items into the
             // temporary database and then clears the live local tier.
             Step::PreparePlayerKit,
-            // The original clears the scene and imports the arena's stored
-            // level section again, through the same practice scene filter
-            // the first fight's load used (the save unit's combatant
-            // preparation). Exarust reloads the arena from the archive in
-            // process and runs the filter after it, the same as
-            // `start_practice`.
+            // The original clears the scene and imports the arena again
+            // (the save unit's combatant preparation). It passes the
+            // practice scene filter, which that reload never reads, so no
+            // node is filtered. Exarust reloads the arena from the archive
+            // in process.
             Step::LoadLevel {
                 locale: match self.practice.ladder {
                     Ladder::Novice => "arena",
@@ -2785,7 +2813,6 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
-            Step::PracticeFilter,
             // The next fight equips the player's prepared kit, with no
             // scene nodes, into the new arena's local tier before it places
             // the player. The behaviour reset then drops the stored target,
@@ -2806,6 +2833,7 @@ impl Flow {
             // body already in it restarts, with no blend from the pose it held.
             Step::Condition(0),
             Step::SnapAction(PRACTICE_MOTION),
+            Step::PlacedFrame(crate::limp::FrameHeight::Stand),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(
                 PRACTICE_POINT,
@@ -3059,7 +3087,8 @@ impl Flow {
             Step::ResetDeathFade,
             Step::GameGui(false),
             Step::Controls(false),
-            Step::Dialogue,
+            // Every conversation ends (the original's third call).
+            Step::EndDialogues,
         ];
         if self.story.reconstruction == STRIPPED {
             steps.push(Step::ClearStoryFlag);
@@ -3231,19 +3260,20 @@ impl Flow {
         steps
     }
 
-    /// Leaving a session: the hook and the frame task stop, the dialogue and
-    /// interface go, the prelude closes, the world is torn down and the
-    /// player pointers are cleared. A scripted mode's end hook is named.
+    /// Leaving a session: the hook and the frame task stop, the interface
+    /// goes, every conversation ends, the prelude closes, the world is torn
+    /// down and the player pointers are cleared. A scripted mode's end hook
+    /// is named.
     pub fn leave_session(&mut self) -> Vec<Step> {
-        // The original's leave resets the death fade third among its calls.
-        // [guess: which of its first two calls Exarust's session task and
-        // game view steps are is not traced]
+        // The original's leave sweeps the game screens, ends every
+        // conversation, then resets the death fade. [guess: the sweep is
+        // Exarust's game view step; the session task's place is not traced]
         let mut steps = vec![
             Step::Hook(Hook::None),
             Step::SessionTask(false),
             Step::GameGui(false),
+            Step::EndDialogues,
             Step::ResetDeathFade,
-            Step::Dialogue,
             Step::ClosePrelude,
         ];
         self.hook = Hook::None;
@@ -3480,40 +3510,6 @@ pub fn hover_sound(has_sound: bool, draw: f64) -> Option<f32> {
 /// gain).
 pub const HOVER_VOLUME: f32 = exa_ui::menu::MENU_SOUND_GAIN;
 
-/// Whether an object id is the player's own: its record's id, its second id
-/// or one of the ids in its record's item list. The practice scene filter
-/// removes such objects from a level loaded around the player, so the level
-/// does not hold a second copy of the player's things.
-fn players_own(id: u32, player_id: u32, second_id: u32, item_ids: &[u32]) -> bool {
-    id == player_id || id == second_id || item_ids.contains(&id)
-}
-
-/// The practice scene filter on a level's top node: a container node (item
-/// type 0x11) always stays and has its children filtered by
-/// [`child_stays`]; a node of the 0x4000 family is removed when its object
-/// is the player's own; every other node stays.
-pub fn node_stays(
-    item_type: u32,
-    id: u32,
-    item_ids: &[u32],
-    player_id: u32,
-    second_id: u32,
-) -> bool {
-    if item_type & 0xfff == 0x11 {
-        return true;
-    }
-    if item_type & 0x7000 == 0x4000 {
-        return !players_own(id, player_id, second_id, item_ids);
-    }
-    true
-}
-
-/// The practice scene filter on a container's child: a child without an
-/// object (id 0) stays; one whose object is the player's own is removed.
-pub fn child_stays(id: u32, item_ids: &[u32], player_id: u32, second_id: u32) -> bool {
-    id == 0 || !players_own(id, player_id, second_id, item_ids)
-}
-
 /// An exit trigger as the nudge reads it: its centre and bounding radius,
 /// its box's half extents and its turn (three rows; a local axis `i` is
 /// row `i`), and whether its object is an exit marker.
@@ -3648,6 +3644,10 @@ impl Plugin for FlowPlugin {
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::arena_hub_live::ArenaLeave>()
             .add_message::<crate::scene_bodies::SceneCommand>()
+            // The session leave's end of the conversations and the camera
+            // shots' pointer warp.
+            .add_message::<exa_script::EndAllConversations>()
+            .add_message::<crate::os_pointer::WarpPointer>()
             .init_resource::<exa_physics::sim_app::FixedCommands>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
@@ -4198,6 +4198,7 @@ fn apply_steps(
             matches!(
                 step,
                 Step::PlacePlayer(_)
+                    | Step::PlacedFrame(_)
                     | Step::PlaceAtPortal(_)
                     | Step::SettlePlayer(_)
                     | Step::ExitNudge
@@ -4311,6 +4312,48 @@ fn apply_steps(
             Step::SettlePlayer(ticks) => {
                 commands.insert_resource(crate::level_change::PlacedSettle(ticks));
             }
+            Step::PlacedFrame(height) => {
+                commands.insert_resource(crate::level_change::PlacedFrame(height));
+            }
+            Step::EndDialogues => {
+                // The dialogue engine runs in its own system: the end reaches
+                // it as a message, read before its next update.
+                commands.queue(|world: &mut World| {
+                    if let Some(mut ends) =
+                        world.get_resource_mut::<Messages<exa_script::EndAllConversations>>()
+                    {
+                        ends.write(exa_script::EndAllConversations);
+                    }
+                });
+            }
+            Step::FirstWake => {
+                commands.queue(|world: &mut World| {
+                    if let Some(mut flow) = world.get_resource_mut::<Flow>() {
+                        flow.story.wake.animating = true;
+                        info!("game flow: the first wake-up's animation is watched");
+                    }
+                });
+            }
+            Step::PracticePlayer { role } => {
+                // The practice start clears the player's roles and adds the
+                // practice role (with the parents it inherits) before the
+                // player is spawned; a player the level load spawned already
+                // holds it, a surviving one takes it here.
+                if let Some(book) = story.roles.as_deref() {
+                    for player in &mut players {
+                        match player.roles {
+                            Some(mut roles) => {
+                                *roles = exa_ai::roles::Roles::only(&book.book, role)
+                            }
+                            None => {
+                                commands
+                                    .entity(player.entity)
+                                    .insert(exa_ai::roles::Roles::only(&book.book, role));
+                            }
+                        }
+                    }
+                }
+            }
             Step::EndMenuUnselected(unselected) => {
                 if let Some(end) = end.as_mut() {
                     end.unselected = unselected;
@@ -4372,11 +4415,34 @@ fn apply_steps(
                 }
             }
             Step::Camera(frame) => {
+                // The shot ends with its cursor warp while the window has
+                // the focus (the original's gate is the window's active
+                // flag): the client point the shot framed, in physical
+                // pixels, posted with the warp hold.
+                let warp = frame.warp;
+                commands.queue(move |world: &mut World| {
+                    let mut windows =
+                        world.query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
+                    let Some(scale) = windows
+                        .iter(world)
+                        .find(|window| window.focused)
+                        .map(Window::scale_factor)
+                    else {
+                        return;
+                    };
+                    if let Some(mut warps) =
+                        world.get_resource_mut::<Messages<crate::os_pointer::WarpPointer>>()
+                    {
+                        let to = Vec2::new(warp.0 as f32, warp.1 as f32) / scale;
+                        warps.write(crate::os_pointer::WarpPointer(to));
+                        debug!("camera shot: the pointer is warped to {to}");
+                    }
+                });
                 // The shot places the chase camera as the original's
                 // placement does: the bearing of the eye from the target,
                 // and a fast shot's distance as the zoom. The view position
-                // and the cursor warp are not taken (the chase camera keeps
-                // its own distance and pitch rules).
+                // is not taken (the chase camera keeps its own distance and
+                // pitch rules).
                 for mut camera in &mut cameras {
                     camera.face_shot(frame.camera, frame.target, frame.distance);
                     info!(
@@ -5350,7 +5416,6 @@ mod tests {
             villager_light.rotation_degrees,
             Vec3::new(8.0, -150.0, 50.0)
         );
-        assert_eq!(practice_height(90.0), 95.0);
         // The unknown spawn height follows the body's height.
         assert_eq!(
             story_start(Background::Unknown, 1.8).placement.position.y,
@@ -5397,7 +5462,7 @@ mod tests {
         assert_eq!(start.view.target, Vec3::new(0.0, 20.0, 500.0));
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 95.0, 500.0),
+            position: Vec3::new(0.0, 0.0, 500.0),
         })));
         assert!(steps.contains(&Step::Camera(camera::frame_point(
             PRACTICE_POINT,
@@ -5521,15 +5586,26 @@ mod tests {
         flow.set_practice_health(0.2, 0.25);
         flow.stand_height = 88.5;
         let steps = flow.practice_next(9000);
-        // The body stands at its measured stand height at the table's
-        // point (only the vertical is overwritten).
-        assert!(steps.contains(&Step::PlacePlayer(Placement {
-            rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 88.5, 500.0),
-        })));
+        // The body stands at the table's point, its vertical the fresh
+        // pose's stand height over the origin (the caller's reading is not
+        // used).
+        let place = steps
+            .iter()
+            .position(|step| {
+                *step
+                    == Step::PlacePlayer(Placement {
+                        rotation: PRACTICE_ROTATION,
+                        position: Vec3::new(0.0, 0.0, 500.0),
+                    })
+            })
+            .expect("the player is placed");
+        assert_eq!(
+            steps[place - 1],
+            Step::PlacedFrame(crate::limp::FrameHeight::Stand)
+        );
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
-        // The arena is imported again through the practice filter.
+        // The arena is imported again, with no scene filter.
         let load = steps
             .iter()
             .position(|step| {
@@ -5541,13 +5617,12 @@ mod tests {
                     }
             })
             .expect("the arena reloads");
-        assert_eq!(steps[load + 1], Step::PracticeFilter);
-        assert_eq!(steps[load + 2], Step::EquipPlayerKit);
+        assert_eq!(steps[load + 1], Step::EquipPlayerKit);
         assert_eq!(steps[load - 1], Step::PreparePlayerKit);
         // The stored target is dropped before the partner exists.
-        assert_eq!(steps[load + 3], Step::ForgetTarget);
+        assert_eq!(steps[load + 2], Step::ForgetTarget);
         assert_eq!(
-            steps[load + 4],
+            steps[load + 3],
             Step::SpawnPracticePartner {
                 name: *b"opponent16",
             }
@@ -6373,27 +6448,6 @@ mod tests {
     }
 
     #[test]
-    fn the_node_filter_removes_the_players_own_objects() {
-        // Nodes of other item types are never filtered.
-        assert!(node_stays(0, 5, &[6, 7], 100, 0x6c));
-        assert!(node_stays(0, 100, &[6, 7], 100, 0x6c));
-        assert!(node_stays(0x2000, 100, &[], 100, 0x6c));
-        // The 0x4000 family loses the player's own objects.
-        assert!(node_stays(0x4000, 5, &[6, 7], 100, 0x6c));
-        assert!(!node_stays(0x4000, 100, &[6, 7], 100, 0x6c));
-        assert!(!node_stays(0x4000, 0x6c, &[6, 7], 100, 0x6c));
-        assert!(!node_stays(0x4000, 7, &[6, 7], 100, 0x6c));
-        // A container always stays; its children are filtered, and a child
-        // without an object stays.
-        assert!(node_stays(0x11, 100, &[6], 100, 0x6c));
-        assert!(node_stays(0x3011, 6, &[6], 100, 0x6c));
-        assert!(!child_stays(6, &[6], 100, 0x6c));
-        assert!(!child_stays(100, &[], 100, 0x6c));
-        assert!(child_stays(1, &[6], 100, 0x6c));
-        assert!(child_stays(0, &[0], 0, 0));
-    }
-
-    #[test]
     fn the_flow_boots_into_the_title_and_switches_modes() {
         let mut flow = Flow::default();
         let steps = flow.boot();
@@ -6570,14 +6624,14 @@ mod tests {
         };
         let steps = flow.start_practice(Ladder::Expert, 92.0, view, 500);
         assert_eq!(flow.mode, Mode::Practice);
-        // The standing height plus 5 cm at the table's point (x 0, z 500),
-        // half turned: only the table's vertical is overwritten.
+        // The table's point (x 0, z 500), half turned, its vertical the
+        // fresh pose's pelvis target plus 5 cm over the origin.
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 97.0, 500.0),
+            position: Vec3::new(0.0, 0.0, 500.0),
         })));
+        assert!(steps.contains(&Step::PlacedFrame(crate::limp::FrameHeight::Target(5.0))));
         assert_eq!(flow.practice.fight, 1);
-        assert!(steps.contains(&Step::PracticeFilter));
         assert!(steps.contains(&Step::PracticePlayer {
             role: PRACTICE_ROLE
         }));
@@ -6652,7 +6706,15 @@ mod tests {
             at(Step::RequestAction(0x1d)) + 1
         );
         assert!(at(Step::Controls(true)) < at(Step::RequestAction(0x1d)));
-        assert!(flow.story.wake.animating);
+        // The first wake-up is watched once the level is in (after the
+        // load's GUI reset), before the motion.
+        assert!(!flow.story.wake.animating);
+        let load = steps
+            .iter()
+            .position(|step| matches!(step, Step::LoadLevel { .. }))
+            .unwrap();
+        assert!(load < at(Step::FirstWake));
+        assert_eq!(at(Step::FirstWake) + 1, at(Step::RequestAction(0x1d)));
         assert_eq!(flow.story.wake.start_ms, 3500);
         assert_eq!(flow.mode, Mode::Story);
         assert_eq!(flow.phase, Phase::Playing);
@@ -7173,7 +7235,7 @@ mod tests {
                 Step::ResetDeathFade,
                 Step::GameGui(false),
                 Step::Controls(false),
-                Step::Dialogue,
+                Step::EndDialogues,
                 Step::ClearStoryFlag,
                 Step::Save {
                     drop_on_low_health: false
@@ -8682,5 +8744,196 @@ mod tests {
             }]
         );
         assert_eq!(app.world().resource::<Flow>().unlocks.backgrounds, 4);
+    }
+
+    /// The game flow's app with the real plugins: the menu, the flow, the
+    /// end menu, the GUI reset and the script engine (its role library
+    /// given, as the installation's would be).
+    fn session_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .insert_resource(BootToMenu(false))
+            .insert_resource(exa_script::Scripts::default())
+            .add_plugins((
+                crate::menu_screen::MenuScreenPlugin,
+                FlowPlugin,
+                crate::end_menu_screen::EndMenuScreenPlugin,
+                crate::load_reset::LoadResetPlugin,
+                exa_script::ScriptPlugin,
+            ));
+        app.update();
+        app
+    }
+
+    /// Leaving a session ends every conversation: the reply panel the
+    /// player had open closes and a pending narration is dropped, as the
+    /// story's end-menu exit does too.
+    #[test]
+    fn leaving_the_session_ends_every_conversation() {
+        for leave in [
+            Flow::leave_session as fn(&mut Flow) -> Vec<Step>,
+            Flow::story_exit,
+        ] {
+            let mut app = session_app();
+            {
+                let mut talk = app.world_mut().resource_mut::<exa_script::Conversations>();
+                talk.engine.panel.open = true;
+                talk.engine.panel.partner = Some(exa_script::bubbles::Speaker::Narrator);
+            }
+            let steps = {
+                let mut flow = app.world_mut().resource_mut::<Flow>();
+                flow.mode = Mode::Story;
+                flow.phase = Phase::Playing;
+                leave(&mut flow)
+            };
+            assert!(steps.contains(&Step::EndDialogues));
+            assert!(!steps.contains(&Step::Dialogue));
+            app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+            app.update();
+            app.update();
+            let talk = app.world().resource::<exa_script::Conversations>();
+            assert!(!talk.engine.panel.open);
+            assert!(talk.engine.narration.is_none());
+        }
+    }
+
+    /// The new story's first wake-up is watched once its level is in: the
+    /// load's GUI reset clears the flag (as every load's does) before the
+    /// start's steps set it.
+    #[test]
+    fn the_first_wake_is_set_after_the_loads_reset() {
+        let mut app = session_app();
+        app.world_mut().resource_mut::<Flow>().story.wake.animating = true;
+        let steps = {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            let viewport = flow.viewport;
+            flow.start_story(Background::Unknown, 1.0, viewport, 0)
+        };
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        app.update();
+        // The load was asked for and its reset ran; the start's later steps
+        // wait for the level.
+        assert!(!app.world().resource::<Flow>().story.wake.animating);
+        assert!(
+            app.world()
+                .resource::<AfterLoad>()
+                .steps
+                .contains(&Step::FirstWake)
+        );
+        for _ in 0..AFTER_LOAD_WAIT_FRAMES + 2 {
+            app.update();
+        }
+        assert!(app.world().resource::<AfterLoad>().steps.is_empty());
+        assert!(app.world().resource::<Flow>().story.wake.animating);
+        // A later load (a door) clears it again, as the original's does.
+        app.world_mut()
+            .write_message(exa_world::level_lifecycle::LevelChangeRequest::change(
+                "exanima02",
+                0,
+            ));
+        app.update();
+        app.update();
+        assert!(!app.world().resource::<Flow>().story.wake.animating);
+    }
+
+    /// The practice start gives the player its roles anew: the list cleared,
+    /// then the practice role.
+    #[test]
+    fn the_practice_start_gives_the_player_its_role() {
+        let mut app = session_app();
+        app.insert_resource(exa_ai::brain::RoleDatabase::default());
+        let mut held = exa_ai::roles::Roles::default();
+        held.add(
+            &exa_formats::roles::RoleDb::default(),
+            exa_ai::roles::PLAYER,
+        );
+        let player = app
+            .world_mut()
+            .spawn((crate::player::PlayerBody::new(0.0), held))
+            .id();
+        app.world_mut().resource_mut::<FlowSteps>().steps = vec![Step::PracticePlayer {
+            role: PRACTICE_ROLE,
+        }];
+        app.update();
+        let roles = app.world().get::<exa_ai::roles::Roles>(player).unwrap();
+        assert_eq!(roles.ids().collect::<Vec<_>>(), vec![PRACTICE_ROLE]);
+    }
+
+    /// The practice placements carry their frame height across the arena's
+    /// load with the placement: the next fight's stand height over the
+    /// origin.
+    #[test]
+    fn a_practice_placement_carries_its_frame_height() {
+        let mut app = session_app();
+        let steps = {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            flow.mode = Mode::Practice;
+            flow.practice.ladder = Ladder::Novice;
+            flow.practice_next(0)
+        };
+        app.world_mut().resource_mut::<FlowSteps>().steps = steps;
+        app.update();
+        assert_eq!(
+            app.world()
+                .get_resource::<crate::level_change::PlacedFrame>()
+                .copied(),
+            Some(crate::level_change::PlacedFrame(
+                crate::limp::FrameHeight::Stand
+            ))
+        );
+        let at = app
+            .world()
+            .resource::<crate::level_change::PlayerPlacement>();
+        assert_eq!(at.position, Vec3::new(0.0, 0.0, 5.0));
+    }
+
+    /// A camera shot warps the pointer to the point it framed while the
+    /// window has the focus, and not without it.
+    #[test]
+    fn a_camera_shot_warps_the_focused_pointer() {
+        let mut app = session_app();
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1600, 1140)
+                        .with_scale_factor_override(2.0),
+                    ..Default::default()
+                },
+                bevy::window::PrimaryWindow,
+            ))
+            .id();
+        let view = Viewport {
+            width: 1600,
+            height: 1140,
+        };
+        let frame = camera::frame_point(PRACTICE_POINT, true, false, view);
+        app.world_mut().resource_mut::<FlowSteps>().steps = vec![Step::Camera(frame)];
+        app.update();
+        let warps: Vec<crate::os_pointer::WarpPointer> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::os_pointer::WarpPointer>>()
+            .drain()
+            .collect();
+        assert_eq!(
+            warps,
+            vec![crate::os_pointer::WarpPointer(
+                Vec2::new(frame.warp.0 as f32, frame.warp.1 as f32) / 2.0
+            )]
+        );
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        app.world_mut().resource_mut::<FlowSteps>().steps = vec![Step::Camera(frame)];
+        app.update();
+        assert!(
+            app.world_mut()
+                .resource_mut::<Messages<crate::os_pointer::WarpPointer>>()
+                .drain()
+                .next()
+                .is_none()
+        );
     }
 }
