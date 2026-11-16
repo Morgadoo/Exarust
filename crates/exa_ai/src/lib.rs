@@ -653,6 +653,9 @@ struct DuelChase<'a> {
     frame: u32,
     body: ChaseBody,
     foe: ChaseFoe,
+    /// The brain's integration found its foe this tick (a brainless
+    /// fighter's always counts as found).
+    fresh: bool,
     /// The brain's goal record and alert count (a brainless fighter's are
     /// the constructor's), written back after the tick.
     plan_goal: crate::route::PlanGoal,
@@ -674,9 +677,11 @@ impl combat::Field for DuelField<'_> {
         let Some(c) = self.chase.as_mut() else {
             return false;
         };
-        // The duellist's foe is fresh while it perceives it [Exarust's: the
-        // original's mark is set when the target is taken].
-        c.mind.fresh = true;
+        // The foe is fresh while the brain's integration sees it: the
+        // original's integration writes the mark each AI tick from its
+        // sight of the body's target (a focus with no target keeps it
+        // set), and the chase reads it before it plans.
+        c.mind.fresh = c.fresh;
         c.mind.estimate = estimate;
         let mut router = NavRouter::new(c.grid, &mut c.plan_goal, c.alert_count);
         let outcome = chase::chase(
@@ -2056,6 +2061,9 @@ fn duellist(
                             npc.applied.as_ref().map_or(0, |a| a.phase_word),
                         )
                     });
+            // The integration's sight of the foe, which the chase's leave
+            // reads [Exarust's: a fighter without a brain always sees it].
+            let foe_fresh = brains.get(entity).map_or(true, |npc| npc.integration.fresh);
             // The chase follows while the character's route is its own, and
             // plans again when the follower's line was blocked.
             ai.chase.following = route.follows(route_walk::Walker::Chase);
@@ -2095,6 +2103,7 @@ fn duellist(
                         ground_y_cm: target.translation().y * CM,
                         down: target_condition.off_feet(),
                     },
+                    fresh: foe_fresh,
                     plan_goal: plan_record.0,
                     alert_count: plan_record.1,
                     outcome: None,
@@ -2466,6 +2475,12 @@ fn duellist(
                         outcome.reached.is_some()
                     );
                 }
+                // The chase remembers the body's target as the body in the
+                // way, so the route it walks is not stopped by the foe it
+                // runs after (the walk's way test skips it).
+                if let Some(driven) = driven.as_mut() {
+                    driven.0.in_way = combatant.target.map(Entity::to_bits);
+                }
                 let contact = &mut combatant.contacts[index];
                 if let Some(mark) = outcome.mark {
                     contact.unreachable_until_ms = mark.until_ms;
@@ -2498,6 +2513,8 @@ fn duellist(
                     combatant.target = None;
                     ai.focus = None;
                     ai.dropped = false;
+                    // Its level goes too: the next entry starts from none.
+                    ai.mind.level = 0;
                     // The chase leaves through the idle return: the AI's
                     // look, heading and eased offset take the body's look
                     // yaw, the idle state's step restarts at 1, the idle
@@ -4854,6 +4871,84 @@ mod chase_tests {
         assert!(combatant.contacts.iter().all(|c| c.flags & 0x10 == 0));
         let body = app.world().get::<CharacterBody>(root).unwrap();
         assert!(body.desired_velocity.z > 0.0, "it walks the route");
+    }
+
+    /// A stuck fighter whose brain no longer sees its foe, and which follows
+    /// no route, leaves combat at the chase: its target, focus and level go
+    /// and it returns to its idle state. One that sees its foe plans the
+    /// route and remembers the foe as the body in its way, so the walk is
+    /// not stopped by it.
+    #[test]
+    fn the_chase_leaves_an_unseen_foe_and_skips_a_seen_one() {
+        let run = |sees: bool| {
+            let floor = Vec3::new(0.0, 10.0, 0.0);
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<exa_combat::AttackAskedHook>()
+                .add_systems(Update, (duellist, route_walk::walk_routes).chain())
+                .insert_resource(yard());
+            let target = app
+                .world_mut()
+                .spawn((
+                    GlobalTransform::from_translation(floor + Vec3::new(0.0, 0.0, 8.0)),
+                    Fighter::default(),
+                ))
+                .id();
+            let root = app
+                .world_mut()
+                .spawn((
+                    CharacterBody::default(),
+                    GlobalTransform::from_translation(floor),
+                ))
+                .id();
+            let mut ai = Duellist::new(target);
+            ai.engaged = true;
+            let foe = app
+                .world_mut()
+                .spawn((
+                    ai,
+                    Transform::from_translation(floor),
+                    GlobalTransform::from_translation(floor),
+                    Animator::new("Default", "Idle"),
+                    Fighter::default(),
+                    drive::Driven::default(),
+                    ChildOf(root),
+                ))
+                .id();
+            app.insert_resource(BodyTicks(1));
+            app.update();
+            let mut brain = brain::Npc::new([0.0; 4]);
+            brain.integration.fresh = sees;
+            app.world_mut().entity_mut(foe).insert(brain);
+            {
+                let mut ai = app.world_mut().get_mut::<Duellist>(foe).unwrap();
+                ai.mind.stuck = 20;
+                ai.mind.level = 3;
+            }
+            for tick in 2..=6 {
+                app.world_mut().resource_mut::<BodyTicks>().0 = tick;
+                app.update();
+                if !app.world().get::<Duellist>(foe).unwrap().in_combat {
+                    break;
+                }
+            }
+            (app, foe, target)
+        };
+        let (app, foe, _) = run(false);
+        let ai = app.world().get::<Duellist>(foe).unwrap();
+        assert!(!ai.in_combat, "the unseen foe is left");
+        assert!(!ai.chase.following);
+        assert_eq!(ai.mind.level, 0);
+        assert_eq!(ai.focus, None);
+        assert_eq!(app.world().get::<Combatant>(foe).unwrap().target, None);
+        let (app, foe, target) = run(true);
+        let ai = app.world().get::<Duellist>(foe).unwrap();
+        assert!(ai.in_combat && ai.chase.following, "the seen foe is chased");
+        assert_eq!(
+            app.world().get::<drive::Driven>(foe).unwrap().0.in_way,
+            Some(target.to_bits()),
+            "the chased foe is the body in the way"
+        );
     }
 
     /// The combat state lifts its foe's footprint for its place pass and
