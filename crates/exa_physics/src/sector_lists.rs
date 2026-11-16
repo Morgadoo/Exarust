@@ -411,10 +411,12 @@ pub fn placement_touch(
     b: &crate::body::Part,
     b_frame: Affine3A,
 ) -> bool {
-    let relative = b_frame.inverse() * a_frame;
+    // The original's relative frame (the transposed turn of `b`, not an
+    // inverse) and its point routine, summed (x·X + y·Y) + (z·Z + T).
+    let relative = crate::engine_math::frame_into(&b_frame, &a_frame);
     let mesh = b.pairing.mesh;
     for &(c, r) in a.spheres.iter() {
-        let at = relative.transform_point3(c);
+        let at = crate::engine_math::point_out_of_frame(c, &relative);
         if !sector::placement_meet(
             at * 100.0,
             r * 100.0,
@@ -557,10 +559,11 @@ pub fn overlap_touch(
     b: &crate::body::Part,
     b_frame: Affine3A,
 ) -> bool {
-    let relative = b_frame.inverse() * a_frame;
+    // As in [`placement_touch`]: the original's relative frame and point.
+    let relative = crate::engine_math::frame_into(&b_frame, &a_frame);
     let mesh = b.pairing.mesh;
     a.spheres.iter().any(|&(c, r)| {
-        let at = relative.transform_point3(c);
+        let at = crate::engine_math::point_out_of_frame(c, &relative);
         sector::static_overlap_meet(at, r, mesh.centre, mesh.half, mesh.radius)
             && mesh_meets(b, at, r)
     })

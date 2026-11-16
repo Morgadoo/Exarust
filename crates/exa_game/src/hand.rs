@@ -743,10 +743,12 @@ pub fn mechanism_press(
             // hit, a sliding leaf's the hit itself.
             let origin = Vec3::new(node.x, hit.y, node.z);
             let delta = hit - origin;
+            // The original divides by the engine's fast length (RSQRTSS)
+            // here, not the exact one.
             let point = if state.sliding {
                 hit
             } else {
-                origin + delta * (1.0 / delta.length())
+                origin + delta * (1.0 / exa_physics::engine_math::length_approx(delta))
             };
             MechanismPress::Door(DoorGrip {
                 origin,

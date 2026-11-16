@@ -138,7 +138,9 @@ pub fn edge_push(progress: f32, edge: &Edge) -> Option<(Vec3, Vec3)> {
         share *= progress;
     }
     let push = out * share;
-    Some((push, -push))
+    // The swing routine negates the push in place between its two pushes
+    // (the engine's 0 − v).
+    Some((push, exa_physics::engine_math::negate3(push)))
 }
 
 /// The engagement target's chest height, written by the game before the

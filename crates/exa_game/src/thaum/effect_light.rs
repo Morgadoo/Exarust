@@ -204,7 +204,7 @@ pub fn barrier_shape(barrier: &Barrier, alpha: f32, gain: f32) -> (GiShape, Shap
     let shape = GiShape {
         program: GiShapeProgram::Dome,
         colour: light.colour,
-        matrix: Mat4::from(frame.inverse()),
+        matrix: Mat4::from(exa_physics::engine_math::rigid_inverse(&frame)),
         half: light.extent,
         tex_pos: Vec2::from(dome.tex_pos),
         ..default()
@@ -257,7 +257,7 @@ pub fn held_box_shape(frame: &ShellFrame, fit: RigidFit, colour: Vec3) -> (GiSha
     let shape = GiShape {
         program: GiShapeProgram::Cuboid,
         colour: light.colour,
-        matrix: Mat4::from_translation(-centre) * Mat4::from(node.inverse()),
+        matrix: Mat4::from_translation(-centre) * Mat4::from(exa_physics::engine_math::rigid_inverse(&node)),
         half: light.extent,
         ..default()
     };
@@ -469,7 +469,7 @@ pub fn barricade_shape(wall: &Barricade, gain: f32) -> (GiShape, ShapeVolume) {
     let shape = GiShape {
         program: GiShapeProgram::CuboidFn,
         colour: light.colour,
-        matrix: Mat4::from(node.inverse()),
+        matrix: Mat4::from(exa_physics::engine_math::rigid_inverse(&node)),
         half: light.extent,
         tex_pos: Vec2::from(wall.texture),
         ..default()

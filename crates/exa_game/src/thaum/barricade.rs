@@ -315,7 +315,9 @@ impl Barricade {
         if let Some(hit) = trim(frame.at, along, reach[0] - 40.0) {
             reach[0] = hit + 40.0;
         }
-        if let Some(hit) = trim(frame.at, -along, reach[1] - 40.0) {
+        // The original negates the direction in place (the engine's 0 − v).
+        let back = exa_physics::engine_math::negate3(along);
+        if let Some(hit) = trim(frame.at, back, reach[1] - 40.0) {
             reach[1] = hit + 40.0;
         }
         let texture = [draws.unit() as f32, draws.unit() as f32];

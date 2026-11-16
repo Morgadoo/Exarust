@@ -600,9 +600,15 @@ pub fn swept_box_hit(start: Vec3, end: Vec3, radius: f32, box_centre: Vec3, half
 /// box, then (2) the second's mesh bound, likewise in the first's frames,
 /// against the first's sphere box. Both must pass ([`swept_box_hit`]).
 pub fn meet(first: &Meeting, second: &Meeting) -> bool {
-    let previous =
-        (second.previous.inverse() * first.previous).transform_point3(first.sphere.centre);
-    let current = (second.current.inverse() * first.current).transform_point3(first.sphere.centre);
+    use crate::engine_math::{point_into_frame, point_out_of_frame};
+    // The original keeps each side's bound centres in the world (its point
+    // routine, (x·X + y·Y) + (z·Z + T)) and takes them into the other's
+    // frame by the transposed turn ([`point_into_frame`]), not an inverse.
+    let into = |centre: Vec3, from: &Affine3A, to: &Affine3A| {
+        point_into_frame(point_out_of_frame(centre, from), to)
+    };
+    let previous = into(first.sphere.centre, &first.previous, &second.previous);
+    let current = into(first.sphere.centre, &first.current, &second.current);
     if !swept_box_hit(
         previous,
         current,
@@ -612,9 +618,8 @@ pub fn meet(first: &Meeting, second: &Meeting) -> bool {
     ) {
         return false;
     }
-    let previous =
-        (first.previous.inverse() * second.previous).transform_point3(second.mesh.centre);
-    let current = (first.current.inverse() * second.current).transform_point3(second.mesh.centre);
+    let previous = into(second.mesh.centre, &second.previous, &first.previous);
+    let current = into(second.mesh.centre, &second.current, &first.current);
     swept_box_hit(
         previous,
         current,
@@ -646,14 +651,36 @@ fn last_overhang2(offset: Vec3, half: Vec3) -> f32 {
 /// [`last_overhang2`] against the moving sphere's radius². The first
 /// comparison lets a NaN through; the second does not.
 pub fn static_meet(first: &Meeting, second: &Meeting) -> bool {
-    let world = first.current.transform_point3(first.sphere.centre);
-    let offset = (second.current.inverse().transform_point3(world) - second.mesh.centre).abs();
-    let over = last_overhang2(offset, second.mesh.half);
+    use crate::engine_math::{point_into_frame, point_out_of_frame};
+    // The original's offset: one side's world centre less the other's world
+    // box centre, turned by the other's transposed turn, each dot summed
+    // (x·X + y·Y) + z·Z; the world centres by its point routine.
+    let offset = |centre: Vec3, from: &Affine3A, box_centre: Vec3, to: &Affine3A| {
+        let world = point_out_of_frame(centre, from);
+        let around = Affine3A {
+            matrix3: to.matrix3,
+            translation: point_out_of_frame(box_centre, to).into(),
+        };
+        point_into_frame(world, &around).abs()
+    };
+    let over = last_overhang2(
+        offset(
+            first.sphere.centre,
+            &first.current,
+            second.mesh.centre,
+            &second.current,
+        ),
+        second.mesh.half,
+    );
     if over > first.sphere.radius * first.sphere.radius {
         return false;
     }
-    let world = second.current.transform_point3(second.mesh.centre);
-    let offset = (first.current.inverse().transform_point3(world) - first.sphere.centre).abs();
+    let offset = offset(
+        second.mesh.centre,
+        &second.current,
+        first.sphere.centre,
+        &first.current,
+    );
     last_overhang2(offset, first.sphere.half) <= second.mesh.radius * second.mesh.radius
 }
 
