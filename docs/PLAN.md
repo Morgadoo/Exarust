@@ -1621,6 +1621,8 @@ a function oracle runs the original's machine code in an emulator on the build w
 
 every schedule the simulation step runs is fully ordered (1149 unordered pairs touching the same data, each kept in the order the single-threaded simulation executor already ran it, so no simulation value changes) and the frame's PreUpdate too; a test builds the game's own App and fails on any new unordered pair, with the frame's Update and PostUpdate held at an exact count to be ordered by a later lane. The trace's row order within a tick changes on exanima01 (command order), its values do not.
 
+three findings from the scene evidence fixed: F565, the saves' character screen drew none of its records because its paint ran before the game screens' per-frame clear of the GUI queue (now ordered after it); F564, the respawn's rebuilt player got Exarust's carried torch and started outside the rooms until the simulation placed it (now no carried torch and the respawn placement at once); F561, the hire page kept the roster's records (now the constructor's hire-mode records, the profession text and the candidate preview), and the hub's coin counts drew one row above their rows (now on their own baseline). F562 is the original's behaviour: the character view's camera is fixed and does not reframe for a golem's size. Before and after pictures from the build worker's GPU.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
