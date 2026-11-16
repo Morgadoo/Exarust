@@ -679,6 +679,115 @@ pub struct KitPanels {
     pub bars_on: bool,
     /// The stone texture the bars' frames are multiplied by, loaded once.
     pub bar_texture: Option<exa_ui::hud::FrameTexture>,
+    /// The hire page's own views while the form shows a candidate
+    /// ([`HireView`]).
+    pub hire: Option<HireView>,
+}
+
+/// The hire page's views: the preview showing the candidate (the record
+/// view builds the candidate's body for the form's character view) and
+/// the profession text box with the profession's description, at the
+/// form's top right ([`exa_ui::arena_forms::HIRE_TEXT_SIZE`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HireView {
+    pub preview: [i32; 4],
+    pub text: [i32; 4],
+    pub description: &'static str,
+}
+
+/// The candidate's record as the hire page's preview shows it: a new
+/// record with the candidate's name, wearing the outfit the hire list gave
+/// it and holding its hand items.
+pub fn candidate_record(candidate: &crate::career::Member) -> CharacterRecord {
+    let mut record = CharacterRecord::reset();
+    record.name = candidate.name.clone();
+    let hands = candidate.outfit.hands;
+    for &item in &candidate.outfit.items {
+        if item == 0 || hands.contains(&item) {
+            continue;
+        }
+        record.worn.push(ItemRef::new(item, 0));
+    }
+    for (slot, &held) in hands.iter().enumerate() {
+        if held != 0 {
+            record.hands[slot] = ItemRef::new(held, 0);
+        }
+    }
+    record
+}
+
+/// The hire page's views of a form at `origin`, `width` × `height` on the
+/// screen at GUI `unit`: the preview at the kit's place and the text box
+/// four pixels (at unit 4) from the right edge.
+pub fn hire_view(
+    origin: (i32, i32),
+    width: i32,
+    height: i32,
+    unit: i32,
+    description: &'static str,
+) -> HireView {
+    let s = |v: i32| v * unit / 4;
+    let (w, h) = exa_ui::arena_forms::HIRE_TEXT_SIZE;
+    HireView {
+        preview: kit_rects(origin, width, height, unit, false).preview,
+        text: [
+            origin.0 + width - s(w) - s(exa_ui::arena_forms::HIRE_TEXT_MARGIN),
+            origin.1 + s(exa_ui::arena_forms::HIRE_TEXT_Y),
+            s(w),
+            s(h),
+        ],
+        description,
+    }
+}
+
+/// The hire page's views from the open form, while it is on the hire page:
+/// the shown candidate's preview record and its profession's text.
+fn sync_hire(
+    windows: &crate::hub_windows::HubWindows,
+    career: &crate::hub_windows::ArenaCareer,
+    panels: &mut KitPanels,
+    preview: &mut KitPreview,
+) -> bool {
+    let Some(arsenal) = windows.forms.arsenal else {
+        return false;
+    };
+    if arsenal.page != crate::manage::PAGE_HIRE {
+        return false;
+    }
+    let Some(form) = windows.forms.get(crate::hub_forms::FormWindow::Loadout) else {
+        return false;
+    };
+    let Some(candidate) = usize::try_from(arsenal.selection)
+        .ok()
+        .and_then(|row| career.hire_pool.get(row))
+    else {
+        return false;
+    };
+    let r = form.rect();
+    let view = hire_view(
+        (r.x, r.y),
+        r.w,
+        r.h,
+        form.unit(),
+        crate::manage::profession_text(Some(candidate.profession)),
+    );
+    let [px, py, pw, ph] = view.preview;
+    preview.rect = Some(exa_ui::gui_core::GuiRect::new(px, py, pw, ph));
+    let record = candidate_record(candidate);
+    if preview.record.as_ref() != Some(&record) {
+        panels.revision += 1;
+        preview.revision = panels.revision;
+        info!(
+            "loadout kit: the hire page shows candidate {:?} ({:?}) wearing {:?}, hands {:?}",
+            record.name,
+            candidate.profession,
+            record.worn.iter().map(|w| w.id).collect::<Vec<_>>(),
+            record.hands.map(|h| h.id)
+        );
+        preview.record = Some(record);
+    }
+    panels.hire = Some(view);
+    true
 }
 
 /// What the preview shows: its screen rect, the record and the worn
@@ -761,9 +870,15 @@ pub fn sync_kit(
             info!("loadout kit: the form's item views close");
         }
         exa_ui::game_gui::preview_bars_toggle(&mut panels.bars_on, false);
-        preview.rect = None;
+        // The hire page shows the candidate in the preview and its
+        // profession's text (F561).
+        if !sync_hire(&windows, &career, &mut panels, &mut preview) {
+            panels.hire = None;
+            preview.rect = None;
+        }
         return;
     };
+    panels.hire = None;
     let row = arsenal.selection;
     let tab = arsenal.tab;
     let r = form.rect();
@@ -1387,13 +1502,37 @@ pub(crate) fn paint_kit(
     look: &crate::hub_windows::Look<'_>,
     pointer: Option<(i32, i32)>,
 ) {
+    let rect = |r: [i32; 4]| exa_ui::gui_core::GuiRect::new(r[0], r[1], r[2], r[3]);
+    if let Some(hire) = panels.hire.as_ref() {
+        // The hire page: the preview cleared for the candidate's figure
+        // and the profession's description wrapped in its text box.
+        painted.push(crate::gui_screens::clear_layer(rect(hire.preview)));
+        let (font, size) = crate::hub_windows::screen_font(look.textures, look.unit);
+        if let Some(size) = size {
+            let [x, y, w, h] = hire.text;
+            let drawn = exa_ui::gui_text::draw_wrapped(
+                &font,
+                hire.description.as_bytes(),
+                x,
+                y,
+                w,
+                h,
+                0,
+                false,
+            );
+            painted.push(exa_ui::gui_draw::GuiLayer::new(
+                exa_ui::gui_draw::text_batch(&font, &drawn.quads, look.palette.text[6], size),
+                exa_ui::gui_draw::LayerTexture::Named(font.texture),
+            ));
+        }
+        return;
+    }
     let Some(open) = panels.open.as_ref() else {
         return;
     };
     let Some(rects) = open.rects else {
         return;
     };
-    let rect = |r: [i32; 4]| exa_ui::gui_core::GuiRect::new(r[0], r[1], r[2], r[3]);
     painted.push(crate::gui_screens::clear_layer(rect(rects.preview)));
     if let (Some(shares), Some(texture)) = (open.bars, panels.bar_texture.as_ref())
         && let Some(layer) = preview_bars_layer(rect(rects.preview), shares, look.unit, texture)
@@ -1442,6 +1581,45 @@ pub(crate) fn paint_kit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F561: the hire page's preview shows the candidate wearing the
+    /// outfit the hire list gave it (its hand items held, not worn), and
+    /// its text box sits at the form's top right, 0xec × 0x100 at y 0x20.
+    #[test]
+    fn the_hire_page_previews_the_candidate() {
+        let candidate = crate::career::Member {
+            name: "Nioca".into(),
+            profession: crate::career::Profession::Merchant,
+            xp: 0,
+            skills: [0; 6],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
+            health: 65_535,
+            in_entry: false,
+            outfit: crate::hirelings::Loadout {
+                hands: [0x44, 0],
+                items: vec![0x44, 501, 502],
+            },
+        };
+        let record = candidate_record(&candidate);
+        assert_eq!(record.name, "Nioca");
+        // The new record's own underwear stays; the outfit's pieces follow
+        // it, the held item not worn again.
+        let base = CharacterRecord::reset().worn.len();
+        assert_eq!(
+            record.worn[base..].iter().map(|w| w.id).collect::<Vec<_>>(),
+            vec![501, 502]
+        );
+        assert_eq!(record.hands[0].id, 0x44);
+        assert_eq!(record.hands[1].id, 0);
+        let view = hire_view((0, 0), 1024, 768, 4, "Merchants provide");
+        assert_eq!(view.text, [1024 - 0xec - 4, 0x20, 0xec, 0x100]);
+        assert_eq!(view.preview, kit_rects((0, 0), 1024, 768, 4, false).preview);
+        // At unit 8 the places scale with the unit.
+        let big = hire_view((0, 0), 2048, 1536, 8, "");
+        assert_eq!(big.text, [2048 - 0x1d8 - 8, 0x40, 0x1d8, 0x200]);
+    }
 
     #[test]
     fn the_preview_bars_draw_at_the_bottom_of_the_view_the_right_way_up() {
