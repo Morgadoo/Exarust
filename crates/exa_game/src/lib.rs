@@ -90,6 +90,7 @@ pub mod item_effects;
 pub mod item_icon_render;
 pub mod item_panel_draw;
 pub mod joint_trace;
+pub mod left_behind;
 pub mod level_change;
 pub mod level_save;
 pub mod level_transition;

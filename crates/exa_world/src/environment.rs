@@ -344,6 +344,44 @@ pub fn level_preset(level: &str) -> LevelPreset {
     }
 }
 
+/// The indoor preset's fog distance the story's level-enter hook gives a
+/// story level, by the bytes of its locale name (0-based): byte 11 `w`, or
+/// bytes 7 and 8 `67`, take 1.8; then byte 8 `4` takes 1.4 (the flooded
+/// level, with its underwater ambience), `6`, `7` and `8` the plain 2.0,
+/// `5` and `2` 1.8; then byte 7 `c` 1.8; any other name 1.8. `None` for a
+/// level that is not the story's (its name does not start with
+/// `exanima`), which keeps the load's preset.
+///
+/// Evidence (REA, Exanima.exe, read in the assembly): the experience
+/// unit's level-enter hook, which the story installs, compares those name
+/// bytes in that order and calls one of the three indoor preset variants
+/// (fog distance words `0x3FE66666`, `0x3FB33333` and the base preset's
+/// `0x40000000`). [Exarust's: keyed on the story level's name, as only the
+/// story installs the hook.]
+pub fn story_level_fog(level: &str) -> Option<f32> {
+    let stem = level.to_ascii_lowercase();
+    let stem = stem.strip_suffix(".rfc").unwrap_or(&stem);
+    if !stem.starts_with("exanima") {
+        return None;
+    }
+    let byte = |i: usize| stem.as_bytes().get(i).copied().unwrap_or(0);
+    const FOG_18: f32 = 1.8;
+    const FOG_14: f32 = 1.4;
+    const FOG_20: f32 = crate::scene_env::INDOOR_FOG_DISTANCE;
+    Some(
+        if byte(11) == b'w' || (byte(7) == b'6' && byte(8) == b'7') {
+            FOG_18
+        } else {
+            match byte(8) {
+                b'4' => FOG_14,
+                b'6' | b'7' | b'8' => FOG_20,
+                b'5' | b'2' => FOG_18,
+                _ => FOG_18,
+            }
+        },
+    )
+}
+
 /// What the scene presets draw from at a level load: the seed of the outdoor
 /// preset's local stream (zero asks the caller for a fresh one), the seed of
 /// the engine's shared weather stream (the thunder draw) and the tick the
@@ -492,7 +530,13 @@ pub fn level_lighting_scene(
     let mut sky = matches!(preset, LevelPreset::Outdoor { .. });
     let mut preset_outdoor = false;
     match (preset, input) {
-        (LevelPreset::Indoor, Some(_)) => env.apply_indoor_preset(),
+        (LevelPreset::Indoor, Some(_)) => {
+            env.apply_indoor_preset();
+            // The story's level-enter hook then applies its own variant.
+            if let Some(distance) = story_level_fog(level) {
+                env.apply_indoor_preset_with_fog(distance);
+            }
+        }
         (LevelPreset::Outdoor { night_allowed }, Some(input)) => {
             let mut engine = crate::scene_env::WeatherRng::new(input.engine_seed);
             let mut used = input.seed;
@@ -1585,5 +1629,33 @@ mod tests {
             assert!(lit.fog.is_some(), "{name}");
         }
         assert_eq!(level_preset("arenahub"), LevelPreset::Record);
+    }
+
+    /// The story's levels take the level-enter hook's fog variant after the
+    /// indoor preset: the flooded `exanima04` 1.4, `exanima06` to `08` the
+    /// plain 2.0, the rest (and `exanima67`) 1.8; an arena keeps 2.0.
+    #[test]
+    fn the_story_levels_take_their_fog_variant() {
+        for (level, distance) in [
+            ("exanima01", 1.8),
+            ("exanima02.rfc", 1.8),
+            ("exanima03", 1.8),
+            ("exanima04", 1.4),
+            ("exanima05", 1.8),
+            ("exanima06", 2.0),
+            ("exanima07", 2.0),
+            ("exanima08", 2.0),
+            ("exanima67", 1.8),
+        ] {
+            assert_eq!(story_level_fog(level), Some(distance), "{level}");
+            let scene = level_lighting_scene(level, None, 3, None, Some(PresetInput::default()));
+            assert_eq!(scene.env.fog.distance, distance, "{level}");
+        }
+        assert_eq!(story_level_fog("arena"), None);
+        let scene = level_lighting_scene("arena", None, 3, None, Some(PresetInput::default()));
+        assert_eq!(
+            scene.env.fog.distance,
+            crate::scene_env::INDOOR_FOG_DISTANCE
+        );
     }
 }

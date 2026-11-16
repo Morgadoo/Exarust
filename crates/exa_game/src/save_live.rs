@@ -312,6 +312,10 @@ pub struct SaveReport {
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SaveLiveSystems {
     Steps,
+    /// The story's level load takes the save's own section of the level
+    /// ([`prefer_saved_section`]), after the teardown and before the host
+    /// starts the load.
+    SavedSection,
     QuitGate,
     QuitForfeit,
     QuitWrite,
@@ -458,6 +462,18 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 sync_before_level_change
                     .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+            )
+            .init_resource::<crate::left_behind::LeftBody>()
+            .configure_sets(
+                Update,
+                SaveLiveSystems::SavedSection
+                    .after(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+            )
+            .add_systems(
+                Update,
+                (prefer_saved_section, crate::left_behind::forget_on_level_change)
+                    .chain()
+                    .in_set(SaveLiveSystems::SavedSection),
             )
             .add_systems(Update, crate::follower_travel::restore_arrivals)
             .add_systems(Update, crate::level_save::restore_saved_state)
@@ -1294,6 +1310,19 @@ fn live_story_player(
     created: Option<&crate::creator_screen::CreatedCharacter>,
     record_of: &dyn Fn(crate::mind::casts::BodyId) -> Option<u32>,
 ) -> Option<StoryPlayer> {
+    live_story_player_left(players, created, record_of, None)
+}
+
+/// [`live_story_player`] after the reconstruction device's strip: the
+/// player is the stripped record the flow kept ([`crate::left_behind`]),
+/// written as it is (the dead body's possessions and health are the
+/// left-behind copy's), at the body's place.
+fn live_story_player_left(
+    players: &PlayerSaveQuery,
+    created: Option<&crate::creator_screen::CreatedCharacter>,
+    record_of: &dyn Fn(crate::mind::casts::BodyId) -> Option<u32>,
+    left: Option<&crate::left_behind::LeftBody>,
+) -> Option<StoryPlayer> {
     let (transform, data, possessions, (fighter, flags, condition, caster, mind)) =
         players.iter().next()?;
     let powers = crate::power_save::saved_powers(mind, caster, record_of);
@@ -1302,6 +1331,19 @@ fn live_story_player(
             "save: the player's running powers {:x?} are saved with the placement",
             powers.iter().map(|power| power.id).collect::<Vec<_>>()
         );
+    }
+    if let Some(stripped) = left.and_then(|left| left.player_record()) {
+        info!(
+            "save: the stripped player record is written; the dead body keeps record {:#x}",
+            data.map_or(0, |data| data.record.id)
+        );
+        let (yaw, _, _) = transform.rotation().to_euler(EulerRot::YXZ);
+        return Some(StoryPlayer {
+            record: stripped.clone(),
+            position_cm: (transform.translation() * 100.0).to_array(),
+            heading: yaw,
+            powers,
+        });
     }
     let mut record = data
         .map(|data| data.record.clone())
@@ -1400,8 +1442,26 @@ fn flush_story_characters(
     mut world: Option<&mut crate::world_characters::WorldCharacters>,
     player: Option<&StoryPlayer>,
     scene: &mut crate::level_save::LevelSaveScene,
+    left_body: Option<(CharacterRecord, bool)>,
 ) -> (Vec<CharacterRecord>, Vec<crate::level_save::LiveCharacter>) {
-    let characters = scene.flush_characters(world.as_deref_mut());
+    let mut characters = scene.flush_characters(world.as_deref_mut());
+    // The dead player's body, its owned mark cleared, is flushed as one of
+    // the scene's characters: its record (the left-behind copy) into the
+    // world store, its body into the level section.
+    if let Some((record, dead)) = left_body
+        && let Some(body) = scene.left_character(record.id, dead)
+    {
+        if let Some(world) = world.as_deref_mut()
+            && record.id & exa_formats::characters::WORLD_DB != 0
+        {
+            world.store(&record);
+        }
+        info!(
+            "save: the dead player's body (record {:#x}, dead {dead}) is written into the level at {:?}",
+            record.id, body.position
+        );
+        characters.push(body);
+    }
     let Some(world) = world else {
         return (Vec::new(), characters);
     };
@@ -1409,6 +1469,23 @@ fn flush_story_characters(
         world.refresh_player(&player.record);
     }
     (world.others(), characters)
+}
+
+/// The dead player's body as the story save's flush stores it once its
+/// owned mark is cleared ([`crate::left_behind::LeftBody::exported`]): the
+/// body's record (the left-behind copy) with its live possessions written
+/// back, and whether it is dead. Its pools and roles are the copy's.
+fn left_body_record(
+    players: &PlayerSaveQuery,
+    left: Option<&crate::left_behind::LeftBody>,
+) -> Option<(CharacterRecord, bool)> {
+    left.filter(|left| left.exported)?;
+    let (_, data, possessions, (_, _, condition, _, _)) = players.iter().next()?;
+    let mut record = data?.record.clone();
+    if let Some(possessions) = possessions {
+        record = record_with_possessions(record, possessions);
+    }
+    Some((record, condition.is_some_and(|c| c.is_dead())))
 }
 
 /// The live session with the story player's record and placement: the
@@ -1532,14 +1609,24 @@ fn save_to_new_slot(
             stamp_story(&mut session, flow.as_deref());
             stamp_discovery(&mut session, experience.as_deref());
             let records = scene.record_ids();
-            let player = live_story_player(&players, created.as_deref(), &|id| {
-                records
-                    .iter()
-                    .find(|(body, _)| *body == id)
-                    .map(|(_, record)| *record)
-            });
-            let (others, flushed) =
-                flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
+            let left = scene.left().cloned();
+            let player = live_story_player_left(
+                &players,
+                created.as_deref(),
+                &|id| {
+                    records
+                        .iter()
+                        .find(|(body, _)| *body == id)
+                        .map(|(_, record)| *record)
+                },
+                left.as_ref(),
+            );
+            let (others, flushed) = flush_story_characters(
+                world.as_deref_mut(),
+                player.as_ref(),
+                &mut scene,
+                left_body_record(&players, left.as_ref()),
+            );
             characters = Some(flushed);
             let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
             (player.map(|p| p.record.name), export)
@@ -1852,14 +1939,24 @@ fn run_save_steps<const AT_QUIT: bool>(
                     let mut session = story_session();
                     sync_players(&mut live, &mut players);
                     let records = scene.record_ids();
-                    let player = live_story_player(&players, created.as_deref(), &|id| {
-                        records
-                            .iter()
-                            .find(|(body, _)| *body == id)
-                            .map(|(_, record)| *record)
-                    });
-                    let (others, characters) =
-                        flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
+                    let left = scene.left().cloned();
+                    let player = live_story_player_left(
+                        &players,
+                        created.as_deref(),
+                        &|id| {
+                            records
+                                .iter()
+                                .find(|(body, _)| *body == id)
+                                .map(|(_, record)| *record)
+                        },
+                        left.as_ref(),
+                    );
+                    let (others, characters) = flush_story_characters(
+                        world.as_deref_mut(),
+                        player.as_ref(),
+                        &mut scene,
+                        left_body_record(&players, left.as_ref()),
+                    );
                     let export =
                         story_save_world(&mut session, player.as_ref(), live.db(), &others);
                     let section = scene.section(live.db(), true, Some((&characters, &others)));
@@ -1914,14 +2011,24 @@ fn run_save_steps<const AT_QUIT: bool>(
                     sync_players(&mut live, &mut players);
                 }
                 let records = scene.record_ids();
-                let player = live_story_player(&players, created.as_deref(), &|id| {
-                    records
-                        .iter()
-                        .find(|(body, _)| *body == id)
-                        .map(|(_, record)| *record)
-                });
-                let (others, characters) =
-                    flush_story_characters(world.as_deref_mut(), player.as_ref(), &mut scene);
+                let left = scene.left().cloned();
+                let player = live_story_player_left(
+                    &players,
+                    created.as_deref(),
+                    &|id| {
+                        records
+                            .iter()
+                            .find(|(body, _)| *body == id)
+                            .map(|(_, record)| *record)
+                    },
+                    left.as_ref(),
+                );
+                let (others, characters) = flush_story_characters(
+                    world.as_deref_mut(),
+                    player.as_ref(),
+                    &mut scene,
+                    left_body_record(&players, left.as_ref()),
+                );
                 let export = story_save_world(&mut session, player.as_ref(), live.db(), &others);
                 // The disable flag skips the save but not the copy: the
                 // old save becomes the checkpoint, as in the original.
@@ -2248,6 +2355,83 @@ fn load_arena_slot(
             stream.flags
         );
     }
+}
+
+/// The story's level loads read the level from the save when the save
+/// holds it, as the original's transition (a door, a journey) and its
+/// respawn load do: the current story slot's save is opened, and a section
+/// named by the destination's locale is imported in place of the archive's
+/// `<locale>.rfc` ([`exa_world::SavedLevelSection`], used once by the host's
+/// load). A save without the section (a level not visited yet, a new
+/// story's fresh slot) leaves the archive's; a section a save load already
+/// handed is left alone. The arena's loads are the arena unit's.
+///
+/// Evidence (REA, Exanima.exe, the assembly): the transition opens the save
+/// package when none is open, looks the destination's section up by name
+/// and imports it, the archive's file only when that failed; the respawn's
+/// level load (the save-or-archive loader) the same.
+pub fn prefer_saved_section(
+    mut commands: Commands,
+    ready: Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
+    mut seen: Local<u64>,
+    flow: Option<Res<crate::flow::Flow>>,
+    lists: Option<Res<SlotLists>>,
+    saved: Option<Res<exa_world::SavedLevelSection>>,
+) {
+    let Some(ready) = ready else {
+        return;
+    };
+    if ready.changes == *seen {
+        return;
+    }
+    *seen = ready.changes;
+    let Some(level) = ready.level.as_deref() else {
+        return;
+    };
+    if flow.is_some_and(|flow| flow.mode != crate::flow::Mode::Story) {
+        return;
+    }
+    if saved.is_some_and(|saved| saved.is_for(level)) {
+        return;
+    }
+    let Some(lists) = lists else {
+        return;
+    };
+    let Some(section) = saved_level_section(&lists.story, level) else {
+        debug!("level change: the save holds no {level} section; the archive's is read");
+        return;
+    };
+    info!(
+        "level change: {} comes from the save's own section ({} bytes)",
+        section.locale,
+        section.bytes.len()
+    );
+    commands.insert_resource(section);
+}
+
+/// The current slot's save section for `level` (with or without `.rfc`),
+/// named by its locale; `None` without a current slot, a save file or the
+/// section. Nothing is created or written.
+pub fn saved_level_section(list: &SlotList, level: &str) -> Option<exa_world::SavedLevelSection> {
+    if list.current() <= 0 {
+        return None;
+    }
+    let file = list
+        .slots()
+        .file(list.current() as u32, save_package::SlotKind::Save);
+    if !file.is_file() {
+        return None;
+    }
+    let locale = level
+        .strip_suffix(".rfc")
+        .unwrap_or(level)
+        .to_ascii_lowercase();
+    let package = Slots::open(&file).ok()?;
+    let bytes = package.section(&save_package::name(&locale))?;
+    Some(exa_world::SavedLevelSection {
+        locale,
+        bytes: bytes.to_vec().into(),
+    })
 }
 
 /// What a story load read from a slot, before the running game takes it.

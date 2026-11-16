@@ -468,8 +468,9 @@ impl LiveTransition {
     }
 }
 
-/// The flow of an in-process level change as the running game has it: no
-/// save package is open (the destination comes from the archive), the
+/// The flow of an in-process level change read from the archive (the save
+/// holds no section of the destination, [`live_transition_from`] for one
+/// that does): the
 /// archive's `<locale>.rfc` was or was not found, a found level imports
 /// (Exarust's loader builds what it finds), a non-zero spawn names a
 /// portal, `followers` characters travel (the door's migration list,
@@ -482,11 +483,24 @@ pub fn live_transition(
     archive_found: bool,
     followers: usize,
 ) -> LiveTransition {
+    live_transition_from(level, spawn, false, archive_found, followers)
+}
+
+/// [`live_transition`] with `from_save`: the destination was read from the
+/// save's own section ([`crate::save_live::prefer_saved_section`]), which
+/// counts as found and imported, so saving stays enabled.
+pub fn live_transition_from(
+    level: &str,
+    spawn: u32,
+    from_save: bool,
+    archive_found: bool,
+    followers: usize,
+) -> LiveTransition {
     LiveTransition {
         level: level.to_string(),
         spawn,
         flow: transition_flow(
-            false,
+            from_save,
             archive_found,
             archive_found,
             spawn != 0,

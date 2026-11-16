@@ -564,6 +564,29 @@ only.
   probed down 300 cm from 100 cm up, then lifted by `108.18 − 11.1·extent`
   and 5 cm (13 cm for a body in its raised state). The body's feet are put
   at the probed floor and the body is carried to the lifted point.
+* **The save's own section.** A door's or a journey's transition opens the
+  save package when none is open, looks the destination's section up by
+  its locale name and imports it; the archive's file is read only when the
+  save holds none. The story respawn's load does the same (the save load's
+  loader with its "prefer the save" argument set). Exarust hands the
+  section to the host's load for every story level change
+  (`exa_game::save_live::prefer_saved_section`, REA on the transition's
+  package lookup and import calls, read in the assembly); the arena's
+  loads are the arena unit's.
+* **The dead player's body.** The player's spawn sets the root node's flag
+  `0x1000`, the exporter's owned mark, so no level section holds the
+  living player. A scanned player's story death strips the character: an
+  unshared record is copied (mark `0x40` in the profession word, roles 1
+  and `0xC2`, yellow and red pools 0) into the world character database
+  under its first free id and the body takes the copy, while the player's
+  record loses its hands, worn list (the underwear rule follows) and
+  carried list and is left at `0x7FFF`. The death screen's CONTINUE and a
+  stripped player's EXIT clear the body's `0x1000` before they save, so the
+  save's level section writes the body as a dead character under the
+  copy's world id (with its pose tree) and `#playerdata` the stripped
+  record; a later visit finds the corpse with its gear (REA on the death
+  path, the strip routine and the respawn's flag clear, read in the
+  assembly; `exa_game::left_behind`).
 * **Followers.** When the current scene character is flushed, every
   travelling character (controller word 4, flags without 0x800) joins the
   migration list once; a repeat is logged as `Duplicate simulation motile:

@@ -172,6 +172,88 @@ impl PortalArrival {
     }
 }
 
+/// The session's two arrival words as the original keeps them across
+/// loads: the arrival word (the entrance a level exit names, or the
+/// session-start word `0xEEEE00DB` a respawn sets) and the id of the level
+/// the session came from. The content stream names the loaded level's
+/// player object by them (an operative of the word's kind, or a transition
+/// marker naming both), which sets the stream's focus point and the
+/// player-object frame.
+///
+/// **What the original does** (REA, Exanima.exe, every write of the two
+/// globals read in the assembly). The arrival word starts at all ones. A
+/// level exit sets it to its entrance before the transition, and the
+/// transition stores the level it leaves as the previous level, then
+/// clears the word once the destination is in. The story respawn sets the
+/// session-start word before its load and clears it right after. The story
+/// save reader sets the session-start word only for a save whose
+/// reconstruction state is 2 (a respawn pending) and leaves it set. Every
+/// other load (the save-or-archive load, a named level, the arena's level
+/// and combatant loads, the menu scene) stores no previous level (all
+/// ones) and leaves the word as it is. So a new game or a plain save load
+/// reads the word the session last left: all ones after start-up, 0 after
+/// any transition or respawn, the session-start word after a pending
+/// respawn's load.
+///
+/// **What Exarust does.** [`SessionArrival::load_words`] gives the host's
+/// load these words for each change and keeps them the same way.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionArrival {
+    pub word: u32,
+    pub previous_level: u32,
+}
+
+impl Default for SessionArrival {
+    fn default() -> Self {
+        Self {
+            word: exa_assets::content_stream::NO_ARRIVAL_WORD,
+            previous_level: exa_assets::content_stream::NO_PREVIOUS_LEVEL,
+        }
+    }
+}
+
+/// What kind of load asks for the session's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrivalLoad {
+    /// A door's or a journey's transition: its entrance and the id of the
+    /// level it leaves.
+    Door { entrance: u32, previous_level: u32 },
+    /// The story respawn's load.
+    Respawn,
+    /// A save load whose respawn is pending.
+    PendingRespawn,
+    /// Any other load (a new game, a plain save load, the arena's, the
+    /// practice fight's).
+    Other,
+}
+
+impl SessionArrival {
+    /// The two words `load` reads, as the original sets them before it,
+    /// and what it leaves behind for the next load: a door's and a
+    /// respawn's word is cleared once the level is in, a pending respawn's
+    /// session-start word stays, and a load that is no transition names no
+    /// previous level.
+    pub fn load_words(&mut self, load: ArrivalLoad) -> (u32, u32) {
+        use exa_assets::content_stream::{NO_PREVIOUS_LEVEL, SESSION_START_WORD};
+        let words = match load {
+            ArrivalLoad::Door {
+                entrance,
+                previous_level,
+            } => (entrance, previous_level),
+            ArrivalLoad::Respawn | ArrivalLoad::PendingRespawn => {
+                (SESSION_START_WORD, NO_PREVIOUS_LEVEL)
+            }
+            ArrivalLoad::Other => (self.word, NO_PREVIOUS_LEVEL),
+        };
+        self.word = match load {
+            ArrivalLoad::Door { .. } | ArrivalLoad::Respawn => 0,
+            ArrivalLoad::PendingRespawn | ArrivalLoad::Other => words.0,
+        };
+        self.previous_level = words.1;
+        words
+    }
+}
+
 /// A level change's arrival: the entrance the change named (a level exit's
 /// spawn word; zero otherwise) and the `locales.rdb` id of the level it
 /// left. The original's level-change load keeps both in its session and
@@ -435,5 +517,43 @@ mod tests {
         assert!((at - Vec3::new(10.0, 0.0, 1.25)).length() < 1e-4);
         assert!(nudge_out_of_exits(Vec3::new(20.0, 0.0, 0.0), &exits).is_none());
         assert!(nudge_out_of_exits(Vec3::ZERO, &[]).is_none());
+    }
+
+    /// The session's arrival words across a session: all ones at start-up,
+    /// a door's entrance and the level it left, cleared after it; a plain
+    /// load then reads 0 with no previous level; the respawn's start word
+    /// is cleared after its load; a pending respawn's stays for the next.
+    #[test]
+    fn the_session_keeps_its_arrival_words_across_loads() {
+        use exa_assets::content_stream::{NO_ARRIVAL_WORD, NO_PREVIOUS_LEVEL, SESSION_START_WORD};
+        let mut session = SessionArrival::default();
+        assert_eq!(
+            session.load_words(ArrivalLoad::Other),
+            (NO_ARRIVAL_WORD, NO_PREVIOUS_LEVEL)
+        );
+        assert_eq!(
+            session.load_words(ArrivalLoad::Door {
+                entrance: 3,
+                previous_level: 2
+            }),
+            (3, 2)
+        );
+        assert_eq!(
+            session.load_words(ArrivalLoad::Other),
+            (0, NO_PREVIOUS_LEVEL)
+        );
+        assert_eq!(
+            session.load_words(ArrivalLoad::Respawn),
+            (SESSION_START_WORD, NO_PREVIOUS_LEVEL)
+        );
+        assert_eq!(session.word, 0);
+        assert_eq!(
+            session.load_words(ArrivalLoad::PendingRespawn),
+            (SESSION_START_WORD, NO_PREVIOUS_LEVEL)
+        );
+        assert_eq!(
+            session.load_words(ArrivalLoad::Other),
+            (SESSION_START_WORD, NO_PREVIOUS_LEVEL)
+        );
     }
 }

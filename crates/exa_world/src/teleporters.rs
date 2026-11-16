@@ -524,8 +524,9 @@ pub struct Record {
     /// Health and stamina words; 0xFFFF is full.
     pub health: u16,
     pub stamina: u16,
-    /// The queued actions: one zeroed entry is left.
-    pub actions: Vec<u32>,
+    /// The carried list's entries: a strip empties it (the original sets
+    /// its count to 0 and its storage to one slot).
+    pub carried: Vec<u32>,
     /// The record's roles.
     pub roles: Vec<i32>,
 }
@@ -536,8 +537,8 @@ impl Record {
     /// the left-behind mark, identity 0, its roles replaced by
     /// [`LEFT_BEHIND_ROLES`] and its health and stamina at 0, with every
     /// item still on it. The record itself, the one the player goes on
-    /// with, then loses both hands and the worn list, keeps one empty
-    /// action and is left at [`STRIPPED_WORD`] health and stamina; the
+    /// with, then loses both hands, the worn list and the carried list,
+    /// and is left at [`STRIPPED_WORD`] health and stamina; the
     /// underwear rule runs after this, on the cleared worn list. A shared
     /// record is stripped in place and counts one more use.
     pub fn strip(&mut self) -> Option<Record> {
@@ -553,7 +554,7 @@ impl Record {
         });
         self.held = [0; 4];
         self.worn.clear();
-        self.actions = vec![0];
+        self.carried.clear();
         self.health = STRIPPED_WORD;
         self.stamina = STRIPPED_WORD;
         if self.shared {
@@ -1017,23 +1018,23 @@ mod tests {
             worn: vec![20, 21],
             health: 0xFFFF,
             stamina: 0xC000,
-            actions: vec![7, 8, 9],
+            carried: vec![7, 8, 9],
             roles: vec![9],
         };
         let corpse = record.strip().expect("an unshared record leaves a copy");
-        // The record the player keeps: bare, one empty action, just under
+        // The record the player keeps: bare, nothing carried, just under
         // half health and stamina, its roles, uses and identity kept.
         assert_eq!(record.held, [0; 4]);
         assert!(record.worn.is_empty());
         assert_eq!((record.health, record.stamina), (0x7FFF, 0x7FFF));
-        assert_eq!(record.actions, [0]);
+        assert!(record.carried.is_empty());
         assert_eq!(record.roles, [9]);
         assert_eq!((record.uses, record.identity), (3, 0x00C1_0ED0));
         // The copy the dead body keeps: still dressed and armed, no health,
         // one use, the mark, identity 0 and the two roles.
         assert_eq!(corpse.held, [10, 11, 12, 13]);
         assert_eq!(corpse.worn, [20, 21]);
-        assert_eq!(corpse.actions, [7, 8, 9]);
+        assert_eq!(corpse.carried, [7, 8, 9]);
         assert_eq!((corpse.health, corpse.stamina), (0, 0));
         assert_eq!((corpse.uses, corpse.status), (1, 0x41));
         assert_eq!(corpse.identity, 0);

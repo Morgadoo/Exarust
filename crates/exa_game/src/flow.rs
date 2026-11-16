@@ -3627,6 +3627,8 @@ impl Plugin for FlowPlugin {
             .init_resource::<FlowSteps>()
             .init_resource::<AfterLoad>()
             .init_resource::<crate::save_kit::KitScratch>()
+            .init_resource::<crate::left_behind::LeftBody>()
+            .init_resource::<crate::level_change::SessionArrival>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()
@@ -4696,13 +4698,72 @@ fn apply_steps(
                 }
             }
             Step::StripPlayer => {
-                // The reconstruction device's strip: the player's live body
-                // loses its hands and worn data, keeps the underwear rule and
-                // is left at just under half health (the record's 0x7FFF).
-                for player in &mut players {
-                    if let Some(mut fighter) = player.fighter {
-                        crate::teleporters::strip_body(&mut commands, player.entity, &mut fighter);
+                // The reconstruction device's strip
+                // ([`crate::left_behind::leave_behind`]): the dead body keeps
+                // a dressed copy of its record, in the world store, and the
+                // player goes on with the stripped record, which the next
+                // save writes as the player's.
+                let level = story.roles.as_deref().map_or(0, |roles| roles.locale);
+                for mut player in &mut players {
+                    let Some(character) = player.character.as_mut() else {
+                        continue;
+                    };
+                    let dressed = match player.possessions.as_deref() {
+                        Some(possessions) => crate::save_live::record_with_possessions(
+                            character.record.clone(),
+                            possessions,
+                        ),
+                        None => character.record.clone(),
+                    };
+                    let strip = crate::left_behind::leave_behind(
+                        dressed,
+                        story.roles.as_deref().map(|roles| &roles.book),
+                        story.world.as_deref_mut(),
+                        level,
+                    );
+                    info!(
+                        "game flow: the dead player's body keeps the dressed record {:#x} (level {level}); the player goes on stripped",
+                        strip.corpse.id
+                    );
+                    // The body takes the copy; nothing is refitted (it
+                    // stays dressed).
+                    character.bypass_change_detection().record = strip.corpse;
+                    if let Some(left) = story.left.as_mut() {
+                        **left = crate::left_behind::LeftBody {
+                            body: Some(player.entity),
+                            player: Some(strip.player),
+                            exported: false,
+                        };
                     }
+                }
+            }
+            Step::ClearStoryFlag => {
+                // The body's owned mark goes: the next save writes it into
+                // the level section. Without a strip the body's record is
+                // the player's own (the world store's player slot).
+                let level = story.roles.as_deref().map_or(0, |roles| roles.locale);
+                for mut player in &mut players {
+                    let Some(left) = story.left.as_mut() else {
+                        continue;
+                    };
+                    if left.body != Some(player.entity) {
+                        **left = crate::left_behind::LeftBody {
+                            body: Some(player.entity),
+                            player: None,
+                            exported: true,
+                        };
+                        if let Some(character) = player.character.as_mut() {
+                            let record = &mut character.bypass_change_detection().record;
+                            record.id = exa_formats::characters::WORLD_DB
+                                | crate::save_live::PLAYER_RECORD_ID;
+                            record.locale = level;
+                        }
+                    }
+                    left.exported = true;
+                    info!(
+                        "game flow: the player's body {} loses its owned mark; the save writes it into the level",
+                        player.entity
+                    );
                 }
             }
             Step::Checkpoint => {
@@ -4884,6 +4945,10 @@ struct StoryParts<'w> {
     /// reset, and the game time it gives back.
     fade: Option<ResMut<'w, exa_ui::DeathFade>>,
     time: Option<ResMut<'w, Time<Virtual>>>,
+    /// The world character store the strip's copy joins, and the flow's
+    /// record of the dead player's body ([`crate::left_behind`]).
+    world: Option<ResMut<'w, crate::world_characters::WorldCharacters>>,
+    left: Option<ResMut<'w, crate::left_behind::LeftBody>>,
 }
 
 /// The story start's writes the spawned player takes with the start
@@ -8259,8 +8324,10 @@ mod tests {
     }
 
     /// A story death of a scanned player: the flow asks for the strip and the
-    /// app applies it, clearing the hands and worn data, keeping the
-    /// underwear rule and leaving yellow and red health just under half.
+    /// app applies the original's record strip: the dead body keeps its gear
+    /// and its health (it stays a dressed corpse) under a dressed copy of its
+    /// record, which joins the world store, and the flow keeps the stripped
+    /// record the player goes on with.
     #[test]
     fn the_app_strips_a_reconstructed_player() {
         let mut app = App::new();
@@ -8268,6 +8335,8 @@ mod tests {
             .init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .init_resource::<GameView>()
+            .init_resource::<crate::left_behind::LeftBody>()
+            .insert_resource(crate::world_characters::WorldCharacters::new_story())
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_message::<ForfeitMatch>()
@@ -8282,6 +8351,10 @@ mod tests {
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.max = 100.0;
         fighter.health.red = 0.0;
+        let mut record = exa_formats::characters::CharacterRecord::reset();
+        record.hands[0] = ItemRef::new(0x31, 0);
+        record.worn.push(ItemRef::new(0x32, 0));
+        let possessions = exa_items::possession::Possessions::of_record(&record);
         let player = app
             .world_mut()
             .spawn((
@@ -8289,6 +8362,8 @@ mod tests {
                 fighter,
                 exa_character::Outfit::default(),
                 exa_character::Wielded::model("ub05ssworda"),
+                exa_character::record::CharacterData::of_record(record),
+                possessions,
             ))
             .id();
         let mut flow = Flow {
@@ -8306,11 +8381,30 @@ mod tests {
             .extend(steps);
         app.update();
         let world = app.world();
-        assert!(world.get::<exa_character::Wielded>(player).is_none());
-        assert!(world.get::<exa_character::WearsUnderwear>(player).is_some());
+        // The body is left as it fell: armed, dressed, dead.
+        assert!(world.get::<exa_character::Wielded>(player).is_some());
         let health = world.get::<exa_combat::Fighter>(player).unwrap().health;
-        assert!((health.red - 49.999_237).abs() < 1e-3, "{health:?}");
-        assert!((health.yellow - 49.999_237).abs() < 1e-3, "{health:?}");
+        assert_eq!(health.red, 0.0);
+        let copy = &world
+            .get::<exa_character::record::CharacterData>(player)
+            .unwrap()
+            .record;
+        assert_eq!(copy.id, exa_formats::characters::WORLD_DB | 2);
+        assert_eq!(copy.hands[0].id, 0x31);
+        assert!(copy.worn.iter().any(|w| w.id == 0x32));
+        let left = world.resource::<crate::left_behind::LeftBody>();
+        assert_eq!(left.body, Some(player));
+        assert!(!left.exported);
+        let stripped = left.player.as_ref().unwrap();
+        assert!(!stripped.hands[0].is_some());
+        assert_eq!(
+            stripped.worn,
+            [ItemRef::new(exa_formats::characters::UNDERWEAR_ITEM, 0)]
+        );
+        assert_eq!(
+            (stripped.pools.yellow, stripped.pools.red),
+            (0x7FFF, 0x7FFF)
+        );
     }
 
     /// The story revive on a dead player body at game clock 1200 ms: combat
