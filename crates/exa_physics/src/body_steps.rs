@@ -198,6 +198,9 @@ pub(super) struct Steps {
     jolt_latch: bool,
     jolt_quiet: i32,
     pub jolt_told: bool,
+    /// A walk stopped this tick: after this tick's jolt the decaying term
+    /// takes the chest's slow velocity × −0.6.
+    pub(super) jolt_seed: bool,
     /// The step loudness the footwork's footstep reads
     /// ([`super::feet::step_loudness`] of the last started step's length).
     pub loudness: f32,
@@ -230,6 +233,7 @@ impl Default for Steps {
             jolt_quiet: 0,
             loudness: 0.0,
             jolt_told: false,
+            jolt_seed: false,
         }
     }
 }
@@ -639,6 +643,10 @@ pub(super) fn take_queued(
     super::feet::queued_step(chest, target, queued, look, aim, scale, landings)
 }
 
+/// A walk's stop seeds the jolt's decaying term with the chest's slow
+/// velocity times this.
+const JOLT_SEED: f32 = -0.6;
+
 /// What one tick's jolt asks of the body.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Jolt {
@@ -672,6 +680,12 @@ pub(super) fn jolt(
     steps.jolt_told = false;
     steps.jolt_decay *= 0.85;
     let jolt = (fast - slow).with_y(0.0) - steps.jolt_decay;
+    // The stop branch's seed, later in the original's tick than its jolt:
+    // next tick's term is this tick's slow velocity (all three axes) ×
+    // −0.6, then × 0.85.
+    if std::mem::take(&mut steps.jolt_seed) {
+        steps.jolt_decay = slow * JOLT_SEED;
+    }
     if off_feet {
         steps.jolt_latch = false;
         return None;

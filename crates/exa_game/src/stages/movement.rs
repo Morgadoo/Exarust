@@ -141,6 +141,7 @@ pub(crate) fn decide_movement(
     // gate reads the posture wait.
     let mut at = Footing::of(ragdoll.as_deref(), standing, speed);
     at.gaits = table;
+    let was_moving = body.moving();
     let decided = locomotion::decide(&mut req, &mut body, &at);
     if decided.land
         && let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut())
@@ -207,7 +208,6 @@ pub(crate) fn decide_movement(
     let drive = ragdoll.as_deref().and_then(|r| r.drive.as_ref());
     // A body without muscles stands on level ground.
     let level = drive.map_or(1.0, |d| d.balance().level());
-    let was_locomoting = body.locomoted;
     // The game clock at this tick, moving or not: a stopped body's
     // trailing-foot request lapses by it (and the stay check runs).
     body.now = ticks.as_deref().map_or(0, BodyTicks::millis);
@@ -318,9 +318,11 @@ pub(crate) fn decide_movement(
         if start_notice {
             r.walk_started();
         }
-        // Leaving the walk, the rearmost foot is planted anew.
-        if was_locomoting && !body.moving() {
-            r.plant_trailing_foot();
+        // The stop branch of a body in the walk's condition, on the tick
+        // it stops (the behaviour then ends the walk clip, as the
+        // original's stop branch starts the stance): the jolt's seed.
+        if was_moving && !body.moving() && state == Condition::WALKING {
+            r.walk_stopped();
         }
         // A moving armed body's held items query the level statically
         // (guess: Exarust's nearest read of the original's weapon-class

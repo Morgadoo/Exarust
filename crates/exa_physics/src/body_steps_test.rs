@@ -735,6 +735,35 @@ fn a_walking_body_jolts_past_its_chest_velocity() {
     assert!(!down.jolt_latch);
 }
 
+/// A walk's stop seeds the jolt's decaying term after that tick's jolt:
+/// the stop tick's jolt reads the old term, the next one 0.85 × (−0.6 ×
+/// the stop tick's slow velocity), so a body that has just stopped has
+/// 0.51 of its slow velocity added back to its jolt.
+#[test]
+fn a_walks_stop_seeds_the_jolt_after_its_jolt() {
+    let mut steps = Steps::default();
+    let slow = Vec3::new(0.02, 0.001, 0.0);
+    let feet = Vec3::ZERO;
+    steps.jolt_seed = true;
+    // This tick: fast − slow, the term still 0 (3 cm a tick: a jolt).
+    let fast = Vec3::new(0.05, 0.0, 0.0);
+    assert!(jolt(fast, slow, &mut steps, true, false, false, false, 1.0, feet).is_some());
+    assert!(!steps.jolt_seed);
+    assert_eq!(steps.jolt_decay, slow * -0.6);
+    // Next tick a chest at its slow velocity jolts by the term alone:
+    // 0.85 × 1.2 = 1.02 cm a tick, under the walk's 2.5.
+    let fast = Vec3::new(0.02, 0.0, 0.0);
+    assert!(jolt(fast, slow, &mut steps, true, false, false, false, 1.0, feet).is_none());
+    assert_eq!(steps.jolt_decay, slow * -0.6 * 0.85);
+    // Off its feet the seed is taken too.
+    let mut down = Steps {
+        jolt_seed: true,
+        ..Steps::default()
+    };
+    assert!(jolt(fast, slow, &mut down, true, false, true, false, 1.0, feet).is_none());
+    assert_eq!(down.jolt_decay, slow * -0.6);
+}
+
 /// The score's reference term is 1 less a 30th of the distance to the feet's
 /// segment, except under the original's squared epsilon (and for a NaN,
 /// which takes the root). The width and side terms divide by the stance
