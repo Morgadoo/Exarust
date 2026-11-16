@@ -823,7 +823,10 @@ impl GuiTask {
         let at = crate::form::add_child_index(&words, attributes);
         self.forms.push(Some(form));
         let id = self.forms.len() as FormId;
-        match siblings.get(at).and_then(|s| self.order.iter().position(|o| o == s)) {
+        match siblings
+            .get(at)
+            .and_then(|s| self.order.iter().position(|o| o == s))
+        {
             Some(slot) if self.root.is_some() => self.order.insert(slot, id),
             _ => self.order.push(id),
         }
@@ -979,11 +982,7 @@ impl GuiTask {
         self.raise_with(form, crate::form::raise_child);
     }
 
-    fn raise_with(
-        &mut self,
-        form: FormId,
-        rule: fn(&mut Vec<crate::form::Sibling>, u32) -> bool,
-    ) {
+    fn raise_with(&mut self, form: FormId, rule: fn(&mut Vec<crate::form::Sibling>, u32) -> bool) {
         let top = self.root_of(form);
         let root = self.root;
         let siblings: Vec<FormId> = self

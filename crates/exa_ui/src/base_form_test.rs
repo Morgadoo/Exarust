@@ -259,7 +259,12 @@ fn a_slider_let_go_off_its_track_still_reports_the_change() {
     task.release(1);
     let events = &base(&task, id).events;
     assert!(events.contains(&BaseEvent::Changed(0)), "{events:?}");
-    task.form_mut(id).unwrap().base_mut().unwrap().events.clear();
+    task.form_mut(id)
+        .unwrap()
+        .base_mut()
+        .unwrap()
+        .events
+        .clear();
     task.update(false, (130, 210));
     task.press(1);
     task.update(false, (130, 250));

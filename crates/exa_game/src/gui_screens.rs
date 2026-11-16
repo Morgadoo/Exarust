@@ -4439,7 +4439,12 @@ mod tests {
         }
         // The journal's key now raises the journal (it is not on top) ...
         ask(&mut app, GameScreen::Journal);
-        assert!(app.world().resource::<GameScreens>().task.is_active(journal));
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .task
+                .is_active(journal)
+        );
         // ... and closes it once it is, whatever the hover focuses.
         app.world_mut()
             .resource_mut::<GameScreens>()
@@ -4473,18 +4478,16 @@ mod tests {
             assert!(screens.journal_box_focused());
             text_box
         };
-        app.world_mut()
-            .write_message(bevy::window::WindowFocused {
-                window,
-                focused: true,
-            });
+        app.world_mut().write_message(bevy::window::WindowFocused {
+            window,
+            focused: true,
+        });
         app.update();
         assert!(app.world().resource::<GameScreens>().journal_box_focused());
-        app.world_mut()
-            .write_message(bevy::window::WindowFocused {
-                window,
-                focused: false,
-            });
+        app.world_mut().write_message(bevy::window::WindowFocused {
+            window,
+            focused: false,
+        });
         app.update();
         let mut screens = app.world_mut().resource_mut::<GameScreens>();
         assert!(!screens.journal_box_focused());
@@ -4562,7 +4565,12 @@ mod tests {
             .add_message::<ScreenRequest>()
             .add_systems(
                 Update,
-                (sync_screen_size, rescale_open_screens, open_requested_screens).chain(),
+                (
+                    sync_screen_size,
+                    rescale_open_screens,
+                    open_requested_screens,
+                )
+                    .chain(),
             );
         app.world_mut().spawn((
             crate::player::PlayerBody::new(0.0),
@@ -4617,7 +4625,12 @@ mod tests {
         assert_eq!(screens.journal_unit, 6);
         let text_box = screens.journal_box.as_ref().unwrap().form;
         assert_eq!(
-            screens.task.form(text_box).and_then(|f| f.base()).unwrap().unit,
+            screens
+                .task
+                .form(text_box)
+                .and_then(|f| f.base())
+                .unwrap()
+                .unit,
             6
         );
         // One text box: the old one closed with the walk.
