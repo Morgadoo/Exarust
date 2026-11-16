@@ -67,9 +67,8 @@ use exa_ai::brain::{CharacterId, Npc, RoleDatabase};
 use exa_ai::idle::{FollowAct, Follower, Leader};
 use exa_ai::roles::Roles;
 use exa_ai::route::Router as _;
+use exa_ai::route_walk::{AiRoute, Walker};
 use exa_ai::search::{self, Attention, Deed, Gaze, Goal, Loot, Pack, Phrases, Scene};
-use exa_ai::walker::IdleWalk;
-use exa_anim::Animator;
 use exa_assets::{Game, PackKind};
 use exa_combat::Condition;
 use exa_formats::characters::ItemRef;
@@ -103,10 +102,6 @@ const GOAL_REACH_CM2: f32 = 1.44e6;
 const ATTEND_SCORE: f32 = 1.0;
 /// The alert look runs while the panic is at least this.
 const ALERT_PANIC: f32 = 0.2;
-/// A followed route is given up after its length × this plus
-/// [`GIVE_UP_BASE_MS`] [Exarust's guard, as the idle walk's].
-const GIVE_UP_PER_CM: f32 = 20.0;
-const GIVE_UP_BASE_MS: u32 = 2000;
 
 /// The items the search can weigh, read once from the game's object
 /// database, and the loaded level's own records (keyed by their tagged
@@ -152,12 +147,12 @@ fn size_of(item: &exa_formats::objdb::Item) -> Option<u8> {
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct DebugSearcher(pub u32);
 
-/// One follower's own state: its follow fields, its walk, the search's gaze
-/// and the objects it has searched.
+/// One follower's own state: its follow fields, the search's gaze and the
+/// objects it has searched. The route it walks is the character's
+/// [`AiRoute`].
 #[derive(Debug, Clone)]
 struct Following {
     follower: Follower,
-    walk: IdleWalk,
     gaze: Gaze,
     searched: Vec<u32>,
     /// The search state and the object last logged.
@@ -187,7 +182,6 @@ impl Default for Following {
                 stop_cm: 0,
                 hold_search: false,
             },
-            walk: IdleWalk::default(),
             gaze: Gaze {
                 body_yaw: 0.0,
                 head: Vec3::Z,
@@ -735,12 +729,13 @@ struct LiveSearcher<'a> {
     pack: &'a mut Pack,
     pack_id: u32,
     searched: &'a mut Vec<u32>,
-    walk: &'a mut IdleWalk,
+    walk: &'a mut AiRoute,
+    /// The follow state's urgency, the walk's.
+    urgency: i32,
     router: Option<exa_ai::route::NavRouter<'a>>,
     turn: &'a mut exa_ai::route::PlanTurn,
     who: u64,
     frame: u32,
-    stand: bool,
 }
 
 impl search::Searcher for LiveSearcher<'_> {
@@ -765,14 +760,11 @@ impl search::Searcher for LiveSearcher<'_> {
     fn attend(&mut self, level: f32) -> bool {
         self.attended.is_some_and(|score| level <= score)
     }
-    fn wait(&mut self) {
-        if self.walk.route.is_empty() {
-            self.stand = true;
-        }
-    }
+    // The wait asks the body to stand while no route is walked: the AI's
+    // walk does not run then, so the body keeps its last request.
+    fn wait(&mut self) {}
     fn settle(&mut self) {
-        self.walk.route.clear();
-        self.stand = true;
+        self.walk.stop_if(Walker::Follow);
     }
     fn idle_look(&mut self) {}
     fn attention(&self) -> Attention {
@@ -811,11 +803,11 @@ impl search::Searcher for LiveSearcher<'_> {
             // Without a grid the route is the straight line.
             None => vec![self.feet, goal.at],
         };
-        start_walk(self.walk, points, self.now);
+        start_walk(self.walk, points, self.urgency, self.now);
         true
     }
     fn walking(&self) -> bool {
-        !self.walk.route.is_empty()
+        self.walk.follows(Walker::Follow)
     }
     fn calm_walk(&mut self) {}
     fn clear_path_mark(&mut self) {}
@@ -836,14 +828,10 @@ impl search::Searcher for LiveSearcher<'_> {
     }
 }
 
-/// Starts following `points` (cm), with Exarust's give-up deadline.
-fn start_walk(walk: &mut IdleWalk, points: Vec<Vec3>, now: u32) {
-    let length = exa_ai::route::path_length(&points);
-    walk.give_up_ms = now
-        .wrapping_add((length * GIVE_UP_PER_CM) as u32)
-        .wrapping_add(GIVE_UP_BASE_MS);
-    walk.goal = points.last().copied();
-    walk.route = points;
+/// Starts following `points` (cm) as the character's route, at the follow
+/// state's urgency, with Exarust's give-up deadline.
+fn start_walk(walk: &mut AiRoute, points: Vec<Vec3>, urgency: i32, now: u32) {
+    walk.start_until(points, urgency.clamp(0, 2), Walker::Follow, now);
 }
 
 /// One character as the scene keeps it.
@@ -995,12 +983,12 @@ pub fn follow_and_search(
         &mut Npc,
         &exa_ai::Duellist,
         &Condition,
-        &mut Transform,
+        &Transform,
         &ChildOf,
         Option<&exa_ai::presence::Presence>,
-        Option<&mut Animator>,
         Option<&Name>,
         Option<exa_ai::drive::Walking>,
+        &mut AiRoute,
     )>,
     mut characters: Query<(
         Entity,
@@ -1009,7 +997,7 @@ pub fn follow_and_search(
         &GlobalTransform,
         Option<&CharacterId>,
     )>,
-    mut roots: Query<(&mut CharacterBody, &GlobalTransform), Without<Possessions>>,
+    roots: Query<&GlobalTransform, (With<CharacterBody>, Without<Possessions>)>,
     leader_root: Query<&GlobalTransform, (With<Player>, Without<Possessions>)>,
     (others, combatants): (
         Query<(&GlobalTransform, &Condition)>,
@@ -1125,14 +1113,14 @@ pub fn follow_and_search(
             .and_then(|c| c.card_facts(id))
             .map_or_else(|| "thing".to_string(), |f| f.name.clone())
     };
-    for (entity, mut npc, duellist, condition, mut t, parent, presence, anim, name, mut walking) in
+    for (entity, mut npc, duellist, condition, t, parent, presence, name, mut walking, mut route) in
         &mut followers
     {
         if npc.state() != Some(IdleState::Follow) {
             world.following.remove(&entity);
             continue;
         }
-        let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
+        let Ok(root_gt) = roots.get(parent.parent()) else {
             continue;
         };
         let world = &mut *world;
@@ -1144,15 +1132,23 @@ pub fn follow_and_search(
             && !duellist.fighting()
             && npc.flight.is_none();
         if !active {
-            // A body on its locomotion soft-stops.
-            if let Some((req, motor, driven, ragdoll)) = walking.as_mut()
-                && driven.0.driving
-                && npc.flight.is_none()
-            {
-                state.walk.route.clear();
-                let at =
-                    exa_ai::drive::DriveBody::of(root_gt.translation(), motor, ragdoll.as_deref());
-                exa_ai::drive::soft_stop(req, &mut driven.0, &at);
+            // The follow's route ends (a body on its locomotion soft-stops).
+            if route.follows(Walker::Follow) {
+                route.stop();
+                if let Some((req, motor, driven, ragdoll)) = walking.as_mut() {
+                    let at = exa_ai::drive::DriveBody::of(
+                        root_gt.translation(),
+                        motor,
+                        ragdoll.as_deref(),
+                    );
+                    exa_ai::route_walk::stop_request(
+                        &mut route,
+                        req,
+                        &mut driven.0,
+                        &at,
+                        nav.as_deref(),
+                    );
+                }
             }
             if stepped && !state.rested {
                 state.rested = true;
@@ -1166,18 +1162,6 @@ pub fn follow_and_search(
                     npc.flight.is_some()
                 );
             }
-            if !state.walk.route.is_empty() || state.walk.velocity != Vec3::ZERO {
-                state.walk.route.clear();
-                state.walk.velocity = Vec3::ZERO;
-                if npc.flight.is_none() && !duellist.engaged {
-                    body.desired_velocity = Vec3::ZERO;
-                }
-                if let Some(mut anim) = anim
-                    && anim.action == "Walk"
-                {
-                    anim.play_loop("Idle");
-                }
-            }
             continue;
         }
         state.rested = false;
@@ -1189,7 +1173,7 @@ pub fn follow_and_search(
             let (_, turn, frame) = &mut *clock;
             let npc = &mut *npc;
             state.follower.place = feet_cm;
-            state.follower.walking = !state.walk.route.is_empty();
+            state.follower.walking = route.follows(Walker::Follow);
             // The closing walk's mode ends with its walk, as the route stop
             // clears the follow mode word [inf: the original's stop runs
             // when the route ends].
@@ -1261,7 +1245,9 @@ pub fn follow_and_search(
                             None => Some(vec![feet_cm, state.follower.goal]),
                         };
                         match points {
-                            Some(points) => start_walk(&mut state.walk, points, now),
+                            Some(points) => {
+                                start_walk(&mut route, points, state.follower.urgency, now)
+                            }
                             None => state.follower.mode = 0,
                         }
                     }
@@ -1272,7 +1258,7 @@ pub fn follow_and_search(
                     // which backs the follower off to 400 cm from the
                     // leader when it stands within 200 cm.
                     state.follower.replan = false;
-                    state.walk.route.clear();
+                    route.stop_if(Walker::Follow);
                     if let Some(leader) = leader.as_ref() {
                         let close = exa_ai::idle::closing_goal(&mut state.follower, leader);
                         // The closing replan writes the larger size class;
@@ -1312,7 +1298,7 @@ pub fn follow_and_search(
                                 "search: {who} backs off from the player to ({:.0}, {:.0}) cm",
                                 close.point.x, close.point.z
                             );
-                            start_walk(&mut state.walk, points, now);
+                            start_walk(&mut route, points, state.follower.urgency, now);
                         }
                     }
                 }
@@ -1322,7 +1308,7 @@ pub fn follow_and_search(
                     if state.follower.mode == exa_ai::idle::FOLLOWING {
                         state.follower.mode = 0;
                     }
-                    state.walk.route.clear();
+                    route.stop_if(Walker::Follow);
                 }
                 FollowAct::Activity => {
                     if state.follower.mode == exa_ai::idle::FOLLOWING {
@@ -1385,12 +1371,12 @@ pub fn follow_and_search(
                             pack: &mut pack,
                             pack_id,
                             searched: &mut state.searched,
-                            walk: &mut state.walk,
+                            walk: &mut route,
+                            urgency: state.follower.urgency,
                             router,
                             turn,
                             who: entity.to_bits(),
                             frame: *frame,
-                            stand: false,
                         };
                         let (busy, deeds) = search.tick(
                             &mut me,
@@ -1404,7 +1390,6 @@ pub fn follow_and_search(
                             },
                             &names,
                         );
-                        let stand = me.stand;
                         npc.roll = roll;
                         // The activity's answer is the follow's busy flag.
                         state.follower.busy = busy;
@@ -1445,9 +1430,6 @@ pub fn follow_and_search(
                             && state.gaze.look_until >= now
                         {
                             npc.turn.look = state.gaze.turn_to;
-                        }
-                        if stand && state.walk.route.is_empty() {
-                            state.walk.velocity = Vec3::ZERO;
                         }
                         let corpses_before: Vec<Pack> =
                             world.scene.corpses.iter().map(|c| c.pack.clone()).collect();
@@ -1533,71 +1515,15 @@ pub fn follow_and_search(
                             }
                         }
                     } else {
-                        state.walk.route.clear();
+                        route.stop_if(Walker::Follow);
                     }
                 }
             }
         }
-        // A body on its locomotion walks the route by the AI's driver at
-        // the follower's urgency, on its feet.
-        if let Some((req, motor, driven, ragdoll)) = walking.as_mut() {
-            let at = exa_ai::drive::DriveBody::of(feet, motor, ragdoll.as_deref());
-            match exa_ai::walker::follow_walk(&mut state.walk, feet_cm, now) {
-                Some(carrot) => {
-                    let cost = |p: Vec3| exa_ai::drive::grid_cost(nav.as_deref(), p);
-                    let drove = exa_ai::drive::drive(
-                        req,
-                        &mut driven.0,
-                        &at,
-                        carrot / 100.0,
-                        true,
-                        state.follower.urgency.clamp(0, 2),
-                        true,
-                        &cost,
-                    );
-                    let bodies = exa_ai::brain::nearby_bodies(&npc.nearby, &others);
-                    if drove && exa_ai::drive::obstacle(&mut driven.0, feet_cm, &bodies) {
-                        state.walk.route.clear();
-                        exa_ai::drive::soft_stop(req, &mut driven.0, &at);
-                    }
-                }
-                None if driven.0.driving => exa_ai::drive::soft_stop(req, &mut driven.0, &at),
-                None => {}
-            }
-            continue;
-        }
-        // The walk, every tick: steer along the followed route.
-        let was_walking = state.walk.velocity != Vec3::ZERO;
-        match exa_ai::walker::follow_walk(&mut state.walk, feet_cm, now) {
-            Some(carrot) => {
-                let urgency = state.follower.urgency.clamp(0, 2) as u8;
-                let order = exa_ai::order::follow(
-                    &[feet, carrot / 100.0],
-                    feet,
-                    npc.facing(t.rotation),
-                    urgency,
-                );
-                body.desired_velocity = order.velocity;
-                state.walk.velocity = order.velocity;
-                npc.turn_model(&mut t, order.heading);
-                if let Some(mut anim) = anim
-                    && order.velocity != Vec3::ZERO
-                    && anim.action != "Walk"
-                {
-                    anim.play_loop("Walk");
-                }
-            }
-            None => {
-                state.walk.velocity = Vec3::ZERO;
-                if was_walking {
-                    body.desired_velocity = Vec3::ZERO;
-                    if let Some(mut anim) = anim
-                        && anim.action == "Walk"
-                    {
-                        anim.play_loop("Idle");
-                    }
-                }
-            }
+        // The follow state writes the walk's urgency every tick it runs; the
+        // AI's walk (`exa_ai::route_walk::walk_routes`) walks the route.
+        if stepped && route.follows(Walker::Follow) {
+            route.urgency = state.follower.urgency.clamp(0, 2);
         }
     }
 }
@@ -1892,13 +1818,15 @@ impl Plugin for NpcSearchPlugin {
                 ),
             )
             // The follow and the search are idle states of the AI tick: they
-            // run in the brains' tick, every body tick, after the walks; what
-            // their deeds leave is carried out right after.
+            // run in the brains' tick, every body tick, after the other
+            // states and before the AI's walk; what their deeds leave is
+            // carried out right after.
             .add_systems(
                 exa_ai::BrainChain,
                 (follow_and_search, carry_out_search, send_search_shots)
                     .chain()
-                    .after(exa_ai::brain::idle_walk),
+                    .after(exa_ai::brain::idle_walk)
+                    .before(exa_ai::route_walk::walk_routes),
             );
     }
 }
@@ -1908,6 +1836,7 @@ impl Plugin for NpcSearchPlugin {
 fn bridge_npc_search_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_move_resource::<exa_ai::rooms::RoomGridSize>()
+        .bridge_copy::<exa_ai::route_walk::AiRoute>()
         .bridge_copy::<exa_character::Outfit>()
         .bridge_copy_in_resource::<crate::doll_view::DollItems>()
         .bridge_copy_in_resource::<crate::npc_search::OpenSearchScreens>()

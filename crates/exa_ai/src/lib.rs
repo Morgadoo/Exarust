@@ -61,6 +61,7 @@ pub mod presence;
 pub mod roles;
 pub mod rooms;
 pub mod route;
+pub mod route_walk;
 pub mod search;
 pub mod sense;
 pub mod struck;
@@ -162,6 +163,9 @@ impl Plugin for AiPlugin {
                     brain::flee_walk,
                     brain::face_entering,
                     brain::idle_walk,
+                    // The AI tick's walk, after every state: the game's
+                    // follow and search join the chain before it.
+                    route_walk::walk_routes,
                 )
                     .chain(),
             )
@@ -184,6 +188,7 @@ fn bridge_ai_types(app: &mut App) {
         .bridge_snapshot_resource::<crate::BrainTickClock>()
         .bridge_copy::<crate::Duellist>()
         .bridge_copy::<crate::drive::Driven>()
+        .bridge_copy::<crate::route_walk::AiRoute>()
         .bridge_move_resource::<crate::brain::BrainClock>()
         .bridge_copy::<crate::brain::CharacterId>()
         .bridge_copy::<crate::brain::MindWarded>()
@@ -333,7 +338,7 @@ impl cast::Powers for DuelPowers {
 /// `CharacterBody`) that duels `target` (a world-space entity, e.g. the
 /// player's physics root).
 #[derive(Component, Debug, Clone)]
-#[require(Stance, Combatant, presence::Presence)]
+#[require(Stance, Combatant, presence::Presence, route_walk::AiRoute)]
 pub struct Duellist {
     pub target: Entity,
     /// The combat state's generator.
@@ -373,9 +378,8 @@ pub struct Duellist {
     pub personality: Option<personality::Personality>,
     /// The chase's fields.
     pub chase: chase::ChaseMind,
-    /// The chase route to walk (cm), as the planner returned it.
-    route: Vec<Vec3>,
-    /// The last combat tick ended at the chase, following the route.
+    /// The last combat tick ended at the chase, following the route (the
+    /// character's [`route_walk::AiRoute`]).
     chasing: bool,
     /// The stab's aim, which the behaviour turns toward the foe while a
     /// stab plays and the body's stab drive pulls the weapon onto.
@@ -420,21 +424,16 @@ impl Duellist {
         (self.in_combat && self.focus.is_none() && !self.dropped).then_some(self.target)
     }
 
-    /// It walks a chase route: the last combat tick ended at the chase and
-    /// a route the planner accepted is left to walk (the route-following
-    /// flag the AI tick's footprint gate reads) [guess: the original's flag
-    /// stays set until its walk state changes; Exarust's route is cleared
-    /// on arrival and only walked while the tick ends at the chase].
-    pub fn follows_route(&self) -> bool {
-        self.chasing && !self.route.is_empty()
+    /// The last combat tick ended at the chase.
+    pub fn chasing(&self) -> bool {
+        self.chasing
     }
 
-    /// Leaves combat for the idle state.
+    /// Leaves combat for the idle state. The chase's follow ends; its
+    /// route is ended by the caller ([`route_walk::AiRoute::stop_if`]).
     pub fn leave(&mut self) {
         self.engaged = false;
         self.in_combat = false;
-        // The idle state takes the walk: the chase's route ends.
-        self.route.clear();
         self.chase.following = false;
     }
 
@@ -456,7 +455,6 @@ impl Duellist {
             queue: 0,
             personality: None,
             chase: chase::ChaseMind::default(),
-            route: Vec::new(),
             chasing: false,
             focus: None,
             dropped: false,
@@ -467,7 +465,7 @@ impl Duellist {
 }
 
 /// Exarust's interim footwork clip (the original's AI steps in its stance).
-const COMBAT_WALK: &str = "Combat Walk";
+pub(crate) const COMBAT_WALK: &str = "Combat Walk";
 /// Centimetres per metre: the combat state works in the original's units.
 const CM: f32 = 100.0;
 /// A step is done this close to its goal (m) [Exarust's: the original's
@@ -1145,6 +1143,7 @@ fn duellist(
             Option<&mut exa_character::record::CharacterData>,
             Option<&mut drive::Driven>,
             Option<&mut exa_combat::CombatTarget>,
+            &mut route_walk::AiRoute,
         ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
@@ -1205,6 +1204,7 @@ fn duellist(
             mut record,
             mut driven,
             mut combat_target,
+            mut route,
         ),
     ) in &mut npcs
     {
@@ -1820,6 +1820,12 @@ fn duellist(
                             npc.applied.as_ref().map_or(0, |a| a.phase_word),
                         )
                     });
+            // The chase follows while the character's route is its own, and
+            // plans again when the follower's line was blocked.
+            ai.chase.following = route.follows(route_walk::Walker::Chase);
+            if route.wants_plan && route.owner == Some(route_walk::Walker::Chase) {
+                ai.chase.replanned = true;
+            }
             let Duellist {
                 mind,
                 roll,
@@ -2162,6 +2168,7 @@ fn duellist(
             if matches!(out.exit, Some(combat::Exit::Leave { .. })) {
                 info!("duellist {entity:?} leaves combat: it has no foe and no focus");
                 ai.leave();
+                route.stop_if(route_walk::Walker::Chase);
                 ai.dropped = false;
                 ai.focus = None;
                 combatant.in_combat = false;
@@ -2189,6 +2196,15 @@ fn duellist(
                     );
                 }
             }
+            // [Exarust's guard] A combat tick that did not reach the chase
+            // lets the chase's route go: the original's combat state stops
+            // the route at its own points, which are not all traced. A
+            // running body's stop is one of them (the route's soft stop).
+            if (chased.is_none() || out.stop_run.is_some())
+                && route.follows(route_walk::Walker::Chase)
+            {
+                route.stop();
+            }
             if let Some(outcome) = chased {
                 // Debug aid: `EXA_DUEL_TRACE` also logs what the chase did.
                 if std::env::var_os("EXA_DUEL_TRACE").is_some() {
@@ -2211,21 +2227,22 @@ fn duellist(
                 } else if outcome.reached.is_some() {
                     contact.flags &= !crate::contacts::UNREACHABLE;
                 }
+                // A route the start test takes is the character's route, at
+                // the chase's gait; one it refuses stops the route.
                 if let Some(planned) = outcome.planned {
-                    ai.route = if planned.following {
-                        planned.route.points
+                    if planned.following {
+                        let gait = ai.chase.gait;
+                        route.start(planned.route.points, gait, route_walk::Walker::Chase);
                     } else {
-                        Vec::new()
-                    };
+                        route.stop();
+                    }
                 }
-                // Without a route the walk follows nothing: the chase's
-                // follow state ends with it.
-                if ai.route.is_empty() {
-                    ai.chase.following = false;
-                }
+                // The chase's follow state is the route's.
+                ai.chase.following = route.follows(route_walk::Walker::Chase);
                 if outcome.end == chase::End::Left {
                     info!("duellist {entity:?} leaves combat: its foe is out of reach");
                     ai.leave();
+                    route.stop_if(route_walk::Walker::Chase);
                     combatant.in_combat = false;
                     // The chase leaves through the idle return: the AI's
                     // look, heading and eased offset take the body's look
@@ -2497,68 +2514,19 @@ fn duellist(
         if attacking.is_some() || !anim.looping {
             continue;
         }
-        // While the combat tick ends at the chase, its route is walked
-        // through the path's carrot.
-        // A body on its locomotion walks the chase by the AI's driver at
-        // the chase's urgency 1, on its feet, and soft-stops at its end.
+        // While the chase's route is followed it is walked by the AI's walk
+        // ([`route_walk::walk_routes`]); one the combat tick let go ends
+        // on a body on its locomotion with the soft stop.
+        if route.follows(route_walk::Walker::Chase) {
+            continue;
+        }
         if let (Some(req), Some(motor), Some(driven)) =
             (walk.as_deref_mut(), locomotor, driven.as_deref_mut())
+            && driven.0.driving
+            && !route.following
         {
             let at = drive::DriveBody::of(feet, motor, ragdoll);
-            if ai.chasing && !ai.route.is_empty() {
-                if std::env::var_os("EXA_DUEL_TRACE").is_some() {
-                    let body_step = ragdoll.and_then(Ragdoll::footwork_step);
-                    info!(
-                        "chase-walk {entity:?} feet {:.0?} route {} carrot {:.0?} driving {} \
-                         body_step {:?}",
-                        feet * CM,
-                        ai.route.len(),
-                        crate::path::carrot(&ai.route, feet * CM).goal,
-                        driven.0.driving,
-                        body_step.map(|s| (
-                            s.stepping,
-                            s.balance_step,
-                            s.long,
-                            s.age_ms as i32,
-                            s.queue,
-                            s.landed,
-                            (s.target * CM).round(),
-                            (s.feet_centre * CM).round()
-                        ))
-                    );
-                }
-                if let Some(goal) = crate::path::carrot(&ai.route, feet * CM).goal {
-                    let cost = |p: Vec3| drive::grid_cost(nav.as_deref(), p);
-                    drive::drive(req, &mut driven.0, &at, goal / CM, true, 1, false, &cost);
-                }
-                // The path follower soft-stops a hurried walk within a
-                // metre of the route's end, and the walk no longer follows:
-                // the next combat tick runs on past the chase.
-                let last = ai.route[ai.route.len() - 1];
-                if crate::path::hurried_arrival(feet * CM, last) {
-                    ai.route.clear();
-                    ai.chase.following = false;
-                    drive::soft_stop(req, &mut driven.0, &at);
-                }
-                continue;
-            }
-            if driven.0.driving {
-                drive::soft_stop(req, &mut driven.0, &at);
-            }
-        }
-        if ai.chasing && !ai.route.is_empty() {
-            let carrot = crate::path::carrot(&ai.route, feet * CM);
-            if let Some(goal) = carrot.goal {
-                let order = follow(&[feet, goal / CM], feet, yaw_of(t.rotation), 0);
-                body.desired_velocity = order.velocity;
-                anim.play_loop(COMBAT_WALK);
-            }
-            let last = ai.route[ai.route.len() - 1];
-            if crate::path::hurried_arrival(feet * CM, last) {
-                ai.route.clear();
-                ai.chase.following = false;
-            }
-            continue;
+            route_walk::stop_request(&mut route, req, &mut driven.0, &at, nav.as_deref());
         }
         match ai.step {
             // A body on its feet steps by them in its stance.
@@ -4322,15 +4290,16 @@ mod chase_tests {
 
     /// A fighter whose foe is out of reach for 21 ticks plans a chase
     /// route on the navigation grid (the one pathfinder) on its plan turn,
-    /// follows it, and walks its carrot while the combat tick ends at the
-    /// chase; the route reaches the foe, so its contact is not marked.
+    /// follows it as the character's route at the chase's gait, and the
+    /// AI's walk walks its carrot while the combat tick ends at the chase;
+    /// the route reaches the foe, so its contact is not marked.
     #[test]
     fn a_stuck_fighter_plans_its_chase_route_through_the_grid() {
         let floor = Vec3::new(0.0, 10.0, 0.0);
         let mut app = App::new();
         app.init_resource::<Time>()
             .add_message::<exa_combat::AttackAskedHook>()
-            .add_systems(Update, duellist)
+            .add_systems(Update, (duellist, route_walk::walk_routes).chain())
             .insert_resource(yard());
         let target = app
             .world_mut()
@@ -4371,9 +4340,14 @@ mod chase_tests {
         let ai = app.world().get::<Duellist>(foe).unwrap();
         assert!(ai.chase.following, "the chase started");
         assert!(ai.chasing, "the combat tick ends at the chase");
-        assert!(!ai.route.is_empty(), "the route was planned");
+        let route = app.world().get::<route_walk::AiRoute>(foe).unwrap();
+        assert!(
+            route.follows(route_walk::Walker::Chase),
+            "the route was planned"
+        );
+        assert_eq!(route.urgency, chase::WALK_GAIT);
         // The route walks toward the foe (+z).
-        assert!(ai.route[ai.route.len() - 1].z > 600.0);
+        assert!(route.points[route.points.len() - 1].z > 600.0);
         let combatant = app.world().get::<Combatant>(foe).unwrap();
         assert!(combatant.contacts.iter().all(|c| c.flags & 0x10 == 0));
         let body = app.world().get::<CharacterBody>(root).unwrap();

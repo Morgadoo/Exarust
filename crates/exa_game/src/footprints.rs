@@ -16,8 +16,7 @@
 use std::collections::HashSet;
 
 use bevy::prelude::*;
-use exa_ai::Duellist;
-use exa_ai::brain::{self, Npc};
+use exa_ai::brain;
 use exa_combat::{Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_world::nav::{NavFootprints, NavGrid};
@@ -64,8 +63,7 @@ pub fn keep_footprints(
             &ChildOf,
             Option<&Condition>,
             Has<PlayerBody>,
-            Option<&Npc>,
-            Option<&Duellist>,
+            Option<&exa_ai::route_walk::AiRoute>,
             Option<&Transform>,
         ),
         With<Fighter>,
@@ -79,7 +77,7 @@ pub fn keep_footprints(
         prints.forget();
     }
     seen.clear();
-    for (who, parent, condition, player, npc, duellist, model) in &characters {
+    for (who, parent, condition, player, route, model) in &characters {
         let Ok((capsule, at)) = roots.get(parent.parent()) else {
             continue;
         };
@@ -88,7 +86,7 @@ pub fn keep_footprints(
             stamps(true, condition.copied())
         } else {
             let facing = model.map_or(Vec3::Z, |t| t.rotation * Vec3::Z);
-            let following = brain::follows_route(npc, duellist);
+            let following = brain::follows_route(route);
             let on = npc_stamps(
                 following,
                 capsule.desired_velocity,
