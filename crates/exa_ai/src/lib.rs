@@ -387,6 +387,13 @@ pub struct Duellist {
     /// The body's step as this tick's combat state left it, and whether
     /// it started a step: written into the body by [`apply_feet_steps`].
     feet_write: Option<FeetWrite>,
+    /// The attack arc kind its down exit published ([`combat::down_arc`]),
+    /// which the position scores read in place of the arc its body's clip
+    /// would publish; None while it is not down in combat.
+    down_arc: Option<i32>,
+    /// Its last combat tick cleared the body's pose word: the down exit
+    /// and every tick past the leave do.
+    clears_pose: bool,
 }
 
 /// The body's step as the combat tick left it, whether it started a step,
@@ -460,7 +467,21 @@ impl Duellist {
             dropped: false,
             stab_aim: exa_combat::stab::StabAim::default(),
             feet_write: None,
+            down_arc: None,
+            clears_pose: false,
         }
+    }
+
+    /// The attack arc kind its down exit publishes while it is down in
+    /// combat.
+    pub fn down_arc(&self) -> Option<i32> {
+        self.down_arc
+    }
+
+    /// Its last combat tick cleared the body's pose word (the down exit, or
+    /// a tick that went on past the leave): a statue's rest ends.
+    pub fn clears_pose(&self) -> bool {
+        self.clears_pose
     }
 }
 
@@ -737,6 +758,17 @@ fn published_blow(
         origin_in_arc: false,
         angle: 0.0,
     }
+}
+
+/// The arc kind a downed duellist at or under `who` published from its down
+/// exit ([`Duellist::down_arc`]), if any.
+fn down_arc_under(who: Entity, arcs: &[(Entity, i32)], children: &Query<&Children>) -> Option<i32> {
+    if arcs.is_empty() {
+        return None;
+    }
+    std::iter::once(who)
+        .chain(children.iter_descendants(who))
+        .find_map(|e| arcs.iter().find(|(d, _)| *d == e).map(|(_, kind)| *kind))
 }
 
 /// The step the position score reads, in centimetres. A recovery or stagger
@@ -1162,6 +1194,12 @@ fn duellist(
         .iter()
         .filter_map(|(entity, ai, ..)| ai.step.map(|step| (entity, step.goal)))
         .collect();
+    // The arc each downed duellist's down exit published last tick, which
+    // the position scores read in place of its clip's.
+    let down_arcs: Vec<(Entity, i32)> = npcs
+        .iter()
+        .filter_map(|(entity, ai, ..)| ai.down_arc.map(|kind| (entity, kind)))
+        .collect();
     // The fighters in combat as the starters' aim reads them, taken once
     // after the AI tick: the duellists and every other fighter.
     let fighting = exa_combat::parry::fighting_of(
@@ -1216,11 +1254,28 @@ fn duellist(
         // nothing more. The combat state's down exit (its condition's down
         // bit) still runs while it is the current state: the AI's look,
         // heading and head look take the yaw of the body's facing and the
-        // body's look and smoothing directions the facing itself. [Not
-        // reproduced: the exit's AI state word (0 or 4), the body's stance
-        // word 3 written without the set-stance call, and its pose word 0.]
+        // body's look and smoothing directions the facing itself; it
+        // publishes the arc kind "recovering", or "none" once it lies with
+        // its clip past 0.9 ([`combat::down_arc`]); the body's stance word
+        // becomes the guard without the set-stance helper (no clip starts:
+        // the clip under way ends in it); the body's pose word clears.
+        ai.down_arc = None;
+        ai.clears_pose = false;
         if condition.fallen_or_dying() || fallen {
             if ai.in_combat && condition.0 & combat::DOWN != 0 {
+                let clock = motions
+                    .as_deref()
+                    .and_then(|m| m.clip(&anim, &anim.action))
+                    .map_or(0.0, |c| anim.clip_progress(c));
+                ai.down_arc = Some(combat::down_arc(condition.0, clock));
+                ai.clears_pose = true;
+                if *stance != Stance::Defence {
+                    let old = stance.action();
+                    *stance = Stance::Defence;
+                    if anim.then.as_deref() == Some(old) {
+                        anim.then = Some(Stance::Defence.action().to_string());
+                    }
+                }
                 let facing = t.rotation * Vec3::Z;
                 ai.mind.aim = combat::yaw(facing);
                 ai.mind.heading = ai.mind.aim;
@@ -1492,6 +1547,10 @@ fn duellist(
             target_condition == Condition::ATTACKING,
             target_swing,
         );
+        if let Some(kind) = down_arc_under(ai.target, &down_arcs, &children) {
+            blow.kind = kind;
+            blow.sweeping = false;
+        }
         if blow.kind == 0 {
             blow.sweeping = false;
         }
@@ -1914,7 +1973,7 @@ fn duellist(
                         .iter()
                         .find(|(id, _)| *id == c.character)
                         .map(|(_, goal)| *goal);
-                    let Some(measured) = measure_contact(
+                    let Some(mut measured) = measure_contact(
                         c.character,
                         me_cm,
                         &targets,
@@ -1932,6 +1991,10 @@ fn duellist(
                     ) else {
                         continue;
                     };
+                    if let Some(kind) = down_arc_under(c.character, &down_arcs, &children) {
+                        measured.blow.kind = kind;
+                        measured.blow.sweeping = false;
+                    }
                     Some(measured)
                 };
                 contacts.push(combat::Contact {
@@ -2165,6 +2228,12 @@ fn duellist(
                 swinging.release(&swing, &at);
             }
             ai.chasing = out.exit == Some(combat::Exit::Chase);
+            // Past the follow and the leave, the tick clears the body's
+            // pose word before its estimate.
+            ai.clears_pose = !matches!(
+                out.exit,
+                Some(combat::Exit::Follow | combat::Exit::Leave { .. })
+            );
             if matches!(out.exit, Some(combat::Exit::Leave { .. })) {
                 info!("duellist {entity:?} leaves combat: it has no foe and no focus");
                 ai.leave();
@@ -3458,6 +3527,69 @@ mod tests {
         assert_eq!(npc.turn.heading, ai.mind.aim);
         assert_eq!(npc.gaze.look, ai.mind.aim);
         assert!((npc.gaze.body_look - facing).length() < 1e-6);
+    }
+
+    /// The down exit publishes the arc kind "recovering" (4), takes the
+    /// guard as the body's stance word without starting it (the clip under
+    /// way now ends in it) and clears the pose word; up again, the arc is
+    /// the body's own.
+    #[test]
+    fn a_downed_fighter_publishes_a_recovery_and_takes_the_guard() {
+        let (mut app, fighter, _) = duel(8.0, false);
+        engage(&mut app, fighter);
+        step(&mut app);
+        assert!(app.world().get::<Duellist>(fighter).unwrap().fighting());
+        *app.world_mut().get_mut::<Stance>(fighter).unwrap() = Stance::CombatIdle;
+        {
+            let mut anim = app.world_mut().get_mut::<Animator>(fighter).unwrap();
+            anim.action = "Fall Forward".into();
+            anim.then = Some(Stance::CombatIdle.action().into());
+        }
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert(Condition(combat::DOWN));
+        step(&mut app);
+        let ai = app.world().get::<Duellist>(fighter).unwrap();
+        assert_eq!(ai.down_arc(), Some(4));
+        assert!(ai.clears_pose());
+        assert_eq!(
+            *app.world().get::<Stance>(fighter).unwrap(),
+            Stance::Defence
+        );
+        let anim = app.world().get::<Animator>(fighter).unwrap();
+        // No clip started: the fall plays on and ends in the guard.
+        assert_eq!(anim.action, "Fall Forward");
+        assert_eq!(anim.then.as_deref(), Some("Defence stance"));
+        // The getting-up word without a clip (its clock 0) still recovers.
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert(Condition(combat::LYING));
+        step(&mut app);
+        assert_eq!(
+            app.world().get::<Duellist>(fighter).unwrap().down_arc(),
+            Some(4)
+        );
+        // Up again, its arc is published from its body.
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert(Condition::NORMAL);
+        step(&mut app);
+        let ai = app.world().get::<Duellist>(fighter).unwrap();
+        assert_eq!(ai.down_arc(), None);
+        assert!(ai.fighting());
+    }
+
+    /// The down exit's arc gives way past a clock of 0.9 (a double
+    /// compare, NaN not past) only for the exact getting-up word.
+    #[test]
+    fn the_down_arc_gives_way_late_in_the_getting_up() {
+        let past = f32::from_bits(0.9f32.to_bits() + 1);
+        assert_eq!(combat::down_arc(combat::LYING, past), 0);
+        // 0.9f is below the double 0.9: not yet.
+        assert_eq!(combat::down_arc(combat::LYING, 0.9), 4);
+        assert_eq!(combat::down_arc(combat::LYING, f32::NAN), 4);
+        assert_eq!(combat::down_arc(combat::DOWN, 1.0), 4);
+        assert_eq!(combat::down_arc(combat::LYING | 0x20, 1.0), 4);
     }
 
     #[test]

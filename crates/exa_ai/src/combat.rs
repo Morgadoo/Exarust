@@ -126,6 +126,22 @@ pub const CLAWS: u32 = 0xc0;
 pub const GUARD: i32 = 3;
 /// The stance motion of the combat idle.
 pub const COMBAT_IDLE: i32 = 4;
+/// The down exit's arc gives way once a lying body's clock is past this
+/// (a double compare).
+const DOWN_ARC_CLOCK: f64 = 0.9;
+
+/// The attack arc kind the down exit publishes for a body with the down
+/// bit: "none" (0) when its condition is exactly [`LYING`] (the getting-up
+/// word) with its motion clock past 0.9, else "recovering" (4). A NaN clock is not past
+/// 0.9. The position scores of the fighters around it read the kind
+/// ([`crate::place::Blow::kind`]): a recovering fighter draws them in.
+pub fn down_arc(condition: u32, clock: f32) -> i32 {
+    if condition == LYING && f64::from(clock) > DOWN_ARC_CLOCK {
+        0
+    } else {
+        4
+    }
+}
 
 /// The engine's generator: the next value times `n`, high half.
 fn draw(roll: &mut u32, n: u64) -> u32 {
