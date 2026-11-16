@@ -472,6 +472,28 @@ fn head_tilt_persists_and_ramps_in_the_air() {
     assert!(body.head_tilt < 0.0);
 }
 
+/// With support the locomotion routine sets the head tilt again from the
+/// exertion it has just eased (× 0.99 walking): sign × square × 2, the
+/// lean's ease not applied, so the twist after it reads this tick's.
+#[test]
+fn supported_locomotion_sets_the_tilt_from_this_ticks_exertion() {
+    let (req, mut body, at) = walker();
+    body.exertion = 0.5;
+    body.head_tilt = 0.123;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    let e = (0.5f64 * 0.99) as f32;
+    assert_eq!(body.exertion, e);
+    assert_eq!(body.head_tilt, e * e * 2.0);
+    // Running to its cap, the exertion takes its 0.98 first.
+    body.leg = LegMode::Run;
+    body.run = 1.0;
+    body.align = 1.0;
+    body.exertion = -0.5;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    let e = (-0.5f64 * 0.98) as f32;
+    assert_eq!(body.head_tilt, -(e * e) * 2.0);
+}
+
 /// The grip mode the routine sets: the general mode running (and walking
 /// in combat), the walk's mode otherwise.
 #[test]
