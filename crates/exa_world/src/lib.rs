@@ -1644,9 +1644,13 @@ pub fn spawn_model_nodes_at(
             commands.entity(e).insert(PortalMarker { size });
         }
         if !node.gi_points.is_empty() {
-            commands
-                .entity(e)
-                .insert(gi_volume::GiPoints(node.gi_points.clone()));
+            commands.entity(e).insert((
+                gi_volume::GiPoints(node.gi_points.clone()),
+                gi_volume::GiBounds {
+                    centre: node.bounds.0,
+                    half: node.half_extents,
+                },
+            ));
             // The node's centred GI variant (flags2 0x10): its points gain
             // half a voxel in height and leave their column's lowest slice
             // alone, as the original's second splat path does.
