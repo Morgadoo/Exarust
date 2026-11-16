@@ -139,7 +139,10 @@ impl Bindings {
     /// fills its slot takes the code's row ([`row_code`]).
     pub fn set_key(&mut self, action: Action, key: u32) {
         self.keys[action.slot()] = key;
-        if let Some(row) = ROW_SLOTS.iter().position(|slot| *slot == Some(action.slot())) {
+        if let Some(row) = ROW_SLOTS
+            .iter()
+            .position(|slot| *slot == Some(action.slot()))
+        {
             self.rows[row] = row_code(key);
         }
     }
@@ -166,7 +169,9 @@ impl Bindings {
     /// The name the Controls page's key cell shows for the saved row `row`
     /// ([`row_key_name`]).
     pub fn row_name(&self, row: usize) -> String {
-        self.rows.get(row).map_or_else(String::new, |code| row_key_name(*code))
+        self.rows
+            .get(row)
+            .map_or_else(String::new, |code| row_key_name(*code))
     }
 
     /// The file's controller word as read ([`Bindings::encode`] writes it
@@ -280,11 +285,7 @@ impl Bindings {
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         };
         let version = word(0)? as i32;
-        let (saved_word, first) = if version > 100 {
-            (word(1)?, 3)
-        } else {
-            (0, 2)
-        };
+        let (saved_word, first) = if version > 100 { (word(1)?, 3) } else { (0, 2) };
         let controller = saved_word != 0;
         let count = (word(first - 1)? as i32).max(0) as usize;
         let mut rows = DEFAULT_ROWS;
@@ -984,7 +985,10 @@ mod rebind_tests {
         bindings.set_row(13, 0x138);
         assert_eq!(bindings.rows()[13], 0x138);
         assert_eq!(bindings.key(Action::Alternate), 0xA4);
-        assert_eq!(&bindings.encode()[(3 + 13) * 4..][..4], &0x138u32.to_le_bytes());
+        assert_eq!(
+            &bindings.encode()[(3 + 13) * 4..][..4],
+            &0x138u32.to_le_bytes()
+        );
         // Exarust's live flag does not change the word the file keeps.
         bindings.controller = false;
         assert_eq!(&bindings.encode()[4..8], &5u32.to_le_bytes());

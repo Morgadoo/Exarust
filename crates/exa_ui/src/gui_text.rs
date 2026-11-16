@@ -923,7 +923,14 @@ mod tests {
         // ("ab" then "\n" skipped, then nothing left, plus one).
         assert_eq!(count_lines(&f, b"ab\r\n", 100), 2);
         // Agrees with the caret layout's count on the same texts.
-        for t in [&b"ab cd ef"[..], b"ab\r\ncd", b"abcdef", b"ab\r\n", b"x\rq", b""] {
+        for t in [
+            &b"ab cd ef"[..],
+            b"ab\r\ncd",
+            b"abcdef",
+            b"ab\r\n",
+            b"x\rq",
+            b"",
+        ] {
             assert_eq!(
                 count_lines(&f, t, 30),
                 crate::text_layout::line_count(t, 30, &f),

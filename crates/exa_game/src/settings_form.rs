@@ -1095,7 +1095,8 @@ mod tests {
             let form = settings.form.as_mut().expect("the form opened");
             assert_eq!(form.controller_tabs, connected);
             form.switch(1);
-            let hidden = |record: usize| form.geometry.main[record].state & exa_ui::settings::HIDDEN != 0;
+            let hidden =
+                |record: usize| form.geometry.main[record].state & exa_ui::settings::HIDDEN != 0;
             assert_eq!(hidden(2), !connected);
             assert_eq!(hidden(3), !connected);
         }

@@ -1142,12 +1142,18 @@ mod tests {
             app.update();
         }
         let icons = app.world().resource::<PanelIcons>();
-        let pending = icons.pending.front().expect("the scene waits for the paint");
+        let pending = icons
+            .pending
+            .front()
+            .expect("the scene waits for the paint");
         assert!(pending.scene.is_some(), "{} has no scene", item.name);
         let variant = pending.variant;
         assert_ne!(variant & exa_items::icon_cache::variant::WEAPON, 0);
         // The cache keeps its key: the weapon bit is the render's only.
-        assert_eq!(icons.cache.entries[0].variant & exa_items::icon_cache::variant::WEAPON, 0);
+        assert_eq!(
+            icons.cache.entries[0].variant & exa_items::icon_cache::variant::WEAPON,
+            0
+        );
         let (_, plan) = exa_items::item_icon::scene_plan(
             variant,
             false,
