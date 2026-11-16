@@ -985,9 +985,11 @@ pub fn unequip(editor: &mut LoadoutEditor, id: u32) -> bool {
     editor.weapons.len() + editor.armour.len() != before
 }
 
-/// The preview's encumbrance: `strength² × 10`.
-pub fn encumbrance(strength: f32) -> f32 {
-    strength * strength * 10.0
+/// The loadout form's encumbrance dots: the shown body's encumbrance (0
+/// to 1, the field the inventory's dots read unsquared) squared, times
+/// ten, a single-precision product.
+pub fn encumbrance(encumbrance: f32) -> f32 {
+    encumbrance * encumbrance * 10.0
 }
 
 /// What closing the form does.

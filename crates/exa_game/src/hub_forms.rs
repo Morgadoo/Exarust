@@ -1553,6 +1553,8 @@ pub(crate) struct FormExtras<'a> {
     pub edits: Vec<(usize, exa_ui::text_edit::EditView)>,
     /// The form's caret bit (the blink's lit half).
     pub caret_lit: bool,
+    /// The rating-dot sheet a dots record (class 0xac01) draws with.
+    pub dots: Option<&'a crate::doll_view::DotSheet>,
 }
 
 /// [`paint_form`] with the extended forms' extras.
@@ -1664,7 +1666,22 @@ pub(crate) fn paint_form_with(
                     }
                 }
             }
-            0xac01 => {}
+            // The rating dots: whole dots up to the value less a quarter,
+            // then a half dot, in the label group's seventh ink (the
+            // loadout form's encumbrance).
+            0xac01 => {
+                if let Some(layer) = extras.dots.and_then(|sheet| {
+                    crate::doll_view::rating_dots_layer(
+                        sheet,
+                        c.value,
+                        (rect.left, rect.top, rect.height()),
+                        unit,
+                        look.palette.text[6],
+                    )
+                }) {
+                    painted.push(layer);
+                }
+            }
             _ if crate::option_forms::paint_extended(
                 painted,
                 c,
@@ -2157,8 +2174,11 @@ pub fn hub_form_input(
     ),
     mut open_arsenal: MessageWriter<crate::arsenal_view::OpenArsenal>,
     live: Option<Res<exa_assets::live_objects::LiveObjects>>,
+    flow: Option<Res<crate::flow::Flow>>,
 ) {
-    if !windows.forms.is_empty() {
+    // The transition screen over the forms takes every pointer hit.
+    let covered = flow.is_some_and(|flow| flow.takes_pointer());
+    if !windows.forms.is_empty() && !covered {
         let pointer = windows_q.single().ok().and_then(|window| {
             let at = match scripted.as_deref() {
                 Some(scripted) => scripted.position(window),
@@ -2730,6 +2750,34 @@ mod tests {
         assert_eq!(windows.forms.dragged_rank, None);
         assert_eq!(windows.forms.arsenal.unwrap().tab, 3);
         assert_eq!(points(&app), "Points: 0 / 20");
+    }
+
+    /// The roster page's encumbrance record takes ten times the square of
+    /// the shown kit's encumbrance (a worn item of burden 10 and a shield
+    /// in the left hand: 0.525, so 2.75625 dots).
+    #[test]
+    fn the_encumbrance_dots_follow_the_shown_kit() {
+        let (mut windows, mut career) = opened();
+        let member = &mut career.company.roster[0];
+        member.loadouts[0].worn = vec![exa_formats::characters::ItemRef::new(10, 0)];
+        member.loadouts[0].hands[1] = exa_formats::characters::ItemRef::new(20, 0);
+        windows.open_loadout(PAGE_ROSTER, &career);
+        let mut arsenal = windows.forms.arsenal.expect("the loadout form");
+        arsenal.select(1);
+        windows.forms.arsenal = Some(arsenal);
+        let mut app = form_app(windows, career);
+        app.insert_resource(crate::save_live::ArenaStores::default())
+            .insert_resource(crate::equip::tests::catalogue(10, [100, 0, 100]))
+            .init_resource::<crate::doll_view::DollItems>()
+            .init_resource::<crate::loadout_kit::KitPanels>()
+            .init_resource::<crate::loadout_kit::KitPreview>()
+            .init_resource::<crate::loadout_kit::LoadoutDots>()
+            .add_systems(Update, crate::loadout_kit::sync_kit.after(hub_form_input));
+        app.update();
+        let windows = app.world().resource::<HubWindows>();
+        let form = windows.forms.get(FormWindow::Loadout).unwrap();
+        let value = form.controls()[loadout::ENCUMBRANCE].value;
+        assert!((value - 10.0 * 0.525f32 * 0.525).abs() < 1e-4, "{value}");
     }
 
     #[test]

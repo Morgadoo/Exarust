@@ -32,6 +32,7 @@ pub mod char_view;
 pub mod character_use;
 pub mod character_voice;
 pub mod commands;
+pub mod company_live;
 pub mod container_fill;
 pub mod content_requests;
 pub mod control_nodes;
@@ -283,6 +284,7 @@ impl Plugin for GamePlugin {
                 end_menu_screen::EndMenuScreenPlugin,
                 arena_match::ArenaMatchPlugin,
                 arena_hub_live::ArenaHubPlugin,
+                company_live::CompanyDialogPlugin,
                 (
                     scene_bodies::SceneBodiesPlugin,
                     arena_live::ArenaLivePlugin,
