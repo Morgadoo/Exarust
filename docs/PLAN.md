@@ -1593,6 +1593,8 @@ the golem's coreless mark is written where the original writes it: the view's co
 
 the build worker's RTX 4000 runs the game offscreen (a shared runner with slots, binary snapshots, timed shots and input, and a determinism mode); two defects found and fixed: the vanish turn message and the sound sets' size cache were never bridged into the simulation world, so the casters' tick and the body impact sounds were skipped in the running game since round 253 (Vanish, Long Door and the Force Blast never got past the cast: F547, F548); screenshot runs no longer lose their shot (F546). Determinism passes on exanima01, 02, 06 and arena and on ten power and duel scenes; the owed scenes of rounds 252 to 272 mostly pass; the held skinning lane looks right; F549 (the Shock fires early) and F550 (a terrain seam) opened. The first scene evidence since the local GPU went on hold.
 
+garments take the body's skin through the original's morph transfer (about 27 percent of the garment vertices change their dominant bone); held since round 241 for a picture check, released on the build worker's GPU: on main, bent bodies in gambeson and brigandine showed a garment ring floating above the back and torn back panels, coats a white tear at the front and the gambeson skirt flaring off the hips; with this lane all of them follow the body; golems and uwc2harna unchanged; FPS within the worker's noise.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
