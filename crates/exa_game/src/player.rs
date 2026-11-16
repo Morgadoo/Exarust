@@ -891,7 +891,7 @@ fn end_play_session(
 /// that has had none since takes the switch as its construction; a switch
 /// to no mode leaves the camera its record (the original detaches the
 /// controller from the view, which Exarust's camera has no part for).
-fn take_mode_records(
+pub(crate) fn take_mode_records(
     modes: Res<crate::player_controls::GameModes>,
     config: Option<Res<crate::hw_config::HardwareConfig>>,
     mut cameras: Query<&mut ChaseCamera>,

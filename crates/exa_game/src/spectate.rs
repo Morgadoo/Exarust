@@ -280,7 +280,11 @@ impl Plugin for SpectatePlugin {
         app.init_resource::<SpectateSession>().add_systems(
             Update,
             (
-                start_on_load.run_if(resource_exists::<SpectateOnLoad>),
+                // The mode it enters is taken by the camera in the same
+                // frame, as the play session's start and end are.
+                start_on_load
+                    .run_if(resource_exists::<SpectateOnLoad>)
+                    .before(crate::player::take_mode_records),
                 spectate_clicks.run_if(|s: Res<SpectateSession>| s.active),
                 end_arena_session.run_if(|s: Res<SpectateSession>| s.active),
                 force_the_room_walk.run_if(resource_exists::<exa_world::room_view::ForcedRoom>),
