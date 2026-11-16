@@ -19,8 +19,15 @@
 //!   hands from [`Possessions`]). What the tick does to the world (its
 //!   deeds) is carried out on the model ([`search::apply_deed`]) and then
 //!   written back to both sides' [`Possessions`]: the corpse loses the item
-//!   and the searcher carries, wears or wields it. A comment to the leader
-//!   is logged (Exarust has no dialogue engine to say it).
+//!   and the searcher carries or wears it. The re-arm's hands go through
+//!   the inventory: the stow through the planned arms
+//!   ([`exa_items::possession::PlannedArms`]), the wield through the take
+//!   into the hand ([`crate::doll_view::hold_item`]). A put-on plays the
+//!   piece's handling sound; a comment to the leader barks through the near
+//!   activation of the Explorer role's `ContextPhrase` topic
+//!   ([`bark_search_comments`]). The leader is the first contact attended
+//!   50 or more that is a living character holding the Player role. A dead
+//!   body's gripped shield, taken, lets go and leaves the world.
 //! - **The searcher's world** answers the search: reachable is the level's
 //!   sight callback ([`exa_ai::rooms::in_sight`]), as the original's pick
 //!   asks it; a path is the navigation grid's route on the planning turn;

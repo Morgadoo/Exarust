@@ -1115,3 +1115,136 @@ fn a_shield_taken_off_the_dead_leaves_its_arm() {
     let mine = app.world().get::<Possessions>(follower).unwrap();
     assert_eq!(mine.worn.iter().map(|w| w.id).collect::<Vec<_>>(), [200]);
 }
+
+/// The walk, settle and look the search asks of the AI: the path and the
+/// approach drop the walk's urgency to 0 (the follow had left it at 2),
+/// and the arrival's settle takes the brain's look and heading from the
+/// body's heading.
+#[test]
+fn the_search_calms_the_walk_and_settles_the_look() {
+    let mut app = App::new();
+    let mut items = SearchItems {
+        tried: true,
+        ..SearchItems::default()
+    };
+    items.loot.insert(100, Loot::Other);
+    app.insert_resource(items)
+        .init_resource::<SearchWorld>()
+        .init_resource::<OpenSearchScreens>()
+        .init_resource::<exa_physics::sim_app::FrameCommands>()
+        .insert_resource(BodyTicks(0))
+        .add_systems(
+            Update,
+            (follow_and_search, exa_ai::route_walk::walk_routes).chain(),
+        );
+    let player = app
+        .world_mut()
+        .spawn((
+            Player,
+            GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 20.0)),
+        ))
+        .id();
+    let root = app
+        .world_mut()
+        .spawn((
+            CharacterBody::default(),
+            GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
+        ))
+        .id();
+    let mut npc = Npc::new([0.0; 4]);
+    npc.applied = Some(exa_ai::activity::Applied {
+        activity: 4,
+        idle_activity: 6,
+        state: IdleState::Follow,
+        leaves_party: false,
+        follow_band_cm: Some(400.0),
+        phase_word: 1,
+        create_idle: None,
+        drop_idle: false,
+        skipped: Vec::new(),
+    });
+    npc.search = Some(Search::new());
+    npc.gaze.body_heading = exa_ai::motion::dir_of(0.7);
+    let follower = app
+        .world_mut()
+        .spawn((
+            npc,
+            exa_ai::Duellist::new(player),
+            Condition::default(),
+            Transform::default(),
+            GlobalTransform::from_translation(Vec3::new(21.5, 0.0, 20.0)),
+            ChildOf(root),
+            CharacterId(5),
+            Possessions::default(),
+        ))
+        .id();
+    app.world_mut().spawn((
+        exa_world::PlacedItem {
+            id: 0x32,
+            tagged_id: exa_formats::objdb::LOCAL | 0x32,
+            condition: 0,
+        },
+        exa_world::ObjectSections {
+            placement: 0,
+            usable: None,
+            use_script: None,
+            container: Some(exa_formats::containers::Container {
+                width: 4,
+                height: 4,
+                capacity: 20,
+                max_item: 5,
+                children: vec![exa_formats::containers::Child {
+                    id: 100,
+                    flags: 0,
+                    x: 0,
+                    y: 0,
+                }],
+            }),
+        },
+        GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 23.0)),
+    ));
+    app.world_mut().resource_mut::<BodyTicks>().0 = 1;
+    app.update();
+    app.world_mut()
+        .resource_mut::<SearchWorld>()
+        .following
+        .get_mut(&follower)
+        .unwrap()
+        .follower
+        .urgency = 2;
+    let (mut approached, mut settled) = (false, false);
+    for tick in 2..4000u64 {
+        app.world_mut().resource_mut::<BodyTicks>().0 = tick;
+        let velocity = app
+            .world()
+            .get::<CharacterBody>(root)
+            .unwrap()
+            .desired_velocity;
+        let mut gt = app.world_mut().get_mut::<GlobalTransform>(root).unwrap();
+        *gt = GlobalTransform::from_translation(gt.translation() + velocity * 0.012);
+        app.update();
+        let npc = app.world().get::<Npc>(follower).unwrap();
+        let state = npc.search.as_ref().unwrap().state;
+        let urgency = app.world().resource::<SearchWorld>().following[&follower]
+            .follower
+            .urgency;
+        if state == search::State::Approach {
+            approached = true;
+            assert_eq!(urgency, 0);
+            let route = app
+                .world()
+                .get::<exa_ai::route_walk::AiRoute>(follower)
+                .unwrap();
+            if route.follows(Walker::Follow) {
+                assert_eq!(route.urgency, 0);
+            }
+        }
+        if state == search::State::Settle {
+            settled = true;
+            let yaw = exa_ai::motion::yaw_of(npc.gaze.body_heading);
+            assert_eq!((npc.gaze.look, npc.turn.heading), (yaw, yaw));
+            break;
+        }
+    }
+    assert!(approached && settled, "{approached} {settled}");
+}
