@@ -155,7 +155,11 @@ spaces; bytes from `[` up move down by 0x20 (lower case to upper). The
 commands are split at `;`, lose leading and trailing spaces, and a single
 byte left at the end is dropped. Every macro gets a command list; only the
 first six are bound to a key, whose handler runs the commands through the
-debug command registry (not reproduced).
+debug command registry: they are shortcuts of the root GUI task, after
+which the game's boot adds Escape (the main menu's toggle). The task's key
+slot runs only the best shortcut for a key (the most required modifiers
+held, the earlier entry on a tie) and none for a repeat, a typed
+character or Shift alone (`exa_game::commands::root_task_keys`).
 
 The count of macros is the length of the settings unit's macro list,
 which a re-read never clears: a second read of the file appends its macros

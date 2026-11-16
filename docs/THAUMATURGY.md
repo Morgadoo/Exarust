@@ -1238,7 +1238,10 @@ grid's penalty until the wall falls;
 wisps ride their parts. The running game opens the tree with `P` and the bar with `C` (`hotkeys`;
 the debug simulation keys never take a bound game key, so `P` no longer also pauses the game clock
 the tree's fades run on, which had left the opened tree invisible at zero fade),
-and while the tree is shown its form has the keys: the arrow keys step the bar and any other key
+and while the tree is shown its form has the keys: every key the window procedure sends (a key-down,
+its repeats, the character it typed, each with its word; `exa_game::gui_keys::GuiKeyFrame`) goes to
+the tree's key slot; the bound next-power and previous-power keys (the right and left arrows as
+shipped; not a typed character) step the bar and any other key
 closes the tree (ignored for the opening fade's first 50 ms and while it fades out); a screen that
 is not the play screen hands keys to the base form's handler (`exa_ui::form::form_key`),
 routes the pointer through the tree's hover/click/drag/zoom rules and draws

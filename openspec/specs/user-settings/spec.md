@@ -121,3 +121,10 @@ The system SHALL append a re-read file's `KeyDef` macros after the macros alread
 #### Scenario: A seventh macro on a re-read
 - **WHEN** a file with six macros is read and a file with one more is read into the same settings
 - **THEN** the list holds seven macros and the seventh is unbound
+
+### Requirement: Hotkey macros fire from the root task
+A bound `KeyDef` macro SHALL run its commands only when its key reaches the root task's key slot with its modifier held and no better shortcut for the key comes first.
+
+#### Scenario: Ctrl and Shift held
+- **WHEN** shift+S and ctrl+S are bound and S goes down with both held over the game view
+- **THEN** only the shift+S macro runs

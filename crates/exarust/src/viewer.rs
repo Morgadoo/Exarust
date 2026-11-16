@@ -75,7 +75,8 @@ impl Plugin for ViewerPlugin {
                 PreUpdate,
                 (autowalk, press_keys)
                     .chain()
-                    .after(bevy::input::InputSystems),
+                    .after(bevy::input::InputSystems)
+                    .before(exa_game::gui_keys::GuiKeySet),
             )
             .add_systems(
                 Update,

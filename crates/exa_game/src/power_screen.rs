@@ -285,6 +285,7 @@ pub struct PowerScreenPlugin;
 
 impl Plugin for PowerScreenPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<PowerScreen>()
             .init_resource::<CreatorPowerTree>()
             .add_systems(Startup, (load_screen, setup_router))
@@ -542,6 +543,7 @@ pub fn domain_cells(sheets: &TreeSheets) -> [u32; 7] {
 #[allow(clippy::too_many_arguments)]
 fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
+    gui_keys: Option<Res<crate::gui_keys::GuiKeyFrame>>,
     bindings: Option<Res<Bindings>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
@@ -569,24 +571,32 @@ fn hotkeys(
         sound,
         ..
     } = &mut *screen;
-    // While the tree is shown its form has the keys: every key goes to the
-    // tree's key slot, which steps the bar on the arrows and closes the
-    // tree on any other key (after the first 50 ms of the opening fade, and
-    // not again while it fades out).
+    // While the tree is shown its form has the keys: every key the window
+    // procedure sends (a key-down, its repeats, the character it typed,
+    // each with its word) goes to the tree's key slot, which steps the bar
+    // on the arrows (not a typed character) and closes the tree on any
+    // other key (after the first 50 ms of the opening fade, and not again
+    // while it fades out). The slot passes nothing up.
     if *open {
-        let pressed: Vec<u32> = keys
-            .get_just_pressed()
-            .filter_map(|&key| crate::bindings::virtual_key(key))
-            .collect();
-        for key in pressed {
+        let pressed: Vec<exa_ui::gui_keys::GuiKey> = match gui_keys.as_deref() {
+            Some(frame) => frame.keys.clone(),
+            None => keys
+                .get_just_pressed()
+                .filter_map(|&key| crate::bindings::virtual_key(key))
+                .map(|key| exa_ui::gui_keys::GuiKey { key, flags: 0 })
+                .collect(),
+        };
+        for exa_ui::gui_keys::GuiKey { key, flags } in pressed {
             let out = tree.key(
                 crate::thaum::tree::KeyInput {
                     key: key as i32,
-                    flags: 0,
+                    flags,
                     guarded: tree.fade_flags & crate::thaum::tree::FADING_IN != 0,
                     hidden: tree.closing(),
                     stamp: tree.open_at,
                     now,
+                    next: bindings.key(Action::PowerNext),
+                    previous: bindings.key(Action::PowerPrevious),
                 },
                 bar,
                 Some(record),
@@ -2407,7 +2417,8 @@ mod tests {
                     }
                 }
             })
-            .after(bevy::input::InputSystems),
+            .after(bevy::input::InputSystems)
+            .before(crate::gui_keys::GuiKeySet),
         );
         app
     }
