@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r252, 11-16) | target |
+| measure | start (r186, 11-10) | now (r253, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **55.43%** | **100%** |
+| **Ledger: bytes in a final state** | — | **55.45%** | **100%** |
 | Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 8,894 | all |
+| Tests passing | 8,489 | 8,899 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -98,10 +98,10 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
-| Physics, bodies & cloth | 7 | 7 | 159 | 167,794 |
+| Physics, bodies & cloth | 7 | 7 | 158 | 167,446 |
 | UI | 12 | 12 | 380 | 150,606 |
 | Rendering & GPU | 10 | 10 | 293 | 149,713 |
-| Thaumaturgy & effects | 9 | 9 | 163 | 114,861 |
+| Thaumaturgy & effects | 9 | 9 | 161 | 114,574 |
 | Characters, motion & animation | 8 | 8 | 234 | 107,087 |
 | AI & behaviour | 8 | 8 | 152 | 104,455 |
 | World, levels & terrain | 5 | 5 | 168 | 87,048 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,212** | **1,118,587** |
+| **Total** | **90** | **90** | **2,209** | **1,117,952** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 253 | Vanish and the Long Door take the body out of the world and bring it back as the original does: the vanished bit, the body and its held items disabled with the first grab dropped, the come-back's 1000-tick settling; the duellist drops a vanished target, a vanished player leaves no new footprint, and the after-image is a real tendril image sized by the body. Two old ledger readings corrected (dispfx). Scenes and determinism runs owed (GPU on hold). |
 | 2026-11-16 | 252 | F415 closed: the save header holds the view camera's eye in centimetres and the current zoom; journal pages keep their ids; a door's arrival lands the player as the original's save landing does; the arena match's return reads the hub from the arena slot's saved section (saves3). Left: the between-round reload, the death CONTINUE's player rebuild, the menu scene. Scenes owed (GPU on hold). |
 | 2026-11-16 | 251 | F544 closed: every practice and arena staging sets the original's staging flag, under which the fighters stand in the idle stand for about 1.1 s while the transition screen fades in; Exarust holds the AI states for 92 ticks (aifreeze). Held for a picture check once the GPU is back: skinning and terrain (blank blocks not drawn past 44 m). Determinism runs owed (GPU on hold). |
 | 2026-11-16 | 248–250 | Force effects: the torrent stirs cloths, the watch list makes brains forget a gone effect, the torrent and barricade sounds, the wave's alert (forcefx). The door drive after the leaf's integration, the impact class from sounded sets (tetrarbd). The game main's session steps; a bug fixed where the HUD disappeared after every door, death or knock-out (gamemain). Scenes owed (GPU on hold). |

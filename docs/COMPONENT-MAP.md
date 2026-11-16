@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 55.4% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 55.5% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **55.4% closed**, of which 43.5% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 36.9% partial and 7.7% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **55.5% closed**, of which 43.6% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 36.9% partial and 7.6% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -272,7 +272,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TTetraRBD | Physics, bodies & cloth | 15 | 80% | 42% | 40% | 1% | 1% | 54% | 4% |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 14 | 90% | 37% | 37% | 0% | 0% | 45% | 18% |
 | RF_Intersection | Physics, bodies & cloth | 14 | 93% | 72% | 70% | 3% | 0% | 2% | 26% |
-| RF_Dynamics | Physics, bodies & cloth | 9 | 76% | 27% | 26% | 1% | 0% | 22% | 51% |
+| RF_Dynamics | Physics, bodies & cloth | 9 | 76% | 31% | 30% | 1% | 0% | 22% | 47% |
 | Rigid-body shape builders (RF_GUI_Controls_Ex by address) | Physics, bodies & cloth | 8 | 85% | 39% | 37% | 2% | 0% | 0% | 61% |
 | TSimulation | Physics, bodies & cloth | 2 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TVoxelMap | Physics, bodies & cloth | 0 | 95% | 100% | 51% | 49% | 0% | 0% | 0% |
@@ -369,7 +369,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TForceTorrentEffect | Thaumaturgy & effects | 15 | 89% | 33% | 32% | 1% | 0% | 67% | 0% |
 | TTendrilEmitter | Thaumaturgy & effects | 15 | 90% | 37% | 36% | 2% | 0% | 62% | 0% |
 | SG_Thaum_Force | Thaumaturgy & effects | 14 | 90% | 71% | 62% | 9% | 0% | 28% | 1% |
-| SG_Thaum_DIsp | Thaumaturgy & effects | 12 | 86% | 62% | 60% | 2% | 0% | 32% | 5% |
+| SG_Thaum_DIsp | Thaumaturgy & effects | 12 | 86% | 64% | 62% | 2% | 0% | 32% | 3% |
 | TForceBarricadeEffect | Thaumaturgy & effects | 12 | 86% | 33% | 33% | 0% | 0% | 67% | 0% |
 | TTendrilEffect | Thaumaturgy & effects | 10 | 86% | 24% | 24% | 0% | 0% | 76% | 0% |
 | TFireEffectRow | Thaumaturgy & effects | 8 | 82% | 48% | 47% | 1% | 0% | 52% | 0% |
@@ -405,7 +405,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | FLX_EffectRender | Thaumaturgy & effects | 1 | 40% | 30% | 22% | 9% | 0% | 70% | 0% |
 | TCuboidEmissive | Thaumaturgy & effects | 1 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TTendrilEmissive | Thaumaturgy & effects | 1 | 78% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TVanishEffect | Thaumaturgy & effects | 1 | 91% | 80% | 80% | 0% | 0% | 20% | 0% |
+| TVanishEffect | Thaumaturgy & effects | 1 | 91% | 86% | 86% | 0% | 0% | 14% | 0% |
 | TTendrilGeometry | Thaumaturgy & effects | 1 | 55% | 26% | 26% | 0% | 0% | 74% | 0% |
 | TStrikesGeometry | Thaumaturgy & effects | 1 | 70% | 42% | 42% | 0% | 0% | 58% | 0% |
 | TStrikesEmissive | Thaumaturgy & effects | 1 | 82% | 100% | 100% | 0% | 0% | 0% | 0% |

@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 715 | 180,824 | B1 wire (or prove unreachable) |
-| partial | 1,447 | 926,890 | B4 complete the port |
+| uncalled | 712 | 180,216 | B1 wire (or prove unreachable) |
+| partial | 1,447 | 926,863 | B4 complete the port |
 | missing | 58 | 11,783 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -14,10 +14,10 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | section | partial | uncalled | missing |
 |---|---|---|---|
-| physics | 144,596 | 22,922 | 276 |
+| physics | 144,596 | 22,574 | 276 |
 | ui | 98,154 | 51,141 | 1,311 |
 | render | 123,703 | 22,990 | 3,232 |
-| powers | 109,123 | 3,417 | 2,321 |
+| powers | 109,096 | 3,157 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
 | ai | 99,815 | 4,612 | 28 |
 | world | 65,469 | 21,016 | 563 |
@@ -78,13 +78,13 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_GameMain (unit routines) | modes | 17 / 6,806 | 1 / 442 | 0 / 0 | 7,248 |
 | FLX_Character_Textures (unit routines) | characters | 14 / 6,969 | 1 / 187 | 0 / 0 | 7,156 |
 | RF_GUI_Controls (unit routines) | ui | 10 / 5,854 | 4 / 1,215 | 0 / 0 | 7,069 |
-| RF_Dynamics (unit routines) | physics | 5 / 2,122 | 13 / 4,927 | 0 / 0 | 7,049 |
 | RF_Navigation (unit routines) | render | 7 / 4,895 | 9 / 2,080 | 0 / 0 | 6,975 |
 | Steam Input action bindings | runtime | 10 / 6,237 | 3 / 345 | 3 / 393 | 6,975 |
 | TRenderer | render | 15 / 6,335 | 1 / 526 | 1 / 10 | 6,871 |
 | RFE_GridEnvs (unit routines) | world | 7 / 6,790 | 0 / 0 | 0 / 0 | 6,790 |
 | Character roles & relations (script functions) | ai | 11 / 6,145 | 2 / 603 | 0 / 0 | 6,748 |
 | TParticleSystem | powers | 4 / 4,883 | 7 / 1,858 | 0 / 0 | 6,741 |
+| RF_Dynamics (unit routines) | physics | 5 / 2,122 | 12 / 4,579 | 0 / 0 | 6,701 |
 | RF_Textures (unit routines) | render | 17 / 5,574 | 9 / 1,051 | 0 / 0 | 6,625 |
 | TLoadoutForm | modes | 7 / 6,452 | 1 / 80 | 0 / 0 | 6,532 |
 | TMatchBoard | modes | 4 / 6,481 | 0 / 0 | 0 / 0 | 6,481 |
@@ -106,9 +106,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | SG_ItemGUI (unit routines) | items | 8 / 3,063 | 9 / 1,886 | 0 / 0 | 4,949 |
 | Item description phrases | items | 5 / 4,855 | 0 / 0 | 0 / 0 | 4,855 |
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
-| SG_Thaum_DIsp (unit routines) | powers | 12 / 4,042 | 3 / 691 | 0 / 0 | 4,733 |
 | RF_Main (unit routines) | runtime | 14 / 4,263 | 4 / 405 | 0 / 0 | 4,668 |
 | FLX_ItemFactory (unit routines) | items | 4 / 4,535 | 0 / 0 | 0 / 0 | 4,535 |
+| SG_Thaum_DIsp (unit routines) | powers | 13 / 4,087 | 1 / 431 | 0 / 0 | 4,518 |
 | TSkillUI | ui | 4 / 3,673 | 2 / 716 | 0 / 0 | 4,389 |
 | TTerrainManager | world | 6 / 3,351 | 6 / 1,033 | 0 / 0 | 4,384 |
 | SG_CharacterAI (unit routines) | ai | 12 / 4,255 | 0 / 0 | 0 / 0 | 4,255 |
@@ -308,7 +308,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | FLXG_Pathfinding (unit routines) | ai | 2 / 265 | 0 / 0 | 0 / 0 | 265 |
 | SG_GUI_Skills (unit routines) | ui | 0 / 0 | 1 / 197 | 1 / 67 | 264 |
 | SG_Character_DBs (unit routines) | data | 1 / 18 | 3 / 239 | 0 / 0 | 257 |
-| TVanishEffect | powers | 2 / 248 | 0 / 0 | 0 / 0 | 248 |
 | TVoxelLight | render | 2 / 245 | 0 / 0 | 0 / 0 | 245 |
 | TPopUpContainer | items | 1 / 245 | 0 / 0 | 0 / 0 | 245 |
 | TDBObjManager | data | 1 / 245 | 0 / 0 | 0 / 0 | 245 |
@@ -323,6 +322,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TVoxeliser | render | 0 / 0 | 1 / 193 | 0 / 0 | 193 |
 | SG_Thaum_Energy (unit routines) | powers | 1 / 187 | 0 / 0 | 0 / 0 | 187 |
 | TStreamThread | data | 0 / 0 | 1 / 181 | 0 / 0 | 181 |
+| TVanishEffect | powers | 1 / 176 | 0 / 0 | 0 / 0 | 176 |
 | TAbstractToolTip | ui | 0 / 0 | 2 / 175 | 0 / 0 | 175 |
 | RF_KFControllers (unit routines) | characters | 0 / 0 | 1 / 159 | 0 / 0 | 159 |
 | RFA_Main (unit routines) | audio | 1 / 147 | 0 / 0 | 0 / 0 | 147 |
