@@ -152,6 +152,10 @@ pub struct SkillLabel {
     pub text: String,
     /// The label is centred on `x` rather than left-aligned.
     pub centred: bool,
+    /// Centred inside a box of this width that starts at `x`, and clipped
+    /// after the glyph that passes its end (the GUI's centred line draw,
+    /// [`crate::gui_text::draw_line_centred`]); `None` for the other draws.
+    pub centred_in: Option<f32>,
     /// The batches drawn before it, as [`SkillTip::order`].
     pub order: usize,
 }
@@ -613,6 +617,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 ink,
                 text: name.to_string(),
                 centred: false,
+                centred_in: None,
             });
         } else {
             // The level's tooltip hangs under its satellite, not the node.
@@ -640,6 +645,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     ink,
                     text: title.to_string(),
                     centred: true,
+                    centred_in: None,
                 });
                 if !chosen {
                     let status = node_status(skills, code);
@@ -651,6 +657,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                             ink,
                             text: status.to_string(),
                             centred: false,
+                            centred_in: None,
                         });
                     }
                 }
@@ -720,6 +727,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     ink: popup_ink,
                     text: title,
                     centred: true,
+                    centred_in: None,
                 });
                 if let Some(status) = row.status {
                     draw.labels.push(SkillLabel {
@@ -729,6 +737,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                         ink: popup_ink,
                         text: status.to_string(),
                         centred: false,
+                        centred_in: None,
                     });
                 }
             }
@@ -763,6 +772,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 ink: popup_ink,
                 text: crate::skill::FORGET_TITLE.to_string(),
                 centred: false,
+                centred_in: Some(dialog.text_width),
             });
             draw.labels.push(SkillLabel {
                 order: draw.batches.len(),
@@ -771,6 +781,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 ink: popup_ink,
                 text: crate::skill::FORGET_QUESTION.to_string(),
                 centred: false,
+                centred_in: Some(dialog.text_width),
             });
             if dialog.choices {
                 let choice_ink = |code: i32| {
@@ -789,6 +800,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     ink: choice_ink(FORGET_YES),
                     text: "YES".to_string(),
                     centred: true,
+                    centred_in: None,
                 });
                 draw.labels.push(SkillLabel {
                     order: draw.batches.len(),
@@ -797,6 +809,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     ink: choice_ink(FORGET_NO),
                     text: "NO".to_string(),
                     centred: true,
+                    centred_in: None,
                 });
             }
         }
@@ -989,6 +1002,19 @@ mod tests {
         let no = draw.labels.iter().find(|label| label.text == "NO").unwrap();
         assert_eq!(yes.ink, [0xff, 0xf8, 0xf0, 120]);
         assert_eq!(no.ink, [0xff, 0xcc, 0x99, 255]);
+        // The title and the question go through the centred line draw in
+        // the dialog's 82-unit text width; Yes and No are plain lines.
+        let question = draw
+            .labels
+            .iter()
+            .find(|label| label.text == crate::skill::FORGET_QUESTION)
+            .unwrap();
+        let width = (82 * screen.unit) as f32;
+        assert_eq!(title.text, crate::skill::FORGET_TITLE);
+        assert_eq!(title.centred_in, Some(width));
+        assert_eq!(question.centred_in, Some(width));
+        assert_eq!(yes.centred_in, None);
+        assert_eq!(no.centred_in, None);
     }
 
     #[test]

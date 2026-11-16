@@ -423,8 +423,10 @@ mod tests {
     fn the_store_gives_the_bindings() {
         let mut u = user(b"");
         assert_eq!(u.bindings(), None);
-        let mut b = exa_game::bindings::Bindings::default();
-        b.controller = true;
+        // A file whose controller word is set.
+        let mut bytes = exa_game::bindings::Bindings::default().encode();
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        let b = exa_game::bindings::Bindings::decode(&bytes).expect("loads");
         u.store.set(&BINDINGS_PATH, &b.encode()).unwrap();
         // The saved rows come back (the modifiers read one-sided once
         // loaded, as the original's conversion gives them).

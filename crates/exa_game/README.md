@@ -3182,3 +3182,11 @@ while the controls are off); the tooltip's background is the skin's rounded
 fill; the manual draws its inline pictures; the hub's Dismiss and yes/no
 dialogs and the save screen's delete and reset boxes close on a press off
 their buttons.
+
+Round uiscreens (L14): `bindings::Bindings` keeps the saved rows and the
+file's controller word as read or captured (`set_row`, `rows`,
+`row_key_name` for the Controls page's cells); Apply writes `InputMode` 3
+for the controller; `player::reselect_on_mode_switch` forces the GUI's
+reselect on each game mode switch; the settings form shows the Controls
+view tabs while a pad is connected; icons render with
+`exa_items::item_icon::render_variant` (weapon light preset).

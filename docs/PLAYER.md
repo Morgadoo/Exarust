@@ -421,7 +421,7 @@ alone, as the original does.
 ### The controller-mode switch
 
 The Controls page's controller-mode switch writes `InputMode` (0 for the
-keyboard, 51 for a controller). Exarust copies it into the saved bindings'
+keyboard, 3 for a controller). Exarust copies it into the saved bindings'
 controller flag, and the player reads the pad only while that flag is set;
 the keyboard stays live in either mode. A gamepad connected with no
 settings file turns the flag on, and so does a pad used while the saved

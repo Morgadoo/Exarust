@@ -949,3 +949,8 @@ gives `TextBox::picture_sizes` for the layout and the picture layers for the
 draw (the manual's pages). `GuiTask::focus_lost`/`focus_regained` are the
 window procedure's kill-focus and set-focus; `gui_core::DOUBLE_CLICK` is the
 system's 500 ms.
+
+Round uiscreens (L14): `gui_text::count_lines` counts as the text box
+does (one line under two bytes, one more for a carriage return before the
+last byte); `skill_draw::SkillLabel::centred_in` draws the forget dialog's
+title and question with `gui_text::draw_line_centred`.

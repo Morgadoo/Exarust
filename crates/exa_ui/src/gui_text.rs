@@ -366,13 +366,22 @@ fn next_start(text: &[u8], end: usize) -> usize {
     }
 }
 
-/// The line count of a plain text at `width` (an empty text has none).
+/// The line count of a plain text at `width`, as the text box's line
+/// count: a text under two bytes is one line (an empty one too), and a
+/// carriage return in the second-to-last byte counts one line more (the
+/// original tests the byte before the last, so `"..\r"` plus one byte).
 pub fn count_lines(font: &GuiFont, text: &[u8], width: i32) -> i32 {
+    if text.len() < 2 {
+        return 1;
+    }
     let mut count = 0;
     let mut start = 0usize;
     while start < text.len() {
         let (end, _) = scan_line(text, start, width, font);
         start = next_start(text, end);
+        count += 1;
+    }
+    if text[text.len() - 2] == b'\r' {
         count += 1;
     }
     count
@@ -897,11 +906,38 @@ mod tests {
     #[test]
     fn the_line_count_wraps_on_spaces_and_carriage_returns() {
         let f = tens();
-        assert_eq!(count_lines(&f, b"", 30), 0);
+        assert_eq!(count_lines(&f, b"", 30), 1);
         assert_eq!(count_lines(&f, b"a", 30), 1);
         assert_eq!(count_lines(&f, b"ab cd ef", 30), 3);
         assert_eq!(count_lines(&f, b"ab\r\ncd", 100), 2);
         assert_eq!(count_lines(&f, b"abcdef", 30), 2);
+    }
+
+    #[test]
+    fn an_empty_text_is_one_line_and_a_closing_return_adds_one() {
+        let f = tens();
+        // A text under two bytes is one line, even empty.
+        assert_eq!(count_lines(&f, b"", 30), 1);
+        assert_eq!(count_lines(&f, b"\r", 30), 1);
+        // The byte before the last is a carriage return: one line more
+        // ("ab" then "\n" skipped, then nothing left, plus one).
+        assert_eq!(count_lines(&f, b"ab\r\n", 100), 2);
+        // Agrees with the caret layout's count on the same texts.
+        for t in [
+            &b"ab cd ef"[..],
+            b"ab\r\ncd",
+            b"abcdef",
+            b"ab\r\n",
+            b"x\rq",
+            b"",
+        ] {
+            assert_eq!(
+                count_lines(&f, t, 30),
+                crate::text_layout::line_count(t, 30, &f),
+                "{:?}",
+                String::from_utf8_lossy(t)
+            );
+        }
     }
 
     #[test]

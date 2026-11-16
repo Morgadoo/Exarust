@@ -158,6 +158,25 @@ impl IconCamera {
     }
 }
 
+/// The variant an icon is rendered with, as the item manager's render
+/// builds it from the cache variant: only the cache variant's top two bits
+/// (the effect and apparel framing bits) are kept, the effect bit is added
+/// when the model section's flags have `0x2000`, and the weapon bit
+/// (`0x0400_0000`, the weapon light preset and, with the apparel bit, the
+/// turn) when the item has a weapon section. The lit, streamed, highlight
+/// and condition bits stay with the cache key.
+pub fn render_variant(cache_variant: u32, model_flags: u32, weapon_section: bool) -> u32 {
+    use crate::icon_cache::variant as v;
+    let mut out = cache_variant & crate::icon_cache::STREAM_TAGS;
+    if model_flags & 0x2000 != 0 {
+        out |= v::EFFECT;
+    }
+    if weapon_section {
+        out |= v::WEAPON;
+    }
+    out
+}
+
 /// The render plan for a scene at this camera and plan variant: the framing
 /// camera first, then the plan with the box's projected extents and the
 /// camera's own distance and scale. `alpha` is the alpha global (the screen
@@ -594,6 +613,22 @@ impl IconPixels {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_render_variant_keeps_the_top_bits_and_adds_the_weapon_and_effect() {
+        use crate::icon_cache::variant as v;
+        // A lit, streamed, highlighted cache variant keeps only its
+        // apparel bit; a weapon section adds the weapon bit.
+        let cache = v::APPAREL | v::LIT | v::STREAMED | v::HIGHLIGHT | 0x0033_0000;
+        assert_eq!(render_variant(cache, 0, false), v::APPAREL);
+        assert_eq!(render_variant(cache, 0, true), v::APPAREL | v::WEAPON);
+        assert_eq!(render_variant(0, 0x2001, false), v::EFFECT);
+        // The weapon preset's sun follows the render variant.
+        let sun = |variant| crate::item_gui::framing(variant, false).sun;
+        assert_eq!(sun(render_variant(0, 0, true)), (-0.16, 0.6516));
+        assert_eq!(sun(render_variant(0, 0, false)), (-0.21, 0.7516));
+        assert!(crate::item_gui::framing(render_variant(cache, 0, true), false).turned);
+    }
+
     use super::*;
     use crate::icon_cache::variant as v;
 
