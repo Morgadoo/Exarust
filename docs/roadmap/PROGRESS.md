@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r298, 11-16) | target |
+| measure | start (r186, 11-10) | now (r299, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **60.02%** | **100%** |
+| **Ledger: bytes in a final state** | — | **60.22%** | **100%** |
 | Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,160 | all |
+| Tests passing | 8,489 | 9,168 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -100,11 +100,11 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 145 | 159,884 |
 | Rendering & GPU | 10 | 10 | 277 | 139,841 |
-| UI | 12 | 12 | 339 | 127,230 |
+| UI | 12 | 12 | 334 | 126,442 |
 | Thaumaturgy & effects | 9 | 9 | 135 | 105,532 |
 | Characters, motion & animation | 8 | 8 | 222 | 101,754 |
-| Game modes, arena & session | 7 | 7 | 178 | 76,192 |
 | World, levels & terrain | 5 | 5 | 146 | 73,180 |
+| Game modes, arena & session | 7 | 7 | 157 | 72,065 |
 | AI & behaviour | 8 | 8 | 115 | 70,226 |
 | Items, materials & crafting | 5 | 5 | 132 | 62,916 |
 | Data, assets & I/O | 6 | 6 | 118 | 38,360 |
@@ -114,7 +114,7 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **1,991** | **1,003,193** |
+| **Total** | **90** | **90** | **1,965** | **998,278** |
 
 ## Open decisions
 
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 299 | The arena NEW CAREER opens the company name and emblem dialog first (F446): BACK fades to the title, a named NEXT stores the company and starts the arena creator; the menu plays its back cue and keeps a dragged-off press unselected, its hide takes the version line down, the transition screen takes the pointer, divination deals from a running stream and closes on a right press, the loadout shows the kit's encumbrance dots, the tip banner box is rounded and the destination rows carry their destination words. |
 | 2026-11-16 | 298 | The powers sound as in the original: Shock's charge and release, the Vanish and Long Door starts and come-backs on a voice that follows the body, the wave's charge loop and throw; a missed throw and a refused kinesis pick play the failure cue; Force Strikes swaps the body's swing set and loudness; Mind powers mark their bar slots; a barricade ended by an event fells its wall, the cast end returns to the stored stance and the power tree reopens on its domain only for the same body. |
 | 2026-11-16 | 297 | NPC bodies turn and look through their locomotion as the player body does (look, look smoothing and heading kept as in the original, combat look snap past 30 degrees); the search creates the perceived goal entity the brain weighs and attends (F389), and a classify bug was fixed (the attention bonus belongs to the attended contact). |
 | 2026-11-16 | 296 | The frame's Update and PostUpdate are fully ordered in named phases following the original's frame order, and the schedule test now holds every schedule to zero unordered conflicting pairs (seven documented pairs with private engine systems allowed); ordering the frame fixed a GUI bug: paints that ran before the game screens' per-frame clear were wiped every frame, so the story death's tip banner now shows (ambiguity2) |
