@@ -1237,6 +1237,14 @@ type PressMechanisms<'w, 's> = (
     Option<Res<'w, player_controls::PlayerControl>>,
 );
 
+/// The press's hooks: the kinesis pick's, the kinesis sight and the
+/// pointer warp a lift asks for.
+type PressHooks<'w> = (
+    Option<Res<'w, KinesisPickHook>>,
+    Option<Res<'w, KinesisSight>>,
+    Option<ResMut<'w, Messages<crate::os_pointer::WarpPointer>>>,
+);
+
 /// What a body's nodes say of the placed object they belong to: its id,
 /// its template and the node above.
 pub(crate) type ObjectIds = (
@@ -1586,7 +1594,7 @@ fn press_hand(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
-    (kinesis, sight): (Option<Res<KinesisPickHook>>, Option<Res<KinesisSight>>),
+    (kinesis, sight, mut warps): PressHooks,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
     (
         over_gui,
@@ -1839,6 +1847,16 @@ fn press_hand(
                 let dropped = exa_physics::body::hold_entities_out_of_pairs(world, &[body]);
                 debug!("hand: the lifted {body:?} leaves {dropped} kept pair(s)");
             });
+            // The press's lift moves the pointer onto the lifted node's
+            // screen point (the lift start's warp flag), so the item does
+            // not jump to where the button went down.
+            let node_at = held.saved_frame.position;
+            if let Some(warps) = warps.as_deref_mut()
+                && let Ok((camera, eye)) = cameras.single()
+                && let Ok(point) = camera.world_to_viewport(eye, node_at)
+            {
+                warps.write(crate::os_pointer::WarpPointer(point));
+            }
             pb.hold_object(true);
             items.begin(held);
             hand.holding = Holding::Lift;

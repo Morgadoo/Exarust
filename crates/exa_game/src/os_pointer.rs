@@ -68,15 +68,39 @@ pub fn wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
+/// A request to warp the pointer to a point of the primary window (logical
+/// pixels), with the warp hold: the hand's lift moves the pointer onto the
+/// lifted item's screen point.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct WarpPointer(pub Vec2);
+
 pub struct OsPointerPlugin;
 
 impl Plugin for OsPointerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PointerWarp>()
             .init_resource::<PointerConfinement>()
+            .add_message::<WarpPointer>()
             .add_systems(PreUpdate, settle_warp.after(bevy::input::InputSystems))
-            .add_systems(PostUpdate, confine_full_screen);
+            .add_systems(PostUpdate, (apply_warps, confine_full_screen).chain());
     }
+}
+
+/// The frame's warp requests, the last one winning, applied to the primary
+/// window with the hold ([`PointerWarp::warp`]).
+fn apply_warps(
+    mut requests: MessageReader<WarpPointer>,
+    mut warp: ResMut<PointerWarp>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    let Some(&WarpPointer(to)) = requests.read().last() else {
+        return;
+    };
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    warp.warp(&mut window, to);
+    debug!("pointer warped to {to}");
 }
 
 /// The window procedure's pointer-move rule while a warp holds: each move
@@ -165,6 +189,42 @@ mod tests {
         let mut outside = PointerWarp::default();
         outside.warp(&mut window, Vec2::new(900.0, 10.0));
         assert_eq!(outside.0.remaining, 0);
+    }
+
+    /// A warp request (the lift's) moves the window's pointer with the
+    /// hold; the frame's last request wins.
+    #[test]
+    fn a_warp_request_moves_the_pointer() {
+        let mut app = App::new();
+        app.add_message::<WarpPointer>()
+            .init_resource::<PointerWarp>()
+            .add_systems(Update, apply_warps);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(800, 600),
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.world_mut()
+            .write_message(WarpPointer(Vec2::new(10.0, 20.0)));
+        app.world_mut()
+            .write_message(WarpPointer(Vec2::new(300.0, 250.0)));
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Window>(window)
+                .unwrap()
+                .physical_cursor_position(),
+            Some(Vec2::new(300.0, 250.0))
+        );
+        assert_eq!(
+            app.world().resource::<PointerWarp>().0.remaining,
+            crate::window::WARP_HOLD_MOVES
+        );
     }
 
     #[test]
