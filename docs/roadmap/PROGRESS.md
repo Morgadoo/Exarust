@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r292, 11-16) | target |
+| measure | start (r186, 11-10) | now (r293, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,108 | all |
+| Tests passing | 8,489 | 9,111 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 293 | F560's cause found with a new headless trace tool (the armour pass's head height was unordered in the fixed step, now first); F566 fixed (the hand's pick names sliding leaves by their door record, so a portcullis can be pulled); F563 closed as the original's (the placed portcullises stand open in their arches); F568 opened (a locked portcullis can be dragged aside) (physfix) |
 | 2026-11-16 | 292 | The first lane from the triage's port queue: the chase leave is reachable (it reads the brain's sight of its foe), a cast started while parrying ends the clinch, a released race shocked in combat resets its swing and a dying one takes no shock; six readings corrected; most of the lane's other items wait on NPC body turning and the brain's goal entity (npcbody lane) (combatai) |
 | 2026-11-16 | 291 | Three findings from the scene evidence fixed: the saves' character screen drew none of its records (its paint ran before the game screens' per-frame clear; F565), the respawn's rebuilt player got a carried torch and started outside the rooms (F564), the hire page kept the roster's records and the hub's coins drew a row high (F561); F562 is the original's fixed character-view camera (uifix) |
 | 2026-11-16 | 290 | Every schedule the simulation step runs is fully ordered (1149 unordered pairs touching the same data, each kept in the order it already ran, no simulation value changed) and PreUpdate too; a test on the game's own App fails on any new unordered pair, the frame's Update and PostUpdate held at an exact count (5835 and 275) for the next ordering lane (ambiguity) |
