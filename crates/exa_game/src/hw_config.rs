@@ -66,9 +66,10 @@ pub struct HardwareConfig {
     /// The window size the launcher asked for, kept for a return to windowed
     /// mode.
     pub window_size: Option<(u32, u32)>,
-    /// Whether Steam Input drives the Controller page's tabs. Exarust has no
-    /// Steam, so the Keyboard/Controller tabs stay hidden and the controller
-    /// view is never shown (its rules are modelled all the same).
+    /// Whether Steam Input has a controller handle, which shows the Controls
+    /// page's Keyboard and Controller tabs at the page switch. Exarust has no
+    /// Steam: a connected pad stands for the handle (the settings form sets
+    /// it from [`crate::gamepad::PadStatus`]).
     pub steam_input: bool,
     /// The `ScreenWidth` and `ScreenHeight` settings: the full-screen display
     /// mode's size, 0 when unset ([`crate::window::fullscreen_mode`]).

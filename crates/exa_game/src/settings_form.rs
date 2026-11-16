@@ -136,6 +136,7 @@ fn open_settings(
     bindings: Option<Res<Bindings>>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
 ) {
     let mut wanted = choices
         .read()
@@ -168,6 +169,9 @@ fn open_settings(
     let fallback = Bindings::default();
     config.open(Some(bindings.as_deref().unwrap_or(&fallback)));
     let mut form = FormState::open(screen, unit);
+    // A controller handle (a connected pad) shows the Controls page's view
+    // tabs at its page switch.
+    config.steam_input = pad_status.as_deref().is_some_and(|status| status.connected);
     form.controller_tabs = config.steam_input;
     form.set_device(
         adapter.as_deref().map(|info| info.name.as_str()),
@@ -309,9 +313,10 @@ fn form_input(
     mut applied: MessageWriter<BindingsApplied>,
     mut timers: Option<ResMut<crate::frame_timers::FrameTimers>>,
     mut pad: Option<ResMut<crate::pad_menu::PadMenu>>,
-    (gui_keys, mut climbed): (
+    (gui_keys, mut climbed, pad_status): (
         Option<Res<crate::gui_keys::GuiKeyFrame>>,
         Option<ResMut<crate::gui_keys::TaskKeys>>,
+        Option<Res<crate::gamepad::PadStatus>>,
     ),
 ) {
     let notches: f32 = wheel
@@ -327,6 +332,12 @@ fn form_input(
     let Some(mut form) = settings.form.take() else {
         return;
     };
+    // The page switch asks Steam Input for a controller each time: with one
+    // the Keyboard and Controller tabs show on the Controls page. A
+    // connected pad stands for the handle.
+    let handle = pad_status.as_deref().is_some_and(|status| status.connected);
+    config.steam_input = handle;
+    form.controller_tabs = handle;
     if editor.is_changed()
         && let Some(copy) = &config.bindings
     {
@@ -1050,6 +1061,44 @@ mod tests {
         app.update();
         assert!(!app.world().resource::<SettingsForm>().is_open());
         assert!(app.world().resource::<HardwareConfig>().screen.is_none());
+    }
+
+    /// A connected pad stands for Steam Input's controller handle: the
+    /// Controls page shows its Keyboard and Controller tabs; without one
+    /// they stay hidden.
+    #[test]
+    fn a_connected_pad_shows_the_controls_view_tabs() {
+        for connected in [false, true] {
+            let mut app = app();
+            app.insert_resource(crate::gamepad::PadStatus {
+                connected,
+                ..default()
+            });
+            app.world_mut().spawn((
+                Window {
+                    resolution: bevy::window::WindowResolution::new(1280, 720),
+                    ..default()
+                },
+                PrimaryWindow,
+            ));
+            app.update();
+            app.world_mut().resource_mut::<MenuScreen>().open();
+            app.world_mut()
+                .write_message(MenuChoice(MenuCommand::OpenSettings));
+            app.update();
+            app.update();
+            assert_eq!(
+                app.world().resource::<HardwareConfig>().steam_input,
+                connected
+            );
+            let mut settings = app.world_mut().resource_mut::<SettingsForm>();
+            let form = settings.form.as_mut().expect("the form opened");
+            assert_eq!(form.controller_tabs, connected);
+            form.switch(1);
+            let hidden = |record: usize| form.geometry.main[record].state & exa_ui::settings::HIDDEN != 0;
+            assert_eq!(hidden(2), !connected);
+            assert_eq!(hidden(3), !connected);
+        }
     }
 
     /// The settings form opened by the menu's row in a 1280x720 window,
