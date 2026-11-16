@@ -17,6 +17,7 @@ pub mod dynamics;
 pub mod engine_math;
 pub mod exit_trace;
 pub mod float_mode;
+pub mod frame_phase;
 pub mod grip;
 pub mod grip_solve;
 pub mod intersect;
@@ -67,6 +68,7 @@ pub const MAX_STEPS_BEHIND: f64 = 4.0;
 use body::GRAVITY;
 
 /// A collider's handle in the physics world, as the picks report it.
+pub use frame_phase::{FramePhase, FramePostPhase};
 pub use rapier3d::prelude::ColliderHandle;
 
 pub struct PhysicsPlugin;
@@ -87,7 +89,7 @@ impl Plugin for PhysicsPlugin {
                 PostUpdate,
                 (shape_static_grid, build_static_colliders)
                     .chain()
-                    .after(TransformSystems::Propagate),
+                    .after(TransformSystems::Propagate).in_set(crate::FramePostPhase::Placed),
             )
             // Each tick puts the characters where their bodies' frames
             // went, before the pre-step; the bodies' character ticks then
@@ -903,7 +905,7 @@ impl CharacterBody {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_static_colliders(
+pub fn build_static_colliders(
     mut commands: Commands,
     (mut physics, mut fixed): (
         ResMut<collision_share::FramePhysics>,
