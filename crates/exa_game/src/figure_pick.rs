@@ -1267,6 +1267,7 @@ mod tests {
             body: Some(body),
             view,
             backdrop: [0; 4],
+            scale: 2,
         });
         app.insert_resource(doll);
         app.update();

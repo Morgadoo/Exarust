@@ -103,7 +103,20 @@ pub fn doll_layers() -> RenderLayers {
 pub const DOLL_ORIGIN: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
 /// The view renders at this many pixels a view pixel on each axis, and the
 /// UI node scales it down (the view's supersampling, Exarust's measure).
+/// The creator's view keeps it; the inventory's takes [`doll_scale`].
 pub const DOLL_SCALE: u32 = 2;
+
+/// The inventory view's pixels per view pixel on each axis, from the
+/// supersampling level its constructor asks for
+/// ([`exa_ui::character_view::supersample_level`]) at the settings' value:
+/// Exarust's super-sampling switch stands for the original's setting 4
+/// (4x, level 4) when on and 0 (level 1) when off. A level's sub-frames
+/// are drawn as a square grid of samples (Exarust's 2 x 2 for 4x), so the
+/// scale is the level's whole square root: 2 on, 1 off.
+pub fn doll_scale(super_sampling: bool) -> u32 {
+    let level = exa_ui::character_view::supersample_level(if super_sampling { 4 } else { 0 });
+    (level.max(1) as u32).isqrt()
+}
 /// The UI node's depth: under the GUI canvas (200), so the forms, the
 /// dragged icon and the cards draw over the figure.
 pub const DOLL_Z: i32 = 199;
@@ -160,9 +173,16 @@ pub fn light_transform(camera: &Transform) -> Transform {
 
 /// The image the view renders into for a view of `size` pixels.
 pub fn image_size(size: (i32, i32)) -> UVec2 {
+    image_size_at(size, DOLL_SCALE)
+}
+
+/// The image a view of `size` pixels renders into at `scale` pixels a view
+/// pixel.
+pub fn image_size_at(size: (i32, i32), scale: u32) -> UVec2 {
+    let scale = scale.max(1);
     UVec2::new(
-        (size.0.max(1) as u32) * DOLL_SCALE,
-        (size.1.max(1) as u32) * DOLL_SCALE,
+        (size.0.max(1) as u32) * scale,
+        (size.1.max(1) as u32) * scale,
     )
 }
 
@@ -278,6 +298,10 @@ pub struct DollScene {
     pub view: GuiRect,
     /// The colour the camera clears to.
     pub backdrop: [u8; 4],
+    /// The image's pixels a view pixel, taken from the settings when the
+    /// scene was made ([`doll_scale`]), as the constructor takes its first
+    /// choice of super sampling.
+    pub scale: u32,
 }
 
 /// The inventory's character view state.
@@ -485,8 +509,9 @@ fn spawn_scene(
     images: &mut Assets<Image>,
     view: GuiRect,
     backdrop: [u8; 4],
+    scale: u32,
 ) -> DollScene {
-    let size = image_size((view.width(), view.height()));
+    let size = image_size_at((view.width(), view.height()), scale);
     let mut image = Image::new_uninit(
         Extent3d {
             width: size.x,
@@ -563,6 +588,7 @@ fn spawn_scene(
         body: None,
         view,
         backdrop,
+        scale,
     }
 }
 
@@ -583,6 +609,7 @@ fn sync_doll(
     mut nodes: Query<&mut Node>,
     mut cameras: Query<&mut Camera>,
     game: Option<Res<Game>>,
+    super_sampling: Option<Res<exa_render::supersample::SuperSampling>>,
 ) {
     let Some(view) = open_view(&screens) else {
         if let Some(scene) = doll.scene.take() {
@@ -615,9 +642,10 @@ fn sync_doll(
         despawn_scene(&mut commands, scene);
     }
     let backdrop = doll.backdrop;
-    let scene = doll
-        .scene
-        .get_or_insert_with(|| spawn_scene(&mut commands, &mut images, view, backdrop));
+    let sampling = doll_scale(super_sampling.is_none_or(|on| on.0));
+    let scene = doll.scene.get_or_insert_with(|| {
+        spawn_scene(&mut commands, &mut images, view, backdrop, sampling)
+    });
     scene.view = view;
     scene.body = bound;
     if scene.backdrop != backdrop
@@ -1923,6 +1951,40 @@ mod tests {
 
     /// A torch or off-hand root on the figure takes the pick's marker with
     /// its 1-based slot; a striker or the figure's shield does not.
+    /// The view's scene, made by the live sync when the player's inventory
+    /// opens, renders at the settings' supersampling: two image pixels a
+    /// view pixel with super sampling on, one with it off.
+    #[test]
+    fn the_view_image_follows_the_supersampling_setting() {
+        for (on, scale) in [(true, 2), (false, 1)] {
+            let mut app = App::new();
+            app.init_resource::<GameScreens>()
+                .init_resource::<InventoryDoll>()
+                .init_resource::<Assets<Image>>()
+                .init_resource::<crate::char_view::PreviewPointer>()
+                .insert_resource(exa_render::supersample::SuperSampling(on))
+                .add_systems(Update, sync_doll);
+            let view = {
+                let mut screens = app.world_mut().resource_mut::<GameScreens>();
+                screens.open_inventory(true, true, 4);
+                open_view(&screens).unwrap()
+            };
+            app.update();
+            let doll = app.world().resource::<InventoryDoll>();
+            let scene = doll.scene.as_ref().expect("the view's scene");
+            assert_eq!(scene.scale, scale);
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(&scene.image)
+                .unwrap();
+            assert_eq!(
+                image.size(),
+                image_size_at((view.width(), view.height()), scale)
+            );
+        }
+    }
+
     #[test]
     fn figure_hand_roots_take_the_pick_marker() {
         use crate::figure_pick::FigureHeld;
@@ -1940,6 +2002,11 @@ mod tests {
         assert_eq!((view.left, view.top), (18, 18));
         assert_eq!((view.width(), view.height()), (224, 380));
         assert_eq!(image_size((224, 380)), UVec2::new(448, 760));
+        // The inventory's view takes the settings' level: 4x is a 2 x 2
+        // grid, off is one sample.
+        assert_eq!(doll_scale(true), 2);
+        assert_eq!(doll_scale(false), 1);
+        assert_eq!(image_size_at((224, 380), doll_scale(false)), UVec2::new(224, 380));
     }
 
     /// The dots centre on the record: a 28-pixel record puts the 22-pixel
