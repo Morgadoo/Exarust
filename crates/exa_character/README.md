@@ -425,7 +425,9 @@ tested rules of their own.
   it (`ungroup_dead_hands`). The choice runs in the frame; behind the simulation
   bridge its switch of the animator's config is queued for the
   simulation's copy (`FixedCommands::write`), not sent as the frame's whole
-  animator; the dresser's armour layers reach the fighter the same way.
+  animator; the dresser's armour layers reach the fighter the same way
+  (`Fighter::wear`), and the worn protection stays on the body
+  (`WornArmour`) for the armour refresh after a rise in the armour skill.
 - The off hand's item is attached by `offhand` after the dresser: a shield
   from either hand (its own model, body, a back pivot to its forearm and two face
   pivots to the left hand, and its soft weld, turned −5° about z on the hand) or a second
