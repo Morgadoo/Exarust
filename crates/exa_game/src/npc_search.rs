@@ -1009,7 +1009,7 @@ pub fn follow_and_search(
             &GlobalTransform,
             Option<&exa_physics::body::locomotion::Locomotion>,
         ),
-        With<PlayerBody>,
+        (With<PlayerBody>, Without<Npc>),
     >,
     objects: LevelObjects,
     mut clock: Local<(Option<u64>, exa_ai::route::PlanTurn, u32)>,
