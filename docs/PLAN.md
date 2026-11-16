@@ -1585,6 +1585,8 @@ the AI's room bookkeeping and nearby gather are the original's: per-room lists n
 
 the character view: the game's crystal drain drains the player's open inventory's pack panel and the record follows (a bug fixed: the open panel had kept stale charges and wrote them back over the drained record on a save); the core crystal is shown over the figure (the bind's crystal scan, the lower-left icon, the hover pick's shown branch, the core drop for races that take it, checked against the shipped race table, and the shown take-off); the view image renders at the settings' supersampling. The equipment job finalisers and the loadout-close redress checked and left uncalled (no job queue, no world-body redress at the hub's close); a finaliser reading corrected. Left: the golem body mark, the take-off's effect and part refresh. Inventory scenes owed while the GPU is on hold.
 
+the hub, save screen, manual, end menu and arsenal take their keys from the window procedure's key list; the root's menu toggle dispatches on the session phase as the original's (in the hub it closes only the loadout form, the title page stays up, in a session the manual closes with the menu); the GUI unit fills the large icon atlas from the common glyph sheet, sets the drag distance from the window height, clamps the inventory and journal opens, and answers the pad's focus checks. Several readings corrected (the loadout-only close, the extra task layer, the board's drops). Left: a draw that reads the large atlas, the form cursor slot, the toggle's opening arms, the exit hook. Key scenes owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
