@@ -2349,17 +2349,21 @@ fn place_corner(x: f32, y: f32, view: SpanView) -> (f32, f32) {
     )
 }
 
-/// Draws the span bar. `band_word` is the stored count, doubled for the thickness.
+/// Draws the span bar (the line skin's rule, the table view's header line):
+/// the bar two GUI units thick from `inset` in from each end, and a cap at
+/// each end. `inset` is the skin's first side length (two units while a
+/// form draws its contents), `unit` the GUI unit. Checked against the
+/// assembly (the float sums add the inset to the origin as it does).
 pub fn draw_span_bar(
-    unit: i32,
+    inset: i32,
     origin_x: f32,
     origin_y: f32,
     span: f32,
-    band_word: i32,
+    unit: i32,
     view: SpanView,
 ) -> SpanBar {
-    let unit_f = unit as f32;
-    let thick = (i64::from(band_word) << 1) as f32;
+    let unit_f = inset as f32;
+    let thick = (i64::from(unit) << 1) as f32;
     let top = origin_y;
     let bottom = origin_y + thick;
     let inset_l = origin_x + unit_f;

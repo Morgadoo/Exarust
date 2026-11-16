@@ -2230,6 +2230,31 @@ fn paint_table_selection(
     {
         view.hover_at(y - client.top);
     }
+    // The line skin's header line first: the span bar in the idle control
+    // ink along the header's foot.
+    let [x, y, w] = view.header_rule();
+    let bar = exa_ui::skin::draw_span_bar(
+        look.unit * 2,
+        (client.left + x) as f32,
+        (client.top + y) as f32,
+        w as f32,
+        look.unit,
+        exa_ui::skin::SPAN_VIEW_UNSET,
+    );
+    let mut rule = exa_ui::skin::line_skin_batch();
+    rule.set_ink(exa_ui::line_skin::line_control_inks(look.fade)[1]);
+    for (quad, sample) in bar.quads.iter().zip(bar.binds) {
+        let uv = sample.map(f32::from_bits);
+        for (k, (px, py)) in quad.iter().enumerate() {
+            rule.set_uv(uv[k * 2], uv[k * 2 + 1]);
+            rule.vertex(*px, *py);
+        }
+    }
+    rule.end_quads();
+    painted.push(exa_ui::gui_draw::GuiLayer::new(
+        rule,
+        exa_ui::gui_draw::LayerTexture::Named(exa_ui::gui_draw::SKIN_TEXTURE),
+    ));
     if view.selection_band().is_none() {
         return;
     }
@@ -3494,10 +3519,21 @@ mod tests {
             // Manage Company and Records over it.
             // Without font textures the captions add no layers: each
             // window's shadow, backdrop and corner frame (the line skin's
-            // form draw), the panels, buttons and table panes give 19, and
+            // form draw), the panels, buttons and table panes give 19, the
+            // two tables' header rules (the line skin's span bar) two, and
             // the roster's selected first row its band.
             assert_eq!(frames.frames.len(), 1);
-            assert_eq!(frames.frames[0].layers.len(), 20);
+            assert_eq!(frames.frames[0].layers.len(), 22);
+            // A rule's bar: the bar record from two units in, a header row
+            // (six units) less half a unit and one down the table's client.
+            let unit = 4.0;
+            assert!(frames.frames[0].layers.iter().any(|l| {
+                l.batch.vertices.as_chunks::<4>().0.iter().any(|q| {
+                    (q[0].u, q[0].v) == (0.3, 0.1)
+                        && q[1].y - q[0].y == 2.0 * unit
+                        && q[3].x - q[0].x > 10.0 * unit
+                })
+            }));
             assert!(frames.primitives() > 0);
         }
     }
