@@ -194,7 +194,7 @@ fn shipped_bodies_hand_their_skin_to_the_garments() {
                 .find(|(n, _)| exa_formats::rsq::bone_index(&n.name) == Some(bone))
                 .map(|(_, f)| *f)
         };
-        let (mut pieces, mut flagged, mut unnamed, mut skipped) = (0, 0, 0, 0);
+        let (mut pieces, mut flagged, mut unnamed, mut skipped, mut cloth) = (0, 0, 0, 0, 0);
         let (mut vertices, mut moved_bone, mut unreached) = (0usize, 0usize, 0usize);
         let (mut own_seam, mut own_transfer) = (0usize, 0usize);
         let mut l1 = 0.0f64;
@@ -214,6 +214,9 @@ fn shipped_bodies_hand_their_skin_to_the_garments() {
                 flagged += 1;
                 if node.flags & 0x20 != 0 {
                     skipped += 1;
+                }
+                if node.cloth_marker {
+                    cloth += 1;
                 }
                 let Some(frame) = exa_formats::rsq::bone_index(&node.name)
                     .filter(|b| (1..=18).contains(b))
@@ -262,7 +265,7 @@ fn shipped_bodies_hand_their_skin_to_the_garments() {
         }
         eprintln!(
             "{stem}: garment pieces {pieces}, asking for the body's skin {flagged} (skin flag 0x20: \
-             {skipped}, not named after a body part: {unnamed}); over their {vertices} vertices: \
+             {skipped}, cloth: {cloth}, not named after a body part: {unnamed}); over their {vertices} vertices: \
              dominant bone changed on {moved_bone} ({:.1}%), mean weight moved {:.3}; elements \
              never reached {unreached}; the piece's own bone leads on {:.1}% of the seam \
              weights and {:.1}% of the transferred ones",
