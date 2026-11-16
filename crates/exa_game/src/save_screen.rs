@@ -780,6 +780,26 @@ impl SaveScreen {
     /// A left press.
     pub fn press(&mut self, list: &mut SlotList, x: i32, y: i32) {
         let hit = self.hit(x, y);
+        // The reset-to-portal and delete boxes' press slot: a press on the
+        // box off its buttons closes it (answer 0x40).
+        let boxed = if self.reset.is_some() {
+            Some(self.reset_px())
+        } else if self.confirm.is_some() {
+            Some(self.confirm_px())
+        } else {
+            None
+        };
+        if let Some(rect) = boxed
+            && rect.contains(x, y)
+        {
+            let selection = i32::from(hit.is_some());
+            if exa_ui::dialogs::dialog_click(selection, || 0).close {
+                info!("save screen: a press off the box's buttons closes it");
+                self.reset = None;
+                self.confirm = None;
+                return;
+            }
+        }
         match hit {
             Some(Target::Row(row)) => {
                 match self.list.take() {
@@ -1817,6 +1837,35 @@ mod tests {
         s.ask_delete();
         assert_eq!(s.confirm_delete(&mut list), SaveAction::Leave);
         assert!(!Slots::story(&dir).file(first, SlotKind::Save).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The delete and reset boxes' press slot: a press on the box off its
+    /// buttons closes it without an answer; the save stays.
+    #[test]
+    fn a_press_on_a_box_off_its_buttons_closes_it() {
+        let dir = folder("box-press");
+        let mut list = SlotList::new(Slots::story(&dir));
+        let number = story_slot(&mut list, "Ash");
+        let mut s = SaveScreen::open(&mut list, STORY, (1024, 768), 4, HashMap::new()).unwrap();
+        let at = centre(&s, saves::DELETE);
+        click(&mut s, &mut list, at);
+        assert!(s.confirm.is_some());
+        let rect = s.confirm_px();
+        let inside = (rect.left + 3, rect.top + 3);
+        assert_eq!(s.hit(inside.0, inside.1), None);
+        assert_eq!(click(&mut s, &mut list, inside), SaveAction::None);
+        assert!(s.confirm.is_none());
+        assert_eq!(list.numbers(), &[number]);
+        // A press outside the box leaves it up.
+        s.ask_delete();
+        click(&mut s, &mut list, (1, 1));
+        assert!(s.confirm.is_some());
+        s.confirm = None;
+        s.ask_portal_reset();
+        let rect = s.reset_px();
+        click(&mut s, &mut list, (rect.left + 3, rect.top + 3));
+        assert!(s.reset.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

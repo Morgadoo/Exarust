@@ -3,9 +3,11 @@
 //! default tooltip it shows.
 //!
 //! A frame's pointer moves the task's pointer ([`GuiTask::update`]: the
-//! hover and the focus follow it, a held form gets the drag), the left
-//! button's press and release go to [`GuiTask::press`] and
-//! [`GuiTask::release`] (the original's left button word 1), the wheel to
+//! hover and the focus follow it, a held form gets the drag), the buttons'
+//! presses and releases go to [`GuiTask::press`] and [`GuiTask::release`]
+//! (the original's words: left 1, right 2, middle 4; a press adds Ctrl
+//! 0x40, Shift 0x20 and Alt 0x80, so a Ctrl press on a title does not drag;
+//! the middle button only while the player's controls are off), the wheel to
 //! the focused form ([`GuiTask::wheel`], 120 a notch). On the frames the
 //! GUI timer comes due ([`crate::frame_timers::FrameTimers`], every 100 ms)
 //! every base form runs its repeat and the task's tick shows a requested
@@ -32,11 +34,40 @@ use exa_ui::tooltips::{ToolTipState, draw as tooltip_draw, layout as tooltip_lay
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PointerFrame {
     pub at: Option<(i32, i32)>,
+    /// The left button's press and release this frame.
     pub pressed: bool,
     pub released: bool,
+    /// The right button's press and release (the original's word 2).
+    pub right_pressed: bool,
+    pub right_released: bool,
+    /// The middle button's press and release (word 4), already gated by
+    /// [`read_pointer`]: the GUI hears it only while the player's controls
+    /// are off.
+    pub middle_pressed: bool,
+    pub middle_released: bool,
+    /// The press words' modifier bits: Ctrl 0x40, Shift 0x20, Alt 0x80.
+    pub modifiers: u16,
     /// The wheel's turn this frame, 120 a notch (up positive).
     pub wheel: i32,
     pub now: u32,
+}
+
+/// The modifier bits a button press carries, as the window procedure
+/// builds them: Ctrl 0x40, Shift 0x20 and Alt 0x80.
+pub fn press_modifiers(ctrl: bool, shift: bool, alt: bool) -> u16 {
+    u16::from(ctrl) << 6 | u16::from(shift) << 5 | u16::from(alt) << 7
+}
+
+/// The modifiers held now, as [`press_modifiers`] words them.
+pub fn held_modifiers(keys: Option<&ButtonInput<KeyCode>>) -> u16 {
+    let Some(keys) = keys else {
+        return 0;
+    };
+    press_modifiers(
+        keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
+        keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+        keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
+    )
 }
 
 /// The wheel's messages summed into the original's units (120 a notch).
@@ -71,8 +102,33 @@ pub fn read_pointer(
         at,
         pressed: mouse.just_pressed(MouseButton::Left),
         released: mouse.just_released(MouseButton::Left),
+        right_pressed: mouse.just_pressed(MouseButton::Right),
+        right_released: mouse.just_released(MouseButton::Right),
+        middle_pressed: false,
+        middle_released: false,
+        modifiers: 0,
         wheel,
         now,
+    }
+}
+
+impl PointerFrame {
+    /// Adds the keyboard's modifiers and the middle button: the window
+    /// procedure sends the middle button's press and release to the GUI
+    /// only while the player's controls are off (`gui_middle`); with the
+    /// controls on, the controls' mouse hook takes that button.
+    pub fn with_keys(
+        mut self,
+        mouse: &ButtonInput<MouseButton>,
+        keys: Option<&ButtonInput<KeyCode>>,
+        gui_middle: bool,
+    ) -> Self {
+        self.modifiers = held_modifiers(keys);
+        if gui_middle {
+            self.middle_pressed = mouse.just_pressed(MouseButton::Middle);
+            self.middle_released = mouse.just_released(MouseButton::Middle);
+        }
+        self
     }
 }
 
@@ -143,8 +199,8 @@ impl FormTask {
     }
 }
 
-/// Feeds one frame to a task: the clock, the pointer's move, the left
-/// button's press and release and the wheel; then, when the GUI timer came
+/// Feeds one frame to a task: the clock, the pointer's move, the
+/// buttons' presses (with the modifier bits) and releases and the wheel; then, when the GUI timer came
 /// due (every frame without a timer table), the forms' repeat and the
 /// task's tick. A press that started an arrow's repeat reschedules the GUI
 /// timer [`crate::frame_timers::GUI_TIMER_ARROW_PAUSE`] units out.
@@ -162,9 +218,19 @@ pub fn drive(
     if let Some(at) = frame.at {
         task.update(false, at);
     }
-    if frame.pressed {
+    // The window procedure's button messages: a press carries its button
+    // (left 1, right 2, middle 4) with the modifier bits; a release carries
+    // the button alone.
+    for (down, button) in [
+        (frame.pressed, 1u16),
+        (frame.right_pressed, 2),
+        (frame.middle_pressed, 4),
+    ] {
+        if !down {
+            continue;
+        }
         let before = repeat_times(task);
-        task.press(1);
+        task.press(button | frame.modifiers);
         let started = repeat_times(task)
             .into_iter()
             .any(|(id, at)| at.is_some() && !before.contains(&(id, at)));
@@ -176,8 +242,14 @@ pub fn drive(
             );
         }
     }
-    if frame.released {
-        task.release(1);
+    for (up, button) in [
+        (frame.released, 1u16),
+        (frame.right_released, 2),
+        (frame.middle_released, 4),
+    ] {
+        if up {
+            task.release(button);
+        }
     }
     if frame.wheel != 0 {
         task.wheel(frame.wheel);
@@ -294,5 +366,77 @@ impl ShownTooltip {
             ));
         }
         Some(layers)
+    }
+}
+
+#[cfg(test)]
+mod button_tests {
+    use super::*;
+    use exa_ui::form::ClientRect;
+
+    /// A titled window at 100, 50, 200 × 300 (the inventory's words).
+    fn window() -> BaseForm {
+        BaseForm::new(
+            GuiRect::new(100, 50, 200, 300),
+            4,
+            (0x3010, 0x3_0063, 0),
+            ClientRect {
+                left: 8,
+                top: 24,
+                right: 192,
+                bottom: 292,
+            },
+        )
+    }
+
+    fn frame(at: (i32, i32)) -> PointerFrame {
+        PointerFrame {
+            at: Some(at),
+            now: 1000,
+            ..PointerFrame::default()
+        }
+    }
+
+    /// The window procedure's words: only a plain left press drags a
+    /// title; the same press with Ctrl (0x41) or the right button (2) holds
+    /// nothing, as the base form's press rule takes only the word 1.
+    #[test]
+    fn only_a_plain_left_press_drags_a_title() {
+        for (left, right, modifiers, moves) in [
+            (true, false, 0, true),
+            (true, false, press_modifiers(true, false, false), false),
+            (false, true, 0, false),
+        ] {
+            let mut forms = FormTask::new();
+            let id = forms.add(window(), None);
+            forms.drive(&frame((200, 52)), None);
+            let mut press = frame((200, 52));
+            press.pressed = left;
+            press.right_pressed = right;
+            press.modifiers = modifiers;
+            forms.drive(&press, None);
+            forms.drive(&frame((260, 90)), None);
+            let mut release = frame((260, 90));
+            release.released = left;
+            release.right_released = right;
+            forms.drive(&release, None);
+            let left_at = forms.base(id).unwrap().bounds.left;
+            assert_eq!(left_at == 160, moves, "{left} {right} {modifiers:#x}");
+        }
+        assert_eq!(press_modifiers(true, true, true), 0xe0);
+    }
+
+    /// The middle button reaches the GUI only while the controls are off.
+    #[test]
+    fn the_middle_button_is_the_guis_only_with_the_controls_off() {
+        let mut mouse = ButtonInput::<MouseButton>::default();
+        mouse.press(MouseButton::Middle);
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::ShiftLeft);
+        let on = PointerFrame::default().with_keys(&mouse, Some(&keys), false);
+        assert!(!on.middle_pressed);
+        assert_eq!(on.modifiers, 0x20);
+        let off = PointerFrame::default().with_keys(&mouse, Some(&keys), true);
+        assert!(off.middle_pressed);
     }
 }

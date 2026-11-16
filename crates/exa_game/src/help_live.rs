@@ -572,7 +572,10 @@ fn manual_input(
     let rect = screen.rect(size, unit);
     screen.build_forms(rect, unit);
     let now = time.elapsed().as_millis() as u32;
-    let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
+    // The manual is open with the controls off: the middle button is the
+    // GUI's too.
+    let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now)
+        .with_keys(&mouse, Some(&keys), true);
     let (Some(outer), Some(page), Some(list_form)) = (screen.outer, screen.page, screen.list_form)
     else {
         return;

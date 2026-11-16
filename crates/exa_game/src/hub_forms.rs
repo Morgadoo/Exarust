@@ -559,6 +559,19 @@ impl HubForms {
             self.swatch_drag(target, at, screen_h);
         }
         if pressed {
+            // The Dismiss and yes/no dialogs' press slot: a press on the
+            // dialog off its buttons closes it (answer 0x40), no callback.
+            let top = &self.forms[target];
+            if matches!(window, FormWindow::Dismiss | FormWindow::YesNo(_))
+                && top.form.contains(at.0, at.1)
+            {
+                let selection = top.form.hit(at.0, at.1).map_or(0, |i| i as i32 + 1);
+                if exa_ui::dialogs::dialog_click(selection, || 0).close {
+                    info!("{window:?}: a press off its buttons closes the dialog");
+                    self.remove(window);
+                    return out;
+                }
+            }
             self.field_press(target, at);
             let top = &mut self.forms[target];
             out.extend(
@@ -2996,6 +3009,43 @@ mod tests {
                 .find(FormWindow::YesNo(YesHook::ForfeitTourney))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_press_on_a_dialog_off_its_buttons_closes_it() {
+        let (mut windows, mut career) = opened();
+        windows.open_yes_no(crate::tournament::FORFEIT_TOURNEY, YesHook::ForfeitTourney);
+        let window = FormWindow::YesNo(YesHook::ForfeitTourney);
+        let rect = windows.forms.get(window).unwrap().rect();
+        // A point inside the dialog that no button takes: scan its client.
+        let off = (rect.x..rect.x + rect.w)
+            .flat_map(|x| (rect.y..rect.y + rect.h).map(move |y| (x, y)))
+            .find(|&(x, y)| {
+                let f = windows.forms.get(window).unwrap();
+                f.contains(x, y) && f.hit(x, y).is_none()
+            })
+            .unwrap();
+        let answered = windows.forms.input(off, true, false);
+        assert!(answered.is_empty());
+        assert!(windows.forms.find(window).is_none());
+        // A press on Yes still runs the hook.
+        windows.open_yes_no(crate::tournament::FORFEIT_TOURNEY, YesHook::ForfeitTourney);
+        click(&mut windows, &mut career, window, dialog::YES);
+        assert!(windows.forms.find(window).is_none());
+        // The dismiss dialog closes the same way.
+        windows.open_dismiss("Someone");
+        let rect = windows.forms.get(FormWindow::Dismiss).unwrap().rect();
+        let inside = (rect.x + 3, rect.y + 3);
+        assert!(
+            windows
+                .forms
+                .get(FormWindow::Dismiss)
+                .unwrap()
+                .hit(inside.0, inside.1)
+                .is_none()
+        );
+        windows.forms.input(inside, true, false);
+        assert!(windows.forms.find(FormWindow::Dismiss).is_none());
     }
 
     #[test]
