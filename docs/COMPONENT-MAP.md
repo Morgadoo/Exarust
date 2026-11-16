@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 57.9% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 58.0% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **57.9% closed**, of which 45.7% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.3% partial and 6.8% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **58.0% closed**, of which 45.8% live (reimplemented), 9.7% engine and 2.5% closed without code (unreachable or deviation). Still open: 35.2% partial and 6.8% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -31,7 +31,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 56% | 53% | 1% | 2% | 43% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 63% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
-| Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
+| Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 86% | 84% | 2% | 0% | 10% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 61% | 59% | 2% | 0% | 33% | 6% |  |
 | UI | 959 | 312 | 63 | 86% | 0% | 59% | 50% | 1% | 9% | 27% | 14% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
@@ -308,7 +308,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TGUIItemContainer | Items, materials & crafting | 26 | 90% | 86% | 85% | 0% | 0% | 9% | 6% |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
 | Item description phrases | Items, materials & crafting | 16 | 86% | 71% | 65% | 2% | 3% | 29% | 0% |
-| SG_ItemGUI | Items, materials & crafting | 15 | 84% | 67% | 61% | 2% | 4% | 21% | 13% |
+| SG_ItemGUI | Items, materials & crafting | 15 | 84% | 68% | 62% | 2% | 4% | 21% | 11% |
 | Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 16% | 16% | 0% | 0% | 78% | 6% |
 | FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 26% | 25% | 2% | 0% | 46% | 28% |
 | TProcMaterial | Items, materials & crafting | 6 | 79% | 0% | 0% | 0% | 0% | 91% | 9% |
@@ -345,12 +345,12 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TWiredGripA01 | Items, materials & crafting | 0 | 60% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TPopUpContainer | Items, materials & crafting | 0 | 85% | 46% | 46% | 0% | 0% | 54% | 0% |
 | TArsenalContFrame | Items, materials & crafting | 0 | 0% | 0% | 0% | 0% | 0% | 0% | 100% |
-| TMotileAI | AI & behaviour | 60 | 99% | 50% | 44% | 0% | 5% | 50% | 0% |
+| TMotileAI | AI & behaviour | 60 | 99% | 51% | 45% | 0% | 5% | 49% | 0% |
 | SG_PlayerControls | AI & behaviour | 47 | 99% | 63% | 61% | 1% | 0% | 37% | 0% |
 | TPathFinder | AI & behaviour | 32 | 91% | 55% | 55% | 0% | 0% | 45% | 0% |
 | TPlayerBehaviour | AI & behaviour | 17 | 99% | 67% | 64% | 3% | 0% | 33% | 0% |
 | TCombatant | AI & behaviour | 17 | 97% | 67% | 60% | 0% | 8% | 28% | 4% |
-| TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 1% |
+| TAISearchActivity | AI & behaviour | 16 | 90% | 66% | 62% | 4% | 0% | 34% | 0% |
 | Character roles & relations (script functions) | AI & behaviour | 11 | 93% | 39% | 36% | 3% | 0% | 55% | 5% |
 | SG_CharacterAI | AI & behaviour | 5 | 88% | 11% | 9% | 3% | 0% | 89% | 0% |
 | TCharViewBehaviour | AI & behaviour | 0 | 70% | 0% | 0% | 0% | 0% | 100% | 0% |
@@ -452,7 +452,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | RFG_Dialogue | Script, dialogue & story | 18 | 91% | 95% | 93% | 2% | 0% | 0% | 5% |
 | FG_AIFunctions | Script, dialogue & story | 11 | 86% | 88% | 86% | 2% | 0% | 12% | 0% |
 | RFG_Scripts | Script, dialogue & story | 6 | 86% | 100% | 99% | 1% | 0% | 0% | 0% |
-| SG_GameFunctions | Script, dialogue & story | 3 | 82% | 44% | 41% | 3% | 0% | 37% | 19% |
+| SG_GameFunctions | Script, dialogue & story | 3 | 82% | 58% | 55% | 3% | 0% | 23% | 19% |
 | TRTDialogue | Script, dialogue & story | 3 | 85% | 48% | 43% | 5% | 0% | 52% | 0% |
 | TDialogueChoices | Script, dialogue & story | 2 | 80% | 100% | 98% | 2% | 0% | 0% | 0% |
 | TScriptRole | Script, dialogue & story | 1 | 82% | 52% | 52% | 0% | 0% | 48% | 0% |
@@ -493,7 +493,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TTextBox | UI | 12 | 88% | 96% | 95% | 1% | 0% | 2% | 2% |
 | TIconManager | UI | 10 | 85% | 44% | 42% | 1% | 1% | 0% | 56% |
 | RF_GUI_Controls | UI | 8 | 80% | 14% | 13% | 1% | 0% | 71% | 15% |
-| TCharacterView | UI | 8 | 76% | 8% | 8% | 0% | 0% | 78% | 14% |
+| TCharacterView | UI | 8 | 76% | 12% | 12% | 0% | 0% | 78% | 11% |
 | TGUITableView | UI | 7 | 90% | 66% | 39% | 4% | 23% | 34% | 0% |
 | RF_GUI_Icons | UI | 7 | 90% | 84% | 74% | 1% | 9% | 9% | 7% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 7 | 87% | 84% | 83% | 1% | 0% | 0% | 16% |

@@ -3179,15 +3179,28 @@ fn screenshot_after_frames(
     };
     if *frames == options.frames {
         // Offscreen (a grid quadrant), the image the window's cameras
-        // draw into.
+        // draw into. The run ends once the shot is saved: a fixed count of
+        // frames after it was too short at a few hundred frames a second,
+        // and the shot was lost ("sending on a closed channel").
         commands
             .spawn(exa_game::debug_shot::window_shot(offscreen.as_deref()))
-            .observe(save_to_disk(path.clone()));
+            .observe(save_to_disk(path.clone()))
+            .observe(
+                |_: On<bevy::render::view::screenshot::ScreenshotCaptured>,
+                 mut exit: MessageWriter<AppExit>| {
+                    exit.write(AppExit::Success);
+                },
+            );
     }
-    if *frames == options.frames + 20 {
+    if *frames == options.frames + SCREENSHOT_EXIT_WAIT_FRAMES {
+        warn!("--screenshot: no shot after {SCREENSHOT_EXIT_WAIT_FRAMES} frames; exiting");
         exit.write(AppExit::Success);
     }
 }
+
+/// Frames `--screenshot` waits for its shot to be saved before it exits
+/// anyway.
+const SCREENSHOT_EXIT_WAIT_FRAMES: u32 = 600;
 
 /// A body blow, from the front, to every simulated character body at the
 /// `--shove` frame, counted from the end of the loading screen.
