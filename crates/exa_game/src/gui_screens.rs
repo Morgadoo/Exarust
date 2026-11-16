@@ -4269,7 +4269,7 @@ pub(crate) fn draw_screens(
         let (font, atlas) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
         let screen = screens.task.screen;
         let palette = gui_paint::palette();
-        if let Some(layers) = tip.paint(screens.task.clock, screen, &font, atlas, &palette) {
+        if let Some(layers) = tip.paint(screens.task.clock, unit, screen, &font, atlas, &palette) {
             let mut painted = gui_paint::Painted::default();
             for layer in layers {
                 painted.push(layer);

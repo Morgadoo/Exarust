@@ -20,7 +20,7 @@
 //! the GUI level's main font, its box sized and placed by
 //! [`exa_ui::tooltips::layout`] on the pointer, fading in over 256 units,
 //! up for 2500 and fading out ([`exa_ui::tooltips::ToolTipState`]), drawn
-//! with the translucent background (alpha 153 at full strength).
+//! on the skin's rounded fill (alpha 153 at full strength).
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
@@ -277,6 +277,10 @@ fn repeat_times(task: &GuiTask) -> Vec<(FormId, Option<u32>)> {
         .collect()
 }
 
+/// The tooltip background's rounded corner, in the rounded fill's radius
+/// words (four units each).
+pub const TOOLTIP_CORNER: i32 = 2;
+
 /// The default tooltip on the screen.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShownTooltip {
@@ -326,6 +330,7 @@ impl ShownTooltip {
     pub fn paint(
         &mut self,
         now: u32,
+        unit: i32,
         screen: (i32, i32),
         font: &exa_ui::gui_font::GuiFont,
         atlas: Option<(u16, u16)>,
@@ -339,20 +344,22 @@ impl ShownTooltip {
         let layout = tooltip_layout(width, font.line_height, self.at, screen);
         let draw = tooltip_draw(layout, frame.alpha);
         let mut layers = Vec::new();
+        // The background: the skin's rounded fill (the rounded program's
+        // black with the corner fade) over the box from (1, 1), one pixel
+        // short of its size, its corner two units grown.
         let mut back = SkinBatch::new();
-        back.select(1, 0, false);
-        back.set_ink([0, 0, 0, draw.background_alpha]);
-        back.begin();
-        let (x0, y0) = (layout.x as f32, layout.y as f32);
-        let (x1, y1) = (
-            (layout.x + layout.width) as f32,
-            (layout.y + layout.height) as f32,
+        exa_ui::skin::rounded_fill_fixed(
+            &mut back,
+            exa_ui::skin::GuiRect::sized(
+                (layout.x + 1) as f32,
+                (layout.y + 1) as f32,
+                (layout.width - 1) as f32,
+                (layout.height - 1) as f32,
+            ),
+            unit,
+            TOOLTIP_CORNER,
+            draw.background_alpha,
         );
-        back.vertex(x0, y0);
-        back.vertex(x0, y1);
-        back.vertex(x1, y1);
-        back.vertex(x1, y0);
-        back.end_quads();
         layers.push(GuiLayer::new(back, LayerTexture::None));
         if let Some(atlas) = atlas {
             let mut ink = palette.text[6];
@@ -438,5 +445,41 @@ mod button_tests {
         assert_eq!(on.modifiers, 0x20);
         let off = PointerFrame::default().with_keys(&mouse, Some(&keys), true);
         assert!(off.middle_pressed);
+    }
+}
+
+#[cfg(test)]
+mod tooltip_tests {
+    use super::*;
+
+    /// The tooltip's background is the skin's rounded fill: the rounded
+    /// program's quad grown by two corner words (eight units) around the
+    /// box from (1, 1), at alpha 153 once faded in; the text follows.
+    #[test]
+    fn the_tooltip_back_is_the_skins_rounded_fill() {
+        let mut tip = ShownTooltip {
+            text: b"Hint".to_vec(),
+            at: (200, 200),
+            state: ToolTipState::default(),
+        };
+        tip.state.show(0);
+        let font = exa_ui::gui_font::RAYFORM_08;
+        let palette = crate::gui_paint::palette();
+        let layers = tip
+            .paint(1000, 4, (800, 600), &font, Some((256, 256)), &palette)
+            .unwrap();
+        let back = &layers[0].batch;
+        let primitive = &back.primitives[0];
+        assert!(primitive.rounded_scale.is_some());
+        assert_eq!(back.vertices[0].ink[3], 153);
+        let layout = tooltip_layout(
+            font.text_width(b"Hint"),
+            font.line_height,
+            (200, 200),
+            (800, 600),
+        );
+        assert_eq!(back.vertices[0].x, (layout.x + 1 - 32) as f32);
+        assert_eq!(back.vertices[0].y, (layout.y + 1 - 32) as f32);
+        assert_eq!(layers.len(), 2);
     }
 }
