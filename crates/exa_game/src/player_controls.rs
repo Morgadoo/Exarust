@@ -1969,12 +1969,11 @@ pub struct GameModeEntry {
 
 impl GameMode {
     /// The camera record the mode's start hands the camera switch: the
-    /// Character record (its Steam Deck distances are not taken, as
-    /// Exarust has no Steam client) or the Spectate record with its scan
-    /// bit ([`crate::nav_camera`]).
-    pub fn camera_record(self) -> crate::nav_camera::PresetFields {
+    /// Character record (with the Deck's distances `on_deck`) or the
+    /// Spectate record with its scan bit ([`crate::nav_camera`]).
+    pub fn camera_record(self, on_deck: bool) -> crate::nav_camera::PresetFields {
         match self {
-            GameMode::Character => crate::nav_camera::character_camera_record(false),
+            GameMode::Character => crate::nav_camera::character_camera_record(on_deck),
             GameMode::Spectate => crate::nav_camera::spectate_camera_record(),
         }
     }
@@ -2129,9 +2128,9 @@ impl GameModes {
 /// Runs the camera switch's mode half and logs it, with what asked.
 pub fn enter_mode(modes: &mut GameModes, to: Option<GameMode>, by: &str) -> ModeSwitch {
     let switch = modes.switch(to);
-    let left = switch
-        .left
-        .map_or("none".to_string(), |(mode, hook)| format!("{} ({hook:?})", mode.name()));
+    let left = switch.left.map_or("none".to_string(), |(mode, hook)| {
+        format!("{} ({hook:?})", mode.name())
+    });
     bevy::log::info!(
         "game mode: {} (left {left}; {by})",
         switch.entered.map_or("none", GameMode::name)
@@ -3160,8 +3159,10 @@ mod tests {
         assert_eq!(modes.switch(None).left, None);
         assert_eq!(modes.switches, 5);
         // The records the starts hand the switch.
-        assert_eq!(GameMode::Character.camera_record().flags, 0x0020_0300);
-        assert_eq!(GameMode::Spectate.camera_record().flags, 0x0062_0b01);
+        assert_eq!(GameMode::Character.camera_record(false).flags, 0x0020_0300);
+        assert_eq!(GameMode::Character.camera_record(true).distance, 800.0);
+        assert_eq!(GameMode::Spectate.camera_record(true).flags, 0x0062_0b01);
+        assert_eq!(GameMode::Spectate.camera_record(true).distance, 1300.0);
     }
 
     /// The right press: a usable kind zero opens the container, another

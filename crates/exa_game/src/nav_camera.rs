@@ -1253,8 +1253,8 @@ pub const CHARACTER_CAMERA_RECORD: PresetFields = PresetFields {
 pub const DECK_DISTANCES: (f32, f32) = (800.0, 600.0);
 
 /// The record the Character start hands the camera switch: the shipped
-/// one, with [`DECK_DISTANCES`] when `on_deck`. Exarust has no Steam
-/// client, so the live start passes `false`.
+/// one, with [`DECK_DISTANCES`] when `on_deck` (the settings' Deck flag,
+/// which Exarust does not detect).
 pub fn character_camera_record(on_deck: bool) -> PresetFields {
     let mut record = CHARACTER_CAMERA_RECORD;
     if on_deck {

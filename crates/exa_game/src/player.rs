@@ -794,8 +794,10 @@ fn end_play_session(
 /// controller from the view, which Exarust's camera has no part for).
 fn take_mode_records(
     modes: Res<crate::player_controls::GameModes>,
+    config: Option<Res<crate::hw_config::HardwareConfig>>,
     mut cameras: Query<&mut ChaseCamera>,
 ) {
+    let on_deck = config.is_some_and(|c| c.steam_deck);
     for mut cam in &mut cameras {
         if cam.switches_seen == Some(modes.switches) {
             continue;
@@ -804,10 +806,14 @@ fn take_mode_records(
         let Some(mode) = modes.current() else {
             continue;
         };
-        if std::mem::take(&mut cam.fresh) && cam.mode == Some(mode) {
+        let record = mode.camera_record(on_deck);
+        // A new camera is built from the shipped Character record.
+        if std::mem::take(&mut cam.fresh)
+            && cam.mode == Some(mode)
+            && record == crate::nav_camera::CHARACTER_CAMERA_RECORD
+        {
             continue;
         }
-        let record = mode.camera_record();
         cam.take_record(record);
         cam.mode = Some(mode);
         info!(
@@ -899,8 +905,7 @@ fn project_to_window(clip: Mat4, eye: &GlobalTransform, size: Vec2, point: Vec3)
         return None;
     }
     let view = eye.affine().inverse().transform_point3(point);
-    let [x, y, _] =
-        exa_ui::viewport::view_to_screen(view.to_array(), (size.x, size.y), projection);
+    let [x, y, _] = exa_ui::viewport::view_to_screen(view.to_array(), (size.x, size.y), projection);
     Some(Vec2::new(x, y))
 }
 
@@ -3159,7 +3164,10 @@ pub(crate) fn chase_camera(
         )
     });
     // The pad's move stick in the world, which the free camera's pan adds.
-    let pad_move = match (pad_status.as_ref().is_some_and(|s| s.active()), pad.as_deref()) {
+    let pad_move = match (
+        pad_status.as_ref().is_some_and(|s| s.active()),
+        pad.as_deref(),
+    ) {
         (true, Some(pad)) => pad.frame().move_world,
         _ => Vec3::ZERO,
     };
@@ -4974,7 +4982,15 @@ mod tests {
     /// points to, where Bevy's projection gives none.
     #[test]
     fn a_window_point_snaps_to_the_edge_behind_the_eye() {
-        let clip = Mat4::perspective_infinite_reverse_rh(1.0, 1.6, 0.1);
+        // An infinite reversed-depth projection, Bevy's: a vertical field
+        // of view of 1 rad at an aspect of 1.6, the near plane at 0.1.
+        let f = 1.0 / 0.5f32.tan();
+        let clip = Mat4::from_cols(
+            Vec4::new(f / 1.6, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, f, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, -1.0),
+            Vec4::new(0.0, 0.0, 0.1, 0.0),
+        );
         let eye = GlobalTransform::from(Transform::from_xyz(0.0, 2.0, 5.0));
         let size = Vec2::new(1600.0, 1000.0);
         let ahead = project_to_window(clip, &eye, size, Vec3::new(0.0, 2.0, 0.0)).unwrap();
@@ -5009,7 +5025,7 @@ mod tests {
         };
         let panned = |mode: crate::player_controls::GameMode| {
             let mut cam = ChaseCamera::behind(0.0);
-            cam.take_record(mode.camera_record());
+            cam.take_record(mode.camera_record(false));
             cam.free_at(Vec3::ONE);
             for _ in 0..30 {
                 cam.tick(Some(&input));
@@ -5028,7 +5044,7 @@ mod tests {
     #[test]
     fn a_free_camera_pans_with_the_keys() {
         let mut cam = ChaseCamera::behind(0.0);
-        cam.take_record(crate::player_controls::GameMode::Spectate.camera_record());
+        cam.take_record(crate::player_controls::GameMode::Spectate.camera_record(false));
         assert!(!cam.is_free());
         cam.free_at(Vec3::new(1.0, 1.0, 1.0));
         assert!(cam.is_free());

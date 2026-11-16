@@ -1323,7 +1323,13 @@ under 0.2 and takes its first grip. The controls unit also
 appends the Character and Spectate game modes in that order, each id the
 table's new length plus two, its 16 name bytes and its hooks (Character the start and end of play, Spectate its own pair);
 `GameModes` is the live table and registers them at start-up
-(`register_game_modes`). The pad's
+(`register_game_modes`). It also holds the scene's mode word: the start of
+play, the Spectate starts (`--spectate`, the spectated arena match) and the
+end of play in Character mode (no mode) enter through `GameModes::switch`
+(`enter_mode`), which answers the leave routine of the mode it leaves; the
+chase camera takes the entered mode's record, the room walk is forced while
+the scene is in Spectate, and the controls skip their end of play when the
+switch to Spectate has run it. The pad's
 camera look takes the frame from the mouse-look capture, as the original's
 gamepad branch returns before touching the pointer. The start and end of play set the AI's activation centre and
 radius (`PlaySession`, which the player tick and the AI read); `PlayerControl`
@@ -1712,19 +1718,27 @@ sectors, the flag words, `exa_physics::intersect::segment_sphere`, the
 blocking word, then each face).
 
 The chase camera builds its controller with `nav_camera::NavController::new`
-from `nav_camera::GAME_CAMERA_PRESET` (the game camera's record: view 250,
-size 6000, rate 0.01, distances 1300 in 800 to 2000, heights 0 to 200; the
-controls' second record differs only in handler bits) and takes the
-backward vector's spring (stiffness and retention) and the zoom spring's
-rate and step from the applied preset. Each tick runs the zoom spring (or
+from `nav_camera::CHARACTER_CAMERA_RECORD` (the Character mode's record:
+flags 0x200300, view 250, size 6000, rate 0.01, distances 1300 in 800 to
+2000, heights 0 to 200) and takes the backward vector's spring (stiffness
+and retention), the zoom spring's rate and step and the wheel's stops from
+the applied preset. Each game mode's start gives the existing controller
+its own record (`ChaseCamera::take_record`, run by `take_mode_records`
+when `GameModes` has switched): Character's, with the Deck's 800/600
+distances when the settings' Deck flag is set, or the Spectate record
+(`SPECTATE_CAMERA_RECORD`, flags 0x220b01 with the scan bit 0x400000),
+whose pan keys (0x800) and flattening (0x20000) the free branch reads;
+the record's distance restarts the zoom through the placement. A camera
+built from the Character record takes the first switch into Character as
+its construction. Each tick runs the zoom spring (or
 the shown zoom's snap), the shake, the pitch ease, then reads the shown yaw
 off the backward vector (the target turning a whole turn when it crosses
 ±π, `wrap_target_yaw`), turns the node to the target yaw led at most 45°
 (`lead_yaw`) and springs the vector to the node's axis (`spring_back`); a
 frame draws the vector, the zoom spring's last two values (`frame_zoom`)
 and the shake between ticks. A camera that follows nothing (spectating)
-also runs the free branch each tick (`FreeFocus::tick`: the pan keys, the
-terrain lift, the zoom's pull `free_pull`, the rate and the height limits)
+also runs the free branch each tick (`FreeFocus::tick`: the pan keys and
+the pad's move stick under the record's 0x800, the terrain lift, the zoom's pull `free_pull`, the rate and the height limits)
 and draws its own point between ticks; it runs no wall probe, which starts
 at the followed body's hip and skips meshes the cut-away fade marked.
 Camera shots go through `nav_camera::place` (`ChaseCamera::face_shot`),

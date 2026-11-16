@@ -415,10 +415,7 @@ pub fn view_to_screen(point: [f32; 3], size: (f32, f32), projection: (f32, f32))
             h * 0.5 + projection.1 * h * 0.5 * y / -z,
         )
     } else {
-        (
-            if 0.0 > x { 0.0 } else { w },
-            if 0.0 > y { 0.0 } else { h },
-        )
+        (if 0.0 > x { 0.0 } else { w }, if 0.0 > y { 0.0 } else { h })
     };
     [sx, h - sy, -z]
 }

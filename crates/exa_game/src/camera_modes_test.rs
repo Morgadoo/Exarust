@@ -93,7 +93,11 @@ fn each_mode_start_gives_the_camera_its_record() {
     assert_eq!(cam(&app, camera).mode, Some(GameMode::Character));
     assert_eq!(cam(&app, camera).record_flags(), 0x0020_0300);
     assert!(!app.world().resource::<PlayerControl>().off);
-    assert!(!app.world().resource::<exa_world::room_view::ForcedRoom>().active);
+    assert!(
+        !app.world()
+            .resource::<exa_world::room_view::ForcedRoom>()
+            .active
+    );
     // The wheel zooms out to the last stop.
     app.world_mut()
         .write_message(bevy::input::mouse::MouseWheel {
@@ -117,7 +121,11 @@ fn each_mode_start_gives_the_camera_its_record() {
     assert_eq!(cam(&app, camera).zoom(), 1300.0);
     // The room walk reads the mode word in the next frame.
     app.update();
-    assert!(app.world().resource::<exa_world::room_view::ForcedRoom>().active);
+    assert!(
+        app.world()
+            .resource::<exa_world::room_view::ForcedRoom>()
+            .active
+    );
     // The spectating camera follows nothing: the Spectate record's pan keys
     // move its point; with the Character record (no `0x800`) W does not.
     assert!(cam(&app, camera).is_free());
@@ -125,7 +133,7 @@ fn each_mode_start_gives_the_camera_its_record() {
     app.world_mut()
         .get_mut::<ChaseCamera>(camera)
         .unwrap()
-        .take_record(GameMode::Character.camera_record());
+        .take_record(GameMode::Character.camera_record(false));
     for _ in 0..200 {
         app.update();
     }
@@ -155,7 +163,11 @@ fn the_end_of_play_leaves_the_scene_in_no_mode() {
     let modes = app.world().resource::<GameModes>();
     assert_eq!((modes.active, modes.current()), (0, None));
     assert!(app.world().resource::<PlayerControl>().off);
-    assert!(!app.world().resource::<exa_world::room_view::ForcedRoom>().active);
+    assert!(
+        !app.world()
+            .resource::<exa_world::room_view::ForcedRoom>()
+            .active
+    );
     // The camera keeps its record through the switch to no mode.
     assert_eq!(cam(&app, camera).record_flags(), 0x0020_0300);
     // A camera given the Spectate record by hand takes the Character one
@@ -163,7 +175,7 @@ fn the_end_of_play_leaves_the_scene_in_no_mode() {
     app.world_mut()
         .get_mut::<ChaseCamera>(camera)
         .unwrap()
-        .take_record(GameMode::Spectate.camera_record());
+        .take_record(GameMode::Spectate.camera_record(false));
     app.world_mut().spawn((Player, Transform::default()));
     app.update();
     assert!(app.world().resource::<GameModes>().is(GameMode::Character));

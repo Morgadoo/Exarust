@@ -1851,8 +1851,9 @@ character body's possession routines; addresses are in the research notes.
   node's backward axis, its velocity the last move plus 250/59² =
   0.0718184 of the gap, moved by 0.6162461 of it and normalised by the
   engine's reciprocal root, only while that velocity's square passes
-  1e-8 (`nav_camera::spring_back`; the game camera preset's view and
-  default retention, `nav_camera::GAME_CAMERA_PRESET`). The shown yaw is
+  1e-8 (`nav_camera::spring_back`; the mode record's view and default
+  retention, `nav_camera::CHARACTER_CAMERA_RECORD` or
+  `SPECTATE_CAMERA_RECORD`, which differ only in their flags). The shown yaw is
   the vector's heading as the tick reads it, before the spring; when it
   jumps more than half a turn (crossing ±π) the target turns a whole
   turn with it, in double precision (`wrap_target_yaw`). A pitch change
