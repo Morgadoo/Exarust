@@ -45,13 +45,18 @@ pub const BLOCK_SHADOW_FACES: u32 = 0x2_0000;
 /// meets with the renderer's view mask): the chunk casts into the sun's
 /// shadow map.
 pub const NODE_SUN_SHADOW: u32 = 0x8000_0000;
-/// Chunk node word bit: the chunk is left out of the main draw.
+/// Chunk node word bit: the chunk is left out of the main draw. The word is
+/// the block node's composite state (the chunk is its block's node), and
+/// the bit is its blank state, the same bit the lit terrain draw skips on:
+/// a block without a composite draws neither its ground nor its plants.
+/// Live, [`super::blank_draw`] applies it to the plant chunks.
 pub const NODE_SKIP_DRAW: u32 = 0x4;
 
 /// Whether the grass hook draws a chunk: the block has a draw node, the
-/// renderer's view mask meets the chunk node's mask, the node's word has no
-/// skip bit and the chunk has instances. The original tests these in this
-/// order before binding the buffers and drawing the instances.
+/// renderer's view mask meets the chunk node's mask, the node's composite
+/// state is not blank ([`NODE_SKIP_DRAW`]) and the chunk has instances. The
+/// original tests these in this order before binding the buffers and drawing
+/// the instances. The two shadow tests below have no blank test.
 pub fn chunk_drawn(
     block_words: u32,
     render_mask: u32,

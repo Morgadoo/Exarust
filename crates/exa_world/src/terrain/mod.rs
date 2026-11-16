@@ -709,7 +709,8 @@ impl Plants {
 
     /// Grows a tile's plants as chunk meshes under `tile_entity`; returns
     /// how many grew. None grow in absent blocks (as in holes); a chunk
-    /// goes to the room of its plants' block.
+    /// goes to the room of its plants' block and names that block's entity
+    /// (`block_at`, by column + row × 8) as its [`PlantBlock`].
     #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
@@ -720,6 +721,7 @@ impl Plants {
         built: &BuiltTile,
         blocks: Option<&TileBlocks>,
         tile_entity: Entity,
+        block_at: &[Option<Entity>],
     ) -> usize {
         let n = TILE_VERTICES;
         let block = |p: bevy::math::Vec2| {
@@ -813,6 +815,9 @@ impl Plants {
                     ChildOf(tile_entity),
                 ))
                 .id();
+            if let Some(&Some(block)) = block_at.get(k) {
+                commands.entity(e).insert(PlantBlock(block));
+            }
             if let Some(b) = blocks {
                 // The point set is partitioned into the tile's 8 × 8 chunks:
                 // chunk `k` is column `k % 8`, row `k / 8`.
@@ -830,6 +835,12 @@ impl Plants {
 /// quality 4.
 #[derive(Component)]
 pub struct PlantChunk;
+
+/// The 6 m terrain block whose plants a [`PlantChunk`] holds: the original
+/// keeps a block's plant instances on its block node, so the grass draw
+/// reads that block's composite state (see [`blank_draw`]).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlantBlock(pub Entity);
 
 /// Appends a Bevy mesh's positions, normals, UVs and indices to a variant.
 fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
@@ -1617,6 +1628,9 @@ impl TerrainBuild {
         let tile_size = self.terrain.spacing * (TILE_VERTICES - 1) as f32;
         let wireframe = self.wireframe.clone();
         let mut block_entities = Vec::new();
+        // Each 6 m block's entity by its place in the tile (column + row ×
+        // 8): the block node whose plants a chunk is.
+        let mut block_at = [None; vegetation::CHUNKS * vegetation::CHUNKS];
         // Each block culls by its leaf descriptor over the tile's height
         // bounds (the finished, lifted vertices), as the original's block
         // nodes do; an edge block's box also reaches down over its skirt.
@@ -1668,6 +1682,9 @@ impl TerrainBuild {
                     .insert((aabb, bevy::camera::visibility::NoAutoAabb));
             }
             block_entities.push(part);
+            if block.bx < vegetation::CHUNKS && block.by < vegetation::CHUNKS {
+                block_at[block.bx + block.by * vegetation::CHUNKS] = Some(part);
+            }
             let centre_in_tile =
                 TerrainBlock::centre_in_tile(tile_size, record.bx, record.by, record.level);
             self.live_blocks.push(live::LiveBlock {
@@ -1713,6 +1730,7 @@ impl TerrainBuild {
                 built,
                 blocks,
                 tile_entity,
+                &block_at,
             );
         }
         self.grounds[slot] = Some(ground);
@@ -3073,6 +3091,30 @@ mod build_tests {
         assert_eq!(live.tiles().len(), 20);
         assert!(!live.blocks().is_empty());
         assert!(live.blocks().iter().all(|block| block.tile < 20));
+        // Every plant chunk names the block it stands on, in its own tile
+        // and at its own place (the grass draw reads that block's state).
+        let mut chunks = world.query::<(&PlantBlock, &ChildOf, &Transform)>();
+        let mut linked = 0;
+        for (block, tile, at) in chunks.iter(&world) {
+            let record = world.get::<TerrainBlock>(block.0).expect("a block");
+            assert_eq!(
+                world.get::<ChildOf>(block.0).unwrap().parent(),
+                tile.parent()
+            );
+            let tile_size = 48.0;
+            let centre =
+                TerrainBlock::centre_in_tile(tile_size, record.bx, record.by, record.level);
+            assert!((centre - at.translation).length() < 0.5, "{centre} {at:?}");
+            linked += 1;
+        }
+        let all = world
+            .query_filtered::<(), With<PlantChunk>>()
+            .iter(&world)
+            .count();
+        assert!(
+            linked > 0 && linked == all,
+            "{linked} of {all} chunks linked"
+        );
         // The frame hook's inserts showed every spawned tile: none is left
         // hidden by an insert handled before its entity existed.
         for tile in live.tiles().iter().flatten() {

@@ -127,7 +127,12 @@ and the grid's rooms; portal clipping is next (see
   wireframe hook); `terrain::blank_draw` leaves the blocks the selection
   holds blank (no composite: past the 44.4 m reach, or without a set) out of
   every camera's visible list, as the original's lit and shadow draws skip
-  them (`EXA_TERRAIN_DRAW_BLANK=1` draws them); `terrain::shadow_draw` keeps
+  them (`EXA_TERRAIN_DRAW_BLANK=1` draws them), and takes the plant chunks
+  standing on those blocks (`PlantBlock`, each chunk's block entity) out of
+  the cameras' lists too, as the grass main draw skips a blank block's
+  plants, while they stay shadow casters (the grass shadow draws have no
+  blank test; `EXA_TERRAIN_DRAW_DEBUG=1` logs which camera listed blank
+  blocks); `terrain::shadow_draw` keeps
   out of the sun's cascades the blank blocks and those the live scene's
   visible pass did not draw, and lists them in
   `exa_render::cube_shadows::CubeCasterGate` so the point lights' cube faces
@@ -154,8 +159,9 @@ and the grid's rooms; portal clipping is next (see
   irrelevant), and
   the grass hooks' per-chunk tests are `chunk_drawn`, `chunk_sun_shadow` and
   `chunk_omni_shadow` (the block node and shadow words, the renderer and
-  node masks, the node mask's sun-shadow bit, the node's skip bit and a
-  positive instance count); the baked chunks have no collider and cast shadows
+  node masks, the node mask's sun-shadow bit, the node's skip bit (the
+  block's composite blank bit, applied live by `blank_draw`) and a positive
+  instance count); the baked chunks have no collider and cast shadows
   only above shadow quality 4; the plants draw with the original's grass
   program (`exa_render::material::flags2::GRASS`) and its normal-map
   variant follows the shading quality (`sync_plant_normal_map`, above 3);

@@ -1311,6 +1311,15 @@ the camera, and on a level with many blocks in view a block can stay undrawn
 while all 64 sets are held by visible blocks (`EXA_TERRAIN_DRAW_BLANK=1`
 draws every block, to compare).
 
+A block's plants follow its ground in the camera draws: the original's grass
+main draw tests the same blank bit on each block node before drawing the
+node's plant instances, so a blank block's plants are not drawn and no plant
+stands over missing ground. The grass shadow draws (sun and omni) do not
+test it, so the same plants still cast where plants cast at all (shadow
+quality above 4). Each plant chunk names its block (`terrain::PlantBlock`);
+`blank_draw` takes the chunks of blank blocks out of every camera's visible
+list and leaves the sun's cascades and the cube faces alone.
+
 The selection's visible bit is the block node's main-view bit, the one the
 scene's visible pass sets on a node it drew; a block the live scene holds
 takes its answer, any other block Bevy's view visibility.
