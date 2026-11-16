@@ -217,6 +217,7 @@ fn bridge_combat_types(app: &mut App) {
         .bridge_copy::<crate::wounds::WoundQueue>()
         .bridge_move_resource::<crate::weapon_blood::WeaponBlood>()
         .bridge_message::<crate::condition::Awakened>()
+        .bridge_message::<crate::condition::WeaponSwapDue>()
         .bridge_message::<crate::fighter::SecondWindFired>()
         .bridge_message::<crate::fighter::Weakened>()
         .bridge_message::<crate::impact::BadFall>()

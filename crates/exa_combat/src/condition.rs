@@ -292,15 +292,27 @@ pub const STILL_BELOW: f32 = 25.0;
 /// Under this tone a standing body is weak.
 pub const WEAK_BELOW: f32 = 0.85;
 /// A weapon switch swaps the weapons once past this share of its clip
-/// (compared in double precision, so the float 0.6 is past it).
+/// (compared in double precision, so the float 0.6 is past it; a NaN
+/// progress is not).
 pub const SWAP_AT: f64 = 0.6;
 
-/// Whether a weapon switch reaches its swap this tick: the condition was
-/// [`Condition::SWITCHING`] and the tick's posture made it
-/// [`Condition::SWITCHED`] (the clip passed [`SWAP_AT`]). The holder then
-/// swaps its two held items' slots, in [`crate::grip`]'s runtime.
-pub fn swap_due(before: Condition, after: Condition) -> bool {
-    before == Condition::SWITCHING && after == Condition::SWITCHED
+/// A weapon switch reached its swap: the posture's switch arm found the
+/// clip past [`SWAP_AT`] with the condition it entered with lacking bit 4
+/// (not yet [`Condition::SWITCHED`]), so once a switch. The original's
+/// body tick posts the weapon-set swap to the main thread's queue then,
+/// for any body, and writes the switched word; the frame swaps the body's
+/// sets (`exa_items::catalogue::SwapRequested`) after the step that sent
+/// it.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeaponSwapDue {
+    pub body: Entity,
+}
+
+/// Whether the posture's switch arm posts the swap: the arm wrote the
+/// switched word ([`exa_physics::motile::switch_phase`]) from a condition
+/// without bit 4.
+pub fn swap_due(entering: Condition, next: Condition) -> bool {
+    next == Condition::SWITCHED && entering.0 & 4 == 0
 }
 /// The actions the decision tells apart.
 pub mod action {
@@ -408,11 +420,9 @@ pub fn posture(condition: Condition, p: &Posture) -> (Condition, Branch) {
     } else if is(action::WALK) || is(action::RUN) {
         Condition::WALKING
     } else if is(action::SWITCH_WEAPONS) {
-        if f64::from(p.progress) <= SWAP_AT {
-            Condition::SWITCHING
-        } else {
-            Condition::SWITCHED
-        }
+        // Past 0.6 (in double; a NaN progress is not) the switched word,
+        // else the switching one.
+        Condition(exa_physics::motile::switch_phase(p.progress, condition.0).0)
     } else {
         Condition::NORMAL
     };
@@ -466,6 +476,7 @@ impl Plugin for ConditionPlugin {
             PostureTick.after(StanceTick).before(CharacterTicks),
         )
         .add_message::<Awakened>()
+        .add_message::<WeaponSwapDue>()
         .add_systems(
             CharacterTick,
             (
@@ -532,6 +543,7 @@ pub fn track_condition(
         Option<&crate::Fighter>,
         Option<&mut PostureBranch>,
     )>,
+    mut swaps: MessageWriter<WeaponSwapDue>,
 ) {
     let Some(motions) = motions else { return };
     let set = &*motions.0;
@@ -563,6 +575,9 @@ pub fn track_condition(
         shock_over: false,
     };
     let (next, branch) = posture(entering, &p);
+    if swap_due(entering, next) {
+        swaps.write(WeaponSwapDue { body: entity });
+    }
     if let Some(layer) = leg_layer_for(entering, next, branch) {
         pairs::set_leg_layers(&mut body.parts, layer);
     }

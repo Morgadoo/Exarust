@@ -125,13 +125,16 @@ fn standing_the_clip_decides() {
         )
         .0
     };
-    // Compared in double precision: the float 0.6 is past the swap.
+    // Compared in double precision: the float 0.6 is past the swap; a NaN
+    // progress is not (the compare's parity jump keeps the switching word).
     assert_eq!(switch(0.599), Condition::SWITCHING);
     assert_eq!(switch(0.6), Condition::SWITCHED);
-    // The swap fires once, on the tick that leaves the switching word.
+    assert_eq!(switch(f32::NAN), Condition::SWITCHING);
+    // The swap is posted when the arm writes the switched word from a
+    // condition without bit 4: once a switch.
     assert!(swap_due(Condition::SWITCHING, Condition::SWITCHED));
+    assert!(swap_due(Condition::NORMAL, Condition::SWITCHED));
     assert!(!swap_due(Condition::SWITCHED, Condition::SWITCHED));
-    assert!(!swap_due(Condition::NORMAL, Condition::SWITCHED));
     assert!(!swap_due(Condition::SWITCHING, Condition::SWITCHING));
     // An action the motion set lacks is normal.
     let none = Posture {
@@ -339,6 +342,7 @@ fn motions() -> Motions {
 fn the_posture_stage_writes_once_a_tick() {
     let mut app = App::new();
     app.insert_resource(motions())
+        .add_message::<WeaponSwapDue>()
         .add_systems(Update, track_condition);
     let body = Ragdoll::new(&[]).with_drive();
     let id = app
@@ -505,6 +509,7 @@ fn a_high_condition_restores_the_lower_leg_layer() {
 fn the_posture_stage_restores_the_lower_legs() {
     let mut app = App::new();
     app.insert_resource(motions())
+        .add_message::<WeaponSwapDue>()
         .add_systems(Update, track_condition);
     let id = app
         .world_mut()

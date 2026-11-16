@@ -408,6 +408,7 @@ fn press_hotkeys(
         Option<&Hands>,
         Option<&mut Possessions>,
         Option<&HeldMark>,
+        Option<&mut exa_anim::Animator>,
     )>,
     casters: Query<&PowerCaster>,
     mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
@@ -451,7 +452,9 @@ fn press_hotkeys(
         return;
     }
     let mut hand = hand;
-    for (entity, mut pb, mut req, condition, hands, mut possessions, mark) in &mut players {
+    for (entity, mut pb, mut req, condition, hands, mut possessions, mark, mut animator) in
+        &mut players
+    {
         let word = condition.copied().unwrap_or_default();
         let caster = casters.get(entity).ok();
         let context = Context {
@@ -510,10 +513,29 @@ fn press_hotkeys(
                 }
                 Hotkey::SwapSets => {
                     let lifting = hand.as_deref().is_some_and(|h| h.holding == Holding::Lift);
-                    if Possessions::swap_request(word.0, lifting, false) != SwapRequest::Refused {
-                        commands
-                            .entity(entity)
-                            .insert(exa_items::catalogue::SwapRequested);
+                    // The view's finder: the character's own inventory
+                    // window is open (and shown).
+                    let pack_open = gui.as_deref().is_some_and(|gui| {
+                        gui.is_open(GameScreen::Inventory)
+                            && gui.inventory_bound(Some(entity)) == Some(entity)
+                    });
+                    match Possessions::swap_request(word.0, lifting, pack_open) {
+                        SwapRequest::Refused => {}
+                        SwapRequest::Now => {
+                            commands
+                                .entity(entity)
+                                .insert(exa_items::catalogue::SwapRequested);
+                        }
+                        // The swap request writes the switch motion into the
+                        // body's requested motion; the body tick starts it
+                        // when the body is free, and the clip's swap point
+                        // swaps the sets (`swap_at_switch_point`).
+                        SwapRequest::Animate => {
+                            if let Some(animator) = animator.as_mut() {
+                                animator.requested =
+                                    exa_combat::condition::action::SWITCH_WEAPONS as i32;
+                            }
+                        }
                     }
                 }
                 Hotkey::ToggleLight => {
@@ -1014,6 +1036,65 @@ mod tests {
             GameScreen::Journal
         );
         assert!(run(Condition::DEAD, KeyCode::KeyI).is_empty());
+    }
+
+    /// The swap key queues the weapon switch in the body's requested motion
+    /// (the clip's swap point trades the sets later); with the player's own
+    /// inventory open the sets swap at once; a busy body asks for nothing.
+    #[test]
+    fn the_swap_key_queues_the_switch_unless_the_pack_is_open() {
+        let run = |word: Condition, pack_open: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Bindings>()
+                .init_resource::<Hand>()
+                .init_resource::<crate::gui_screens::GameScreens>()
+                .add_message::<ScreenRequest>()
+                .add_message::<crate::end_menu_screen::EndMenuConfirm>()
+                .add_message::<crate::skill_screen::OpenSkills>()
+                .add_message::<BarCommand>()
+                .add_message::<FlipWeaponRequest>()
+                .init_resource::<DialogueFocus>()
+                .add_message::<exa_script::Talk>()
+                .add_message::<exa_script::PickReply>()
+                .add_message::<exa_script::LeaveDialogue>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .add_systems(Update, press_hotkeys);
+            if pack_open {
+                let mut screens = app
+                    .world_mut()
+                    .resource_mut::<crate::gui_screens::GameScreens>();
+                let player = screens.player;
+                screens.show_inventory(true, true, 8, false, player);
+                assert!(screens.is_open(GameScreen::Inventory));
+            }
+            let player = app
+                .world_mut()
+                .spawn((
+                    PlayerBody::new(0.0),
+                    word,
+                    Possessions::default(),
+                    exa_anim::Animator::new("Default", "Idle"),
+                ))
+                .id();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyR);
+            app.update();
+            (
+                app.world()
+                    .get::<exa_anim::Animator>(player)
+                    .unwrap()
+                    .requested,
+                app.world()
+                    .get::<exa_items::catalogue::SwapRequested>(player)
+                    .is_some(),
+            )
+        };
+        assert_eq!(run(Condition::NORMAL, false), (0x1F, false));
+        assert_eq!(run(Condition::NORMAL, true), (0, true));
+        assert_eq!(run(Condition::SWITCHING, false), (0, false));
+        assert_eq!(run(Condition::DOWN, false), (0, false));
     }
 
     /// Entering combat clears the backpedal, keys' heading and turn-about
