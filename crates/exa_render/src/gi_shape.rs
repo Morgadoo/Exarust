@@ -458,6 +458,14 @@ impl GiShapes {
     pub fn shapes(&self) -> &[Entity] {
         &self.0
     }
+
+    /// Forgets every registered shape, as the original's scene clear sets
+    /// the manager's shape count to zero: a shape that outlives the level
+    /// stays alive but is no longer drawn, and its later unregistration
+    /// finds nothing.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// Lists every new [`GiShape`] and drops every removed one, as the effects'
@@ -482,7 +490,7 @@ pub struct GiShapePlugin;
 impl Plugin for GiShapePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GiShapes>()
-            .add_systems(PostUpdate, track_shapes);
+            .add_systems(PostUpdate, track_shapes.before(crate::gi::GiSystems));
     }
 }
 

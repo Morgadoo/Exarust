@@ -184,7 +184,13 @@ fn move_points(
         lowest: vec![255u8; SIDE * SIDE],
         sector,
     };
-    let region = occupancy.update_dynamic(&old_points, &new_points, thin, centred);
+    // The old frame's points come out, then the new frame's go in, each
+    // through its frame as the build splats them.
+    let region = occupancy.region_of(old_points.iter().chain(&new_points).copied());
+    if region.is_some() {
+        occupancy.splat_mesh(points, CM_PER_M, old, -1.0, thin, centred);
+        occupancy.splat_mesh(points, CM_PER_M, new, 1.0, thin, centred);
+    }
     *cells = occupancy.cells;
     let Some(region) = region else { return };
     if let (Some(sink), Some(bytes)) = (sink.as_mut(), sub_upload(cells, dims, region)) {
@@ -670,11 +676,18 @@ enum SourceInputs {
 }
 
 struct GiInputs {
-    meshes: usize,
-    /// Every mesh's world points, with its thin and centred flags.
-    points: Vec<(Vec3, bool, bool)>,
-    /// The grid cells' floor points, world space.
-    floor_points: Vec<Vec3>,
+    /// Every GI mesh's points (its own space, metres) with its world frame
+    /// and its thin and centred flags: the builds splat them through the
+    /// frame as the original does.
+    meshes: Vec<(Arc<Vec<Vec3>>, Affine3A, bool, bool)>,
+    /// How many points the meshes hold.
+    points: usize,
+    /// Each grid cell's floor points (the cell's own space, centimetres, as
+    /// the original generates them on the cell's `+Floor` mesh) and where
+    /// the cell sits in the world.
+    floors: Vec<(Vec<Vec3>, Affine3A)>,
+    /// How many floor points the cells hold.
+    floor_points: usize,
     terrain: Vec<[Vec3; 3]>,
 }
 
@@ -693,7 +706,17 @@ impl FloorCell {
     ///
     /// The generator keeps the original's centimetres: the triangles and
     /// their bounds are scaled up, and the points scaled back.
+    #[cfg(test)]
     fn points(&self) -> Vec<Vec3> {
+        self.points_cm()
+            .into_iter()
+            .map(|p| self.to_world.transform_point3(p / CM_PER_M))
+            .collect()
+    }
+
+    /// The cell's floor points in its own space, in centimetres, as the
+    /// original's heightfield leaves them on the cell's `+Floor` mesh.
+    fn points_cm(&self) -> Vec<Vec3> {
         let triangles: Vec<[Vec3; 3]> = self
             .triangles
             .iter()
@@ -713,9 +736,6 @@ impl FloorCell {
             half_extents: (max - min) * 0.5,
         };
         voxel::floor_points(bounds, &triangles, FLOOR_PARAMETER)
-            .into_iter()
-            .map(|p| self.to_world.transform_point3(p / CM_PER_M))
-            .collect()
     }
 }
 
@@ -905,6 +925,13 @@ pub fn unload_level(commands: &mut Commands, state: &mut GiState) {
     commands.remove_resource::<GiNeighbourVolumes>();
     commands.insert_resource(exa_render::gi::GiTextureCache::default());
     commands.insert_resource(GiBuiltBlocks::default());
+    // The scene clear empties the manager's shape list; shapes that outlive
+    // the level are no longer drawn.
+    commands.queue(|world: &mut World| {
+        if let Some(mut shapes) = world.get_resource_mut::<exa_render::gi::GiShapes>() {
+            shapes.clear();
+        }
+    });
     *state = GiState::Off;
 }
 
@@ -951,17 +978,15 @@ fn build_level(
         .collect();
     let ground = mesh_copies(terrain.iter(), &meshes);
     let task = AsyncComputeTaskPool::get().spawn(async move {
-        let mut world = Vec::new();
-        for (gi, m, thin, centred) in &points {
-            world.extend(gi.iter().map(|&p| (m.transform_point3(p), *thin, *centred)));
-        }
+        let floors: Vec<(Vec<Vec3>, Affine3A)> = floor_cells(&floors)
+            .iter()
+            .map(|cell| (cell.points_cm(), cell.to_world))
+            .collect();
         GiInputs {
-            meshes: points.len(),
-            points: world,
-            floor_points: floor_cells(&floors)
-                .iter()
-                .flat_map(FloorCell::points)
-                .collect(),
+            points: points.iter().map(|m| m.0.len()).sum(),
+            floor_points: floors.iter().map(|f| f.0.len()).sum(),
+            meshes: points,
+            floors,
             terrain: world_triangles(&ground),
         }
     });
@@ -1047,9 +1072,9 @@ fn follow_camera(
         };
         info!(
             "GI source: {} meshes, {} points, {} floor points, {} terrain triangles",
-            inputs.meshes,
-            inputs.points.len(),
-            inputs.floor_points.len(),
+            inputs.meshes.len(),
+            inputs.points,
+            inputs.floor_points,
             inputs.terrain.len()
         );
         source.inputs = SourceInputs::Ready(Arc::new(inputs));
@@ -1492,13 +1517,13 @@ fn build_block(
         ground.add(t);
     }
     let terrain_columns = ground.apply(&mut occupancy);
-    for &(p, thin, centred) in &inputs.points {
-        occupancy.splat_styled(p, 1.0, thin, centred);
+    for (points, at, thin, centred) in &inputs.meshes {
+        occupancy.splat_mesh(points, CM_PER_M, *at, 1.0, *thin, *centred);
     }
-    for &p in &inputs.floor_points {
-        occupancy.splat(p);
+    for (points, at) in &inputs.floors {
+        occupancy.splat_mesh(points, 1.0, *at, 1.0, false, false);
     }
-    let floor_points = inputs.floor_points.len();
+    let floor_points = inputs.floor_points;
     let floors = occupancy.floors();
     if let Some(path) = std::env::var_os("EXA_GI_DUMP") {
         let _ = std::fs::write(&path, &occupancy.cells);
@@ -1743,9 +1768,54 @@ impl Occupancy {
     /// a normal point (the original's 20) and −1 to take an old position back
     /// out.
     pub fn splat_styled(&mut self, p: Vec3, weight: f32, thin: bool, centred: bool) {
-        let weight = weight * POINT_WEIGHT * if thin { 0.25 } else { 1.0 };
         let g = (p - self.origin) / VOXEL - Vec3::splat(0.5)
             + if centred { Vec3::Y * 0.5 } else { Vec3::ZERO };
+        self.splat_voxel(g, weight, thin, centred);
+    }
+
+    /// Splats a mesh's points through its world frame `at` (metres), as the
+    /// original's splat does: the points are taken in centimetres (`scale`
+    /// times the given units: 100 for metres, 1 for centimetres), the
+    /// frame's three axis rows are scaled by one over the voxel size, and
+    /// its translation becomes `T/fc − 0.5` plus the block's whole-voxel
+    /// offset (eight margin voxels and 30 a cell from the grid's middle in
+    /// X and Z, the level's vertical offset in Y), so each point lands at
+    /// `(x·r0 + y·r1) + (z·r2 + t)` in voxel units, the original's sum
+    /// order. A centred mesh then adds half a voxel in height.
+    pub fn splat_mesh(
+        &mut self,
+        points: &[Vec3],
+        scale: f32,
+        at: Affine3A,
+        weight: f32,
+        thin: bool,
+        centred: bool,
+    ) {
+        let inv = 1.0 / VOXEL_CM;
+        let rows = [
+            Vec3::from(at.matrix3.x_axis) * inv,
+            Vec3::from(at.matrix3.y_axis) * inv,
+            Vec3::from(at.matrix3.z_axis) * inv,
+        ];
+        // The block's first voxel counted from the world origin: whole
+        // voxels, so its negation is the original's integer offset.
+        let first = (self.origin / VOXEL).round();
+        let t = Vec3::from(at.translation) * CM_PER_M * inv - Vec3::splat(0.5);
+        let t = Vec3::new(t.x - first.x, t.y - first.y, t.z - first.z);
+        for &p in points {
+            let p = p * scale;
+            let mut g = (rows[0] * p.x + rows[1] * p.y) + (rows[2] * p.z + t);
+            if centred {
+                g.y += 0.5;
+            }
+            self.splat_voxel(g, weight, thin, centred);
+        }
+    }
+
+    /// Splats one point already in voxel units (cell-centred: voxel `i`
+    /// spans `i..i + 1`).
+    fn splat_voxel(&mut self, g: Vec3, weight: f32, thin: bool, centred: bool) {
+        let weight = weight * POINT_WEIGHT * if thin { 0.25 } else { 1.0 };
         let base = g.trunc();
         let f = g - base;
         let (x, y, z) = (base.x as i64, base.y as i64, base.z as i64);
@@ -2466,6 +2536,39 @@ mod tests {
         // Each half alone would lose the blocks across the split.
         let alone = floor_cells(&meshes[..1]);
         assert_eq!(alone[0].points().len(), 15 * 30);
+    }
+
+    /// A mesh's points go through its frame in centimetres with the
+    /// block's whole-voxel offset, as the original's splat forms them: a
+    /// lattice point at 650 cm (6.5 m once read) lands on voxel 160's
+    /// centre and marks column 160, where measuring from the block's corner
+    /// in metres puts it a hair short, in column 159.
+    #[test]
+    fn a_mesh_splats_through_its_frame_in_centimetres() {
+        let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        assert_eq!(o.origin.x, -25.6);
+        // Slice 34 is world height 0..20 cm (the lid is at 6 m, 64 slices).
+        let point = Vec3::new(650.0, 10.0, 650.0) * 0.01;
+        o.splat_mesh(&[point], CM_PER_M, Affine3A::IDENTITY, 1.0, false, false);
+        let column = |x: usize, z: usize| x + z * SIDE;
+        assert_eq!(o.lowest[column(160, 160)], 34);
+        assert_eq!(o.lowest[column(159, 159)], 255);
+        let cell = |x: usize, y: usize, z: usize| o.cells[x + z * SIDE + y * SIDE * SIDE];
+        assert_eq!(cell(160, 34, 160), 20);
+        // The metre route starts the point in the column before.
+        let mut m = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        m.splat_styled(point, 1.0, false, false);
+        assert_eq!(m.lowest[column(159, 159)], 34);
+        // A frame moves the points with its rotation and centimetre
+        // translation: a quarter turn about Y and 3 m along X.
+        let mut r = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        let at = Affine3A::from_mat3_translation(
+            Mat3::from_cols(Vec3::NEG_Z, Vec3::Y, Vec3::X),
+            Vec3::new(3.0, 0.0, 0.0),
+        );
+        r.splat_mesh(&[Vec3::splat(0.1)], CM_PER_M, at, 1.0, false, false);
+        assert_eq!(r.lowest[column(143, 127)], 34);
+        assert_eq!(r.cells[143 + 127 * SIDE + 34 * SIDE * SIDE], 20);
     }
 
     #[test]

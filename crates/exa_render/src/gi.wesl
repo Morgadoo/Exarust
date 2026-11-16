@@ -147,6 +147,28 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
     return vec3(encode_srgb8(c.x), encode_srgb8(c.y), encode_srgb8(c.z));
 }
 
+// The linear value of a stored code (`stored` is the code over 255), as the
+// sRGB target decodes its destination before blending.
+fn decode_srgb8(stored: f32) -> f32 {
+    return select(pow((stored + 0.055) / 1.055, 2.4), stored / 12.92, stored <= 0.04045);
+}
+
+// One additive pass into the sRGB8 target, as the original's blended draws
+// (each voxel light, then each shape, after the groups) add: the stored
+// codes are decoded, the pass's colour (clamped at 0 as each fragment
+// program clamps it) is added, and the sum is encoded back into codes.
+fn blend_srgb8(stored: vec3<f32>, add: vec3<f32>) -> vec3<f32> {
+    let lin = vec3(decode_srgb8(stored.x), decode_srgb8(stored.y), decode_srgb8(stored.z));
+    return to_srgb(lin + max(add, vec3(0.0)));
+}
+
+// The stored alpha: the target's alpha is linear 8-bit, the nearest code
+// [guess: nearest, as Vulkan asks of a unorm store; not measured on the
+// reference driver].
+fn store_alpha(a: f32) -> f32 {
+    return floor(clamp(a, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+}
+
 fn openness(occ: f32) -> f32 {
     return max(1.0 - 13.0 * occ, 0.0);
 }
@@ -182,8 +204,8 @@ fn volume_height(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
 // world-scale texture units, nothing beyond 3.62 voxels. Geometry at the
 // voxel or halfway to the light (openness 1 − occupancy, unlike the
 // propagation's) leaves only the voxels within about 1.2 of the light lit.
-fn voxel_lights(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
-    var rgb = vec3(0.0);
+fn voxel_lights(id: vec3<u32>, dims: vec3<u32>, stored: vec3<f32>) -> vec3<f32> {
+    var rgb = stored;
     let uv = volume_uv(id, dims);
     let at = volume_height(id, dims);
     let here = 1.0 - textureSampleLevel(occupancy, linear_sampler, uv, 0.0).r;
@@ -201,7 +223,11 @@ fn voxel_lights(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
         let atn = pow(max(1.0 - dot(q, q) * 5000.0, 0.0), 4.0);
         let near = max(2.0 - 0.75 / (atn * atn), 0.0);
         let blocked = 1.0 - occ * (1.0 - near);
-        rgb += lt.colour.rgb * atn * 0.25 * blocked;
+        // Each light is its own blended draw.
+        let add = lt.colour.rgb * atn * 0.25 * blocked;
+        if any(add > vec3(0.0)) {
+            rgb = blend_srgb8(rgb, add);
+        }
     }
     return rgb;
 }
@@ -366,8 +392,8 @@ fn shape_multipoint(s: GiShape, p: vec3<f32>) -> vec3<f32> {
 
 // The shapes covering voxel `id` (texture axes X, Z, Y), with `world` the
 // voxel's centre in world centimetres and `occ` its occupancy.
-fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
-    var rgb = vec3(0.0);
+fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32, stored: vec3<f32>) -> vec3<f32> {
+    var rgb = stored;
     // The line and point programs measure in the volume's units (the
     // block's width is 1), as the original's texture space does.
     let unit = 1.0 / (params.extent.x * 100.0);
@@ -382,20 +408,25 @@ fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
         }
         let p = (s.matrix * vec4(world, 1.0)).xyz;
         let prog = s.head.x;
+        var add = vec3(0.0);
         if prog == 0u {
-            rgb += shape_dome(s, p);
+            add = shape_dome(s, p);
         } else if prog == 1u {
-            rgb += shape_cuboid(s, p);
+            add = shape_cuboid(s, p);
         } else if prog == 2u {
-            rgb += shape_bubble(s, p);
+            add = shape_bubble(s, p);
         } else if prog == 3u {
-            rgb += shape_telebubble(s, p);
+            add = shape_telebubble(s, p);
         } else if prog == 4u {
-            rgb += shape_gradline(s, world * unit);
+            add = shape_gradline(s, world * unit);
         } else if prog == 5u {
-            rgb += shape_multipoint(s, world * unit);
+            add = shape_multipoint(s, world * unit);
         } else {
-            rgb += shape_cuboid_fn(s, p);
+            add = shape_cuboid_fn(s, p);
+        }
+        // Each shape is its own blended draw.
+        if any(add > vec3(0.0)) {
+            rgb = blend_srgb8(rgb, add);
         }
     }
     _ = occ;
@@ -403,10 +434,23 @@ fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
 }
 
 // The voxels the manager does not draw this frame: the original clears the
-// scratch target to (0, 0, 0, 0) and then runs the voxel lights' additive
-// pass over it, so they take the lights' colour and no openness.
+// scratch target to (0, 0, 0, 0) and then runs the voxel lights' and the
+// shapes' additive passes over their boxes, whatever the groups drew, so
+// they take those colours and no openness.
 fn write_dark(id: vec3<u32>, dims: vec3<u32>) {
-    textureStore(light_next, vec3<i32>(id), vec4(to_srgb(voxel_lights(id, dims)), 0.0));
+    textureStore(light_next, vec3<i32>(id), vec4(extras(id, dims, vec3(0.0)), 0.0));
+}
+
+// The additive passes after the groups' draw, over `stored` (codes over
+// 255): every voxel light, then every shape, each blended on its own.
+fn extras(id: vec3<u32>, dims: vec3<u32>, stored: vec3<f32>) -> vec3<f32> {
+    let uvw = volume_uv(id, dims);
+    let at = volume_height(id, dims);
+    let occ = textureSampleLevel(occupancy, linear_sampler, uvw, 0.0).r;
+    let world = params.origin.xyz
+        + vec3(at.x * params.extent.x, at.z * params.extent.x, at.y * params.extent.z);
+    let lit = voxel_lights(id, dims, stored);
+    return shape_light(id, world * 100.0, occ, lit);
 }
 
 // The lowest height (m) the sky light's map reaches: the map is drawn once
@@ -556,11 +600,8 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         let shaped = max((exp2((ly + (1.0 - ly) * lt.shaping.x) * lt.shaping.y) - 1.0) * lt.shaping.z, 0.0);
         rgb += lt.colour_shadow.rgb * atn * shaped * 0.01;
     }
-    // The shapes inject after the point lights and before the voxel lights,
-    // as the original draws them.
-    let world = params.origin.xyz
-        + vec3(at.x * params.extent.x, at.z * params.extent.x, at.y * params.extent.z);
-    rgb += shape_light(id, world * 100.0, occ0);
-    rgb += voxel_lights(id, dims);
-    textureStore(light_next, vec3<i32>(id), vec4(to_srgb(max(rgb, vec3(0.0))), stored_alpha));
+    // The group's draw is stored, then the voxel lights and the shapes
+    // blend over it, as the original draws them.
+    let stored = extras(id, dims, to_srgb(max(rgb, vec3(0.0))));
+    textureStore(light_next, vec3<i32>(id), vec4(stored, store_alpha(stored_alpha)));
 }
