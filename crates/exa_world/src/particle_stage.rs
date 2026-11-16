@@ -147,8 +147,12 @@ pub struct ParticleSolve {
     doses: Vec<Dose>,
     /// Each cell's parts: the list (sleeping or awake), the body's place in
     /// it and the part's index, kept from tick to tick.
-    cells: bevy::platform::collections::HashMap<(i32, i32), Vec<(bool, usize, usize)>>,
+    cells: bevy::platform::collections::HashMap<(i32, i32), Vec<LinkedSlot>>,
 }
+
+/// A part linked in a cell: whether its body is in the sleeping list, the
+/// body's place in that list and the part's index.
+type LinkedSlot = (bool, usize, usize);
 
 impl ParticleSolve {
     /// A stage with `staged` emitters keyed in `grid`'s cells.

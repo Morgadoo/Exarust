@@ -80,7 +80,7 @@ pub(crate) struct Walked {
 }
 
 /// The sector step's first pass (see the module).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn meet_bodies_first(
     mut blasts: Query<(Entity, &mut LiveBlast)>,
     mut waves: Query<(Entity, &mut LiveWave)>,

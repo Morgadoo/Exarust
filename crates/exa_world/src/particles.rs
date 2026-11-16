@@ -2653,7 +2653,7 @@ mod tests {
             // The ball's surface point toward the sphere, met within its
             // radius.
             let d = sphere.0.length();
-            if !(d < 20.0 + sphere.1) {
+            if d >= 20.0 + sphere.1 {
                 return false;
             }
             on_point(sphere, sphere.0.normalize_or(Vec3::Y) * 20.0);
