@@ -236,6 +236,8 @@ pub mod section {
     /// The apparel body.
     pub const APPAREL: u32 = 0x1000;
     pub const WEAPON: u32 = 0x4000;
+    /// The shield body (its sixth byte is the shield's desirability).
+    pub const SHIELD: u32 = 0x8000;
     /// The operative and container parts make an item worth gathering.
     pub const OPERATIVE: u32 = 0x1_0000;
     pub const CONTAINER: u32 = 0x2_0000;
@@ -284,28 +286,46 @@ impl Loot {
     /// them, which the gathering skips. Bytes past a short section read 0.
     pub fn of_payload(payload: &[u8]) -> Option<Self> {
         use exa_formats::containers::section as find;
-        if let Some(body) = find(payload, section::APPAREL) {
-            let mark = find(payload, section::MODEL).map_or(0, |m| byte_at(m, at::MODEL_MARK));
-            return Some(Loot::Apparel(Box::new(Apparel {
-                coverage: std::array::from_fn(|i| u32_at(body, at::COVERAGE + 4 * i)),
-                protection: std::array::from_fn(|i| byte_at(body, at::PROTECTION + i)),
-                occupancy: std::array::from_fn(|i| u64_at(body, at::OCCUPANCY + 8 * i)),
-                special: byte_at(body, at::APPAREL_SPECIAL),
-                model_mark: mark,
-            })));
+        if let Some(piece) = Apparel::of_payload(payload) {
+            return Some(Loot::Apparel(Box::new(piece)));
         }
-        if let Some(body) = find(payload, section::WEAPON) {
-            return Some(Loot::Weapon(Arm {
-                flags: u32_at(body, 0),
-                quality: byte_at(body, at::QUALITY),
-                damage: byte_at(body, at::DAMAGE),
-                thrust: byte_at(body, at::THRUST),
-                tier: byte_at(body, at::TIER),
-                special: u32_at(body, at::WEAPON_SPECIAL),
-            }));
+        if let Some(arm) = Arm::of_payload(payload) {
+            return Some(Loot::Weapon(arm));
         }
         (find(payload, section::OPERATIVE).is_some() || find(payload, section::CONTAINER).is_some())
             .then_some(Loot::Other)
+    }
+}
+
+impl Apparel {
+    /// The apparel body of an item record's payload, with its model
+    /// section's model byte; `None` without an apparel section.
+    pub fn of_payload(payload: &[u8]) -> Option<Self> {
+        use exa_formats::containers::section as find;
+        let body = find(payload, section::APPAREL)?;
+        let mark = find(payload, section::MODEL).map_or(0, |m| byte_at(m, at::MODEL_MARK));
+        Some(Apparel {
+            coverage: std::array::from_fn(|i| u32_at(body, at::COVERAGE + 4 * i)),
+            protection: std::array::from_fn(|i| byte_at(body, at::PROTECTION + i)),
+            occupancy: std::array::from_fn(|i| u64_at(body, at::OCCUPANCY + 8 * i)),
+            special: byte_at(body, at::APPAREL_SPECIAL),
+            model_mark: mark,
+        })
+    }
+}
+
+impl Arm {
+    /// The weapon section of an item record's payload; `None` without one.
+    pub fn of_payload(payload: &[u8]) -> Option<Self> {
+        let body = exa_formats::containers::section(payload, section::WEAPON)?;
+        Some(Arm {
+            flags: u32_at(body, 0),
+            quality: byte_at(body, at::QUALITY),
+            damage: byte_at(body, at::DAMAGE),
+            thrust: byte_at(body, at::THRUST),
+            tier: byte_at(body, at::TIER),
+            special: u32_at(body, at::WEAPON_SPECIAL),
+        })
     }
 }
 
