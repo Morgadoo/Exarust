@@ -2540,11 +2540,14 @@ pub struct ChaseCamera {
     free: Option<crate::nav_camera::FreeFocus>,
 }
 
-/// What the free branch of a tick reads: the movement keys, the camera's
-/// drawn right and forward axes, and the terrain's height under a point
-/// (both in the original's centimetres; `None` where it has no ground).
+/// What the free branch of a tick reads: the movement keys, the pad's
+/// move stick turned into the world (zero without an active pad), the
+/// camera's drawn right and forward axes, and the terrain's height under a
+/// point (both in the original's centimetres; `None` where it has no
+/// ground).
 pub(crate) struct FreeInput<'a> {
     pub keys: crate::nav_camera::PanKeys,
+    pub pad: Vec3,
     pub right: Vec3,
     pub forward: Vec3,
     pub ground: &'a dyn Fn(Vec3) -> Option<f32>,
@@ -2902,8 +2905,8 @@ impl ChaseCamera {
 
     /// The free branch of a tick, for a camera that follows nothing: the
     /// movement keys make the pan vector along the drawn right and forward
-    /// axes (the preset's `0x800` reads them, its `0x20000` flattens and
-    /// normalises the vector), and the looked-at point is lifted over the
+    /// axes and the pad's stick vector is added (the preset's `0x800` reads
+    /// them, its `0x20000` flattens and normalises the vector), and the looked-at point is lifted over the
     /// terrain, pulled along the pan by the zoom's pull and moved by the
     /// preset's rate within its height limits
     /// ([`crate::nav_camera::FreeFocus::tick`]).
@@ -2913,16 +2916,18 @@ impl ChaseCamera {
             return;
         };
         let preset = &self.controller.preset;
-        let keys = if preset.flags & 0x800 != 0 {
-            input.keys
+        // The keys and the pad's stick vector are read only by a record
+        // with `0x800`.
+        let (keys, pad) = if preset.flags & 0x800 != 0 {
+            (input.keys, input.pad)
         } else {
-            nav::PanKeys::default()
+            (nav::PanKeys::default(), Vec3::ZERO)
         };
         let pan = nav::pan_input(
             input.right,
             input.forward,
             keys,
-            Vec3::ZERO,
+            pad,
             preset.flags & 0x2_0000 != 0,
         );
         let pull = nav::free_pull(self.shown_zoom, preset.max_distance, preset.extent);
@@ -3139,6 +3144,11 @@ pub(crate) fn chase_camera(
             f64::from(w.width()) / f64::from(w.height().max(1.0)),
         )
     });
+    // The pad's move stick in the world, which the free camera's pan adds.
+    let pad_move = match (pad_status.as_ref().is_some_and(|s| s.active()), pad.as_deref()) {
+        (true, Some(pad)) => pad.frame().move_world,
+        _ => Vec3::ZERO,
+    };
     for (mut cam, mut t, mut projection) in &mut cameras {
         // The controls' capture drags while it is the orbit's, from the
         // frame after it began (`cursor_look`); a drag ends an alignment.
@@ -3257,6 +3267,7 @@ pub(crate) fn chase_camera(
                 back: keys.pressed(KeyCode::KeyS),
                 forward: keys.pressed(KeyCode::KeyW),
             },
+            pad: pad_move,
             right: *t.right(),
             forward: *t.forward(),
             ground: &ground,
@@ -4943,6 +4954,34 @@ mod tests {
         assert_eq!(asked, 0);
     }
 
+    /// The pad's stick vector pans a free camera as the keys do, but only
+    /// under a record with the pan keys' `0x800`: the Spectate one, not the
+    /// Character one.
+    #[test]
+    fn the_pad_pans_a_free_camera_only_under_the_spectate_record() {
+        let no_ground = |_: Vec3| None;
+        let input = FreeInput {
+            keys: crate::nav_camera::PanKeys::default(),
+            pad: Vec3::new(0.0, 0.0, -0.8),
+            right: Vec3::X,
+            forward: Vec3::NEG_Z,
+            ground: &no_ground,
+        };
+        let panned = |mode: crate::player_controls::GameMode| {
+            let mut cam = ChaseCamera::behind(0.0);
+            cam.take_record(mode.camera_record());
+            cam.free_at(Vec3::ONE);
+            for _ in 0..30 {
+                cam.tick(Some(&input));
+            }
+            cam.free_focus(1.0).unwrap()
+        };
+        let moved = panned(crate::player_controls::GameMode::Spectate);
+        assert!(moved.z < 1.0 && (moved.x - 1.0).abs() < 1e-6, "{moved}");
+        let still = panned(crate::player_controls::GameMode::Character);
+        assert_eq!(still, Vec3::ONE);
+    }
+
     /// A free camera with the Spectate record pans its looked-at point with
     /// W along the drawn forward axis, flattened, and it coasts to a stop
     /// once the key is let go; a followed camera has no free point.
@@ -4959,6 +4998,7 @@ mod tests {
                 forward: w,
                 ..Default::default()
             },
+            pad: Vec3::ZERO,
             right: Vec3::X,
             // A forward axis tilted down: the pan is flattened.
             forward: Vec3::new(0.0, -0.7, -0.7),
