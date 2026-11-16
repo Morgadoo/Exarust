@@ -28,6 +28,15 @@ pub fn apply_game_gui_reset(world: &mut World, reset: GameGuiReset) {
             let time = world.get_resource_mut::<Time<Virtual>>();
             crate::fall::reset_death_fade(&mut fade, time.map(Mut::into_inner));
         });
+        // The reset ends with the heartbeat's fade start.
+        let now = world
+            .get_resource::<Time<Real>>()
+            .map(Time::elapsed_secs_f64);
+        if let (Some(now), Some(mut beat)) = (now, world.get_resource_mut::<exa_ui::Heartbeat>())
+            && beat.start_fade(now)
+        {
+            info!("load reset: the heartbeat fades out");
+        }
     }
     if reset.screens {
         crate::gui_screens::sweep_screens(world, crate::gui_screens::ScreenSweep::Every);
@@ -102,6 +111,10 @@ mod tests {
             })
             .init_resource::<CrystalDrain>()
             .init_resource::<GameScreens>()
+            .insert_resource(exa_ui::Heartbeat {
+                started: Some(0.0),
+                fading: None,
+            })
             .insert_resource(PanelIcons::new(4));
         app.world_mut().resource_mut::<Time<Virtual>>().pause();
         app.world_mut()
@@ -125,6 +138,8 @@ mod tests {
         app.update();
         let fade = app.world().resource::<exa_ui::DeathFade>();
         assert_eq!((fade.started, fade.paused), (None, false));
+        // The reset ends with the running heartbeat's fade start.
+        assert!(app.world().resource::<exa_ui::Heartbeat>().fading.is_some());
         assert!(!app.world().resource::<Time<Virtual>>().is_paused());
         assert!(
             app.world()

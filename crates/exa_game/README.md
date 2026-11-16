@@ -956,7 +956,11 @@ cursor's per-sphere placement sweep and box refusal, its level placement
 markers and hover word, its release and the GUI drop's branch and queue), the health
 bars' values and the low-health heartbeat with its sound, started by a
 blow's low-health check on the player's body (`exa_combat::Weakened`;
-`hud`), the
+`hud`; a death, a knock-out and the death fade's reset fade it out over
+1 s through `flow::Step::FadeHeartbeat`), the HUD's shield gauge (the
+off hand's `ShieldHold`) and power-bar flag (`hud::power_bar_up`), the
+1000 ms bars hold of a quick-bar cast and of the player's healing charge
+(`hud::hold_bars`), the
 held torch (`torch`, which fills its hand and holds it by the grip
 table's one-handed or off-hand grip for the holder's size and race, its
 body and grip waiting for the holder's body when it is lit first; its
@@ -2023,8 +2027,18 @@ Mind's handover and hand-back close the container and journal family and
 sweep the tree or bar (`ScreenSweep::ContainerFamily`); J leaves combat
 mode first. Before a save to a new slot or a writing save step,
 `save_open_screens_for_saves` (in the save chain) saves the open screens:
-the popups' contents into their containers' sections and the journal's
-text. The rules are `exa_ui::game_gui`'s.
+the popups' contents into their containers' sections, the journal's
+text, and the inventory's and loot windows' packs into their bodies'
+carried lists (`body_inventory::store_pack`). Raise Dead and Command Dead
+close the corpse's loot window (`gui_screens::close_loot_on_body`), a
+Loyalty or Command Dead mark's end closes its body's inventory
+(`gui_screens::release_marked_body`), the inventory of a bound body sets
+its mind window (`GameScreens::inventory_mind_window`: a drag out of its
+pack on a body with Volition breaks the hold and closes it,
+`panel_live::drag_permission`), open container popups follow a GUI unit
+change, and the focus loss reaches the main menu's and the power tree's
+tasks. The AI search reads the GUI's open-container registry
+(`npc_search::OpenSearchScreens`). The rules are `exa_ui::game_gui`'s.
 The screens are base forms (`exa_ui::base_form`) on a rooted window
 manager the pointer drives (`form_input`: a frame's pointer, left button
 and wheel, the GUI timer and the task's tick): a press on a title drags the

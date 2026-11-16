@@ -33,7 +33,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_items::catalogue::{ItemCatalogue, PendingHands, SwapRequested};
-use exa_items::inventory_window::{DragPermission, SWAP_STATE, permission};
+use exa_items::inventory_window::{DragPermission, MIND_CONTROL_BIT, SWAP_STATE, permission};
 use exa_items::possession::Possessions;
 use exa_ui::ScriptedPointer;
 use exa_ui::game_gui::GameScreen;
@@ -281,15 +281,34 @@ fn owner_present(
 
 /// Whether a drag may start on `panel`: the inventory's pack asks the
 /// window's permission, with the player's body in the swap state while a
-/// weapon-set swap is requested or its hand plan pending. Exarust's
-/// inventory shows no other character, so the doll's mind-control close
-/// never applies.
+/// weapon-set swap is requested or its hand plan pending.
 pub fn drag_allowed(panel: Panel, player_swapping: bool) -> bool {
+    drag_permission(panel, player_swapping, None) == DragPermission::Allowed
+}
+
+/// What the inventory's pack answers a drag: the window's permission with
+/// its mind window. `mind` is the view's mind window flag, the shown
+/// body's technique word and the hold break (run only when the flag and
+/// the word's mind-control bit ask for it, as the original tests them in
+/// turn): a drag out of the pack of a bound body whose hold the player's
+/// drag breaks closes the window.
+pub fn drag_permission(
+    panel: Panel,
+    player_swapping: bool,
+    mind: Option<(bool, u32, &mut dyn FnMut() -> bool)>,
+) -> DragPermission {
     if panel != Panel::PlayerPack {
-        return true;
+        return DragPermission::Allowed;
     }
     let state = if player_swapping { SWAP_STATE } else { 0 };
-    permission(false, true, 0, false, state) == DragPermission::Allowed
+    let (window, word, controlled) = match mind {
+        Some((window, word, breaks)) => {
+            let asks = window && word & MIND_CONTROL_BIT != 0;
+            (window, word, asks && breaks())
+        }
+        None => (false, 0, false),
+    };
+    permission(window, true, word, controlled, state)
 }
 
 /// A player body in the middle of a weapon-set swap.
@@ -317,6 +336,11 @@ pub(crate) fn press(
     scripted: Option<Res<ScriptedPointer>>,
     cards: Res<crate::item_card::CardView>,
     mut icons: ResMut<PanelIcons>,
+    (fighters, mut minds, player_bodies): (
+        Query<&exa_combat::Fighter>,
+        Query<&mut crate::mind::casts::MindBody>,
+        Query<Entity, With<crate::player::PlayerBody>>,
+    ),
 ) {
     // The press that ended the use cursor is the cursor's: the desk holds
     // the mouse for the world view while it is up.
@@ -358,8 +382,32 @@ pub(crate) fn press(
     let Some((panel, local)) = panel_at(&panels, at) else {
         return;
     };
-    if !drag_allowed(panel, !swapping.is_empty()) {
-        return;
+    // The pack of a bound body: the drag breaks the player's hold on it
+    // (a Loyalty or Trust marker the player placed ends) and the window
+    // closes.
+    let shown = screens.inventory_body;
+    let window = screens.inventory_mind_window;
+    let word = shown
+        .and_then(|body| fighters.get(body).ok())
+        .map_or(0, |fighter| fighter.perks.body_word());
+    let mut breaks = || match (shown, player_bodies.iter().next()) {
+        (Some(body), Some(player)) => minds.get_mut(body).is_ok_and(|mut mind| {
+            crate::mind::casts::end_binding_by(&mut mind, crate::mind::runtime::body_id(player))
+        }),
+        _ => false,
+    };
+    match drag_permission(
+        panel,
+        !swapping.is_empty(),
+        Some((window, word, &mut breaks)),
+    ) {
+        DragPermission::Allowed => {}
+        DragPermission::Refused => return,
+        DragPermission::Close => {
+            info!("inventory: the drag breaks the hold on the shown body; the window closes");
+            screens.close(GameScreen::Inventory);
+            return;
+        }
     }
     let Some(container) = container_mut(&mut screens, panel) else {
         return;
@@ -1447,6 +1495,63 @@ mod tests {
         again.client = app.world().resource::<GameScreens>().pack.client;
         body_inventory::bind_pack(&mut again, possessions, &mut PanelIcons::default(), None);
         assert_eq!(again.entries.last().unwrap().cell, moved.cell);
+    }
+
+    /// The inventory of a body the player holds with Loyalty, shown with
+    /// its mind window: a drag out of its pack, when the body has Volition
+    /// (its technique word's mind-control bit), breaks the hold (the
+    /// player's marker ends) and closes the window instead of dragging;
+    /// without Volition the drag starts and the hold stays.
+    #[test]
+    fn a_drag_from_a_bound_bodys_pack_breaks_the_hold_and_closes() {
+        use crate::mind::casts::{LOYALTY_MARK, MindBody, MindClass, MindPower};
+        use exa_items::possession::Carried;
+        let run = |volition: bool| {
+            let (mut app, player) = live_app(vec![Carried {
+                id: 10,
+                flags: 0,
+                x: 0,
+                y: 0,
+            }]);
+            let player_id = crate::mind::runtime::body_id(player);
+            let mut mind = MindBody::new(7);
+            let mut mark = MindPower::new(
+                LOYALTY_MARK,
+                MindClass::LoyaltyMark(crate::thaum::power::mind::LoyaltyTarget::new(player_id)),
+            );
+            mark.caster = Some(player_id);
+            mind.powers.push(mark);
+            let mut fighter = exa_combat::Fighter::default();
+            if volition {
+                fighter
+                    .perks
+                    .insert(exa_formats::characters::Perk::Volition);
+            }
+            let shown = app.world_mut().spawn((mind, fighter)).id();
+            {
+                let mut screens = app.world_mut().resource_mut::<GameScreens>();
+                screens.inventory_body = Some(shown);
+                screens.inventory_mind_window = true;
+            }
+            let client = pack_client(&app);
+            let cell = app.world().resource::<GameScreens>().pack.entries[0].cell;
+            let middle = IVec2::new(client.left + cell.x + 40, client.top + cell.y + 40);
+            app.world_mut().resource_mut::<ScriptedPointer>().0 = Some(middle.as_vec2());
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(MouseButton::Left);
+            app.update();
+            let open = app
+                .world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Inventory);
+            let dragging = app.world().resource::<PanelDrag>().source.is_some();
+            let held = app.world().get::<MindBody>(shown).unwrap().powers[0].state()
+                != crate::thaum::power::ENDING;
+            (open, dragging, held)
+        };
+        assert_eq!(run(true), (false, false, false));
+        assert_eq!(run(false), (true, true, true));
     }
 
     #[test]

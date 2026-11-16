@@ -777,6 +777,8 @@ pub(crate) struct BarAim {
 struct BarAnswer {
     screen_sound: Option<super::tree::TreeSound>,
     end_control: bool,
+    /// The cast's slot held a power: the HUD's bars show for a second.
+    hold_bars: bool,
     mind_sounds: Vec<crate::mind::casts::MindSound>,
     music: Option<exa_audio::MusicOverlay>,
     spirit: Option<crate::mind::runtime::SpiritBodyAsked>,
@@ -799,6 +801,9 @@ enum HoldAnswer {
 impl BarAnswer {
     /// Runs the answer on the frame's world.
     fn deliver(self, world: &mut World) {
+        if self.hold_bars {
+            crate::hud::hold_bars(world, crate::hud::BARS_HOLD_MS);
+        }
         if let Some(sound) = self.screen_sound
             && let Some(mut screen) = world.get_resource_mut::<PowerScreen>()
         {
@@ -1267,6 +1272,7 @@ fn cast_bar_slot(
     }
     answer.screen_sound = entry.sound;
     answer.end_control = entry.end_control;
+    answer.hold_bars = entry.hold_bars;
     // "Not now" holds the slot in the controls for 500 ms (renewed by
     // each "not now"); any other answer to the hold's retry lets it go.
     if let Some(queued) = entry.queued_slot {

@@ -546,6 +546,7 @@ pub fn paint_preview_bars(
         shield: false,
         stamina: 1.0,
         combat: false,
+        power_bar: false,
     };
     crate::hud::paint_bars_with(
         &mut canvas,

@@ -312,8 +312,8 @@ impl FormHost for MenuForm {
 
 /// The GUI core task the menu routes through.
 #[derive(Resource)]
-struct MenuRouter {
-    task: GuiTask,
+pub(crate) struct MenuRouter {
+    pub(crate) task: GuiTask,
     geometry: Arc<Mutex<FormGeometry>>,
     form: FormId,
 }
@@ -359,7 +359,7 @@ pub(crate) fn open_menu(menu: &mut MenuScreen, flow: Option<&mut Flow>) {
 }
 
 /// Creates the menu's form in a GUI core task.
-fn setup_router(mut commands: Commands) {
+pub(crate) fn setup_router(mut commands: Commands) {
     let geometry = Arc::new(Mutex::new(FormGeometry::default()));
     let mut task = GuiTask::new((800, 600));
     let form = task.add(Box::new(MenuForm {
