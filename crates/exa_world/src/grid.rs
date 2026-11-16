@@ -1749,9 +1749,13 @@ fn spawn_node(
         commands.entity(e).insert(crate::light_bundle(light));
     }
     if !n.gi_points.is_empty() {
-        commands
-            .entity(e)
-            .insert(crate::gi_volume::GiPoints(n.gi_points.clone()));
+        commands.entity(e).insert((
+            crate::gi_volume::GiPoints(n.gi_points.clone()),
+            crate::gi_volume::GiBounds {
+                centre: n.bounds.0,
+                half: n.half_extents,
+            },
+        ));
     }
     e
 }

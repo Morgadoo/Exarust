@@ -263,6 +263,36 @@ mod tests {
         );
     }
 
+    /// The level's teardown empties the GI manager's shape list, as the
+    /// original's scene clear sets its count to zero: a shape entity that
+    /// outlives the level stays alive but is no longer listed, and its later
+    /// removal finds nothing to drop.
+    #[test]
+    fn a_teardown_forgets_the_gi_shapes() {
+        use exa_render::gi::{GiShape, GiShapes};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(LevelChangePlugin)
+            .add_plugins(exa_render::gi_shape::GiShapePlugin)
+            .insert_resource(exa_physics::Physics::default())
+            .init_resource::<exa_physics::collision_share::FramePhysics>()
+            .insert_resource(gi_volume::GiState::Off)
+            .insert_resource(nav::NavState::None)
+            .insert_resource(nav::InstalledPathfinder::default());
+        let shape = app.world_mut().spawn(GiShape::default()).id();
+        app.update();
+        assert_eq!(app.world().resource::<GiShapes>().shapes(), &[shape]);
+        app.world_mut()
+            .resource_mut::<Messages<LevelChangeRequest>>()
+            .write(LevelChangeRequest::teardown());
+        app.update();
+        assert!(app.world().get_entity(shape).is_ok());
+        assert!(app.world().resource::<GiShapes>().shapes().is_empty());
+        app.world_mut().despawn(shape);
+        app.update();
+        assert!(app.world().resource::<GiShapes>().shapes().is_empty());
+    }
+
     #[derive(Resource, Default)]
     struct Seen(Vec<usize>);
 

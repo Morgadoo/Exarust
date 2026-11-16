@@ -1608,6 +1608,23 @@ impl TerrainBuild {
             crate::shadow_links::Unwalled,
             exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
         );
+        // The GI manager fills each terrain column from the tile's vertex
+        // grid and its present 6 m blocks.
+        if built.heights.len() == TILE_VERTICES * TILE_VERTICES {
+            let mut present = [false; 64];
+            for block in &built.blocks {
+                if block.bx < 8 && block.by < 8 {
+                    present[block.bx + block.by * 8] = true;
+                }
+            }
+            commands
+                .entity(tile_entity)
+                .insert(crate::gi_volume::GiTerrainHeights {
+                    spacing: self.terrain.spacing,
+                    heights: std::sync::Arc::new(built.heights.clone()),
+                    blocks: present,
+                });
+        }
         let tile_size = self.terrain.spacing * (TILE_VERTICES - 1) as f32;
         let wireframe = self.wireframe.clone();
         let mut block_entities = Vec::new();
