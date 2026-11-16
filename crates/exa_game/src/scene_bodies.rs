@@ -1429,8 +1429,10 @@ mod tests {
             ))
             .id();
         let body = crate::limp::tests::spawn_body(world, character);
-        let mut combatant = exa_ai::combatant::Combatant::default();
-        combatant.target = Some(character);
+        let combatant = exa_ai::combatant::Combatant {
+            target: Some(character),
+            ..Default::default()
+        };
         world.entity_mut(body).insert((
             exa_combat::Fighter::default(),
             exa_combat::Condition(0x300),
