@@ -369,6 +369,23 @@ fn the_weight_normalisations_are_the_originals() {
     assert_eq!(normalise_to_max([-1.0, -1.0, -1.0, -1.0]), None);
 }
 
+/// The original scales by the reciprocal of the sum (or of the largest
+/// magnitude) rather than dividing: the oracle's form, which differs from
+/// a division in the last bit (here 0x3EAFE423 against 0x3EAFE422, and
+/// 0xBE2AAAAB against 0xBE2AAAAA).
+#[test]
+fn the_weight_normalisations_multiply_by_the_reciprocal() {
+    let w = normalise_sum([1.01, 0.87, 0.41, 0.65]).unwrap();
+    assert_eq!(w[0].to_bits(), 0x3eaf_e423);
+    let (w, _) = scale_to_max([-0.1, 0.6, -0.53, -0.36]);
+    assert_eq!(w[0].to_bits(), 0xbe2a_aaab);
+    // A negative zero weight is dropped to +0 (the maximum with zero).
+    assert_eq!(
+        normalise_sum([-0.0, 1.0, 0.0, 0.0]).unwrap()[0].to_bits(),
+        0
+    );
+}
+
 /// The span uses the processor's round-half-to-even, not the floor used
 /// for a point: half a cell rounds to the even cell (0), a hair past it to
 /// the next; the grid's origin is added afterwards.

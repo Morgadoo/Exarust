@@ -577,7 +577,8 @@ impl LoyaltyTarget {
             self.state = super::ENDING;
         }
         self.ticks = self.ticks.wrapping_add(1);
-        if self.ticks >= LOYALTY_SETTLE_TICKS {
+        // The original's count is signed: past 2³¹ ticks it reads negative.
+        if self.ticks as i32 >= LOYALTY_SETTLE_TICKS as i32 {
             // The relation plus 100 is a single, the rest double until the
             // square times 100 is narrowed; the blend is double again.
             let scaled = f64::from(relation + 100.0) * LOYALTY_RELATION_SCALE;
@@ -1170,6 +1171,18 @@ mod tests {
         close.ticks = LOYALTY_SETTLE_TICKS;
         close.control(0, -98.15);
         assert_eq!(close.strength.to_bits(), 971_000_813);
+    }
+
+    /// The tick count is signed in the original: the oracle's case of a
+    /// count that wraps past 2³¹ reads negative and keeps the strength.
+    #[test]
+    fn a_wrapped_tick_count_keeps_the_loyalty_strength() {
+        let mut t = LoyaltyTarget::new(1);
+        t.ticks = 0x7FFF_FFFF;
+        t.strength = -43.094_833;
+        t.control(3, -79.7257);
+        assert_eq!(t.ticks, 0x8000_0000);
+        assert_eq!(t.strength.to_bits(), 0xc22c_611c);
     }
 
     #[test]

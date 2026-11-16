@@ -601,6 +601,19 @@ pub struct BlastStep {
     pub at: Vec3,
 }
 
+/// The yaw from a place back toward the thing it was measured from: the
+/// engine's heading of `flat` turned half a circle in double precision
+/// (less π above π, else plus π), as the barricade's and the blast's place
+/// scores write their bearing.
+fn facing_back(flat: Vec3) -> f32 {
+    let h = f64::from(exa_physics::engine_math::heading(flat));
+    if h > std::f64::consts::PI {
+        (h - std::f64::consts::PI) as f32
+    } else {
+        (h + std::f64::consts::PI) as f32
+    }
+}
+
 /// The place score a barricade gives the combat tick. The close term stays 0.
 /// The danger is the keep-away weight and the strike is the distance score,
 /// so a place against the wall costs more than one clear of it.
@@ -615,7 +628,7 @@ pub fn barricade_place(wall: WallStep, at: Vec3, body: &Body, skill: f32) -> Pla
     let mut flat = at - point;
     flat.y = 0.0;
     let distance = (flat.x * flat.x + flat.z * flat.z).sqrt();
-    let heading = wrap(yaw(flat) + std::f32::consts::PI);
+    let heading = facing_back(flat);
     let reach = if body.scale <= 1.3 {
         body.reach_cm
     } else {
@@ -648,7 +661,8 @@ pub fn barricade_place(wall: WallStep, at: Vec3, body: &Body, skill: f32) -> Pla
 }
 
 /// The place score a blast gives the combat tick. A released blast within
-/// 5 m of its line pushes; anything else does not. The close term stays 0.
+/// 5 m of its line pushes, its weight written to both the close and the
+/// danger terms as the original writes them; anything else does not.
 pub fn blast_place(blast: BlastStep, at: Vec3) -> PlaceScore {
     let mut t = at.dot(blast.aim) - blast.chest.dot(blast.aim);
     if t < 0.0 {
@@ -658,14 +672,15 @@ pub fn blast_place(blast: BlastStep, at: Vec3) -> PlaceScore {
     let mut flat = at - nearest;
     flat.y = 0.0;
     let distance = (flat.x * flat.x + flat.z * flat.z).sqrt();
-    let heading = wrap(yaw(flat) + std::f32::consts::PI);
+    let heading = facing_back(flat);
     let danger = if blast.released && distance < 500.0 {
         (1.0 - distance * 0.002) * 6.0
     } else {
         0.0
     };
+    // The original writes the push to both the close and the danger words.
     PlaceScore {
-        close: 0.0,
+        close: danger,
         danger,
         bearing: heading,
         distance_cm: distance,
@@ -1276,8 +1291,8 @@ pub fn keep_off(me_chest: Vec3, foe_chest: Vec3, foe_scale: f32, offset: &mut Ve
             offset.x = d.0 * r * inv;
             offset.z = d.1 * r * inv;
         } else {
-            offset.x = 0.0;
-            offset.z = 0.0;
+            // The original stores a zero vector there: the height too.
+            *offset = Vec3::ZERO;
         }
         return;
     }
@@ -2580,7 +2595,8 @@ mod wall_place {
         };
         let on_line = blast_place(blast, Vec3::new(0.0, 0.0, 100.0));
         assert!(on_line.danger > 0.0, "{}", on_line.danger);
-        assert_eq!(on_line.close, 0.0);
+        // The oracle's case: the push is written to the close word too.
+        assert_eq!(on_line.close, on_line.danger);
         let held = BlastStep {
             released: false,
             ..blast
