@@ -1960,3 +1960,10 @@ The system SHALL box a moving GI mesh in each frame by its node's bounds centre 
 #### Scenario: A node's bounds
 - **WHEN** a mesh whose bounds are 30 by 10 by 10 cm about (2010, 110, 2010) cm moves 20 cm along X
 - **THEN** its uploaded region runs from (98, 98, 4) to (104, 102, 8) in texture axes
+
+### Requirement: Renderer finished before exit
+In the frame whose end exits the run, the render world SHALL wait for every pipeline compile still in flight and for the GPU work submitted, before the renderer is dropped, so no compile runs inside the graphics driver while the process's exit handlers run.
+
+#### Scenario: A run ends right after a new material variant
+- **WHEN** a run's last frame asks for a pipeline that is still compiling
+- **THEN** the compile finishes before the render world is dropped and the exit trace logs both stages

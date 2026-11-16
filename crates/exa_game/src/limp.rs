@@ -2117,7 +2117,7 @@ fn install_limb_trees(
 ) {
     for (root, mut trees) in &mut pending {
         trees.tasks.retain_mut(|(part, task)| {
-            let Some(tree) = bevy::tasks::block_on(bevy::tasks::poll_once(task)) else {
+            let Some(tree) = exa_physics::job_wait::poll(task) else {
                 return true;
             };
             // The tree goes into the simulation's body at the start of the

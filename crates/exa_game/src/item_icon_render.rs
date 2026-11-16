@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use bevy::render::gpu_readback::{ReadbackComplete, ReadbackOnce};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use exa_assets::model::{self, Paint, PaintedSet};
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind};
 use exa_formats::objdb::Appearance;
@@ -239,7 +239,7 @@ fn prepare_icon_scenes(
         // waits rather than being taken for an unknown record.
         return;
     }
-    let deadline = std::time::Instant::now() + ICON_PAINT_BUDGET;
+    let deadline = std::time::Instant::now() + exa_physics::job_wait::budget(ICON_PAINT_BUDGET);
     if let Some(painting) = painting.as_deref_mut()
         && !painting.tasks.is_empty()
     {
@@ -253,7 +253,7 @@ fn prepare_icon_scenes(
         };
         painting
             .tasks
-            .retain(|_, task| match block_on(poll_once(task)) {
+            .retain(|_, task| match exa_physics::job_wait::poll(task) {
                 Some(painted) => {
                     loader.painted_material(painted);
                     false

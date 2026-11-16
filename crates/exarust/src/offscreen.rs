@@ -17,6 +17,15 @@
 //! mouse button, wheel, cursor and motion messages, so the game reads it as
 //! if winit had delivered it. Standard input closing (the host gone) ends
 //! the game.
+//!
+//! A `--fixed-frames` run reads its frames back in lockstep: the render
+//! world waits for the GPU at the end of each frame, so a frame's pixels
+//! reach the main world exactly one frame later, and its loading flag and
+//! counter repeat from run to run (a free readback lands one to three
+//! frames later, as the GPU allows). `EXA_OFFSCREEN_SHOTS=F1,F2,...` saves
+//! the read-back frames that many frames past the loading screen (counted
+//! as the frame file's host counts them) as `<frame file>-fNNNNN.png`, so a
+//! runner gets the exact frame however fast it polls the file.
 
 use std::fs::File;
 use std::io::BufRead;
@@ -36,7 +45,11 @@ use bevy::prelude::*;
 use bevy::reflect::enums::{DynamicEnum, DynamicVariant};
 use bevy::reflect::{FromReflect, ReflectRef};
 use bevy::render::gpu_readback::{Readback, ReadbackComplete};
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use bevy::render::render_resource::{
+    Extent3d, PollType, TextureDimension, TextureFormat, TextureUsages,
+};
+use bevy::render::renderer::RenderDevice;
+use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy::ui::IsDefaultUiCamera;
 use bevy::window::{CursorLeft, CursorMoved, PrimaryWindow, WindowRef};
 
@@ -264,6 +277,51 @@ pub struct OffscreenPlugin {
     /// Drop the host's forwarded input (an unattended `--fixed-frames` run:
     /// the host's mouse would otherwise steer the player wherever it rests).
     pub ignore_input: bool,
+    /// Read the frames back in lockstep (a `--fixed-frames` run): the render
+    /// world waits for the GPU at the end of every frame.
+    pub lockstep_readback: bool,
+}
+
+/// The frames past the loading screen saved as pictures
+/// (`EXA_OFFSCREEN_SHOTS`), and where: the frame file's path without its
+/// extension, then `-fNNNNN.png`.
+#[derive(Resource, Default)]
+struct FrameShots {
+    wanted: std::collections::BTreeSet<u64>,
+    stem: PathBuf,
+    /// The frame counter of the last frame behind the loading screen, once
+    /// a frame past it was read back (the host's base).
+    base: Option<u64>,
+}
+
+impl FrameShots {
+    fn from_env(path: &std::path::Path) -> Self {
+        let wanted = std::env::var("EXA_OFFSCREEN_SHOTS")
+            .ok()
+            .map(|v| parse_shot_frames(&v))
+            .unwrap_or_default();
+        Self {
+            wanted,
+            stem: path.with_extension(""),
+            base: None,
+        }
+    }
+
+    /// The picture's path for frame `n` past the loading screen.
+    fn path(&self, n: u64) -> PathBuf {
+        let mut name = self.stem.clone().into_os_string();
+        name.push(format!("-f{n:05}.png"));
+        PathBuf::from(name)
+    }
+}
+
+/// Reads `F1,F2,...` (frames past the loading screen); words that are not
+/// numbers are skipped.
+fn parse_shot_frames(text: &str) -> std::collections::BTreeSet<u64> {
+    text.split(',')
+        .filter_map(|w| w.trim().parse().ok())
+        .filter(|&n| n > 0)
+        .collect()
 }
 
 /// The host's forwarded input is dropped (only its closing is kept).
@@ -327,6 +385,15 @@ impl Plugin for OffscreenPlugin {
         if self.ignore_input {
             app.insert_resource(IgnoreHostInput);
         }
+        app.insert_resource(FrameShots::from_env(&self.path));
+        if self.lockstep_readback
+            && let Some(render) = app.get_sub_app_mut(RenderApp)
+        {
+            // After Bevy's readback maps its buffers (in the cleanup): the
+            // wait runs the map callbacks, so the next extract hands this
+            // frame's pixels over, whatever the GPU's pace.
+            render.add_systems(Render, wait_for_gpu.in_set(RenderSystems::PostCleanup));
+        }
         app.insert_resource(FrameFile {
             file,
             seq: 0,
@@ -358,6 +425,14 @@ impl Plugin for OffscreenPlugin {
                 .before(CameraUpdateSystems)
                 .before(bevy::ui::UiSystems::Prepare),
         );
+    }
+}
+
+/// Waits for the frame's GPU work, its readback copy included (a lockstep
+/// readback, `--fixed-frames`).
+fn wait_for_gpu(device: Res<RenderDevice>) {
+    if let Err(e) = device.poll(PollType::wait_indefinitely()) {
+        warn!("offscreen: the wait for the GPU failed: {e}");
     }
 }
 
@@ -449,6 +524,7 @@ fn write_frame(
     target: Res<OffscreenTarget>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut out: ResMut<FrameFile>,
+    mut shots: ResMut<FrameShots>,
 ) {
     let (w, h) = (target.size.x as usize, target.size.y as usize);
     let row = w * 4;
@@ -493,6 +569,42 @@ fn write_frame(
     out.seq = header.seq;
     if let Err(e) = written.and_then(|()| out.file.write_all_at(&header.to_bytes(), 0)) {
         error!("offscreen: cannot write the frame: {e}");
+    }
+    // The host counts frames from the first one past the loading screen
+    // (that one is 1).
+    if shots.base.is_none() && loading.is_none() {
+        shots.base = Some(out.frame - 1);
+    }
+    if let Some(base) = shots.base {
+        let n = out.frame - base;
+        if shots.wanted.remove(&n) {
+            save_shot(&shots.path(n), target.size, &out.pixels);
+        }
+    }
+}
+
+/// Saves read-back pixels (RGBA8, sRGB, unpadded) as a PNG.
+fn save_shot(path: &std::path::Path, size: UVec2, pixels: &[u8]) {
+    let image = Image::new(
+        Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels.to_vec(),
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD,
+    );
+    match image.try_into_dynamic() {
+        Ok(picture) => match picture.to_rgb8().save(path) {
+            Ok(()) => info!("offscreen: frame saved to {}", path.display()),
+            Err(e) => error!("offscreen: cannot save {}: {e}", path.display()),
+        },
+        Err(e) => error!(
+            "offscreen: cannot convert the frame for {}: {e}",
+            path.display()
+        ),
     }
 }
 
@@ -599,6 +711,18 @@ fn inject_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shot_frames_are_read_and_named_beside_the_frame_file() {
+        let wanted = parse_shot_frames("150, 280,x,0,150");
+        assert_eq!(wanted.into_iter().collect::<Vec<_>>(), [150, 280]);
+        let shots = FrameShots {
+            wanted: Default::default(),
+            stem: PathBuf::from("/run/r/hub_s1.bin").with_extension(""),
+            base: None,
+        };
+        assert_eq!(shots.path(150), PathBuf::from("/run/r/hub_s1-f00150.png"));
+    }
 
     #[test]
     fn forwarded_input_round_trips() {

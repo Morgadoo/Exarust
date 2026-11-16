@@ -55,7 +55,14 @@ and kernel wait channel, three in-process stack samples two seconds apart
 (each thread takes its own with glibc's `backtrace` on a signal; the
 addresses are logged as module + address from its load base, for
 `addr2line -f -C -i -e` on a `--profile profiling` build), then `eu-stack`
-or `gdb` here or on the host when one is found.
+or `gdb` here or on the host when one is found. At `main`'s return the trace also lists the
+threads still alive, the ones the process's exit handlers run beside (F567).
+
+`job_wait`: in a repeatable run (`--fixed-frames`, `wait_for_jobs`) a
+background job a frame polls is waited for (`job_wait::poll`, used by every
+task-pool poll of the game) and per-frame time budgets are lifted
+(`job_wait::budget`), so results land in the same frame every run; a normal
+run polls and keeps its budgets.
 
 With `SimMode::Free` (the game's default; `--sim-lockstep`, `--fixed-frames`,
 `--sim-inline` and `--no-sim-bridge` step in lockstep) the

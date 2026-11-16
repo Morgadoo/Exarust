@@ -21,6 +21,7 @@ pub mod frame_phase;
 pub mod grip;
 pub mod grip_solve;
 pub mod intersect;
+pub mod job_wait;
 pub mod kd_tree;
 pub mod kdtree;
 pub mod lever;
@@ -54,7 +55,7 @@ pub mod weapon_mass;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use rapier3d::prelude::*;
 
 /// Simulation rate of the fixed step: the original's 83 Hz (12 ms) time-
@@ -976,7 +977,7 @@ pub fn build_static_colliders(
             if waiting {
                 return true;
             }
-            let Some(colliders) = block_on(poll_once(task)) else {
+            let Some(colliders) = job_wait::poll(task) else {
                 waiting = true;
                 return true;
             };

@@ -196,6 +196,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   bloom), the twice-icon sRGB target with alpha for cut-outs, the
   destination RGBA8 image, the object-list walk, and the readback rows (not
   spawned yet; the item renderer is the live icon path).
+- `exit_wait`: the frame that ends the run (an `AppExit` written, `RunEnding` extracted) waits in the render world's post-cleanup for every pipeline compile still in flight and for the GPU, so no compile runs inside the driver while the renderer is dropped and the process's exit handlers run (F567).
 - `quads`: the data path of the original's 2-D immediate-draw batcher: the begin scale, flipped y, cumulative 16-level translation stack, texture coordinates and RGBA colours, the quad and textured-quad conveniences, the quad index template and line pairs, the projections, the six built-in vertex programs, their attribute locations, the lazily built program slots and the vertex-format attribute switches. The GUI rasteriser uses the index template (`exa_ui::gui_draw`); its pixels stay in window space, so the clip projection and the vertex buffers are not on that path.
 
 ## Scope
