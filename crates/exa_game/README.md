@@ -1913,6 +1913,14 @@ Inventory and Skills with its own gates; the pad's pause toggles the menu
 as F1 does) send a
 `ScreenRequest`, and the inventory and journal open as forms on an
 `exa_ui::gui_core::GuiTask`, so their focus follows the window manager.
+The inventory and journal toggles close a window only when it is on top
+(the base form's active test, not the hover focus) and raise one that is
+not; the journal is found by its tag; a closed window's child forms (the
+journal's text box) close with it and the window manager forgets them; a
+loss of the window's focus parks the GUI focus on the root
+(`deactivate_on_focus_loss`); a GUI unit change rescales the open screens
+(`GameScreens::rescale_open`: places as free forms, layouts at the new
+unit, the panels' entries; container popups keep theirs).
 The inventory toggles when active, is activated otherwise, sits at its
 (8, 8) or remembered place and is registered as an open container; it is
 laid out at the live GUI unit (`InventoryLayout`): the constructor's
