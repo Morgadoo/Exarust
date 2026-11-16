@@ -398,22 +398,26 @@ pub fn screen_to_view(point: [f32; 3], size: (i32, i32), projection: (f32, f32))
     ]
 }
 
-/// A view-space point into view pixels, y counted from the bottom: a point
-/// at or behind the eye (depth 0 or more) goes to the edge its signs point
-/// to; otherwise half the size plus the projection scale times half the
-/// size times the coordinate over the negated depth.
-pub fn view_to_screen(point: [f32; 3], size: (i32, i32), projection: (f32, f32)) -> [f32; 3] {
+/// A view-space point into view pixels, y counted from the top, and its
+/// depth (the negated view z). A point in front of the eye (z below 0) is
+/// half the size plus the projection scale times the size, times a half,
+/// times the coordinate, over the negated depth, in that order. Any other
+/// point (at or behind the eye, or a NaN depth, as the unordered compare
+/// falls) goes to the edge its signs point to: 0 for a negative
+/// coordinate, the full size otherwise (a NaN coordinate too). The size is
+/// the view's in pixels (the original's integer size, converted).
+pub fn view_to_screen(point: [f32; 3], size: (f32, f32), projection: (f32, f32)) -> [f32; 3] {
     let [x, y, z] = point;
-    let (w, h) = (size.0 as f32, size.1 as f32);
-    let (sx, sy) = if z >= 0.0 {
-        (
-            if x >= 0.0 { w } else { 0.0 },
-            if y >= 0.0 { h } else { 0.0 },
-        )
-    } else {
+    let (w, h) = size;
+    let (sx, sy) = if 0.0 > z {
         (
             w * 0.5 + projection.0 * w * 0.5 * x / -z,
             h * 0.5 + projection.1 * h * 0.5 * y / -z,
+        )
+    } else {
+        (
+            if 0.0 > x { 0.0 } else { w },
+            if 0.0 > y { 0.0 } else { h },
         )
     };
     [sx, h - sy, -z]
@@ -988,12 +992,21 @@ mod tests {
         let projection = (1.0, 2.0);
         let p = screen_to_view([0.0, 0.0, 10.0], size, projection);
         assert_eq!(p, [-10.0, -5.0, -10.0]);
-        let u = view_to_screen([100.0, 50.0, -10.0], size, projection);
+        let fsize = (200.0, 100.0);
+        let u = view_to_screen([100.0, 50.0, -10.0], fsize, projection);
         assert_eq!(u, [1100.0, -450.0, 10.0]);
         assert_eq!(
-            view_to_screen([-1.0, 1.0, 0.0], size, projection),
+            view_to_screen([-1.0, 1.0, 0.0], fsize, projection),
             [0.0, 0.0, -0.0]
         );
+        // Behind the eye a zero coordinate goes to the far edge; a NaN
+        // depth or coordinate takes the edge branch's far side.
+        assert_eq!(
+            view_to_screen([0.0, -0.0, 5.0], fsize, projection),
+            [200.0, 0.0, -5.0]
+        );
+        let nan = view_to_screen([f32::NAN, -1.0, f32::NAN], fsize, projection);
+        assert_eq!((nan[0], nan[1]), (200.0, 100.0));
     }
 
     #[test]

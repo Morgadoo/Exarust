@@ -877,17 +877,31 @@ pub(crate) fn window_ray(
         .ok()
 }
 
-/// Where a world point shows in the window (logical pixels).
+/// Where a world point shows in the window (logical pixels), as the game
+/// view's projection routine puts it ([`exa_ui::viewport::view_to_screen`]):
+/// the point in the eye's space, divided by its depth with the projection's
+/// x and y scales over the window's size. A point at or behind the eye goes
+/// to the window's edge its side points to (the original never fails);
+/// `None` only for a camera without a projection.
 pub(crate) fn window_point(
     camera: &Camera,
     eye: &GlobalTransform,
     window: &Window,
     point: Vec3,
 ) -> Option<Vec2> {
-    camera
-        .world_to_viewport(eye, point)
-        .ok()
-        .map(|p| p / viewport_scale(camera, window))
+    project_to_window(camera.clip_from_view(), eye, window.size(), point)
+}
+
+/// [`window_point`] for a projection matrix and a window size.
+fn project_to_window(clip: Mat4, eye: &GlobalTransform, size: Vec2, point: Vec3) -> Option<Vec2> {
+    let projection = (clip.x_axis.x, clip.y_axis.y);
+    if projection == (0.0, 0.0) {
+        return None;
+    }
+    let view = eye.affine().inverse().transform_point3(point);
+    let [x, y, _] =
+        exa_ui::viewport::view_to_screen(view.to_array(), (size.x, size.y), projection);
+    Some(Vec2::new(x, y))
 }
 
 /// Whether the session is a Wayland one, where the pointer can be moved
@@ -4952,6 +4966,32 @@ mod tests {
             None,
         );
         assert_eq!(asked, 0);
+    }
+
+    /// A point ahead of the eye lands where the projection puts it (the
+    /// window's centre straight ahead, a point to the right and up to the
+    /// right and up); a point behind the eye goes to the edge its side
+    /// points to, where Bevy's projection gives none.
+    #[test]
+    fn a_window_point_snaps_to_the_edge_behind_the_eye() {
+        let clip = Mat4::perspective_infinite_reverse_rh(1.0, 1.6, 0.1);
+        let eye = GlobalTransform::from(Transform::from_xyz(0.0, 2.0, 5.0));
+        let size = Vec2::new(1600.0, 1000.0);
+        let ahead = project_to_window(clip, &eye, size, Vec3::new(0.0, 2.0, 0.0)).unwrap();
+        assert_eq!(ahead, Vec2::new(800.0, 500.0));
+        let right_up = project_to_window(clip, &eye, size, Vec3::new(1.0, 3.0, 0.0)).unwrap();
+        // Against the matrix's own divide.
+        let ndc = clip.project_point3(Vec3::new(1.0, 1.0, -5.0));
+        let expect = Vec2::new((ndc.x + 1.0) * 800.0, (1.0 - ndc.y) * 500.0);
+        assert!(right_up.abs_diff_eq(expect, 1e-3), "{right_up} {expect}");
+        assert!(right_up.x > 800.0 && right_up.y < 500.0);
+        // Behind the eye, left and down: the left edge and the bottom.
+        let behind = project_to_window(clip, &eye, size, Vec3::new(-1.0, 1.0, 9.0)).unwrap();
+        assert_eq!(behind, Vec2::new(0.0, 1000.0));
+        // Behind, right and up: the right edge and the top.
+        let behind = project_to_window(clip, &eye, size, Vec3::new(1.0, 3.0, 9.0)).unwrap();
+        assert_eq!(behind, Vec2::new(1600.0, 0.0));
+        assert_eq!(project_to_window(Mat4::ZERO, &eye, size, Vec3::ZERO), None);
     }
 
     /// The pad's stick vector pans a free camera as the keys do, but only
