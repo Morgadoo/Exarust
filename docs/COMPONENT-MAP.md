@@ -9,7 +9,7 @@ Two numbers are published while the function ledger is being completed (see `doc
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - **Estimate 82.3% + 5.1% engine; ledger 53.8% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.8% closed**, of which 41.9% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.1% partial and 8.1% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.8% closed**, of which 42.0% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.2% partial and 8.0% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -27,13 +27,13 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 27% | 26% | 1% | 0% | 62% | 10% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
-| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 48% | 45% | 2% | 1% | 44% | 8% | TArsenalContFrame |
+| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 48% | 45% | 2% | 1% | 44% | 7% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 48% | 45% | 1% | 2% | 49% | 3% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 61% | 59% | 1% | 0% | 37% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 4% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 55% | 53% | 2% | 0% | 38% | 7% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 53% | 43% | 1% | 9% | 31% | 17% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 53% | 43% | 1% | 9% | 31% | 16% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -307,15 +307,15 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TBloodSprays | Combat, weapons & damage | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TGUIItemContainer | Items, materials & crafting | 26 | 90% | 64% | 63% | 0% | 0% | 30% | 6% |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
-| Item description phrases | Items, materials & crafting | 16 | 86% | 69% | 64% | 2% | 3% | 29% | 2% |
+| Item description phrases | Items, materials & crafting | 16 | 86% | 70% | 64% | 2% | 3% | 29% | 1% |
 | SG_ItemGUI | Items, materials & crafting | 15 | 84% | 52% | 46% | 2% | 4% | 29% | 18% |
-| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 9% | 9% | 0% | 0% | 77% | 14% |
+| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 14% | 14% | 0% | 0% | 79% | 7% |
 | FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 19% | 17% | 2% | 0% | 53% | 28% |
 | TProcMaterial | Items, materials & crafting | 6 | 79% | 0% | 0% | 0% | 0% | 91% | 9% |
 | Item variant & condition randomisers (FLX_Character_Textures by address) | Items, materials & crafting | 5 | 84% | 55% | 54% | 1% | 0% | 45% | 0% |
 | TItemGUIManager | Items, materials & crafting | 4 | 62% | 26% | 15% | 7% | 4% | 48% | 27% |
-| TArsenalView | Items, materials & crafting | 3 | 80% | 37% | 37% | 0% | 0% | 32% | 31% |
-| TInventory | Items, materials & crafting | 3 | 80% | 21% | 21% | 0% | 0% | 75% | 4% |
+| TArsenalView | Items, materials & crafting | 3 | 80% | 41% | 41% | 0% | 0% | 40% | 18% |
+| TInventory | Items, materials & crafting | 3 | 80% | 24% | 24% | 0% | 0% | 75% | 1% |
 | TCharLoot | Items, materials & crafting | 1 | 65% | 78% | 78% | 0% | 0% | 22% | 0% |
 | TItemRenderer | Items, materials & crafting | 1 | 50% | 100% | 0% | 100% | 0% | 0% | 0% |
 | TPopUpDesc | Items, materials & crafting | 1 | 85% | 68% | 68% | 0% | 0% | 32% | 0% |
@@ -363,7 +363,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TEntity | AI & behaviour | 0 | 40% | 0% | 0% | 0% | 0% | 33% | 67% |
 | TAIActivity | AI & behaviour | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TThaumTree | Thaumaturgy & effects | 38 | 91% | 95% | 92% | 0% | 3% | 5% | 1% |
-| SG_Thaum_Mind | Thaumaturgy & effects | 21 | 96% | 92% | 92% | 0% | 0% | 5% | 3% |
+| SG_Thaum_Mind | Thaumaturgy & effects | 21 | 96% | 93% | 93% | 0% | 0% | 5% | 2% |
 | TParticleSystem | Thaumaturgy & effects | 19 | 89% | 66% | 64% | 2% | 0% | 25% | 9% |
 | TForceBlastEffect | Thaumaturgy & effects | 17 | 92% | 65% | 63% | 2% | 0% | 35% | 0% |
 | TForceTorrentEffect | Thaumaturgy & effects | 15 | 89% | 24% | 22% | 1% | 0% | 72% | 5% |
@@ -418,7 +418,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | FLX_FX_Fire | Thaumaturgy & effects | 1 | 55% | 60% | 53% | 7% | 0% | 40% | 0% |
 | TPortalEffect | Thaumaturgy & effects | 1 | 95% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TBarricadeGeometry | Thaumaturgy & effects | 1 | 60% | 0% | 0% | 0% | 0% | 100% | 0% |
-| TPwrLoyalty_E | Thaumaturgy & effects | 1 | 90% | 18% | 18% | 0% | 0% | 61% | 21% |
+| TPwrLoyalty_E | Thaumaturgy & effects | 1 | 90% | 18% | 18% | 0% | 0% | 82% | 0% |
 | TPwrForceShell_C | Thaumaturgy & effects | 1 | 64% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TPwrCommandDead_C | Thaumaturgy & effects | 1 | 92% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TPwrLoyalty_C | Thaumaturgy & effects | 1 | 90% | 93% | 93% | 0% | 0% | 7% | 0% |
@@ -493,7 +493,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TTextBox | UI | 12 | 88% | 96% | 95% | 1% | 0% | 2% | 2% |
 | TIconManager | UI | 10 | 85% | 44% | 42% | 1% | 1% | 0% | 56% |
 | RF_GUI_Controls | UI | 8 | 80% | 14% | 13% | 1% | 0% | 71% | 15% |
-| TCharacterView | UI | 8 | 76% | 8% | 8% | 0% | 0% | 74% | 18% |
+| TCharacterView | UI | 8 | 76% | 8% | 8% | 0% | 0% | 78% | 14% |
 | TGUITableView | UI | 7 | 90% | 66% | 39% | 4% | 23% | 34% | 0% |
 | RF_GUI_Icons | UI | 7 | 90% | 84% | 74% | 1% | 9% | 9% | 7% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 7 | 87% | 84% | 83% | 1% | 0% | 0% | 16% |
