@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 55.7% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 56.3% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **55.7% closed**, of which 43.6% live (reimplemented), 9.7% engine and 2.4% closed without code (unreachable or deviation). Still open: 36.9% partial and 7.5% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **56.3% closed**, of which 44.3% live (reimplemented), 9.7% engine and 2.4% closed without code (unreachable or deviation). Still open: 36.4% partial and 7.3% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -33,7 +33,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 3% |  |
 | Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 60% | 58% | 2% | 0% | 34% | 6% |  |
-| UI | 959 | 312 | 63 | 86% | 0% | 53% | 43% | 1% | 9% | 31% | 16% |  |
+| UI | 959 | 312 | 63 | 86% | 0% | 58% | 48% | 1% | 9% | 27% | 15% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -481,8 +481,8 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | Save-package section delete (SG_EmblemGen by address) | Game modes, arena & session | 0 | 85% | 100% | 100% | 0% | 0% | 0% | 0% |
 | TSaveGameManager | Game modes, arena & session | 0 | 70% | 100% | 90% | 10% | 0% | 0% | 0% |
 | TManageForm | Game modes, arena & session | 0 | 60% | 100% | 100% | 0% | 0% | 0% | 0% |
-| TGUIDrawSkin | UI | 35 | 93% | 55% | 45% | 0% | 10% | 13% | 31% |
-| TGSLines | UI | 24 | 89% | 23% | 23% | 0% | 0% | 59% | 18% |
+| TGUIDrawSkin | UI | 35 | 93% | 63% | 53% | 0% | 10% | 10% | 27% |
+| TGSLines | UI | 24 | 89% | 81% | 81% | 0% | 0% | 16% | 3% |
 | SG_GameGUI | UI | 22 | 90% | 67% | 50% | 1% | 16% | 30% | 2% |
 | TGUIForm | UI | 20 | 96% | 18% | 17% | 1% | 0% | 49% | 33% |
 | TSkillUI | UI | 18 | 88% | 76% | 76% | 0% | 0% | 20% | 4% |

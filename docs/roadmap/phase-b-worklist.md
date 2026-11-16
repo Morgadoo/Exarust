@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 711 | 175,717 | B1 wire (or prove unreachable) |
-| partial | 1,446 | 926,045 | B4 complete the port |
+| uncalled | 700 | 170,524 | B1 wire (or prove unreachable) |
+| partial | 1,442 | 914,133 | B4 complete the port |
 | missing | 58 | 11,783 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -15,8 +15,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | section | partial | uncalled | missing |
 |---|---|---|---|
 | physics | 144,341 | 18,075 | 276 |
-| ui | 98,154 | 51,141 | 1,311 |
 | render | 123,703 | 22,990 | 3,232 |
+| ui | 86,242 | 45,948 | 1,311 |
 | powers | 109,096 | 3,157 | 2,321 |
 | characters | 89,749 | 15,241 | 2,097 |
 | ai | 99,815 | 4,612 | 28 |
@@ -41,13 +41,12 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TSimSector | physics | 28 / 21,578 | 0 / 0 | 0 / 0 | 21,578 |
 | TMotilePart | characters | 37 / 17,208 | 5 / 1,341 | 2 / 1,370 | 19,919 |
 | XA_Arena (unit routines) | modes | 29 / 17,125 | 6 / 1,436 | 7 / 779 | 19,340 |
-| TGSLines | ui | 3 / 14,576 | 10 / 4,368 | 0 / 0 | 18,944 |
 | RF_SceneNodes (unit routines) | world | 10 / 15,347 | 12 / 2,377 | 0 / 0 | 17,724 |
 | TVXGIManager | render | 12 / 16,995 | 1 / 61 | 0 / 0 | 17,056 |
 | TGUIForm | ui | 31 / 10,077 | 24 / 6,919 | 0 / 0 | 16,996 |
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
-| TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
 | TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
+| TGUIDrawSkin | ui | 2 / 3,550 | 22 / 9,559 | 0 / 0 | 13,109 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
 | XA_SaveGames (unit routines) | modes | 21 / 11,487 | 3 / 704 | 0 / 0 | 12,191 |
@@ -107,6 +106,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | Item description phrases | items | 5 / 4,855 | 0 / 0 | 0 / 0 | 4,855 |
 | Rigid-body shape builders (RF_GUI_Controls_Ex (unit routines) by address) | physics | 0 / 0 | 2 / 4,570 | 1 / 238 | 4,808 |
 | RF_Main (unit routines) | runtime | 14 / 4,263 | 4 / 405 | 0 / 0 | 4,668 |
+| TGSLines | ui | 3 / 3,841 | 5 / 815 | 0 / 0 | 4,656 |
 | FLX_ItemFactory (unit routines) | items | 4 / 4,535 | 0 / 0 | 0 / 0 | 4,535 |
 | SG_Thaum_DIsp (unit routines) | powers | 13 / 4,087 | 1 / 431 | 0 / 0 | 4,518 |
 | TSkillUI | ui | 4 / 3,673 | 2 / 716 | 0 / 0 | 4,389 |
