@@ -23,7 +23,7 @@ pub mod efx;
 mod efx_bus;
 mod environment;
 mod footsteps;
-mod hits;
+pub mod hits;
 mod loops;
 mod mechanisms;
 mod music;
@@ -94,16 +94,16 @@ impl Plugin for AudioPlugin {
                 Update,
                 (
                     hits::layer_sounds,
-                    hits::pain_sounds,
+                    hits::pain_sounds.before(exa_combat::collapse::collapse_groans),
                     hits::impact_sounds,
                     hits::weapon_sounds,
                     hits::shield_sounds,
                     sounds::second_wind_heals,
                     sounds::heal_sounds,
                     sounds::named_sounds,
-                    mechanisms::mechanism_sounds,
+                    mechanisms::mechanism_sounds.after(crate::sounds::handling_sounds),
                     sounds::swing_voices,
-                    footsteps::footsteps,
+                    footsteps::footsteps.after(crate::cloth_rustle::cloth_rustles),
                     footsteps::foot_sounds,
                     music::start_music,
                     music::apply_music_setting,
@@ -114,19 +114,22 @@ impl Plugin for AudioPlugin {
                     playback::apply_source_commands,
                     efx_bus::drive_reverb_bus,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(exa_physics::FramePhase::Audio),
             )
             .add_systems(
                 Update,
                 sounds::handling_sounds
                     .after(sounds::named_sounds)
-                    .before(playback::advance_audio_environment),
+                    .before(playback::advance_audio_environment)
+                    .in_set(exa_physics::FramePhase::Audio),
             )
             .add_systems(
                 Update,
                 cloth_rustle::cloth_rustles
                     .after(sounds::swing_voices)
-                    .before(playback::advance_audio_environment),
+                    .before(playback::advance_audio_environment)
+                    .in_set(exa_physics::FramePhase::Audio),
             )
             .init_resource::<bodies::FrameBodySounds>()
             .init_resource::<bodies::SetSizes>()

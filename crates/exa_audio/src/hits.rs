@@ -38,7 +38,7 @@ pub(crate) const GRUNTS: usize = 6;
 /// each layer's class set at the blow, at the ring's volume and pitch, on
 /// the plain one-shot flags. The striking weapon's ring on the same wound
 /// comes as a [`exa_combat::impact::WeaponSounded`] ([`weapon_sounds`]).
-pub(crate) fn layer_sounds(
+pub fn layer_sounds(
     game: Option<Res<Game>>,
     mut rings: MessageReader<LayerSounded>,
     mut bank: ResMut<SoundBank>,
