@@ -22,6 +22,13 @@
 //!   radius; ahead of it, along `travel`, a smear about √2 times as wide
 //!   that runs on to the end of the mesh. Vertices are taken where the
 //!   current pose puts them.
+//! - **Plain meshes** ([`paint_mesh`]) are painted in their own frame (a
+//!   scaled node takes the wound smaller) and by position element: the
+//!   vertices a seam splits keep one value.
+//! - **Cloths** (long hair, [`paint_cloth`]) are painted in place on the
+//!   mesh their simulation moves, by the cloth's painter
+//!   (`exa_physics::cloth::paint_blood`): the wound's point goes into the
+//!   node's frame, its travel stays a world direction.
 //!
 //! [`PaintWound`] paints one wound now. Wounds from hits come from the
 //! combat (`exa_combat::wounds`): a blow deep enough on a race that bleeds
@@ -196,6 +203,46 @@ pub fn paint(
             let byte = value.round_ties_even() as u8;
             changed |= byte < *alpha;
             *alpha = byte;
+        }
+    }
+    changed
+}
+
+/// Paints `wound` into the blood values `alphas` of a plain mesh whose
+/// vertices sit at `positions` in the frame `at` puts in the world, as the
+/// original's mesh painter does: the wound's centre and travel go into the
+/// mesh's frame (its scale too: the radius stays as it is), and the paint
+/// runs over the mesh's position elements, one random draw for each
+/// element inside the wound, every vertex of an element taking its value
+/// (the vertices a seam splits keep one value). A render vertex's element
+/// is the first vertex at the same place. Returns whether any value fell.
+pub fn paint_mesh(
+    alphas: &mut [u8],
+    positions: &[[f32; 3]],
+    at: &GlobalTransform,
+    wound: &PaintWound,
+    rng: &mut WoundRng,
+) -> bool {
+    let into = at.affine().inverse();
+    let centre = into.transform_point3(wound.centre());
+    let travel = into.transform_vector3(wound.travel);
+    // Each element's paint, by its place's bits: the new value, if it
+    // falls below the element's.
+    let mut elements: HashMap<[u32; 3], Option<u8>> = HashMap::new();
+    let mut changed = false;
+    for (alpha, p) in alphas.iter_mut().zip(positions) {
+        let key = p.map(f32::to_bits);
+        let paint = *elements.entry(key).or_insert_with(|| {
+            let f = wound_depth(Vec3::from(*p) - centre, travel, wound.radius)?;
+            // The random number is drawn only for elements inside the wound.
+            let value = wound_alpha(f, rng.unit());
+            (value < f32::from(*alpha)).then(|| value.round_ties_even() as u8)
+        });
+        if let Some(byte) = paint
+            && byte < *alpha
+        {
+            *alpha = byte;
+            changed = true;
         }
     }
     changed
@@ -397,23 +444,22 @@ pub fn paint_wounds(
             let Some(mesh) = meshes.get(&mesh3d.0) else {
                 continue;
             };
-            let positions = match (skin, skinned.is_some()) {
-                (Some(skin), _) => skinned_positions(mesh, skin, &bindposes, &transforms),
+            let mut alphas = blood_of(mesh);
+            let changed = match (skin, skinned.is_some()) {
+                (Some(skin), _) => skinned_positions(mesh, skin, &bindposes, &transforms)
+                    .is_some_and(|positions| paint(&mut alphas, &positions, wound, &mut rng)),
                 // A skinned part not bound to its skeleton yet is not drawn.
-                (None, true) => None,
-                (None, false) => transforms.get(part).ok().and_then(|g| {
-                    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
-                    Some(
-                        positions
-                            .iter()
-                            .map(|p| g.transform_point(Vec3::from(*p)))
-                            .collect(),
-                    )
+                (None, true) => false,
+                // A plain mesh: the mesh painter, in the mesh's own frame.
+                (None, false) => transforms.get(part).ok().is_some_and(|g| {
+                    mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                        .and_then(|a| a.as_float3())
+                        .is_some_and(|positions| {
+                            paint_mesh(&mut alphas, positions, g, wound, &mut rng)
+                        })
                 }),
             };
-            let Some(positions) = positions else { continue };
-            let mut alphas = blood_of(mesh);
-            if !paint(&mut alphas, &positions, wound, &mut rng) {
+            if !changed {
                 continue;
             }
             painted += 1;
@@ -1255,6 +1301,51 @@ mod tests {
         let both = alphas(&app, b.chest).unwrap();
         assert_eq!((both[3], both[7]), (0, 0));
         assert_eq!(both[5], 255);
+    }
+
+    /// The mesh painter draws once per position element: the two vertices
+    /// a seam splits at one place take one value, the speckled edge's
+    /// random numbers go to the elements inside the wound only, and the
+    /// wound is measured in the mesh's frame, so a node scaled by 2 takes
+    /// the wound at half its world size.
+    #[test]
+    fn a_seam_keeps_one_value_per_element() {
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [0.06, 0.0, 0.0],
+            [0.06, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+        ];
+        let wound = PaintWound {
+            body: Entity::PLACEHOLDER,
+            contact: Vec3::new(1.0, 0.0, 0.0),
+            travel: Vec3::ZERO,
+            radius: 0.15,
+        };
+        let at = GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 0.0));
+        let mut alphas = [255u8; 4];
+        let mut rng = WoundRng::default();
+        assert!(paint_mesh(&mut alphas, &positions, &at, &wound, &mut rng));
+        assert_eq!(alphas[0], 0);
+        assert!(alphas[1] < 255);
+        assert_eq!(alphas[1], alphas[2]);
+        assert_eq!(alphas[3], 255);
+        // Two draws: the centre's and the seam's element.
+        let mut two = WoundRng::default();
+        two.unit();
+        two.unit();
+        assert_eq!(rng.unit(), two.unit());
+        // Scaled by 2 about the contact: the seam is 12 cm off in the world
+        // but 6 cm in the mesh, where the wound is measured, so it paints
+        // as before.
+        let scaled =
+            GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 0.0).with_scale(Vec3::splat(2.0)));
+        let mut again = [255u8; 4];
+        let mut rng = WoundRng::default();
+        assert!(paint_mesh(
+            &mut again, &positions, &scaled, &wound, &mut rng
+        ));
+        assert_eq!(again, alphas);
     }
 
     /// A head wound paints the long hair's cloth in place, through the
