@@ -25,9 +25,12 @@
 //! radius about the body origin, spread over the particles by its weights
 //! (positions only, so the move carries into the next tick's velocity).
 //! A signalled open's 3 cm shove is applied at the handle along the leaf's
-//! z. The original runs this in the body's own step, between its
-//! integration and the link passes; Exarust runs it after the solver's
-//! tick, so the links meet the drive one tick later.
+//! z. The original's hinged step measures the leaf, then calls the body's
+//! integration, then pushes the stop point; Exarust measures after the
+//! solver's tick (where the leaf stands when its next integration starts)
+//! and queues the drive's push for right after that integration
+//! ([`Ragdoll::push_after_integration`]), so the integration does not carry
+//! it and the link passes meet it in the same tick, as in the original.
 //!
 //! **The hand** ([`DoorBody::take_hold`]): the press adds a world link from
 //! the leaf point 100 cm from the hinge-side origin toward the hit, slack
@@ -207,14 +210,17 @@ impl DoorBody {
         Vec3::from(leaf.transform().translation) + self.parent_turn * local
     }
 
-    /// Moves the stop point to the point at `angle`, by its weights.
+    /// Moves the stop point to the point at `angle`, by its weights: the
+    /// move is measured now (the leaf as the last tick left it) and made
+    /// right after the leaf's next integration
+    /// ([`Ragdoll::push_after_integration`]), as the original's hinged step
+    /// measures before it calls the body's integration and pushes after.
     fn drive(&self, body: &mut Ragdoll, angle: f32) {
         let target = self.stop_at(body, angle);
         let w = body.world[self.stop].on_part;
-        let leaf = &mut body.parts[0];
-        let delta = target - leaf.point(&w);
+        let delta = target - body.parts[0].point(&w);
         if delta.is_finite() {
-            leaf.push(&w, delta);
+            body.push_after_integration(0, w, delta);
         }
     }
 

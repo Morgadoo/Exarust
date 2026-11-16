@@ -371,6 +371,7 @@ impl Ragdoll {
             kept_muscles: None,
             scrapes: Vec::new(),
             scrape_events: Vec::new(),
+            after_integration: Vec::new(),
         }
     }
 }
