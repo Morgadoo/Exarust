@@ -277,6 +277,29 @@ impl GridShape {
     }
 }
 
+/// The frame of part `a` in part `b`'s space, as the original's pair
+/// contact builds it for the sphere queries: `b`'s rotation is taken as
+/// its own inverse (its transpose), so each axis of `a` and the offset
+/// between the origins are dotted with `b`'s axes, `(x·x′ + y·y′) + z·z′`
+/// in that order. On an orthonormal frame this is `b⁻¹ · a` up to
+/// rounding; the original's frames are not orthonormalised, and it uses
+/// the transpose all the same.
+pub fn relative_frame(a: &Affine3A, b: &Affine3A) -> Affine3A {
+    let axes = [b.matrix3.x_axis, b.matrix3.y_axis, b.matrix3.z_axis];
+    let into = |v: bevy::math::Vec3A| {
+        let dot = |w: bevy::math::Vec3A| (v.x * w.x + v.y * w.y) + v.z * w.z;
+        bevy::math::Vec3A::new(dot(axes[0]), dot(axes[1]), dot(axes[2]))
+    };
+    Affine3A {
+        matrix3: bevy::math::Mat3A::from_cols(
+            into(a.matrix3.x_axis),
+            into(a.matrix3.y_axis),
+            into(a.matrix3.z_axis),
+        ),
+        translation: into(a.translation - b.translation),
+    }
+}
+
 /// A sparse cell grid: each cell lists the ids inserted into it. The
 /// original stores linked lists in dense arrays; a map of short vectors
 /// serves Exarust's unbounded levels with the same meaning (the pair stage

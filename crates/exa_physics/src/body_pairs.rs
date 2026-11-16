@@ -1496,7 +1496,8 @@ impl Pairs {
 fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, placed: Option<bool>) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();
-    let previous = pb.settled.inverse() * pa.settled;
+    // The original's relative frames: B's transpose as its inverse.
+    let previous = sector::relative_frame(&pa.settled, &pb.settled);
     let triangles = pb.triangles.clone();
     let tree = pb.tree.clone();
     // The pre-tests take B's mesh box and sphere. The sphere fallback tests
@@ -1524,7 +1525,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
     for i in 0..pa.spheres.len() {
         let (c, r) = pa.spheres[i];
         let start = previous.transform_point3(c);
-        let mut end = (b_now.inverse() * a_now).transform_point3(c);
+        let mut end = sector::relative_frame(&a_now, &b_now).transform_point3(c);
         // The placed callback always runs the static query (the original
         // sweeps only in the dynamic path). Unlike the level detection, the
         // pair stage has no static-only gate.
@@ -1562,7 +1563,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                 took.then(|| {
                     a_now = pa.transform();
                     b_now = pb.transform();
-                    (b_now.inverse() * a_now).transform_point3(c)
+                    sector::relative_frame(&a_now, &b_now).transform_point3(c)
                 })
             };
             if swept {
@@ -1627,7 +1628,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                 if took {
                     a_now = pa.transform();
                     b_now = pb.transform();
-                    end = (b_now.inverse() * a_now).transform_point3(c);
+                    end = sector::relative_frame(&a_now, &b_now).transform_point3(c);
                 }
             }
             continue;
@@ -1689,7 +1690,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
             // Later spheres see where the push left both parts.
             a_now = pa.transform();
             b_now = pb.transform();
-            end = (b_now.inverse() * a_now).transform_point3(c);
+            end = sector::relative_frame(&a_now, &b_now).transform_point3(c);
             from = j + 1;
         }
     }

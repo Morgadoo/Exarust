@@ -1121,3 +1121,43 @@ fn a_scene_grid_takes_half_its_size_and_its_node_cell() {
     assert_eq!(model.offsets, level.offsets());
     assert_eq!(model.sector_cell(Vec3::new(1500.0, 70.0, -1800.0)), [18, 17]);
 }
+
+/// The pair contact's relative frame takes the other part's transpose as
+/// its inverse, as the original's does: on a stretched frame it is not
+/// the inverse (x scaled by 2 is dotted, not divided), and on a turned one
+/// it is the inverse.
+#[test]
+fn the_relative_frame_takes_the_transpose() {
+    let b = Affine3A::from_cols(
+        bevy::math::Vec3A::new(2.0, 0.0, 0.0),
+        bevy::math::Vec3A::Y,
+        bevy::math::Vec3A::Z,
+        bevy::math::Vec3A::new(1.0, 0.0, 0.0),
+    );
+    let a = Affine3A::from_translation(Vec3::new(3.0, 5.0, 0.0));
+    let rel = relative_frame(&a, &b);
+    // (3 − 1)·2 along x, 5 along y; the inverse would give 1.
+    assert_eq!(Vec3::from(rel.translation), Vec3::new(4.0, 5.0, 0.0));
+    assert_eq!(Vec3::from(rel.matrix3.x_axis), Vec3::new(2.0, 0.0, 0.0));
+    // A quarter turn about y and an offset: the same as the inverse.
+    let turn = Affine3A::from_rotation_translation(
+        bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        Vec3::new(0.0, 0.0, 2.0),
+    );
+    let at = relative_frame(&Affine3A::from_translation(Vec3::new(1.0, 0.0, 2.0)), &turn);
+    let want = turn.inverse() * Affine3A::from_translation(Vec3::new(1.0, 0.0, 2.0));
+    assert!(
+        Vec3::from(at.translation).distance(Vec3::from(want.translation)) < 1e-6,
+        "{at:?} {want:?}"
+    );
+    // The sums run x, y then z: 0.1·0.7 + 0.2·0.3 first, then 0.3·0.9.
+    let c = Affine3A::from_cols(
+        bevy::math::Vec3A::new(0.7, 0.3, 0.9),
+        bevy::math::Vec3A::Y,
+        bevy::math::Vec3A::Z,
+        bevy::math::Vec3A::ZERO,
+    );
+    let d = Affine3A::from_translation(Vec3::new(0.1, 0.2, 0.3));
+    let x = relative_frame(&d, &c).translation.x;
+    assert_eq!(x.to_bits(), ((0.1f32 * 0.7 + 0.2 * 0.3) + 0.3 * 0.9).to_bits());
+}
