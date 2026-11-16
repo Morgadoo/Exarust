@@ -808,7 +808,8 @@ pub fn press_out_of_reach(
 
 /// Whether the frame measures the reach: in combat mode only with Ctrl
 /// held or something held, whatever the right button does; outside it while
-/// the right button is not walking to the cursor (it shows chevrons then).
+/// the behaviour's walk latch does not hold a mouse-driven walk to the
+/// cursor (it shows chevrons then; [`PlayerBody::walking_to_cursor`]).
 pub fn measures_reach(combat: bool, ctrl: bool, holding: bool, walking: bool) -> bool {
     if combat { ctrl || holding } else { !walking }
 }
@@ -2882,7 +2883,6 @@ fn send_let_go(mut items: ResMut<ItemCursor>, mut moved: MessageWriter<exa_world
 #[allow(clippy::too_many_arguments)]
 fn reach_hand(
     keys: Res<ButtonInput<KeyCode>>,
-    buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     scripted: Res<ScriptedPointer>,
     sources: PickSources,
@@ -2929,7 +2929,10 @@ fn reach_hand(
         return;
     }
     let ctrl = bindings.pressed(&keys, Action::Interact);
-    let walking = buttons.pressed(MouseButton::Right);
+    // The behaviour's walk latch: set when a move starts, held after its
+    // release until the stride reaches a double support; the reach is
+    // measured while it is clear or the keys drive the walk.
+    let walking = pb.walking_to_cursor();
     if !measures_reach(pb.combat, ctrl, hand.holding != Holding::Nothing, walking) {
         return;
     }
@@ -3766,6 +3769,45 @@ mod tests {
         let hand = app.world().resource::<Hand>();
         assert_eq!(hand.holding, Holding::Nothing);
         assert!(!hand.out_of_reach);
+    }
+
+    /// The reach follows the behaviour's walk latch, not the right button:
+    /// a latched walk to the cursor (still finishing its stride after the
+    /// release) leaves the reach as it was; with the latch clear the reach
+    /// is measured (here: nothing under the cursor is out of reach), even
+    /// with the right button down.
+    #[test]
+    fn the_reach_waits_for_the_walk_latch() {
+        let run = |body: PlayerBody, right: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<ButtonInput<MouseButton>>()
+                .init_resource::<exa_physics::sim_app::FixedCommands>()
+                .init_resource::<Time<Real>>()
+                .init_resource::<Bindings>()
+                .init_resource::<ScriptedPointer>()
+                .init_resource::<StandIns>()
+                .init_resource::<ColliderNodes>()
+                .init_resource::<exa_physics::collision_share::FramePhysics>()
+                .init_resource::<Hand>()
+                .init_resource::<ItemCursor>()
+                .add_message::<WorldClick>()
+                .add_message::<ObjectClick>()
+                .add_systems(Update, reach_hand);
+            let child = app.world_mut().spawn(body).id();
+            app.world_mut()
+                .spawn((Player, GlobalTransform::default()))
+                .add_child(child);
+            if right {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<MouseButton>>()
+                    .press(MouseButton::Right);
+            }
+            app.update();
+            app.world().resource::<Hand>().out_of_reach
+        };
+        assert!(!run(PlayerBody::new(0.0).walking_to_the_cursor(), false));
+        assert!(run(PlayerBody::new(0.0), true));
     }
 
     /// The live lift frame turns the held item by the move keys and makes
