@@ -3568,10 +3568,11 @@ pub(crate) fn tick_casters(
 /// Play the stance return a live effect's cast end asked for, then the cast
 /// motions the body recorded, by the motion id's action name.
 fn play_cast_motions(
-    mut casters: Query<(&mut PowerCaster, &mut Animator), Changed<PowerCaster>>,
+    mut commands: Commands,
+    mut casters: Query<(Entity, &mut PowerCaster, &mut Animator), Changed<PowerCaster>>,
     motions: Option<Res<Motions>>,
 ) {
-    for (mut caster, mut animator) in &mut casters {
+    for (entity, mut caster, mut animator) in &mut casters {
         // A live effect's cast end this tick returns to the stance now,
         // before any new cast motion, as the original's cast end does.
         if casting::take_stance_return(&mut caster.body) {
@@ -3580,6 +3581,8 @@ fn play_cast_motions(
         let Some(motion) = caster.body.cast_motion.take() else {
             continue;
         };
+        // A cast motion started while parrying first ends the clinch.
+        exa_combat::parry::clear_for_cast(&mut commands, entity);
         let Some(motions) = motions.as_deref() else {
             continue;
         };

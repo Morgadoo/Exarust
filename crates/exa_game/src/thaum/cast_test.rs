@@ -1874,6 +1874,38 @@ fn a_live_cast_end_returns_to_the_stance_that_tick() {
     assert!(!caster.body.stance_return);
 }
 
+/// A cast motion started while the body parries ends the clinch first: the
+/// parry is off, keeps no clip and counters no motion; a body that does
+/// not parry keeps its parry state as it was.
+#[test]
+fn a_cast_motion_ends_the_clinch_of_a_parrying_body() {
+    let run = |parrying: bool| {
+        let mut app = App::new();
+        app.add_systems(Update, play_cast_motions);
+        let mut caster = PowerCaster::new(&[0x10203]);
+        caster.body.cast_motion = Some(0x22);
+        let mut fighter = Fighter::default();
+        fighter.parry.active = parrying;
+        fighter.parry.clip = Some(0x14);
+        fighter.parry.counter_motion = Some(5);
+        fighter.guard = exa_combat::damage::Guard::Parry;
+        let entity = app
+            .world_mut()
+            .spawn((caster, Animator::new("Default", "Parry Left"), fighter))
+            .id();
+        app.update();
+        app.world().get::<Fighter>(entity).cloned().expect("a fighter")
+    };
+    let cleared = run(true);
+    assert!(!cleared.parry.active);
+    assert_eq!(cleared.parry.clip, None);
+    assert_eq!(cleared.parry.counter_motion, None);
+    assert!(matches!(cleared.guard, exa_combat::damage::Guard::Open));
+    let kept = run(false);
+    assert_eq!(kept.parry.clip, Some(0x14));
+    assert_eq!(kept.parry.counter_motion, Some(5));
+}
+
 /// A Long Door's destination is in centimetres on the floor; the root lands
 /// in metres, as high above it as it stood above the body's lowest part.
 #[test]
