@@ -446,7 +446,7 @@ const VK_DOWN: u32 = 0x28;
 /// The music code toggles the menu music: the alternative flag flips and
 /// the menu theme for it plays (the drum-and-bass theme at 0.2, the plain
 /// one at 0.1).
-fn toggle_music(flow: Option<&mut Flow>, steps: Option<&mut crate::flow::FlowSteps>) {
+pub(crate) fn toggle_music(flow: Option<&mut Flow>, steps: Option<&mut crate::flow::FlowSteps>) {
     let Some(flow) = flow else {
         return;
     };
@@ -463,24 +463,62 @@ fn toggle_music(flow: Option<&mut Flow>, steps: Option<&mut crate::flow::FlowSte
 }
 
 /// The root task's menu toggle ([`crate::commands::MenuToggleKey`], the
-/// Escape that climbed from the menu's key slot): on the open menu it goes
-/// back from the arena and practice pages and closes the screen elsewhere.
-/// With the menu closed the toggle's opening arms stay with F1 and the
-/// screens' own Escape (the arena's pause).
+/// Escape that climbed to the root): it branches on the session-phase word
+/// as the original's does. In the menu's phase (1) the menu goes back from
+/// its start and arena pages and stays elsewhere. In a session's phases
+/// (3, 4, 5, 8) the open menu closes, and the settings form and the manual
+/// close with it; the closed menu's opening arm stays with F1. The class
+/// select's (0x40) and the creator's (2) arms are their screens' own (the
+/// character screen's is [`crate::save_screen`]'s), the loadout's (0x20)
+/// the hub's; Exarust's arena pause page, which keeps 0x20 as its phase,
+/// still closes.
 pub fn menu_toggle_key(
     mut toggles: MessageReader<crate::commands::MenuToggleKey>,
     mut menu: ResMut<MenuScreen>,
-    settings: Option<Res<crate::settings_form::SettingsForm>>,
-    manual: Option<Res<crate::help_live::ManualScreen>>,
+    mut flow: Option<ResMut<Flow>>,
+    mut manual: Option<ResMut<crate::help_live::ManualScreen>>,
+    mut steps: Option<ResMut<crate::flow::FlowSteps>>,
 ) {
-    if toggles.read().count() == 0 || !menu.open {
+    if toggles.read().count() == 0 {
         return;
     }
-    if settings.is_some_and(|s| s.is_open()) || manual.is_some_and(|m| m.is_open()) {
-        return;
-    }
-    if !menu.back() {
-        menu.close();
+    let phase = flow
+        .as_deref()
+        .map_or(crate::flow::PHASE_MENU, |f| f.phase.word());
+    match phase {
+        crate::flow::PHASE_MENU => {
+            if menu.open {
+                menu.back();
+            }
+        }
+        crate::flow::PHASE_PLAYING
+        | crate::flow::PHASE_WON
+        | crate::flow::PHASE_ENDED
+        | crate::flow::PHASE_ROUND_WON
+        | crate::flow::PHASE_PAUSED => {
+            if !menu.open {
+                return;
+            }
+            menu.close();
+            if let Some(flow) = flow.as_mut() {
+                flow.menu_closed();
+            }
+            // The menu's hide closes an open manual (the settings form
+            // closes with the menu on its own, `close_with_menu`).
+            if let Some(manual) = manual.as_mut()
+                && manual.is_open()
+                && manual.close()
+            {
+                info!("manual: closed with the menu");
+                if let Some(steps) = steps.as_mut() {
+                    match flow.as_mut() {
+                        Some(flow) => steps.steps.extend(flow.help_closed()),
+                        None => steps.steps.push(crate::flow::Step::MenuHelp(false)),
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -639,7 +677,9 @@ fn input(
     let x = (cursor.x * scale) as i32;
     let y = (cursor.y * scale) as i32;
     let menu_font = MenuFont::at_scale(menu_font_scale(row_scale));
-    router.task.screen = (width, height);
+    if router.task.screen != (width, height) {
+        router.task.resize((width, height));
+    }
     if let Ok(mut geometry) = router.geometry.lock() {
         geometry.bounds = GuiRect::new(0, 0, width, height);
         geometry.rows = rows
@@ -1130,7 +1170,7 @@ mod tests {
     /// The menu's key slot: a typed character enters the name buffer and
     /// `barechoons` toggles the menu music; Escape climbs from the menu's
     /// key slot to the root task, whose menu toggle goes back from the
-    /// start page and closes the title page.
+    /// start page and leaves the title page up (the menu phase's arm).
     #[test]
     fn the_menu_types_the_music_code_and_escape_climbs_to_the_root() {
         use bevy::input::ButtonState;
@@ -1183,7 +1223,8 @@ mod tests {
             crate::flow::Step::Music { name, .. } if *name == exa_ui::menu::MENU_THEME_DNB.0
         )));
         // Escape on the start page goes back to the title through the root's
-        // menu toggle; on the title it closes the screen.
+        // menu toggle; on the title the menu's phase only goes back, so the
+        // title stays.
         app.world_mut()
             .resource_mut::<MenuScreen>()
             .show(Page::Start);
@@ -1196,7 +1237,9 @@ mod tests {
         assert_eq!(menu.page, Page::Title);
         send(&mut app, KeyCode::Escape, Key::Escape, true);
         app.update();
-        assert!(!app.world().resource::<MenuScreen>().open);
+        let menu = app.world().resource::<MenuScreen>();
+        assert!(menu.open);
+        assert_eq!(menu.page, Page::Title);
     }
 
     #[test]

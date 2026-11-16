@@ -192,11 +192,15 @@ The open inventory SHALL light its Primary or Secondary page button by the set i
 - **THEN** Primary is lit and the pack shows the newly held items as held
 
 ### Requirement: Arsenal keys and right release
-The open arsenal SHALL take each pressed key (Escape closes, the bound inventory key flips the embedded inventory) and a right release over its form, which closes it.
+The open arsenal SHALL take each key of the frame with its word (a key-down or its repeat: Escape closes, the bound inventory key flips the embedded inventory; a typed character does nothing; nothing goes on to its parent) and a right release over its form, which closes it.
 
 #### Scenario: Right release over the arsenal
 - **WHEN** the player releases the right button over the open arsenal
 - **THEN** the arsenal closes and the player's controls come back
+
+#### Scenario: A held inventory key
+- **WHEN** the inventory key goes down and repeats on the open arsenal
+- **THEN** the embedded inventory flips on the key-down and again on the repeat
 
 ### Requirement: Open pack drains its crystals
 While the player's own inventory is open, the inventory crystal-drain source SHALL drain the crystal stacks of the inventory's pack panel instead of the record, resolve each drained entry's icon again for its new flags, and give the carried entry it was loaded from the same flags.

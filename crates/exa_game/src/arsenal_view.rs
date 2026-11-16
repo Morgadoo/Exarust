@@ -610,11 +610,18 @@ type ArsenalStores<'w> = (
 );
 
 /// The open arsenal's input as the window manager hands it to the form:
-/// each key pressed this frame (its virtual-key code; the inventory key is
-/// the player's bound one) and a right release over the form.
+/// each key of the frame with the window procedure's word (the form's key
+/// slot passes over a typed character, word 2; a repeat acts as its
+/// key-down; the inventory key is the player's bound one, compared with
+/// the whole code) and a right release over the form. The slot sends
+/// nothing on to its parent. Without the frame's key list the keys pressed
+/// this frame are read with the word 0.
 pub fn arsenal_input(
     window: Res<ArsenalWindow>,
-    keys: Option<Res<ButtonInput<KeyCode>>>,
+    (keys, gui_keys): (
+        Option<Res<ButtonInput<KeyCode>>>,
+        Option<Res<crate::gui_keys::GuiKeyFrame>>,
+    ),
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     bindings: Option<Res<crate::bindings::Bindings>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
@@ -627,18 +634,30 @@ pub fn arsenal_input(
     let inventory = bindings
         .as_deref()
         .map(|b| b.key(crate::bindings::Action::Inventory));
-    if let Some(keys) = keys.as_deref() {
+    // The key slot compares with the bound inventory key: the bound code
+    // is handed on as the window's own.
+    let own = |code: u32| match inventory {
+        Some(bound) if bound == code => window.inventory_key,
+        _ => code,
+    };
+    if let Some(frame) = gui_keys.as_deref() {
+        for key in &frame.keys {
+            let typed = key.flags & exa_ui::gui_keys::TYPED != 0;
+            let code = if typed { key.key } else { own(key.key) };
+            out.write(ArsenalKey {
+                code,
+                flags: key.flags,
+            });
+        }
+    } else if let Some(keys) = keys.as_deref() {
         for &key in keys.get_just_pressed() {
             let Some(code) = crate::bindings::virtual_key(key) else {
                 continue;
             };
-            // The key slot compares with the bound inventory key: the
-            // bound code is handed on as the window's own.
-            let code = match inventory {
-                Some(bound) if bound == code => window.inventory_key,
-                _ => code,
-            };
-            out.write(ArsenalKey { code, flags: 0 });
+            out.write(ArsenalKey {
+                code: own(code),
+                flags: 0,
+            });
         }
     }
     if buttons
@@ -795,6 +814,7 @@ pub struct ArsenalViewPlugin;
 
 impl Plugin for ArsenalViewPlugin {
     fn build(&self, app: &mut App) {
+        crate::gui_keys::ensure(app);
         app.init_resource::<ArsenalWindow>()
             .init_resource::<GuiFrames>()
             .add_message::<ArsenalKey>()
@@ -918,6 +938,44 @@ mod tests {
         assert_eq!(word(&mut app, 0x2002), 2);
         assert_eq!(word(&mut app, 0x1002), 1);
         assert_eq!(word(&mut app, 0x2001), 1);
+    }
+
+    /// The arsenal's key slot hears the window procedure's keys with their
+    /// words: a held key's repeat (word 1) acts as its key-down, so the
+    /// inventory flips again; the typed character after each key-down
+    /// (word 2) is passed over.
+    #[test]
+    fn the_key_slot_hears_repeats_and_passes_over_typed_characters() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ArsenalViewPlugin)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<crate::bindings::Bindings>()
+            .insert_resource(window());
+        app.world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow));
+        let down = |app: &mut App| {
+            app.world_mut().write_message(KeyboardInput {
+                key_code: KeyCode::KeyI,
+                logical_key: Key::Character("i".into()),
+                state: ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+            app.update();
+            app.world().resource::<ArsenalWindow>().inventory_shown
+        };
+        let first = app.world().resource::<ArsenalWindow>().inventory_shown;
+        assert_eq!(down(&mut app), !first);
+        // Still held: the repeat flips it back.
+        assert_eq!(down(&mut app), first);
+        let frame = app.world().resource::<crate::gui_keys::GuiKeyFrame>();
+        assert_eq!(frame.keys[0].flags & 1, 1);
+        assert_eq!(frame.keys[1].flags & 2, 2);
     }
 
     /// The open arsenal takes the keys and a right release over it: the

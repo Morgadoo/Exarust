@@ -561,3 +561,20 @@ fn the_base_record_classes_answer_the_key_message_0() {
         assert!(events.is_empty());
     }
 }
+
+/// The pad's focus checks read the selected record (its 1-based low code):
+/// the leave check its state bit 0x400, the enter check its style bit
+/// 0x80_0000; no record, or a code past the records, answers no.
+#[test]
+fn the_pads_focus_checks_read_the_selected_record() {
+    let mut w = window();
+    let mut leaves = Control::new(1, 0, 0, 10, 10);
+    leaves.state = 0x400;
+    let mut enters = Control::new(1, 0, 0, 10, 10);
+    enters.style = 0x80_0000;
+    w.records = vec![leaves, enters];
+    assert!(w.drops_focus(1) && !w.takes_focus(1));
+    assert!(w.takes_focus(2) && !w.drops_focus(2));
+    assert!(w.drops_focus(0x1_0001), "the low 16 bits name the record");
+    assert!(!w.drops_focus(0) && !w.takes_focus(3) && !w.drops_focus(-1));
+}

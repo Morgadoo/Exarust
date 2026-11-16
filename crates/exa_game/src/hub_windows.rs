@@ -2610,7 +2610,7 @@ pub fn sync_hub_screen(
         );
         let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
         if size != hub.task.screen || unit != hub.unit {
-            hub.task.screen = size;
+            hub.task.resize(size);
             hub.unit = unit;
             hub.forms.resize(size, unit);
             let hub = &mut *hub;
