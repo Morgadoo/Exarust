@@ -299,3 +299,27 @@ fn closing_a_window_closes_its_children_and_sweeps_the_slots() {
     assert_eq!((task.active, task.active_control), (Some(root), -1));
     assert_eq!(task.draw_order(), vec![root, other]);
 }
+
+/// A press activates its window through the child raise rule: a pressed
+/// lower-layer window stays under the plain ones, a pressed plain window
+/// goes on top of them.
+#[test]
+fn a_press_raises_by_the_child_rule() {
+    let mut task = GuiTask::new((800, 600));
+    let root = task.add(Box::new(PlainForm::new(GuiRect::new(0, 0, 800, 600), 4)));
+    let mut low = window();
+    low.parent = Some(root);
+    low.attributes |= form::attribute::LOWER_LAYER;
+    let low = task.add(Box::new(low));
+    let mut plain = window();
+    plain.parent = Some(root);
+    plain.move_to(300, 50);
+    let plain = task.add(Box::new(plain));
+    assert_eq!(task.draw_order(), vec![root, low, plain]);
+    // The lower window's title band, left of the plain one.
+    task.update(false, (120, 52));
+    task.press(1);
+    task.release(1);
+    assert_eq!(task.draw_order(), vec![root, low, plain]);
+    assert_eq!(task.active, Some(low));
+}

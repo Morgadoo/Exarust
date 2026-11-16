@@ -965,8 +965,25 @@ impl GuiTask {
     }
 
     /// Raises the top-level form holding `form` among the root's children
-    /// by the base form's layer rule ([`crate::form::raise_top_level`]).
+    /// by the base form's top-level layer rule
+    /// ([`crate::form::raise_top_level`]: the show fade's raise).
     pub fn raise(&mut self, form: FormId) {
+        self.raise_with(form, crate::form::raise_top_level);
+    }
+
+    /// The activation's raise: the top-level form holding `form` is raised
+    /// within its parent by the child rule ([`crate::form::raise_child`]:
+    /// the lower-layer search starts at the second child, and the forms it
+    /// owns follow it; Exarust's forms carry no owner).
+    pub fn raise_child(&mut self, form: FormId) {
+        self.raise_with(form, crate::form::raise_child);
+    }
+
+    fn raise_with(
+        &mut self,
+        form: FormId,
+        rule: fn(&mut Vec<crate::form::Sibling>, u32) -> bool,
+    ) {
         let top = self.root_of(form);
         let root = self.root;
         let siblings: Vec<FormId> = self
@@ -983,7 +1000,7 @@ impl GuiTask {
                 owner: None,
             })
             .collect();
-        if !crate::form::raise_top_level(&mut list, top) {
+        if !rule(&mut list, top) {
             return;
         }
         let mut raised = list.into_iter().map(|s| s.id);
@@ -1442,7 +1459,7 @@ impl GuiTask {
     /// Brings a form to the front of its siblings with a control focused
     /// (the forms' activation; the order of the form list is its z-order).
     fn bring_to_front(&mut self, form: FormId, control: i32) {
-        self.raise(form);
+        self.raise_child(form);
         self.focus_set(Some(form), control);
     }
 
