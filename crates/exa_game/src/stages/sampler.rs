@@ -435,7 +435,8 @@ pub(crate) fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPo
         else {
             continue;
         };
-        *turn = exa_physics::engine_math::quaternion_product(*turn, femur_posture_turn(posture, leg));
+        *turn =
+            exa_physics::engine_math::quaternion_product(*turn, femur_posture_turn(posture, leg));
     }
     pose
 }

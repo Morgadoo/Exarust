@@ -449,7 +449,8 @@ fn start_getting_up(
         .map_or(0.0, |c| anim.clip_progress(c));
     // The compare's unordered branch keeps the clip too: a NaN progress
     // changes nothing.
-    if playing == Some(rise) && !(progress < SETTLED_FROM) {
+    let settled = progress.partial_cmp(&SETTLED_FROM) != Some(std::cmp::Ordering::Less);
+    if playing == Some(rise) && settled {
         return Rising::Keeps;
     }
     condition.get_up();

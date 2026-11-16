@@ -577,7 +577,11 @@ impl WornEffects {
                 .then(|| self.items.iter().find(|item| item.id as i32 == entry.id))
                 .flatten()
         })?;
-        Some(register_worn(u16::from(suit.power_flags), suit.charge, 0.0, 0.0).0.lit)
+        Some(
+            register_worn(u16::from(suit.power_flags), suit.charge, 0.0, 0.0)
+                .0
+                .lit,
+        )
     }
 
     /// One body tick: when the game clock `now_ms` is past the stored clock

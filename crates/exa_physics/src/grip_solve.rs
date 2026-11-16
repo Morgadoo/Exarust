@@ -502,7 +502,9 @@ pub fn share_holder_sleep(
     }
     let found = crate::body::first_by_key(
         keys.iter().copied(),
-        holders.iter().map(|body| ((body.countdown(), body.asleep()), body)),
+        holders
+            .iter()
+            .map(|body| ((body.countdown(), body.asleep()), body)),
     );
     // The largest countdown each holder's items carry.
     let mut raised = bevy::ecs::entity::EntityHashMap::<i32>::default();
@@ -515,9 +517,11 @@ pub fn share_holder_sleep(
     let mut woken = bevy::ecs::entity::EntityHashMap::<(i32, bool)>::default();
     for (key, top) in &raised {
         let (count, asleep) = found[key];
-        let woken_by_item = !asleep && top > &count || asleep && *top > SLEEPING_ITEM;
-        let count = if woken_by_item { (*top).max(count) } else { count };
-        woken.insert(*key, (count, asleep && !woken_by_item));
+        // A sleeping holder stays asleep unless an item is awake; the tree
+        // then takes the larger countdown.
+        let sleeps = asleep && *top <= SLEEPING_ITEM;
+        let count = if sleeps { count } else { count.max(*top) };
+        woken.insert(*key, (count, sleeps));
     }
     let wake: Vec<(Entity, i32)> = woken
         .iter()

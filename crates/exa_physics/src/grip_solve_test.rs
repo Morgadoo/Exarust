@@ -996,8 +996,14 @@ fn a_held_item_sleeps_and_wakes_with_its_holder() {
     assert_eq!(get(&app, holder), (crate::body::WAKE_COUNT, false));
     assert_eq!(get(&app, item), (crate::body::WAKE_COUNT, false));
     // Both count down; the item takes the larger countdown.
-    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().take_ticks(40);
-    app.world_mut().get_mut::<Ragdoll>(item).unwrap().take_ticks(50);
+    app.world_mut()
+        .get_mut::<Ragdoll>(holder)
+        .unwrap()
+        .take_ticks(40);
+    app.world_mut()
+        .get_mut::<Ragdoll>(item)
+        .unwrap()
+        .take_ticks(50);
     app.update();
     assert_eq!(get(&app, item), (crate::body::WAKE_COUNT - 40, false));
     assert_eq!(get(&app, holder).0, crate::body::WAKE_COUNT - 40);
@@ -1014,7 +1020,10 @@ fn a_held_item_sleeps_and_wakes_with_its_holder() {
     assert_eq!(get(&app, item), (0, true));
     assert_eq!(get(&app, holder), (0, true));
     // A sleeping item of an awake holder wakes with it.
-    app.world_mut().get_mut::<Ragdoll>(holder).unwrap().wake_to(100);
+    app.world_mut()
+        .get_mut::<Ragdoll>(holder)
+        .unwrap()
+        .wake_to(100);
     app.update();
     assert_eq!(get(&app, item), (100, false));
     // Asleep together again, a touch on the item wakes its holder.

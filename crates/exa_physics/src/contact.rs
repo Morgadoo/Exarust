@@ -497,7 +497,10 @@ mod tests {
         ]];
         let level: &[[Vec3; 3]] = &floor;
         assert_eq!(level.height_below(Vec3::ZERO, 0.05, 20.0), None);
-        assert_eq!(level.height_below(Vec3::new(0.0, -0.001, 0.0), 0.05, 20.0), None);
+        assert_eq!(
+            level.height_below(Vec3::new(0.0, -0.001, 0.0), 0.05, 20.0),
+            None
+        );
         let above = level.height_below(Vec3::new(0.0, 0.001, 0.0), 0.05, 20.0);
         assert!(above.is_some_and(|y| y.abs() < 1e-5), "{above:?}");
     }
