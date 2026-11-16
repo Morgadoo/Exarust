@@ -744,27 +744,33 @@ pub const GROUP_STACK_LIMIT: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GroupStackOverflow;
 
-/// One frame of the builder's group stack: the centres of the parent part's
-/// groups, in the part's space and in centimetres (the unit the builder
-/// compares distances in). The original pushes every group's centre,
-/// whether or not the group took a joint.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct GroupFrame {
-    pub centres: Vec<Vec3>,
+/// Words in one frame of the original's group stack: the centre count, then
+/// room for eight centres of three floats (100 bytes).
+const FRAME_WORDS: usize = 25;
+
+/// The builder's group stack as the original lays it out: frames of 100
+/// bytes back to back, each a centre count and room for eight centres (in
+/// centimetres, the part's space), with a depth counter. A push past the
+/// sixteenth frame is refused with the overflow error and pushes nothing,
+/// while the pass still pops after the children, as the original's does.
+/// A part with more than eight groups writes the rest on into the next
+/// frame's words (its count and first centres), where its children read
+/// them until a child's push overwrites them; the area grows past the
+/// sixteen frames for the empty push, which tests no limit (the original
+/// writes on into the builder's next fields there).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupStack {
+    depth: i32,
+    words: Vec<u32>,
 }
 
-/// The builder's group stack, pushed around the recursive pass over a body's
-/// children. The original pushes an empty frame for a node without groups
-/// and for one that keeps a shipped skin stream. The model build carries the
-/// frames down its own recursion (`model::scene_skins`); this type pins the
-/// limit rules.
-///
-/// Not reproduced: each original frame has room for eight centres, and a
-/// part with more groups writes the rest into the next frame's slot (a
-/// child's push then overwrites them). Exarust keeps every centre.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct GroupStack {
-    frames: Vec<GroupFrame>,
+impl Default for GroupStack {
+    fn default() -> Self {
+        Self {
+            depth: 0,
+            words: vec![0; FRAME_WORDS * GROUP_STACK_LIMIT],
+        }
+    }
 }
 
 impl GroupStack {
@@ -773,43 +779,72 @@ impl GroupStack {
         Self::default()
     }
 
-    /// Frames held.
-    pub fn len(&self) -> usize {
-        self.frames.len()
+    /// The depth counter (frames pushed less frames popped; a refused push
+    /// does not count, its pop does).
+    pub fn depth(&self) -> i32 {
+        self.depth
     }
 
-    /// Whether no frame is held.
-    pub fn is_empty(&self) -> bool {
-        self.frames.is_empty()
+    fn write(&mut self, at: usize, word: u32) {
+        if at >= self.words.len() {
+            self.words.resize(at + 1, 0);
+        }
+        self.words[at] = word;
     }
 
-    /// Pushes the parent groups' centres, or fails at the original's
+    fn word(&self, at: usize) -> u32 {
+        self.words.get(at).copied().unwrap_or(0)
+    }
+
+    /// Pushes the part's group centres, or fails at the original's
     /// sixteen-frame limit (the original reports the error and pushes
     /// nothing).
-    pub fn push(&mut self, centres: Vec<Vec3>) -> Result<(), GroupStackOverflow> {
-        if self.frames.len() >= GROUP_STACK_LIMIT {
+    pub fn push(&mut self, centres: &[Vec3]) -> Result<(), GroupStackOverflow> {
+        if self.depth >= GROUP_STACK_LIMIT as i32 {
             return Err(GroupStackOverflow);
         }
-        self.frames.push(GroupFrame { centres });
+        let base = FRAME_WORDS * self.depth.max(0) as usize;
+        self.write(base, centres.len() as u32);
+        for (k, c) in centres.iter().enumerate() {
+            for (axis, v) in [c.x, c.y, c.z].into_iter().enumerate() {
+                self.write(base + 1 + 3 * k + axis, v.to_bits());
+            }
+        }
+        self.depth += 1;
         Ok(())
     }
 
     /// Pushes an empty frame. The original's push-with-no-groups does not
     /// test the limit: a seventeenth empty frame is accepted (and leaves
-    /// the count past [`GROUP_STACK_LIMIT`], so the next push with groups
+    /// the depth past [`GROUP_STACK_LIMIT`], so the next push with groups
     /// is refused).
     pub fn push_empty(&mut self) {
-        self.frames.push(GroupFrame::default());
+        let base = FRAME_WORDS * self.depth.max(0) as usize;
+        self.write(base, 0);
+        self.depth += 1;
     }
 
-    /// Pops every frame.
-    pub fn clear(&mut self) {
-        self.frames.clear();
+    /// Pops a frame: the depth counter goes down whether or not the push it
+    /// pairs with went in.
+    pub fn pop(&mut self) {
+        self.depth -= 1;
     }
 
-    /// The top frame, if any.
-    pub fn top(&self) -> Option<&GroupFrame> {
-        self.frames.last()
+    /// The top frame's centres as the apparel matching reads them: its
+    /// count, then that many centres from its words on (past the eighth,
+    /// whatever the next frame's words hold); none at depth 0 or below.
+    pub fn top(&self) -> Vec<Vec3> {
+        if self.depth <= 0 {
+            return Vec::new();
+        }
+        let base = FRAME_WORDS * (self.depth as usize - 1);
+        let count = self.word(base) as i32;
+        (0..count.max(0) as usize)
+            .map(|k| {
+                let f = |axis: usize| f32::from_bits(self.word(base + 1 + 3 * k + axis));
+                Vec3::new(f(0), f(1), f(2))
+            })
+            .collect()
     }
 }
 
@@ -1582,7 +1617,7 @@ mod tests {
                 .and_then(|p| p.get(entry))
                 .unwrap();
             let scene = Scene::parse(bytes).unwrap();
-            let skins = crate::model::scene_skins(&scene, true, PackKind::Resource);
+            let skins = crate::model::scene_skins(&scene, true, PackKind::Resource, &[]);
             let (pairs, torn) = torn_pairs(&scene, &skins);
             assert_eq!(pairs, shared, "{entry}");
             assert!(
@@ -1750,22 +1785,29 @@ mod tests {
 
     /// The group stack keeps sixteen group-bearing frames; the seventeenth
     /// is refused, as is a push of no centres (the original's push tests the
-    /// limit whatever the group count). Only the separate empty push skips
-    /// the test.
+    /// limit whatever the group count), and its pop still counts down. Only
+    /// the separate empty push skips the test.
     #[test]
     fn the_group_stack_holds_sixteen_frames() {
         let mut stack = GroupStack::new();
         for i in 0..GROUP_STACK_LIMIT {
-            stack.push(vec![Vec3::splat(i as f32)]).unwrap();
+            stack.push(&[Vec3::splat(i as f32)]).unwrap();
         }
-        assert_eq!(stack.len(), 16);
-        assert!(stack.push(vec![Vec3::ZERO]).is_err());
-        assert!(stack.push(Vec::new()).is_err());
-        assert_eq!(stack.len(), 16);
-        stack.clear();
-        assert!(stack.is_empty());
+        assert_eq!(stack.depth(), 16);
+        assert_eq!(stack.top(), vec![Vec3::splat(15.0)]);
+        assert!(stack.push(&[Vec3::ZERO]).is_err());
+        assert!(stack.push(&[]).is_err());
+        assert_eq!(stack.depth(), 16);
+        // The refused push's pop takes the frame below off.
+        stack.pop();
+        assert_eq!(stack.top(), vec![Vec3::splat(14.0)]);
+        let mut stack = GroupStack::new();
+        assert!(stack.top().is_empty());
         stack.push_empty();
-        assert_eq!(stack.top().unwrap().centres.len(), 0);
+        assert!(stack.top().is_empty());
+        stack.pop();
+        stack.pop();
+        assert!(stack.top().is_empty());
     }
 
     /// An empty frame does not test the sixteen-frame limit: the original's
@@ -1777,8 +1819,31 @@ mod tests {
         for _ in 0..=GROUP_STACK_LIMIT {
             stack.push_empty();
         }
-        assert_eq!(stack.len(), GROUP_STACK_LIMIT + 1);
-        assert!(stack.push(vec![Vec3::ZERO]).is_err());
+        assert_eq!(stack.depth(), GROUP_STACK_LIMIT as i32 + 1);
+        assert!(stack.push(&[Vec3::ZERO]).is_err());
+    }
+
+    /// A frame of ten centres writes its last two into the next frame's
+    /// words: the children read all ten until one pushes its own frame,
+    /// after which a sibling reads that frame's count and centres in their
+    /// place.
+    #[test]
+    fn centres_past_the_eighth_spill_into_the_next_frame() {
+        let mut stack = GroupStack::new();
+        let ten: Vec<Vec3> = (0..10).map(|i| Vec3::splat(i as f32)).collect();
+        stack.push(&ten).unwrap();
+        assert_eq!(stack.top(), ten);
+        stack.push(&[Vec3::new(1.0, 2.0, 3.0)]).unwrap();
+        stack.pop();
+        let after = stack.top();
+        assert_eq!(after.len(), 10);
+        assert_eq!(&after[..8], &ten[..8]);
+        // Centre 8 now reads the child frame's count (1) and its first two
+        // floats; centre 9 the child's third float and two stale words.
+        assert_eq!(after[8].x.to_bits(), 1);
+        assert_eq!((after[8].y, after[8].z), (1.0, 2.0));
+        assert_eq!(after[9].x, 3.0);
+        assert_eq!((after[9].y, after[9].z), (9.0, 9.0));
     }
 
     /// Compares with weights measured on the shipped body (run with

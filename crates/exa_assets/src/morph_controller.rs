@@ -144,13 +144,6 @@ pub fn apply_morph_parts(node: &MorphPart) -> usize {
     count
 }
 
-/// Four morph ids and their weights.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MorphWeights {
-    pub ids: [i32; 4],
-    pub weights: [f32; 4],
-}
-
 /// The weight a centred character-creation slider sets: its position from
 /// 0 to 1 read as `(position − 0.5) · −1`, so the middle leaves the target
 /// at rest and the ends reach −½ and +½.
@@ -191,49 +184,6 @@ pub fn morph_slider(
 ) -> Option<f32> {
     let value = slider_weight(position, centred);
     set_morph_target_weight(weights, index, value).then_some(value)
-}
-
-/// Merges up to four source ids and weights into the current slots.
-pub fn merge_morph_weights(
-    mut current: MorphWeights,
-    source_ids: &[i32],
-    source_weights: &[f32],
-    scale: f32,
-) -> MorphWeights {
-    const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
-    if scale < EPSILON {
-        return current;
-    }
-    let mut last = current
-        .ids
-        .iter()
-        .rposition(|&id| id > 0)
-        .map_or(-1, |index| index as i32);
-    for index in 0..4 {
-        let Some(&id) = source_ids.get(index) else {
-            break;
-        };
-        let weight = source_weights.get(index).copied().unwrap_or(0.0);
-        if id < 1 {
-            break;
-        }
-        let mut found = false;
-        if last >= 0 {
-            for slot in 0..=last as usize {
-                if current.ids[slot] == id {
-                    current.weights[slot] += weight * scale;
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if !found && last < 3 {
-            last += 1;
-            current.ids[last as usize] = id;
-            current.weights[last as usize] = weight * scale;
-        }
-    }
-    current
 }
 
 /// Starts at `base` and adds each point times its weight.
@@ -426,23 +376,6 @@ mod tests {
         assert_eq!(apply_morph_parts(&root), 2);
         assert_eq!(apply_morph_parts(&leaf(0x01, 0x40_0000)), 0);
         assert_eq!(apply_morph_parts(&leaf(0x89, 0x80_0000)), 0);
-    }
-
-    #[test]
-    fn the_morph_weights_merge_into_four_slots() {
-        let current = MorphWeights {
-            ids: [1, 2, 0, 0],
-            weights: [0.5, 0.5, 0.0, 0.0],
-        };
-        let merged = merge_morph_weights(current, &[2, 3, 0, 0], &[1.0, 0.5, 0.0, 0.0], 2.0);
-        assert_eq!(merged.ids, [1, 2, 3, 0]);
-        assert_eq!(merged.weights, [0.5, 2.5, 1.0, 0.0]);
-
-        let unchanged = merge_morph_weights(current, &[2, 3, 0, 0], &[1.0, 0.5, 0.0, 0.0], 0.0);
-        assert_eq!(unchanged, current);
-
-        let stopped = merge_morph_weights(current, &[0, 3, 0, 0], &[1.0, 1.0, 0.0, 0.0], 1.0);
-        assert_eq!(stopped, current);
     }
 
     #[test]
@@ -1156,193 +1089,6 @@ mod cook_tests {
     }
 }
 
-/// A 32-byte skin record: up to four joints and their weights. Joint 0 ends
-/// the list.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct SkinRecord {
-    pub joints: [u32; 4],
-    pub weights: [f32; 4],
-}
-
-/// Merges a source record into the destination with a scale, through the
-/// four-slot joint merge.
-pub fn merge_skin_record(
-    mut destination: SkinRecord,
-    source: SkinRecord,
-    scale: f32,
-) -> SkinRecord {
-    let ids: Vec<i32> = source.joints.iter().map(|&joint| joint as i32).collect();
-    let merged = merge_morph_weights(
-        MorphWeights {
-            ids: destination.joints.map(|joint| joint as i32),
-            weights: destination.weights,
-        },
-        &ids,
-        &source.weights,
-        scale,
-    );
-    for slot in 0..4 {
-        destination.joints[slot] = merged.ids[slot].max(0) as u32;
-        destination.weights[slot] = merged.weights[slot];
-    }
-    destination
-}
-
-/// Scales every weight of a record.
-pub fn scale_skin_record(mut record: SkinRecord, scale: f32) -> SkinRecord {
-    for weight in &mut record.weights {
-        *weight *= scale;
-    }
-    record
-}
-
-/// Normalizes a record: stops at the first zero joint, zeroes a negative
-/// weight (leaving it out of the sum), then divides the weights through the
-/// last used slot by the sum.
-pub fn normalize_skin_record(record: &mut SkinRecord) {
-    let mut sum = 0.0f32;
-    let mut last: Option<usize> = None;
-    for slot in 0..4 {
-        if record.joints[slot] == 0 {
-            break;
-        }
-        if record.weights[slot] < 0.0 {
-            record.weights[slot] = 0.0;
-        } else {
-            sum += record.weights[slot];
-        }
-        last = Some(slot);
-    }
-    let Some(last) = last else {
-        return;
-    };
-    let scale = 1.0 / sum;
-    for slot in 0..=last {
-        record.weights[slot] *= scale;
-    }
-}
-
-/// Fills one target record from its neighbours: each neighbour is merged at
-/// `1/sqrt(distance squared)`, and the merged weights are divided by the
-/// distance sum. Returns whether a fill happened (the sum was positive).
-pub fn fill_skin_record(record: &mut SkinRecord, neighbours: &[(SkinRecord, f32)]) -> bool {
-    let mut merged = SkinRecord::default();
-    let mut sum = 0.0f32;
-    for &(neighbour, distance_squared) in neighbours {
-        let weight = 1.0 / distance_squared.sqrt();
-        merged = merge_skin_record(merged, neighbour, weight);
-        sum += weight;
-    }
-    if sum > 0.0 {
-        let scale = 1.0 / sum;
-        *record = scale_skin_record(merged, scale);
-        true
-    } else {
-        false
-    }
-}
-
-/// Runs the three relaxation passes: each record becomes half itself plus
-/// half of `1/sqrt(distance squared)` times each neighbour, then is
-/// normalized. The neighbours are vertex ids and squared distances.
-pub fn relax_skin_records(
-    records: &[SkinRecord],
-    neighbours: &[Vec<(usize, f32)>],
-) -> Vec<SkinRecord> {
-    let mut current = records.to_vec();
-    for _ in 0..3 {
-        let previous = current.clone();
-        for (vertex, record) in current.iter_mut().enumerate() {
-            let mut mixed = scale_skin_record(previous[vertex], 0.5);
-            if let Some(list) = neighbours.get(vertex) {
-                for &(neighbour, distance_squared) in list {
-                    let weight = 0.5 * (1.0 / distance_squared.sqrt());
-                    mixed = merge_skin_record(mixed, previous[neighbour], weight);
-                }
-            }
-            normalize_skin_record(&mut mixed);
-            *record = mixed;
-        }
-    }
-    current
-}
-
-#[cfg(test)]
-mod skin_tests {
-    use super::*;
-
-    #[test]
-    fn a_record_normalizes_through_its_last_slot() {
-        let mut record = SkinRecord {
-            joints: [1, 2, 3, 0],
-            weights: [1.0, 1.0, 2.0, 0.0],
-        };
-        normalize_skin_record(&mut record);
-        assert_eq!(record.weights, [0.25, 0.25, 0.5, 0.0]);
-
-        let mut negative = SkinRecord {
-            joints: [1, 2, 0, 0],
-            weights: [2.0, -1.0, 0.0, 0.0],
-        };
-        normalize_skin_record(&mut negative);
-        assert_eq!(negative.weights, [1.0, 0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn the_merge_adds_a_scaled_source() {
-        let merged = merge_skin_record(
-            SkinRecord::default(),
-            SkinRecord {
-                joints: [5, 6, 0, 0],
-                weights: [0.5, 0.25, 0.0, 0.0],
-            },
-            2.0,
-        );
-        assert_eq!(merged.joints, [5, 6, 0, 0]);
-        assert_eq!(merged.weights, [1.0, 0.5, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn a_fill_weights_its_neighbours_by_the_inverse_distance() {
-        let near = SkinRecord {
-            joints: [1, 0, 0, 0],
-            weights: [1.0, 0.0, 0.0, 0.0],
-        };
-        let far = SkinRecord {
-            joints: [2, 0, 0, 0],
-            weights: [1.0, 0.0, 0.0, 0.0],
-        };
-        let mut record = SkinRecord::default();
-        assert!(fill_skin_record(&mut record, &[(near, 4.0), (far, 9.0)]));
-        assert_eq!(record.joints, [1, 2, 0, 0]);
-        let sum = 0.5f32 + 1.0 / 3.0;
-        assert!((record.weights[0] - 0.5 / sum).abs() < 1e-6);
-        assert!((record.weights[1] - (1.0 / 3.0) / sum).abs() < 1e-6);
-
-        let mut empty = SkinRecord::default();
-        assert!(!fill_skin_record(&mut empty, &[]));
-    }
-
-    #[test]
-    fn three_relaxation_passes_blend_half_and_half() {
-        let records = vec![
-            SkinRecord {
-                joints: [1, 0, 0, 0],
-                weights: [1.0, 0.0, 0.0, 0.0],
-            },
-            SkinRecord {
-                joints: [2, 0, 0, 0],
-                weights: [1.0, 0.0, 0.0, 0.0],
-            },
-        ];
-        let neighbours = vec![vec![(1, 4.0)], vec![(0, 4.0)]];
-        let relaxed = relax_skin_records(&records, &neighbours);
-        assert_eq!(relaxed[0].joints, [1, 2, 0, 0]);
-        assert!(relaxed[0].weights[0] > relaxed[0].weights[1]);
-        assert!((relaxed[0].weights[0] + relaxed[0].weights[1] - 1.0).abs() < 1e-6);
-    }
-}
-
 /// Diffuses the target deltas: every unknown vertex whose neighbours are
 /// known takes the weighted mean of those neighbours, at
 /// `1/sqrt(distance squared)`, and becomes known in the next pass. The
@@ -1422,97 +1168,6 @@ mod diffuse_tests {
         );
         assert_eq!(deltas[1], [1.0, 2.0, 3.0]);
         assert_eq!(known, vec![false, false]);
-    }
-}
-
-/// The owner's skin-weight stream as the cook registers it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MorphStream {
-    pub found: bool,
-    pub grew: bool,
-    pub flags: u32,
-    pub kind: u32,
-    pub count: usize,
-    pub zeroed: usize,
-}
-
-/// Registers the skin-weight stream: only with weights and owner bit
-/// 0x200000. An existing entry whose low flag bits are 0x1000 is reused;
-/// otherwise the owner's list grows by one with flags 0x04000001 and type
-/// 0x02a41000 and the vertex count. Either way the stream's `count·32`
-/// bytes are zeroed.
-pub fn register_morph_stream(
-    has_weights: bool,
-    owner_flag: bool,
-    existing: bool,
-    verts: usize,
-) -> Option<MorphStream> {
-    if !has_weights || !owner_flag {
-        return None;
-    }
-    Some(MorphStream {
-        found: existing,
-        grew: !existing,
-        flags: if existing { 0 } else { 0x0400_0001 },
-        kind: if existing { 0 } else { 0x02a4_1000 },
-        count: verts,
-        zeroed: verts * 32,
-    })
-}
-
-/// Rebuilds the controller's target list: every mesh triangle whose flags
-/// carry 0xC00000 contributes its three corners, remapped through the
-/// vertex map, in the order 1, 2, 0; a vertex already listed is not added
-/// again.
-pub fn collect_morph_targets(flagged: &[bool], triangles: &[[u32; 3]], map: &[u32]) -> Vec<u32> {
-    const ORDER: [usize; 3] = [1, 2, 0];
-    let mut targets: Vec<u32> = Vec::new();
-    for (index, triangle) in triangles.iter().enumerate() {
-        if !flagged.get(index).copied().unwrap_or(false) {
-            continue;
-        }
-        for corner in ORDER {
-            let mapped = map[triangle[corner] as usize];
-            if !targets.contains(&mapped) {
-                targets.push(mapped);
-            }
-        }
-    }
-    targets
-}
-
-#[cfg(test)]
-mod stream_tests {
-    use super::*;
-
-    #[test]
-    fn the_stream_registers_only_with_weights_and_the_owner_bit() {
-        assert_eq!(register_morph_stream(false, true, false, 8), None);
-        assert_eq!(register_morph_stream(true, false, false, 8), None);
-
-        let existing = register_morph_stream(true, true, true, 8).unwrap();
-        assert!(existing.found);
-        assert!(!existing.grew);
-        assert_eq!(existing.zeroed, 256);
-
-        let created = register_morph_stream(true, true, false, 8).unwrap();
-        assert!(!created.found);
-        assert!(created.grew);
-        assert_eq!(created.flags, 0x0400_0001);
-        assert_eq!(created.kind, 0x02a4_1000);
-        assert_eq!(created.count, 8);
-        assert_eq!(created.zeroed, 256);
-    }
-
-    #[test]
-    fn the_targets_come_from_flagged_triangles_in_corner_order() {
-        let flagged = [true, false, true];
-        let triangles = [[10, 11, 12], [20, 21, 22], [10, 11, 12]];
-        let map: Vec<u32> = (0..32).collect();
-        assert_eq!(
-            collect_morph_targets(&flagged, &triangles, &map),
-            vec![11, 12, 10]
-        );
     }
 }
 
@@ -2003,33 +1658,6 @@ pub fn control_matches(points: [[f32; 2]; 3], rotation: usize, reference: [[f32;
     })
 }
 
-/// The search bound of the nearest-point scans (3.4e38).
-const NEAREST_BOUND: f32 = f32::from_bits(0x7f7f_c99e);
-
-/// For every base point, the index of the nearest candidate (squared
-/// distance, `(dx² + dy²) + dz²`, strictly less than the best so far,
-/// starting from 3.4e38), or 0 when none is nearer: the controller copies
-/// each base point's 32-byte record from that candidate (the records'
-/// contents are not interpreted here).
-pub fn nearest_records(points: &[[f32; 3]], candidates: &[[f32; 3]]) -> Vec<usize> {
-    points
-        .iter()
-        .map(|p| {
-            let mut best = 0;
-            let mut best_distance = NEAREST_BOUND;
-            for (i, c) in candidates.iter().enumerate() {
-                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
-                let distance = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-                if distance < best_distance {
-                    best_distance = distance;
-                    best = i;
-                }
-            }
-            best
-        })
-        .collect()
-}
-
 /// A numbered target node's deltas: its points less the base mesh's,
 /// point by point, refused when the counts differ. The controller first
 /// matches the target's point order to the base ([`start_morph`]); the
@@ -2096,22 +1724,6 @@ mod registration_tests {
         let mut nan = tri;
         nan[0][0] = f32::NAN;
         assert!(control_matches(nan, 0, tri));
-    }
-
-    /// Every point takes its nearest candidate, the first on a tie, and 0
-    /// with none.
-    #[test]
-    fn the_nearest_records_default_to_the_first() {
-        let candidates = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
-        let points = [
-            [0.1, 0.0, 0.0],
-            [0.9, 0.0, 0.0],
-            [3.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0],
-        ];
-        assert_eq!(nearest_records(&points, &candidates), [0, 1, 1, 0]);
-        assert_eq!(nearest_records(&[[f32::NAN; 3]], &candidates), [0]);
-        assert_eq!(nearest_records(&points[..1], &[]), [0]);
     }
 
     /// A numbered target's deltas are its points less the base's.
