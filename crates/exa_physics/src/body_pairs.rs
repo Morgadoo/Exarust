@@ -74,13 +74,15 @@ const EXCESSIVE_PUSH2: f32 = 25_600.0;
 const MAX_WEIGHT: f32 = 1.0;
 /// Points a pair keeps.
 const POINTS: usize = 4;
-/// Depth (cm) a pair's point may keep before the pair pass corrects it.
-const SLOP: f32 = 0.01;
-/// The pair friction's limit is (0.01 + 0.99·n_y²)·μ_A·μ_B (cm² a tick²);
-/// a slip it damps loses a hundredth of the limit of itself.
-const FLAT_FRICTION: f32 = 0.01;
-const STEEP_FRICTION: f32 = 0.99;
-const SLIDE: f32 = 0.01;
+/// Depth (cm) a pair's point may keep before the pair pass corrects it:
+/// the original's double 0.01, which no single lies between it and 0.01f32
+/// below, so the single compares the same.
+const SLOP_CM: f64 = 0.01;
+/// The pair friction's limit is (0.99·n_y² + 0.01)·μ_A·μ_B (cm² a tick²),
+/// in double; a slip it damps loses a hundredth of the limit of itself.
+const FLAT_FRICTION: f64 = 0.01;
+const STEEP_FRICTION: f64 = 0.99;
+const SLIDE: f64 = 0.01;
 /// Pairs whose friction product μ_A·μ_B is under this do not rub.
 const MIN_FRICTION: f32 = 1.192_089_9e-7;
 /// A centre this close (squared, m²) to the other sphere's is pushed
@@ -1832,8 +1834,8 @@ fn solve_pair(pa: &mut Part, pb: &mut Part, points: &[Point]) -> bool {
         ) else {
             continue;
         };
-        pa.push(&p.a.map(|w| w.max(0.0)), c * sa);
-        pb.push(&p.b.map(|w| w.max(0.0)), c * -sb);
+        push_shared(pa, &p.a, sa, c);
+        push_shared(pb, &p.b, -sb, c);
         work = true;
     }
     if work {
@@ -1843,11 +1845,25 @@ fn solve_pair(pa: &mut Part, pb: &mut Part, points: &[Point]) -> bool {
     work
 }
 
-/// The pair pass's correction for one point (m): the normal part that takes
-/// a depth over the 0.01 cm slop back to it, less the tangential travel of
-/// A against B this tick (cancelled under the friction limit, only a
-/// hundredth of the limit of it kept above). `mu` is the product of the two
-/// parts' level friction. None at or under the slop (a NaN depth too).
+/// The original's scaled push of a pair point: each particle moves by the
+/// correction times `share · max(w, 0)`, the share and the clamped weight
+/// multiplied first (the processor's maximum, so a NaN weight is 0).
+fn push_shared(p: &mut Part, w: &[f32; 4], share: f32, c: Vec3) {
+    for (x, &wi) in p.positions.iter_mut().zip(w) {
+        *x += c * (share * intersect::max_first(wi, 0.0));
+    }
+}
+
+/// The pair pass's correction for one point (m), worked in centimetres as
+/// the original's: the depth `(b − a)·n` must pass the 0.01 cm slop (a
+/// double compare; NaN fails), the correction is `n` times the depth less
+/// the slop (in double, then single); A's travel against B this tick is
+/// `(b_start − a_start) − (b − a)`, its part across the normal
+/// `t + n·(−t·n)`; the friction limit is `(0.99·n_y² + 0.01)·μ` in double
+/// (n_y² in single), `mu` the product of the two parts' level friction.
+/// When the limit reaches the slip's square, or either is NaN, the
+/// correction takes the slip times `limit · −0.01` (double, then single);
+/// otherwise the whole slip is taken away.
 fn correction(
     a: Vec3,
     b: Vec3,
@@ -1856,21 +1872,24 @@ fn correction(
     normal: Vec3,
     mu: f32,
 ) -> Option<Vec3> {
-    let depth = cm((b - a).dot(normal));
-    if depth.is_nan() || depth <= SLOP {
+    let (a, b, a_start, b_start) = (cm(a), cm(b), cm(a_start), cm(b_start));
+    let d = b - a;
+    let depth = d.dot(normal);
+    if depth.is_nan() || f64::from(depth) <= SLOP_CM {
         return None;
     }
-    // A's travel against B's this tick, across the normal.
-    let travel = (a - a_start) - (b - b_start);
-    let across = travel - normal * travel.dot(normal);
-    let mut c = normal * ((depth - SLOP) / CM);
-    let limit = (FLAT_FRICTION + STEEP_FRICTION * normal.y * normal.y) * mu;
-    if limit >= cm(across).length_squared() {
-        c -= across * (SLIDE * limit);
+    let travel = (b_start - a_start) - d;
+    let mut c = normal * (f64::from(depth) - SLOP_CM) as f32;
+    let across = travel + normal * -travel.dot(normal);
+    let across2 = across.length_squared();
+    let ny2 = normal.y * normal.y;
+    let limit = ((f64::from(ny2) * STEEP_FRICTION + FLAT_FRICTION) * f64::from(mu)) as f32;
+    if limit >= across2 || limit.is_nan() || across2.is_nan() {
+        c += across * (f64::from(limit) * -SLIDE) as f32;
     } else {
         c -= across;
     }
-    Some(c)
+    Some(c / CM)
 }
 
 /// [`solve_pair`] for a pair with exactly one placed body: the placed side
@@ -1925,9 +1944,13 @@ fn rub_pair(pa: &mut Part, pb: &mut Part, pair: &Pair) {
     for p in &pair.points[..pair.count] {
         let slip = pb.slip(&p.b) - pa.slip(&p.a);
         let mut across = slip - p.normal * slip.dot(p.normal);
-        let limit = (FLAT_FRICTION + STEEP_FRICTION * p.normal.y * p.normal.y) * mu;
+        // The limit in double (n_y² in single), as in the pair pass; a
+        // slip over it is scaled by a hundredth of it (double, then
+        // single), and a NaN keeps the slip.
+        let ny2 = p.normal.y * p.normal.y;
+        let limit = ((f64::from(ny2) * STEEP_FRICTION + FLAT_FRICTION) * f64::from(mu)) as f32;
         if limit < cm(across).length_squared() {
-            across *= SLIDE * limit;
+            across *= (f64::from(limit) * SLIDE) as f32;
         }
         pa.push(&p.a, across * sa);
         pb.push(&p.b, across * -sb);

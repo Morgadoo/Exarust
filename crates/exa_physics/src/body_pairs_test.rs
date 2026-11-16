@@ -1720,3 +1720,66 @@ fn the_step_takes_the_scene_grid() {
     app.world_mut().run_schedule(FixedUpdate);
     assert_eq!(pairs(&app), Some((BroadPhase::Cells, None)));
 }
+
+/// The pair pass's correction in the original's precision and branches
+/// (its dynamic and placed solvers share them): the friction limit is
+/// `(0.99·n_y² + 0.01)·μ` in double, which for n_y 0.8 and μ 0.37 is
+/// 0.23813201 where the single-precision sum gives 0.238132; a slip under
+/// it takes `limit · −0.01` of itself (double, then single), a slip over
+/// it is taken away whole, and a NaN limit takes the slide branch.
+#[test]
+fn the_pair_correction_takes_the_originals_precision() {
+    let n = Vec3::new(0.6, 0.8, 0.0);
+    let ny2 = n.y * n.y;
+    let limit = ((f64::from(ny2) * 0.99 + 0.01) * f64::from(0.37f32)) as f32;
+    assert_eq!(limit, 0.238_132_01);
+    assert_ne!(limit, (0.01 + 0.99 * n.y * n.y) * 0.37f32);
+    // B 0.2 cm into A along n; A slid 0.1 cm across it this tick.
+    let (a, b) = (Vec3::ZERO, n * 0.002);
+    let across_dir = Vec3::new(0.8, -0.6, 0.0);
+    let a_start = a - across_dir * 0.001;
+    let worked = || {
+        let (ac, bc, asc, bsc) = (a * 100.0, b * 100.0, a_start * 100.0, b * 100.0);
+        let d = bc - ac;
+        let depth = d.dot(n);
+        let t = (bsc - asc) - d;
+        let c = n * (f64::from(depth) - 0.01) as f32;
+        let across = t + n * -t.dot(n);
+        (c, across)
+    };
+    let (c, across) = worked();
+    assert!(across.length_squared() < limit);
+    let slid = correction(a, b, a_start, b, n, 0.37).unwrap();
+    assert_eq!(slid, (c + across * (f64::from(limit) * -0.01) as f32) / 100.0);
+    // No friction: the whole slip goes.
+    let full = correction(a, b, a_start, b, n, 0.0).unwrap();
+    assert_eq!(full, (c - across) / 100.0);
+    // A NaN limit takes the slide branch (the parity jump), so the NaN
+    // reaches the correction.
+    assert!(correction(a, b, a_start, b, n, f32::NAN).unwrap().x.is_nan());
+    // At the slop or a NaN depth: nothing.
+    assert_eq!(correction(a, n * 0.0001, a, n * 0.0001, n, 0.37), None);
+    assert_eq!(correction(a, Vec3::NAN, a, b, n, 0.37), None);
+}
+
+/// A pair point pushes each particle by the correction times
+/// `share · max(w, 0)`, the share and the weight multiplied first
+/// (0.7 · 0.45 · 3 is 0.945, where 3 · 0.7 · 0.45 is 0.94499993); a
+/// negative or NaN weight is 0.
+#[test]
+fn a_pair_push_multiplies_the_share_and_the_weight_first() {
+    let mut a = ball(1, 11, Vec3::new(0.0, 2.0, 0.0), 0.1);
+    let before = a.parts[0].positions;
+    push_shared(
+        &mut a.parts[0],
+        &[0.45, -0.2, f32::NAN, 0.0],
+        0.7,
+        Vec3::new(3.0, 0.0, 0.0),
+    );
+    let moved: Vec<f32> = (0..4)
+        .map(|i| a.parts[0].positions[i].x - before[i].x)
+        .collect();
+    assert_eq!(a.parts[0].positions[0].x, before[0].x + 0.945);
+    assert_ne!(0.945f32, 3.0f32 * 0.7 * 0.45);
+    assert_eq!(&moved[1..], &[0.0, 0.0, 0.0]);
+}
