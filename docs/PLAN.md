@@ -1563,6 +1563,8 @@ the arena's last two immediate exits run behind the transition screen: the Conti
 
 fifth TMotileDynamics pass: the step radius base follows the body tick (30 while moving, 65 only off its feet, 60 at a new body), a stopping walker seeds its jolt term, armed parries and counter holds aim at the blade's parry-height point, a shield parry holds the shield by a plane link, and footsteps play on the body's two alternating voices; several earlier gaps found stale, write-only or no-ops, and a dead trailing-foot call removed. Left: the weapon-in-hand gate's points, condition 0x4000's data source, the damage routine's opening and tail, the body tick's Fend, lying-arm, arm-setter and get-up items. Traces change from the first standing tick; determinism runs and duel scenes owed while the GPU is on hold.
 
+the pathfinder's planner, corner line test and nearest-walkable flood match the original block by block, including its unchecked 32-bit grid index (a column past the grid's side reads the neighbouring row); the movers' raise and refresh sample through the original's pre-scaled single-precision frame and walk the simulation's rooms with the confirmed offset (an old guess resolved); the merge's caller is the sector's registration of meshes flagged for it (1536 shipped props), now queued when they register with a grid built; slot 17 proven unreachable; one physics row's reading corrected (a pending-node drain, not a purge). Left: DEC-5 (the shared stamp table), the flood's leftover-register term (needs a retail capture), marking dropped items. Determinism runs and a nav grid scene owed while the GPU is on hold.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
