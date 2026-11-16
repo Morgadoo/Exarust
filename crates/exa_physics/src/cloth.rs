@@ -788,12 +788,14 @@ pub fn next_random(roll: &mut u32) -> f32 {
 }
 
 /// Paints blood on a cloth's vertex colours (RGBA8, alpha 255 clean) where
-/// a ray from `point` along `direction` passes near a vertex, in the
-/// vertex space.
+/// a ray from `point` along `direction` passes near a vertex.
 ///
-/// The point is moved half a centimetre back along the direction and the
-/// direction normalised (its length summed the engine's way: x², z², then
-/// y²). A vertex counts unless the squared radius is below its squared
+/// The point is moved back by half the direction (the wound's travel, not
+/// yet normalised) and the direction normalised (its length summed the
+/// engine's way: x², z², then y²). Then the point alone goes into the
+/// vertices' frame through `frame` (the mesh node's world-to-node matrix;
+/// `None` for a mesh whose vertices are world ones): the direction stays a
+/// world one, as the original leaves it. A vertex counts unless the squared radius is below its squared
 /// distance from the point (or from the ray, for a vertex ahead of the
 /// point: the squared distance scaled by `1 − t/d`, with `t` the vertex's
 /// distance along the direction and `d` its distance). The paint's share is
@@ -807,6 +809,7 @@ pub fn paint_blood(
     colours: &mut [[u8; 4]],
     point: Vec3,
     direction: Vec3,
+    frame: Option<&bevy::math::Affine3A>,
     radius_squared: f32,
     roll: &mut u32,
 ) -> usize {
@@ -815,6 +818,7 @@ pub fn paint_blood(
         + direction.y * direction.y)
         .sqrt();
     let direction = direction * (1.0 / length);
+    let point = frame.map_or(point, |m| m.transform_point3(point));
     let mut painted = 0;
     for (index, vertex) in vertices.iter().enumerate() {
         let Some(colour) = colours.get_mut(index) else {
@@ -2686,7 +2690,15 @@ mod tests {
         let mut colours = [[255u8, 255, 255, 255]; 3];
         let mut roll = 1;
         // Radius² 1 at the origin along +z: the first vertex is clean.
-        let painted = paint_blood(&vertices, &mut colours, Vec3::ZERO, Vec3::Z, 1.0, &mut roll);
+        let painted = paint_blood(
+            &vertices,
+            &mut colours,
+            Vec3::ZERO,
+            Vec3::Z,
+            None,
+            1.0,
+            &mut roll,
+        );
         assert_eq!(painted, 1);
         assert_eq!(colours[0][3], 0);
         assert_eq!(colours[1][3], 255);
@@ -2701,12 +2713,31 @@ mod tests {
                 &mut off,
                 Vec3::ZERO,
                 Vec3::Z,
+                None,
                 1.0,
                 &mut roll
             ),
             1
         );
         assert!(off[0][3] < 255);
+        // A node frame moves the point alone: shifted 10 cm along x, the
+        // first vertex is now 10 cm off the ray and stays clean, while the
+        // direction is still the world's +z.
+        let shifted = bevy::math::Affine3A::from_translation(Vec3::X * -10.0);
+        let mut clean = [[255u8, 255, 255, 255]; 1];
+        let mut roll = 1;
+        assert_eq!(
+            paint_blood(
+                &[Vec3::ZERO],
+                &mut clean,
+                Vec3::ZERO,
+                Vec3::Z,
+                Some(&shifted),
+                1.0,
+                &mut roll
+            ),
+            0
+        );
         // The generator starts at 1: s = 1·0x08088405 + 1.
         let mut roll = 1;
         let first = next_random(&mut roll);

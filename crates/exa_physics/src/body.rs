@@ -3640,7 +3640,10 @@ impl Ragdoll {
         pairs::mask_groups(&mut self.parts);
     }
 
-    /// Gives a living body its race's muscle factors.
+    /// Gives a living body its race's muscle factors. Its standing stance
+    /// is the race record's, a golem's too: the character init's golem
+    /// branch writes a stance of 0.75 first, but the init then writes the
+    /// record's stance again for every race.
     pub fn with_race(mut self, race: RaceMuscles) -> Self {
         if let Some(d) = self.drive.as_mut() {
             d.race = race;

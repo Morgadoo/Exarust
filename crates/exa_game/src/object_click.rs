@@ -1035,6 +1035,64 @@ mod tests {
         );
     }
 
+    /// The use of the secret switch plays its brick's keyframe track
+    /// through the live systems: the double click starts the tracks under
+    /// the object, the track clock turns the time since the start into a
+    /// time on the curve (its first start plays the once track reversed)
+    /// and the Catmull-Rom curve places the brick, sunk into the wall half
+    /// a second in.
+    #[test]
+    fn using_the_secret_switch_sinks_its_brick() {
+        use bevy::time::TimeUpdateStrategy;
+        use exa_anim::tracks::{NodeTracks, PlayingTracks, TracksPlugin};
+        use exa_formats::key_track::{KeyTrack, PlayMode, PositionKey};
+        let mut app = app();
+        app.add_plugins((bevy::time::TimePlugin, TracksPlugin))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(250),
+            ));
+        app.update();
+        let at = Vec3::new(-40.654, 1.930, 83.285);
+        let switch = placed(&mut app, 0x11, Some(sections(Some((0, 1)), false, 0)), at);
+        let key = |time, z: f32| PositionKey {
+            time,
+            position: [0.0, 0.0, z * 0.01],
+        };
+        let brick = app
+            .world_mut()
+            .spawn((
+                Name::new("Box001"),
+                Transform::IDENTITY,
+                NodeTracks(vec![KeyTrack {
+                    mode: PlayMode::Once,
+                    duration: 3.0,
+                    keys: vec![key(0.0, 0.0), key(1.0, -5.0), key(2.0, -5.0), key(3.0, 0.0)],
+                }]),
+                ChildOf(switch),
+            ))
+            .id();
+        click(&mut app, Hit::SceneNode { node: switch }, at, true);
+        // The start lands in the click's frame or the next (the systems of
+        // this test app are not ordered against each other).
+        if app.world().resource::<PlayingTracks>().is_empty() {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<PlayingTracks>().len(), 1);
+        for _ in 0..2 {
+            app.update();
+        }
+        // 0.5 s into the reversed play: the curve at 2.5 s.
+        let z = app.world().get::<Transform>(brick).unwrap().translation.z;
+        assert!((z - -0.028125).abs() < 1e-6, "{z}");
+        // It ends at rest 3 s on and leaves the playing list.
+        for _ in 0..12 {
+            app.update();
+        }
+        assert!(app.world().resource::<PlayingTracks>().is_empty());
+        let z = app.world().get::<Transform>(brick).unwrap().translation.z;
+        assert!(z.abs() < 1e-6, "{z}");
+    }
+
     /// A kind-5 use opens the divination reading with the zero argument
     /// the use passes; the object stays.
     #[test]

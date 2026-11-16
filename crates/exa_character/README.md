@@ -497,7 +497,11 @@ words). Nothing builds that node yet.
   behind and a smear ahead, into the vertex colour's alpha (255 clean,
   only ever lowered) of the character's skinned meshes and the meshes under
   its head, on their current skinned positions. Held items, rigid items on
-  other parts and hidden parts are never painted.
+  other parts and hidden parts are never painted. A plain mesh is painted
+  in its own frame, once per position element (`blood::paint_mesh`: a
+  seam's vertices keep one value); a cloth (long hair) in place on the
+  mesh its simulation moves, by the cloth's painter (`blood::paint_cloth`,
+  the point in the node's frame, the travel a world direction).
 - A model's meshes stay shared until a wound lowers a value of one: the
   struck character then gets its own copy (marked `Bloodied`), painted in
   place afterwards. A whole human body in braies costs 278 KiB, the

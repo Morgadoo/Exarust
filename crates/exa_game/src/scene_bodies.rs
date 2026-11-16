@@ -1378,6 +1378,37 @@ mod tests {
     use crate::match_layout::{Place, opponent_place};
     use exa_formats::characters::CharacterRecord;
 
+    /// A golem keeps its race record's stance factor, damping ratio, clip
+    /// rate and pin factor. The character init's golem branch writes 0.75,
+    /// 0.95, 1 and 1 into them, but the race join that every race branch
+    /// reaches afterwards writes the record's stance, damping ratio and
+    /// clip rate again, and the feral step writes its pin factor; only the
+    /// branch's arm relaxation (0.5, the boss's none) and its golem suit
+    /// survive. The shipped golems store a stance of 1.
+    #[test]
+    fn a_golem_keeps_its_race_records_stance() {
+        let record = RaceBody {
+            stance: 1.0,
+            damping_ratio: 0.95,
+            ..RaceBody::FALLBACK
+        };
+        let stats = exa_formats::character_stats::CharacterStats {
+            golem: true,
+            arm_relaxation: 0.5,
+            ..Default::default()
+        };
+        let muscles = character_muscles(&record, &stats);
+        assert_eq!(muscles.stance, 1.0);
+        assert_eq!(muscles.damping_ratio, 0.95);
+        assert_eq!(muscles.arm_relaxation, 0.5);
+        let body = exa_physics::body::Ragdoll::new(&[])
+            .with_drive()
+            .with_race(muscles);
+        let drive = body.drive.unwrap();
+        assert_eq!(drive.stance(), 1.0);
+        assert!(drive.golem_powered);
+    }
+
     /// A kept body's reset, through the scene system: yellow takes red,
     /// the shield arm fills, the condition is 0 and the marker takes the
     /// standby behaviour and the held clock.
