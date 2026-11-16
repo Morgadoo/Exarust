@@ -279,7 +279,13 @@ carried order (with the original's dead second-pair replacements), and the
 equip pass instantiates them, rewrites the attached hand nodes and the
 carried duplicates, and frees the temporary database. A load imports the
 save's world character and object databases into their world tiers
-(`Slots::world_characters`/`world_objects`). `level_transition` now also
+(`Slots::world_characters`/`world_objects`); an older save's object
+database goes through the loader's upgrade chain, the oldest bodies'
+paint seeds drawn from a run-time library twister seeded from the clock
+(`slots::world_object_tier`). The loadout form's equip cost reads the
+object database's weapon points (one less for a one-handed weapon,
+`exa_items::card::weapon_points`), and the search's container sizes come
+from the live database's flagged model lookup (`npc_search::model_size`). `level_transition` now also
 has the transition's ordered flow: the teardown and flush, the destination
 read (save section or archive), the import, the spawn matrix choice, the
 story respawn, the grid arrays, the followers and the post-load pass, with
@@ -551,7 +557,12 @@ original's start sets them, the per-part contact in each struck part's
 frame against its node mesh (the chunk pushed out of the faces it reaches,
 the limb push with the part's velocity at the chunk's particle weights,
 the knock, pins and wake per part; a part without a mesh answers with its
-spheres; the part's node mesh asked its two-sided sphere query), the
+spheres; the part's node mesh asked its two-sided sphere query), met in
+the next tick's first pass of the sector step before the character ticks
+(`thaum::pre_pass::meet_bodies_first`: the thrown blasts and waves in
+entity order, the parts of the nine grid cells around each, the sector's
+sphere and box gates, a disabled body skipped, the caster's own parts
+skipped by the slot), the
 cloths' stir (their particles, rustle envelope and wake), the level's
 static meshes walked from the static grid (`strike_level_mesh`: the mesh
 walk's two-sided query and the rebound; the bolt's sampled walk through
@@ -602,8 +613,8 @@ either's end clears both). A cast barricade's floor probe meets floor
 nodes only. A wave cast runs its wave round the caster's body root
 (`thaum::wave_live`): charging on the blast's hook, paying its drain each
 tick, and thrown through the blast's contact slots, which its class shares
-(the level's meshes, the cloths, each other body part by part with the
-character knock); its throw alerts the caster's known characters as the
+(the level's meshes and the cloths after its tick, each other body part by
+part with the character knock in the next tick's first pass); its throw alerts the caster's known characters as the
 blast's release does (`thaum::blast_live::alert_known`). A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
 its hook until the caster lets go or runs out, its points walking the
@@ -2352,13 +2363,18 @@ random-table children (every shipped chest's children are "DropTable"
 records) with the rows their tables give, through
 `exa_items::randomise::Fill` (292 children in exanima01; the chest of
 drawers 0x80000054 gets boots twice, a shirt, a belt and trousers): a
-picked child takes the row's item with zero flags, an empty slot id 0
+picked child takes, with zero flags, the row's item as the original's
+container instantiate makes it (`ContainerPicks`: the dispatcher copies an
+instance-on-use record into the local tier; an item body takes the palette
+roll on the row's wealth, the count byte's signed fraction, damage and dirt
+with their spreads and the apparel walker; a tagged weapon copy damage and
+dirt with their spreads and the weapon walker), an empty slot id 0
 with `0x100`. The filled children are also written into the level's own
 record in the live local tier, so a save's level section keeps them; a
 level read from a save's section is not filled (the original's import of a
-saved section runs only the tier migration). Stand-ins: the row's item id is used without the
-instance copy and condition word, only placed containers are walked
-and the generator starts from `FILL_SEED`. Opening a popup logs each
+saved section runs only the tier migration). Stand-ins: only placed containers are walked, the generator starts
+from `FILL_SEED` and the walkers' clock words are a fixed sequence from
+it; without a base tier (no game data) the child takes the row's id. Opening a popup logs each
 child's id, flags, model, icon slot, whether its icon has rendered and its
 pixel rect at debug level. `item_icon_render` keeps one GPU icon job in
 flight at a time (`start_budget`): every job's scene and sun sit on the one

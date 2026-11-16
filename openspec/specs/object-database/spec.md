@@ -173,11 +173,15 @@ Every tree the manager makes SHALL carry node flag 0x4000 and each child 0x5000 
 - **THEN** the mask is hidden, the cloth painted and the glass drawn
 
 ### Requirement: Oldest body conversion
-The `0xDBAC0D06` body converter SHALL keep the blocks below `0x1A0`, copy the power word from the old bytes `0x1AC`–`0x1B3`, map the old category to the armour type (1–8 to 1, 2, 3, 1, 2, 4, 5, 6; others keep the byte), apply the category's finish changes when the finish is 1–7 without bit 7, draw one paint seed per body as a 63-bit value modulo `0xFFFFFFFF`, and turn the four old 16-byte parts into the first four appearance layers.
+The `0xDBAC0D06` body converter SHALL keep the blocks below `0x1A0`, copy the power word from the old bytes `0x1AC`–`0x1B3`, map the old category to the armour type (1–8 to 1, 2, 3, 1, 2, 4, 5, 6; others keep the byte), apply the category's finish changes when the finish is 1–7 without bit 7, write the count byte through the count setter with 1, draw one paint seed per body as a 63-bit value modulo `0xFFFFFFFF`, and turn the four old 16-byte parts into the first four appearance layers.
 
 #### Scenario: An unknown category
 - **WHEN** an old body's category byte is 9
 - **THEN** the converted armour type is 9
+
+#### Scenario: The seed from the generator
+- **WHEN** an old body is converted with a twister seeded with a value
+- **THEN** its paint seed equals that twister's first 64-bit draw below `0xFFFFFFFF`, and its count bits read 1
 
 ### Requirement: Oldest random-table condition words
 After the bodies, each random-table row's condition word SHALL be rewritten by the setters applied in turn to the same word. An unrolled word (bit 7 clear) SHALL become `0x5284`. A rolled one SHALL take wealth 1, then the damage read from the updated word as the sign-magnitude value of bits 0–2 plus 2 quarters, then the spread from bits 4–6 of the word after that, then dirt 0.5 and spread 0.25.
@@ -321,7 +325,7 @@ An `.rdb` database SHALL hold `table_len / 16 − 1` records: the table slot aft
 - **THEN** the database holds one record
 
 ### Requirement: Operative use script
-An operative section's body SHALL keep, after its fixed words, a use script: its length at `0x38`, read signed, and its text from `0x3C`; a length under 1 or past the body's end SHALL give none. In `objdb.rdb` of the installed build exactly one record holds one: the PedestalHand (`0x587`, class 2 kind 3, sound `DeviceA01`), `WitnessRole(Operative, $E1D1);`.
+An operative section's body SHALL keep, after its fixed words, a use script: its length at `0x38`, read signed, and its text from `0x3C`, read as the database's counted list of the body; a length under 1 or past the body's end SHALL give none. In `objdb.rdb` of the installed build exactly one record holds one: the PedestalHand (`0x587`, class 2 kind 3, sound `DeviceA01`), `WitnessRole(Operative, $E1D1);`.
 
 #### Scenario: The pedestal hand's body
 - **WHEN** an operative body of class 2, kind 3 with sound `DeviceA01` and a 27-byte text at `0x3C` is read

@@ -1292,3 +1292,91 @@ fn the_search_calms_the_walk_and_settles_the_look() {
     }
     assert!(approached && settled, "{approached} {settled}");
 }
+
+/// A section: tag, size (body + 8) and body.
+fn db_section(tag: u32, body: &[u8]) -> Vec<u8> {
+    let mut v = tag.to_le_bytes().to_vec();
+    v.extend((body.len() as u32 + 8).to_le_bytes());
+    v.extend_from_slice(body);
+    v
+}
+
+/// A current-layout database of `(id, table flags, payload)` records.
+fn db_store(records: &[(u32, u32, &[u8])]) -> exa_formats::objdb::Store {
+    let mut b = 0xDBAC_0D09u32.to_le_bytes().to_vec();
+    b.extend((((records.len() + 1) * 16) as u32).to_le_bytes());
+    let mut offset = 0u32;
+    for (id, flags, payload) in records {
+        for w in [*id, *flags, offset, payload.len() as u32] {
+            b.extend(w.to_le_bytes());
+        }
+        offset += payload.len() as u32;
+    }
+    b.extend([0; 16]);
+    for (_, _, payload) in records {
+        b.extend_from_slice(payload);
+    }
+    exa_formats::objdb::Store::parse(&b).unwrap()
+}
+
+/// The level's own records feed the search's container sizes through the
+/// object database's flagged lookup: a record whose table flags name its
+/// model gives the model's byte `0x1C`; one whose flags do not (though it
+/// holds a model section) gives none, so a drop into a container refuses
+/// it, as the original's container add does.
+#[test]
+fn the_level_sizes_come_from_the_flagged_model_lookup() {
+    const NAME: u32 = 0x1000_0000;
+    let mut model = vec![0u8; 0x28];
+    model[..4].copy_from_slice(b"Cup\0");
+    model[0x1C] = 7;
+    let payload = db_section(search::section::MODEL, &model);
+    // A record with a container part is worth gathering; a model alone is
+    // not (the database's mask test over the section chain).
+    let chest = [
+        payload.clone(),
+        db_section(search::section::CONTAINER, &[0; 0x18]),
+    ]
+    .concat();
+    let records = db_store(&[
+        (1, NAME | search::section::MODEL, &payload),
+        (2, NAME, &payload),
+        (3, NAME | search::section::CONTAINER, &chest),
+    ]);
+    let mut live = exa_assets::live_objects::LiveObjects::default();
+    live.load_level("test", Some(records), None);
+    let items = vec![
+        exa_formats::objdb::Item::parse(1, &payload).unwrap(),
+        exa_formats::objdb::Item::parse(2, &payload).unwrap(),
+        exa_formats::objdb::Item::parse(3, &chest).unwrap(),
+    ];
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(live)
+        .insert_resource(exa_world::LevelLocalItems(items))
+        .init_resource::<SearchItems>()
+        .add_systems(Update, load_level_search_items);
+    app.update();
+    let items = app.world().resource::<SearchItems>();
+    let local = exa_formats::objdb::LOCAL;
+    assert_eq!(
+        items
+            .level_sizes
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect::<Vec<_>>(),
+        vec![(local | 1, 7)]
+    );
+    assert_eq!(
+        items.level_loot.keys().copied().collect::<Vec<_>>(),
+        vec![local | 3]
+    );
+    assert_eq!(items.level_loot[&(local | 3)], Loot::Other);
+    // A world id has no flagged section.
+    let db = app
+        .world()
+        .resource::<exa_assets::live_objects::LiveObjects>()
+        .db();
+    assert_eq!(model_size(db, exa_formats::objdb::WORLD | 1), None);
+    assert_eq!(model_size(db, local | 1), Some(7));
+}

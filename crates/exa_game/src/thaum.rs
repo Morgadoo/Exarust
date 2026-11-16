@@ -60,6 +60,7 @@ pub mod kinesis_live;
 pub mod live;
 pub mod long_door_live;
 pub mod power;
+pub mod pre_pass;
 pub mod shell_hum;
 pub mod summon_live;
 pub mod throw_live;

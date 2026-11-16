@@ -548,6 +548,31 @@ pub fn vec4_mul_4x3_difference(v: Vec4, rows: &[[f32; 3]; 8]) -> Vec3 {
     out
 }
 
+/// A point into a rigid 4×3 frame (the rows `x_axis`, `y_axis`, `z_axis`
+/// and the translation of `frame`): the point less the translation, dotted
+/// with each axis row, each dot summed `(x + y) + z`. The original's
+/// transpose product, exact where a full inverse would round otherwise.
+pub fn point_into_frame(point: Vec3, frame: &bevy::math::Affine3A) -> Vec3 {
+    let d = point - Vec3::from(frame.translation);
+    let dot = |row: Vec3A| (d.x * row.x + d.y * row.y) + d.z * row.z;
+    Vec3::new(
+        dot(frame.matrix3.x_axis),
+        dot(frame.matrix3.y_axis),
+        dot(frame.matrix3.z_axis),
+    )
+}
+
+/// A point out of a rigid 4×3 frame into its parent's space: the axis rows
+/// scaled by the point's coordinates and the translation, summed lane by
+/// lane as `(x·X + y·Y) + (z·Z + T)` (glam's `transform_point3` sums
+/// `((x·X + y·Y) + z·Z) + T`).
+pub fn point_out_of_frame(point: Vec3, frame: &bevy::math::Affine3A) -> Vec3 {
+    let m = &frame.matrix3;
+    let low = Vec3::from(m.x_axis) * point.x + Vec3::from(m.y_axis) * point.y;
+    let high = Vec3::from(m.z_axis) * point.z + Vec3::from(frame.translation);
+    low + high
+}
+
 /// The scalar triple product `a · (b × c)`, summed in the original's
 /// horizontal order.
 pub fn triple_product(a: Vec3, b: Vec3, c: Vec3) -> f32 {

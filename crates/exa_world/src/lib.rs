@@ -28,6 +28,7 @@ pub mod markers;
 pub mod mechanisms;
 pub mod nav;
 pub mod node_parts;
+pub mod particle_stage;
 pub mod particles;
 pub mod presets;
 pub mod prop_skin;
