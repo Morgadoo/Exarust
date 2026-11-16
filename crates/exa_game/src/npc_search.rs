@@ -1664,7 +1664,19 @@ pub fn follow_and_search(
                         state.follower.busy = busy;
                         if state.logged != Some(search.state) {
                             state.logged = Some(search.state);
-                            info!("search: {who} {:?}", search.state);
+                            // With the brain's attention: its goal entity,
+                            // someone else, no one.
+                            let attention = match npc.pass.attention {
+                                None => "no one",
+                                Some(id) if npc.goal.is_some_and(|g| g.id == id) => {
+                                    "its goal entity"
+                                }
+                                Some(_) => "someone else",
+                            };
+                            info!(
+                                "search: {who} {:?} (attending {attention}, pick flag {})",
+                                search.state, npc.goal_picked
+                            );
                             if matches!(
                                 search.state,
                                 search::State::Look | search::State::Settle | search::State::Loot
