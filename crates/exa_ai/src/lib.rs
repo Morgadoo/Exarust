@@ -1259,10 +1259,7 @@ fn duellist(
     ),
     mut brains: Query<&mut brain::Npc>,
     (role_db, follow_leader): (Option<Res<brain::RoleDatabase>>, Option<Res<FollowLeader>>),
-    (role_lists, state_flags): (
-        Query<&crate::roles::Roles>,
-        Query<&exa_combat::StateFlags>,
-    ),
+    (role_lists, state_flags): (Query<&crate::roles::Roles>, Query<&exa_combat::StateFlags>),
     ids: Query<&brain::CharacterId>,
     mut npcs: Query<(
         Entity,
@@ -2957,9 +2954,7 @@ mod tests {
     fn the_duellist_drops_a_vanished_target() {
         let (mut app, foe, _) = duel(2.0, false);
         let target = app.world().get::<Duellist>(foe).unwrap().target;
-        app.world_mut()
-            .entity_mut(target)
-            .insert(Condition::NORMAL);
+        app.world_mut().entity_mut(target).insert(Condition::NORMAL);
         engage(&mut app, foe);
         for _ in 0..3 {
             step(&mut app);

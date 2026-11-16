@@ -111,11 +111,14 @@ pub(crate) fn bridge_vanish_body_types(app: &mut App) {
 
 /// The class's tendril image slot.
 fn image_slot(caster: &mut PowerCaster, power: u32) -> Option<&mut Option<u64>> {
-    caster.active.iter_mut().find_map(|entry| match &mut entry.class {
-        ActiveClass::Vanish(p) if power == VANISH => Some(&mut p.node.image),
-        ActiveClass::LongDoor(p) if power == LONG_DOOR => Some(&mut p.node.image),
-        _ => None,
-    })
+    caster
+        .active
+        .iter_mut()
+        .find_map(|entry| match &mut entry.class {
+            ActiveClass::Vanish(p) if power == VANISH => Some(&mut p.node.image),
+            ActiveClass::LongDoor(p) if power == LONG_DOOR => Some(&mut p.node.image),
+            _ => None,
+        })
 }
 
 /// Each body step, after the casters' walk and before the placements:
@@ -169,7 +172,8 @@ pub(crate) fn turn_vanishing_bodies(
                 let Ok((_, body, _)) = bodies.get(turn.caster) else {
                     continue;
                 };
-                let image = spawn_body_wisps(&mut commands, turn.caster, body, &mut draws, &mut roll);
+                let image =
+                    spawn_body_wisps(&mut commands, turn.caster, body, &mut draws, &mut roll);
                 *slot = Some(image.to_bits());
                 debug!("vanish of {:?}: a new tendril image {image:?}", turn.caster);
             }

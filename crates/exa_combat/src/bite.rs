@@ -229,7 +229,10 @@ impl BiteHold {
         if let Some((sb, sp)) = find_part(bodies, bite.struck) {
             bodies[sb].lower_grab_layer(sp);
         }
-        if let Some(wp) = bodies[body].parts.iter().position(|p| p.entity == bite.weapon)
+        if let Some(wp) = bodies[body]
+            .parts
+            .iter()
+            .position(|p| p.entity == bite.weapon)
             && let Some(layer) = bodies[body].layer(wp)
         {
             bodies[body].set_layer(wp, layer & !PART_BIT);

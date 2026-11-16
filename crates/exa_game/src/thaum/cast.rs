@@ -2341,9 +2341,7 @@ fn create_displacement(
                     ));
                 // Then the tendril image on the body, over a shell of its
                 // own ([`super::vanish_body`]).
-                if !shared
-                    && let Some(body) = ragdoll
-                {
+                if !shared && let Some(body) = ragdoll {
                     let image = spawn_body_wisps(commands, caster_entity, body, draws, roll);
                     if let Some(ActiveClass::Vanish(power)) =
                         caster.active.last_mut().map(|entry| &mut entry.class)

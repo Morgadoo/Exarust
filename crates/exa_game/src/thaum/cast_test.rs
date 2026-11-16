@@ -2267,9 +2267,7 @@ fn a_vanish_takes_its_body_out_and_brings_it_back() {
     let mut app = new_app();
     app.insert_resource(BodyTicks(0));
     let caster = caster(&mut app, &[VANISH]);
-    app.world_mut()
-        .entity_mut(caster)
-        .insert(StateFlags::NONE);
+    app.world_mut().entity_mut(caster).insert(StateFlags::NONE);
     let key = app.world().get::<Ragdoll>(caster).unwrap().parts[0].entity;
     let item = app
         .world_mut()
@@ -2309,7 +2307,9 @@ fn a_vanish_takes_its_body_out_and_brings_it_back() {
     };
     let first = image(&app).1.and_then(Entity::try_from_bits);
     let first = first.expect("the cast puts the tendril image up");
-    assert!(app.world().get::<LiveWisps>(first).is_some());
+    // A body without muscles is of size 1: the image is 12.
+    let size = app.world().get::<LiveWisps>(first).unwrap().wisps.size;
+    assert_eq!(size, BODY_WISP_SIZE);
     let step = |app: &mut App, tick: u64| {
         app.insert_resource(BodyTicks(tick));
         app.world_mut().run_schedule(FixedUpdate);
@@ -2317,8 +2317,16 @@ fn a_vanish_takes_its_body_out_and_brings_it_back() {
     };
     let vanished = |app: &App| {
         let flags = app.world().get::<StateFlags>(caster).unwrap();
-        let status = app.world().get::<PowerCaster>(caster).unwrap().body.status_bits;
-        (flags.has(StateFlags::VANISHED), status & casting::VANISHED != 0)
+        let status = app
+            .world()
+            .get::<PowerCaster>(caster)
+            .unwrap()
+            .body
+            .status_bits;
+        (
+            flags.has(StateFlags::VANISHED),
+            status & casting::VANISHED != 0,
+        )
     };
     let disabled = |app: &App, e| app.world().get::<Ragdoll>(e).unwrap().disabled();
     let mut tick = 1;
@@ -2343,7 +2351,11 @@ fn a_vanish_takes_its_body_out_and_brings_it_back() {
         step(&mut app, tick);
         tick += 1;
     }
-    assert_eq!(vanished(&app), (true, true), "still vanished while it fades in");
+    assert_eq!(
+        vanished(&app),
+        (true, true),
+        "still vanished while it fades in"
+    );
     assert!(!disabled(&app, caster) && !disabled(&app, item));
     let body = app.world().get::<Ragdoll>(caster).unwrap();
     assert!(0 < body.settling() && body.settling() <= RETURN_SETTLE);
@@ -2390,7 +2402,9 @@ fn a_collapsing_long_door_comes_back_where_it_stands() {
     app.world_mut().run_schedule(FixedUpdate);
     app.update();
     let state = app.world().get::<PowerCaster>(caster).unwrap();
-    assert!(matches!(&state.active[0].class, ActiveClass::LongDoor(p) if p.base.phase == FADING_IN));
+    assert!(
+        matches!(&state.active[0].class, ActiveClass::LongDoor(p) if p.base.phase == FADING_IN)
+    );
     let body = app.world().get::<Ragdoll>(caster).unwrap();
     assert!(
         body.parts[0].transform().translation.length() < 1e-5,

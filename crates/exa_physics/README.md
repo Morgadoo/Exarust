@@ -605,7 +605,9 @@ the other's mesh sphere query at the radius plus 2 cm, a part without triangles 
 its spheres), and a touch raises the lower of the two sleep countdowns to the higher
 (`equalise_placement`; `place_released` runs it on the simulation's world, posted by the hand).
 The release itself wakes the item to at least 128 (`RELEASE_WAKE`) and settles it 8 ticks
-(`RELEASE_SETTLE`), as the original's put-back does. While the item cursor carries an item its body is out of the
+(`RELEASE_SETTLE`), as the original's put-back does. The displacement powers disable a vanishing character and its held items
+and, at the come-back, clear the disabled and kinematic bits
+(`Ragdoll::set_kinematic`) and let it settle. While the item cursor carries an item its body is out of the
 simulation (`Ragdoll::hold_out`: asleep, disabled, countdown 0, as the
 original's lift leaves it after every placement), moved whole so its grab point lands on the
 placed point (`Ragdoll::place_grab_at`); the release's raise therefore gives it 128, and a
