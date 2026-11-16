@@ -247,9 +247,13 @@ the same tag. 17 of the 20 shipped arena actors' databases (`actors.rpk`) are
   `0x1A7`/`0x1AB`, the old word `0x1B4` becomes the articulated set
   (`0x220`), quality starts at `0xA0` and damage at `0x40`, and the paint
   seed (`0x1AC`) takes a 63-bit random draw modulo `0xFFFFFFFF` (the
-  original draws it from its process RNG; `Store::parse` hands the
-  converter a fixed seed stream, `Store::parse_with_seeds` another, so a
-  load is reproducible). The four
+  original's 64-bit `Random(0xFFFFFFFF)` from its process RNG, the run-time
+  library's twister seeded from the clock). A save's load does the same:
+  `Store::parse_with_generator` with a twister the save loader seeds from
+  the clock (`exa_game::slots::world_object_tier`); `Store::parse` (the
+  actor databases, which hold no old body) hands it a fixed stream, and
+  `Store::parse_with_seeds` any other. The old count byte `0x1A9` takes 1
+  through the count setter (`Quantised::set_count(1.0)`). The four
   old 16-byte parts at `0x1B8` become the first four 12-byte appearance
   layers at `0x1B4`: the mask is 1–4 (part 0 also sets layer byte 0 to 1),
   byte 3 and byte 0xB start at 1, the colour is the part's byte 2, and the

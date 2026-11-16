@@ -82,6 +82,19 @@ impl Store {
         Self::parse_with_seeds(b, &mut seeds)
     }
 
+    /// [`Self::parse`] with the paint seeds drawn from a run-time library
+    /// generator, as the original's oldest-layout conversion draws each one
+    /// (`Random` over `0xFFFFFFFF`, 64-bit: the low word first, then the
+    /// high word). A save loader passes the game's clock-seeded generator.
+    pub fn parse_with_generator(b: &[u8], rng: &mut crate::rtl_random::Mt19937) -> Result<Self> {
+        let mut seeds = || {
+            let low = rng.next_u32();
+            let high = rng.next_u32();
+            (u64::from(high) << 32) | u64::from(low)
+        };
+        Self::parse_with_seeds(b, &mut seeds)
+    }
+
     /// [`Self::parse`] with the source of the paint seeds an older body
     /// layout's conversion stores (the original draws them from its process
     /// RNG; a save loader can pass the game's own source here).

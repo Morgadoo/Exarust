@@ -61,11 +61,23 @@ pub fn world_object_tier(
 ) -> Option<(exa_formats::objdb::Store, exa_formats::objstrings::Library)> {
     let section = package.section(save_package::WORLD_OBJECT_DB)?;
     let (objects, strings) = save_package::world_object_payloads(section)?;
-    let world = exa_formats::objdb::Store::parse(objects).ok()?;
+    // An older save's oldest-layout bodies take their paint seeds from the
+    // run-time library's generator, which the original seeds from the
+    // clock (`Randomize`).
+    let mut rng = exa_formats::rtl_random::Mt19937::new(clock_seed());
+    let world = exa_formats::objdb::Store::parse_with_generator(objects, &mut rng).ok()?;
     let strings = strings
         .and_then(|bytes| exa_formats::objstrings::Library::parse(bytes).ok())
         .unwrap_or_default();
     Some((world, strings))
+}
+
+/// The run-time library's `Randomize` seed: the clock's milliseconds, as
+/// the original stores the tick count.
+fn clock_seed() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u32)
 }
 
 /// The two world databases as a save exports them, ready for

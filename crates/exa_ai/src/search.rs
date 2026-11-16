@@ -252,6 +252,11 @@ pub mod section {
     pub const MODEL: u32 = 0x10_0000;
 }
 
+/// The section tags that make an object worth gathering: an apparel body,
+/// a weapon, an operative or a container part.
+pub const GATHERED_PARTS: u32 =
+    section::APPAREL | section::WEAPON | section::OPERATIVE | section::CONTAINER;
+
 /// Where the apparel and weapon values sit in their section bodies.
 mod at {
     /// Apparel: the occupancy table (20 `u64`), the coverage (20 `u32`),
@@ -291,17 +296,21 @@ impl Loot {
     /// What the search reads of an item record's payload, in the order its
     /// weighing asks: the apparel body first, then the weapon section, then
     /// an operative or container part; `None` for an item with none of
-    /// them, which the gathering skips. Bytes past a short section read 0.
+    /// them, which the gathering skips: the object database's mask test
+    /// over the record's section chain ([`exa_formats::objdb::Record::has_any`]
+    /// with [`GATHERED_PARTS`]), as the original's gathering asks it. Bytes
+    /// past a short section read 0.
     pub fn of_payload(payload: &[u8]) -> Option<Self> {
-        use exa_formats::containers::section as find;
+        if !exa_formats::objdb::Record::new(0, 0, payload).has_any(GATHERED_PARTS) {
+            return None;
+        }
         if let Some(piece) = Apparel::of_payload(payload) {
             return Some(Loot::Apparel(Box::new(piece)));
         }
         if let Some(arm) = Arm::of_payload(payload) {
             return Some(Loot::Weapon(arm));
         }
-        (find(payload, section::OPERATIVE).is_some() || find(payload, section::CONTAINER).is_some())
-            .then_some(Loot::Other)
+        Some(Loot::Other)
     }
 }
 

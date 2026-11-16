@@ -9,7 +9,7 @@
 //! section (the original runs its table's converters from the matched
 //! entry down to the newest).
 
-use super::packed::FractionWord;
+use super::packed::{FractionWord, Quantised};
 use super::record::{section_range, set_u16, u16_at, u32_at};
 use super::{BODY, OPERATIVE, RANDOM_TABLE, Store, WEAPON};
 use crate::Result;
@@ -197,8 +197,13 @@ fn convert_body(old: &[u8], new: &mut [u8], paint_seeds: &mut dyn FnMut() -> u64
     set_byte(new, 0x214, byte(0x1A7));
     copy(old, 0x1AC, new, 0x218, 8);
     set_byte(new, 0x1A8, byte(0x1A8));
-    // The old condition word's low two bits become the current count's 1.
-    set_byte(new, 0x1A9, 1);
+    // The count field of byte 0x1A9 takes 1 through the count setter (the
+    // original calls it with 1.0 over the new body's byte).
+    if let Some(slot) = new.get_mut(0x1A9) {
+        let mut count = Quantised([*slot, 0, 0, 0]);
+        count.set_count(1.0);
+        *slot = count.0[0];
+    }
     set_byte(new, 0x1AA, if byte(0x1A9) & 0x80 != 0 { 0xFF } else { 0 });
     set_byte(new, 0x1B2, byte(0x1F9));
     // Three fractions of 0.25 in byte 0x1B3: the encoder's 2 is a quarter.
@@ -600,6 +605,15 @@ mod tests {
         let t = r.section(RANDOM_TABLE).unwrap();
         assert_eq!(u16_at(t, 0x10 + 0xA), 0x5284);
         assert_eq!(u16_at(t, 0x20 + 0xA), 0x57B4);
+        // The run-time library's generator gives the seed its 64-bit
+        // `Random(0xFFFFFFFF)` draw would.
+        let mut rng = crate::rtl_random::Mt19937::new(0x5EED);
+        let s = Store::parse_with_generator(&b, &mut rng).unwrap();
+        let drawn = crate::rtl_random::Mt19937::new(0x5EED).random_i64(0xFFFF_FFFF);
+        let body = s.find(1).unwrap().section(BODY).unwrap().to_vec();
+        assert_eq!(i64::from(u32_at(&body, 0x1AC)), drawn);
+        // The count setter leaves 1 in the count bits of byte 0x1A9.
+        assert_eq!(body[0x1A9] & 3, 1);
         // A 0D07 database runs only the weapon and operative converters:
         // the body and the table rows stay as they were.
         b[0..4].copy_from_slice(&0xDBAC_0D07u32.to_le_bytes());
