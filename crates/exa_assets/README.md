@@ -565,8 +565,9 @@ SteelGen), lifted colour bytes and finish level, the factory's condition
 seed B. An area's emblem adds a colour-only layer over the same mask
 through its `emblembkg` picture placed by the factory's `PtrnPos`
 (`paint::Pattern`), and blade layers sample their mask, shade and region
-normal stretched by the part's `UVScale` (`Tiling::uv_scale`); apparel takes its palette colour, the material's wear weight and the
-loader's condition. The per-part target is the part's atlas region (the
+normal stretched by the part's `UVScale` (`Tiling::uv_scale`); apparel takes its palette colour, the wear weight the job's table holds
+for the layer's stored material byte (1 for a layer drawing from a set)
+and the loader's condition. The per-part target is the part's atlas region (the
 factory atlas times its atlas scale, rounded to nearest), over which the
 region quad stretches the source textures; the region quad's width crop
 (`1 − texture_parameter`) limits the drawn columns without rescaling the
@@ -575,8 +576,8 @@ detail 3 a job paints at half the region's size while its tiles double
 (`paint::paint_target_size`); `paint::RegionDraw::uniforms` reproduces the
 `MatTile`, `DmgTile`, `ShdTile`, `MatCol`, `Damage`, `Dirt`, `Quality`,
 `UVScale`, `PtrnPos` and `NrmTile` values the original's six passes bind. `paint::jitters` draws the four offsets from a job's
-seed (the factory's seed B, or an apparel block's seed; the apparel use is a
-labelled guess since only the procedural programs read them), and a layer's
+seed (the factory's seed B, or an apparel item's paint seed,
+`Appearance::seed`, the body word before the block), and a layer's
 mask texture is the stem, `m` and the mask byte plus `'0'` as one character
 (`paint::mask_texture`, so mask 10 names `m:`; no shipped mask passes 9).
 A stored texture layer's opacity over its wear steps is
@@ -593,6 +594,9 @@ The painter's GPU-side bookkeeping is modelled in `paint_jobs`: the
 cursor arithmetic, the per-size shade scratch targets and the render-target
 formats. Exarust paints on the CPU and on Bevy's task pool, so these queues
 have no GL thread; their index arithmetic and formats are pinned by tests.
+`paint_bench` (`exa-tool paint-bench`) times the generators: every apparel
+item of the object database and every factory recipe, after a warm-up that
+decodes their textures.
 
 The procedural material's compiled program variants are
 `exa_formats::procedural::programs`: family names, pattern/alternate-normal
@@ -611,8 +615,21 @@ then regrouped, welded and converted to render form with rebuilt normals.
 The weapon is one node with one mesh and one material, whose atlas
 (`atlas::paint`) holds every part's region at its rectangle, blended into
 what earlier regions drew (shipped recipes overlap their regions), in the
-original's pass order: every region's colour and normal passes, then every
-specular pass. The merged mesh's box top is the striking extents'
+original's pass order: the shade scratch, every region's colour and normal
+passes, then every specular pass. The job's regions are its own list
+(`weapon::paint_regions`: every part with a choice, texture-only overlays
+such as fullers included). The shade scratch (`atlas::shade_scratch`, the
+`shademapa` program) multiplies every region's shade into one atlas-sized
+channel, an overlay replacing it under its first mask and a part flagged 2
+replacing it there and multiplying elsewhere (`atlas::region_flags`); every
+region's passes then read their shade from it at their own atlas texels
+(`paint::ShadeTile`), and the steel normal turns the item normal by the
+rectangle's signs. A Gemstone item is an alpha job: after the colour passes
+`RegionJob::alpha` multiplies the colour alpha by `gemstone_a` over each
+gem layer's mask, and the weapon's material refracts through it
+(`_procmatr`). A region's passes split its rows over up to eight threads
+(every texel reads only the sources and writes only itself, so the texels
+are the same on every machine). The merged mesh's box top is the striking extents'
 denominator. Item quality, condition and stored choices are honoured. A
 change of condition repaints the atlas from the same seeds (the area
 colours follow the new quality) and keeps the mesh, as the original's

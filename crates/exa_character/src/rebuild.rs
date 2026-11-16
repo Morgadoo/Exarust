@@ -677,6 +677,7 @@ mod tests {
     #[test]
     fn the_feral_underwear_takes_the_feral_share() {
         let appearance = exa_formats::objdb::Appearance {
+            seed: 0,
             quality: 160,
             damage: 64,
             dirt: 3,

@@ -44,6 +44,8 @@ pub const CONDITION_SCALED: u32 = 1;
 /// The weapon's stored part choices and materials are valid.
 pub const WEAPON_STORED: u32 = 0x1000_0000;
 const APPEARANCE_OFFSET: usize = 0x1B0;
+/// The body's paint seed word, just before the appearance block.
+const PAINT_SEED_OFFSET: usize = 0x1AC;
 /// Per-bone occupancy of apparel: a `u64` for each of bones 1..20, whose
 /// byte L holds the sub-parts of the bone the item occupies on layer L.
 const OCCUPANCY_OFFSET: usize = 0x10;
@@ -836,6 +838,10 @@ pub struct Appearance {
     pub damage: u8,
     pub dirt: u8,
     pub layers: [Layer; LAYERS],
+    /// The item's paint seed, the body word just before the block
+    /// (`0x1AC`): the texture job draws its four library-tile offsets from
+    /// it. 0 when the block was not read from an item body.
+    pub seed: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -866,6 +872,7 @@ impl Appearance {
             }
         });
         Ok(Self {
+            seed: 0,
             quality: b[0],
             damage: b[1],
             dirt: b[2],
@@ -988,7 +995,13 @@ impl Item {
                     }
                     item.appearance = body
                         .get(APPEARANCE_OFFSET..)
-                        .and_then(|b| Appearance::parse(b).ok());
+                        .and_then(|b| Appearance::parse(b).ok())
+                        .map(|a| Appearance {
+                            seed: body
+                                .get(PAINT_SEED_OFFSET..APPEARANCE_OFFSET)
+                                .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("4 bytes"))),
+                            ..a
+                        });
                     if let Some(t) = body.get(SLOT_LAYERS_OFFSET..SLOT_LAYERS_OFFSET + SLOTS * 8) {
                         item.slot_layers = std::array::from_fn(|s| t[s * 8]);
                         item.slot_words = std::array::from_fn(|s| {
@@ -1222,6 +1235,7 @@ mod tests {
     #[test]
     fn the_paint_condition_follows_the_originals_conversion() {
         let a = Appearance {
+            seed: 0,
             quality: 0x70,
             damage: 0x40,
             dirt: 0x52,
@@ -1236,6 +1250,7 @@ mod tests {
         assert_eq!((2.0 / (2.0 - x) - 1.0).to_bits(), 0x3eab_8f68);
         assert_eq!((x / (2.0 - x)).to_bits(), 0x3eab_8f6a);
         let full = Appearance {
+            seed: 0,
             quality: 255,
             damage: 255,
             dirt: 255,
@@ -1243,6 +1258,7 @@ mod tests {
         };
         assert_eq!(full.condition(), (1.0, 1.0, 1.0));
         let none = Appearance {
+            seed: 0,
             quality: 0,
             damage: 0,
             dirt: 0,
@@ -1898,6 +1914,7 @@ mod tests {
             layer.mask = i as u8 + 1;
         }
         let appearance = Appearance {
+            seed: 0,
             quality: 0,
             damage: 0,
             dirt: 0,

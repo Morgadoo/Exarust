@@ -886,6 +886,7 @@ mod tests {
     fn level_records_carry_the_appearance_their_icon_paints() {
         use exa_formats::objdb::{Appearance, Item, LOCAL};
         let shirt = Appearance {
+            seed: 0,
             quality: 200,
             damage: 10,
             dirt: 30,

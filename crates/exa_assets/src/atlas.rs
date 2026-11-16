@@ -16,10 +16,30 @@
 //! ([`crate::paint::paint_target_size`]) over the atlas texels its quad
 //! covers, mirrored when the recipe stores a negative size, in the same
 //! order and with the same blending.
+//!
+//! Before the colour passes the job draws every region's shade into a
+//! one-channel scratch of the atlas's size (cleared to 1), through the
+//! `shademapa` program, blended `ONE, SRC_ALPHA` (`dst = R + dst·A`):
+//!
+//! ```text
+//! s, m = the region's shade and its first mask at vrTex
+//! R = s·m·BMsk.x
+//! A = mix(s·(1 − m·BMsk.x), 1 − m, BMsk.y)
+//! ```
+//!
+//! `BMsk` is (1, 0) for a part flagged 2 (the shade replaces what lies
+//! under its first mask, and multiplies elsewhere), (1, 1) for a
+//! texture-only overlay part (flag 1: its shade replaces the scratch under
+//! its mask and leaves the rest), and (0, 0) otherwise (the shade
+//! multiplies in). Every factory region carries the tile flag, so all its
+//! passes then read their shade from the scratch at the region's rectangle
+//! ([`crate::paint::ShadeTile`]) and the overlapping parts share one
+//! shade. An alpha job (`_procmatr`) also runs every layer's alpha program
+//! after the colour passes, into the colour target's alpha.
 
 use bevy::math::{Vec2, Vec3};
 
-use crate::paint::{Canvas, RegionJob, byte, normal_byte, normal_texel};
+use crate::paint::{Canvas, RegionJob, ShadeTile, byte, normal_byte, normal_texel};
 use exa_formats::pixel;
 
 /// The cleared colour texel: black, opaque.
@@ -41,6 +61,77 @@ pub fn clear_surface() -> [u8; 4] {
 pub struct AtlasRegion<'a> {
     pub job: RegionJob<'a>,
     pub rect: [f32; 4],
+    /// The recipe part's flag word (bit 0 texture-only overlay, bit 1
+    /// mask-gated shade, bit 2 alternate normal program).
+    pub part_flags: u32,
+}
+
+/// A region's flags as the factory's job builder sets them from its part's:
+/// 1 (the shade tile) always, 4 for part flag 2, else 2 for part flag 1,
+/// and 8 for part flag 4.
+pub fn region_flags(part_flags: u32) -> u32 {
+    let mut flags = 1;
+    if part_flags & 2 != 0 {
+        flags |= 4;
+    } else if part_flags & 1 != 0 {
+        flags |= 2;
+    }
+    if part_flags & 4 != 0 {
+        flags |= 8;
+    }
+    flags
+}
+
+/// The `BMsk` uniform the shade scratch pass sets for a region's flags.
+pub fn shade_mask_weights(region_flags: u32) -> [f32; 2] {
+    if region_flags & 4 != 0 {
+        [1.0, 0.0]
+    } else if region_flags & 2 != 0 {
+        [1.0, 1.0]
+    } else {
+        [0.0, 0.0]
+    }
+}
+
+/// One `shademapa` fragment blended into a scratch texel `dst` (0..1):
+/// `R + dst·A`, the program's outputs clamped as the unorm target takes
+/// them, the sum stored as a byte.
+pub fn shade_scratch_texel(dst: u8, s: f32, m: f32, bmsk: [f32; 2]) -> u8 {
+    let r = s * m * bmsk[0];
+    let s = s * (1.0 - m * bmsk[0]);
+    // GLSL `mix(x, y, a)` is `x·(1 − a) + y·a`.
+    let a = s * (1.0 - bmsk[1]) + (1.0 - m) * bmsk[1];
+    let (r, a) = (r.clamp(0.0, 1.0), a.clamp(0.0, 1.0));
+    byte(r + f32::from(dst) / 255.0 * a)
+}
+
+/// The job's shade scratch: one byte per atlas texel, cleared to 255, every
+/// region with a first layer drawing its shade over the texels its quad
+/// covers.
+pub fn shade_scratch(
+    width: usize,
+    height: usize,
+    regions: &[AtlasRegion<'_>],
+    maps: &[Vec<(usize, usize)>],
+) -> Vec<u8> {
+    let mut scratch = vec![255u8; width * height];
+    for (region, map) in regions.iter().zip(maps) {
+        let Some(first) = region.job.layers.first() else {
+            continue;
+        };
+        let bmsk = shade_mask_weights(region_flags(region.part_flags));
+        let (w, h) = region.job.size;
+        for &(r, a) in map {
+            let (x, y) = (r % w, r / w);
+            if !region.job.tiling.covers_column(x, w) {
+                continue;
+            }
+            let s = crate::paint::sample_at(region.job.shade, x, y, w, h);
+            let m = crate::paint::sample_at(first.mask, x, y, w, h);
+            scratch[a] = shade_scratch_texel(scratch[a], s, m, bmsk);
+        }
+    }
+    scratch
 }
 
 /// The painted atlas, RGBA8 each.
@@ -108,10 +199,11 @@ fn put(dst: &mut [u8], at: usize, rgb: [u8; 3]) {
 }
 
 /// Paints `regions` into an atlas of `width` × `height` texels, as the
-/// original's job draws them: every region's colour and normal passes in
-/// order, then every region's specular pass over the finished normals.
+/// original's job draws them: the shade scratch, every region's colour and
+/// normal passes in order (and, for an alpha job, every region's alpha
+/// passes), then every region's specular pass over the finished normals.
 /// The targets hold bytes between regions.
-pub fn paint(width: usize, height: usize, regions: &[AtlasRegion<'_>]) -> Atlas {
+pub fn paint(width: usize, height: usize, regions: &[AtlasRegion<'_>], alpha_job: bool) -> Atlas {
     let (width, height) = (width.max(1), height.max(1));
     let texels = width * height;
     let mut colour = CLEAR_COLOUR.repeat(texels);
@@ -125,31 +217,59 @@ pub fn paint(width: usize, height: usize, regions: &[AtlasRegion<'_>]) -> Atlas 
         .iter()
         .map(|r| region_texels(r.job.size, r.rect, (width, height)))
         .collect();
-    for (region, map) in regions.iter().zip(&maps) {
-        let (w, h) = region.job.size;
+    let scratch = shade_scratch(width, height, regions, &maps);
+    // Every region's passes read the scratch at its rectangle.
+    let tiled: Vec<RegionJob<'_>> = regions
+        .iter()
+        .map(|r| RegionJob {
+            shade_tile: Some(ShadeTile {
+                scratch: &scratch,
+                width,
+                height,
+                rect: r.rect,
+            }),
+            ..r.job
+        })
+        .collect();
+    // Each region's layer coverage, shared by its passes.
+    let covers: Vec<Vec<Vec<f32>>> = tiled.iter().map(RegionJob::covers).collect();
+    for ((job, map), covers) in tiled.iter().zip(&maps).zip(&covers) {
+        let (w, h) = job.size;
         let mut canvas = Canvas::cleared(w, h);
         for &(r, a) in map {
             canvas.colour[r] = colour_of(&colour[a * 4..]);
             canvas.normal[r] = normal_texel(normal[a * 4], normal[a * 4 + 1]);
         }
-        region
-            .job
-            .colour_and_normal(&mut canvas.colour, &mut canvas.normal);
+        job.colour_and_normal_with(covers, &mut canvas.colour, &mut canvas.normal);
         for &(r, a) in map {
             put(&mut colour, a, byte3(canvas.colour[r]));
             let [x, y] = normal_byte(canvas.normal[r]);
             put(&mut normal, a, [x, y, pixel::rebuild_z(x, y)]);
         }
     }
-    for (region, map) in regions.iter().zip(&maps) {
-        let (w, h) = region.job.size;
+    if alpha_job {
+        for (job, map) in tiled.iter().zip(&maps) {
+            let (w, h) = job.size;
+            let mut alpha = vec![255u8; w * h];
+            for &(r, a) in map {
+                alpha[r] = colour[a * 4 + 3];
+            }
+            job.alpha(&mut alpha);
+            for &(r, a) in map {
+                colour[a * 4 + 3] = alpha[r];
+            }
+        }
+    }
+    for ((job, map), covers) in tiled.iter().zip(&maps).zip(&covers) {
+        let (w, h) = job.size;
         let mut canvas = Canvas::cleared(w, h);
         let mut painted_normal = vec![Vec2::ZERO; w * h];
         for &(r, a) in map {
             canvas.surface[r] = colour_of(&surface[a * 4..]);
             painted_normal[r] = normal_texel(normal[a * 4], normal[a * 4 + 1]);
         }
-        region.job.surface(
+        job.surface_with(
+            covers,
             has_normal.then_some(painted_normal.as_slice()),
             &mut canvas.surface,
         );
@@ -212,13 +332,116 @@ mod tests {
 
     #[test]
     fn an_atlas_without_regions_is_the_cleared_targets() {
-        let a = paint(2, 2, &[]);
+        let a = paint(2, 2, &[], false);
         assert_eq!(&a.colour[0..4], &CLEAR_COLOUR);
         assert_eq!(&a.surface[0..4], &clear_surface());
         assert!(a.normal.is_none());
         // The cleared normal is the flat one: (128, 128), z at full.
         assert_eq!(clear_normal()[..2], [128, 128]);
         assert_eq!(clear_surface()[1], 3);
+    }
+
+    /// The region flags the job builder sets from a part's: the tile flag
+    /// always, part flag 2 before part flag 1, part flag 4 apart.
+    #[test]
+    fn region_flags_follow_the_part_flags() {
+        assert_eq!(region_flags(0), 1);
+        assert_eq!(region_flags(1), 3);
+        assert_eq!(region_flags(2), 5);
+        assert_eq!(region_flags(3), 5);
+        assert_eq!(region_flags(4), 9);
+        assert_eq!(region_flags(0x11), 3);
+        assert_eq!(shade_mask_weights(5), [1.0, 0.0]);
+        assert_eq!(shade_mask_weights(3), [1.0, 1.0]);
+        assert_eq!(shade_mask_weights(1), [0.0, 0.0]);
+    }
+
+    /// `shademapa` blended `ONE, SRC_ALPHA` into the scratch: a plain
+    /// region multiplies its shade in, an overlay replaces the scratch
+    /// under its mask, a gated part replaces under its mask and multiplies
+    /// elsewhere.
+    #[test]
+    fn the_shade_scratch_blends_each_region() {
+        // Plain: 1 · 0.5 → 127.5, stored 128.
+        assert_eq!(shade_scratch_texel(255, 0.5, 1.0, [0.0, 0.0]), 128);
+        // Overlay under its mask: the shade replaces (0.25 → 64) ...
+        assert_eq!(shade_scratch_texel(200, 0.25, 1.0, [1.0, 1.0]), 64);
+        // ... and outside it the scratch stays.
+        assert_eq!(shade_scratch_texel(200, 0.25, 0.0, [1.0, 1.0]), 200);
+        // Gated: s·m + dst·s·(1 − m) = 0.25 + 0.25 = 0.5 at m ½.
+        assert_eq!(shade_scratch_texel(255, 0.5, 0.5, [1.0, 0.0]), 128);
+        // Outside its mask it multiplies like a plain region.
+        assert_eq!(shade_scratch_texel(200, 0.5, 0.0, [1.0, 0.0]), 100);
+    }
+
+    /// The scratch over overlapping regions, in order: a plain region over
+    /// the whole atlas multiplies everywhere, then an overlay over the left
+    /// half replaces the shade where its mask is set.
+    #[test]
+    fn overlapping_regions_share_one_scratch() {
+        use crate::paint::{Condition, PaintLayer, Texels, Tiling};
+        let flat = |w: usize, h: usize, v: u8| Texels {
+            width: w,
+            height: h,
+            rgba: [v, v, v, 255].repeat(w * h),
+        };
+        let half = flat(4, 1, 128);
+        let full = flat(4, 1, 255);
+        let light = flat(2, 1, 255);
+        let mask = Texels {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 255, 255, 255, 0, 0, 0, 255],
+        };
+        let layer = |mask| PaintLayer {
+            mask,
+            material: 1,
+            tint: Vec3::ONE,
+            wear: 1.0,
+            library: vec![],
+            specular: vec![],
+            normals: vec![],
+            pattern: None,
+        };
+        let base_layers = [layer(&full)];
+        let overlay_layers = [layer(&mask)];
+        let job = |shade, layers, size| RegionJob {
+            shade,
+            item_normal: None,
+            layers,
+            condition: Condition {
+                quality: 1.0,
+                damage: 0.0,
+                dirt: 0.0,
+            },
+            tiling: Tiling::default(),
+            size,
+            shade_tile: None,
+        };
+        let regions = [
+            AtlasRegion {
+                job: job(&half, &base_layers, (4, 1)),
+                rect: [0.0, 0.0, 1.0, 1.0],
+                part_flags: 0,
+            },
+            AtlasRegion {
+                job: job(&light, &overlay_layers, (2, 1)),
+                rect: [0.0, 0.0, 0.5, 1.0],
+                part_flags: 1,
+            },
+        ];
+        let maps: Vec<_> = regions
+            .iter()
+            .map(|r| region_texels(r.job.size, r.rect, (4, 1)))
+            .collect();
+        // 255 · 0.502 = 128; the overlay's first texel replaces it by its
+        // full shade, its second (mask 0) keeps it.
+        assert_eq!(shade_scratch(4, 1, &regions, &maps), [255, 128, 128, 128]);
+        // The colour passes read it: the base's first texel is lit by the
+        // overlay's shade, so it differs from its neighbour.
+        let atlas = paint(4, 1, &regions, false);
+        assert_ne!(atlas.colour[0..3], atlas.colour[8..11]);
+        assert_eq!(atlas.colour[8..11], atlas.colour[12..15]);
     }
 
     #[test]

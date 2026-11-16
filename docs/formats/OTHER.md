@@ -1530,8 +1530,8 @@ factory weapons of a real save, part for part and material for material.
   After the last part: regroup by material, weld (positions within 0.01 cm,
   texture coordinates within √1e-9), render form (normals rebuilt from the
   assembled shape), bounds refit, and the run-time material (`_procmat1`,
-  or `_procmatr` when an area's material has the alpha program bit) on
-  every sub-object. Shipped components share one material name, so a
+  or `_procmatr` when an area's material is Gemstone, the factory's
+  material table's only alpha entry) on every sub-object. Shipped components share one material name, so a
   weapon draws as one group.
 - **Atlas job**: one colour, normal and surface target at the factory's
   atlas size (both halved, integer, below texture detail 3), cleared to
@@ -1545,10 +1545,31 @@ factory weapons of a real save, part for part and material for material.
   texture coordinates use only its own part of its region.
   `exa_assets::atlas` places each region over the atlas texels whose
   centres its quad covers, backwards for a negative size.
-- Not reproduced yet: texture-only overlay parts (part flag 1) and the
-  mask-gated shade of parts flagged 2, the alternate normal program (part
-  flag 4), the alpha job's sRGB-alpha colour target (the atlas is opaque),
-  and a crop above 1 overhanging its region into the atlas.
+- **Regions** (REA): the job lists every part with variants, in recipe
+  order, whose choice byte is not zero (a choice past the variants takes
+  the first), texture-only overlays included (they are never placed), and
+  keeps a region when its first mask loads. Region flags: 1 always, 4 for
+  part flag 2, else 2 for part flag 1, 8 for part flag 4. Shipped: 17
+  overlay parts (fullers, axe holes), 24 parts flagged 2 (grips, necks,
+  spikes), one flagged 4 (`shield test`, which no item names)
+  (`exa-tool corpus factories`).
+- **Shade scratch** (REA, `textures.flb`): before the colour passes every
+  region with a shade texture is drawn into a one-channel scratch of the
+  job's size (cleared to 1; nearest, clamped) by `shademapa` (`R = s·m·BMsk.x`,
+  `A = mix(s·(1 − m·BMsk.x), 1 − m, BMsk.y)`, s the region's shade, m its
+  first mask) blended `ONE, SRC_ALPHA`; `BMsk` is (1, 0) for region flag
+  4, (1, 1) for 2 and (0, 0) otherwise. With region flag 1 every pass's
+  `ShdTile` is the region's rectangle (the blade programs scale its height
+  by `UVScale`), so all regions read their shade from the scratch at their
+  own atlas texels; `steel_n` turns the item normal by `sign(ShdTile.xy)`.
+- **Alpha job**: an item with a Gemstone area flags the job; after the
+  colour passes (which write no alpha) every layer's alpha program is
+  drawn blended `ZERO, SRC_COLOR` into the sRGB-alpha colour target. Only
+  `gemstone_a` exists in the shipped `textures.flb`. `_procmatr` is
+  `_procmat1` with the refraction mode (material word 0x360207).
+- Not reproduced yet: the alternate-normal draw of part flag 4, linear
+  filtering of the source maps, and a crop above 1 overhanging its region
+  into the atlas.
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
   4 material slots (material, finish, colour, mode), stats, and the stored

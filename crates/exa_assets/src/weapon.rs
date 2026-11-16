@@ -129,12 +129,12 @@ impl ModelLoader<'_> {
         &self,
         factory: &Factory,
         built: &Built,
-        placed: &Placed,
+        (part_index, variant): (usize, usize),
         pattern_position: [f32; 4],
         condition: (u8, u8, u8),
     ) -> FactoryPaint {
-        let part = &factory.parts[placed.part];
-        let variant = &part.variants[placed.variant];
+        let part = &factory.parts[part_index];
+        let variant = &part.variants[variant];
         let (quality, damage, dirt) = condition;
         // Masks 1–4 take their areas' materials; an area past the generated
         // ones paints as SteelGen.
@@ -157,6 +157,7 @@ impl ModelLoader<'_> {
         FactoryPaint {
             stem: variant.model.clone(),
             condition: Appearance {
+                seed: 0,
                 quality,
                 damage,
                 dirt,
@@ -169,7 +170,7 @@ impl ModelLoader<'_> {
                 built
                     .generated
                     .deform
-                    .get(placed.part)
+                    .get(part_index)
                     .copied()
                     .unwrap_or([0.0; 3]),
             ),
@@ -177,6 +178,7 @@ impl ModelLoader<'_> {
             // The region quad's u runs over `1 − texture_parameter`.
             texture_crop: 1.0 - part.texture_parameter,
             texture_detail: self.cache.textures.settings().texture_detail,
+            part_flags: part.flags,
         }
     }
 
@@ -224,13 +226,9 @@ impl ModelLoader<'_> {
             loaded[placed.part] = self.factory_component(model).is_some();
         }
         let condition = weapon.map_or((0, 0, 0), |w| (w.quality, w.damage, w.dirt));
-        let material = self.factory_material(name, &factory, &built, &placed, &loaded, condition);
+        let material = self.factory_material(name, &factory, &built, &loaded, condition);
         let mut model = geometry.clone();
-        for node in &mut model.nodes {
-            for part in &mut node.parts {
-                part.1 = material.clone();
-            }
-        }
+        model.assign_material(&material);
         let root = model.nodes.first();
         let top = root.map_or(0.0, |n| (n.bounds.0.y + n.half_extents.y) * CM_PER_METRE);
         self.store_factory_extents(&factory, &built, weapon, &boxes, &placed, top, key);
@@ -270,14 +268,16 @@ impl ModelLoader<'_> {
         component
     }
 
-    /// The weapon's one material: every assembled part's region painted
-    /// into the shared atlas ([`ModelLoader::factory_atlas_material`]).
+    /// The weapon's one material: every chosen part's region painted into
+    /// the shared atlas ([`ModelLoader::factory_atlas_material`]). The
+    /// paint job's region list is its own: every part in recipe order with
+    /// a choice, texture-only overlays included and whether or not its
+    /// component has a mesh ([`paint_regions`]).
     fn factory_material(
         &mut self,
         name: &str,
         factory: &Factory,
         built: &Built,
-        placed: &[Placed],
         loaded: &[bool],
         condition: (u8, u8, u8),
     ) -> Handle<ExaMaterial> {
@@ -285,17 +285,30 @@ impl ModelLoader<'_> {
         let pattern_position = factory.pattern_position(&built.generated.selection, |i| {
             loaded.get(i).copied().unwrap_or(false)
         });
-        let regions: Vec<_> = placed
-            .iter()
-            .filter(|p| loaded.get(p.part).copied().unwrap_or(false))
-            .map(|p| {
-                let paint = self.factory_paint(factory, built, p, pattern_position, condition);
-                (paint, factory.parts[p.part].atlas)
+        let regions: Vec<_> = paint_regions(factory, &built.generated.selection)
+            .into_iter()
+            .map(|(part, variant)| {
+                let paint = self.factory_paint(
+                    factory,
+                    built,
+                    (part, variant),
+                    pattern_position,
+                    condition,
+                );
+                (paint, factory.parts[part].atlas)
             })
             .collect();
         let size =
             crate::atlas::job_size(factory.atlas, self.cache.textures.settings().texture_detail);
-        self.factory_atlas_material(name, size, &regions)
+        // An alpha job when an area's material is one the factory's
+        // material table marks (Gemstone only): its run-time material is
+        // `_procmatr`.
+        let alpha_job = built
+            .generated
+            .materials
+            .iter()
+            .any(|m| procedural::alpha_target(m.material));
+        self.factory_atlas_material(name, size, &regions, alpha_job)
     }
 
     /// Writes the assembled striking extents into the weapon's stat bytes:
@@ -447,7 +460,7 @@ impl ModelLoader<'_> {
             }
         };
 
-        let material = self.factory_material(name, &factory, &built, &placed, &loaded, condition);
+        let material = self.factory_material(name, &factory, &built, &loaded, condition);
         let mut root = ModelNode {
             prop_skin: None,
             name: name.to_string(),
@@ -624,6 +637,28 @@ pub fn part_frame(placed: &Placed) -> Frame {
 }
 
 /// A factory weapon's model and stat cache key.
+/// The paint job's regions as the factory's job builder lists them: every
+/// part with variants, in recipe order, whose choice byte is not zero, with
+/// the chosen variant (a choice past the part's variants takes the first).
+/// Unlike placing, the overlay flag does not exclude a part: a texture-only
+/// part (flag 1) has a region but no mesh.
+pub fn paint_regions(factory: &Factory, selection: &[u8]) -> Vec<(usize, usize)> {
+    factory
+        .parts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, part)| {
+            let n = part.variants.len();
+            if n == 0 {
+                return None;
+            }
+            let choice = usize::from(selection.get(i).copied().unwrap_or(0));
+            let variant = choice.checked_sub(1)?;
+            Some((i, if variant < n { variant } else { 0 }))
+        })
+        .collect()
+}
+
 fn factory_key(name: &str, weapon: Option<&Weapon>) -> String {
     format!("factory/{}/{:?}", name.to_ascii_lowercase(), weapon)
 }
@@ -883,6 +918,141 @@ mod tests {
         // Many parts draw a source texture of another size over the region;
         // this is why the region, not the texture, is the target.
         assert!(stretched > 20, "only {stretched} stretched");
+    }
+
+    /// The paint job lists every part with a choice, overlays included, in
+    /// recipe order; a choice past the variants takes the first. Shipped
+    /// overlay parts (the blades' fullers, the axes' holes) get a region
+    /// though they are never placed. Skipped without the game.
+    #[test]
+    fn overlay_parts_have_paint_regions() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::GameData::open(dir).unwrap();
+        let pack = game.pack(PackKind::Factories).unwrap();
+        let mut overlays = 0;
+        for entry in pack.entries() {
+            let f = Factory::parse(pack.get(&entry.name).unwrap()).unwrap();
+            for seed in 0..8u32 {
+                let built = f.build(&WeaponSpec {
+                    seeds: [seed.wrapping_mul(0x9E37_79B9), seed],
+                    quality: 128,
+                    ..Default::default()
+                });
+                let selection = &built.generated.selection;
+                let regions = paint_regions(&f, selection);
+                let expected: Vec<usize> = (0..f.parts.len())
+                    .filter(|&i| {
+                        !f.parts[i].variants.is_empty()
+                            && selection.get(i).copied().unwrap_or(0) > 0
+                    })
+                    .collect();
+                assert_eq!(
+                    regions.iter().map(|r| r.0).collect::<Vec<_>>(),
+                    expected,
+                    "{}",
+                    entry.name
+                );
+                let boxes = vec![ComponentBox::default(); f.parts.len()];
+                let placed: Vec<usize> = f
+                    .place(&built.generated, &boxes)
+                    .iter()
+                    .map(|p| p.part)
+                    .collect();
+                for &(part, _) in &regions {
+                    if f.parts[part].flags & 1 != 0 {
+                        assert!(!placed.contains(&part), "{}: overlay placed", entry.name);
+                        overlays += 1;
+                    }
+                }
+            }
+        }
+        assert!(overlays > 10, "only {overlays} overlay regions");
+    }
+
+    /// A gem-set weapon is an alpha job: its atlas carries the gem layers'
+    /// alpha and its material refracts (`_procmatr`); every other weapon's
+    /// atlas is opaque. Skipped without the game.
+    #[test]
+    fn gem_weapons_paint_their_alpha_and_refract() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::GameData::open(dir).unwrap();
+        let pack = game.pack(PackKind::Factories).unwrap();
+        let names: Vec<String> = pack.entries().iter().map(|e| e.name.to_string()).collect();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let (mut gems, mut plain) = (0, 0);
+        for name in names {
+            let Some((factory, _)) = loader.factory_recipe(&name, None) else {
+                continue;
+            };
+            let gem_candidate = factory.areas.iter().any(|a| {
+                a.candidates
+                    .iter()
+                    .any(|c| procedural::alpha_target(c.material))
+            });
+            let seeds: u32 = if gem_candidate { 64 } else { 2 };
+            for seed in 0..seeds {
+                let weapon = Weapon {
+                    seeds: [seed.wrapping_mul(0x9E37_79B9) ^ 0x51, seed],
+                    quality: 200,
+                    ..Default::default()
+                };
+                let Some((_, built)) = loader.factory_recipe(&name, Some(&weapon)) else {
+                    continue;
+                };
+                let alpha_job = built
+                    .generated
+                    .materials
+                    .iter()
+                    .any(|m| procedural::alpha_target(m.material));
+                if !alpha_job && plain > 3 {
+                    continue;
+                }
+                let Some(model) = loader.factory_weapon(&name, Some(&weapon)) else {
+                    continue;
+                };
+                let handle = &model.nodes[0].parts[0].1;
+                let material = loader.materials.get(handle).unwrap();
+                let refracts =
+                    material.params.flags2 & exa_render::material::flags2::REFRACTION != 0;
+                let image = loader
+                    .images
+                    .get(material.diffuse_map.as_ref().unwrap())
+                    .unwrap();
+                let (w, h) = (image.width() as usize, image.height() as usize);
+                let data = image.data.as_ref().unwrap();
+                let translucent = data[..w * h * 4]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|p| p[3] < 255)
+                    .count();
+                assert_eq!(refracts, alpha_job, "{name}");
+                if alpha_job {
+                    assert!(translucent > 0, "{name}: an opaque gem atlas");
+                    gems += 1;
+                    break;
+                } else {
+                    assert_eq!(translucent, 0, "{name}: a plain atlas with alpha");
+                    plain += 1;
+                }
+            }
+        }
+        assert!(gems > 0, "no gem-set weapon among the shipped recipes");
     }
 
     /// Assembles the first few shipped factories (skipped without the game):
