@@ -1192,6 +1192,12 @@ impl BlockComposite {
         self.state
     }
 
+    /// Whether it has no composite (state bit 4): the original's lit draw
+    /// and both shadow draws skip such a block.
+    pub fn is_blank(&self) -> bool {
+        self.state & block_flags::BLANK != 0
+    }
+
     /// The set it holds, if any.
     pub fn set(&self) -> Option<u32> {
         self.set
@@ -1380,15 +1386,17 @@ impl CompositeSelector {
                     block.state = (block.state & !block_flags::LOW_RES) | block_flags::HIGH_RES;
                 }
             } else {
-                self.remove(index);
+                self.remove(index, true);
             }
         }
     }
 
-    /// Takes a block out of the selected list, hands its set back to its
-    /// pool and returns it to the wanted, blank state. This is the removal
-    /// the out-of-reach branch and a tile unload share.
-    fn remove(&mut self, index: usize) {
+    /// Takes a block out of the selected list (the last entry takes its
+    /// place) and hands its set back to its pool. The out-of-reach branch
+    /// of the selection then returns the block to the wanted, blank state
+    /// (`reset`); the original's separate removal routine, which a block
+    /// leaving its tile goes through, leaves the state word as it was.
+    fn remove(&mut self, index: usize, reset: bool) {
         let Some(at) = self.blocks[index].selection.take() else {
             return;
         };
@@ -1400,7 +1408,9 @@ impl CompositeSelector {
         }
         self.selected.pop();
         let state = self.blocks[index].state;
-        self.blocks[index].state = block_flags::WANTED | block_flags::BLANK;
+        if reset {
+            self.blocks[index].state = block_flags::WANTED | block_flags::BLANK;
+        }
         if let Some(set) = self.blocks[index].set.take() {
             if state & block_flags::LOW_SET != 0 {
                 self.pools.give_low(set);
@@ -1410,13 +1420,16 @@ impl CompositeSelector {
         }
     }
 
-    /// Removes blocks from the selection, as the frame hook does when a tile
-    /// is unloaded: each leaves the list, hands its set back and becomes
-    /// wanted and blank. Blocks that are not selected are left alone.
+    /// Removes blocks from the selection, as the original does for a block
+    /// node that leaves its tile (a grid cell losing its terrain, or the
+    /// unload of all geometry): each leaves the list and hands its set back;
+    /// its state word is not touched (the node is about to go). Blocks that
+    /// are not selected are left alone, as the callers test the list index
+    /// first.
     pub fn drop_blocks(&mut self, blocks: &[usize]) {
         for &index in blocks {
             if index < self.blocks.len() {
-                self.remove(index);
+                self.remove(index, false);
             }
         }
     }

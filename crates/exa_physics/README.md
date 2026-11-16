@@ -451,7 +451,9 @@ sphere–box tests, capsule–sphere, the slab tests of a swept sphere against
 a box and an oriented box, segment against oriented box (slab and
 separating-axis), point-set bounds, and the convex volumes: rebasing,
 plane refresh (the normal (v2−v1)×(v0−v1) with the normaliser's
-x²+z²-then-y² sum, a zero vector left zero), box tests, polygon clipping
+x²+z²-then-y² sum, a zero vector left zero), box tests, how far a box lies
+outside a volume (`outside_distance`, over a volume's faces or bare planes:
+the terrain's hidden-block light rank calls it live), polygon clipping
 into a portal pyramid, cutting a volume by a plane with its cap (the cap
 closed by dropping its last point when its ends are nearer than 0.01 cm,
 turned round and chained from its start otherwise, a NaN distance

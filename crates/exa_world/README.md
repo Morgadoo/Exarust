@@ -49,7 +49,8 @@ and the grid's rooms; portal clipping is next (see
 - `scene_env`: the original's scene environment as a pure model: the sun and moon on their 45° path and the daylight factor (the engine's fast sines, the library's double cosines and its approximate reciprocal square root), the engine's built-in six-record day track and its start-up pass (the `o` fill rule; the optional step that linearises the colours and scales the sky colours by 0.75 is modelled but off, as the shipped game never sets its flag), the records' pick-and-blend, the engine's own sRGB curve (the fast logarithm and exponential), cloud dimming (the luminance summed x, y, then z; `f⁴` squared twice), the fog's span and per-frame near/far, the clear colour (RGBA) and sky gradient, the ambient scale, the automatic sunlight rule, the sun mode and sky switch (the light's colour and intensity back to the level's and 3), the sun placement's two bodies for the sky, the scene's `k`-colour scale, the sky cube's tint, the flash tint, the frame's water level (−100000, or −25 cm when the terrain palette's wetness the terrain load hands the environment is above 0.4; published as `exa_physics::body::WaterLevel`), its rain-driven wind, tint and sun intensity, the `_Sunlight` node's constants, rain, a rain effect and sound, thunder and lightning with the original's generators and its branch order, the paused and view-led tick, the strike placed 200 cm in front of the view, and the save unit's three presets: the indoor/underground scene, the seeded outdoor day and weather, and the fog variants. `environment` turns it into the level's `Lighting` (ambient, sun, linear fog, clear colour and sky) and Bevy resources; a level load calls `level_lighting_scene`, which applies the preset the level's name selects (indoor for `exanima*` and the first seven arenas, a story level then taking the level-enter hook's fog variant, `story_level_fog`: 1.4 for `exanima04`, 2.0 for `exanima06` to `08`, 1.8 for the rest, the seeded outdoor preset for `arenao*`, the record for everything else) with one seed per load (the original's counter word: the low word of a 100 ns counter with its bytes reversed, `counter_seed`, unless `--env-seed` (`fix_seed`) or `EXA_SCENE_SEED` fixes it, `fixed_seed`; the visibility pass and the lighting draw the same day, and the lighting logs the draw), keeps the environment as `SceneEnvRuntime` with the engine's and the library's streams, and a `PostUpdate` system ticks the weather each frame, hands the sun placement's dimmer to the sun map as the light's softness source (`SunShadowRegion::c`) and rewrites the fog, clear colour, ambient and sun light only when the frame changes (the time of day has no speed in play, as in the shipped game, which never writes the field; `EXA_TIME_SPEED` drives it and `EXA_TIME_OF_DAY` re-places the sun after the draw, both debug aids).
 - `published_light`: the light records the unit publishes to the engine's scene globals, as `PublishedLight`: the sun record's direction times its fourth lane and that lane's root, the reach (stored only when it differs by at least 0.01 from the published one, single-precision difference and double-precision compare, a NaN passing, scaling the direction and halved while the original's mode flag is clear) and re-publishing the held reach through a zeroed one when a sun is set, and the sky light's record stored verbatim. The records' identity past the sun and the sky direction, and the mode flag's meaning, are inferred guesses.
 - `terrain`: tiles, blend rules, the tile bake and plants; the palette's
-  name-sorted brush table (the original's binary search), the
+  name-sorted brush table (the original's binary search, through which the
+  rules' children and the tiles' painted layers resolve), the
   eleven-brush limit (wired: later layers are dropped), the painted
   layers' 0.001 weight gate, the 256 × 256 byte channel accumulation per
   vertex and leaf, the used-material list in palette order (the tile's summed leaf
@@ -58,7 +59,9 @@ and the grid's rooms; portal clipping is next (see
   its byte) and the four-per-mask-plane packing (wired into the tile's
   splat, with the renderer's sixteen-layer cap keeping the heaviest
   materials and material 0 first), and, not wired, the height-rule
-  scaling and the Gaussian blur kernel (the original builds it at init and
+  scaling (the original's only call scales the rule table its manager has
+  just created, before any palette fills it, so it changes nothing) and the
+  Gaussian blur kernel (the original builds it at init and
   never reads it, nor its scratch planes); `terrain::tile_bake` runs the
   original's per-tile mask and height passes on the tile worker with the
   GPU's rules (the root node's quads, the merged weight bytes filtered
@@ -89,8 +92,9 @@ and the grid's rooms; portal clipping is next (see
   original's streaming decisions (60 m block priorities, the 44.4 m / 15 m
   composite selection and its pools, the 3 × 3 tile gather), the tile
   streaming bits with the one-tile-a-frame hook, the block-until-loaded
-  wait, the per-tile refresh and the oriented-box/light-plane distance the
-  hidden blocks rank by; `terrain::composite` is the original's compositor
+  wait, the per-tile refresh and the light distance the hidden blocks rank
+  by (the engine's convex-volume clearance,
+  `exa_physics::intersect::outside_distance`); `terrain::composite` is the original's compositor
   as numbers: the 21 high and 43 low set pools and their 1024²/512² targets
   (colour, normal, gloss, half-size parallax), the four-layer pass keys
   (`AddPass`, `Textured`, `Masked`, `BaseNrm`), every per-layer value the
@@ -120,12 +124,22 @@ and the grid's rooms; portal clipping is next (see
   the set; the priority slot is `reprioritise`, not
   run every frame because its caller is not identified; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
-  wireframe hook); `terrain::shadow_draw` keeps out of the sun's cascades the
-  blocks the live scene's visible pass did not draw, and lists them in
+  wireframe hook); `terrain::blank_draw` leaves the blocks the selection
+  holds blank (no composite: past the 44.4 m reach, or without a set) out of
+  every camera's visible list, as the original's lit and shadow draws skip
+  them (`EXA_TERRAIN_DRAW_BLANK=1` draws them); `terrain::shadow_draw` keeps
+  out of the sun's cascades the blank blocks and those the live scene's
+  visible pass did not draw, and lists them in
   `exa_render::cube_shadows::CubeCasterGate` so the point lights' cube faces
   rendered that frame leave them out too (the faces stay cached as rendered),
-  as the original's shadow draws take only blocks with the main-view bit
-  (`EXA_TERRAIN_SHADOW_ALL=1` keeps them all). Grass and
+  as the original's shadow draws take only composited blocks with the
+  main-view bit (`EXA_TERRAIN_SHADOW_ALL=1` keeps the undrawn ones). The
+  selection reads that main-view bit as a block's visibility where the live
+  scene holds the block. `terrain::plugins` models the static terrain's
+  bring-up and its activation (hooks in, worker resumed, release timer
+  registered once, extensions activated) and deactivation (hooks out, worker
+  suspended, extensions deactivated, composites freed); the live terrain is
+  `TerrainBuild` and the level teardown, so the model is test-only. Grass and
   small plants take the original's upward normals turned with the instance,
   large plants their own model normals turned and un-scaled the same way
   (the loader's terrain-normal branch never runs, though its rule is
