@@ -65,7 +65,12 @@ pub struct GiTagPlugin;
 
 impl Plugin for GiTagPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, tag_cells.after(TransformSystems::Propagate));
+        app.add_systems(
+            PostUpdate,
+            tag_cells
+                .after(TransformSystems::Propagate)
+                .in_set(exa_physics::FramePostPhase::Placed),
+        );
     }
 }
 
@@ -81,7 +86,7 @@ type Bounds = (
 /// Gives surfaces that moved (or all of them, when the block grid changes)
 /// the cell their bounds centre falls in. Only a changed value is written,
 /// so a still surface never touches its tag.
-fn tag_cells(
+pub fn tag_cells(
     mut commands: Commands,
     textures: Option<Res<GiTextures>>,
     mut grid: Local<Option<Vec2>>,

@@ -308,7 +308,12 @@ impl Plugin for PostPlugin {
             UniformComponentPlugin::<ExaPost>::default(),
         ))
         .init_resource::<PostSharpen>()
-        .add_systems(PostUpdate, (adopt_cameras, follow_sharpen).chain());
+        .add_systems(
+            PostUpdate,
+            (adopt_cameras, follow_sharpen)
+                .chain()
+                .in_set(exa_physics::FramePostPhase::Prepare),
+        );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
