@@ -1077,7 +1077,9 @@ point moved toward that bone by its projected fraction, a NaN fraction
 staying NaN, and the 80 cm pixel radius at the reference point's depth)
 and its raised
 surface, the gamepad aim's `250·|aim| + 50` cm point and its
-`(0.4·AimSpeed + 0.1)²` ease, the 12 m contact list and its 12-entry
+`(0.4·AimSpeed + 0.1)²` ease, the nearby gather from the room lists
+(`exa_ai::rooms::RoomLists`) and the room move after the contacts, the
+12 m contact list over the nearby list and its 12-entry
 eviction, the strongest engaged enemy (the enemy's own concern for the
 player over 2) and the late-swing check that takes its fighting estimate
 as the practice's lesson, the auto-target (the visible opponent within 500 cm
@@ -2364,7 +2366,8 @@ plain and whether the GPU or the stand-in made it.
 `--open-container FRAME` (Exarust's debug helper) opens
 the container nearest the player that many frames after the level load ends.
 `npc_search` hosts the original's follow state and the companion's search
-in the running game: a level brain whose roles choose the follow follows the
+in the running game (a searcher that leaves the scene lets the object it
+held go, the removal hook's search stop, `release_removed_searches`): a level brain whose roles choose the follow follows the
 player (past its 400 cm band a route through the navigation grid on its own
 planning turn; inside the personal stop it backs off along the closing walk,
 to 400 cm from the player when it stands within 200 cm, `exa_ai::idle::closing_goal`) and, inside the band,

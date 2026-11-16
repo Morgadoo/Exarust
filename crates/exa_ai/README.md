@@ -65,7 +65,7 @@ AI's walk (`route_walk`; the follower's hurried soft stop ends it once
 its ground is within a metre of the route's end in 3-D; a combat tick
 that does not reach the chase, or stops a running body, lets it go); it can be told
 to hold its ground (a debug aid). The fighter's skill and blend come from
-its brain's personality, else Exarust's default (skill 0, blend 1).
+its brain's personality, else skill 0 (as the original's player behaviour keeps it: only the AI's constructor and the companion conversion write it) and blend 1. A chase that leaves for want of a fresh foe clears the body's target and the duellist's focus before the idle return. The death hook fades a golem's (race word AI bit) `go` glow to 0 (logged: no live skin material carries it yet).
 
 A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
@@ -88,12 +88,18 @@ player keeps its world number (`world_character_id`). A character wearing a mind
 brains' and a duellist's, sees it hidden, its range shrinking with the
 observer's perception. The AI tick decays its group alert a step every ten
 seconds, lets a cast go 500 ms after it began unless the body still casts
-(`brain::cast_timeout`, before the condition gate), links each brain into
-its 600 cm room cell and the level's room table, gathers its nearby list
-from the characters of its level room and of the room behind each exit
-(a repeat skipped), each through the nearby insert's sight test, the
-room-to-room light reach (a level without a room table gathers its 600 cm
-cell), and out of combat runs the idle states' head (`walker`: the alert
+(`brain::cast_timeout`, before the condition gate), on a level with a grid
+moves each brain (a dead one too, before the condition gate) to the list
+of its level room (`rooms::RoomLists`: the room's characters, the newest
+first; off the grid nothing changes, a cell in no room unlinks it and
+empties its nearby list), gathers its nearby list while it is present from
+its room's list (without itself) and the list of the room behind each exit
+(a repeat skipped, itself not skipped there), each through the nearby
+insert's sight test, the room-to-room light reach (a brain in no room, or
+a level without a room table, keeps its list); a body no behaviour links
+(a brainless duellist) is linked by the AI tick [Exarust], and the
+player's behaviour links itself and gathers its own list
+(`rooms::RoomPlace`, `exa_game::player_practice`); and out of combat runs the idle states' head (`walker`: the alert
 look-around while the panic is at least 0.2 and the body keeps its
 in-combat mark, which fighting and fleeing set, turning to the body's
 target when it has one and panning otherwise; then the attention to the attended contact, whose notice
@@ -228,7 +234,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), and the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg into the character's route, a refused route stopping it, the settle before the pause) |
 | `route_walk` | the character's one route (`AiRoute`) and the AI tick's one walk after the state (`walk`, run by `walk_routes` after every state of the brains' tick): the path follower (in the scene the ground point's nearest projection in 3-D, the 100 cm carrot spilling onto later segments, out of the scene the 2 cm slide with the original's crossing sums; the urgency-0 run bit until the carrot passes 0.99 of the last segment in double and its 30 cm soft stop, the hurried 100 cm soft stop, the blocked line's run clear and plan request), the walk (busy while stepping, the after-route count of 80, out of the scene only the moving byte, the aim along the carrot with the 0.7/0.007 gate, the goal 150 cm out, the run test with a NaN cost passing, the sprint at urgency 2, the look yaw and the look eased, the head look at the AI's look target or the offset eased 0.02 toward 0 in double, the cursor, the body in the way's soft stop), the route stop and the soft stop (`8·speed + 20` cm pull-back along the frame's forward, then the grid's line walk clamping the goal). Exarust's: the ground and standing points are the root's place, each route carries the state that planned it (a state that loses the character ends only its own), a deadline (length × 20 ms + 2 s) on the roam, flight and follow routes, the flight's straight route without a grid route, and a stand-in steer and clip for a body without muscles |
 | `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the out-of-combat look chain (the body look toward the head offset, the 0.4/0.64 smoothing and the gait helper's 30° write, with the stepping, live-target and combat cases), the steer line (120 cm, 3600 cm²), the way share, the body in the way (each body shifted 20 cm along the walk direction, skipping the remembered and carried bodies), the alert pan (both draws every tick, one in 300 and 75, the body turned by the sway with a foe), the out-of-combat sway, and the aim, settle and snap (the snap copies the body's facing vector; the settle reads the body's heading direction). Every yaw of a body direction goes through the engine's fast heading, every direction from a yaw through its fast sine and cosine, the idle look's yaw through its fast two-argument arctangent and the walk's normalise through the approximate reciprocal square root, as the original's routines call them (`yaw_of`, `dir_of`, `pitched`, `yaw_atan2`, `unit`); only the model's own rotation is built by exact trigonometry (`model_yaw`) |
-| `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
+| `rooms` | the room lists (the level grid's floored, half-offset flat cell index over 600 cm, the cell-to-room read, the per-room occupant lists newest first, the previous-room memory, the unlink and the nearby gather over the room and its exits), the search's 600 cm cell index, and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return (called by the chase's leave, with `restart_idle`), the investigation of a disturbance (sampled live in the waits' head with the shipped constant 0, so it never walks) and its goal callback (the pathfinder's nearest walkable point, mode 20, radius 100 cm), the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal (the idle driver and go-to-object state have no caller: in 0.9.5 only a never-set flag installs them, on the player body) |
 | `estimate` | the fighting estimate from a record's skills and combat skill, the held weapon's stat bytes and reach, and the body scale |
 | `struck` | the hit reaction in the running game: each blow `exa_combat` notices (a wound, a clash or a block, in the damage routine's order) runs the combatant base's courage and attacker mark, then the AI's concern rise with the threat estimate over the brain's nearby list (only under the cap); a non-duellist attacker's lesson goes out as `Taught`; the base's last call, the mind break of a body whose status has the handover bit, is the game's (`exa_game::mind::runtime::break_on_blows`, after `HitReactions`) |
