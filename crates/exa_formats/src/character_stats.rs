@@ -364,6 +364,11 @@ pub struct CharacterStats {
     /// the spawn's armour pass sums after the init
     /// ([`CharacterStats::with_encumbrance`]); 0 until then.
     pub encumbrance: f32,
+    /// The weightless share its worn gauntlets register (1 while powered,
+    /// [`crate::encumbrance::weightless_share`]), which the spawn's armour
+    /// pass sets after the init ([`CharacterStats::with_weightless`]); 0
+    /// until then.
+    pub weightless: f32,
     /// Its race walks on four limbs (the second flag word's
     /// [`crate::races::QUADRUPED`]): its stab is resolved as a swing.
     pub quadruped: bool,
@@ -512,6 +517,7 @@ impl CharacterStats {
             golem_core: golem_core(flags),
             deflection: record.deflection(),
             encumbrance: 0.0,
+            weightless: 0.0,
             quadruped: stats.flags2 & QUADRUPED != 0,
             heavy_claws: weapon_record::unarmed(byte, stats.kind).heavy_claws,
             attack_bonus: stats.attack_bonus,
@@ -577,15 +583,21 @@ impl CharacterStats {
         weapon_record::step_reach(self.scale, age, self.encumbrance)
     }
 
+    /// These stats with the weightless share the armour pass registered.
+    pub fn with_weightless(self, weightless: f32) -> Self {
+        Self { weightless, ..self }
+    }
+
     /// What the character brings to the weapons it holds: its size, its
-    /// scale and its encumbrance. No worn item makes its weapons weightless
-    /// yet (the shield-lightening gauntlets, unpowered in every shipped
+    /// scale, its encumbrance and the weightless share its powered
+    /// shield-lightening gauntlets give (unpowered in every shipped
     /// record).
     pub fn holder(&self) -> Holder {
         Holder {
             encumbrance: self.encumbrance,
             size: self.size,
             scale: self.scale,
+            weightless: self.weightless,
             ..Holder::AVERAGE
         }
     }

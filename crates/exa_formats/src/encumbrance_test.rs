@@ -505,6 +505,32 @@ fn the_special_kinds_dispatch_in_wearing_order() {
     assert_eq!(WornSpecials::of_worn([]), WornSpecials::default());
 }
 
+/// The gauntlets' weightless share: 0 without them, 1 while the last pair
+/// worn is powered, 0 when the last pair is not (whatever an earlier pair
+/// registered); the stats' holder carries it to the holding pass.
+#[test]
+fn the_gauntlets_register_the_weightless_share() {
+    let gauntlets = |powered| Burden {
+        special: Burden::LIGHT_SHIELD,
+        powered,
+        ..plain(20)
+    };
+    assert_eq!(weightless_share(&[plain(5)]), 0.0);
+    assert_eq!(weightless_share(&[gauntlets(true)]), 1.0);
+    assert_eq!(weightless_share(&[gauntlets(true), gauntlets(false)]), 0.0);
+    assert_eq!(weightless_share(&[gauntlets(false), gauntlets(true)]), 1.0);
+    let specials = WornSpecials::of_worn([(1, gauntlets(true)), (2, plain(5))]);
+    assert_eq!(specials.weightless, 1.0);
+    let stats = crate::character_stats::CharacterStats::default().with_weightless(1.0);
+    assert_eq!(stats.holder().weightless, 1.0);
+    assert_eq!(
+        crate::character_stats::CharacterStats::default()
+            .holder()
+            .weightless,
+        0.0
+    );
+}
+
 /// A record's specials come from the items its worn ids find, with their
 /// crystal bytes as the body stores them.
 #[test]
