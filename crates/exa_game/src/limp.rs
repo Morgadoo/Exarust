@@ -61,19 +61,26 @@ impl Plugin for LimpPlugin {
         )
         .add_systems(
             FixedUpdate,
-            watch_spawns.after(exa_physics::body::BodySystems),
+            watch_spawns
+                .in_set(exa_physics::body::AfterSolver::Observe)
+                .after(crate::fall::fall_out_of_world),
         )
         .add_systems(
             FixedPreUpdate,
             (place_living, place_on_ground)
                 .chain()
-                .after(crate::player::steer_player),
+                .after(crate::player::steer_player)
+                .before(crate::player::release_held_wake),
         )
         .add_systems(
             FixedUpdate,
             place_entering
                 .after(exa_ai::presence::check_presence)
-                .after(exa_ai::BrainTick)
+                .after(exa_physics::body::TickBehaviour)
+                .after(crate::thaum::kinesis_live::take_kinesis_picks)
+                .before(exa_physics::body::MechanismRegistration)
+                .before(exa_physics::CharacterControllers)
+                .before(exa_physics::body::BodyPreStep)
                 .before(exa_combat::condition::PostureTick),
         )
         .add_systems(Update, (pace_swings, install_limb_trees))
@@ -671,7 +678,7 @@ fn ground_for(body: &Ragdoll, own: Option<Entity>) -> bool {
 /// pelvis, which the parts carry. Logs the
 /// pelvis height it placed at info level.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn place_on_ground(
+pub(crate) fn place_on_ground(
     mut commands: Commands,
     mut asked: Query<(Entity, &GroundPlacement, &mut Ragdoll, &GlobalTransform)>,
     motions: Option<Res<Motions>>,

@@ -85,11 +85,16 @@ impl Plugin for CharacterTickPlugin {
                         .in_set(Movement),
                     note_strike_chests
                         .in_set(Attack)
+                        .after(exa_combat::parry::hold_counter_parries)
                         .before(exa_combat::swing::run_swings),
                     push_striking_fists
                         .in_set(Attack)
-                        .after(exa_combat::swing::run_swings),
-                    sampler::rise_thorax_hunch.in_set(Upkeep),
+                        .after(exa_combat::swing::run_swings)
+                        .after(exa_combat::parry::run_parries),
+                    // Before the burn, which reads the same body.
+                    sampler::rise_thorax_hunch
+                        .in_set(Upkeep)
+                        .before(exa_combat::burn::burn_upkeep),
                     sampler::sample_clip.in_set(Sampler),
                     carry::aim_body.in_set(Carry),
                 ),

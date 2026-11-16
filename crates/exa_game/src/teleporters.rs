@@ -177,11 +177,16 @@ impl Plugin for TeleportPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    release_from_slots,
-                    use_devices,
-                    glow_devices,
-                    power_down_devices,
-                    end_sessions,
+                    // The slots, the devices' use and glow before the
+                    // behaviour; the power-down and the sessions' end after
+                    // the worn effects' calls, before the characters' ticks.
+                    (release_from_slots, use_devices, glow_devices)
+                        .chain()
+                        .before(exa_physics::body::TickBehaviour),
+                    (power_down_devices, end_sessions)
+                        .chain()
+                        .after(crate::item_effects::run_worn_effects)
+                        .before(exa_physics::body::CharacterTicks),
                 )
                     .chain()
                     .after(crate::effects::advance_clock),

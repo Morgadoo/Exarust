@@ -209,7 +209,7 @@ pub(super) fn end_holds(
 /// Before the caster tick: a throw from the cursor puts its body in the
 /// held environment and spawns its shell.
 #[allow(clippy::type_complexity)]
-pub(super) fn grab_thrown(
+pub(crate) fn grab_thrown(
     mut commands: Commands,
     mut casters: Query<&mut PowerCaster>,
     mut bodies: Query<(&mut Ragdoll, Has<PropBody>), Without<PowerCaster>>,

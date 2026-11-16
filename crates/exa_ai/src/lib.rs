@@ -114,7 +114,12 @@ impl Plugin for AiPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                presence::check_presence.before(exa_physics::body::CharacterTicks),
+                // Before the deaths' silence and the stance read the
+                // conditions it writes, and before the behaviour.
+                presence::check_presence
+                    .before(exa_combat::condition::silence_the_dead)
+                    .before(exa_combat::stance::StanceTick)
+                    .before(exa_physics::body::TickBehaviour),
             )
             // The brains' tick: every body tick, after the presence check
             // and the daze's stance, before the posture, the character

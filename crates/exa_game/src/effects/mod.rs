@@ -173,10 +173,13 @@ impl Plugin for EffectsPlugin {
             (
                 advance_clock,
                 (
-                    bubble::tick_bubbles,
-                    scan::tick_scans,
-                    shell::tick_shells,
-                    fire_row::tick_rows,
+                    // Before the brains' chain, which takes the world.
+                    (bubble::tick_bubbles, scan::tick_scans, shell::tick_shells)
+                        .before(exa_physics::body::TickBehaviour),
+                    // After it, before the characters' ticks.
+                    fire_row::tick_rows
+                        .after(exa_physics::body::TickBehaviour)
+                        .before(exa_physics::body::CharacterTicks),
                 ),
             )
                 .chain(),

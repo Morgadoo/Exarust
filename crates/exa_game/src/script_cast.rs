@@ -63,7 +63,12 @@ impl Plugin for ScriptCastPlugin {
             .add_message::<exa_combat::condition::Awakened>()
             .add_message::<WitnessGrant>()
             .init_resource::<ContactMirror>()
-            .add_systems(PreUpdate, sync_contacts)
+            // After a level change's spray reset (both post fixed-step
+            // commands), before the pad reads the conversations.
+            .add_systems(
+                PreUpdate,
+                sync_contacts.after(exa_character::spray::reset_sprays),
+            )
             .add_systems(
                 Update,
                 (

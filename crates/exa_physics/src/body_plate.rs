@@ -155,16 +155,17 @@ pub(crate) fn plugin(app: &mut App) {
         FixedUpdate,
         (
             register_plates
-                .after(crate::body::TickBehaviour)
+                .in_set(crate::body::MechanismRegistration)
+                .after(crate::body::slide_body::register_slides)
                 .before(BodySystems),
-            step_plates.after(BodySystems),
+            step_plates.in_set(crate::body::MechanismStep),
         ),
     );
 }
 
 /// Turns each registered surface with a [`PendingPlate`] into a
 /// [`PlateBody`]: its mobility and the mechanism environment.
-fn register_plates(
+pub(crate) fn register_plates(
     mut commands: Commands,
     mut pending: Query<(Entity, &PendingPlate, &mut Ragdoll)>,
 ) {
@@ -183,7 +184,7 @@ fn register_plates(
 
 /// Steps every awake surface, sending the signals and the sounds its
 /// reports make.
-fn step_plates(
+pub(crate) fn step_plates(
     mut plates: Query<(Entity, &mut PlateBody, &mut Ragdoll)>,
     mut signals: MessageWriter<MechanismSignal>,
     mut sounds: MessageWriter<MechanismSounded>,

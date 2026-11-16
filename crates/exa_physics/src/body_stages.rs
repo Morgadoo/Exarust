@@ -47,6 +47,39 @@ pub struct BodyPreStep;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BodyPostStep;
 
+/// The fixed step's work after the solver, in this order, before the
+/// post-step ([`BodyPostStep`]) and the rest of the step: what reads the
+/// bodies as the solver left them (the traces, the falls out of the world,
+/// the spawn watch, the held items' follow), the bodies' sounds, the
+/// level's mechanisms (the doors under bodies, the signals, the flames'
+/// unstaging), the strikes the contacts made (the particles' doses, the
+/// blades, the held weapons and limbs, the broken bites), the blood
+/// sprays' tick, then the physics' own follow-up (the grips' lengths,
+/// [`MechanismStep`], the props, the sector lists). Each pair of systems
+/// that touch the same data runs in one order (no order left to the
+/// executor), the order the step ran before the phases were named.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AfterSolver {
+    Observe,
+    Sounds,
+    Level,
+    Strikes,
+    Sprays,
+    Physics,
+}
+
+/// The mechanisms' registration, slides, plates, levers then doors: after
+/// the behaviour (the hands' words, the grips' requests), before the
+/// character controllers. In the fixed step.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MechanismRegistration;
+
+/// The mechanisms' own step after the solver, plates, levers then doors:
+/// after the strikes the solver's contacts made and the held grips' lengths,
+/// before the props and the sector lists. In the fixed step.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MechanismStep;
+
 /// The schedule of one character's tick: its [`CharacterStage`]s in order,
 /// run once for every living character ([`run_character_ticks`]), the
 /// character it ticks in [`TickedCharacter`]. Its systems run one at a time
@@ -133,6 +166,29 @@ pub(super) fn configure(app: &mut App) {
             CharacterTicks,
             BodySystems,
             BodyPostStep,
+        )
+            .chain(),
+    )
+    .configure_sets(
+        FixedUpdate,
+        (
+            MechanismRegistration
+                .after(TickBehaviour)
+                .before(crate::CharacterControllers),
+            MechanismStep.in_set(AfterSolver::Physics),
+            BodyPostStep.after(AfterSolver::Physics),
+        ),
+    )
+    .configure_sets(
+        FixedUpdate,
+        (
+            BodySystems,
+            AfterSolver::Observe,
+            AfterSolver::Sounds,
+            AfterSolver::Level,
+            AfterSolver::Strikes,
+            AfterSolver::Sprays,
+            AfterSolver::Physics,
         )
             .chain(),
     )

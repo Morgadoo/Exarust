@@ -523,7 +523,9 @@ impl Plugin for CastPlugin {
                 )
                     .chain()
                     .after(tick_casters)
-                    .after(exa_combat::CombatSystems),
+                    .after(exa_combat::CombatSystems)
+                    .before(exa_character::spray::start_jets)
+                    .before(exa_ai::struck::HitReactions),
             )
             // An AI's Long Door and Summon ask the grid before the walk
             // runs them; a summon whose place is known asks for its demon,
@@ -531,9 +533,12 @@ impl Plugin for CastPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    super::long_door_live::pick_long_doors,
-                    super::summon_live::ask_demons,
-                    super::summon_live::arrive_demons,
+                    super::long_door_live::pick_long_doors
+                        .in_set(exa_physics::body::AfterSolver::Observe),
+                    (super::summon_live::ask_demons, super::summon_live::arrive_demons)
+                        .chain()
+                        .after(exa_physics::body::AfterSolver::Physics)
+                        .before(exa_combat::impact::level_impacts),
                 )
                     .chain()
                     .before(tick_casters)
@@ -542,8 +547,11 @@ impl Plugin for CastPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    super::summon_live::release_demons,
-                    super::summon_live::end_demon_wisps,
+                    super::summon_live::release_demons.before(exa_combat::CombatSystems),
+                    super::summon_live::end_demon_wisps
+                        .before(follow_weapon_changes)
+                        .before(super::live::tick_wisps)
+                        .before(super::veil_live::displace_bodies),
                 )
                     .after(tick_casters)
                     .before(super::vanish_live::step_vanishes),
@@ -636,38 +644,73 @@ impl Plugin for CastPlugin {
                 (
                     reset_entered_casts
                         .after(exa_ai::presence::check_presence)
+                        .after(crate::mind::runtime::feed_mind_status)
                         .before(exa_ai::BrainTick),
                     answer_attack_asks
                         .after(exa_ai::BrainTick)
+                        .after(super::kinesis_live::take_kinesis_picks)
+                        .before(super::throw_live::sense_throws)
                         .before(tick_casters),
+                    // After the hands' words, before the grips' runtime,
+                    // the mechanisms and the pre-step.
                     super::kinesis_live::take_kinesis_picks
                         .after(exa_physics::body::TickBehaviour)
+                        .after(exa_character::body_words::drop_collapsed_hands)
+                        .after(exa_combat::impact::sync_fist_striking)
+                        .after(crate::equip::apply_head_height)
+                        .before(exa_character::grip_runtime::resolve_pending_grips)
+                        .before(exa_physics::body::MechanismRegistration)
+                        .before(exa_physics::CharacterControllers)
+                        .before(exa_physics::body::BodyPreStep)
                         .before(BodySystems)
                         .before(tick_casters),
+                    // After the pre-step, before the collapsed hands'
+                    // release, the grips' build and the health tick.
                     super::throw_live::sense_throws
+                        .after(exa_physics::body::BodyPreStep)
+                        .before(exa_character::grip_runtime::release_collapsed)
+                        .before(exa_physics::grip_solve::GripSolveSet::Build)
+                        .before(exa_combat::regen::HealthTick)
                         .before(BodySystems)
                         .before(tick_casters)
                         .after(super::kinesis_live::take_kinesis_picks),
                     super::hold_live::grab_thrown
+                        .before(exa_character::grip_runtime::release_collapsed)
+                        .before(exa_physics::grip_solve::GripSolveSet::Build)
+                        .before(exa_combat::regen::HealthTick)
                         .before(BodySystems)
                         .before(tick_casters)
                         .after(super::throw_live::sense_throws),
-                    super::user_stamp::blame_impacts.after(exa_combat::impact::strike_limbs),
+                    super::user_stamp::blame_impacts
+                        .after(exa_combat::impact::strike_limbs)
+                        .after(exa_physics::body::AfterSolver::Physics)
+                        .before(exa_ai::struck::HitReactions),
                     shock_weapon_hits
                         .after(exa_combat::impact::strike_limbs)
+                        .after(exa_combat::impact::level_impacts)
+                        .before(super::live::tick_arcs)
                         .before(super::live::shock_fighters),
                 ),
             )
             .add_systems(
                 FixedUpdate,
-                super::pre_pass::meet_bodies_first.in_set(exa_physics::body::BodyPreStep),
+                super::pre_pass::meet_bodies_first
+                    .in_set(exa_physics::body::BodyPreStep)
+                    .after(exa_physics::CharacterControllers),
             )
             .add_systems(
                 FixedUpdate,
                 (
-                    tick_casters,
-                    follow_weapon_changes.after(tick_casters),
-                    super::vanish_body::turn_vanishing_bodies.after(tick_casters),
+                    tick_casters.after(super::live::tick_barricades),
+                    follow_weapon_changes
+                        .after(tick_casters)
+                        .after(exa_combat::react_to_hits)
+                        .before(exa_combat::bite::open_bites)
+                        .before(super::veil_live::displace_bodies),
+                    super::vanish_body::turn_vanishing_bodies
+                        .after(tick_casters)
+                        .after(exa_character::spray::start_jets)
+                        .after(crate::mind::runtime::break_on_blows),
                     apply_otherwhere.after(tick_casters),
                     super::hold_live::end_holds,
                     super::hold_live::dress_strikes,
@@ -684,10 +727,10 @@ impl Plugin for CastPlugin {
                     crate::effects::danger::sync_hazards,
                     super::torrent_live::tick_torrents,
                     play_cast_motions,
-                    call_motion_hooks,
+                    call_motion_hooks.before(super::live::shock_fighters),
                 )
                     .chain()
-                    .after(BodySystems),
+                    .after(exa_physics::body::AfterSolver::Physics),
             );
     }
 }
@@ -2760,7 +2803,7 @@ fn weapon_arc(
 /// is armed when fewer than four weapons already carry arcs. A blade that
 /// was already in hand and was not armed stays that way.
 #[allow(clippy::type_complexity)]
-fn follow_weapon_changes(
+pub(crate) fn follow_weapon_changes(
     mut commands: Commands,
     mut casters: Query<(Entity, &mut PowerCaster)>,
     blades: Query<(

@@ -1772,6 +1772,7 @@ impl Plugin for GamepadPlugin {
                     crate::pad_menu::sync_focus,
                     read_pad
                         .after(bevy::input::gamepad::gamepad_event_processing_system)
+                        .after(crate::script_cast::sync_contacts)
                         .run_if(resource_exists::<crate::bindings::Bindings>),
                     sync_controller_mode,
                 )

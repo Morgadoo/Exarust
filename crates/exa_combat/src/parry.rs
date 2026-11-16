@@ -1862,7 +1862,7 @@ pub fn aim_at_new_target(
 /// that does not fight, or has no foe attacking, does no more than read
 /// its own state.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub(crate) fn run_parries(
+pub fn run_parries(
     mut commands: Commands,
     ticked: Res<TickedCharacter>,
     ticks: Option<Res<BodyTicks>>,
@@ -2168,7 +2168,7 @@ const TWO_WEAPONS: u8 = 0x90;
 /// attack's clip clears both hands (the motion start's release, in
 /// [`run_parries`]).
 #[allow(clippy::type_complexity)]
-pub(crate) fn hold_counter_parries(
+pub fn hold_counter_parries(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
     blades: Query<&Blade>,

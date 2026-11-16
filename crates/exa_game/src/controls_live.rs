@@ -183,7 +183,10 @@ impl EndGuiDrag {
 /// The release itself, once the frame's input is read: a held left button
 /// is released as if the window manager had seen it go up, so every
 /// reader this frame sees the release. A button not held is left alone.
-fn end_gui_drag(mut end: ResMut<EndGuiDrag>, buttons: Option<ResMut<ButtonInput<MouseButton>>>) {
+pub fn end_gui_drag(
+    mut end: ResMut<EndGuiDrag>,
+    buttons: Option<ResMut<ButtonInput<MouseButton>>>,
+) {
     if !std::mem::take(&mut end.0) {
         return;
     }
@@ -206,7 +209,9 @@ impl Plugin for ControlsLivePlugin {
                 PreUpdate,
                 (
                     character_mode,
-                    end_gui_drag.after(bevy::input::InputSystems),
+                    end_gui_drag
+                        .after(bevy::input::InputSystems)
+                        .before(bevy::ui::UiSystems::Focus),
                 ),
             )
             .add_systems(Update, (hand_bytes, loadout_form_block));

@@ -532,7 +532,12 @@ impl Plugin for LightSourcePlugin {
     fn build(&self, app: &mut App) {
         bridge_light_source_types(app);
         app.init_resource::<FlickerRng>()
-            .add_systems(FixedUpdate, fade_from_levers)
+            // The levers' light fades of the last step, before the
+            // behaviour.
+            .add_systems(
+                FixedUpdate,
+                fade_from_levers.before(exa_physics::body::TickBehaviour),
+            )
             .add_systems(Update, flicker_lights)
             .add_systems(PostUpdate, apply_light_state);
     }
