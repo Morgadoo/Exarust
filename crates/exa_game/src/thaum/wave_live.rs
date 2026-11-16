@@ -14,8 +14,9 @@
 //!   and ends the cast. The charge passing 1 throws the ring and clears the
 //!   caster's hook and power id. Thrown, its live chunks take the blast's
 //!   contact slots, which the wave's class shares: the level's static
-//!   meshes, the cloths and each other body part by part
-//!   ([`super::blast_live::strike_part`]), the wave's setup giving the
+//!   meshes and the cloths after its tick, and each other body part by
+//!   part in the next tick's first pass ([`super::pre_pass`],
+//!   [`super::blast_live::strike_part`]), the wave's setup giving the
 //!   pushes; a struck character takes the blast's knock, counter, concern
 //!   and loosened pins, and a body met is woken. The entity leaves the
 //!   scene when the wave is spent or fizzled.
@@ -38,10 +39,7 @@ use exa_ai::brain::Npc;
 use exa_ai::combatant::Combatant;
 use exa_physics::Physics;
 
-use super::blast_live::{
-    BLAST_HOOK, BODY_WAKE, ChunkSet, STATIC_SCALE, body_mass, knock_character, part_near,
-    stir_cloth, strike_level, strike_part,
-};
+use super::blast_live::{BLAST_HOOK, ChunkSet, STATIC_SCALE, stir_cloth, strike_level};
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, spend_tick};
 use super::force::{BlastSetup, WAVE_SETUP};
@@ -146,7 +144,7 @@ fn as_blast_chunk(chunk: &WaveChunk) -> BlastChunk {
 
 /// The wave's chunks as the blast's contacts walk them, and which live:
 /// `chunks` and `alive` are the caller's scratch buffers.
-fn wave_chunks(live: &LiveWave, chunks: &mut Vec<BlastChunk>, alive: &mut Vec<bool>) {
+pub(crate) fn wave_chunks(live: &LiveWave, chunks: &mut Vec<BlastChunk>, alive: &mut Vec<bool>) {
     chunks.clear();
     chunks.extend(live.wave.chunks.iter().map(as_blast_chunk));
     alive.clear();
@@ -155,7 +153,7 @@ fn wave_chunks(live: &LiveWave, chunks: &mut Vec<BlastChunk>, alive: &mut Vec<bo
 
 /// The contacts' moves and weights back on the wave's chunks (the wave
 /// keeps no wear).
-fn take_back(live: &mut LiveWave, chunks: &[BlastChunk]) {
+pub(crate) fn take_back(live: &mut LiveWave, chunks: &[BlastChunk]) {
     for (wave, blast) in live.wave.chunks.iter_mut().zip(chunks) {
         wave.at = blast.at;
         wave.weight = blast.weight;
@@ -204,7 +202,7 @@ pub(crate) fn tick_waves(
     mut commands: Commands,
     mut waves: Query<(Entity, &mut LiveWave)>,
     mut casters: Query<(&mut PowerCaster, Option<&Locomotor>)>,
-    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    bodies: Query<(Entity, &Ragdoll)>,
     mut draws: ResMut<EffectDraws>,
     mut chunks: Local<Vec<BlastChunk>>,
     mut alive: Local<Vec<bool>>,
@@ -258,8 +256,10 @@ pub(crate) fn tick_waves(
             );
         }
         if live.wave.state == WaveState::Thrown {
-            // The blast's contact slots, in the sector's order: the level,
-            // the simulated objects, then the bodies' parts.
+            // The blast's static and object slots, as the sector's stages
+            // run them after the wave's step: the level, then the simulated
+            // objects. The bodies meet it in the next tick's first pass
+            // (`super::pre_pass`).
             wave_chunks(live, &mut chunks, &mut alive);
             let mut set = ChunkSet {
                 chunks: &mut chunks,
@@ -279,38 +279,6 @@ pub(crate) fn tick_waves(
             for mut cloth in &mut cloths {
                 if stir_cloth(&set, scale, &mut cloth) {
                     debug!("wave {entity:?} stirs a cloth");
-                }
-            }
-            for (other, mut body) in &mut bodies {
-                if other == live.caster {
-                    continue;
-                }
-                let character = body.drive.is_some();
-                let mass = body_mass(&body);
-                for part in 0..body.parts.len() {
-                    if !part_near(&set, &body.parts[part]) {
-                        continue;
-                    }
-                    let strike = strike_part(&mut set, &mut body, part, character, mass);
-                    if !strike.struck {
-                        continue;
-                    }
-                    debug!(
-                        "wave {entity:?} strikes {other:?} part {part}: impulse {:.3?} cm",
-                        strike.impulse
-                    );
-                    if character {
-                        knock_character(
-                            &mut body,
-                            mass,
-                            strike.impulse,
-                            live.caster,
-                            other,
-                            &mut combatants,
-                            &npcs,
-                        );
-                    }
-                    body.touch(BODY_WAKE);
                 }
             }
             take_back(live, &chunks);

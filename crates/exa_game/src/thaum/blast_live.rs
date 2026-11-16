@@ -16,8 +16,9 @@
 //!   chest, else the player's cursor), pays its drain from the caster's
 //!   focus and ticks ([`Blast::tick`]); a thrown blast strikes the other
 //!   bodies' limbs and leaves the scene when [`BlastEvents::removed`] says so.
-//! - **Contacts** (after the tick, in the sector's order: the level, the
-//!   simulated objects, the bodies' parts; each contact leaves its reach
+//! - **Contacts** (after the tick, in the sector's order: the level and
+//!   the simulated objects after its step, the bodies' parts in the next
+//!   tick's first pass, [`super::pre_pass`]; each contact leaves its reach
 //!   scale for the next): a thrown blast meets the level's static meshes
 //!   ([`strike_level`], [`strike_level_mesh`]: the mesh walk's two-sided
 //!   sphere query and rebound, or the bolt's sampled walk through the front
@@ -35,10 +36,12 @@
 //!   character's part also takes [`character_knock`] of that part's
 //!   gathered impulse: the energy, a knockback step, its instability
 //!   counter +1, concern 1 at 0.01 toward the caster and the loosened pins.
-//!   The force wave shares these contact slots ([`ChunkSet`]).
+//!   The force wave shares these contact slots ([`ChunkSet`]). The parts
+//!   offered are those the sector's first pass walks: the nine grid cells
+//!   around the blast's, each part's bound sphere and mesh box against the
+//!   blast's bounds, a disabled body skipped.
 //!   [inf: a part built without a node mesh answers with its collision
-//!   spheres; the sector's offer of nearby parts is a sphere test against
-//!   the blast's bounds; the knock is a knockback step.]
+//!   spheres; the knock is a knockback step.]
 //! - **Release**: the release alerts the caster's known characters
 //!   ([`alert_amount`]); the thrown ribbon draws with `effectforce_f`
 //!   ([`draw_blasts`]); the charge loop and the release play
@@ -349,37 +352,12 @@ impl PartMesh {
         mut on_point: impl FnMut(&mut (Vec3, f32), Vec3),
     ) -> bool {
         match self {
-            PartMesh::Triangles(triangles, tree) => {
-                let mut face = |s: &mut (Vec3, f32), t: &[Vec3; 3]| -> bool {
-                    let t = t.map(|v| v * CM);
-                    match two_sided_point(&t, s.0, s.1, mesh_query::SMALL) {
-                        Some(q) => {
-                            on_point(s, q);
-                            true
-                        }
-                        None => false,
-                    }
-                };
-                match tree.as_deref() {
-                    // The tree is built in centimetres.
-                    Some(tree) => tree.tree.sphere_leaves(sphere, 1.0, |s, ids| {
-                        let mut hit = false;
-                        for &id in ids {
-                            if let Some(t) = triangles.get(id as usize) {
-                                hit |= face(s, t);
-                            }
-                        }
-                        hit
-                    }),
-                    None => {
-                        let mut hit = false;
-                        for t in triangles.iter() {
-                            hit |= face(sphere, t);
-                        }
-                        hit
-                    }
-                }
-            }
+            PartMesh::Triangles(triangles, tree) => exa_physics::mesh_tree::two_sided_contacts(
+                triangles,
+                tree.as_deref(),
+                sphere,
+                on_point,
+            ),
             // [inf: a part without a node mesh answers with its spheres:
             // each one's surface point toward the query, met within the
             // query's radius, as a face's closest point would be.]
@@ -504,21 +482,6 @@ pub(crate) fn strike_part(
         impulse: gathered,
         scale,
     }
-}
-
-/// Whether the sector would hand the effect a part for its contact: the
-/// part's mesh sphere (cm) meets the effect's bounding sphere.
-/// [inf: the original's sector walk offers the parts in its grid cells
-/// near the effect; this sphere test stands in for that walk.]
-pub(crate) fn part_near(set: &ChunkSet<'_>, part: &exa_physics::body::Part) -> bool {
-    let bounds = if part.triangles.is_some() {
-        part.pairing.mesh
-    } else {
-        part.pairing.sphere
-    };
-    let centre = part.transform().transform_point3(bounds.centre) * CM;
-    let span = bounds.radius * CM + set.radius;
-    !(centre.distance_squared(set.centre) > span * span)
 }
 
 /// The effect's walk over a cloth: the chunks stir its particles
@@ -859,7 +822,7 @@ pub(crate) fn knock_character(
 pub(crate) fn alert_known(
     caster: Entity,
     aim: Vec3,
-    bodies: &Query<(Entity, &mut Ragdoll)>,
+    bodies: &Query<(Entity, &Ragdoll)>,
     combatants: &mut Query<&mut Combatant>,
     npcs: &Query<&Npc>,
 ) {
@@ -917,7 +880,7 @@ pub(crate) fn tick_blasts(
         Option<&Locomotor>,
         Option<&GlobalTransform>,
     )>,
-    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    bodies: Query<(Entity, &Ragdoll)>,
     places: Query<&GlobalTransform>,
     cursor: Option<Res<CursorGround>>,
     physics: Option<Res<Physics>>,
@@ -1002,9 +965,10 @@ pub(crate) fn tick_blasts(
             caster.sync_body();
         }
         if live.blast.state == THROWN {
-            // The sector's object contacts in the order its step makes
-            // them: the level, the simulated objects, then the bodies'
-            // parts. Each contact leaves its reach scale for the next.
+            // The sector's object stages after the blast's step: the level,
+            // then the simulated objects. Each contact leaves its reach
+            // scale for the next; the bodies meet the blast in the next
+            // tick's first pass (`super::pre_pass`).
             let mut set = ChunkSet::of_blast(&mut live.blast, &mut alive);
             if let (Some(physics), Some(statics)) = (physics.as_deref(), statics.as_deref()) {
                 let hits = strike_level(&mut set, statics, physics, &places, &mut triangles);
@@ -1016,39 +980,6 @@ pub(crate) fn tick_blasts(
             for mut cloth in &mut cloths {
                 if stir_cloth(&set, live.contact_scale, &mut cloth) {
                     debug!("blast {entity:?} stirs a cloth");
-                }
-            }
-            for (other, mut body) in &mut bodies {
-                if other == live.caster {
-                    continue;
-                }
-                let character = body.drive.is_some();
-                let mass = body_mass(&body);
-                for part in 0..body.parts.len() {
-                    if !part_near(&set, &body.parts[part]) {
-                        continue;
-                    }
-                    let strike = strike_part(&mut set, &mut body, part, character, mass);
-                    live.contact_scale = strike.scale;
-                    if !strike.struck {
-                        continue;
-                    }
-                    debug!(
-                        "blast {entity:?} strikes {other:?} part {part}: impulse {:.3?} cm",
-                        strike.impulse
-                    );
-                    if character {
-                        knock_character(
-                            &mut body,
-                            mass,
-                            strike.impulse,
-                            live.caster,
-                            other,
-                            &mut combatants,
-                            &npcs,
-                        );
-                    }
-                    body.touch(BODY_WAKE);
                 }
             }
         }
