@@ -77,6 +77,12 @@ fn the_barricade_casts_and_raises_a_wall() {
     assert!((state.body.spent - 0.25).abs() < 1e-6);
     assert!(state.active[0].entity.is_some());
     assert_eq!(count::<LiveBarricade>(&mut app), 1);
+    // The entry kept the process stream's draw for the hum's start.
+    let roll = {
+        let mut q = app.world_mut().query::<&LiveBarricade>();
+        q.iter(app.world()).next().unwrap().wall.hum_roll
+    };
+    assert!(0.0 < roll && roll < 1.0, "{roll}");
 }
 
 /// Energy: the shock makes its class, starts cast motion 0x27, spawns the

@@ -37,6 +37,7 @@ pub(crate) use exa_physics::engine_math::reciprocal_sqrt;
 
 pub mod arcs;
 pub mod barricade;
+pub mod barricade_sound;
 pub mod barrier_live;
 pub mod blast_live;
 pub mod blast_sound;

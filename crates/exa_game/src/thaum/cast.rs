@@ -2073,7 +2073,9 @@ fn create_force(
                     .map(|d| d * CM)
             };
             let mut wall = Barricade::raise(frame, cost, now, trim, None, &mut draws.0);
-            let add = wall.add_to_world(&mut caster.body, None, None, f64::from(roll.0.unit()));
+            // The hum's start takes the process stream's next draw (the
+            // frame starts the voice once its buffer loads).
+            let add = wall.add_to_world(&mut caster.body, None, None, draws.0.unit());
             let entity = commands
                 .spawn((
                     Name::new("_ForceBarricade"),
