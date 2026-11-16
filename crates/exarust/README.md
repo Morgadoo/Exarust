@@ -15,6 +15,13 @@ runs the game's command line headless for that many ticks past the load,
 so `--fixed-frames --trace-all --trace <file>` body traces of two builds can
 be compared without a graphics card; and the check that the armour pass's
 head height comes first in the fixed step.
+`schedule_ambiguity_test` builds the same App and fails on any two systems
+of one schedule that touch the same data with no order between them
+(Bevy's ambiguity analysis): every schedule of the fixed step, the
+character tick, the brains' chain and `PreUpdate` are fully ordered;
+`Update` and `PostUpdate` keep a TODO count of their unordered pairs
+(`FRAME_TODO`), which may only fall. `EXA_AMBIGUITY_DUMP=1` prints each
+schedule's sorted order, edges and pairs.
 `exarust grid <scene>…` (`src/grid.rs`) opens one window split into four
 quadrants, each a separate game in a child process started with
 `--offscreen <file>` (`src/offscreen.rs`): no OS window, its cameras

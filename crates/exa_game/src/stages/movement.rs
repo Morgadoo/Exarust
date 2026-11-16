@@ -65,7 +65,7 @@ fn sprint_gaits(gaits: CapsuleGaits, feral: f32) -> CapsuleGaits {
 /// read of it (moving, its body's step, the run blend, the leg mode, the
 /// turn left).
 #[allow(clippy::type_complexity)]
-pub(crate) fn decide_movement(
+pub fn decide_movement(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
     ticks: Option<Res<BodyTicks>>,

@@ -36,11 +36,22 @@ impl Plugin for FrameLoopPlugin {
             .add_systems(First, pace_frame)
             .add_systems(
                 PreUpdate,
+                // The window's own work first in the frame, after the input
+                // is read: the full-screen toggle, the minimize on a lost
+                // focus, the keys cleared on a focus change; then the GUI's
+                // scale follows the window, the pointer's warp settles and
+                // the GUI's focus and keys read the input.
                 (
                     toggle_windowed,
-                    clear_keys_on_focus_change.after(bevy::input::InputSystems),
                     minimize_on_deactivate,
-                ),
+                    clear_keys_on_focus_change,
+                )
+                    .chain()
+                    .after(bevy::input::InputSystems)
+                    .before(exa_ui::scale::follow_window)
+                    .before(exa_game::os_pointer::settle_warp)
+                    .before(exa_game::controls_live::end_gui_drag)
+                    .before(bevy::ui::UiSystems::Focus),
             );
     }
 }
@@ -125,7 +136,7 @@ fn pace_frame(
 /// focus messages. Bevy already releases the keys on a focus loss; the
 /// mouse buttons and the gain are Exarust's addition. Runs after Bevy's
 /// input systems so the releases are this frame's.
-fn clear_keys_on_focus_change(
+pub(crate) fn clear_keys_on_focus_change(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut keys: Option<ResMut<ButtonInput<KeyCode>>>,
     mut buttons: Option<ResMut<ButtonInput<MouseButton>>>,

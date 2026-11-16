@@ -86,7 +86,7 @@ from the attack, and without Ward clears the hold from 0.4 of its clip
 (double, a NaN too); two weapons keep aiming on the same test and guard the
 hand that does not strike every attack tick (the right hand for motions
 8–10, else the left, with its parent). A placement on the ground opens
-with the clinch clear (`parry::clear_for_placement`).
+with the clinch clear (`parry::clear_for_placement`); a cast motion started while parrying runs it too (`parry::clear_for_cast`, from the game's cast motions).
 
 A blocked striker recoils (`recoil`): strength and the stall rate become
 0.5 and the released bit clears. A class word of 0x90 (two weapons) that

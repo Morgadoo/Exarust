@@ -1003,7 +1003,12 @@ impl Plugin for ClothPlugin {
             // The wind hook runs once a step before them.
             .add_systems(
                 FixedUpdate,
-                (advance_cloth_wind, crate::cloth_stage::stage_cloths)
+                // The cloths stage after the slides load their stage.
+                (
+                    advance_cloth_wind,
+                    crate::cloth_stage::stage_cloths
+                        .after(exa_physics::body::slide_body::load_slides),
+                )
                     .chain()
                     .in_set(exa_physics::body::BodySystems)
                     .before(exa_physics::body::step_bodies),
@@ -1012,7 +1017,8 @@ impl Plugin for ClothPlugin {
                 FixedUpdate,
                 crate::cloth_stage::finish_cloths
                     .in_set(exa_physics::body::BodySystems)
-                    .after(exa_physics::body::step_bodies),
+                    .after(exa_physics::body::step_bodies)
+                    .after(exa_physics::body::slide_body::unload_slides),
             )
             // The meshes take the particles once a frame, after its ticks.
             .add_systems(

@@ -61,7 +61,7 @@ use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
-use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
+use exa_physics::body::{BodyTicks, Ragdoll, step_length};
 use exa_render::electricity::ArcMaterial;
 use exa_render::gi::VoxelLight;
 use exa_render::glow::GlowMaterial;
@@ -110,9 +110,18 @@ impl Plugin for ThaumEffectsPlugin {
             .init_resource::<super::effect_draw::ForceNoise>()
             .add_systems(
                 FixedUpdate,
-                (tick_arcs, tick_barricades, tick_wisps, shock_fighters)
+                (
+                    tick_arcs,
+                    tick_barricades,
+                    tick_wisps
+                        .after(exa_combat::react_to_hits)
+                        .before(exa_combat::bite::open_bites)
+                        .before(super::veil_live::displace_bodies)
+                        .before(super::vanish_body::turn_vanishing_bodies),
+                    shock_fighters,
+                )
                     .chain()
-                    .after(BodySystems),
+                    .after(exa_physics::body::AfterSolver::Physics),
             )
             .add_systems(
                 exa_ai::BrainChain,
@@ -336,7 +345,8 @@ pub struct ShockTaken {
 /// The shock reaction's clock and health rule, as the original's character
 /// takes a shock: `None` while the shock comes too early, and that refusal
 /// draws nothing. A shock that lands first draws the hit sound (pitch from
-/// the first draw, gain from the second). A released race (`released`, and
+/// the first draw, gain from the second); a released race that is dying
+/// takes no shock at all. A released race (`released`, and
 /// not dying) is not burnt: its next shock is 500 ms on and its health is
 /// kept. Every other shock then draws the extra delay below 200 ms.
 #[allow(clippy::too_many_arguments)]
@@ -351,6 +361,11 @@ pub fn shock_reaction(
     roll: &mut Roll,
 ) -> Option<ShockTaken> {
     if ready.is_some_and(|next| next > now + SHOCK_EARLY_MS) {
+        return None;
+    }
+    // A released race that is dying takes nothing: no hit sound, no draw,
+    // and its next shock keeps its time.
+    if released && dying {
         return None;
     }
     let pitch = (f64::from(roll.unit()) * 0.4 + 0.8) as f32;
@@ -602,6 +617,7 @@ pub(crate) fn shock_fighters(
         Option<&mut exa_anim::Animator>,
         Option<&mut exa_combat::voice::CharacterVoice>,
         Option<&exa_character::record::CharacterData>,
+        Option<&mut exa_combat::swing::SwingState>,
     )>,
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<exa_anim::Motions>>,
@@ -628,6 +644,7 @@ pub(crate) fn shock_fighters(
             mut animator,
             mut voice,
             character,
+            swing,
         )) = fighters.get_mut(shock.body)
         else {
             continue;
@@ -668,6 +685,18 @@ pub(crate) fn shock_fighters(
             // state, its step ends and its clip rate stops.
             if let Some(mut body) = body {
                 body.force_release(now as u32);
+            }
+            // A release while attacking resets the swing: it stalls with no
+            // strength left (stalling and cleaving), until the release's
+            // busy time is over.
+            if condition.as_deref() == Some(&Condition::ATTACKING)
+                && let Some(mut swing) = swing
+            {
+                use exa_combat::swing::flags;
+                swing.stall = 1.0;
+                swing.strength = 0.0;
+                swing.flags |= flags::STALLING | flags::CLEAVING;
+                swing.end_ms = now + u64::from(exa_physics::shock::RELEASE_BUSY_MS);
             }
             if let Some(condition) = condition.as_deref_mut() {
                 *condition = Condition::SHOCKED;
@@ -1364,7 +1393,7 @@ pub(crate) fn tick_barricades(
     }
 }
 
-fn tick_wisps(
+pub(crate) fn tick_wisps(
     mut commands: Commands,
     mut sets: Query<(Entity, &mut LiveWisps)>,
     bodies: Query<&Ragdoll>,
@@ -3028,6 +3057,13 @@ mod tests {
         assert_eq!(released.next, 1_500);
         assert_eq!(released.yellow, 0.2);
         assert_ne!(roll, before);
+        // A released race that is dying takes nothing, not even a draw.
+        let before = roll;
+        assert_eq!(
+            shock_reaction(None, 1_000, 0.2, 0.05, true, true, false, &mut roll),
+            None
+        );
+        assert_eq!(roll, before);
         // Race index 1 rings: the hit's two draws, a flat 500 ms, no burn.
         let mut roll = Roll(0);
         let rung = shock_reaction(None, 0, 0.25, 0.05, false, false, true, &mut roll).unwrap();
@@ -3079,6 +3115,57 @@ mod tests {
             app.world().get::<StateFlags>(fighter).map(|f| f.0),
             Some(StateFlags::SHOCK_STAGGER)
         );
+    }
+
+    /// A released race shocked while attacking is put in the shocked state
+    /// with its swing reset: it stalls with no strength left, stalling and
+    /// cleaving, until the release's 600 ms are over. Dying, it takes no
+    /// shock at all: no clock, no state.
+    #[test]
+    fn a_released_attacker_stalls_its_swing_and_a_dying_one_takes_nothing() {
+        use exa_combat::swing::{SwingState, flags};
+        let run = |condition: Condition| {
+            let mut app = App::new();
+            app.add_message::<ArcShocked>()
+                .insert_resource(BodyTicks(10))
+                .insert_resource(EffectRoll(Roll(0)))
+                .init_resource::<exa_physics::sim_app::FrameCommands>()
+                .add_systems(Update, shock_fighters);
+            let mut fighter = Fighter::default();
+            fighter.stats.shocks_release = true;
+            let entity = app.world_mut().spawn((fighter, condition)).id();
+            app.world_mut().write_message(ArcShocked {
+                body: entity,
+                direction: Vec3::X,
+                strength: 0.05,
+            });
+            app.update();
+            (app, entity)
+        };
+        let (app, entity) = run(Condition::ATTACKING);
+        let now = app.world().resource::<BodyTicks>().millis();
+        assert_eq!(
+            app.world().get::<Condition>(entity),
+            Some(&Condition::SHOCKED)
+        );
+        let swing = app.world().get::<SwingState>(entity).unwrap();
+        assert_eq!((swing.stall, swing.strength), (1.0, 0.0));
+        assert_eq!(
+            swing.flags & (flags::STALLING | flags::CLEAVING),
+            flags::STALLING | flags::CLEAVING
+        );
+        assert_eq!(swing.end_ms, now + 600);
+        assert_eq!(
+            app.world().get::<ShockReady>(entity),
+            Some(&ShockReady(now + 500))
+        );
+        let (app, entity) = run(Condition::COLLAPSING);
+        assert_eq!(
+            app.world().get::<Condition>(entity),
+            Some(&Condition::COLLAPSING)
+        );
+        assert_eq!(app.world().get::<ShockReady>(entity), None);
+        assert_eq!(app.world().get::<SwingState>(entity).unwrap().stall, 0.0);
     }
 
     /// A burn stops the walk: the request is no longer moving or free, and

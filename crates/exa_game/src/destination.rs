@@ -121,7 +121,12 @@ impl Plugin for DestinationPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                tick_journeys.after(crate::effects::advance_clock),
+                // After the behaviour, before the health tick (both write
+                // the fighters).
+                tick_journeys
+                    .after(crate::effects::advance_clock)
+                    .after(exa_physics::body::TickBehaviour)
+                    .before(exa_combat::regen::HealthTick),
             );
     }
 }
@@ -351,7 +356,7 @@ fn paint_screen(
 
 /// Steps every journey: its bubble first, then the journey's own tick.
 #[allow(clippy::too_many_arguments)]
-fn tick_journeys(
+pub(crate) fn tick_journeys(
     mut commands: Commands,
     clock: Res<EffectClock>,
     mut journeys: Query<(Entity, &mut BubbleEffect, &TravelJourney)>,

@@ -41,9 +41,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use exa_formats::objdb::{self, Item};
-use exa_physics::body::{
-    BodySystems, BodyTicks, DoorBody, PlateBody, Ragdoll, SlideBody, WAKE_COUNT,
-};
+use exa_physics::body::{BodyTicks, DoorBody, PlateBody, Ragdoll, SlideBody, WAKE_COUNT};
 use exa_physics::mechanism::{Dispatch, DoorOrder, LockSounded, MechanismSignal};
 use exa_physics::{door, lever, mechanism, plate, relay};
 
@@ -64,11 +62,16 @@ impl Plugin for MechanismPlugin {
             .add_message::<RelayForward>()
             .add_systems(
                 FixedUpdate,
-                (route_signals, open_doors_under)
-                    .after(BodySystems)
+                (open_doors_under, route_signals)
+                    .chain()
+                    .in_set(exa_physics::body::AfterSolver::Level)
                     .before(send_relay_forwards),
             )
-            .add_systems(FixedUpdate, send_relay_forwards);
+            // After the physics' follow-up (the levers' step sends them).
+            .add_systems(
+                FixedUpdate,
+                send_relay_forwards.after(exa_physics::body::AfterSolver::Physics),
+            );
         if std::env::var_os("EXA_MECHANISM_LIST").is_some() {
             app.add_systems(Update, list_mechanisms);
         }
@@ -254,7 +257,7 @@ type MechanismParts = (
 pub(crate) struct RelayForward(MechanismSignal);
 
 /// Writes the relays' forwards into the signal queue.
-fn send_relay_forwards(
+pub(crate) fn send_relay_forwards(
     mut forwards: MessageReader<RelayForward>,
     mut signals: MessageWriter<MechanismSignal>,
 ) {

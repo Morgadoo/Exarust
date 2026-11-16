@@ -382,7 +382,7 @@ pub(crate) fn plugin(app: &mut App) {
         FixedUpdate,
         (
             register_slides
-                .after(crate::body::TickBehaviour)
+                .in_set(crate::body::MechanismRegistration)
                 .before(BodySystems),
             load_slides
                 .in_set(BodySystems)
@@ -395,7 +395,7 @@ pub(crate) fn plugin(app: &mut App) {
 }
 
 /// Turns each registered leaf with a [`PendingSlide`] into a [`SlideBody`].
-fn register_slides(
+pub(crate) fn register_slides(
     mut commands: Commands,
     mut pending: Query<(Entity, &PendingSlide, &mut Ragdoll)>,
 ) {
@@ -412,7 +412,7 @@ fn register_slides(
 }
 
 /// Hands every leaf's glue to the [`SlideStage`] before the solver.
-fn load_slides(
+pub fn load_slides(
     ticks: Option<Res<BodyTicks>>,
     slides: Query<(Entity, &SlideBody)>,
     mut stages: ResMut<SolverStages>,
@@ -426,7 +426,7 @@ fn load_slides(
 
 /// Puts the glue of the leaves the solver stepped back and sends the
 /// sounds each step asked for, in the solver's order.
-fn unload_slides(
+pub fn unload_slides(
     mut stages: ResMut<SolverStages>,
     mut slides: Query<&mut SlideBody>,
     mut sounds: MessageWriter<MechanismSounded>,

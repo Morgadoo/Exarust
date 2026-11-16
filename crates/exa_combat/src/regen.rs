@@ -189,15 +189,22 @@ impl Plugin for RegenerationPlugin {
     fn build(&self, app: &mut App) {
         app.configure_sets(
             FixedUpdate,
-            HealthTick.after(PostureTick).before(CharacterTicks),
+            // After the grips' build, which the health tick's bodies read.
+            HealthTick
+                .after(PostureTick)
+                .after(exa_physics::grip_solve::GripSolveSet::Build)
+                .before(CharacterTicks),
         )
         .add_systems(FixedUpdate, regenerate_health.in_set(HealthTick))
         .add_systems(
             CharacterTick,
             (
                 regenerate_red.in_set(CharacterStage::Upkeep),
+                // The health bookkeeping follows the attack block, the
+                // parry check included, as in the original's body tick.
                 keep_health
                     .in_set(CharacterStage::Attack)
+                    .after(crate::parry::run_parries)
                     .run_if(ticked_lives),
             ),
         );
