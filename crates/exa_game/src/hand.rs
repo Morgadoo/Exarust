@@ -1066,6 +1066,23 @@ fn pick_along<'a>(
     })
 }
 
+/// Whether `body` is a door's leaf, hinged or sliding, and if so whether
+/// its record bars the hand (its not-clickable flag). The original's pick
+/// names either leaf by its door record; without the sliding leaves here a
+/// portcullis (mobility about 0.048) read as a prop too heavy to take.
+fn leaf_blocked(
+    doors: &Query<&mut DoorBody>,
+    slides: &Query<&mut SlideBody>,
+    body: Entity,
+) -> Option<bool> {
+    doors
+        .get(body)
+        .ok()
+        .map(|d| d.door.record)
+        .or_else(|| slides.get(body).ok().map(|s| s.door.record))
+        .map(|record| record.has(exa_physics::door::NOT_CLICKABLE))
+}
+
 /// The name of what the pick hit; `top_mobility` gives a prop body's top
 /// part's mobility (the object's own body).
 fn name_of(
@@ -1714,12 +1731,7 @@ fn press_hand(
                     .and_then(|(_, r, ..)| r.parts.iter().find(|p| p.parent.is_none()))
                     .map(|p| p.inverse_mass)
             },
-            |body| {
-                doors
-                    .get(body)
-                    .ok()
-                    .map(|d| d.door.record.has(exa_physics::door::NOT_CLICKABLE))
-            },
+            |body| leaf_blocked(&doors, &slides, body),
             |body| levers.contains(body),
         )
     });
@@ -3721,6 +3733,79 @@ mod tests {
             name_of(Hit::SceneNode { node: near }, |_| None, |_| None, |_| false),
             Pick::Nothing
         );
+    }
+
+    /// A sliding leaf (a portcullis on level rails, mobility 0.048 as the
+    /// shipped one's) is named a door's leaf, not a prop too heavy to take,
+    /// so the press reaches the sliding hold (F566); its record's
+    /// not-clickable flag still bars it.
+    #[test]
+    fn a_sliding_leaf_is_picked_as_a_door() {
+        use bevy::ecs::system::RunSystemOnce;
+        use exa_physics::body::{PendingSlide, RigidLink, RigidPart, world_link};
+        use exa_physics::door::{NOT_CLICKABLE, Record};
+        let travel = 1.7;
+        let slider = |x: f32, y: f32| RigidLink {
+            on_body: Vec3::new(x, y, 0.0),
+            on_parent: Vec3::new(x, y, 0.0),
+            slack: travel,
+            strength: 0.0,
+            smoothing: 0.01,
+            flags: world_link::SLIDER,
+            axis: Vec3::new(-travel, 0.0, 0.0),
+        };
+        let leaf = |flags: u32| {
+            let mut body = Ragdoll::rigid(&[RigidPart {
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: bevy::math::Affine3A::IDENTITY,
+                rest: [
+                    Vec3::new(0.0, 0.0, 0.1),
+                    Vec3::new(0.0, 0.0, -0.1),
+                    Vec3::new(1.0, 2.0, 0.0),
+                    Vec3::new(-1.0, 2.0, 0.0),
+                ],
+                point_masses: [4.0; 4],
+                parent_world: bevy::math::Affine3A::IDENTITY,
+                mobility: 0.048,
+                spheres: vec![(Vec3::new(0.0, 1.0, 0.0), 0.06)],
+                origin: Vec3::ZERO,
+                links: vec![slider(0.7, 0.2), slider(0.7, 1.9), slider(-0.7, 1.0)],
+                mesh: None,
+                triangles: None,
+            }]);
+            let pending = PendingSlide {
+                record: Record {
+                    flags,
+                    ..Record::default()
+                },
+                saved: 0,
+                handle_height: 1.0,
+            };
+            let glue = SlideBody::new(&mut body, &pending).expect("a sliding leaf");
+            (body, glue)
+        };
+        let mut world = World::new();
+        let open = world.spawn(leaf(0)).id();
+        let barred = world.spawn(leaf(NOT_CLICKABLE)).id();
+        let crate_body = world.spawn(leaf(0).0).id();
+        let found = world
+            .run_system_once(
+                move |doors: Query<&mut DoorBody>, slides: Query<&mut SlideBody>| {
+                    [open, barred, crate_body].map(|b| leaf_blocked(&doors, &slides, b))
+                },
+            )
+            .unwrap();
+        assert_eq!(found, [Some(false), Some(true), None]);
+        let hit = Hit::Prop {
+            body: open,
+            part: 0,
+        };
+        let named = |blocked: Option<bool>| name_of(hit, |_| Some(0.048), |_| blocked, |_| false);
+        assert_eq!(named(found[0]), Pick::Hinge);
+        assert_eq!(named(found[1]), Pick::Nothing);
+        // Without its door record the same body is a prop too heavy to take.
+        assert_eq!(named(found[2]), Pick::Nothing);
     }
 
     /// A ray aimed at one of the installed hub's named scenery meshes finds
