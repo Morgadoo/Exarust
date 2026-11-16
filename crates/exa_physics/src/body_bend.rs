@@ -259,7 +259,7 @@ pub fn foot_pitch_target(
 /// `drop` (m), twice the lift term stored before clamping.
 pub(super) fn bend_target(contact: Vec3, anchor: Vec3, anchored: bool, drop: f32) -> Vec3 {
     if anchored {
-        let mid = contact.lerp(anchor, 0.5);
+        let mid = crate::engine_math::lerp3(contact, anchor, 0.5);
         Vec3::new(mid.x, anchor.y, mid.z)
     } else {
         anchor - Vec3::Y * drop

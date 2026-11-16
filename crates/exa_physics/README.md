@@ -399,6 +399,19 @@ step's copy out). It found the
 bridged duel's drift: query filters were not in the coverage, so `With<Player>`
 matched nothing in the simulation's world.
 
+The function oracle (`crates/exa_oracle`) replays the original's own code
+against these functions bit for bit. Its second pass added the engine's
+lerps (`lerp2`, `lerp3`, `lerp4`: `a + (b − a)·t`, which glam's `lerp`
+is not), the exact normaliser's callers switched to `normalize_exact`
+(`y² + (x² + z²)`, one division), the unmasked approximate normaliser
+(`normalize_approx_unmasked`: zero gives NaN; the door leaf's set-up), the
+negations (`negate3`, `negate4`: `0 − v`, so zero stays +0 and DAZ reads a
+denormal as zero), the `RSQRTSS` length and distance, the frame and 4×4
+products, the rigid inverse and relative frame, the 4×4 point transform and
+row dots (none of these yet replacing the glam calls at their call sites),
+and the library sine and cosine through the x87 unit, which keeps a
+denormal angle's sine denormal.
+
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
 `MINSS`/`MAXSS`/clamp compares, the floor and ceiling conversions (the

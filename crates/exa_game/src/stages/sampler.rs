@@ -337,7 +337,7 @@ fn look_of(body: &Ragdoll, req: &Locomotion, l: &mut Locomotor, looks: bool) -> 
     // its deadline is in the past; the cursor otherwise.
     let cursor = match req.look_target {
         Some(target) if req.look_until < l.now => match body.chest_point() {
-            Some(chest) => (target - chest).normalize_or_zero(),
+            Some(chest) => exa_physics::engine_math::normalize_exact(target - chest),
             None => forward(req.cursor),
         },
         _ => forward(req.cursor),
@@ -345,9 +345,9 @@ fn look_of(body: &Ragdoll, req: &Locomotion, l: &mut Locomotor, looks: bool) -> 
     let d = cursor + (ahead - cursor) * (1.0 - energy * energy);
     let mut d = Quat::from_rotation_y(-l.frame_yaw) * d;
     d.y *= 0.5;
-    let length = (d.y * d.y + 0.0 + d.x * d.x + d.z * d.z).sqrt();
+    // The engine's exact normalisation (`y² + (x² + z²)`, one division).
     Some(Look {
-        dir: d * (1.0 / length),
+        dir: exa_physics::engine_math::normalize_exact(d),
         weight: l.head_weight,
         yaw: l.head_yaw,
     })

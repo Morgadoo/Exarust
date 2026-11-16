@@ -19,7 +19,7 @@
 // negated compares say which.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use bevy::math::{Mat3A, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
+use bevy::math::{Affine3A, Mat3A, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
 
 /// The squared length at or below which an axis has no direction (single
 /// precision).
@@ -403,6 +403,19 @@ pub fn normalize_exact(v: Vec3) -> Vec3 {
     v * (1.0 / s.sqrt())
 }
 
+/// The engine's vector lerp, `a + (b − a)·t` per axis (one `SUBPS`, one
+/// `MULPS`, one `ADDPS`). glam's `Vec3::lerp` computes `a·(1 − t) + b·t`
+/// and differs from the original's in the last bit on most inputs: ports
+/// of the original's lerps take this one.
+pub fn lerp3(a: Vec3, b: Vec3, t: f32) -> Vec3 {
+    a + (b - a) * t
+}
+
+/// The engine's two-lane lerp, `a + (b − a)·t`, as [`lerp3`].
+pub fn lerp2(a: Vec2, b: Vec2, t: f32) -> Vec2 {
+    a + (b - a) * t
+}
+
 /// The length of a 3D vector projected onto the ground plane:
 /// `(x² + z²).sqrt()`.
 pub fn length3_ground(v: Vec3) -> f32 {
@@ -447,6 +460,15 @@ pub fn normalize_approx(v: Vec3) -> Vec3 {
     if squared == 0.0 {
         return v * 0.0;
     }
+    v * reciprocal_sqrt(squared)
+}
+
+/// [`normalize_approx`] without the zero test: `v` times `RSQRTSS` of
+/// `(x² + z²) + (y² + 0)`. A vector that reads as zero (zero, or only
+/// denormals under DAZ) gives NaN (0 × ∞), as the original's unmasked
+/// normaliser does (the door leaf's set-up calls it).
+pub fn normalize_approx_unmasked(v: Vec3) -> Vec3 {
+    let squared = (v.x * v.x + v.z * v.z) + (v.y * v.y + 0.0);
     v * reciprocal_sqrt(squared)
 }
 
@@ -584,6 +606,116 @@ pub fn point_out_of_frame(point: Vec3, frame: &bevy::math::Affine3A) -> Vec3 {
     let low = Vec3::from(m.x_axis) * point.x + Vec3::from(m.y_axis) * point.y;
     let high = Vec3::from(m.z_axis) * point.z + Vec3::from(frame.translation);
     low + high
+}
+
+/// A point through a 4×4 matrix whose rows are `m`'s columns (the
+/// original's row-vector convention, the fourth row the translation):
+/// `(x·R0 + y·R1) + (z·R2 + R3)` lane by lane (glam's `transform_point3`
+/// sums `((x·R0 + y·R1) + z·R2) + R3`).
+pub fn mat4_point(point: Vec3, m: &Mat4) -> Vec3 {
+    let low = m.x_axis * point.x + m.y_axis * point.y;
+    let high = m.z_axis * point.z + m.w_axis;
+    (low + high).truncate()
+}
+
+/// A four-vector dotted with each of the four rows of `rows` (a [`Mat4`]
+/// whose columns are the original's rows), each dot summed
+/// `(x·x' + y·y') + (z·z' + w·w')` (glam's `Vec4::dot` sums
+/// `(x·x' + z·z') + (y·y' + w·w')`).
+pub fn dot_rows4(v: Vec4, rows: &Mat4) -> Vec4 {
+    let dot = |r: Vec4| (v.x * r.x + v.y * r.y) + (v.z * r.z + v.w * r.w);
+    Vec4::new(
+        dot(rows.x_axis),
+        dot(rows.y_axis),
+        dot(rows.z_axis),
+        dot(rows.w_axis),
+    )
+}
+
+/// The engine's four-lane lerp, `a + (b − a)·t` (as [`lerp3`]).
+pub fn lerp4(a: Vec4, b: Vec4, t: f32) -> Vec4 {
+    a + (b - a) * t
+}
+
+/// The engine's negation, `0 − v` per lane: a zero (of either sign, or a
+/// denormal under DAZ) becomes `+0` and a NaN keeps its sign, where glam's
+/// `-v` flips the sign bit.
+pub fn negate3(v: Vec3) -> Vec3 {
+    Vec3::ZERO - v
+}
+
+/// [`negate3`] on four lanes.
+pub fn negate4(v: Vec4) -> Vec4 {
+    Vec4::ZERO - v
+}
+
+/// The engine's fast length: the squares summed `(x² + z²) + (y² + 0)`,
+/// times the processor's approximate reciprocal square root of that sum
+/// (`RSQRTSS`). A zero vector gives NaN (0 × ∞).
+pub fn length_approx(v: Vec3) -> f32 {
+    let squared = (v.x * v.x + v.z * v.z) + (v.y * v.y + 0.0);
+    squared * reciprocal_sqrt(squared)
+}
+
+/// The engine's fast distance, [`length_approx`] of `a − b`.
+pub fn distance_approx(a: Vec3, b: Vec3) -> f32 {
+    length_approx(a - b)
+}
+
+/// The original's product of two rigid 4×3 frames, `a` then `b` (glam's
+/// `b * a`): each of `a`'s axis rows through `b`'s turn, summed
+/// `(x·X + y·Y) + z·Z`, and `a`'s translation out of `b`
+/// ([`point_out_of_frame`]: `(x·X + y·Y) + (z·Z + T)`, where glam adds the
+/// translation last).
+pub fn frame_product(a: &Affine3A, b: &Affine3A) -> Affine3A {
+    let m = &b.matrix3;
+    let row = |r: Vec3A| (m.x_axis * r.x + m.y_axis * r.y) + m.z_axis * r.z;
+    Affine3A {
+        matrix3: Mat3A::from_cols(
+            row(a.matrix3.x_axis),
+            row(a.matrix3.y_axis),
+            row(a.matrix3.z_axis),
+        ),
+        translation: Vec3A::from(point_out_of_frame(Vec3::from(a.translation), b)),
+    }
+}
+
+/// The original's 4×4 product, `a` then `b` (glam's `b * a`): each of
+/// `a`'s rows through `b`, summed `(x·R0 + y·R1) + (z·R2 + w·R3)` (glam
+/// sums the four terms one after another).
+pub fn mat4_product(a: &Mat4, b: &Mat4) -> Mat4 {
+    let row = |r: Vec4| (b.x_axis * r.x + b.y_axis * r.y) + (b.z_axis * r.z + b.w_axis * r.w);
+    Mat4::from_cols(row(a.x_axis), row(a.y_axis), row(a.z_axis), row(a.w_axis))
+}
+
+/// The inverse of a rigid 4×3 frame as the original takes it: the turn
+/// transposed, and the translation `0 − t` through the transposed turn,
+/// summed `(x·X + y·Y) + z·Z` (glam's `Affine3A::inverse` inverts the turn
+/// by cofactors and its determinant).
+pub fn rigid_inverse(a: &Affine3A) -> Affine3A {
+    let turn = a.matrix3.transpose();
+    let t = Vec3A::ZERO - a.translation;
+    Affine3A {
+        matrix3: turn,
+        translation: (turn.x_axis * t.x + turn.y_axis * t.y) + turn.z_axis * t.z,
+    }
+}
+
+/// The rigid frame `b` taken into the rigid frame `a` (glam's
+/// `a.inverse() * b` for a rigid `a`): `b`'s axis rows through `a`'s
+/// transposed turn, and `b`'s translation less `a`'s through it, each summed
+/// `(x·X + y·Y) + z·Z`.
+pub fn frame_into(a: &Affine3A, b: &Affine3A) -> Affine3A {
+    let turn = a.matrix3.transpose();
+    let row = |r: Vec3A| (turn.x_axis * r.x + turn.y_axis * r.y) + turn.z_axis * r.z;
+    Affine3A {
+        matrix3: Mat3A::from_cols(
+            row(b.matrix3.x_axis),
+            row(b.matrix3.y_axis),
+            row(b.matrix3.z_axis),
+        ),
+        translation: row(b.translation - a.translation),
+    }
 }
 
 /// The scalar triple product `a · (b × c)`, summed in the original's
@@ -903,9 +1035,42 @@ pub fn mat3_to_euler(m: &Mat3A) -> Vec3 {
 /// which gives the same value unless a result lies within a double's error
 /// of a single-precision rounding boundary. Beyond `|x| = 2^63`, where the
 /// x87 instruction leaves its operand unreduced, this is not the original.
+/// The x87 unit ignores the SSE flush-to-zero and denormals-are-zero
+/// modes, so a denormal argument is read as itself and a denormal result
+/// is kept ([`x87_load`], [`x87_store`]): the sine of a denormal is that
+/// denormal.
 pub fn library_sin_cos(x: f32) -> (f32, f32) {
-    let (sin, cos) = f64::from(x).sin_cos();
-    (sin as f32, cos as f32)
+    let (sin, cos) = x87_load(x).sin_cos();
+    (x87_store(sin), x87_store(cos))
+}
+
+/// A single loaded onto the x87 stack (`FLD`): a denormal keeps its value,
+/// where `CVTSS2SD` under denormals-are-zero would read zero.
+pub fn x87_load(x: f32) -> f64 {
+    let bits = x.to_bits();
+    if bits & 0x7F80_0000 == 0 && bits & 0x007F_FFFF != 0 {
+        let magnitude = f64::from(bits & 0x007F_FFFF) * f64::powi(2.0, -149);
+        if bits >> 31 == 1 {
+            -magnitude
+        } else {
+            magnitude
+        }
+    } else {
+        f64::from(x)
+    }
+}
+
+/// A double stored to single from the x87 stack (`FSTP` to a dword),
+/// rounded to the nearest (ties to even): a result in the denormal range
+/// stays denormal, where `CVTSD2SS` under flush-to-zero would give zero.
+pub fn x87_store(d: f64) -> f32 {
+    if d != 0.0 && d.abs() < f64::from(f32::MIN_POSITIVE) {
+        let units = (d.abs() * f64::powi(2.0, 149)).round_ties_even() as u32;
+        let sign = if d < 0.0 { 0x8000_0000 } else { 0 };
+        f32::from_bits(sign | units)
+    } else {
+        d as f32
+    }
 }
 
 /// The runtime library's two-argument arctangent of `y` over `x`, in
@@ -1094,6 +1259,92 @@ mod tests {
         let unit = normalize_approx(Vec3::new(3.0, 0.0, 4.0));
         assert!((unit.length() - 1.0).abs() < 1e-3);
         assert!(normalize_approx(Vec3::new(f32::NAN, 0.0, 0.0)).x.is_nan());
+    }
+
+    /// The unmasked normaliser (the oracle's first differing case: the
+    /// zero vector) gives NaN where the masked one gives zero; elsewhere
+    /// the two agree bit for bit.
+    #[test]
+    fn the_unmasked_normalisation_turns_zero_into_nan() {
+        assert!(normalize_approx_unmasked(Vec3::ZERO).x.is_nan());
+        let v = Vec3::new(0.762_467_74, 93.808_13, 5.525_882_7);
+        assert_eq!(normalize_approx_unmasked(v), normalize_approx(v));
+    }
+
+    /// The original's frame helpers on a rigid frame: the inverse undoes
+    /// the frame, a frame taken into itself is the identity, and the
+    /// products agree with glam's up to rounding (they sum in another
+    /// order, which the oracle pins bit for bit).
+    #[test]
+    fn the_rigid_frame_helpers() {
+        let turn = Mat3A::from_quat(Quat::from_rotation_y(0.7) * Quat::from_rotation_x(-0.3));
+        let a = Affine3A::from_mat3_translation(turn.into(), Vec3::new(3.0, -2.0, 5.0));
+        let b = Affine3A::from_mat3_translation(
+            Mat3A::from_quat(Quat::from_rotation_z(1.1)).into(),
+            Vec3::new(-1.0, 4.0, 0.5),
+        );
+        let p = Vec3::new(0.25, -1.5, 2.0);
+        let back = point_out_of_frame(point_into_frame(p, &a), &a);
+        assert!((back - p).length() < 1e-5);
+        assert!(rigid_inverse(&a).abs_diff_eq(a.inverse(), 1e-5));
+        assert!(frame_into(&a, &a).abs_diff_eq(Affine3A::IDENTITY, 1e-5));
+        assert!(frame_into(&a, &b).abs_diff_eq(a.inverse() * b, 1e-5));
+        assert!(frame_product(&a, &b).abs_diff_eq(b * a, 1e-5));
+        let (m, n) = (Mat4::from(a), Mat4::from(b));
+        assert!(mat4_product(&m, &n).abs_diff_eq(n * m, 1e-5));
+        assert!((mat4_point(p, &m) - a.transform_point3(p)).length() < 1e-5);
+        let v = Vec4::new(1.0, 2.0, -3.0, 0.5);
+        assert!(dot_rows4(v, &m).abs_diff_eq(m.transpose() * v, 1e-5));
+        assert_eq!(negate3(Vec3::ZERO).x.to_bits(), 0);
+        assert!((length_approx(Vec3::new(3.0, 4.0, 0.0)) - 5.0).abs() < 5e-3);
+    }
+
+    /// The library sine and cosine run on the x87 unit, which keeps
+    /// denormals: the sine of the smallest denormal is itself (the
+    /// oracle's first differing case of the Euler turn), not a flushed zero.
+    #[test]
+    fn the_library_sine_keeps_a_denormal() {
+        crate::float_mode::enter();
+        let tiny = f32::from_bits(1);
+        assert_eq!(library_sin_cos(tiny).0.to_bits(), 1);
+        assert_eq!(library_sin_cos(-tiny).0.to_bits(), 0x8000_0001);
+        assert_eq!(
+            from_euler(Vec3::new(-2.264_165_4, -0.775_539_9, tiny))
+                .x_axis
+                .y
+                .to_bits(),
+            1
+        );
+        assert_eq!(
+            x87_store(f64::from(f32::MIN_POSITIVE) * 0.5).to_bits(),
+            0x0040_0000
+        );
+        assert_eq!(
+            x87_load(f32::from_bits(0x0040_0000)),
+            f64::from(f32::MIN_POSITIVE) * 0.5
+        );
+    }
+
+    /// The engine's lerp is `a + (b − a)·t`, not glam's `a·(1 − t) + b·t`:
+    /// the oracle's first case where glam's differs (in y and z).
+    #[test]
+    fn the_engine_lerp_is_a_plus_the_scaled_difference() {
+        let a = Vec3::new(-81.228_08, 0.671_530_2, 52.456_017);
+        let b = Vec3::new(-0.109_225_61, -54.247_555, 80.285_49);
+        let t = -0.949_108_3;
+        let l = lerp3(a, b, t);
+        assert_eq!(l.y.to_bits(), 0x4253_2eca);
+        assert_eq!(l.z.to_bits(), 0x41d0_57b7);
+        assert_ne!(a.lerp(b, t).y.to_bits(), 0x4253_2eca);
+    }
+
+    /// The exact normaliser sums `y² + (x² + z²)`: the oracle's first case
+    /// where glam's normalise differs (y and z in the last bit).
+    #[test]
+    fn the_exact_normalisation_sums_y_last() {
+        let n = normalize_exact(Vec3::new(0.762_467_74, 93.808_13, 5.525_882_7));
+        assert_eq!(n.y.to_bits(), 0x3f7f_8c6f);
+        assert_eq!(n.z.to_bits(), 0x3d70_dabc);
     }
 
     #[test]

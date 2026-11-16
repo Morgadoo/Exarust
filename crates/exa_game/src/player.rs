@@ -3244,7 +3244,7 @@ impl ChaseCamera {
         // The present offset decides whether there is a shake at all, as the
         // original tests it: one ending drops out at once.
         let shake = if self.shake.length_squared() > SHAKE_FLOOR {
-            self.shake_before.lerp(self.shake, t)
+            exa_physics::engine_math::lerp3(self.shake_before, self.shake, t)
         } else {
             Vec3::ZERO
         };

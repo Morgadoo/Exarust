@@ -548,7 +548,7 @@ pub fn sample(clip: &Clip, time: f32) -> Option<(Vec<Quat>, Vec3)> {
         .zip(&z.rotations)
         .map(|(ra, rz)| slerp(to_quat(*ra), to_quat(*rz), b.f))
         .collect();
-    let root = Vec3::from(a.root).lerp(Vec3::from(z.root), b.f);
+    let root = exa_physics::engine_math::lerp3(Vec3::from(a.root), Vec3::from(z.root), b.f);
     Some((rotations, root))
 }
 
