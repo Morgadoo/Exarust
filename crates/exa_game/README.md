@@ -1209,12 +1209,21 @@ ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
 quiet; each frame the cursor's ray, the held item left out, places it at
 the level hit when that is strictly over the height the player stands at,
 and at the ray's crossing of that height otherwise (a miss too; a climbing
-ray places nothing, `lift_point`), then slides it along the ray
-from 600 cm before that point (never behind the eye) to the nearest
-contact of every collision sphere of every part, each carried with the
-placed grab point (a sweep starting inside the level is no contact),
-and a placement holds only when its rest-point box (280 cm up, −1000 cm
-down) fits and the item stays in the hip's reach (`item_cursor::lift_frame`);
+ray places nothing, `lift_point`), then starts the item's box centre
+600 cm back along the ray from that point and moves it to the nearest
+contact of every collision sphere of every part within 1000 cm (the whole
+1000 cm when nothing is met): the level, the props' stand-ins and the
+loose props' meshes, the held body left out, each sphere starting no
+nearer than where its far side reaches the camera's near plane
+(`item_cursor::near_plane_pulls`; a sphere starting in contact is no
+contact). The frame, the cursor's turned rotation with the box centre on
+that point (`item_cursor::centred_frame`), is copied into the held part
+whole, and a placement holds only when its rest-point box (280 cm up,
+−1000 cm down) fits and the box centre stays in the hip's reach
+(`item_cursor::lift_frame`). With the controls off the hand's own frame
+places the lift by the GUI drop's rule (the −100000 cm limit, the same
+sweep, no markers, reach or hover word; a fitting placement thaws a
+frozen item); blocked, the lift is neither turned nor placed;
 a frame that fails puts the item back at the frame of the last placement
 that held (the lift frame before any) and counts as out of reach. A placement marker (a model node whose name starts
 with `[`, registered by `exa_world::markers` and gathered each frame of a

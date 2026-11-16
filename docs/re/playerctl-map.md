@@ -140,3 +140,39 @@ walkable point when it meets another body; it leaves combat, stops
 following and returns to idle. Now live (`exa_game::revive_pass`, the
 flow's `ReviveBrains` step after the alarm return). No AI routine asks the
 query to place items, choose a stand spot or step.
+
+## The playerctl2 lane (round 252, roadmap B4): the lift's placement sweep
+
+Read in the assembly this time (the earlier port was from the pseudo-code).
+
+| routine | bytes | before | after | evidence |
+|---|---|---|---|---|
+| Per-sphere sweep | 1,996 | partial: rapier's level only, the sweep started no nearer than the eye, the "support plane" pull-back had no caller | partial: every sphere's sweep starts no nearer than where its far side reaches the camera's near plane (the pull-back is the camera's back axis, its eye and its near plane, not a level plane), sweeps only what is left to the best, best from 1000 cm; the level, the props' stand-ins and the loose props' meshes are met, the held body left out | `item_cursor::near_plane_pulls`, `per_sphere_contact`; headless lift frames with a camera, a floor and a dropped cube |
+| Free placement (the request's) | 594 | live, the grab point on the ray, the pick kept when the contact lay beyond it | live: the box centre starts 600 cm back along the ray and moves by the sweep's answer whatever the pick's distance (the whole 1000 cm when nothing is met); the frame is copied into the held part whole; the reach is measured at the box centre | `item_cursor::centred_frame`, `sweep_distance` |
+| Least sweep over the linked bodies (both copies) | 338 + 338 | live / partial | live for the lift and the controls-off frame (the parts of one Exarust body stand for the linked bodies) | — |
+| Lift placement | 1,357 | partial (the room query modelled only as a reach) | the occluder query refuses the frame first (it was already live, `LevelRooms::shell_ray`); then the climbing test (NaN proceeds), then the markers; all match | assembly read |
+| Controls-off frame | 352 | partial | live: with the controls off the hand's own frame turns and places the lift by the GUI drop's rule (−100000 cm, same sweep, no markers, no reach, no hover word); a fitting placement thaws a frozen item; blocked, the lift is neither turned nor placed | headless frames with the controls off and blocked |
+
+Still open: the GUI drop's first placement (the new node has no body until
+the lift begins; the lift places it from the next frame); the characters'
+meshes in the sweep (whether character nodes carry the collision flag the
+sweep tests is not read); one-sidedness of the per-mesh test (Exarust casts
+both faces); a scaled mesh, where the original mixes world and mesh units.
+
+The mouse capture (1,310 B) was read block by block in the assembly. One
+block is dead (a test of a register the routine always sets). Matching:
+the focus drop, the kind fixed at the start, the start's saved pointer and
+GUI test, the spectating look from the plane 80 cm over the look-at point,
+the orbit's drag with the pointer's offset from the centre, Cursor Look's
+turn and the camera's alignment every held frame, the centring, the GUI
+pointer, the release's close message and warp, the pin while the camera
+aligns, and the snapshot at the end. Different:
+- The pad's look buttons (flags 0x100000/0x200000 of the pad word) start a
+  capture in the original; Exarust's pad look has its own branch.
+- A pad stick moving during a held capture skips that frame's work and
+  keeps the capture; Exarust ends it.
+- The release also writes the behaviour's screen cursor pair (the warp
+  point); Exarust keeps no such pair.
+- The routine's answer (1 while it holds the mouse) makes the desk skip its
+  own mouse-move processing (hover, drag start); Exarust's GUI reads the
+  capture's pointer instead.

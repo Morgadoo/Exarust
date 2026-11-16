@@ -877,11 +877,19 @@ The system SHALL leave a plainly released lifted item where the cursor put it, S
 - **THEN** the item goes back to the frames saved at the lift
 
 ### Requirement: Item cursor placement sweep
-The system SHALL slide a placed lifted item along the cursor ray from 600 cm before the picked point (never before the ray's origin) and stop it at its first contact with the level when that is nearer than the pick; a sweep that starts inside the level SHALL count as no contact.
+The system SHALL start a placed lifted item's box centre 600 cm back along the cursor ray from the placed point and move it along the ray to the first contact of any of its collision spheres within 1000 cm, the level, the props' stand-ins and the loose props' meshes met and the held body left out; a sweep that meets nothing SHALL move it the whole 1000 cm, and a sphere that starts touching SHALL count as no contact.
 
 #### Scenario: Wall before the pick
 - **WHEN** the item's sphere meets a wall 50 cm before the picked point
 - **THEN** the item stops at that contact
+
+#### Scenario: Onto the floor
+- **WHEN** the cursor lies on a floor and the item's only sphere hangs 20 cm under its box centre
+- **THEN** the box centre comes to rest on the ray 40 cm over the floor
+
+#### Scenario: Against a dropped item
+- **WHEN** the ray meets the front face of a dropped cube before the floor
+- **THEN** the item stops with its sphere against that face
 
 ### Requirement: Item cursor hover word
 The system SHALL give a lift's hover word as 0x30 when the item snaps onto a level placement marker whose link byte reads `L`, 0x10 for another marker, 1 for a free placement that passed its checks, and 0 otherwise.
@@ -1539,3 +1547,21 @@ A world point SHALL reach the window as the game view's projection routine puts 
 #### Scenario: Behind the eye
 - **WHEN** a point behind the eye lies to the left and below
 - **THEN** it reaches the window's left edge and its bottom
+
+### Requirement: Sweep spheres start at the near plane
+A sphere of the placement sweep whose far side would start in front of the camera's near plane SHALL start where its far side reaches the plane, and sweep only what is left to the best contact so far; a NaN gap SHALL not move it.
+
+#### Scenario: A start behind the eye
+- **WHEN** the sweep's start lies behind the camera
+- **THEN** each sphere starts at the near plane and the item still comes to rest on the floor
+
+### Requirement: Lift with the controls off
+With the controls off, the lift SHALL be turned and placed by the GUI drop's rule (the −100000 cm limit, the same sweep, no markers, no reach test, no hover word), a fitting placement thawing a frozen item; blocked or second-blocked, the lift SHALL be neither turned nor placed.
+
+#### Scenario: Controls off
+- **WHEN** the controls are off while an item is lifted over a floor
+- **THEN** it comes to rest on the floor and the hover word stays 0
+
+#### Scenario: Blocked
+- **WHEN** the controls are blocked while an item is lifted
+- **THEN** it stays where the lift took it

@@ -647,12 +647,37 @@ pub fn ball_cast(p: &Part, start: Vec3, dir: Vec3, max: f32, r: f32) -> Option<f
             .filter(|t| *t > 0.0)
     };
     let mut best: Option<f32> = None;
-    let mut keep = |t: f32| {
+    let keep = |best: &mut Option<f32>, t: f32| {
         if best.is_none_or(|b| t < b) {
-            best = Some(t);
+            *best = Some(t);
         }
     };
     match p.triangles.as_deref() {
+        // A mesh with a kd-tree: only the leaves along the swept path, the
+        // path cut at each nearer contact.
+        Some(triangles) if p.tree.is_some() => {
+            let tree = p.tree.as_deref().expect("checked");
+            let mut record = kd_tree::SweptRecord::new(s, end, radius);
+            tree.sweep(&mut record, |rec, ids| {
+                let mut nearer = false;
+                for &id in ids {
+                    let Some(t) = triangles.get(id as usize) else {
+                        continue;
+                    };
+                    if let Some(at) = cast(&Triangle::new(t[0], t[1], t[2]))
+                        && best.is_none_or(|b| at < b)
+                    {
+                        best = Some(at);
+                        nearer = true;
+                    }
+                }
+                if let Some(b) = best.filter(|_| nearer) {
+                    rec.end = s + d * b;
+                    rec.refresh();
+                }
+                nearer
+            });
+        }
         Some(triangles) => {
             for t in triangles {
                 let (tlo, thi) = (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]));
@@ -660,7 +685,7 @@ pub fn ball_cast(p: &Part, start: Vec3, dir: Vec3, max: f32, r: f32) -> Option<f
                     continue;
                 }
                 if let Some(at) = cast(&Triangle::new(t[0], t[1], t[2])) {
-                    keep(at);
+                    keep(&mut best, at);
                 }
             }
         }
@@ -674,7 +699,7 @@ pub fn ball_cast(p: &Part, start: Vec3, dir: Vec3, max: f32, r: f32) -> Option<f
                     .map(|hit| hit.time_of_impact)
                     .filter(|t| *t > 0.0)
                 {
-                    keep(t);
+                    keep(&mut best, t);
                 }
             }
         }
