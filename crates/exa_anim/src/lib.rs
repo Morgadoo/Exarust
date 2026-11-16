@@ -61,7 +61,8 @@ impl Plugin for AnimPlugin {
                     pose_standing_clips,
                 )
                     .chain()
-                    .in_set(AnimSystems),
+                    .in_set(AnimSystems)
+                    .in_set(exa_physics::FramePhase::World),
             )
             .add_systems(FixedLast, tick_standing_clips);
     }
@@ -409,7 +410,7 @@ pub struct BodyPart {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Stature(pub f32);
 
-fn attach_body_parts(
+pub fn attach_body_parts(
     mut commands: Commands,
     motions: Option<Res<Motions>>,
     roots: Query<Entity, Added<Animator>>,
