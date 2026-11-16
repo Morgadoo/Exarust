@@ -98,6 +98,7 @@ type GiMoverQuery<'w, 's> = Query<
         &'static mut GiMoved,
         Has<GiThinMesh>,
         Has<GiCentredMesh>,
+        Option<&'static GiBounds>,
     ),
 >;
 
@@ -134,54 +135,108 @@ fn update_dynamic(
             continue;
         }
         Arc::make_mut(block).synced = true;
-        for (points, _, moved, thin, centred) in &movers {
+        for (points, _, moved, thin, centred, bounds) in &movers {
             if moved.source != moved.last {
-                move_points(
-                    block,
-                    &points.0,
-                    moved.source,
-                    moved.last,
+                let mesh = MovingMesh {
+                    points: &points.0,
+                    bounds: bounds.copied(),
                     thin,
                     centred,
-                    &mut sink,
-                );
+                };
+                move_points(block, &mesh, moved.source, moved.last, &mut sink);
             }
         }
     }
-    for (points, at, mut moved, thin, centred) in &mut movers {
+    for (points, at, mut moved, thin, centred, bounds) in &mut movers {
         let now = at.affine();
         if moved.last == now {
             continue;
         }
+        let mesh = MovingMesh {
+            points: &points.0,
+            bounds: bounds.copied(),
+            thin,
+            centred,
+        };
         for block in built.0.values_mut() {
-            move_points(block, &points.0, moved.last, now, thin, centred, &mut sink);
+            move_points(block, &mesh, moved.last, now, &mut sink);
         }
         moved.last = now;
     }
 }
 
-/// Moves one mesh's points from frame `old` to frame `new` in one built
-/// block when the two frames' padded boxes meet it, and queues the changed
-/// region's bytes.
-fn move_points(
-    block: &mut Arc<BuiltBlock>,
-    points: &[Vec3],
-    old: Affine3A,
-    new: Affine3A,
+/// A moving GI mesh as the dynamic update reads it.
+struct MovingMesh<'a> {
+    points: &'a [Vec3],
+    bounds: Option<GiBounds>,
     thin: bool,
     centred: bool,
+}
+
+/// A point in frame `at` in centimetres, in the original's transform order
+/// `(x·r0 + y·r1) + (z·r2 + t)`, the point already in centimetres.
+fn frame_point_cm(at: Affine3A, p: Vec3) -> Vec3 {
+    let t = Vec3::from(at.translation) * CM_PER_M;
+    (Vec3::from(at.matrix3.x_axis) * p.x + Vec3::from(at.matrix3.y_axis) * p.y)
+        + (Vec3::from(at.matrix3.z_axis) * p.z + t)
+}
+
+/// The original's voxel box of a node's bounds in frame `at`: the centre
+/// put in the world, ± the half extents through the frame's absolute axes
+/// (`(|r0|·hx + |r1|·hy) + |r2|·hz` per axis), over the voxel size, less
+/// and plus 1.5, rounded ties to even (`cvtss2si`); whole world voxels.
+fn voxel_box(bounds: GiBounds, at: Affine3A) -> (IVec3, IVec3) {
+    let inv = 1.0 / VOXEL_CM;
+    let centre = frame_point_cm(at, bounds.centre * CM_PER_M);
+    let h = bounds.half * CM_PER_M;
+    let rows = [
+        Vec3::from(at.matrix3.x_axis).abs(),
+        Vec3::from(at.matrix3.y_axis).abs(),
+        Vec3::from(at.matrix3.z_axis).abs(),
+    ];
+    let reach = (rows[0] * h.x + rows[1] * h.y) + rows[2] * h.z;
+    let lo = ((centre - reach) * inv - Vec3::splat(1.5)).map(f32::round_ties_even);
+    let hi = ((centre + reach) * inv + Vec3::splat(1.5)).map(f32::round_ties_even);
+    (lo.as_ivec3(), hi.as_ivec3())
+}
+
+/// Moves one mesh's points from frame `old` to frame `new` in one built
+/// block when the two frames' boxes meet it, and queues the changed
+/// region's bytes. A mesh with its node's bounds is boxed as the original
+/// boxes it (the union of both frames' voxel boxes, tested against the
+/// block's whole-voxel range, both ends included); one without is boxed by
+/// its points' padded extent [adaptation].
+fn move_points(
+    block: &mut Arc<BuiltBlock>,
+    mesh: &MovingMesh,
+    old: Affine3A,
+    new: Affine3A,
     sink: &mut Option<&mut Vec<exa_render::gi::GiOccupancyPatch>>,
 ) {
-    let (Some(before), Some(after)) = (point_bounds(points, old), point_bounds(points, new)) else {
-        return;
-    };
-    // The union of the two frames' boxes, which a touched block must meet.
-    let bounds = (before.0.min(after.0), before.1.max(after.1));
-    if !boxes_meet(bounds, block.bounds()) {
-        return;
+    let points = mesh.points;
+    let (thin, centred) = (mesh.thin, mesh.centred);
+    let node_box = mesh.bounds.map(|bounds| {
+        let (old_lo, old_hi) = voxel_box(bounds, old);
+        let (new_lo, new_hi) = voxel_box(bounds, new);
+        (old_lo.min(new_lo), old_hi.max(new_hi))
+    });
+    if let Some((lo, hi)) = node_box {
+        let first = (block.origin / VOXEL).round().as_ivec3();
+        let last = first + IVec3::new(SIDE as i32, block.depth as i32, SIDE as i32);
+        if first.cmpgt(hi).any() || lo.cmpgt(last).any() {
+            return;
+        }
+    } else {
+        let (Some(before), Some(after)) = (point_bounds(points, old), point_bounds(points, new))
+        else {
+            return;
+        };
+        // The union of the two frames' boxes, which a touched block must meet.
+        let bounds = (before.0.min(after.0), before.1.max(after.1));
+        if !boxes_meet(bounds, block.bounds()) {
+            return;
+        }
     }
-    let old_points: Vec<Vec3> = points.iter().map(|&p| old.transform_point3(p)).collect();
-    let new_points: Vec<Vec3> = points.iter().map(|&p| new.transform_point3(p)).collect();
     let block = Arc::make_mut(block);
     let dims = UVec3::new(SIDE as u32, SIDE as u32, block.depth as u32);
     let sector = block.sector;
@@ -198,11 +253,16 @@ fn move_points(
     };
     // The old frame's points come out, then the new frame's go in, each
     // through its frame as the build splats them.
-    let region = occupancy.region_of(old_points.iter().chain(&new_points).copied());
-    if region.is_some() {
-        occupancy.splat_mesh(points, CM_PER_M, old, -1.0, thin, centred);
-        occupancy.splat_mesh(points, CM_PER_M, new, 1.0, thin, centred);
-    }
+    let region = match node_box {
+        Some((lo, hi)) => occupancy.region_of_box(lo, hi),
+        None => occupancy.region_of(
+            points
+                .iter()
+                .flat_map(|&p| [old.transform_point3(p), new.transform_point3(p)]),
+        ),
+    };
+    occupancy.splat_mesh(points, CM_PER_M, old, -1.0, thin, centred);
+    occupancy.splat_mesh(points, CM_PER_M, new, 1.0, thin, centred);
     *cells = occupancy.cells;
     let Some(region) = region else { return };
     if let (Some(sink), Some(bytes)) = (sink.as_mut(), sub_upload(cells, dims, region)) {
@@ -258,6 +318,15 @@ fn base_ambient_share(high_quality: bool) -> f32 {
 /// The GI sample points of a mesh node, in its space (metres).
 #[derive(Component, Clone, Debug)]
 pub struct GiPoints(pub Arc<Vec<Vec3>>);
+
+/// A GI mesh node's own bounding box (centre and half extents in its
+/// space, metres): the dynamic update boxes a moving mesh by it, as the
+/// original boxes the node's bounds in each frame.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GiBounds {
+    pub centre: Vec3,
+    pub half: Vec3,
+}
 
 /// A GI mesh the original counts as thin: its sample points weigh a quarter
 /// (the node's first surface's material is a class-`0x4000` or opacity-cut
@@ -1944,9 +2013,19 @@ impl Occupancy {
             return None;
         }
         let inv = Vec3::splat(1.0 / VOXEL);
-        let first = (self.origin * inv).round();
-        let lo = (lo * inv - Vec3::splat(1.5)).map(f32::round_ties_even) - first;
-        let hi = (hi * inv + Vec3::splat(1.5)).map(f32::round_ties_even) - first;
+        let lo = (lo * inv - Vec3::splat(1.5)).map(f32::round_ties_even);
+        let hi = (hi * inv + Vec3::splat(1.5)).map(f32::round_ties_even);
+        self.region_of_box(lo.as_ivec3(), hi.as_ivec3())
+    }
+
+    /// The region of the volume a box of whole world voxels (both corners
+    /// included) touches, for a sub-upload: the block's first voxel taken
+    /// off, clamped to the block with its end one short of the size, as the
+    /// original's upload does; `None` when it is empty.
+    pub fn region_of_box(&self, lo: IVec3, hi: IVec3) -> Option<VoxelRegion> {
+        let first = (self.origin / VOXEL).round();
+        let lo = lo.as_vec3() - first;
+        let hi = hi.as_vec3() - first;
         // Texture axes: X, then Z, then height.
         let dims = UVec3::new(SIDE as u32, SIDE as u32, self.depth as u32);
         let lo = Vec3::new(lo.x.max(0.0), lo.z.max(0.0), lo.y.max(0.0));
@@ -2158,6 +2237,65 @@ mod tests {
     /// frame, as the original returns while its build count is above zero;
     /// a block built afterwards gets the mesh moved from where the source
     /// collected it to where it last was.
+    /// A mesh with its node's bounds is boxed as the original boxes it:
+    /// each frame's bounds centre ± the half extents through the frame's
+    /// absolute axes, in voxels less and plus 1.5, rounded ties to even, the
+    /// union of both frames; a block whose whole-voxel range that box
+    /// misses is left alone.
+    #[test]
+    fn a_moving_mesh_is_boxed_by_its_nodes_bounds() {
+        use exa_render::gi::GiOccupancyPatches;
+
+        let at = Vec3::new(20.1, 1.1, 20.1);
+        let mut app = App::new();
+        app.insert_resource(one_point_block(at, true))
+            .insert_resource(GiOccupancyPatches::default())
+            .add_systems(Update, update_dynamic);
+        let e = app
+            .world_mut()
+            .spawn((
+                GiPoints(Arc::new(vec![at])),
+                GiBounds {
+                    centre: at,
+                    half: Vec3::new(0.3, 0.1, 0.1),
+                },
+                GlobalTransform::IDENTITY,
+                GiMoved {
+                    source: Affine3A::IDENTITY,
+                    last: Affine3A::IDENTITY,
+                },
+            ))
+            .id();
+        let moved = Affine3A::from_translation(Vec3::new(VOXEL, 0.0, 0.0));
+        *app.world_mut().get_mut::<GlobalTransform>(e).unwrap() = moved.into();
+        app.update();
+        let patches = app.world().resource::<GiOccupancyPatches>();
+        assert_eq!(patches.0.len(), 1);
+        // X: (2010 − 30)/20 − 1.5 = 97.5 → 98 and (2060/20) + 1.5 = 104.5
+        // → 104; Z 98.5 → 98 and 102.5 → 102; height 3.5 → 4 and 7.5 → 8.
+        assert_eq!(patches.0[0].lo, UVec3::new(98, 98, 4));
+        assert_eq!(patches.0[0].hi, UVec3::new(104, 102, 8));
+        assert_eq!(cell_at(&app, at), 0);
+        assert_eq!(cell_at(&app, at + Vec3::X * VOXEL), 20);
+        // Far beyond the block's 256 voxels along X: the block is not
+        // touched and nothing is uploaded.
+        let far = Affine3A::from_translation(Vec3::new(60.0, 0.0, 0.0));
+        let block = app.world().resource::<GiBuiltBlocks>().0[&0].clone();
+        let mut sink = None;
+        let mut copy = block.clone();
+        let mesh = MovingMesh {
+            points: &[at],
+            bounds: Some(GiBounds {
+                centre: at + Vec3::X * 60.0,
+                half: Vec3::splat(0.1),
+            }),
+            thin: false,
+            centred: false,
+        };
+        move_points(&mut copy, &mesh, far, far, &mut sink);
+        assert!(Arc::ptr_eq(&copy, &block));
+    }
+
     #[test]
     fn the_dynamic_update_waits_for_a_build_and_syncs_new_blocks() {
         use exa_render::gi::GiOccupancyPatches;
