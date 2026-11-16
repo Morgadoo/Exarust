@@ -20,11 +20,12 @@
 //!   mean of their neighbours already set, pass after pass, and those never
 //!   reached stay where they are. The part's origin moves with that
 //!   landmark.
-//! - **Applying** ([`PartMorph::offsets`], [`morph_mesh`], [`morph_scene`]):
-//!   positions = base + Σ wₜ·offsetₜ over the targets weighed at least
-//!   [`MIN_WEIGHT`]; normals worked out again from the new shape; each
-//!   morphed node's translation recomputed in its parent's frame from the
-//!   moved origins, so the skeleton and the joints follow the physique.
+//! - **Applying** ([`PartMorph::apply`], [`morph_mesh`], [`morph_scene`]):
+//!   positions = base, then + offsetₜ·wₜ per target weighed at least
+//!   [`MIN_WEIGHT`], in target order (the original's float order); normals
+//!   worked out again from the new shape; the box and sphere refitted;
+//!   each morphed node's translation recomputed in its parent's frame from
+//!   the moved origins, so the skeleton and the joints follow the physique.
 
 use crate::characters::CharacterRecord;
 use crate::rfc::{Mesh, Node, NodeBody, Scene, SkinWeights};
@@ -446,6 +447,40 @@ fn element_triangle_list(mesh: &Mesh) -> Vec<Option<[u32; 3]>> {
         .collect()
 }
 
+/// The next corner of a triangle's corner (the original's table {1, 2, 0}).
+const NEXT_CORNER: [usize; 3] = [1, 2, 0];
+
+/// Each of the `n` position elements' neighbours as the original's
+/// transfer walks them: the element's corners in the mesh's incidence as
+/// the load leaves it ([`Mesh::element_incidence`]: faces last first, each
+/// face's corners last first, then split into smoothing-key runs), and for
+/// each corner the element of its face's next corner. The order sets the
+/// float order of the neighbour means and the slot order of the merged
+/// skin records.
+pub fn element_neighbours(mesh: &Mesh, n: usize) -> Vec<Vec<u32>> {
+    let element = |v: u32| {
+        mesh.position_ids
+            .get(v as usize)
+            .copied()
+            .filter(|&e| (e as usize) < mesh.position_count)
+    };
+    let (starts, corners) = mesh.element_incidence();
+    (0..n)
+        .map(|e| {
+            let (Some(&a), Some(&b)) = (starts.get(e), starts.get(e + 1)) else {
+                return Vec::new();
+            };
+            corners[a as usize..b as usize]
+                .iter()
+                .filter_map(|&(face, corner)| {
+                    let at = face as usize * 3 + NEXT_CORNER[corner as usize % 3];
+                    mesh.indices.get(at).and_then(|&v| element(v))
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// The closest point of triangle `abc` to `p` and its barycentric
 /// coordinates (weights of a, b, c).
 fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, [f32; 3]) {
@@ -787,16 +822,27 @@ impl MorphBody {
         Self::new(set, mesh, frame)
     }
 
-    /// The first node of `scene` that carries a morph set, as the
-    /// original's loader takes it, placed by its frame in the file.
+    /// The morph body of a race's morph file, as the original's race
+    /// loader takes it: the set of the file's first root (a node with no
+    /// parent) when it carries one, placed by its frame. Without one the
+    /// loader turns to its fallback, which first takes the first mesh node
+    /// carrying a set (modelled here over the file's nodes; the original
+    /// scans every node of its scene), else builds one from numbered nodes
+    /// (modelled by `exa_assets::morph_controller`, not called here); both
+    /// shipped morph files carry the set on their first root, so the
+    /// fallback is never reached.
     pub fn of_scene(scene: &Scene) -> Option<Self> {
         let frames = model_frames(scene);
-        scene
-            .nodes
+        let nodes = &scene.nodes;
+        let first_root = (0..nodes.len()).find(|&i| parent_of(nodes, i).is_none())?;
+        if nodes[first_root].morph.is_some() {
+            return Self::of_node(&nodes[first_root], frames[first_root]);
+        }
+        nodes
             .iter()
             .zip(frames)
-            .find_map(|(n, f)| n.morph.as_ref().map(|_| Self::of_node(n, f)))
-            .flatten()
+            .find(|(n, _)| n.morph.is_some() && matches!(n.body, NodeBody::Mesh(_)))
+            .and_then(|(n, f)| Self::of_node(n, f))
     }
 
     /// The morph body of `set` on `mesh` (whose position stream it must
@@ -878,6 +924,12 @@ impl MorphBody {
     /// The share of the morphs of `mesh`, a part or garment whose frame in
     /// the model's space is `frame`.
     pub fn transfer(&self, mesh: &Mesh, frame: &Frame) -> PartMorph {
+        self.transfer_with(mesh, frame, &element_neighbours(mesh, mesh.position_count))
+    }
+
+    /// [`MorphBody::transfer`] with each element's `neighbours` given
+    /// (the transfer's own are [`element_neighbours`]), to compare walks.
+    pub fn transfer_with(&self, mesh: &Mesh, frame: &Frame, neighbours: &[Vec<u32>]) -> PartMorph {
         let elements = element_positions(mesh);
         let n = elements.len();
         // Each element's nearest body surface, found in the body's space.
@@ -885,13 +937,6 @@ impl MorphBody {
             .iter()
             .map(|&p| self.nearest_surface(unplace(&self.frame, place(frame, p))))
             .collect();
-        // Neighbours: for each triangle corner, the next corner's element.
-        let mut neighbours = vec![Vec::new(); n];
-        for t in element_triangles(mesh) {
-            for k in 0..3 {
-                neighbours[t[k] as usize].push(t[(k + 1) % 3]);
-            }
-        }
         let unmatched: Vec<usize> = (0..n).filter(|&e| found[e].is_none()).collect();
         let landmark = self.nearest_landmark(frame[3]);
         let mut origin = Vec::with_capacity(self.set.targets.len());
@@ -955,7 +1000,7 @@ impl MorphBody {
         }
         let skin = match &self.skin {
             Some(records) if mesh.render_flags & BODY_SKIN != 0 => {
-                Some(self.transfer_skin(records, mesh, &elements, &found, &neighbours))
+                Some(self.transfer_skin(records, mesh, &elements, &found, neighbours))
             }
             _ => None,
         };
@@ -1073,69 +1118,61 @@ impl MorphBody {
 }
 
 impl PartMorph {
-    /// How far the origin moves (model space) and each position element
-    /// moves (the part's frame) at `weights`.
-    pub fn offsets(&self, weights: &[f32]) -> (Vec3, Vec<Vec3>) {
-        let n = self.positions.first().map_or(0, Vec::len);
-        let mut origin = [0.0; 3];
-        let mut out = vec![[0.0; 3]; n];
-        for ((o, deltas), &w) in self.origin.iter().zip(&self.positions).zip(weights) {
+    /// The origin at `weights` from `base` (model space), as the original
+    /// sums it: the base, then each target's offset times its weight added
+    /// in target order, skipping a weight below [`MIN_WEIGHT`] in magnitude
+    /// (NaN is applied).
+    pub fn origin_at(&self, base: Vec3, weights: &[f32]) -> Vec3 {
+        let mut origin = base;
+        for (lift, &w) in self.origin.iter().zip(weights) {
             if w.abs() < MIN_WEIGHT {
                 continue;
             }
-            origin = add(origin, scale(*o, w));
+            origin = add(origin, scale(*lift, w));
+        }
+        origin
+    }
+
+    /// The origin and each position element at `weights`, from their base
+    /// (`origin` in model space, `base` in the part's frame), in the
+    /// original's order: the base copied, then per target weighed at least
+    /// [`MIN_WEIGHT`] (or NaN) its offsets times the weight added in place,
+    /// so each position is `((base + d₀·w₀) + d₁·w₁) + …`.
+    pub fn apply(&self, origin: Vec3, base: &[Vec3], weights: &[f32]) -> (Vec3, Vec<Vec3>) {
+        let mut out = base.to_vec();
+        for (deltas, &w) in self.positions.iter().zip(weights) {
+            if w.abs() < MIN_WEIGHT {
+                continue;
+            }
             for (p, d) in out.iter_mut().zip(deltas) {
                 *p = add(*p, scale(*d, w));
             }
         }
-        (origin, out)
+        (self.origin_at(origin, weights), out)
     }
 }
 
-/// The smallest half extent a node's box keeps, metres (0.001 cm).
-pub const MIN_HALF_EXTENT: f32 = 1e-5;
-
-/// A node's box and sphere around `positions`, as the original refits a
-/// morphed node's: the box's centre and half extents (each at least
-/// [`MIN_HALF_EXTENT`]), and the farthest position from the centre.
-pub fn bounds(positions: &[Vec3]) -> (Vec3, Vec3, f32) {
-    let finite = positions.iter().filter(|p| p.iter().all(|v| v.is_finite()));
-    let mut lo = [f32::MAX; 3];
-    let mut hi = [f32::MIN; 3];
-    for p in finite.clone() {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
-    if lo[0] > hi[0] {
-        return ([0.0; 3], [MIN_HALF_EXTENT; 3], MIN_HALF_EXTENT);
-    }
-    let centre = scale(add(lo, hi), 0.5);
-    let half = std::array::from_fn(|k| ((hi[k] - lo[k]) * 0.5).max(MIN_HALF_EXTENT));
-    let radius = finite
-        .map(|&p| dist_sq(p, centre))
-        .fold(0.0f32, f32::max)
-        .sqrt();
-    (centre, half, radius)
-}
-
-/// Moves `mesh`'s vertices by their elements' `offsets` and works its
-/// normals out again.
-pub fn morph_mesh(mesh: &mut Mesh, offsets: &[Vec3]) {
+/// Sets each vertex of `mesh` to its element's position in `positions`
+/// (a vertex whose element has none keeps its place) and works its normals
+/// out again.
+pub fn morph_mesh(mesh: &mut Mesh, positions: &[Vec3]) {
     for (p, &e) in mesh.positions.iter_mut().zip(&mesh.position_ids) {
-        if let Some(d) = offsets.get(e as usize) {
-            *p = add(*p, *d);
+        if let Some(q) = positions.get(e as usize) {
+            *p = *q;
         }
     }
     mesh.recompute_normals();
 }
 
 /// Morphs `scene` at `weights` with each node's share (`parts`, by node
-/// index; `None` leaves a node as it is): every morphed mesh's vertices,
-/// normals and bounds, then, from each root down, every morphed node's translation
-/// from its moved origin in its parent's moved frame (a node that is not
-/// morphed ends the walk below it, as the original's walk does).
+/// index; `None` leaves a node as it is), as the original's per-mesh apply
+/// does: every morphed mesh's positions from its own (the base) and its
+/// origin from its place in the model ([`PartMorph::apply`]), its normals
+/// worked out again and its box and sphere refitted
+/// ([`crate::rfc::Mesh::bounds`]); then, from each root down, every morphed
+/// node's translation from its moved origin in its parent's moved frame (a
+/// node that is not morphed ends the walk below it, as the original's walk
+/// does).
 pub fn morph_scene(scene: &mut Scene, parts: &[Option<PartMorph>], weights: &[f32]) {
     let frames = model_frames(scene);
     let mut moved: Vec<Option<Vec3>> = vec![None; scene.nodes.len()];
@@ -1143,15 +1180,15 @@ pub fn morph_scene(scene: &mut Scene, parts: &[Option<PartMorph>], weights: &[f3
         let (Some(Some(part)), NodeBody::Mesh(mesh)) = (parts.get(i), &mut node.body) else {
             continue;
         };
-        let (origin, offsets) = part.offsets(weights);
-        morph_mesh(mesh, &offsets);
-        let (centre, half, radius) = bounds(&mesh.positions);
+        let (origin, positions) = part.apply(frames[i][3], &element_positions(mesh), weights);
+        morph_mesh(mesh, &positions);
+        let b = mesh.bounds();
         (
             node.bounds_centre,
             node.bounds_half_extents,
             node.bounds_radius,
-        ) = (centre, half, radius);
-        moved[i] = Some(add(frames[i][3], origin));
+        ) = (b.centre, b.half_extents, b.radius);
+        moved[i] = Some(origin);
     }
     // New model frames: the old turn at the moved origin.
     let model: Vec<Frame> = frames

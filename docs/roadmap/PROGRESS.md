@@ -8,19 +8,19 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r278, 11-16) | target |
+| measure | start (r186, 11-10) | now (r284, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
 | Estimate: by function count | 73.4% | 73.8% | — |
 | Combat rules | 90.6% | 90.6% | 100% |
-| **Ledger: bytes in a final state** | — | **58.12%** | **100%** |
-| Ledger: functions audited | — | 6,626 of 6,478 | 6,478 |
+| **Ledger: bytes in a final state** | — | **58.29%** | **100%** |
+| Ledger: functions audited | — | 6,627 of 6,478 | 6,478 |
 | Ledger: audit packages accepted | — | 90 of 90 | 90 |
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,044 | all |
+| Tests passing | 8,489 | 9,075 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -99,14 +99,14 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | section | packages | accepted | open functions | open bytes |
 |---|---|---|---|---|
 | Physics, bodies & cloth | 7 | 7 | 154 | 162,146 |
-| Rendering & GPU | 10 | 10 | 291 | 148,394 |
-| UI | 12 | 12 | 345 | 128,907 |
-| Thaumaturgy & effects | 9 | 9 | 155 | 110,772 |
-| Characters, motion & animation | 8 | 8 | 229 | 105,928 |
-| AI & behaviour | 8 | 8 | 127 | 91,805 |
+| Rendering & GPU | 10 | 10 | 289 | 148,319 |
+| UI | 12 | 12 | 340 | 128,379 |
+| Thaumaturgy & effects | 9 | 9 | 151 | 109,619 |
+| Characters, motion & animation | 8 | 8 | 227 | 104,849 |
+| AI & behaviour | 8 | 8 | 126 | 91,383 |
 | Game modes, arena & session | 7 | 7 | 178 | 76,192 |
 | World, levels & terrain | 5 | 5 | 151 | 76,114 |
-| Items, materials & crafting | 5 | 5 | 137 | 64,090 |
+| Items, materials & crafting | 5 | 5 | 132 | 62,916 |
 | Data, assets & I/O | 6 | 6 | 118 | 38,360 |
 | Runtime & platform | 5 | 5 | 69 | 20,690 |
 | Core, math & threading | 3 | 3 | 79 | 15,557 |
@@ -114,18 +114,24 @@ Packages are listed one by one in [`ledger-summary.md`](ledger-summary.md).
 | Audio | 1 | 1 | 7 | 3,295 |
 | Combat, weapons & damage | 1 | 1 | 5 | 2,201 |
 | Other, tools & editor | 1 | 1 | 0 | 0 |
-| **Total** | **90** | **90** | **2,073** | **1,050,995** |
+| **Total** | **90** | **90** | **2,054** | **1,046,564** |
 
 ## Open decisions
 
 See [`DECISIONS.md`](DECISIONS.md): DEC-1 definition of 100%, DEC-2 Steam, DEC-3
 character creator, DEC-4 start and budget of Phase A, DEC-5 kept deviations,
-DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's write past the contacts, DEC-10 desktop platform differences, DEC-11 the tendrils' reads past their data.
+DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's write past the contacts, DEC-10 desktop platform differences, DEC-11 the tendrils' reads past their data, DEC-12 generated textures on the CPU.
 
 ## Log
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 284 | The game GUI unit's uncalled rows are closed: the inventory's page buttons swap the weapon sets, the journal's entry list drops down and picks an entry, and an open game screen keeps the idle camera from turning, each shown before and after on the worker's GPU; three readings corrected (gamegui2) |
+| 2026-11-16 | 283 | The held terrain lane checked with a free camera on the open outdoor arenas: its 44 m cut-off is the original's and no shipped camera sees it, so it is releasable once blank blocks' plants leave the camera draws (terrainrel lane); F550 split: its light lines were rain whose odd vertex count broke the line pairs across the supersample copies (fixed), its seam is the voxel GI's block edge (open) (terraincheck) |
+| 2026-11-16 | 282 | A test now builds the game's own App headless with the lockstep bridge and fails on any system skipped for a missing resource or message (the bug class of F547); F549 fixed (the Shock charges about 1.2 s by the step length and its burst is aimed); F551 fixed (a dead manager back in the hub ends the session through the death flow and the end menu); F552 fixed (the GI shape box arithmetic wraps) (bridgeaudit) |
+| 2026-11-16 | 281 | The GI manager's shape list is cleared at the level teardown, its dirty-marking slot proven unreachable; voxel lights and shapes blend one pass at a time in the manager's order, meshes splat in centimetres, terrain columns read the tile's vertex grid and moving meshes are boxed by their node bounds; worker GPU pictures unchanged within noise, FPS holds (gimanager) |
+| 2026-11-16 | 280 | The fires' particle systems are simulation objects as the original's sector objects are: each step ticks every flame in the solver's object stage (a carried flame at its part's pose) and meets the bodies with it, the doses reaching the characters' burn; the draw keeps the step's snapshot with no flicker in either simulation mode and takes the original's render fraction (one to two ticks); the beds and portal sparks meet no body (simfires). Torch and brazier scenes owed |
+| 2026-11-16 | 279 | The factory paint job's shade scratch, its overlay regions (fullers, axe holes), the steel normal's mirrored-tile turn and the Gemstone alpha job with its refracting material are ported; the apparel job takes its tile offsets from the item's paint seed and its wear by the stored byte; both generators run about 30 percent faster in wall time (texgen). DEC-12 opened (the generated textures' GPU job queue and caches as engine-replaced): its twenty rows keep their state until it is taken. Picture checks owed |
 | 2026-11-16 | 278 | The death CONTINUE rebuilds the player from the saved record (a bug fixed: the respawned player had woken wearing the gear the corpse also kept); the title loads the menu scene with no player under the original's fixed camera (shown on the worker's GPU against main); early level exits make the checkpoint by the original's rule; exits ask whether the level is available, save first then archive (saves4) |
 | 2026-11-16 | 277 | Garments take the body's skin through the original's morph transfer; held since round 241 for a picture check, released on the build worker's GPU: on main bent bodies in gambeson and brigandine had shown a garment ring floating above the back and torn panels, coats a white tear and the gambeson skirt flaring; with this lane they follow the body, golems unchanged, FPS within noise (skinning) |
 | 2026-11-16 | 276 | The build worker's RTX 4000 runs the game offscreen through a shared runner; it found that since round 253 the casters' tick never ran in the game (the vanish turn message and the sound sets' size cache were not bridged into the simulation world, so Vanish, Long Door and the Force Blast never got past the cast: F547, F548, fixed) and that screenshot runs lost one shot in nine (F546, fixed). Determinism passes on exanima01, 02, 06, arena and ten power and duel scenes; the owed scenes of rounds 252 to 272 mostly pass; F549 and F550 opened (workergpu) |
