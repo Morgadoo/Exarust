@@ -79,11 +79,14 @@ impl Plugin for PhysicsPlugin {
             .init_resource::<StaticBuild>()
             .init_resource::<ColliderNodes>()
             .init_resource::<StaticColliders>()
+            .init_resource::<SceneGrid>()
             .insert_resource(Time::<Fixed>::from_hz(STEP_HZ))
             .add_systems(Startup, limit_backlog)
             .add_systems(
                 PostUpdate,
-                build_static_colliders.after(TransformSystems::Propagate),
+                (shape_static_grid, build_static_colliders)
+                    .chain()
+                    .after(TransformSystems::Propagate),
             )
             // Each tick puts the characters where their bodies' frames
             // went, before the pre-step; the bodies' character ticks then
@@ -423,6 +426,45 @@ impl ColliderNodes {
     }
 }
 
+/// The grid the loaded scene gives its simulation. The original's sector
+/// constructor picks its step from the scene word: a scene in grid mode
+/// (every level with a grid chunk, the outdoor arenas included) gets the
+/// grid step over the scene's `columns` × `rows` cells of 600 cm
+/// ([`sector::GridShape`]), with the static colliders and the bodies
+/// bucketed in it and the bounds pass's position-overflow reset; any other
+/// scene gets the all-pairs step, with no grid. The level load sets it
+/// (`exa_world`); a level's teardown puts the default back.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SceneGrid {
+    /// No scene has given its grid (tests, tools): Exarust's stand-in, an
+    /// unbounded grid of the same cells with no overflow guard.
+    #[default]
+    Unbounded,
+    /// A grid scene's grid.
+    Grid(sector::GridShape),
+    /// A scene without a grid: the all-pairs step.
+    AllPairs,
+}
+
+impl SceneGrid {
+    /// The grid's shape, if the scene gave one.
+    pub fn shape(&self) -> Option<sector::GridShape> {
+        match *self {
+            Self::Grid(shape) => Some(shape),
+            Self::Unbounded | Self::AllPairs => None,
+        }
+    }
+}
+
+/// Gives the static collider grid the scene's shape before the frame's
+/// colliders are built (a change of shape buckets the records again).
+fn shape_static_grid(scene: Res<SceneGrid>, mut statics: ResMut<StaticColliders>) {
+    let wanted = StaticColliders::shape_for(*scene);
+    if statics.grid.shape() != wanted {
+        statics.grid.reshape(wanted);
+    }
+}
+
 /// The original's static-collider grid, live: every fixed collision mesh of
 /// the level bucketed into the sector's 600 cm cells as it is built, so a
 /// simulated object (a cloth) can find the level's triangles around it
@@ -454,12 +496,26 @@ impl Default for StaticColliders {
 }
 
 impl StaticColliders {
-    /// Columns of the grid: a level's cells stay far inside.
+    /// Columns of the stand-in grid used until a scene gives its own
+    /// ([`SceneGrid::Unbounded`]): a level's cells stay far inside.
     pub const COLUMNS: i32 = 4096;
-    /// Rows of the grid.
+    /// Rows of the stand-in grid.
     pub const ROWS: i32 = 4096;
-    /// The grid's origin cell, centred on the world origin.
-    pub const ORIGIN: (i32, i32) = (-2048, -2048);
+    /// The stand-in grid's origin cell, which puts the world origin in its
+    /// middle (cell 2048, 2048), as a scene's own bias does. (A negative
+    /// origin would put every cell below the first, where the insertion's
+    /// floor at cell 1 keeps any collider from spanning cells.)
+    pub const ORIGIN: (i32, i32) = (2048, 2048);
+
+    /// The shape the static grid takes for a scene: its own grid, or the
+    /// stand-in.
+    pub fn shape_for(scene: SceneGrid) -> sector::GridShape {
+        scene.shape().unwrap_or(sector::GridShape {
+            columns: Self::COLUMNS,
+            rows: Self::ROWS,
+            origin: Self::ORIGIN,
+        })
+    }
 
     /// The grid.
     pub fn grid(&self) -> &sector::StaticGrid {
@@ -538,10 +594,10 @@ impl StaticColliders {
     /// The records listed in world cell `cell` (the grid's cells offset by
     /// its origin), in the order they were inserted.
     pub fn in_world_cell(&self, cell: (i32, i32)) -> &[usize] {
-        self.grid.cells().get((
-            cell.0.wrapping_add(Self::ORIGIN.0),
-            cell.1.wrapping_add(Self::ORIGIN.1),
-        ))
+        let origin = self.grid.shape().origin;
+        self.grid
+            .cells()
+            .get((cell.0.wrapping_add(origin.0), cell.1.wrapping_add(origin.1)))
     }
 
     /// Records a fixed collider's world AABB (metres) as level piece
@@ -1114,6 +1170,78 @@ fn step_world(mut physics: ResMut<Physics>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wall 30 m long along x, centred on the world origin.
+    fn long_wall(statics: &mut StaticColliders) -> usize {
+        statics.insert_aabb(
+            7,
+            Vec3::new(-15.0, 0.0, -0.1),
+            Vec3::new(15.0, 3.0, 0.1),
+            0,
+            sector::MASK_SMALL,
+        );
+        statics.len() - 1
+    }
+
+    /// The static grid's stand-in puts the world origin in its middle, so
+    /// a wall wider than its own cell spans cells (the insertion's wide
+    /// form, every cell of its bounds and a cell of margin) and is found
+    /// from a cell two away from its centre's. (Its origin was once
+    /// negative, which kept every collider in its centre cell alone.)
+    #[test]
+    fn a_long_wall_is_found_from_every_cell_it_reaches() {
+        let mut statics = StaticColliders::default();
+        assert_eq!(statics.grid().shape().origin, (2048, 2048));
+        let wall = long_wall(&mut statics);
+        assert_ne!(
+            statics.grid().get(wall).unwrap().mask & sector::WIDE_COLLIDER,
+            0
+        );
+        let mut near = Vec::new();
+        statics.near_object(Vec3::new(1300.0, 100.0, 0.0), 50.0, &mut near);
+        assert_eq!(near, [wall]);
+        // The world cell 2 along x lists it.
+        assert!(statics.in_world_cell((2, 0)).contains(&wall));
+    }
+
+    /// A level's grid (its scene's columns and rows, the bias half of
+    /// each) reshapes the static grid before the frame's colliders are
+    /// built, and buckets the records it already has again: their ids
+    /// stay, the spans take the new grid's floor and cap.
+    #[test]
+    fn the_scene_grid_shapes_the_static_grid() {
+        let mut app = App::new();
+        app.init_resource::<StaticColliders>()
+            .init_resource::<SceneGrid>()
+            .add_systems(Update, shape_static_grid);
+        let wall = long_wall(&mut app.world_mut().resource_mut::<StaticColliders>());
+        let level = sector::GridShape::of_scene(8, 8, Vec3::ZERO);
+        assert_eq!(level.origin, (4, 4));
+        app.insert_resource(SceneGrid::Grid(level));
+        app.update();
+        let statics = app.world().resource::<StaticColliders>();
+        assert_eq!(statics.grid().shape(), level);
+        assert_eq!(statics.len(), 1);
+        // Rounded half to even, the edges are cells −2 and 2 (2 and 6 in
+        // the grid); the cap at the last cell but one keeps 6.
+        let span = sector::grid_span(
+            Vec3::new(0.0, 150.0, 0.0),
+            Vec3::new(1500.0, 150.0, 10.0),
+            8,
+            8,
+            level.origin,
+        );
+        assert_eq!((span.min_x, span.max_x), (2, 6));
+        assert!(statics.in_world_cell((-3, 0)).contains(&wall));
+        assert!(statics.in_world_cell((3, 0)).contains(&wall));
+        assert!(!statics.in_world_cell((4, 0)).contains(&wall));
+        // Back to no scene: the stand-in.
+        app.insert_resource(SceneGrid::Unbounded);
+        app.update();
+        let statics = app.world().resource::<StaticColliders>();
+        assert_eq!(statics.grid().shape().columns, StaticColliders::COLUMNS);
+        assert!(statics.in_world_cell((2, 0)).contains(&wall));
+    }
 
     /// Taking a subtree's nodes takes their colliders out of the map, in
     /// handle order, and leaves the others.

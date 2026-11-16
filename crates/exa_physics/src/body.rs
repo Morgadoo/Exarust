@@ -490,16 +490,21 @@ pub struct LevelImpact {
 }
 
 /// A level contact's fastest smoothed velocity squared must pass this to
-/// make an impact (the original's 0.1 cm² a tick²).
-pub const LEVEL_STRIKE_TRAVEL2: f32 = 0.1;
-/// The level impact's strength must pass this to be called (0.1).
-pub const LEVEL_STRIKE_IMPACT: f32 = 0.1;
+/// make an impact (the original's 0.1 cm² a tick², a double: the square is
+/// widened before the compare, so a square of exactly 0.1 in single
+/// precision, a little over the double, passes).
+pub const LEVEL_STRIKE_TRAVEL2: f64 = 0.1;
+/// The level impact's strength must pass this to be called (0.1, a
+/// double, compared as [`LEVEL_STRIKE_TRAVEL2`] is).
+pub const LEVEL_STRIKE_IMPACT: f64 = 0.1;
 
 /// A level impact record is made for a part whose reaction class is set
 /// (the original's class bit 0x40000, cleared on a foot and its children)
-/// and whose fastest smoothed velocity squared `travel2` (cm² a tick²)
-/// passes 0.1: the strength is that square times the negated cosine
-/// against the summed pushes, and must pass 0.1.
+/// of a body not out of the world (state 0x800), and whose fastest
+/// smoothed velocity squared `travel2` (cm² a tick²) passes 0.1: the
+/// strength is that square times the negated cosine against the summed
+/// pushes, and must pass 0.1. Both compares widen to double and a NaN
+/// fails them.
 fn level_impact(
     part: usize,
     point: Vec3,
@@ -507,11 +512,11 @@ fn level_impact(
     travel: Vec3,
     travel2: f32,
 ) -> Option<LevelImpact> {
-    if travel2.is_nan() || travel2 <= LEVEL_STRIKE_TRAVEL2 {
+    if travel2.is_nan() || f64::from(travel2) <= LEVEL_STRIKE_TRAVEL2 {
         return None;
     }
     let strength = travel2 * -crate::engine_math::cosine(travel, balance::cm(push));
-    if strength > LEVEL_STRIKE_IMPACT {
+    if f64::from(strength) > LEVEL_STRIKE_IMPACT {
         Some(LevelImpact {
             part,
             point,
@@ -701,6 +706,18 @@ impl Part {
             &self.pairing.sphere,
             origin,
         )
+    }
+
+    /// The original's position-overflow reset of a part whose grid cell
+    /// fell outside the scene's grid rows ([`crate::sector::reset_overflow`]):
+    /// its particles, the last tick's and the tick's start all become the
+    /// tick before last's, so it stands where it stood two ticks ago with no
+    /// velocity, and its last-tick frame is its frame now (no sweep this
+    /// tick). Its drawn history and its displacement records are left alone.
+    pub(crate) fn reset_to_two_ticks_ago(&mut self) {
+        crate::sector::reset_overflow(&mut self.positions, &mut self.previous, &self.two_ticks_ago);
+        self.start = self.two_ticks_ago;
+        self.settled = self.transform();
     }
 
     /// The grid cell of [`Self::pose`] alone, computed the same way: the
@@ -2853,6 +2870,7 @@ pub fn bridge_body_types(app: &mut App) {
         .bridge_move_resource::<Physics>()
         .bridge_move_resource::<crate::collision_share::CollisionChanges>()
         .bridge_copy_resource::<crate::StaticColliders>()
+        .bridge_copy_in_resource::<crate::SceneGrid>()
         .bridge_move_resource::<ShoveQueue>()
         .bridge_move_resource::<DealtShoves>()
         .bridge_copy_resource::<BodyTicks>()
@@ -5708,8 +5726,12 @@ impl Ragdoll {
                 }
             }
         }
+        // A body out of the world (the original's state bit 0x800: Spirit
+        // Form's spirit, an item on the cursor) meets the level but makes
+        // no impact.
+        let disabled = self.disabled();
         for (i, p) in self.parts.iter().enumerate() {
-            if p.level_hits == 0 || !p.reacts {
+            if p.level_hits == 0 || !p.reacts || disabled {
                 continue;
             }
             // The original scales the sum by the count's reciprocal.
@@ -6085,11 +6107,21 @@ pub fn first_by_key<'a, T>(
 /// marked changed only once something woke it.
 pub fn step_bodies(
     physics: Res<Physics>,
-    statics: Option<Res<crate::StaticColliders>>,
+    (statics, scene): (
+        Option<Res<crate::StaticColliders>>,
+        Option<Res<crate::SceneGrid>>,
+    ),
     mut clock: ResMut<BodyTicks>,
     mut stages: ResMut<SolverStages>,
     mut bodies: Query<(Entity, &mut Ragdoll), Without<OutOfScene>>,
 ) {
+    // The scene's grid decides the pair stage's step, as the original's
+    // sector constructor takes its scene.
+    if let Some(scene) = scene.as_deref()
+        && let Some(pairs) = stages.get_mut::<Pairs>()
+    {
+        pairs.set_scene(*scene);
+    }
     let (mut awake, mut sleeping): (Vec<Mut<Ragdoll>>, Vec<Mut<Ragdoll>>) =
         (Vec::new(), Vec::new());
     // The bodies in the original's walk order ([`walk_order`]: the sector
@@ -6975,7 +7007,9 @@ mod tests {
 
     /// A level impact needs a smoothed travel squared over 0.1 cm² and an
     /// impact strength over 0.1: 1 cm a tick into a push straight against
-    /// it is the whole square, and equal values do not pass either gate.
+    /// it is the whole square. The gates are the original's doubles: 0.1 in
+    /// single precision (0.10000000149) passes both, the next float down
+    /// neither, and a NaN fails.
     #[test]
     fn level_impacts_take_the_original_gates() {
         let up = Vec3::new(0.0, 0.01, 0.0);
@@ -6983,7 +7017,11 @@ mod tests {
         let impact = level_impact(3, Vec3::ZERO, up, down, 1.0).unwrap();
         assert_eq!(impact.part, 3);
         assert_eq!(impact.strength, 1.0);
-        assert_eq!(level_impact(0, Vec3::ZERO, up, down, 0.1), None);
+        let at_gate = level_impact(0, Vec3::ZERO, up, down, 0.1).unwrap();
+        assert_eq!(at_gate.strength, 0.1);
+        let under = f32::from_bits(0.1f32.to_bits() - 1);
+        assert_eq!(level_impact(0, Vec3::ZERO, up, down, under), None);
+        assert_eq!(level_impact(0, Vec3::ZERO, up, down, f32::NAN), None);
         // A travel square of 0.09 is under the travel gate.
         assert_eq!(level_impact(0, Vec3::ZERO, up, down, 0.09), None);
         // No push gives the original's zero cosine, hence no strength.
@@ -7035,6 +7073,36 @@ mod tests {
                 body.level_impacts()
             );
         }
+    }
+
+    /// A body out of the world (the original's state 0x800) lands on the
+    /// floor as any other, but its landing makes no level impact: the
+    /// original's impact call tests the state bit after the class bit.
+    #[test]
+    fn a_disabled_body_lands_without_an_impact() {
+        let ground = floor_quad(0.0, 5.0);
+        let mut body = Ragdoll::new(&[PartSetup {
+            bone: 1,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::Y),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.15),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }]);
+        body.set_disabled(true);
+        let mut lowest = f32::MAX;
+        for _ in 0..60 {
+            body.tick(ground.as_slice());
+            assert!(body.level_impacts().is_empty());
+            lowest = lowest.min(body.parts[0].positions[0].y);
+        }
+        // It met the floor (the cube's 15 cm half stops it there).
+        assert!(lowest > -0.05, "{lowest}");
     }
 }
 

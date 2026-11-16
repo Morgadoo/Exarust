@@ -1093,3 +1093,82 @@ fn the_placement_query_walks_the_nine_cells_in_order() {
         [(0, false), (1, true)]
     );
 }
+
+/// A scene's grid shape as the original's grid build and sector cache give
+/// it: the bias is half of each dimension (an unsigned shift), plus the
+/// sector node's cell rounded half to even (×1/600 in single precision);
+/// the neighbour table is the flat offsets, own cell first. The model's
+/// grid ([`crate::dynamics::Grid`]) takes the same rule.
+#[test]
+fn a_scene_grid_takes_half_its_size_and_its_node_cell() {
+    let level = GridShape::of_scene(33, 40, Vec3::ZERO);
+    assert_eq!(level.origin, (16, 20));
+    assert_eq!(level.offsets(), [0, -34, -33, -32, -1, 1, 32, 33, 34]);
+    // 1500 cm is 2.5 cells (even: 2), −1800 cm −3; −900 cm −1.5 (even: −2).
+    let moved = GridShape::of_scene(32, 40, Vec3::new(1500.0, 70.0, -1800.0));
+    assert_eq!(moved.origin, (18, 17));
+    assert_eq!(
+        GridShape::of_scene(32, 40, Vec3::new(-900.0, 0.0, 0.0))
+            .origin
+            .0,
+        14
+    );
+    // A point's flat index: (floor(z/600) + oz) · columns + floor(x/600) + ox.
+    assert_eq!(
+        level.index_of(Vec3::new(-1.0, 0.0, 601.0)),
+        (1 + 20) * 33 + 15
+    );
+    let model = crate::dynamics::Grid::new(crate::dynamics::GridSize {
+        width: 33,
+        height: 40,
+    });
+    assert_eq!(model.bias, [16, 20]);
+    assert_eq!(model.offsets, level.offsets());
+    assert_eq!(
+        model.sector_cell(Vec3::new(1500.0, 70.0, -1800.0)),
+        [18, 17]
+    );
+}
+
+/// The pair contact's relative frame takes the other part's transpose as
+/// its inverse, as the original's does: on a stretched frame it is not
+/// the inverse (x scaled by 2 is dotted, not divided), and on a turned one
+/// it is the inverse.
+#[test]
+fn the_relative_frame_takes_the_transpose() {
+    let b = Affine3A::from_cols(
+        bevy::math::Vec3A::new(2.0, 0.0, 0.0),
+        bevy::math::Vec3A::Y,
+        bevy::math::Vec3A::Z,
+        bevy::math::Vec3A::new(1.0, 0.0, 0.0),
+    );
+    let a = Affine3A::from_translation(Vec3::new(3.0, 5.0, 0.0));
+    let rel = relative_frame(&a, &b);
+    // (3 − 1)·2 along x, 5 along y; the inverse would give 1.
+    assert_eq!(Vec3::from(rel.translation), Vec3::new(4.0, 5.0, 0.0));
+    assert_eq!(Vec3::from(rel.matrix3.x_axis), Vec3::new(2.0, 0.0, 0.0));
+    // A quarter turn about y and an offset: the same as the inverse.
+    let turn = Affine3A::from_rotation_translation(
+        bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        Vec3::new(0.0, 0.0, 2.0),
+    );
+    let at = relative_frame(&Affine3A::from_translation(Vec3::new(1.0, 0.0, 2.0)), &turn);
+    let want = turn.inverse() * Affine3A::from_translation(Vec3::new(1.0, 0.0, 2.0));
+    assert!(
+        Vec3::from(at.translation).distance(Vec3::from(want.translation)) < 1e-6,
+        "{at:?} {want:?}"
+    );
+    // The sums run x, y then z: 0.1·0.7 + 0.2·0.3 first, then 0.3·0.9.
+    let c = Affine3A::from_cols(
+        bevy::math::Vec3A::new(0.7, 0.3, 0.9),
+        bevy::math::Vec3A::Y,
+        bevy::math::Vec3A::Z,
+        bevy::math::Vec3A::ZERO,
+    );
+    let d = Affine3A::from_translation(Vec3::new(0.1, 0.2, 0.3));
+    let x = relative_frame(&d, &c).translation.x;
+    assert_eq!(
+        x.to_bits(),
+        ((0.1f32 * 0.7 + 0.2 * 0.3) + 0.3 * 0.9).to_bits()
+    );
+}

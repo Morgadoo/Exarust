@@ -13,7 +13,8 @@
 //!    starts ([`run_character_ticks`]).
 //! 3. [`BodySystems`]: the solver, the queued blows then [`solve_with`]:
 //!    integration; 20 iterations, each a pair pass then every body's links;
-//!    the contacts dropped; sim objects; body–body detection; sim-object
+//!    the contacts dropped; the bounds pass (each body's grid cell, the
+//!    position-overflow reset); sim objects; body–body detection; sim-object
 //!    contacts; body–level detection; 8 friction passes, pairs then the
 //!    level; the post-step. Each [`SolverStage`] in [`SolverStages`] is
 //!    called at every stage it has work for.
@@ -176,7 +177,11 @@ pub trait SolverStage: Any + Send + Sync {
     /// After the iterations, before the level contacts are dropped (the
     /// pair contacts are dropped here).
     fn iterated(&mut self, _bodies: &mut [&mut Ragdoll]) {}
-    /// The sim objects' step (cloth), after every contact is dropped.
+    /// The bounds pass, after every contact is dropped and every inverted
+    /// part repaired, before the sim objects: each awake body's grid cell
+    /// (the original's position-overflow reset lives here).
+    fn bounds(&mut self, _bodies: &mut [&mut Ragdoll]) {}
+    /// The sim objects' step (cloth), after the bounds pass.
     fn sim_objects(&mut self, _bodies: &mut [&mut Ragdoll]) {}
     /// Body–body detection, before the level's.
     fn detect(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {}
@@ -244,8 +249,9 @@ pub fn solve_with<L: Level + Sync + ?Sized>(
 /// (inertia, gravity and its muscles' pull); 20 iterations, each the
 /// stages' pair pass, then every body's links, stored level contacts and
 /// edges, then the stages' links between bodies; the stages' and every
-/// body's contacts dropped; the sim objects; body–body detection (which
-/// also sees the `sleeping` bodies); sim-object contacts; every awake
+/// body's contacts dropped; the bounds pass; the sim objects; body–body
+/// detection (which also sees the `sleeping` bodies); sim-object
+/// contacts; every awake
 /// body's spheres tested against the level (an immediate push, the
 /// contacts kept for the next tick); 8 friction passes, each the stages'
 /// pair friction then every awake body's level friction; the post-step.
@@ -291,6 +297,9 @@ pub fn solve_among<L: Level + Sync + ?Sized>(
             p.contacts.clear();
         }
         b.repair_inverted();
+    }
+    for s in stages.iter_mut() {
+        s.bounds(bodies);
     }
     for s in stages.iter_mut() {
         s.sim_objects(bodies);
