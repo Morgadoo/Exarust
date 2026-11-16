@@ -134,9 +134,15 @@ pub fn refresh_worn_specials(
             fighter.stats.golem_core,
             worn.iter().filter(|(_, b)| b.is_none()).map(|&(id, _)| id),
         );
-        if fighter.stats.rules != rules || fighter.second_wind.granted != specials.second_wind {
+        if fighter.stats.rules != rules
+            || fighter.second_wind.granted != specials.second_wind
+            || fighter.stats.weightless != specials.weightless
+        {
             fighter.stats.rules = rules;
             fighter.second_wind.granted = specials.second_wind;
+            // The gauntlets' weightless share, which the holding pass of
+            // the next equip refresh reads.
+            fighter.stats.weightless = specials.weightless;
         }
         let fresh = crate::item_effects::WornEffects::of_specials(&specials, rules.0);
         match (effects, fresh) {

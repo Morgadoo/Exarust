@@ -687,6 +687,9 @@ pub fn spawn_scene_body(
         resolve_item(context.items, &own, actor, id)
     });
     fighter.second_wind.granted = specials.second_wind;
+    // The gauntlets' weightless share, which the dressing's holding pass
+    // reads.
+    fighter.stats.weightless = specials.weightless;
     if let Some(effects) = crate::item_effects::WornEffects::of_specials(&specials, stats.rules.0) {
         commands.entity(model_entity).insert(effects);
     }
