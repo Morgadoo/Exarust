@@ -27,7 +27,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 35% | 32% | 1% | 2% | 58% | 7% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
-| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 55% | 52% | 2% | 1% | 38% | 6% | TArsenalContFrame |
+| Items, materials & crafting | 341 | 140 | 40 | 83% | 0% | 55% | 52% | 2% | 1% | 39% | 6% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 96% | 0% | 56% | 53% | 1% | 2% | 43% | 1% |  |
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 63% | 62% | 1% | 0% | 35% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
@@ -309,7 +309,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | FLX_ItemFactory | Items, materials & crafting | 24 | 96% | 81% | 79% | 3% | 0% | 19% | 0% |
 | Item description phrases | Items, materials & crafting | 16 | 86% | 71% | 65% | 2% | 3% | 29% | 0% |
 | SG_ItemGUI | Items, materials & crafting | 15 | 84% | 68% | 62% | 2% | 4% | 21% | 11% |
-| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 16% | 16% | 0% | 0% | 78% | 6% |
+| Character equipment & inventory routines (TCharacterView by address) | Items, materials & crafting | 11 | 79% | 16% | 16% | 0% | 0% | 84% | 0% |
 | FLX_Materials_Procedural | Items, materials & crafting | 10 | 82% | 26% | 25% | 2% | 0% | 46% | 28% |
 | TProcMaterial | Items, materials & crafting | 6 | 79% | 0% | 0% | 0% | 0% | 91% | 9% |
 | Item variant & condition randomisers (FLX_Character_Textures by address) | Items, materials & crafting | 5 | 84% | 68% | 67% | 1% | 0% | 32% | 0% |

@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 627 | 155,193 | B1 wire (or prove unreachable) |
-| partial | 1,409 | 887,946 | B4 complete the port |
+| uncalled | 622 | 154,552 | B1 wire (or prove unreachable) |
+| partial | 1,414 | 888,587 | B4 complete the port |
 | missing | 54 | 10,344 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -22,7 +22,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | ai | 89,630 | 2,147 | 28 |
 | modes | 65,694 | 10,554 | 363 |
 | world | 58,664 | 16,887 | 563 |
-| items | 55,107 | 8,382 | 601 |
+| items | 55,748 | 7,741 | 601 |
 | data | 28,925 | 9,435 | 0 |
 | runtime | 18,517 | 2,355 | 516 |
 | core | 12,193 | 3,305 | 59 |
@@ -54,7 +54,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TForceTorrentEffect | powers | 5 / 10,453 | 0 / 0 | 0 / 0 | 10,453 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTendrilEmitter | powers | 2 / 9,208 | 0 / 0 | 0 / 0 | 9,208 |
-| Character equipment & inventory routines (TCharacterView by address) | items | 15 / 8,494 | 5 / 641 | 0 / 0 | 9,135 |
+| Character equipment & inventory routines (TCharacterView by address) | items | 20 / 9,135 | 0 / 0 | 0 / 0 | 9,135 |
 | TTetraRBD | physics | 18 / 8,305 | 2 / 661 | 0 / 0 | 8,966 |
 | RF_OS_Functions (unit routines) | runtime | 13 / 6,781 | 5 / 1,749 | 1 / 49 | 8,579 |
 | FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
