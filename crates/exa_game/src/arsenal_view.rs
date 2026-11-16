@@ -19,12 +19,15 @@
 //! names pictures (6 for the arrows, 1–5 for the template buttons, 7 for
 //! the toggle), not captions; they are drawn here as line-skin buttons
 //! with stand-in captions [guess: the pictures are not traced]. The
-//! inventory key shows or hides the embedded inventory; Escape closes the
-//! arsenal.
+//! inventory key (the player's bound one) shows or hides the embedded
+//! inventory; Escape closes the arsenal, and so does a right release over
+//! its form ([`arsenal_input`] hands the open window the frame's pressed
+//! keys and that release).
 //!
 //! The hub's Arsenal row sends [`OpenArsenal`]. Not wired: no arena store
 //! fills the columns
-//! ([`ArsenalWindow::set_column`]); the drop rules stay the tested
+//! ([`ArsenalWindow::set_column`]), so the close does not write them back
+//! (an empty column would clear the store); the drop rules stay the tested
 //! `exa_items::arsenal::drop_in` and `column_hook`.
 //!
 //! Evidence: the arsenal view's constructor, layout routine, close, key,
@@ -72,6 +75,11 @@ pub struct ArsenalKey {
 /// low word `0x1002` left or `0x2002` right).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArsenalScroll(pub u32);
+
+/// A mouse event on the arsenal's form, as its event mask (`0x2002` a
+/// right release).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArsenalMouse(pub u32);
 
 /// The hub's Arsenal row asks the window to open.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -429,10 +437,57 @@ fn open_arsenal(
     }
 }
 
+/// The open arsenal's input as the window manager hands it to the form:
+/// each key pressed this frame (its virtual-key code; the inventory key is
+/// the player's bound one) and a right release over the form.
+pub fn arsenal_input(
+    window: Res<ArsenalWindow>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    bindings: Option<Res<crate::bindings::Bindings>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut out: MessageWriter<ArsenalKey>,
+    mut mouse: MessageWriter<ArsenalMouse>,
+) {
+    if !window.open {
+        return;
+    }
+    let inventory = bindings
+        .as_deref()
+        .map(|b| b.key(crate::bindings::Action::Inventory));
+    if let Some(keys) = keys.as_deref() {
+        for &key in keys.get_just_pressed() {
+            let Some(code) = crate::bindings::virtual_key(key) else {
+                continue;
+            };
+            // The key slot compares with the bound inventory key: the
+            // bound code is handed on as the window's own.
+            let code = match inventory {
+                Some(bound) if bound == code => window.inventory_key,
+                _ => code,
+            };
+            out.write(ArsenalKey { code, flags: 0 });
+        }
+    }
+    if buttons
+        .as_deref()
+        .is_some_and(|b| b.just_released(MouseButton::Right))
+    {
+        let over = windows.single().ok().and_then(|w| {
+            w.cursor_position()
+                .map(|p| (p * w.scale_factor()).as_ivec2())
+        });
+        if over.is_some_and(|p| window.bounds.contains(p.x, p.y)) {
+            mouse.write(ArsenalMouse(0x2002));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn arsenal_live(
     mut window: ResMut<ArsenalWindow>,
     mut keys: MessageReader<ArsenalKey>,
+    mut mouse: MessageReader<ArsenalMouse>,
     mut scrolls: MessageReader<ArsenalScroll>,
     mut icons: Option<ResMut<PanelIcons>>,
     mut frames: ResMut<GuiFrames>,
@@ -448,6 +503,17 @@ fn arsenal_live(
             if !window.open
                 && let Some(control) = control.as_deref_mut()
             {
+                crate::controls_live::switch_controls(control, false, "arsenal closes");
+            }
+        }
+    }
+    // The form's mouse slot: a right release closes, as a key's close
+    // does.
+    for event in mouse.read() {
+        if window.open && arsenal::closes_on_release(event.0) {
+            window.close();
+            info!("arsenal: a right release closes it");
+            if let Some(control) = control.as_deref_mut() {
                 crate::controls_live::switch_controls(control, false, "arsenal closes");
             }
         }
@@ -508,11 +574,12 @@ impl Plugin for ArsenalViewPlugin {
         app.init_resource::<ArsenalWindow>()
             .init_resource::<GuiFrames>()
             .add_message::<ArsenalKey>()
+            .add_message::<ArsenalMouse>()
             .add_message::<ArsenalScroll>()
             .add_message::<OpenArsenal>()
             .add_systems(
                 Update,
-                (open_arsenal, arsenal_live)
+                (open_arsenal, arsenal_input, arsenal_live)
                     .chain()
                     .after(crate::gui_screens::draw_screens)
                     .after(crate::item_icon_render::IconRenderSystems),
@@ -626,6 +693,54 @@ mod tests {
         assert_eq!(word(&mut app, 0x2002), 2);
         assert_eq!(word(&mut app, 0x1002), 1);
         assert_eq!(word(&mut app, 0x2001), 1);
+    }
+
+    /// The open arsenal takes the keys and a right release over it: the
+    /// inventory key flips the embedded inventory, Escape closes, and so
+    /// does a right release over the form; one elsewhere does not.
+    #[test]
+    fn the_keys_and_a_right_release_reach_the_live_window() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ArsenalViewPlugin)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<crate::bindings::Bindings>()
+            .insert_resource(window());
+        let primary = app
+            .world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        let press = |app: &mut App, key: KeyCode| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset_all();
+            keys.press(key);
+            app.update();
+        };
+        press(&mut app, KeyCode::KeyI);
+        assert!(!app.world().resource::<ArsenalWindow>().inventory_shown);
+        press(&mut app, KeyCode::KeyI);
+        assert!(app.world().resource::<ArsenalWindow>().inventory_shown);
+        press(&mut app, KeyCode::Escape);
+        assert!(!app.world().resource::<ArsenalWindow>().open);
+        let release = |app: &mut App, at: (f64, f64)| {
+            app.world_mut().resource_mut::<ArsenalWindow>().open = true;
+            app.world_mut()
+                .get_mut::<Window>(primary)
+                .unwrap()
+                .set_physical_cursor_position(Some(bevy::math::DVec2::new(at.0, at.1)));
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.reset_all();
+            buttons.press(MouseButton::Right);
+            buttons.release(MouseButton::Right);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+            app.update();
+            app.world().resource::<ArsenalWindow>().open
+        };
+        assert!(!release(&mut app, (500.0, 300.0)));
+        assert!(release(&mut app, (1100.0, 300.0)));
     }
 
     #[test]
