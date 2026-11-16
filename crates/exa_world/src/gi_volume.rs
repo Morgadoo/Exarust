@@ -81,7 +81,11 @@ type GiTerrainQuery<'w, 's> = (
     Query<
         'w,
         's,
-        (&'static Mesh3d, &'static GlobalTransform, Option<&'static ChildOf>),
+        (
+            &'static Mesh3d,
+            &'static GlobalTransform,
+            Option<&'static ChildOf>,
+        ),
         With<GiTerrain>,
     >,
     Query<'w, 's, (&'static GiTerrainHeights, &'static GlobalTransform)>,
