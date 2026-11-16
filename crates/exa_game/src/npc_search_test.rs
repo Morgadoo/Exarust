@@ -195,8 +195,11 @@ fn a_changed_container_writes_back() {
     );
 }
 
+/// A record's sections: each tag with its body.
+type Sections = Vec<(u32, Vec<u8>)>;
+
 /// An item catalogue of records, each id with its sections (tag, body).
-fn catalogue_of(records: &[(u32, Vec<(u32, Vec<u8>)>)]) -> ItemCatalogue {
+fn catalogue_of(records: &[(u32, Sections)]) -> ItemCatalogue {
     let payloads: Vec<Vec<u8>> = records
         .iter()
         .map(|(_, sections)| {
@@ -235,7 +238,7 @@ fn weapon_body(flags: u32) -> (u32, Vec<u8>) {
 
 /// An item catalogue of weapons: each id with its weapon section's flags.
 fn weapon_catalogue(weapons: &[(u32, u32)]) -> ItemCatalogue {
-    let records: Vec<(u32, Vec<(u32, Vec<u8>)>)> = weapons
+    let records: Vec<(u32, Sections)> = weapons
         .iter()
         .map(|&(id, flags)| (id, vec![weapon_body(flags)]))
         .collect();
@@ -741,13 +744,24 @@ fn the_rearm_hands_go_through_the_inventory() {
         ..Possessions::default()
     };
     stow(&mut p, 6, kind_of);
-    assert_eq!(p.stowed, [Hand { id: 6, flags: 0 }, Hand { id: 5, flags: 3 }]);
+    assert_eq!(
+        p.stowed,
+        [Hand { id: 6, flags: 0 }, Hand { id: 5, flags: 3 }]
+    );
     stow(&mut p, 8, kind_of);
     assert_eq!(p.stowed[0].id, 6);
     stow(&mut p, 7, kind_of);
-    assert_eq!(p.stowed, [Hand { id: 7, flags: 0 }, Hand { id: 0, flags: 3 }]);
+    assert_eq!(
+        p.stowed,
+        [Hand { id: 7, flags: 0 }, Hand { id: 0, flags: 3 }]
+    );
 
-    let entry = |id, flags| Carried { id, flags, x: 0, y: 0 };
+    let entry = |id, flags| Carried {
+        id,
+        flags,
+        x: 0,
+        y: 0,
+    };
     let mut p = Possessions {
         carried: vec![entry(6, HELD), entry(6, 0), entry(9, 0)],
         ..Possessions::default()
@@ -775,13 +789,8 @@ fn a_comment_activates_the_context_phrase_topic() {
     let mut follower = exa_script::cast::Character::new(5, "Derrin");
     follower.add_role(&scripts.roles, COMMENT_ROLE);
     follower.add_relation(1, COMMENT_TOWARD, 0);
-    follower
-        .contacts
-        .push(exa_script::cast::Contact::new(1));
-    conversations.cast.characters = vec![
-        follower,
-        exa_script::cast::Character::new(1, "player"),
-    ];
+    follower.contacts.push(exa_script::cast::Contact::new(1));
+    conversations.cast.characters = vec![follower, exa_script::cast::Character::new(1, "player")];
     let topic = exa_formats::roles::Name::from_bytes(COMMENT_TOPIC);
     let shipped = scripts
         .roles
@@ -874,7 +883,11 @@ fn a_living_leader_hears_about_a_special_piece() {
             .spawn((
                 PlayerBody::new(0.0),
                 Roles(vec![leader_role]),
-                if dead { Condition::DEAD } else { Condition::default() },
+                if dead {
+                    Condition::DEAD
+                } else {
+                    Condition::default()
+                },
                 GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 20.0)),
                 Possessions::default(),
             ))

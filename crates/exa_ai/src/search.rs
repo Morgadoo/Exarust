@@ -624,7 +624,8 @@ pub const LEADER_ATTENTION: f32 = 50.0;
 /// original's compare (only a smaller attention is skipped).
 pub fn find_leader(contacts: &[Contact]) -> Option<usize> {
     contacts.iter().position(|c| {
-        !(c.attention < LEADER_ATTENTION) && c.character && !c.dead && c.player
+        let attended = c.attention.partial_cmp(&LEADER_ATTENTION) != Some(std::cmp::Ordering::Less);
+        attended && c.character && !c.dead && c.player
     })
 }
 
@@ -714,14 +715,14 @@ fn draw(roll: &mut u32, n: u32) -> u32 {
     ((u64::from(*roll) * u64::from(n)) >> 32) as u32
 }
 
-/// The engine's lower-casing as the comment calls it: ASCII capitals
-/// become small, all but the last character, which its loop never reaches.
+/// The engine's lower-casing as the comment calls it
+/// ([`exa_formats::text::lowercase_bytes`]): ASCII capitals become small,
+/// all but the last byte, which its loop never reaches (a text's last
+/// character, as only ASCII bytes change).
 pub fn lower_but_last(name: &str) -> String {
-    let n = name.chars().count();
-    name.chars()
-        .enumerate()
-        .map(|(i, c)| if i + 1 < n { c.to_ascii_lowercase() } else { c })
-        .collect()
+    let mut bytes = name.as_bytes().to_vec();
+    exa_formats::text::lowercase_bytes(&mut bytes);
+    String::from_utf8(bytes).unwrap_or_else(|_| name.to_string())
 }
 
 fn vowel(c: char) -> bool {

@@ -52,8 +52,8 @@ pub use music::{
 pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};
 pub use sounds::{
-    FOLEY_GOLEM, FOLEY_PLAYER, HEAL, HandlingSounded, HealSound, PointSounded, SWING, foley_set, hit_set,
-    lock_sound_levels,
+    FOLEY_GOLEM, FOLEY_PLAYER, HEAL, HandlingSounded, HealSound, PointSounded, SWING, foley_set,
+    hit_set, lock_sound_levels,
 };
 
 pub struct AudioPlugin;

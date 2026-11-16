@@ -1725,8 +1725,9 @@ pub fn follow_and_search(
                                 .map(|(e, _)| *e);
                             // A shield taken off a body: its grip lets go and
                             // its node leaves the world with its colliders.
-                            let shield_taken = shields_before.get(place).copied().flatten().is_some()
-                                && world.scene.corpses[place].shield.is_none();
+                            let shield_taken =
+                                shields_before.get(place).copied().flatten().is_some()
+                                    && world.scene.corpses[place].shield.is_none();
                             if shield_taken
                                 && let Some(hold) = owner.and_then(|o| shields.get(o).ok())
                             {
