@@ -2923,11 +2923,12 @@ mod wiring_tests {
         assert_eq!(d.get::<Animator>().action, "Defence stance");
         assert_eq!(*d.get::<Stance>(), Stance::Defence);
         // A shocked body (helpless, its clip stands still, and the posture
-        // stage keeps the condition): the parry goes, the clip stays and so
-        // does the stance, tick after tick.
+        // stage keeps the condition until the release's busy deadline): the
+        // parry goes, the clip stays and so does the stance, tick after tick.
         let mut d = Duel::high();
         d.tick();
         d.edit::<Condition>(|c| *c = Condition::SHOCKED);
+        d.edit::<Ragdoll>(|b| b.drive.as_mut().unwrap().busy_until_ms = u32::MAX);
         d.tick();
         d.tick();
         assert!(!d.parrying());
