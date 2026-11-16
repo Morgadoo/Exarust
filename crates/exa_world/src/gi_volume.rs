@@ -75,6 +75,18 @@ type GiSourceMeshes<'w, 's> = Query<
     ),
 >;
 
+/// The terrain the level's source collects: the tile meshes (with their
+/// tile, when it carries a vertex grid) and the tiles' vertex grids.
+type GiTerrainQuery<'w, 's> = (
+    Query<
+        'w,
+        's,
+        (&'static Mesh3d, &'static GlobalTransform, Option<&'static ChildOf>),
+        With<GiTerrain>,
+    >,
+    Query<'w, 's, (&'static GiTerrainHeights, &'static GlobalTransform)>,
+);
+
 /// The GI meshes the dynamic update follows: those the level's source
 /// collected, each with the frames [`GiMoved`] keeps.
 type GiMoverQuery<'w, 's> = Query<
@@ -275,6 +287,19 @@ pub struct GiFloor {
 /// A terrain tile mesh: the voxels below its surface are solid.
 #[derive(Component, Clone, Copy)]
 pub struct GiTerrain;
+
+/// A terrain tile's vertex grid as the GI manager reads it (on the tile's
+/// entity, whose frame stands at the tile's centre): 241 × 241 heights
+/// (metres, row-major, X fastest), the vertex spacing (metres) and which of
+/// its 8 × 8 blocks of 6 m exist (X fastest). The original fills each
+/// interior column of a block from the mean of its quad's anti-diagonal
+/// vertices, over the tile's present blocks only.
+#[derive(Component, Clone, Debug)]
+pub struct GiTerrainHeights {
+    pub spacing: f32,
+    pub heights: Arc<Vec<f32>>,
+    pub blocks: [bool; 64],
+}
 
 /// A level waiting for its GI volume, once its nodes have world transforms.
 #[derive(Resource, Debug, Clone)]
@@ -688,7 +713,10 @@ struct GiInputs {
     floors: Vec<(Vec<Vec3>, Affine3A)>,
     /// How many floor points the cells hold.
     floor_points: usize,
+    /// Terrain meshes without a tile vertex grid, as world triangles.
     terrain: Vec<[Vec3; 3]>,
+    /// The terrain tiles' vertex grids, each with its centre in the world.
+    terrain_tiles: Vec<(GiTerrainHeights, Vec3)>,
 }
 
 /// A grid cell's floor as the original merges it: the triangles of every
@@ -864,7 +892,7 @@ fn collect_source(
     settings: Res<GiSettings>,
     points: GiSourceMeshes,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
-    terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
+    terrain: GiTerrainQuery,
     meshes: Res<Assets<Mesh>>,
     fires: Query<&crate::fire::Fire>,
     mut state: ResMut<GiState>,
@@ -941,7 +969,7 @@ fn build_level(
     pending: &PendingGi,
     points: GiSourceMeshes,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
-    terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
+    terrain: GiTerrainQuery,
     meshes: Res<Assets<Mesh>>,
     state: &mut GiState,
 ) {
@@ -976,7 +1004,20 @@ fn build_level(
         .iter()
         .filter_map(|(mesh, at, floor)| Some((mesh_copy(mesh, at, &meshes)?, *floor)))
         .collect();
-    let ground = mesh_copies(terrain.iter(), &meshes);
+    let (tile_meshes, tiles) = terrain;
+    // A terrain mesh under a tile with a vertex grid is read from the grid;
+    // any other is voxelised from its triangles.
+    let ground = mesh_copies(
+        tile_meshes
+            .iter()
+            .filter(|(_, _, parent)| parent.is_none_or(|p| tiles.get(p.parent()).is_err()))
+            .map(|(mesh, at, _)| (mesh, at)),
+        &meshes,
+    );
+    let terrain_tiles: Vec<(GiTerrainHeights, Vec3)> = tiles
+        .iter()
+        .map(|(heights, at)| (heights.clone(), at.translation()))
+        .collect();
     let task = AsyncComputeTaskPool::get().spawn(async move {
         let floors: Vec<(Vec<Vec3>, Affine3A)> = floor_cells(&floors)
             .iter()
@@ -988,6 +1029,7 @@ fn build_level(
             meshes: points,
             floors,
             terrain: world_triangles(&ground),
+            terrain_tiles,
         }
     });
     commands.insert_resource(GiSource {
@@ -1516,6 +1558,9 @@ fn build_block(
     for &t in &inputs.terrain {
         ground.add(t);
     }
+    for (tile, centre) in &inputs.terrain_tiles {
+        ground.add_tile(tile, *centre);
+    }
     let terrain_columns = ground.apply(&mut occupancy);
     for (points, at, thin, centred) in &inputs.meshes {
         occupancy.splat_mesh(points, CM_PER_M, *at, 1.0, *thin, *centred);
@@ -1575,6 +1620,7 @@ const SECTOR_RADIUS_CM: f32 = f32::from_bits(0x4454_21cd);
 /// The top of the terrain over the block, per whole column (X fastest).
 struct TerrainColumns {
     origin: Vec3,
+    /// Each column's surface in voxels above the block's bottom.
     tops: Vec<f32>,
 }
 
@@ -1583,6 +1629,46 @@ impl TerrainColumns {
         Self {
             origin: o.origin,
             tops: vec![f32::NEG_INFINITY; SIDE * SIDE],
+        }
+    }
+
+    /// Fills the interior columns a terrain tile covers from its vertex
+    /// grid, as the original does: the column over quad (column, row) takes
+    /// the mean of the quad's anti-diagonal vertices (column + 1, row) and
+    /// (column, row + 1), in centimetres, over the voxel size plus the
+    /// block's vertical offset, `((a + b)·0.5)/fc + b4`, for the quads of
+    /// the tile's present 6 m blocks. A tile whose spacing is not the voxel
+    /// size has no column-to-quad match and is left out.
+    fn add_tile(&mut self, tile: &GiTerrainHeights, centre: Vec3) {
+        const N: i64 = exa_formats::terrain::TILE_VERTICES as i64;
+        if (tile.spacing - VOXEL).abs() > 1e-6 || tile.heights.len() != (N * N) as usize {
+            return;
+        }
+        // Whole voxels from the world origin to the block's first voxel and
+        // to the tile's first vertex (the tile is 240 quads of one voxel).
+        let first = (self.origin / VOXEL).round();
+        let corner = (centre / VOXEL).round() - Vec3::splat(((N - 1) / 2) as f32);
+        let below = -first.y;
+        let height = |i: i64, j: i64| (tile.heights[(j * N + i) as usize] + centre.y) * CM_PER_M;
+        for z in MARGIN..SIDE - MARGIN {
+            let row = first.z as i64 + z as i64 - corner.z as i64;
+            if !(0..N - 1).contains(&row) {
+                continue;
+            }
+            for x in MARGIN..SIDE - MARGIN {
+                let col = first.x as i64 + x as i64 - corner.x as i64;
+                if !(0..N - 1).contains(&col) {
+                    continue;
+                }
+                let block = (col / SECTOR as i64 + (row / SECTOR as i64) * 8) as usize;
+                if !tile.blocks[block] {
+                    continue;
+                }
+                let h = (height(col + 1, row) + height(col, row + 1)) * 0.5;
+                let g = h / VOXEL_CM + below;
+                let top = &mut self.tops[x + z * SIDE];
+                *top = top.max(g);
+            }
         }
     }
 
@@ -1609,7 +1695,7 @@ impl TerrainColumns {
                 }
                 let h = wa * t[0].y + wb * t[1].y + wc * t[2].y;
                 let top = &mut self.tops[x + z * SIDE];
-                *top = top.max(h);
+                *top = top.max((h - self.origin.y) / VOXEL);
             }
         }
     }
@@ -1627,11 +1713,10 @@ impl TerrainColumns {
         let top_slice = o.depth as i32 - 1;
         for z in MARGIN..SIDE - MARGIN {
             for x in MARGIN..SIDE - MARGIN {
-                let top = self.tops[x + z * SIDE];
-                if !top.is_finite() {
+                let g = self.tops[x + z * SIDE];
+                if !g.is_finite() {
                     continue;
                 }
-                let g = (top - self.origin.y) / VOXEL;
                 // The original truncates (towards zero), so a surface less
                 // than a voxel below slice 0 still counts as slice 0.
                 let mut k = g as i32;
@@ -2209,6 +2294,47 @@ mod tests {
         assert!(neighbours.len() < exa_render::gi::RESIDENT_BLOCKS);
     }
 
+    /// The live build fills a block's terrain columns from a tile's vertex
+    /// grid: a flat 40 cm tile over the camera's block gives every interior
+    /// column the floor two slices above the block's vertical offset.
+    #[test]
+    fn a_level_build_reads_the_terrain_tiles_grid() {
+        const N: usize = exa_formats::terrain::TILE_VERTICES;
+        let mut app = App::new();
+        app.add_plugins((TaskPoolPlugin::default(), GiVolumePlugin))
+            .init_resource::<Assets<Mesh>>();
+        app.world_mut()
+            .spawn((Camera3d::default(), GlobalTransform::default()));
+        // The camera's block starts at world voxel -8 (sector 16 of 32), so
+        // a tile centred 24 m along X and Z covers its interior.
+        app.world_mut().spawn((
+            GiTerrainHeights {
+                spacing: VOXEL,
+                heights: Arc::new(vec![0.4; N * N]),
+                blocks: [true; 64],
+            },
+            GlobalTransform::from_xyz(24.0, 0.0, 24.0),
+        ));
+        let level = PendingGi {
+            centre: Vec3::ZERO,
+            top: 6.0,
+            bottom: 0.0,
+            base_ambient: [0.04, 0.04, 0.04],
+            grid: open_grid(32),
+            top_slice: false,
+        };
+        app.insert_resource(level);
+        update_until(&mut app, |w| w.contains_resource::<GiVolume>());
+        let built = app.world().resource::<GiBuiltBlocks>();
+        let block = built
+            .0
+            .values()
+            .find(|b| b.sector == IVec2::new(16, 16))
+            .expect("the camera's block is built");
+        assert_eq!(block.terrain_columns, 240 * 240);
+        assert_eq!(block.floors[8 + 8 * SIDE], 36);
+    }
+
     #[test]
     fn blocks_are_built_off_the_main_thread_where_the_camera_stands() {
         let mut app = App::new();
@@ -2695,13 +2821,51 @@ mod tests {
         assert!(layout.block_at(Vec3::splat(-10_000.0)).is_none());
     }
 
+    /// A terrain column takes the mean of its quad's anti-diagonal
+    /// vertices from the tile's grid, in centimetres over the voxel size
+    /// plus the block's vertical offset, and only over the tile's present
+    /// blocks.
+    #[test]
+    fn terrain_columns_read_the_tiles_anti_diagonal() {
+        const N: usize = exa_formats::terrain::TILE_VERTICES;
+        // The block's interior columns 8.. are world voxels 0.., and the
+        // tile's first vertex sits at world voxel 0.
+        let mut o = Occupancy::new_at(Vec3::new(-1.6, -6.8, -1.6), 64, IVec2::ZERO);
+        let mut heights = vec![0.0f32; N * N];
+        heights[1] = 0.5; // vertex (1, 0)
+        heights[N] = 0.3; // vertex (0, 1)
+        heights[0] = 9.0; // vertex (0, 0): off the anti-diagonal
+        heights[N + 1] = 9.0; // vertex (1, 1)
+        let mut blocks = [true; 64];
+        blocks[1] = false;
+        let tile = GiTerrainHeights {
+            spacing: VOXEL,
+            heights: Arc::new(heights),
+            blocks,
+        };
+        let mut ground = TerrainColumns::new(&o);
+        ground.add_tile(&tile, Vec3::new(24.0, 0.0, 24.0));
+        let filled = ground.apply(&mut o);
+        // Every column of the 63 present blocks.
+        assert_eq!(filled, 63 * 30 * 30);
+        let column = 8 + 8 * SIDE;
+        let cell = |o: &Occupancy, x: usize, y: usize| o.cells[x + 8 * SIDE + y * SIDE * SIDE];
+        // (50 + 30)/2 = 40 cm: 2 voxels over the offset 34.
+        assert_eq!(o.lowest[column], 36);
+        assert_eq!(cell(&o, 8, 35), 20);
+        assert_eq!(cell(&o, 8, 36), 0);
+        // Block (1, 0) is absent: its columns keep no terrain.
+        assert_eq!(o.lowest[8 + 30 + 8 * SIDE], 255);
+        assert_eq!(cell(&o, 8 + 30, 0), 0);
+    }
+
     #[test]
     fn terrain_at_or_above_the_lid_clamps_to_the_top_slice() {
         let column = 20 + 20 * SIDE;
         let fill = |top: f32| {
             let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
             let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
-            tops[column] = top;
+            tops[column] = top / VOXEL;
             let ground = TerrainColumns {
                 origin: Vec3::ZERO,
                 tops,
@@ -2740,7 +2904,7 @@ mod tests {
         // A whole voxel below is skipped.
         let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
         let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
-        tops[column] = -0.25;
+        tops[column] = -0.25 / VOXEL;
         let ground = TerrainColumns {
             origin: Vec3::ZERO,
             tops,
