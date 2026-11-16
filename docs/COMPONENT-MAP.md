@@ -7,9 +7,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 Two numbers are published while the function ledger is being completed (see `docs/roadmap/README.md`, "Two numbers during the transition"): the **estimate**, reviewers' ratings per component, and the **ledger**, the share of the counted bytes whose every function is in a final state.
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- **Estimate 82.3% + 5.1% engine; ledger 53.5% closed.**
+- **Estimate 82.3% + 5.1% engine; ledger 53.6% closed.**
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **82.3% reimplemented** by Exarust's own code and **5.1% provided** by Bevy, wgpu, rapier or the Rust standard library. This is the estimate.
-- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.5% closed**, of which 41.7% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.3% partial and 8.2% uncalled, missing or unaudited.
+- The ledger, function by function over 2,453 KB of counted code (not-applicable rows left out): **53.6% closed**, of which 41.8% live (reimplemented), 9.7% engine and 2.2% closed without code (unreachable or deviation). Still open: 38.2% partial and 8.2% uncalled, missing or unaudited.
 - Weighted by function count (zero-byte imported names left out): 73.8% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **90.6%** reproduced.
 
@@ -23,7 +23,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Core, math & threading | 282 | 37 | 11 | 86% | 1% | 59% | 38% | 19% | 2% | 32% | 9% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 84% | 0% | 52% | 44% | 7% | 2% | 34% | 13% |  |
 | Rendering & GPU | 823 | 334 | 63 | 83% | 1% | 56% | 39% | 15% | 2% | 36% | 8% |  |
-| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 51% | 44% | 4% | 3% | 37% | 12% |  |
+| World, levels & terrain | 454 | 174 | 31 | 82% | 0% | 51% | 45% | 4% | 3% | 37% | 12% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 94% | 0% | 27% | 26% | 1% | 0% | 62% | 10% |  |
 | Characters, motion & animation | 506 | 198 | 23 | 85% | 0% | 47% | 40% | 4% | 3% | 44% | 9% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 83% | 0% | 32% | 28% | 3% | 0% | 68% | 0% |  |
@@ -32,7 +32,7 @@ The first two percentages are the estimate; the next six come from the ledger (c
 | Thaumaturgy & effects | 697 | 296 | 83 | 87% | 0% | 61% | 59% | 1% | 0% | 37% | 2% |  |
 | Audio | 59 | 18 | 4 | 90% | 0% | 82% | 60% | 22% | 0% | 16% | 1% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 87% | 0% | 85% | 83% | 2% | 0% | 11% | 4% |  |
-| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 55% | 52% | 2% | 0% | 38% | 8% |  |
+| Game modes, arena & session | 646 | 193 | 23 | 91% | 0% | 56% | 54% | 2% | 0% | 37% | 7% |  |
 | UI | 959 | 312 | 63 | 86% | 0% | 52% | 42% | 1% | 9% | 31% | 17% |  |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% | 100% | 82% | 18% | 0% | 0% | 0% |  |
 
@@ -252,7 +252,7 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TGridEnvBuilder | World, levels & terrain | 4 | 69% | 62% | 41% | 21% | 0% | 11% | 26% |
 | TScene | World, levels & terrain | 3 | 72% | 38% | 10% | 28% | 0% | 22% | 40% |
 | RF_kdTrees | World, levels & terrain | 3 | 50% | 23% | 11% | 11% | 0% | 77% | 0% |
-| SG_Teleporters | World, levels & terrain | 2 | 80% | 45% | 42% | 3% | 0% | 55% | 0% |
+| SG_Teleporters | World, levels & terrain | 2 | 80% | 59% | 55% | 3% | 0% | 41% | 0% |
 | Scene content helpers (unit before RF_Dynamics) | World, levels & terrain | 2 | 34% | 15% | 8% | 7% | 0% | 41% | 44% |
 | RF_SceneEditor | World, levels & terrain | 2 | 48% | 24% | 16% | 9% | 0% | 0% | 76% |
 | TRBPushSurface | World, levels & terrain | 2 | 98% | 97% | 95% | 2% | 0% | 3% | 0% |
@@ -461,8 +461,8 @@ Every counted component, by section and then by size. "Estimate" is the componen
 | TScriptActor | Script, dialogue & story | 0 | 80% | 0% | 0% | 0% | 0% | 100% | 0% |
 | TScriptClass | Script, dialogue & story | 0 | 100% | 100% | 100% | 0% | 0% | 0% | 0% |
 | XA_Arena | Game modes, arena & session | 71 | 96% | 70% | 68% | 2% | 0% | 27% | 4% |
-| XA_SaveGames | Game modes, arena & session | 27 | 96% | 50% | 47% | 3% | 0% | 46% | 4% |
-| SG_GameMain | Game modes, arena & session | 20 | 87% | 57% | 55% | 2% | 0% | 37% | 6% |
+| XA_SaveGames | Game modes, arena & session | 27 | 96% | 55% | 52% | 3% | 0% | 42% | 3% |
+| SG_GameMain | Game modes, arena & session | 20 | 87% | 60% | 58% | 2% | 0% | 34% | 6% |
 | TMatchBoard | Game modes, arena & session | 17 | 90% | 45% | 44% | 1% | 0% | 55% | 0% |
 | SG_Character_Create | Game modes, arena & session | 17 | 86% | 34% | 31% | 3% | 0% | 40% | 26% |
 | TLoadoutForm | Game modes, arena & session | 7 | 85% | 12% | 12% | 0% | 0% | 87% | 1% |

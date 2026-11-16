@@ -5,8 +5,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 
 | class | functions | bytes | Phase B task |
 |---|---|---|---|
-| uncalled | 761 | 191,198 | B1 wire (or prove unreachable) |
-| partial | 1,493 | 961,262 | B4 complete the port |
+| uncalled | 758 | 190,828 | B1 wire (or prove unreachable) |
+| partial | 1,489 | 959,222 | B4 complete the port |
 | missing | 65 | 14,741 | B4 port |
 | unaudited | 0 | 0 | Phase A |
 
@@ -20,8 +20,8 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | powers | 112,105 | 3,852 | 3,049 |
 | ai | 104,210 | 5,312 | 28 |
 | characters | 89,820 | 15,398 | 2,097 |
-| modes | 74,751 | 14,043 | 942 |
-| world | 65,583 | 21,250 | 563 |
+| modes | 73,059 | 13,673 | 942 |
+| world | 65,235 | 21,250 | 563 |
 | items | 63,514 | 11,086 | 670 |
 | data | 31,939 | 12,305 | 0 |
 | runtime | 18,517 | 2,534 | 516 |
@@ -49,9 +49,9 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TPathFinder | ai | 5 / 15,465 | 3 / 991 | 0 / 0 | 16,456 |
 | TGUIDrawSkin | ui | 6 / 4,727 | 28 / 11,199 | 0 / 0 | 15,926 |
 | TMesh | render | 20 / 13,220 | 3 / 1,391 | 0 / 0 | 14,611 |
-| XA_SaveGames (unit routines) | modes | 24 / 12,546 | 6 / 1,074 | 0 / 0 | 13,620 |
 | RF_Skinning (unit routines) | characters | 8 / 12,301 | 3 / 515 | 0 / 0 | 12,816 |
 | FLX_Terrain_Texrender2 (unit routines) | render | 9 / 12,302 | 0 / 0 | 0 / 0 | 12,302 |
+| XA_SaveGames (unit routines) | modes | 23 / 11,426 | 3 / 704 | 0 / 0 | 12,130 |
 | TForceTorrentEffect | powers | 6 / 11,171 | 0 / 0 | 1 / 728 | 11,899 |
 | SG_Character_Create (unit routines) | modes | 19 / 6,864 | 21 / 4,436 | 0 / 0 | 11,300 |
 | SG_GameGUI (unit routines) | ui | 19 / 9,465 | 10 / 1,573 | 1 / 161 | 11,199 |
@@ -64,7 +64,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TMatchBoard | modes | 6 / 9,526 | 0 / 0 | 0 / 0 | 9,526 |
 | RF_Dynamics_Volumes (unit routines) | physics | 1 / 6,604 | 1 / 2,608 | 0 / 0 | 9,212 |
 | TTetraRBD | physics | 17 / 8,115 | 4 / 917 | 1 / 151 | 9,183 |
-| SG_GameMain (unit routines) | modes | 21 / 7,606 | 3 / 1,300 | 0 / 0 | 8,906 |
 | RF_GUI_Main (unit routines) | ui | 7 / 5,075 | 19 / 2,486 | 3 / 1,167 | 8,728 |
 | RF_OS_Functions (unit routines) | runtime | 13 / 6,781 | 5 / 1,749 | 1 / 49 | 8,579 |
 | FLX_Content_Stream (unit routines) | data | 16 / 7,762 | 6 / 774 | 0 / 0 | 8,536 |
@@ -72,6 +71,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | FLX_Materials_Procedural (unit routines) | items | 9 / 5,600 | 11 / 2,821 | 1 / 76 | 8,497 |
 | RFE_Export_RFC2 (unit routines) | data | 13 / 8,152 | 2 / 240 | 0 / 0 | 8,392 |
 | FLX_GPUPrograms (unit routines) | render | 6 / 8,091 | 2 / 266 | 0 / 0 | 8,357 |
+| SG_GameMain (unit routines) | modes | 19 / 7,034 | 3 / 1,300 | 0 / 0 | 8,334 |
 | RF_Morphing (unit routines) | characters | 6 / 7,170 | 2 / 836 | 1 / 154 | 8,160 |
 | TTendrilEffect | powers | 2 / 8,075 | 0 / 0 | 0 / 0 | 8,075 |
 | SG_ObjectDB2 (unit routines) | data | 8 / 4,937 | 25 / 3,098 | 0 / 0 | 8,035 |
@@ -193,7 +193,6 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | TTerrainMesh | render | 3 / 1,408 | 0 / 0 | 0 / 0 | 1,408 |
 | TGUIDrawSkinTex | ui | 4 / 1,400 | 0 / 0 | 0 / 0 | 1,400 |
 | RF_UIDManager (unit routines) | data | 1 / 248 | 7 / 1,148 | 0 / 0 | 1,396 |
-| SG_Teleporters (unit routines) | world | 3 / 1,390 | 0 / 0 | 0 / 0 | 1,390 |
 | RF_Material_Manager (unit routines) | render | 2 / 1,201 | 1 / 180 | 0 / 0 | 1,381 |
 | TMemBlockLibrary | data | 1 / 272 | 4 / 1,092 | 0 / 0 | 1,364 |
 | RF_SceneEditor (unit routines) | world | 0 / 0 | 4 / 1,351 | 0 / 0 | 1,351 |
@@ -217,6 +216,7 @@ Each open function is a row in `context/re/ledger/ledger.tsv` with its proof; la
 | GUI support routines (unit before RF_GUI_Main) | ui | 0 / 0 | 2 / 1,089 | 0 / 0 | 1,089 |
 | RFE_Effects_Electricity (unit routines) | powers | 2 / 1,050 | 0 / 0 | 0 / 0 | 1,050 |
 | T3DView | render | 2 / 977 | 1 / 69 | 0 / 0 | 1,046 |
+| SG_Teleporters (unit routines) | world | 2 / 1,042 | 0 / 0 | 0 / 0 | 1,042 |
 | TKFCCatRom3f | characters | 1 / 955 | 0 / 0 | 0 / 0 | 955 |
 | THairEditForm | ui | 1 / 828 | 1 / 117 | 0 / 0 | 945 |
 | RF_ShadowMap (unit routines) | render | 2 / 771 | 1 / 127 | 0 / 0 | 898 |
