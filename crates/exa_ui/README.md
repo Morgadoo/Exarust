@@ -290,7 +290,10 @@ HUD status icon uses it); the twelve built-in glyphs and the alpha hits
 their controls rescale with the unit, the glyph sheet and the message
 box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
-app; the other widgets wait for forms that use them.
+app, and fills the large atlas from the common glyph sheet (`GlphCommon`,
+handles 1 to 19) once the game's data is loaded; `GuiTask::resize` sets a
+window manager's drag distance from the window's height. The other
+widgets wait for forms that use them.
 
 The basic controls also draw: `gui_controls` orders each class's back
 calls (a button's shell, a check box's sunken face, an image button's

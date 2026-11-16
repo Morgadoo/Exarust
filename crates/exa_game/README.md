@@ -2105,9 +2105,15 @@ the manual (`help_live`), the hub's Tab and text fields
 (`option_forms::hub_form_typing`), the main menu (`menu_screen`: typed
 characters into the name buffer, `barechoons` toggling the menu music),
 the settings form, the power tree (its bound next and previous power
-keys), the skill screen and the destination screen (any key) hand those
-keys to their focused form's key slot, and a key a form passes up goes to
-the root task (`gui_keys::TaskKeys`); while a game screen has
+keys), the skill screen and the destination screen (any key), the end menu
+(the main menu's slot), the arsenal (`arsenal_view`), the save screen
+(`save_screen`) and the hub's message box and forms
+(`arena_hub_live::close_hub_windows`) hand those keys to their focused
+form's key slot, and a key a form passes up goes to the root task
+(`gui_keys::TaskKeys`), whose Escape is the menu toggle: by the session
+phase it steps the menu back (the menu's phase), closes the open in-game
+menu with the manual (a session), closes the hub's loadout form or leaves
+the character screen for the menu; while a game screen has
 the window manager's focus (the pointer over it) the player's hotkeys
 (`hotkeys`) hear no key-down, as the original's game view, whose key
 handler they are, never gets a key a window passed up to the task. The
