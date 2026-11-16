@@ -1619,6 +1619,8 @@ the scenes owed by rounds 273 to 280 ran on the build worker's GPU: the key rout
 
 a function oracle runs the original's machine code in an emulator on the build worker under the engine's float mode (its SSE arithmetic answered natively, the approximate reciprocals by the CPU or a chosen CPU's table) and replays the recorded cases against the Rust ports by name (the new exa_oracle crate holds no addresses); 29 of 33 functions are identical over 5000 cases each; it found a denormal bug in the floor and ceiling helpers (fixed), confirmed the glam normalise and lerp last-bit drift and the unmasked door normaliser's zero case, and found the swing time differs on non-finite input; DEC-7 numbers: Intel and AMD answer the approximate reciprocals differently on about half of all inputs, and an exact reciprocal in the face's closest point takes another branch on 0.6 percent of cases. About 70 to 110 open rows are cheap to check next.
 
+every schedule the simulation step runs is fully ordered (1149 unordered pairs touching the same data, each kept in the order the single-threaded simulation executor already ran it, so no simulation value changes) and the frame's PreUpdate too; a test builds the game's own App and fails on any new unordered pair, with the frame's Update and PostUpdate held at an exact count to be ordered by a later lane. The trace's row order within a tick changes on exanima01 (command order), its values do not.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
