@@ -194,6 +194,12 @@ pub trait SolverStage: Any + Send + Sync {
         _sleeping: &mut [&mut Ragdoll],
     ) {
     }
+    /// Whether this stage steps an all-pairs sector (a scene without a
+    /// grid): the original's all-pairs step tests the bodies against the
+    /// level before the sim objects' contacts, the grid step after them.
+    fn all_pairs_sector(&self) -> bool {
+        false
+    }
     /// Each of the 8 friction passes, before the bodies' level friction
     /// (the pair friction).
     fn friction(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {}
@@ -260,7 +266,8 @@ pub fn solve_with<L: Level + Sync + ?Sized>(
 /// detection (which also sees the `sleeping` bodies); sim-object
 /// contacts; every awake
 /// body's spheres tested against the level (an immediate push, the
-/// contacts kept for the next tick); 8 friction passes, each the stages'
+/// contacts kept for the next tick), before the sim-object contacts in an
+/// all-pairs sector ([`SolverStage::all_pairs_sector`]); 8 friction passes, each the stages'
 /// pair friction then every awake body's level friction; the post-step.
 pub fn solve_among<L: Level + Sync + ?Sized>(
     bodies: &mut [&mut Ragdoll],
@@ -314,13 +321,22 @@ pub fn solve_among<L: Level + Sync + ?Sized>(
     for s in stages.iter_mut() {
         s.detect(bodies, sleeping);
     }
-    for s in stages.iter_mut() {
-        s.sim_object_contacts(bodies, sleeping);
+    // The all-pairs step meets the level first, then the sim objects.
+    let objects_late = stages.iter().any(|s| s.all_pairs_sector());
+    if !objects_late {
+        for s in stages.iter_mut() {
+            s.sim_object_contacts(bodies, sleeping);
+        }
     }
     drop(span);
     let span = bevy::log::info_span!("solver: level detection").entered();
     each_body(bodies, None, |b| b.detect(level));
     drop(span);
+    if objects_late {
+        for s in stages.iter_mut() {
+            s.sim_object_contacts(bodies, sleeping);
+        }
+    }
     let span = bevy::log::info_span!("solver: friction").entered();
     // The pairs found this tick decide which bodies rub with the stages.
     let together = coupled_bodies(stages, bodies);

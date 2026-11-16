@@ -881,8 +881,11 @@ their bytes but have no drawn light or garment switch. A worn mind ward
 also sets the caster's power-refusing bit and a focus charm its focus
 regeneration bonus (`thaum::cast::PowerCaster::apply_worn`).
 
-It already runs the character ticks of physical bodies, the player's last,
-each body's whole tick before the next, in the original's stages
+It already runs the character ticks of physical bodies in the original's
+character-list order (`stages::CharacterList`: from the last registered
+down to the player, who takes the front entry when it registers; a body
+that leaves has its place taken by the last entry), each body's whole tick
+before the next, in the original's stages
 (`stages`: the driver and one module a stage; the rules in `limp`): its
 condition, dying tick, falls and get-ups, fall check, then its bearing
 with its get-up's first quarter, its clip's progress, walking and off its

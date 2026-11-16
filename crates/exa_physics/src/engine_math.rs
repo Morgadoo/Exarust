@@ -381,6 +381,15 @@ pub fn length3(v: Vec3) -> f32 {
     ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
 }
 
+/// The original's exact out-of-place normalisation: the squares summed
+/// `y² + (x² + z²)` (the same value as [`length3`]'s), one exact division
+/// `1 / √s` and the vector scaled by it. No zero guard: a zero vector gives
+/// NaN, as the original's does.
+pub fn normalize_exact(v: Vec3) -> Vec3 {
+    let s = v.y * v.y + (v.x * v.x + v.z * v.z);
+    v * (1.0 / s.sqrt())
+}
+
 /// The length of a 3D vector projected onto the ground plane:
 /// `(x² + z²).sqrt()`.
 pub fn length3_ground(v: Vec3) -> f32 {
