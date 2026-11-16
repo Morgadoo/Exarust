@@ -148,6 +148,10 @@ pub struct ArenaCareer {
     /// made an item instance in the live object database
     /// ([`crate::arena_hub_live::hub_stow_won`]).
     pub won_items: Vec<crate::arena_rewards::WonItem>,
+    /// The profession nibbles (4 a merchant, 5 a physician) of specialists
+    /// who left, whose figure the hub takes away
+    /// ([`crate::arena_hub_live::remove_left_figures`]).
+    pub figures_left: Vec<u32>,
 }
 
 impl Default for ArenaCareer {
@@ -190,6 +194,7 @@ impl Default for ArenaCareer {
             rivals: [0; crate::career::RIVAL_FIELD],
             staff_left: Vec::new(),
             won_items: Vec::new(),
+            figures_left: Vec::new(),
         };
         // A default career is what the play-mode hub starts with: ten
         // candidates, drawn from a fixed seed until a session host replaces

@@ -234,7 +234,8 @@ impl Plugin for ArenaHubPlugin {
             .add_systems(Update, read_hire_facts.before(enter_loaded_hub))
             .add_systems(
                 Update,
-                place_hired_specialists
+                (remove_left_figures, place_hired_specialists)
+                    .chain()
                     .after(enter_loaded_hub)
                     .after(crate::hub_forms::hub_form_input),
             );
@@ -431,6 +432,40 @@ fn place_hired_specialists(
             "arena hub: the hired {:?} {} stands at its spot",
             member.profession, member.name
         );
+    }
+}
+
+/// A specialist's leaving takes his figure from the hub, as the leaving's
+/// routine does: the first character whose record's profession nibble is
+/// the leaver's (4 a merchant, 5 a physician) has its item lists cleared and
+/// its body removed, and the hub may place a new hire of that profession.
+pub(crate) fn remove_left_figures(
+    mut hub: ResMut<ArenaHub>,
+    career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+    mut characters: Query<(Entity, &mut exa_character::record::CharacterData)>,
+    mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
+) {
+    let Some(mut career) = career else {
+        return;
+    };
+    if career.figures_left.is_empty() {
+        return;
+    }
+    for nibble in std::mem::take(&mut career.figures_left) {
+        let found = characters
+            .iter_mut()
+            .find(|(_, data)| data.record.profession() >> 28 == nibble);
+        if let Some((entity, mut data)) = found {
+            data.clear_items();
+            scene_commands.write(crate::scene_bodies::SceneCommand::Despawn(entity));
+            info!("arena hub: the leaving specialist's figure (profession {nibble}) is removed");
+        }
+        let profession = if nibble == 4 {
+            crate::career::Profession::Merchant
+        } else {
+            crate::career::Profession::Physician
+        };
+        hub.specialists_placed.retain(|&placed| placed != profession);
     }
 }
 
@@ -3136,6 +3171,57 @@ mod tests {
         assert_eq!(career.company.roster[1].loadouts[0].hands, own);
         let board = windows.board.as_ref().unwrap();
         assert_eq!(board.entries[0].participants[0].value, 0x99);
+    }
+
+    /// A merchant's leaving through the live hub: his stock is emptied, the
+    /// character with the merchant's profession nibble has its items
+    /// cleared and is asked away, and the hub forgets the placed merchant.
+    #[test]
+    fn a_leaving_merchant_takes_his_stock_and_his_figure() {
+        let mut app = hub_app();
+        app.add_message::<crate::scene_bodies::SceneCommand>();
+        let mut stores = crate::save_live::ArenaStores::default();
+        stores.staff.employees.push(crate::staff::Employee {
+            class: crate::staff::MERCHANT,
+            ..Default::default()
+        });
+        app.insert_resource(stores);
+        app.init_resource::<crate::arsenal::ShelfKinds>();
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.merchant_stock = vec![11, 12];
+        career.staff_left = vec![0];
+        app.insert_resource(career);
+        let mut hub = ArenaHub::default();
+        hub.npcs_spawned = true;
+        hub.specialists_placed = vec![crate::career::Profession::Merchant];
+        app.insert_resource(hub);
+        let mut data = exa_character::record::CharacterData::default();
+        data.record.set_profession(0x4000_0000);
+        data.record.worn = vec![exa_formats::characters::ItemRef::new(5, 0)];
+        let merchant = app.world_mut().spawn(data).id();
+        app.update();
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert!(career.merchant_stock.is_empty());
+        assert!(career.figures_left.is_empty());
+        assert!(app.world().resource::<crate::save_live::ArenaStores>().staff.employees.is_empty());
+        let data = app
+            .world()
+            .get::<exa_character::record::CharacterData>(merchant)
+            .unwrap();
+        assert!(data.record.worn.is_empty());
+        let despawns: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::scene_bodies::SceneCommand>>()
+            .drain()
+            .filter(|c| matches!(c, crate::scene_bodies::SceneCommand::Despawn(e) if *e == merchant))
+            .collect();
+        assert_eq!(despawns.len(), 1);
+        assert!(
+            !app.world()
+                .resource::<ArenaHub>()
+                .specialists_placed
+                .contains(&crate::career::Profession::Merchant)
+        );
     }
 
     /// The board's Begin, through the hub's click: the first unfit

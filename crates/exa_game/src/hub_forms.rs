@@ -1399,20 +1399,32 @@ pub fn apply_staff_changes(
     stores: &mut crate::save_live::ArenaStores,
     kinds: &crate::arsenal::ShelfKinds,
 ) {
-    let left = &mut career.staff_left;
+    let left: Vec<usize> = career.staff_left.drain(..).collect();
     for employee in forms.joined.drain(..) {
         let crate::save_live::ArenaStores { staff, arsenal, .. } = &mut *stores;
         let stowed = staff.admit_stowing(employee, arsenal, |item| kinds.kind(item));
         info!("hub staff: an employee joined; {stowed} kit entries stowed in the arsenal");
     }
-    for index in left.drain(..) {
-        let crate::save_live::ArenaStores { staff, arsenal, .. } = stores;
+    for index in left {
+        let crate::save_live::ArenaStores { staff, arsenal, .. } = &mut *stores;
         match staff.leave(index, arsenal, |item| kinds.kind(item)) {
-            Some(leaving) => info!(
-                "hub staff: employee {} left; {} kit entries back in the arsenal",
-                index + 1,
-                leaving.released
-            ),
+            Some(leaving) => {
+                info!(
+                    "hub staff: employee {} left; {} kit entries back in the arsenal",
+                    index + 1,
+                    leaving.released
+                );
+                // A merchant's stock goes with him; a merchant's or a
+                // physician's figure leaves the hub.
+                if leaving.merchant_stock_cleared {
+                    career.merchant_stock.clear();
+                }
+                if leaving.figure_removed {
+                    career
+                        .figures_left
+                        .push(if leaving.merchant_stock_cleared { 4 } else { 5 });
+                }
+            }
             None => info!(
                 "hub staff: employee {} is not on the staff list; nothing to release",
                 index + 1
