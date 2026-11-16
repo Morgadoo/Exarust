@@ -603,11 +603,15 @@ Without an installation the check SHALL run the arena's command line with no gam
 - **THEN** the data-free arena runs and passes, and the level scenes are skipped with a note
 
 ### Requirement: The game's schedules leave no conflicting pair unordered
-The workspace tests SHALL build the game's App as the binary builds it, headless in lockstep, and fail on any two systems of a fixed-step schedule, of the character tick, of the brains' chain or of `PreUpdate` that touch the same data with no order between them, naming both systems and the data.
+The workspace tests SHALL build the game's App as the binary builds it, headless in lockstep, and fail on any two systems of a fixed-step schedule, of the character tick, of the brains' chain, of `PreUpdate`, `Update` or `PostUpdate` that touch the same data with no order between them, naming both systems and the data.
 
 #### Scenario: A plugin adds a system that writes the bodies
 - **WHEN** a lane adds a fixed-step system that writes `Ragdoll` with no order against the systems that read it
 - **THEN** the check fails and names each such pair and `Ragdoll`
+
+#### Scenario: A plugin adds a frame system
+- **WHEN** a lane adds an `Update` system that writes the GUI's frames with no order against the other GUI draws of its phase
+- **THEN** the check fails and names each such pair
 
 ### Requirement: Allowed pairs carry a reason
 An unordered conflicting pair SHALL pass only through an allowlist entry naming the schedule, both systems, the data and the reason the order cannot change what either computes; an entry that no longer matches SHALL fail the check.
@@ -616,16 +620,37 @@ An unordered conflicting pair SHALL pass only through an allowlist entry naming 
 - **WHEN** an allowed pair is ordered by a later change
 - **THEN** the check fails asking to drop the entry
 
-### Requirement: The frame's Update and PostUpdate keep a TODO count
-Until they are ordered, `Update` and `PostUpdate` SHALL keep a count of their unordered conflicting pairs in the check, which SHALL fail when the count grows (a new pair) and when it falls (the count to lower).
-
-#### Scenario: A new frame system
-- **WHEN** a lane adds an `Update` system that conflicts with another and orders neither
-- **THEN** the check fails with the new count
-
 ### Requirement: The fixed step's phases after the solver are named
 The fixed step SHALL run, after the solver and before the post-step, the work that reads the bodies as the solver left them, the bodies' sounds, the level's mechanisms, the strikes, the blood sprays, then the physics' own follow-up (the grips' lengths, the mechanisms' step, the props, the sector lists), in that order.
 
 #### Scenario: A trace of the bodies
 - **WHEN** the body trace records a tick
 - **THEN** it reads the bodies after the solver and before the sounds, strikes and mechanisms of that tick write them
+
+### Requirement: The frame's Update runs in phases
+Every game system of `Update` SHALL sit in one of the chained phases `Input`, `Gui`, `Hub`, `Session`, `Controls`, `Camera`, `Hand`, `Cursor`, `World`, `Audio`, `Draw`, `Capture`, after the original's frame order: the GUI's input and windows, the session's frame, the player controls' frame, the camera, the held item and the use list, the cursor, the world's draw preparation, the sounds, the HUD's draw, then the captures.
+
+#### Scenario: The GUI before the session
+- **WHEN** a frame runs a GUI click that opens a container and the flow's steps
+- **THEN** the click's systems run before every system of the session's frame
+
+### Requirement: The mind's hand-back runs between the session and the controls
+The mind's hand-back transition, an exclusive system, SHALL run after every system of the `Session` phase and before every system of the `Controls` phase.
+
+#### Scenario: A spirit returns home
+- **WHEN** the hand-back's black screen calls its action in a frame
+- **THEN** the session's frame of that frame has run and the player's controls run after the swap
+
+### Requirement: The frame's PostUpdate runs in phases placed against Bevy's sets
+Every game system of `PostUpdate` SHALL sit in one of the chained phases `Prepare` (before the transform propagation, the camera update, the UI and the asset events), `Placed` (after the propagation, before the bounds, the frusta, the visibility, the light bounds and the sun's cascades), `View` and `Trace`.
+
+#### Scenario: An effect writes a light's transform
+- **WHEN** the arcs place their voxel lights after the transforms propagate
+- **THEN** the visibility and the light frusta of that frame read the placed lights
+
+### Requirement: Allowed frame pairs are only with Bevy's unnamed systems
+The allowlist SHALL hold, for `Update` and `PostUpdate`, only pairs with one of Bevy's own systems that no public set or path names, and an entry MAY name a module to cover its systems.
+
+#### Scenario: A gizmo system
+- **WHEN** the arcs' draw and Bevy's private light gizmos touch global transforms
+- **THEN** the pair passes through the entry that names the gizmo module and its reason
