@@ -45,7 +45,9 @@ impl Plugin for FlamePlugin {
             FixedUpdate,
             (
                 stage_flames.after(CharacterTicks).before(BodySystems),
-                unstage_flames.after(BodySystems).before(BodyPostStep),
+                unstage_flames
+                    .in_set(exa_physics::body::AfterSolver::Level)
+                    .before(BodyPostStep),
             ),
         );
         app.insert_resource(FireLightPin::from_env()).add_systems(
