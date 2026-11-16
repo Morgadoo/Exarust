@@ -8,7 +8,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 
 ## Headline
 
-| measure | start (r186, 11-10) | now (r269, 11-16) | target |
+| measure | start (r186, 11-10) | now (r270, 11-16) | target |
 |---|---|---|---|
 | Estimate: reimplemented, by bytes | 81.9% | 82.3% | replaced by the ledger |
 | Estimate: engine-provided | 5.1% | 5.1% | — |
@@ -20,7 +20,7 @@ Decisions DEC-1 to DEC-4 taken as recommended; DEC-5 and DEC-6 open.**
 | Live rows with scene or retail evidence | — | 316 of 2,868 (11%) | 100% |
 | Retail references | — | 8 | about 50 |
 | Scenario matrix rows passing | — | 0 (matrix not built) | all |
-| Tests passing | 8,489 | 9,002 | all |
+| Tests passing | 8,489 | 9,012 | all |
 | Specs valid | 87 | 87 | all |
 
 The ledger starts low because nothing has been confirmed function by
@@ -126,6 +126,7 @@ DEC-6 composite terrain, DEC-7 approximate float instructions, DEC-9 Calm's writ
 
 | date | round | what |
 |---|---|---|
+| 2026-11-16 | 270 | The grid sector step's first pass is live: the force blast and wave strike bodies in the next tick before the character ticks through the sector's cell walk and gates; the particles' body pass is ported exactly and hooked into the solver's object stage (still unfed: the fires step in the frame's world, simfires lane); every fighter carries a burn and its upkeep, which had never run, now runs; round 265's particle reading corrected (simprepass). Blast and wave scenes and determinism runs owed (GPU on hold) |
 | 2026-11-16 | 269 | An older save's world objects run the original's upgrade chain on a live load; three readers the game had duplicated go through the database routines; a loadout cost bug fixed (a one-handed weapon costs a point less); the container instantiate is ported, so a level's chest fill makes local copies with each row's condition (datastream). Chest, loadout and search scenes owed; level-load traces change (GPU on hold) |
 | 2026-11-16 | 268 | The remaining form keys come from the window procedure's key list: the main menu (its name buffer and the music code), the settings form, the power tree (its bound power keys), the skill and destination screens (any key: F76 and F122 fixed) and the hub's fields; the root task's key slot holds the KeyDef lines and the boot's Escape, runs only the best shortcut and ignores repeats (F135 fixed) (guikeys). A camera-mode ordering gap the new systems exposed was fixed on integration. Key scenes owed (GPU on hold) |
 | 2026-11-16 | 267 | The player behaviour's gamepad screen cursor is the original's (eased in screen space, advanced in the post-step and drawn at the render fraction); the capture takes the pad's look buttons and makes the desk skip its mouse move; the cursor read takes the plain aim-plane point except in an Overhead Swing and for the powers; the stagger halt, the dash and Head Pain inputs (motion 45 identified), the kinesis-drag request drop, the placements' heading store and the death hook's capture release are wired (playerbeh). Pad and combat-aim scenes owed (GPU on hold) |
