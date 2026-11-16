@@ -457,6 +457,17 @@ fn a_phased_blow_lets_the_striker_through_for_500_ms() {
         .unwrap();
     assert_eq!(layer & 0xC000, 0xC000);
     assert_eq!(count::<BlowTendril>(&mut app), 1);
+    // The tendril entered the world placed: running, its head a node up,
+    // lit at once, so the next steps grow it rather than fade it in.
+    {
+        let mut tendrils = app.world_mut().query::<(&BlowTendril, &LiveWisps)>();
+        let (_, live) = tendrils.single(app.world()).unwrap();
+        let w = &live.wisps;
+        assert_eq!(w.state, crate::thaum::wisps::state::RUNNING);
+        assert_eq!(w.alpha, 1.0);
+        assert_eq!(w.strands[0].head, 1);
+        assert_eq!(w.strands[0].budget, 166);
+    }
     assert_eq!(app.world().get::<LiveVeil>(caster).unwrap().phased.len(), 1);
     let sounded = app
         .world_mut()
