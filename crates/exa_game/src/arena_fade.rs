@@ -4,16 +4,19 @@
 //! callback: the end menu's Continue opens the screen over the next round
 //! (or the tournament's next round) with the music fade off, and the hub's
 //! Begin and the rematch open it over the match start with the music fade
-//! on. The screen fades to black over 600 ms while the game runs on, calls
+//! on; its Continue after the last round opens it over the return to the hub
+//! and a dead manager's over the leave to the title, both with the music
+//! fade on. The screen fades to black over 600 ms while the game runs on, calls
 //! the staging there, holds two frames and 500 ms and fades back in over
 //! 600 ms; the staging raises the pause counter (only while it is zero),
 //! the screen's second frame after it lowers it, and the screen's close
 //! ends the AI staging freeze the staging set (`exa_ai::freeze`).
 //!
 //! Exarust opens the flow's transition screen ([`crate::flow::Flow::transition`])
-//! with [`Action::ArenaRound`] or [`Action::ArenaMatchStart`] and holds the
-//! staging here until its callback fires ([`crate::flow::Step::ArenaStage`]):
-//! the next round's [`EndAction`] for `arena_live`'s Continue, and the
+//! with [`Action::ArenaRound`], [`Action::ArenaReturn`] or
+//! [`Action::ArenaMatchStart`] and holds the staging here until its callback
+//! fires ([`crate::flow::Step::ArenaStage`]): the next round's or the
+//! return's [`EndAction`] for `arena_live`'s Continue, and the
 //! hub's [`ArenaMatchLaunch`], which then goes out as [`ArenaMatchStart`]
 //! for the host's level change. Without the flow (a bare app) a staging
 //! runs at once.
@@ -32,7 +35,8 @@ use crate::flow::{Action, ArenaStage, Flow, FlowSteps};
 /// The arena's stagings waiting for the transition screen's black.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct ArenaStaging {
-    /// The end menu's next round, waiting for its callback.
+    /// The end menu's next round or return to the hub, waiting for its
+    /// callback.
     round: Option<EndAction>,
     /// The hub's launch, waiting for its callback.
     launch: Option<ArenaMatchLaunch>,
@@ -42,7 +46,8 @@ pub struct ArenaStaging {
 }
 
 impl ArenaStaging {
-    /// Holds the next round for the screen's callback.
+    /// Holds the next round (or the return to the hub) for the screen's
+    /// callback.
     pub fn hold_round(&mut self, action: EndAction) {
         self.round = Some(action);
         self.fired_round = false;
@@ -67,12 +72,12 @@ impl ArenaStaging {
     /// The screen's callback for `stage` ran.
     pub fn fire(&mut self, stage: ArenaStage) {
         match stage {
-            ArenaStage::Round => self.fired_round = true,
+            ArenaStage::Round | ArenaStage::Return => self.fired_round = true,
             ArenaStage::MatchStart => self.fired_launch = true,
         }
     }
 
-    /// The next round whose callback fired.
+    /// The next round (or the return) whose callback fired.
     pub fn take_round(&mut self) -> Option<EndAction> {
         if !std::mem::take(&mut self.fired_round) {
             return None;
