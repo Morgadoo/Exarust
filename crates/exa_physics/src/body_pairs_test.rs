@@ -435,7 +435,13 @@ fn the_immediate_pushs_strain_sums_x_and_z_first() {
     let mut b = ball(2, 1, Vec3::X, 0.1);
     a.parts[0].strain = 0.0;
     // Equal mobilities and spreads: each side takes half, signed.
-    push_apart(&mut a.parts[0], &mut b.parts[0], [0.25; 4], [0.25; 4], v * 2.0);
+    push_apart(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        [0.25; 4],
+        [0.25; 4],
+        v * 2.0,
+    );
     assert_eq!(a.parts[0].strain, push_length(v * 2.0 * 0.5));
 }
 
