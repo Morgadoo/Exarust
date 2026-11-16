@@ -1611,6 +1611,8 @@ the game GUI unit's uncalled rows are closed: the inventory's page buttons swap 
 
 the simulation's mesh queries run the original's per-triangle tests (the face record's closest point, the front push with its two floors, the swept push, the swept nearest of the Height Query, the two-sided test), replacing the library projection and the analytic drop; the overlap query now asks the two-sided test as the original does (a defect fixed); the segment slot is proven unreachable; readings corrected (the cloth-only swept slot, the morph-delta zero fill). Each binary repeats itself exactly on the build worker's GPU; traces differ from main from the first tick, as the contact arithmetic changed; pictures and FPS hold. Follow-ups: a sphere starting within its radius of a face is no longer met by the Height Query (a down body's foot probe), the point-ray Height Query mode, the render build's morph-delta stream.
 
+the body morph follows the original's order: each target is added to the base in turn (the sum had been taken first), the morphed mesh is refitted with the mesh's own bounds routine, the morph-to-garment transfer walks the mesh incidence last face first as the load leaves it, and the race loader takes the morph file's first root's set; the slider-driven re-morph path is proven dead in 0.9.5 (four rows unreachable) and F41 closes; no visible change on the build worker's GPU across five physiques and a golem. Left: the original caches the transfer once per mesh object (the first race to wear it wins), Exarust per race and model, which needs a decision or a trace of shared garment objects.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
