@@ -2311,6 +2311,30 @@ pub(crate) mod tests {
 
     /// A two-bone motion set whose "Idle" swings the thigh and bobs the
     /// root over 30 frames.
+    /// [`motions`]' clip under each of `names`, the action numbers in that
+    /// order.
+    pub(crate) fn motions_named(names: &[&str]) -> Motions {
+        let base = motions();
+        let set = base.0.as_ref();
+        let clip = set.movesets[0].clips[0].clone();
+        let set = MotionSet {
+            bone_count: set.bone_count,
+            actions: names
+                .iter()
+                .map(|name| Action {
+                    name: (*name).into(),
+                    params: [0, 0],
+                })
+                .collect(),
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: names.iter().map(|_| clip.clone()).collect(),
+            }],
+        };
+        Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+    }
+
     pub(crate) fn motions() -> Motions {
         let key = |time: f32| {
             let (swing, y) = idle_at(time);
@@ -2678,7 +2702,7 @@ pub(crate) mod tests {
 
     /// A physical body playing "Idle" under `character`, which stands at
     /// [`START`], its root turned by [`YAW`]; returns the body root.
-    fn spawn_body(world: &mut World, character: Entity) -> Entity {
+    pub(crate) fn spawn_body(world: &mut World, character: Entity) -> Entity {
         let root = world
             .spawn((
                 Transform::from_rotation(Quat::from_rotation_y(YAW)),
