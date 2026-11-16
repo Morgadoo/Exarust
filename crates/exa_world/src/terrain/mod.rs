@@ -17,6 +17,7 @@
 
 pub mod manager;
 
+pub mod blank_draw;
 pub mod blend;
 pub mod composite;
 pub mod composite_draw;
@@ -88,19 +89,7 @@ impl Plugin for TerrainPlugin {
                 )
                     .chain(),
             )
-            .init_resource::<shadow_draw::TerrainShadowRule>()
-            .init_resource::<shadow_draw::TerrainShadowStats>()
-            .add_systems(
-                PostUpdate,
-                shadow_draw::sun_casts_drawn_blocks
-                    .after(bevy::light::SimulationLightSystems::CheckLightVisibility),
-            )
-            .add_systems(
-                PostUpdate,
-                shadow_draw::cube_faces_skip_undrawn_blocks
-                    .after(crate::scene_live::run_scene)
-                    .before(exa_render::lights::LightsSystems::Cubes),
-            )
+            .add_plugins(blank_draw::TerrainDrawRulesPlugin)
             .init_resource::<composite_draw::CompositeDraws>()
             .add_systems(
                 Update,
@@ -1258,8 +1247,9 @@ impl TerrainBuild {
         let started = std::time::Instant::now();
         self.uploaded = 0;
         self.blocking = budget == std::time::Duration::MAX;
-        // The frame hook's one tile a step, as the original runs it from the
-        // terrain's activation hook.
+        // The frame hook's one tile a step: the original's activation
+        // inserts this hook into the scene's frame list, and its
+        // deactivation takes it out again.
         self.frame_hook(commands);
         while self.next < self.terrain.tiles.len() {
             // A surface map still being packed waits for a later step, and
@@ -1416,7 +1406,6 @@ impl TerrainBuild {
             build_tile(
                 &terrain,
                 tile,
-                &palette,
                 &tree,
                 &noise,
                 &mut bake_layers,
@@ -1948,7 +1937,6 @@ struct BuiltTile {
 fn build_tile(
     terrain: &Terrain,
     tile: &TerrainTile,
-    palette: &Palette,
     tree: &RuleTree,
     noise: &NoiseMaps,
     bake_layers: &mut dyn FnMut(&[usize]) -> Vec<BakeLayer>,
@@ -1977,7 +1965,7 @@ fn build_tile(
     let mut layers: Vec<(Option<usize>, &[u8])> = tile
         .layers
         .iter()
-        .map(|l| (RuleTree::node(palette, &l.name), l.weights.as_slice()))
+        .map(|l| (tree.node(&l.name), l.weights.as_slice()))
         .collect();
     let unresolved = layers.iter().filter(|l| l.0.is_none()).count();
     // The original keeps at most eleven painted brushes; at the next one
@@ -2670,15 +2658,7 @@ mod tests {
         };
         let tree = RuleTree::new(&palette);
         let noise = NoiseMaps::default();
-        let built = build_tile(
-            &terrain,
-            tile,
-            &palette,
-            &tree,
-            &noise,
-            &mut |_| Vec::new(),
-            None,
-        );
+        let built = build_tile(&terrain, tile, &tree, &noise, &mut |_| Vec::new(), None);
         assert_eq!(built.blocks.len(), 64);
         for block in &built.blocks {
             let indices = block.mesh.indices().unwrap().len();
@@ -2712,7 +2692,6 @@ mod tests {
         let built = build_tile(
             &terrain,
             tile,
-            &palette,
             &tree,
             &noise,
             &mut |_| Vec::new(),
@@ -2752,21 +2731,60 @@ mod tests {
             let noise = NoiseMaps::default();
             let mut most = 0;
             for tile in &terrain.tiles {
-                let built = build_tile(
-                    &terrain,
-                    tile,
-                    &palette,
-                    &tree,
-                    &noise,
-                    &mut |_| Vec::new(),
-                    None,
-                );
+                let built = build_tile(&terrain, tile, &tree, &noise, &mut |_| Vec::new(), None);
                 assert!(!built.truncated, "{level} tile {} {}", tile.x, tile.y);
                 most = most.max(built.materials.len());
             }
             // exanima01's dirt rooms stack eight; one exanima67 tile twelve.
             assert!(most > 4, "{level}: {most}");
         }
+    }
+
+    /// The brush table's binary search resolves every name the shipped
+    /// terrains use (each rule's two children and each tile's painted
+    /// layers) to the node the plain name match gives, rules before
+    /// materials: no shipped palette repeats a name or uses one past the
+    /// key's sixteen bytes (skipped without the game).
+    #[test]
+    fn shipped_names_resolve_through_the_brush_table() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let (mut levels, mut names, mut unresolved) = (0, 0, 0);
+        for entry in pack.entries() {
+            let Some(level) = entry.name.strip_suffix(".rft") else {
+                continue;
+            };
+            let terrain = Terrain::parse(pack.bytes(entry)).unwrap();
+            let (palette, _, _) = choose_palette(&terrain.palette, |name| pack.get(name));
+            let palette = palette.unwrap_or_else(|| panic!("{level}: no palette"));
+            let tree = RuleTree::new(&palette);
+            let linear = |name: &str| {
+                palette.entry(name).map(|e| match e {
+                    exa_formats::terrain::PaletteEntry::Rule(i) => i,
+                    exa_formats::terrain::PaletteEntry::Material(m) => palette.rules.len() + m,
+                })
+            };
+            let children = palette
+                .rules
+                .iter()
+                .flat_map(|r| [r.a.as_str(), r.b.as_str()]);
+            let layers = terrain
+                .tiles
+                .iter()
+                .flat_map(|t| t.layers.iter().map(|l| l.name.as_str()));
+            for name in children.chain(layers) {
+                assert_eq!(tree.node(name), linear(name), "{level}: {name:?}");
+                names += 1;
+                unresolved += usize::from(tree.node(name).is_none());
+            }
+            levels += 1;
+        }
+        eprintln!("{levels} terrains: {names} names, {unresolved} unresolved");
+        assert_eq!(levels, 17);
+        assert!(names > 0 && unresolved < names, "{names} {unresolved}");
     }
 
     /// Every shipped material's tiling factor is a whole number of 4/48 m

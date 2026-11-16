@@ -420,6 +420,30 @@ impl Plane {
     }
 }
 
+/// How far `obb` lies outside the planes `normal · x + offset ≤ 0`, as the
+/// original's plane walk measures it (the terrain's block rank calls it with
+/// a light's volume and a block's box): for each plane the box centre is not
+/// behind (a NaN distance goes on), the plane distance less the box's
+/// support along the normal taken into the box's frame; the largest of
+/// those that is not negative wins, and 0 when there is none. A NaN
+/// clearance never wins. Sums run in the instruction order: the centre's
+/// plane distance and the support both add x and y first, then z (and the
+/// offset after the distance), which the dot products here reproduce.
+pub fn outside_distance(planes: impl IntoIterator<Item = (Vec3, f32)>, obb: &Obb) -> f32 {
+    let mut farthest = 0.0f32;
+    for (normal, offset) in planes {
+        let distance = normal.dot(obb.centre) + offset;
+        if distance < 0.0 {
+            continue;
+        }
+        let beyond = distance - support(obb.half_extents, obb.local(normal));
+        if !(beyond < 0.0) && farthest < beyond {
+            farthest = beyond;
+        }
+    }
+    farthest
+}
+
 /// A convex volume: the intersection of its faces' inner half-spaces.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConvexVolume {
@@ -638,20 +662,10 @@ impl ConvexVolume {
 
     /// How far the box lies outside the volume at its most exposed face,
     /// zero when it is inside or crosses a face: the largest face distance
-    /// left after the box's support along that face is taken off.
+    /// left after the box's support along that face is taken off
+    /// ([`outside_distance`] over the volume's faces).
     pub fn outside_distance(&self, obb: &Obb) -> f32 {
-        let mut farthest = 0.0f32;
-        for plane in &self.planes {
-            let distance = plane.distance(obb.centre);
-            if distance < 0.0 {
-                continue;
-            }
-            let beyond = distance - support(obb.half_extents, obb.local(plane.normal));
-            if !(beyond < 0.0) && farthest < beyond {
-                farthest = beyond;
-            }
-        }
-        farthest
+        outside_distance(self.planes.iter().map(|p| (p.normal, p.offset)), obb)
     }
 
     /// Clips `polygon` by every face of this volume, in face order
